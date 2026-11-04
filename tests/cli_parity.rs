@@ -920,6 +920,196 @@ fn arithmetic_is_data_c_arith_driver() {
 }
 
 #[test]
+fn ash_is_data_c_fash() {
+    // data.c:Fash: a bignum COUNT keeps 0 and sends the rest to -1, 0 or
+    // `overflow-error' by its sign; a fixnum one shifts right in a machine
+    // integer and left through emacs_mpz_mul_2exp, whose limb limit
+    // refuses a count past it even for 0.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (dolist (v (list 0 1 -1 7 -7 most-positive-fixnum most-negative-fixnum (1+ most-positive-fixnum) (- (expt 2 70))))
+    (print (mapcar (lambda (s) (condition-case e (ash v s) (error e)))
+                   (list 0 1 -1 2 61 62 63 64 65 -61 -62 -63 -64 -65 200 -200 most-negative-fixnum
+                         (1+ most-positive-fixnum) (1- most-negative-fixnum)))))
+  (print (mapcar (lambda (s) (condition-case e (ash 0 s) (error e)))
+                 (list 137438953407 137438953408 most-positive-fixnum (- 137438953408))))
+  (print (mapcar (lambda (s) (condition-case e (ash 1 s) (error e)))
+                 (list 137438953408 most-positive-fixnum)))
+  (print (list (condition-case e (ash 1.0 1) (error e)) (condition-case e (ash 1 1.0) (error e))
+               (condition-case e (ash (point-marker) 1) (error e)))))"#,
+        ],
+    );
+}
+
+#[test]
+fn aref_of_a_char_table_is_char_table_ref() {
+    // data.c:Faref's CHECK_CHARACTER and CHAR_TABLE_REF, interpreted, from
+    // byte code and through get-char-code-property's native code: a
+    // table's own ranges, its parent's values, a Unicode property table's
+    // compressed entries, and indices that are no character.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(let* ((parent (make-char-table 'ct-test 'from-parent))
+       (table (make-char-table 'ct-test))
+       (uni (unicode-property-table-internal 'general-category))
+       (compiled (byte-compile (lambda (tb c) (condition-case e (aref tb c) (error e)))))
+       (chars (list ?a #x7f #x80 #x3042 #x10000 #x10ffff #x3fff80 #x3fffff -1 #x400000)))
+  (set-char-table-parent table parent)
+  (set-char-table-range table '(#x3000 . #x30ff) 'kana)
+  (aset table ?b 'bee)
+  (set-char-table-range parent '(#x10000 . #x10fff) nil)
+  (print (mapcar (lambda (c) (condition-case e (aref table c) (error e))) chars))
+  (print (mapcar (lambda (c) (funcall compiled table c)) chars))
+  (print (mapcar (lambda (c) (funcall compiled uni c)) chars))
+  (print (mapcar (lambda (c) (condition-case e (get-char-code-property c 'general-category) (error e)))
+                 (list ?a #x3042 #x1f600 #xe000 #x10ffff)))
+  (print (mapcar (lambda (c) (condition-case e (get-char-code-property c 'name) (error e)))
+                 (list ?a #x3042 #x1f600 #xac00 #x4e00)))
+  (print (list (funcall compiled (make-char-table 'x 0) ?z) (funcall compiled (make-char-table 'x) #x2000)
+               (condition-case e (aref table 'x) (error e)) (condition-case e (aref table 1.0) (error e)))))"#,
+        ],
+    );
+}
+
+#[test]
+fn bindings_and_unwind_records_share_one_specpdl() {
+    // eval.c's one specpdl: a throw or a signal undoes the bindings and
+    // the unwind records above its catch innermost first, so an
+    // unwind-protect's handler runs after the inner bindings are gone and
+    // before the outer ones, and a watcher hears each `unlet' in that
+    // order; Bunbind over a saved current buffer, a buffer-local binding
+    // undone from another buffer, save-excursion and save-restriction in
+    // recursion, interpreted and byte-compiled.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (defvar sp-1 'g1) (defvar sp-2 'g2) (defvar sp-3 'g3) (defvar sp-4 'g4)
+  (defvar sp-log nil)
+  (add-variable-watcher 'sp-3 (lambda (sym new op where)
+                                (push (list 'watch sym new op (and where (buffer-name where))) sp-log)))
+  (defun sp-f1 (b2)
+    (catch 'k
+      (let ((sp-1 'l1))
+        (unwind-protect
+            (let ((sp-2 'l2) (sp-3 'l3))
+              (save-current-buffer
+                (set-buffer b2)
+                (push (list 'inner sp-1 sp-2 sp-3 (buffer-name)) sp-log)
+                (throw 'k (list sp-1 sp-2 sp-3))))
+          (push (list 'cleanup sp-1 sp-2 sp-3 (buffer-name)) sp-log)))))
+  (defun sp-f2 (b2)
+    (let ((sp-1 1) (sp-2 2))
+      (save-current-buffer
+        (set-buffer b2)
+        (let ((sp-4 4))
+          (list sp-1 sp-2 sp-4 (buffer-name))))))
+  (defun sp-f3 (b2)
+    (with-temp-buffer
+      (rename-buffer "sp-home" t)
+      (setq-local sp-4 'local)
+      (list (let ((sp-4 'bound)) (set-buffer b2) (list sp-4 (buffer-name)))
+            sp-4 (buffer-name) (with-current-buffer "sp-home" sp-4))))
+  (defun sp-f4 ()
+    (condition-case err
+        (let ((sp-1 'e1))
+          (unwind-protect (let ((sp-2 'e2) (sp-3 'e3)) (signal 'error (list sp-1 sp-2 sp-3)))
+            (push (list 'f4-cleanup sp-1 sp-2 sp-3) sp-log)))
+      (error (list 'caught err sp-1 sp-2 sp-3))))
+  (defun sp-f5 (n)
+    (if (= n 0) (list sp-1 sp-2)
+      (let ((sp-1 n))
+        (save-excursion
+          (let ((sp-2 (* 2 n)))
+            (save-restriction
+              (sp-f5 (1- n))))))))
+  (let ((b2 (get-buffer-create "b2")) results)
+    (dolist (compiled '(nil t))
+      (when compiled (dolist (f '(sp-f1 sp-f2 sp-f3 sp-f4 sp-f5)) (byte-compile f)))
+      (setq sp-log nil)
+      (push (list compiled (sp-f1 b2) (sp-f2 b2) (sp-f3 b2) (sp-f4) (sp-f5 3) (nreverse sp-log)
+                  sp-1 sp-2 sp-3 sp-4 (buffer-name))
+            results))
+    (dolist (r (nreverse results)) (print r))))"#,
+        ],
+    );
+}
+
+#[test]
+fn generated_dynamic_bindings_match_across_buffers() {
+    // Forty programs generated from one `random' seed: `let', `setq',
+    // `set-default', `make-local-variable', `kill-local-variable' and
+    // `setq-local' of two global variables and a buffer-local one in two
+    // buffers, under buffer switches, unwind-protect, catch and throw and
+    // condition-case, each run interpreted and byte-compiled, its states
+    // and GNU's warnings printed.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (defvar fz-a 'ga) (defvar fz-b 'gb) (defvar-local fz-c 'gc) (defvar fz-out nil)
+  (defun fz-log (x) (push x fz-out))
+  (defun fz-pick (l) (nth (random (length l)) l))
+  (defun fz-state ()
+    '(fz-log (list (buffer-name) fz-a fz-b fz-c (default-value 'fz-a)
+                   (default-value 'fz-c) (local-variable-p 'fz-a) (local-variable-p 'fz-c))))
+  (defun fz-stmt (d)
+    (let ((k (random (if (< d 4) 14 7))) (v (fz-pick '(fz-a fz-b fz-c)))
+          (x (fz-pick '('x 'y 'z 1 2 3))) (b (fz-pick '("fz1" "fz2"))))
+      (if (< k 7)
+          (nth k `((setq ,v ,x) (set-default ',v ,x) (make-local-variable ',v)
+                   (kill-local-variable ',v) (set-buffer ,b) ,(fz-state) (setq-local ,v ,x)))
+        (let ((body (let (l) (dotimes (_ (1+ (random 3))) (push (fz-stmt (1+ d)) l)) l)))
+          (nth (- k 7)
+               `((let ((,v ,x)) ,@body)
+                 (let ((,v ,x) (,(fz-pick '(fz-a fz-b fz-c)) ,x)) ,@body)
+                 (with-current-buffer ,b ,@body)
+                 (unwind-protect (progn ,@body) ,(fz-state))
+                 (catch 'fz-tag ,@body (throw 'fz-tag nil))
+                 (condition-case nil (progn ,@body (error "fz")) (error ,(fz-state)))
+                 (save-current-buffer ,@body)))))))
+  (get-buffer-create "fz1") (get-buffer-create "fz2")
+  (defun fz-run (f)
+    (dolist (b '("fz1" "fz2")) (with-current-buffer b (kill-all-local-variables)))
+    (set-buffer "fz1")
+    (setq-default fz-a 'ga fz-b 'gb fz-c 'gc)
+    (setq fz-out nil)
+    (condition-case e (funcall f) (error (fz-log (list 'err e))))
+    (set-buffer "fz1")
+    (nreverse fz-out))
+  (random "emaxx-specpdl")
+  (let ((programs (let (l) (dotimes (_ 40)
+                             (push `(lambda () ,@(let (s) (dotimes (_ (+ 3 (random 4))) (push (fz-stmt 0) s)) s)
+                                       ,(fz-state))
+                                   l))
+                    (nreverse l))))
+    (dolist (p programs)
+      (let ((f (eval p t)))
+        (print (list (fz-run f) (fz-run (byte-compile f))))))))"#,
+        ],
+    );
+}
+
+#[test]
 fn matcher_backtracks_and_folds_as_regex_emacs() {
     // re_match_2_internal's failure stack (failure points, saved
     // registers, `\{n,m\}' counters) and a case-folded EXACTN over ASCII
@@ -946,6 +1136,317 @@ fn matcher_backtracks_and_folds_as_regex_emacs() {
                      (insert (encode-coding-string s 'utf-8))
                      (let (r) (dotimes (i (1+ (buffer-size))) (goto-char (1+ i)) (push (and (looking-at re) (match-data t)) r)) r))
                    (posix-string-match re s) (match-data t))))))"#,
+        ],
+    );
+}
+
+#[test]
+fn unescaped_character_literals_are_recorded_as_read_char_literal() {
+    // read_char_literal conses each unescaped `(', `)', `[', `]', `"' or
+    // `;' onto `lread--unescaped-character-literals' as it reads it, after
+    // CHECK_LIST and unless Fmemq finds it, by a C assignment: in reading
+    // order, before a later character fails the read, onto the list it
+    // found, seen by a function stream mid-read, in the current buffer's
+    // binding; and `load' warns of a file's as it unwinds, even when the
+    // file's read fails.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (let ((lread--unescaped-character-literals nil) (out nil))
+    (push (condition-case e (read-from-string "`?]_") (error e)) out)
+    (push lread--unescaped-character-literals out)
+    (push (condition-case e (read-from-string "(?; ?[x") (error e)) out)
+    (push lread--unescaped-character-literals out)
+    (with-temp-buffer
+      (insert "(?( . ?\")")
+      (goto-char 1)
+      (push (condition-case e (read (current-buffer)) (error e)) out)
+      (push lread--unescaped-character-literals out)
+      (insert " ?)")
+      (goto-char (point-max))
+      (insert " ?]a")
+      (let ((m (copy-marker 10)))
+        (push (condition-case e (read m) (error e)) out)
+        (push (marker-position m) out)))
+    (push lread--unescaped-character-literals out)
+    (let ((chars (string-to-list "?;z")))
+      (push (condition-case e
+                (read (lambda (&optional ch) (if ch (push ch chars) (pop chars))))
+              (error e))
+            out))
+    (push lread--unescaped-character-literals out)
+    (print (nreverse out)))
+  (let* ((tail (list 40)) (lread--unescaped-character-literals tail) (seen nil)
+         (chars (string-to-list "(?) ?( ?[ ?\\( ?))")))
+    (print (list (read-from-string "?) ?(") lread--unescaped-character-literals
+                 (eq (cdr lread--unescaped-character-literals) tail)))
+    (setq lread--unescaped-character-literals nil)
+    (print (list (read (lambda (&optional ch)
+                         (if ch (push ch chars)
+                           (push lread--unescaped-character-literals seen)
+                           (pop chars))))
+                 (nreverse seen))))
+  (dolist (v '(5 "x" (1 . 2) (41 . 2) (1 2 . 3)))
+    (let ((lread--unescaped-character-literals v))
+      (print (list v (condition-case e (read-from-string "(?) . ") (error e))
+                   lread--unescaped-character-literals))))
+  (let ((lread--unescaped-character-literals nil))
+    (read-from-string "?;")
+    (with-temp-buffer
+      (setq-local lread--unescaped-character-literals (list 1))
+      (read-from-string "?[")
+      (print (list lread--unescaped-character-literals
+                   (default-value 'lread--unescaped-character-literals))))
+    (print lread--unescaped-character-literals))
+  (with-temp-file "lit-a.el" (insert "(setq lit-a '(?( ?] ?\\[))\n"))
+  (with-temp-file "lit-b.el" (insert "(setq lit-b '(?; ?\" . \n"))
+  (print (list (load (expand-file-name "lit-a.el") nil t t) (symbol-value 'lit-a)))
+  (print (condition-case e (load (expand-file-name "lit-b.el") nil t t) (error e)))
+  (print lread--unescaped-character-literals))"#,
+        ],
+    );
+}
+
+#[test]
+fn variable_watchers_hear_stores_as_data_c_tells_them() {
+    // set_internal, set_default_internal, specbind and do_one_unbind as
+    // they notify the watchers of a plain variable, one local when set,
+    // one made local in a buffer, an alias, C variables (a Lisp object,
+    // an integer, a boolean), buffer slots, a C variable made local when
+    // set (`case-fold-search'), and a keyboard's slot:
+    // the operation, the value as given before it is checked or
+    // converted, the buffer notify_variable_watchers finds when the
+    // caller names none, the second notifications set_default_internal
+    // and a buffer slot's set make, a let whose store signals, and
+    // make-local-variable and make-variable-buffer-local refusing a
+    // keyboard's slot; once interpreted and once byte-compiled.
+    let corpus = Corpus::new();
+    let program = r#"(progn
+  (defvar w-plain 'p0)
+  (defvar-local w-local 'l0)
+  (defvar w-ml 'm0)
+  (defvar w-base 'b0)
+  (defvaralias 'w-alias 'w-base)
+  (defun w-subst (tree)
+    (cond ((eq tree 'V) w-var) ((consp tree) (cons (w-subst (car tree)) (w-subst (cdr tree)))) (t tree)))
+  (defvar w-var nil)
+  (with-current-buffer (get-buffer-create "wk") (make-local-variable 'w-ml))
+  (let ((log nil)
+        (ops '((setq V 1)
+               (set-default 'V 2)
+               (let ((V 3)) (setq V 4))
+               (let ((V 5)) (set-default 'V 6))
+               (with-temp-buffer (rename-buffer "wt1") (let ((V 7)) (setq V 8)))
+               (let ((V 9)) (with-temp-buffer (rename-buffer "wt2") (setq-local V 10)))
+               (with-temp-buffer (rename-buffer "wt3") (setq-local V 11)
+                                 (let ((V 12)) (setq V 13))
+                                 (let ((V 14)) (kill-local-variable 'V))
+                                 (setq V 15))
+               (with-temp-buffer (rename-buffer "wt4")
+                                 (let ((V 16)) (make-local-variable 'V) (setq V 17)))
+               (with-current-buffer "wk" (setq V 18) (let ((V 19)) (setq V 20)))
+               (let ((V 21)) (with-current-buffer "wk" (setq V 22)))
+               (list (local-variable-if-set-p 'V) (local-variable-if-set-p 'V (get-buffer "wk")))
+               (make-variable-buffer-local 'V)
+               (let ((V 'sym)) 23)
+               (set 'V 'sym)
+               (setq V nil))))
+    (dolist (v '(w-plain w-local w-ml w-alias lread--unescaped-character-literals
+                 gc-cons-threshold cursor-in-echo-area fill-column case-fold-search
+                 left-margin last-command))
+      (let* ((target (indirect-variable v))
+             (watcher (lambda (sym nv op where)
+                        (push (list sym op nv (and (bufferp where)
+                                                   (or (buffer-name where) 'dead)))
+                              log))))
+        (add-variable-watcher target watcher)
+        (setq log nil)
+        (let ((saved (default-value v)))
+          (dolist (op ops)
+            (setq w-var v)
+            (condition-case e (push (list 'value (eval (w-subst op) t)) log)
+              (error (push (list 'error e) log)))
+            (push '| log))
+          (remove-variable-watcher target watcher)
+          (with-current-buffer "wk" (kill-local-variable v))
+          (set-default v saved))
+        (print (cons v (nreverse log)))))))"#;
+    for program in [
+        program.to_owned(),
+        program.replace(
+            "(eval (w-subst op) t)",
+            "(funcall (byte-compile (list 'lambda nil (w-subst op))))",
+        ),
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
+    }
+}
+
+#[test]
+fn defvar_and_buffer_local_value_are_eval_c_and_data_c_s() {
+    // eval.c:defvar asks Fdefault_boundp first, then
+    // Finternal__define_uninitialized_variable refuses a symbol an
+    // environment an inner binding saved binds lexically (lexbound_p),
+    // and the value goes to the default when it is void or to the value
+    // the outermost let of the symbol as given saved when that is void;
+    // `defvar-1', byte code's, is the same.  buffer_local_value of a
+    // buffer without a binding is the default, void when that is.  A
+    // hundred programs generated in Lisp from one `random' seed mix
+    // let, setq, set-default, makunbound, make-local-variable,
+    // kill-local-variable, kill-all-local-variables, defvar,
+    // set-default-toplevel-value and an alias over two buffers with
+    // nonlocal exits, interpreted and byte-compiled, printing values,
+    // defaults, top-level values, localness and buffer-local-variables.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(print (condition-case e (let ((zq1 1)) (defvar zq1 2) zq1) (error e)))
+(print (condition-case e (let ((zq2 1)) (let ((y 2)) (defvar zq2 3)) zq2) (error e)))
+(print (condition-case e (let ((zq3 1)) (let ((y 2)) (internal--define-uninitialized-variable 'zq3)) zq3) (error e)))
+(defvar zq4) (makunbound 'zq4)
+(print (list (let ((zq4 5)) (defvar-1 'zq4 7 "doc") zq4) (symbol-value 'zq4) (get 'zq4 'variable-documentation)))
+(with-temp-buffer (setq-local zq5 1) (defvar-1 'zq5 9 nil) (print (list zq5 (default-value 'zq5) (special-variable-p 'zq5))))
+(defvar zq6 'a0) (makunbound 'zq6)
+(print (list (let ((zq6 5)) (defvar zq6 8) zq6) (symbol-value 'zq6)))
+(defvar zq7 'a) (defvaralias 'zq7-al 'zq7) (makunbound 'zq7)
+(print (list (let ((zq7 1)) (defvar zq7-al 2) zq7) (boundp 'zq7) (get 'zq7-al 'variable-documentation)))
+(defvar zq8 'a0) (get-buffer-create "zq-2")
+(with-temp-buffer (makunbound 'zq8) (make-local-variable 'zq8) (setq zq8 'y)
+  (print (list (condition-case e (buffer-local-value 'zq8 (get-buffer "zq-2")) (error e))
+               (condition-case e (default-value 'zq8) (error e)))))
+(let ((zq9 1)) (makunbound 'zq9) (defvar zq9 3) (print (list zq9 (default-boundp 'zq9))))
+(random "var-fuzz")
+(defvar vz-a 'a0) (defvar vz-b 'b0) (defvar-local vz-c 'c0) (defvar vz-p 'p0)
+(put 'vz-p 'permanent-local t)
+(defvaralias 'vz-al 'vz-a)
+(get-buffer-create "vz1") (get-buffer-create "vz2")
+(defun vz-state ()
+  (list (buffer-name)
+        (mapcar (lambda (v) (if (boundp v) (symbol-value v) 'UNBOUND)) '(vz-a vz-b vz-c vz-p vz-al))
+        (mapcar (lambda (v) (condition-case nil (default-value v) (void-variable 'VOID))) '(vz-a vz-c vz-p))
+        (mapcar (lambda (v) (condition-case nil (default-toplevel-value v) (void-variable 'VOID))) '(vz-a vz-c))
+        (mapcar (lambda (v) (local-variable-p v)) '(vz-a vz-b vz-c vz-p vz-al))
+        (seq-filter (lambda (c) (memq (car-safe c) '(vz-a vz-b vz-c vz-p))) (buffer-local-variables))
+        (condition-case e (buffer-local-value 'vz-a (get-buffer "vz2")) (error (car e)))))
+(defun vz-stmt (r d)
+  (let* ((k (random (if (< d 3) 22 14)))
+         (v (nth (random 5) '(vz-a vz-b vz-c vz-p vz-al)))
+         (x (nth (random 5) '('x 'y 1 2 nil))))
+    (cond
+     ((= k 0) `(setq ,v ,x))
+     ((= k 1) `(set-default ',v ,x))
+     ((= k 2) `(make-local-variable ',v))
+     ((= k 3) `(kill-local-variable ',v))
+     ((= k 4) `(makunbound ',v))
+     ((= k 5) `(set-buffer ,(nth (random 2) '("vz1" "vz2"))))
+     ((= k 6) `(vz-log (vz-state)))
+     ((= k 7) `(kill-all-local-variables))
+     ((= k 8) `(set-default-toplevel-value ',v ,x))
+     ((= k 9) `(setq-local ,v ,x))
+     ((= k 10) `(vz-log (list 'special (special-variable-p ',v) (boundp ',v) (default-boundp ',v))))
+     ((= k 11) `(vz-log (list 'locus (variable-binding-locus ',v))))
+     ((= k 12) `(defvar ,v ,x))
+     ((= k 13) `(vz-log (list 'ifset (local-variable-if-set-p ',v))))
+     (t (let ((body (let (l) (dotimes (_ (1+ (random 3))) (push (vz-stmt r (1+ d)) l)) l)))
+          (nth (- k 14)
+               `((let ((,v ,x)) ,@body)
+                 (let ((,v ,x) (vz-b 'lb)) ,@body)
+                 (with-current-buffer ,(nth (random 2) '("vz1" "vz2")) ,@body)
+                 (unwind-protect (progn ,@body) (vz-log (vz-state)))
+                 (catch 'vz (progn ,@body (throw 'vz nil)))
+                 (condition-case e (progn ,@body (error "vz")) (error (vz-log (list 'caught (cadr e)))))
+                 (save-current-buffer ,@body)
+                 (let* ((,v ,x)) (setq ,v 'inner) ,@body))))))))
+(defvar vz-out nil)
+(defun vz-log (x) (push x vz-out))
+(defun vz-reset ()
+  (dolist (b '("vz1" "vz2")) (with-current-buffer b (kill-all-local-variables) (kill-local-variable 'vz-p)))
+  (set-buffer "vz1")
+  (setq-default vz-a 'a0 vz-b 'b0 vz-c 'c0 vz-p 'p0)
+  (setq vz-out nil))
+(dotimes (i 100)
+  (let ((form `(progn ,@(let (l) (dotimes (_ (+ 3 (random 6))) (push (vz-stmt nil 0) l)) l) (vz-log (vz-state)))))
+    (dolist (compiled '(nil t))
+      (vz-reset)
+      (condition-case e
+          (if compiled (funcall (byte-compile `(lambda () ,form))) (eval form t))
+        (error (vz-log (list 'err (car e)))))
+      (prin1 (list i compiled (nreverse vz-out))) (terpri)
+      (set-buffer "vz1"))))
+)"#,
+        ],
+    );
+}
+
+#[test]
+fn defalias_leaves_the_cycle_check_to_fset() {
+    // data.c:defalias hands an advised symbol's new definition to its
+    // `defalias-fset-function' (nadvice's), which wraps it before Ffset
+    // checks for a cycle: a definition naming the symbol itself is no
+    // cycle there.  A hundred and fifty programs generated in Lisp from
+    // one `random' seed defalias, fset, advise, unadvise and fmakunbound
+    // four symbols and print each one's fboundp, arity, commandp,
+    // interactive form, documentation, alias chain, advice and the
+    // results of calling it.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+
+(random "fn-fuzz")
+(defun fz-try (f &rest args) (condition-case e (apply f args) (error (list 'err (car e)))))
+(defvar fz-log nil)
+(defun fz-describe (s)
+  (list s (fboundp s)
+        (fz-try (lambda () (func-arity s)))
+        (fz-try (lambda () (commandp s)))
+        (fz-try (lambda () (car-safe (interactive-form s))))
+        (fz-try (lambda () (let ((d (documentation s t))) (and d (car (split-string d "\n"))))))
+        (fz-try (lambda () (function-alias-p s)))
+        (fz-try (lambda () (subrp (indirect-function s))))
+        (fz-try (lambda () (advice-member-p 'fz-adv s)))
+        (fz-try (lambda () (funcall s 1 2)))
+        (fz-try (lambda () (apply s '(3))))
+        (fz-try (lambda () (car-safe (symbol-function s))))))
+(let ((names '(fz-f1 fz-f2 fz-f3 fz-f4))
+      (targets (list (lambda (a &optional b) "Doc A." (list 'l a b))
+                     (lambda (&rest r) (interactive "p") (cons 'rest r))
+                     #'+ #'car 'fz-f1 'fz-f2 'list
+                     (byte-compile (lambda (x y) "Compiled doc." (list 'bc x y)))
+                     (lambda (x) (interactive (list 1)) (list 'int x)))))
+  (dotimes (i 150)
+    (setq fz-log nil)
+    (dolist (n names) (fmakunbound n) (put n 'function-documentation nil))
+    (dotimes (_ (+ 2 (random 8)))
+      (let ((n (nth (random 4) names)) (k (random 9)))
+        (condition-case e
+            (cond ((< k 3) (defalias n (nth (random (length targets)) targets) (and (zerop (random 3)) "Alias doc.")))
+                  ((= k 3) (fset n (nth (random (length targets)) targets)))
+                  ((= k 4) (advice-add n (nth (random 4) '(:around :before :after :filter-return))
+                                       (lambda (&rest r) (push (list 'adv n (length r)) fz-log) (if (functionp (car r)) (apply (car r) (cdr r)) (car r)))
+                                       '((name . fz-adv))))
+                  ((= k 5) (advice-remove n 'fz-adv))
+                  ((= k 6) (fmakunbound n))
+                  ((= k 7) (put n 'function-documentation "Prop doc."))
+                  (t (defalias n (symbol-function (nth (random 4) names)))))
+          (error (push (list 'op-err (car e)) fz-log)))))
+    (prin1 (list i (mapcar #'fz-describe names) (nreverse fz-log)))
+    (terpri)))
+)"#,
         ],
     );
 }
@@ -1045,4 +1546,104 @@ fn signals_are_init_signals_s() {
             "Emaxx (left) and GNU (right) differ for {program}"
         );
     }
+}
+
+#[test]
+fn let_binds_what_specbind_accepts_and_properties_follow_symbols() {
+    // eval.c's let and let* leave the constants to specbind's set_internal:
+    // a keyword bound to itself is no change, and a symbol that only looks
+    // like a keyword, an uninterned or private obarray one, is an ordinary
+    // variable.  A text property's `category' symbol gives its properties
+    // as Fget of the object, and `buffer-local-variables' lists an
+    // uninterned variable as itself.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defun t3-try (f) (condition-case e (funcall f) (error (list 'err e))))
+(defvar t3-dyn 5)
+(dolist (lexical '(nil t))
+  (dolist (form (list '(let ((:k :k)) (list :k))
+                      '(let* ((:k :k) (:j :j)) (list :k :j))
+                      '(let ((:k 2)) 1)
+                      '(let* ((:k nil)) 1)
+                      '(let ((nil nil)) 1)
+                      '(let* ((t t)) 1)
+                      '(let ((t3-dyn 1) (:k :k)) t3-dyn)
+                      '(let ((t3-dyn 1) (:k 3)) t3-dyn)
+                      (let ((x (make-symbol ":zz"))) (list 'let (list (list x 1)) x))
+                      (let ((x (make-symbol ":zz"))) (list 'let* (list (list x 1)) (list 'list x)))
+                      (let ((x (intern ":zz" (obarray-make)))) (list 'let (list (list x 1)) x))
+                      (let ((x (make-symbol "nil"))) (list 'let (list (list x 2)) x))
+                      (let ((x (make-symbol "t"))) (list 'let* (list (list x 3)) x))))
+    (prin1 (list lexical (t3-try (lambda () (eval form lexical)))))
+    (terpri)))
+(prin1 (list 'after t3-dyn (t3-try (lambda () (symbol-value :k)))))
+(terpri)
+;; A category symbol's plist by the symbol object, uninterned or interned.
+(dolist (cat (list (make-symbol "t3-cat") 't3-cat (intern "t3-cat" (obarray-make)) nil))
+  (when cat (put cat 'face 'bold) (put cat 'help-echo "help"))
+  (with-temp-buffer
+    (insert (propertize "abc" 'category cat 'mouse-face 'highlight))
+    (prin1 (list (get-text-property 1 'face) (get-char-property 2 'help-echo)
+                 (get-text-property 1 'mouse-face) (text-property-not-all 1 4 'face 'bold)
+                 (next-single-char-property-change 1 'face)))
+    (terpri)))
+;; buffer-local-variables lists an uninterned variable as itself.
+(with-temp-buffer
+  (let ((v (make-symbol "t3-local")) (w (make-symbol "t3-void")))
+    (set (make-local-variable v) 7)
+    (make-local-variable w)
+    (let ((locals (buffer-local-variables)))
+      (prin1 (list (eq (car (assq v locals)) v) (cdr (assq v locals))
+                   (and (memq w locals) t) (local-variable-p v) (buffer-local-value v (current-buffer)))))
+    (terpri)))
+)"#,
+        ],
+    );
+}
+
+#[test]
+fn overlay_categories_and_symbol_properties_are_read_by_object() {
+    // buffer.c:Foverlay_get and lookup_char_property read an overlay's
+    // `category' symbol with Fget of the object, whether it is uninterned,
+    // interned or a private obarray's; `featurep''s subfeatures and
+    // `find-operation-coding-system''s target index are the symbol's own
+    // properties.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+;; An overlay's `category' symbol gives its properties as Fget of the
+;; object: uninterned, interned, a private obarray's, nil.
+(dolist (cat (list (make-symbol "t4-cat") 't4-cat (intern "t4-cat" (obarray-make)) nil))
+  (when cat (put cat 'face 'italic) (put cat 'priority 5))
+  (with-temp-buffer
+    (insert "abcdef")
+    (let ((o (make-overlay 2 5)))
+      (overlay-put o 'category cat)
+      (overlay-put o 'mouse-face 'highlight)
+      (prin1 (list (overlay-get o 'face) (overlay-get o 'priority) (overlay-get o 'category)
+                   (get-char-property 3 'face) (get-pos-property 3 'face)
+                   (next-single-char-property-change 1 'face) (previous-single-char-property-change 6 'face)
+                   (get-char-property-and-overlay 3 'face)))
+      (terpri))))
+;; A symbol's properties read by the object where the C code holds one.
+(let ((sub (make-symbol "t4-sub")))
+  (put 't4-feature 'subfeatures (list sub 'b))
+  (provide 't4-feature)
+  (prin1 (list (featurep 't4-feature 'b) (featurep 't4-feature sub) (featurep 't4-feature 'c)
+               (find-operation-coding-system 'insert-file-contents "x.el")))
+  (terpri))
+)"#,
+        ],
+    );
 }

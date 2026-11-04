@@ -1247,7 +1247,7 @@ pub(crate) mod tests {
             let [Kind::Symbol(head), name_form, object_form] = kinds.as_slice() else {
                 continue;
             };
-            if head != "defalias" {
+            if !head.is_named("defalias") {
                 continue;
             }
             let Ok(name_items) = name_form.value().to_vec() else {
@@ -1257,7 +1257,7 @@ pub(crate) mod tests {
             let [Kind::Symbol(quote), Kind::Symbol(name)] = name_kinds.as_slice() else {
                 continue;
             };
-            if quote != "quote" {
+            if !quote.is_named("quote") {
                 continue;
             }
             let mut slot_lists = Vec::new();

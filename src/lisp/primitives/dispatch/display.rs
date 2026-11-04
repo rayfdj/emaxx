@@ -1059,7 +1059,7 @@ fn frame_or_window_id(
         && let Some(window) = window_record_id_from_value(interp, value)
         && !matches!(
             window_slot_value(interp, window, WINDOW_KIND_SLOT).kind(),
-            Kind::Symbol(kind) if kind == DELETED_WINDOW_KIND
+            Kind::Symbol(kind) if kind.is_named(DELETED_WINDOW_KIND)
         )
     {
         return Ok(interp
@@ -1128,7 +1128,7 @@ fn frame_or_buffer_changed(
                 .all(|(new, old)| values_eq_in_env(interp, new, old, env))
             && matches!(
                 items.get(current.len()).map(|v| v.kind()),
-                Some(Kind::Symbol(symbol)) if symbol == "lambda"
+                Some(Kind::Symbol(symbol)) if symbol.is_named("lambda")
             )
     });
     if unchanged {
@@ -1189,7 +1189,7 @@ fn valid_window_or_selected(
 fn window_kind_is(window: crate::lisp::types::RecordRef, kind: &str) -> bool {
     matches!(
         window.slots.get(WINDOW_KIND_SLOT).map(|slot| slot.kind()),
-        Some(Kind::Symbol(own)) if own == kind
+        Some(Kind::Symbol(own)) if own.is_named(kind)
     )
 }
 
@@ -1629,7 +1629,7 @@ fn tty_supports_face_attributes(
         let Ok(items) = reference.to_vec() else {
             continue;
         };
-        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.starts_with(':'))
+        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.as_str().starts_with(':'))
         {
             pending.extend(items.into_iter().rev());
             continue;
@@ -1789,7 +1789,7 @@ pub(crate) fn resolve_tty_face_attrs(
                 env,
             )
             .ok()
-            .filter(|value| !matches!(value.kind(), Kind::Symbol(s) if s == "unspecified"))
+            .filter(|value| !matches!(value.kind(), Kind::Symbol(s) if s.is_named("unspecified")))
             .filter(|value| !value.is_nil())
     };
     let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
@@ -1801,7 +1801,7 @@ pub(crate) fn resolve_tty_face_attrs(
         foreground: color_index(interp, env, foreground),
         background: color_index(interp, env, background),
         bold: attribute(interp, env, ":weight")
-            .is_some_and(|weight| matches!(weight.kind(), Kind::Symbol(s) if s == "bold" || s == "semi-bold" || s == "extra-bold" || s == "ultra-bold")),
+            .is_some_and(|weight| matches!(weight.kind(), Kind::Symbol(s) if s.is_named("bold") || s.is_named("semi-bold") || s.is_named("extra-bold") || s.is_named("ultra-bold"))),
         underline: attribute(interp, env, ":underline").is_some_and(|value| value.is_truthy()),
         reverse: attribute(interp, env, ":inverse-video").is_some_and(|value| value.is_truthy()),
         extend: attribute(interp, env, ":extend").is_some_and(|value| value.is_truthy()),
@@ -1878,7 +1878,7 @@ fn resolve_tty_face_reference_options(
     let Ok(items) = face.to_vec() else {
         return TtyFaceAttrOptions::default();
     };
-    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.starts_with(':'))
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.as_str().starts_with(':'))
     {
         let mut merged = TtyFaceAttrOptions::default();
         for item in items.iter().rev() {
@@ -1891,7 +1891,7 @@ fn resolve_tty_face_reference_options(
     let pairs = items.as_chunks::<2>().0;
     let inherited = pairs
         .iter()
-        .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name == ":inherit"))
+        .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name.is_named(":inherit")))
         .map(|pair| &pair[1])
         .filter(|value| value.is_truthy());
     let mut merged = inherited
@@ -1903,7 +1903,7 @@ fn resolve_tty_face_reference_options(
             continue;
         };
         let value = &pair[1];
-        if matches!(value.kind(), Kind::Symbol(name) if name == "unspecified") {
+        if matches!(value.kind(), Kind::Symbol(name) if name.is_named("unspecified")) {
             continue;
         }
         match name.as_ref() {
@@ -1911,10 +1911,10 @@ fn resolve_tty_face_reference_options(
             ":background" => merged.background = color_index(interp, env, value),
             ":weight" => {
                 merged.bold = Some(matches!(value.kind(), Kind::Symbol(weight)
-                    if weight == "bold"
-                        || weight == "semi-bold"
-                        || weight == "extra-bold"
-                        || weight == "ultra-bold"));
+                    if weight.is_named("bold")
+                        || weight.is_named("semi-bold")
+                        || weight.is_named("extra-bold")
+                        || weight.is_named("ultra-bold")));
             }
             ":underline" => merged.underline = Some(value.is_truthy()),
             ":inverse-video" => merged.reverse = Some(value.is_truthy()),
@@ -1939,7 +1939,7 @@ fn resolve_tty_face_attr_options(
                 env,
             )
             .ok()
-            .filter(|value| !matches!(value.kind(), Kind::Symbol(s) if s == "unspecified"))
+            .filter(|value| !matches!(value.kind(), Kind::Symbol(s) if s.is_named("unspecified")))
     };
     let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
         tty_face_color_index(interp, env, value.as_ref()?)
@@ -1951,7 +1951,7 @@ fn resolve_tty_face_attr_options(
         background: color_index(interp, env, background),
         bold: attribute(interp, env, ":weight").map(|weight| {
             matches!(weight.kind(), Kind::Symbol(ref s)
-                if s == "bold" || s == "semi-bold" || s == "extra-bold" || s == "ultra-bold")
+                if s.is_named("bold") || s.is_named("semi-bold") || s.is_named("extra-bold") || s.is_named("ultra-bold"))
         }),
         underline: attribute(interp, env, ":underline").map(|value| value.is_truthy()),
         reverse: attribute(interp, env, ":inverse-video").map(|value| value.is_truthy()),
@@ -1997,7 +1997,7 @@ pub(crate) fn window_face_spans(
             .into_iter()
             .filter_map(|entry| {
                 let key = entry.car_if_list()?;
-                matches!(key.kind(), Kind::Symbol(name) if name == "face")
+                matches!(key.kind(), Kind::Symbol(name) if name.is_named("face"))
                     .then(|| entry.cdr_if_list()?.to_vec().ok())?
             })
             .flatten()
@@ -2271,10 +2271,14 @@ pub(crate) fn render_mode_line_glass(
                 .chunks(2)
                 .find_map(
                     |pair| match (pair[0].kind(), pair.get(1).map(|v| v.kind())) {
-                        (Kind::Symbol(key), Some(Kind::Integer(target))) if key == ":align-to" => {
+                        (Kind::Symbol(key), Some(Kind::Integer(target)))
+                            if key.is_named(":align-to") =>
+                        {
                             Some((target.max(0) as usize).saturating_sub(x))
                         }
-                        (Kind::Symbol(key), Some(Kind::Integer(width))) if key == ":width" => {
+                        (Kind::Symbol(key), Some(Kind::Integer(width)))
+                            if key.is_named(":width") =>
+                        {
                             Some(width.max(0) as usize)
                         }
                         _ => None,
@@ -2397,14 +2401,14 @@ fn valid_window_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError
 fn window_is_deleted(interp: &Interpreter, id: u64) -> bool {
     matches!(
         window_slot_value(interp, id, WINDOW_KIND_SLOT).kind(),
-        Kind::Symbol(ref kind) if kind == DELETED_WINDOW_KIND
+        Kind::Symbol(ref kind) if kind.is_named(DELETED_WINDOW_KIND)
     )
 }
 
 pub(super) fn window_is_minibuffer(interp: &Interpreter, id: u64) -> bool {
     matches!(
         window_slot_value(interp, id, WINDOW_KIND_SLOT).kind(),
-        Kind::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND
+        Kind::Symbol(ref kind) if kind.is_named(MINIBUFFER_WINDOW_KIND)
     )
 }
 
@@ -2412,8 +2416,8 @@ pub(super) fn window_is_minibuffer(interp: &Interpreter, id: u64) -> bool {
 /// combination's direction for an internal window, None for a leaf.
 fn window_combination(interp: &Interpreter, id: u64) -> Option<bool> {
     match window_slot_value(interp, id, WINDOW_KIND_SLOT).kind() {
-        Kind::Symbol(ref kind) if kind == INTERNAL_HORIZONTAL_WINDOW_KIND => Some(true),
-        Kind::Symbol(ref kind) if kind == INTERNAL_VERTICAL_WINDOW_KIND => Some(false),
+        Kind::Symbol(ref kind) if kind.is_named(INTERNAL_HORIZONTAL_WINDOW_KIND) => Some(true),
+        Kind::Symbol(ref kind) if kind.is_named(INTERNAL_VERTICAL_WINDOW_KIND) => Some(false),
         _ => None,
     }
 }
@@ -3933,8 +3937,8 @@ pub(crate) fn window_line_number_layout(
     };
     let mode = match buffer_local("display-line-numbers").kind() {
         Kind::Nil => return None,
-        Kind::Symbol(ref name) if name == "relative" => LineNumberMode::Relative,
-        Kind::Symbol(ref name) if name == "visual" => LineNumberMode::Visual,
+        Kind::Symbol(ref name) if name.is_named("relative") => LineNumberMode::Relative,
+        Kind::Symbol(ref name) if name.is_named("visual") => LineNumberMode::Visual,
         _ => LineNumberMode::Absolute,
     };
     let current_absolute = buffer_local("display-line-numbers-current-absolute").is_truthy();
@@ -4062,7 +4066,7 @@ fn window_list_frames(
                 frame.borrow().terminal.expect("live frame terminal").id
                     == interp.selected_terminal_id()
             }
-            Kind::Symbol(name) if name == "visible" => {
+            Kind::Symbol(name) if name.is_named("visible") => {
                 frame.borrow().terminal.expect("live frame terminal").id
                     == interp.selected_terminal_id()
             }
@@ -4338,7 +4342,7 @@ define_dispatch!(
                             })
                             .is_some_and(|result| {
                                 matches!(result.kind(), Kind::Symbol(answer)
-                                    if answer == "dont-clear-message")
+                                    if answer.is_named("dont-clear-message"))
                             });
                         if !kept {
                             set_echo_area_message(None);
@@ -4584,7 +4588,7 @@ define_dispatch!(
                     None => Value::Nil,
                 };
                 let minibuffer_quit = conditions.to_vec().unwrap_or_default().iter().any(
-                    |condition| matches!(condition.kind(), Kind::Symbol(name) if name == "minibuffer-quit"),
+                    |condition| matches!(condition.kind(), Kind::Symbol(name) if name.is_named("minibuffer-quit")),
                 );
                 let context = string_text(&args[1])?;
                 // keyboard.c command-error-default-function, noninteractive
@@ -5404,7 +5408,7 @@ define_dispatch!(
                 let selected_kind = window_slot_value(interp, selected_id, WINDOW_KIND_SLOT);
                 let mut candidate = if matches!(
                     selected_kind.kind(),
-                    Kind::Symbol(ref kind) if kind == MINIBUFFER_WINDOW_KIND
+                    Kind::Symbol(ref kind) if kind.is_named(MINIBUFFER_WINDOW_KIND)
                 ) {
                     interp
                         .lookup_var("minibuffer-scroll-window", env)
@@ -5618,7 +5622,7 @@ define_dispatch!(
                 let window_id = window_id_or_selected(interp, &window)?;
                 let horizontal = name == "window-total-width";
                 let pixel_rounded = args.get(1).is_some_and(|round| {
-                    matches!(round.kind(), Kind::Symbol(ref round) if round == "floor" || round == "ceiling")
+                    matches!(round.kind(), Kind::Symbol(ref round) if round.is_named("floor") || round.is_named("ceiling"))
                 });
                 Ok(Value::Integer(if pixel_rounded {
                     window_pixel_size(interp, window_id, horizontal)
@@ -5947,7 +5951,7 @@ define_dispatch!(
                 let direction: i64 = if name == "scroll-up" { 1 } else { -1 };
                 let (n, whole) = match args.first().map(|v| v.kind()) {
                     None | Some(Kind::Nil) => (direction, true),
-                    Some(Kind::Symbol(minus)) if minus == "-" => (-direction, true),
+                    Some(Kind::Symbol(minus)) if minus.is_named("-") => (-direction, true),
                     Some(value) => (
                         prefix_numeric_value(&value.value())?.as_integer()? * direction,
                         false,
@@ -6240,7 +6244,7 @@ define_dispatch!(
                     let right = direction > 0;
                     let right_to_left = matches!(
                         current_bidi_paragraph_direction_value(interp, env).kind(),
-                        Kind::Symbol(ref direction) if direction == "right-to-left"
+                        Kind::Symbol(ref direction) if direction.is_named("right-to-left")
                     );
                     let logical_forward = right != right_to_left;
                     let point = interp.buffer.borrow().point();
@@ -7062,7 +7066,7 @@ define_dispatch!(
                 .find_record(window_id)
                 .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
                 .is_some_and(
-                    |slot| matches!(slot.kind(), Kind::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
+                    |slot| matches!(slot.kind(), Kind::Symbol(kind) if kind.is_named(MINIBUFFER_WINDOW_KIND)),
                 );
                 Ok(if is_minibuffer { Value::T } else { Value::Nil })
             }
@@ -7326,7 +7330,7 @@ define_dispatch!(
                 .find_record(window_id)
                 .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
                 .is_some_and(
-                    |slot| matches!(slot.kind(), Kind::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
+                    |slot| matches!(slot.kind(), Kind::Symbol(kind) if kind.is_named(MINIBUFFER_WINDOW_KIND)),
                 );
                 if !is_minibuffer {
                     return Err(LispError::Signal(
@@ -7349,7 +7353,7 @@ define_dispatch!(
                     .and_then(|id| interp.find_record(id))
                     .and_then(|record| record.slots.get(WINDOW_KIND_SLOT).copied())
                     .is_some_and(|slot| {
-                        matches!(slot.kind(), Kind::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND)
+                        matches!(slot.kind(), Kind::Symbol(kind) if kind.is_named(MINIBUFFER_WINDOW_KIND))
                     });
                 let remembered = interp
                     .minibuffer_selected_window_id()

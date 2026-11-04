@@ -41,6 +41,8 @@ mod record_registry;
 mod resource_forms;
 pub(crate) mod roots;
 pub(crate) mod runtime;
+mod specpdl;
+pub(crate) use specpdl::{SpecpdlEntry, SpecpdlRef, UnwindAction};
 pub(crate) mod terminal;
 mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
@@ -1483,34 +1485,188 @@ enum SpecialBindingScope {
     BufferLocal(u64),
 }
 
+/// data.c's `enum symbol_redirect' of a variable that is no alias, with
+/// SYMBOL_FORWARDED told apart by the slot it forwards to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Redirect {
+    /// SYMBOL_PLAINVAL.
+    Plain,
+    /// SYMBOL_LOCALIZED: made buffer-local in some buffer, or when set.
+    Localized,
+    /// SYMBOL_FORWARDED to a buffer's slot (BUFFER_OBJFWDP).
+    BufferSlot,
+    /// SYMBOL_FORWARDED to a keyboard's slot (KBOARD_OBJFWDP).
+    KeyboardSlot,
+    /// SYMBOL_FORWARDED to a C variable.
+    Forwarded,
+}
+
+/// eval.c's `union specbinding' let member in four words, as GNU's:
+/// the symbol, the value saved, `where' and the kind, with the backtrace
+/// depth and the flags beside the kind.
 #[derive(Clone, Debug)]
 pub(crate) struct SpecialBindingRestore {
-    binding_id: u64,
     /// The bound symbol, its alias chain resolved; the cells are read
     /// and written by its id on the way out as on the way in.
     name: SymbolName,
-    scope: SpecialBindingScope,
-    binding_buffer_id: Option<u64>,
-    keyboard_terminal_id: Option<u64>,
-    previous: Option<Value>,
-    /// eval.c's SPECPDL_LET_DEFAULT: the symbol was localized (or a
-    /// per-buffer one) without a cell in the binding buffer, so the
-    /// binding wrote the default and the unbind writes it back through
-    /// set_default_internal, whose watchers hear `set' with no buffer.
-    let_default: bool,
-    /// The specpdl record's where.buf: the buffer current when the
-    /// binding was made.
-    where_buffer_id: u64,
-    // `kill-all-local-variables' can remove a buffer-local value while a
-    // dynamic binding of that value is active.  The binding then stops
-    // participating in lookup and assignment.  On unwind GNU restores the
-    // old local value only if code created a new local cell in the meantime.
-    local_binding_killed: bool,
+    /// The value the binding saved, while `BINDING_HAS_PREVIOUS' says
+    /// there was one (a void global binding saves none).
+    previous: Value,
+    /// The specpdl record's `where': the id of the buffer current when
+    /// the binding was made, or for a keyboard's slot its terminal's
+    /// (`BINDING_KEYBOARD').
+    place: u64,
     /// The number of backtrace frames when the binding was made: it was
     /// made by the frame at this depth, the innermost one then, as the
     /// specpdl entry lies above that frame's record and below the next
     /// one's (`backtrace--locals').
-    frame_depth: usize,
+    frame_depth: u32,
+    kind: BindingKind,
+    flags: u8,
+}
+
+/// The kind of a binding's record, eval.c's SPECPDL_LET, SPECPDL_LET_LOCAL
+/// and SPECPDL_LET_DEFAULT.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BindingKind {
+    Let,
+    /// A binding of the buffer's own cell: `place' is the buffer.
+    LetLocal,
+    /// The symbol was localized (or a buffer's slot) without a cell in
+    /// the binding buffer, so the binding wrote the default and the
+    /// unbind writes it back through set_default_internal.
+    LetDefault,
+}
+
+/// `SpecialBindingRestore::previous' holds the value saved.
+const BINDING_HAS_PREVIOUS: u8 = 1;
+/// The symbol was local when set in the binding buffer, `place'.
+const BINDING_LOCAL_IF_SET: u8 = 2;
+/// `place' is a keyboard's terminal, the binding of its slot.
+const BINDING_KEYBOARD: u8 = 4;
+/// `kill-all-local-variables' removed the buffer-local value while the
+/// binding of it was active: the binding stops taking part in lookup and
+/// assignment, and on unwind GNU restores the old local value only if
+/// code made a new local cell meanwhile.
+const BINDING_LOCAL_KILLED: u8 = 8;
+
+impl SpecialBindingRestore {
+    /// A record of NAME's binding, of the global value when KIND is not
+    /// LetLocal, made with the buffer WHERE current at backtrace depth
+    /// FRAME_DEPTH, saving PREVIOUS.
+    #[inline(always)]
+    fn new(
+        name: SymbolName,
+        kind: BindingKind,
+        previous: Option<Value>,
+        where_buffer_id: u64,
+        frame_depth: usize,
+    ) -> Self {
+        debug_assert!(u32::try_from(frame_depth).is_ok());
+        Self {
+            name,
+            previous: previous.unwrap_or(Value::Nil),
+            place: where_buffer_id,
+            frame_depth: frame_depth as u32,
+            kind,
+            flags: if previous.is_some() {
+                BINDING_HAS_PREVIOUS
+            } else {
+                0
+            },
+        }
+    }
+
+    /// This record, its symbol local when set in its buffer.
+    fn local_if_set(mut self, local_if_set: bool) -> Self {
+        if local_if_set {
+            self.flags |= BINDING_LOCAL_IF_SET;
+        }
+        self
+    }
+
+    /// This record, of a keyboard's slot in TERMINAL's keyboard if some.
+    fn keyboard(mut self, terminal: Option<u64>) -> Self {
+        if let Some(terminal) = terminal {
+            debug_assert_eq!(self.kind, BindingKind::Let);
+            self.place = terminal;
+            self.flags |= BINDING_KEYBOARD;
+        }
+        self
+    }
+
+    #[inline(always)]
+    fn previous(&self) -> Option<Value> {
+        (self.flags & BINDING_HAS_PREVIOUS != 0).then_some(self.previous)
+    }
+
+    #[inline(always)]
+    fn set_previous(&mut self, previous: Option<Value>) {
+        match previous {
+            Some(value) => {
+                self.previous = value;
+                self.flags |= BINDING_HAS_PREVIOUS;
+            }
+            None => {
+                self.previous = Value::Nil;
+                self.flags &= !BINDING_HAS_PREVIOUS;
+            }
+        }
+    }
+
+    fn take_previous(&mut self) -> Option<Value> {
+        let previous = self.previous();
+        self.set_previous(None);
+        previous
+    }
+
+    /// The buffer whose cell a LetLocal record binds, or none for a
+    /// binding of the global value.
+    #[inline(always)]
+    fn scope(&self) -> SpecialBindingScope {
+        if self.kind == BindingKind::LetLocal {
+            SpecialBindingScope::BufferLocal(self.place)
+        } else {
+            SpecialBindingScope::Global
+        }
+    }
+
+    #[inline(always)]
+    fn let_default(&self) -> bool {
+        self.kind == BindingKind::LetDefault
+    }
+
+    /// The buffer current when the binding was made (a keyboard slot's
+    /// record, which is never LetDefault, keeps its terminal instead).
+    #[inline(always)]
+    fn where_buffer_id(&self) -> u64 {
+        debug_assert_eq!(self.flags & BINDING_KEYBOARD, 0);
+        self.place
+    }
+
+    /// The binding buffer, when the symbol was local when set there.
+    fn binding_buffer_id(&self) -> Option<u64> {
+        (self.flags & BINDING_LOCAL_IF_SET != 0).then_some(self.place)
+    }
+
+    #[inline(always)]
+    fn keyboard_terminal_id(&self) -> Option<u64> {
+        (self.flags & BINDING_KEYBOARD != 0).then_some(self.place)
+    }
+
+    #[inline(always)]
+    fn local_binding_killed(&self) -> bool {
+        self.flags & BINDING_LOCAL_KILLED != 0
+    }
+
+    fn kill_local_binding(&mut self) {
+        self.flags |= BINDING_LOCAL_KILLED;
+    }
+
+    #[inline(always)]
+    fn frame_depth(&self) -> usize {
+        self.frame_depth as usize
+    }
 }
 
 /// eval.c's `union specbinding' backtrace member in its four words:
@@ -1836,6 +1992,7 @@ pub(crate) struct LabeledRestriction {
 
 /// Rust representation of the state saved by GNU C's
 /// `record_unwind_protect_excursion`/`save_excursion_save` pair.
+#[derive(Clone, Debug)]
 pub(crate) struct SavedExcursion {
     buffer_id: u64,
     point: usize,
@@ -1845,12 +2002,14 @@ pub(crate) struct SavedExcursion {
 /// Rust representation of the state saved by GNU C's
 /// `save_restriction_save`.  Marker-backed bounds retain their position
 /// across edits exactly like the interpreter's `save-restriction` path.
+#[derive(Clone, Debug)]
 pub(crate) struct SavedRestriction {
     buffer_id: u64,
     bounds: SavedRestrictionBounds,
     labeled: Vec<LabeledRestriction>,
 }
 
+#[derive(Clone, Debug)]
 enum SavedRestrictionBounds {
     Wide,
     Narrow {
@@ -3000,9 +3159,6 @@ impl ImageGraphCopier {
         if symbol.cell().is_builtin() {
             copied.cell().mark_builtin();
         }
-        copied
-            .cell()
-            .set_function_definition(symbol.cell().has_function_definition());
         copied
             .cell()
             .function
@@ -4367,12 +4523,9 @@ impl Interpreter {
             other_marked.retaining = true;
             other.mark_static_roots_into(&mut other_marked);
         }
-        // The thread's bytecode stack and its activations' specpdl entries
-        // (alloc.c marks them with the thread).
+        // The thread's bytecode stack (alloc.c marks it with the thread;
+        // its activations' specpdl entries are the static roots').
         roots::mark_source(self, &mut marked, &self.bc_stack);
-        for entry in &self.bc_unwinds {
-            roots::mark_source(self, &mut marked, entry);
-        }
         for thread in &self.thread_states {
             if let Some(context) = &thread.context {
                 roots::mark_source(self, &mut marked, &**context);
@@ -4687,10 +4840,8 @@ impl Interpreter {
         for test in &self.ert_tests {
             mark(&test.body);
         }
-        for restore in &self.active_special_restores {
-            if let Some(value) = &restore.previous {
-                mark(value);
-            }
+        for entry in &self.specpdl {
+            entry.mark_values(&mut mark);
         }
         // editfns.c keeps a buffer's labeled restrictions (`with-restriction'
         // with a label) in `labeled_restrictions', an alist of the buffer,
@@ -5178,10 +5329,15 @@ impl Interpreter {
             for test in &mut clone.ert_tests {
                 test.body = c.copy(&test.body.clone());
             }
-            for restore in &mut clone.active_special_restores {
+            // A template is copied between top-level forms: its specpdl
+            // holds bindings alone, no native activation being under way.
+            clone
+                .specpdl
+                .retain(|entry| matches!(entry, SpecpdlEntry::Let(_)));
+            for restore in clone.let_records_mut() {
                 restore.name = c.copy_symbol(restore.name);
-                if let Some(previous) = &restore.previous {
-                    restore.previous = Some(c.copy(previous));
+                if let Some(previous) = restore.previous() {
+                    restore.set_previous(Some(c.copy(&previous)));
                 }
             }
             for restriction in &mut clone.labeled_restrictions {
@@ -5221,7 +5377,6 @@ impl Interpreter {
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_frames = Default::default();
         clone.bc_handlers = Default::default();
-        clone.bc_unwinds.clear();
 
         // Identity-bearing keys acquire new addresses in the test image.
         // Rehash only after the complete graph is relocated, preserving
@@ -5725,7 +5880,6 @@ pub struct InterpreterState {
     /// clauses are rooted by the registries of active catches and
     /// handlers).
     pub(crate) bc_handlers: crate::lisp::bytecode::vm::BcHandlers,
-    pub(crate) bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
     /// Live Rust-owned operand/context roots, independent of the reusable pool.
     stack_roots: roots::StackRoots,
     /// Recycled argument buffers for backtrace frames, same idea.
@@ -5772,9 +5926,9 @@ pub struct InterpreterState {
     /// standard one (buffer_defaults'), keyed by buffer id: a slot, not a
     /// Lisp variable.
     buffer_category_tables: coding::BufferCharTables,
-    /// Active dynamic special bindings in stack order.
-    active_special_restores: Vec<SpecialBindingRestore>,
-    next_special_binding_id: u64,
+    /// eval.c's specpdl: the dynamic bindings and native code's unwind
+    /// records, innermost last.
+    specpdl: Vec<SpecpdlEntry>,
     /// Marker-tracked labeled restrictions, with the innermost entry last.
     labeled_restrictions: Vec<LabeledRestriction>,
     /// Indirect buffer mapping: (buffer id, base buffer id).
@@ -6603,7 +6757,6 @@ impl Interpreter {
             bc_stack: crate::lisp::bytecode::vm::BcStack::new(),
             bc_frames: Default::default(),
             bc_handlers: Default::default(),
-            bc_unwinds: Vec::new(),
             stack_roots: roots::StackRoots::default(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),
@@ -6620,8 +6773,7 @@ impl Interpreter {
             loaded_bindings: LoadedBindings::default(),
             buffer_syntax_tables: coding::BufferCharTables::default(),
             buffer_category_tables: coding::BufferCharTables::default(),
-            active_special_restores: Vec::new(),
-            next_special_binding_id: 1,
+            specpdl: Vec::new(),
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
             network_connect_counter: 0,
@@ -8367,11 +8519,11 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
 fn is_lambda_form(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         items.first().is_some_and(|head| {
-            matches!(head.kind(), Kind::Symbol(name) if name == "lambda")
+            matches!(head.kind(), Kind::Symbol(name) if name.is_named("lambda"))
                 || (crate::lisp::primitives::symbols_with_pos_enabled(interp, env)
                     && matches!(
                         crate::lisp::primitives::symbol_with_pos_parts(interp, head).map(|(a0, a1)| (a0.kind(), a1)),
-                        Some((Kind::Symbol(name), _)) if name == "lambda"
+                        Some((Kind::Symbol(name), _)) if name.is_named("lambda")
                     ))
         })
     })

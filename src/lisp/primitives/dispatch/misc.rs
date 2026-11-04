@@ -392,11 +392,12 @@ pub(crate) fn set_internal_symbol(
         return Ok(());
     }
     let resolved = interp.resolve_variable_symbol(symbol)?;
-    // data.c:set_internal notifies with NEWVAL before the forwarded C slot
-    // normalizes it.  The stored value may be t/nil for a DEFVAR_BOOL, but
-    // the watcher must receive the caller's original object.
-    let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
+    // data.c:set_internal notifies with NEWVAL before
+    // store_symval_forwarding checks or normalizes it: the watchers hear
+    // the caller's object, a DEFVAR_BOOL's t/nil being what is stored, and
+    // a DEFVAR_INT's non-integer only after them.
     interp.notify_assignment_symbol(&resolved, value, env)?;
+    let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
     interp.check_per_buffer_set(&resolved, value, env)?;
     interp.set_symbol_value_cell_resolved(&resolved, stored);
     if resolved == *symbol {
@@ -420,8 +421,21 @@ fn set_default_internal_symbol(
         return Ok(());
     }
     let resolved = interp.resolve_variable_symbol(symbol)?;
+    // set_default_internal tells the watchers of a symbol that is not
+    // SYMBOL_PLAINVAL (an alias is SYMBOL_VARALIAS), then, for one whose
+    // variable is plain or a C variable, stores through set_internal,
+    // which tells them again; store_symval_forwarding's checks follow.
+    if resolved.cell().is_trapped_write() {
+        use crate::lisp::eval::Redirect;
+        let redirect = interp.symbol_redirect(&resolved);
+        if resolved != *symbol || redirect != Redirect::Plain {
+            interp.notify_variable_watchers_symbol(&resolved, value, "set_default", None, env)?;
+        }
+        if matches!(redirect, Redirect::Plain | Redirect::Forwarded) {
+            interp.notify_variable_watchers_symbol(&resolved, value, "set", None, env)?;
+        }
+    }
     let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
-    interp.notify_variable_watchers_symbol(&resolved, value, "set", None, env)?;
     interp.set_global_binding_resolved(&resolved, stored);
     // A plain variable's default store is set_internal's (data.c's
     // set_default_internal for SYMBOL_PLAINVAL), learned as that is.
@@ -1007,7 +1021,7 @@ define_dispatch!(
                 // Cheap guard first: GNU compares a function pointer here,
                 // so do not pay an `oclosure-type' Lisp call when the generic
                 // it feeds is not even loaded.
-                if interp.has_lisp_function("oclosure-interactive-form")
+                if interp.is_fbound("oclosure-interactive-form")
                     && super::misc_keymaps::value_is_oclosure(interp, &value, env)
                 {
                     if let Some(items) = callable_interactive_form_items(interp, &value) {
@@ -1089,7 +1103,7 @@ define_dispatch!(
                 // returns the original symbol argument.
                 let checked = checked_symbol_identity(interp, &args[0], env)?;
                 if interp.is_constant_symbol(&checked)
-                    || (checked.cell().has_c_slot() && checked == "initial-window-system")
+                    || (checked.cell().has_c_slot() && checked.is_named("initial-window-system"))
                 {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("setting-constant".into()),
@@ -1102,8 +1116,8 @@ define_dispatch!(
                     && symbol.cell().flags.get() & crate::lisp::eval::symbol_cell_flags::LOCALIZED
                         == 0
                 {
-                    interp.notify_variable_watchers(
-                        symbol.as_str(),
+                    interp.notify_variable_watchers_symbol(
+                        &symbol,
                         Value::Nil,
                         "makunbound",
                         None,
@@ -1118,26 +1132,24 @@ define_dispatch!(
                 // local_if_set symbol without a cell, outside a let made for
                 // this buffer, gets a new void cell.  The default is
                 // untouched either way.
-                let localized_store = !interp.has_native_text_conversion_style(&symbol)
-                    && (interp.has_buffer_local_binding(buffer_id, &symbol)
-                        || (interp.is_auto_buffer_local(&symbol)
-                            && !interp.is_per_buffer_special(&symbol)
-                            && !interp.let_shadows_buffer_binding(&symbol)));
+                let localized_store = !interp.has_native_text_conversion_style(symbol.as_str())
+                    && (interp.has_buffer_local_binding_symbol(buffer_id, &symbol)
+                        || (interp.is_auto_buffer_local_symbol(&symbol)
+                            && !interp.is_per_buffer_symbol(&symbol)
+                            && !interp.let_shadows_buffer_binding(symbol.as_str())));
                 if localized_store {
-                    interp.notify_variable_watchers(
+                    // set_internal's WHERE is nil, and a `makunbound' is
+                    // told without the buffer.
+                    interp.notify_variable_watchers_symbol(
                         &symbol,
                         Value::Nil,
                         "makunbound",
-                        if interp.is_auto_buffer_local(&symbol) {
-                            None
-                        } else {
-                            Some(buffer_id)
-                        },
+                        None,
                         env,
                     )?;
-                    interp.set_buffer_local_value(buffer_id, &symbol, Value::Unbound);
+                    interp.set_buffer_local_value_symbol(buffer_id, &symbol, Value::Unbound);
                 } else {
-                    interp.notify_variable_watchers(
+                    interp.notify_variable_watchers_symbol(
                         &symbol,
                         Value::Nil,
                         "makunbound",
@@ -1153,29 +1165,31 @@ define_dispatch!(
                     // Keep only a detachment marker for them: retaining a
                     // snapshot here would falsely root an old object after
                     // C independently overwrites its slot.
-                    let slot_value = if interp.has_native_text_conversion_style(&symbol) {
+                    let slot_value = if interp.has_native_text_conversion_style(symbol.as_str()) {
                         if !interp.buffer.borrow().text_conversion_style_is_local {
-                            if interp.let_shadows_buffer_binding(&symbol) {
+                            if interp.let_shadows_buffer_binding(symbol.as_str()) {
                                 // set_internal first changes the C default
                                 // under LET_DEFAULT, then disconnects the
                                 // symbol without overwriting the C field.
-                                interp.notify_variable_watchers(
+                                interp.notify_variable_watchers_symbol(
                                     &symbol,
                                     Value::Unbound,
                                     "set",
                                     None,
                                     env,
                                 )?;
-                                interp.set_global_binding(&symbol, Value::Unbound);
+                                interp.set_global_binding_resolved(&symbol, Value::Unbound);
                             } else {
                                 interp.buffer.borrow_mut().text_conversion_style_is_local = true;
                             }
                         }
                         interp.native_text_conversion_style_default()
-                    } else if interp.forwarded_eval_cell_value(&symbol).is_some() {
+                    } else if interp.forwarded_eval_cell_value(symbol.as_str()).is_some() {
                         Value::Nil
                     } else {
-                        interp.forwarded_c_value(&symbol, env).unwrap_or(Value::Nil)
+                        interp
+                            .forwarded_c_value(symbol.as_str(), env)
+                            .unwrap_or(Value::Nil)
                     };
                     interp.remove_global_binding_symbol(&symbol);
                     interp.detach_forwarded_variable_symbol(&symbol, slot_value);
@@ -1203,7 +1217,7 @@ define_dispatch!(
                 if interp.is_constant_symbol(&alias) {
                     return Err(LispError::Signal(format!(
                         "Cannot make a constant an alias: {}",
-                        visible(&alias)
+                        visible(alias.as_str())
                     )));
                 }
                 interp.check_variable_alias_cycle_symbol(&alias, &base)?;
@@ -1215,25 +1229,26 @@ define_dispatch!(
                 let flags = alias.cell().flags.get();
                 use crate::lisp::eval::symbol_cell_flags::{FORWARDED, LOCALIZED, PER_BUFFER};
                 if (flags & LOCALIZED != 0 && flags & PER_BUFFER == 0)
-                    || (alias.cell().has_c_slot() && interp.is_localized_at_startup_in_gnu(&alias))
+                    || (alias.cell().has_c_slot()
+                        && interp.is_localized_at_startup_in_gnu(alias.as_str()))
                 {
                     return Err(crate::lisp::primitives::values::doprnt_error(
                         interp,
                         "Don't know how to make a buffer-local variable an alias: {}",
-                        &[&visible(&alias)],
+                        &[&visible(alias.as_str())],
                     ));
                 }
                 if flags & FORWARDED != 0 {
                     return Err(LispError::Signal(format!(
                         "Cannot make a built-in variable an alias: {}",
-                        visible(&alias)
+                        visible(alias.as_str())
                     )));
                 }
                 if flags & LOCALIZED != 0 {
                     return Err(crate::lisp::primitives::values::doprnt_error(
                         interp,
                         "Don't know how to make a buffer-local variable an alias: {}",
-                        &[&visible(&alias)],
+                        &[&visible(alias.as_str())],
                     ));
                 }
                 // https://lists.gnu.org/r/emacs-devel/2008-04/msg00834.html
@@ -1301,10 +1316,10 @@ define_dispatch!(
                     return Err(crate::lisp::primitives::values::doprnt_error(
                         interp,
                         "Don't know how to make a let-bound variable an alias: {}",
-                        &[&visible(&alias)],
+                        &[&visible(alias.as_str())],
                     ));
                 }
-                interp.notify_variable_watchers(
+                interp.notify_variable_watchers_symbol(
                     &alias,
                     Value::Symbol(base),
                     "defvaralias",
@@ -1345,33 +1360,29 @@ define_dispatch!(
             "internal--define-uninitialized-variable" => {
                 // GNU: (SYMBOL &optional DOC) — cus-start.el passes one arg.
                 need_arg_range(name, args, 1, 2)?;
-                let symbol = args[0].as_symbol()?;
-                interp.mark_special_variable(symbol);
-                // eval.c:Finternal__define_uninitialized_variable attaches
-                // the symbol to the load history (`defcustom' reaches it
-                // through custom-declare-variable).
-                interp.record_definition_in_load_history("defvar", symbol);
-                if let Some(doc) = args.get(1).filter(|value| !value.is_nil()) {
-                    let doc = purecopy_value(interp, doc, env)?;
-                    interp.put_symbol_property(symbol, "variable-documentation", doc);
-                }
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                interp.define_uninitialized_variable(
+                    &symbol,
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    env,
+                )?;
                 Ok(Value::Nil)
             }
             "defvar-1" => {
+                // eval.c:Fdefvar_1: CHECK_SYMBOL, then defvar (SYM,
+                // INITVALUE, DOCSTRING, false).
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let symbol = args[0].as_symbol()?;
-                let symbol_name = symbol.to_string();
-                interp.mark_special_variable(symbol);
-                if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
-                    let doc = purecopy_value(interp, doc, env)?;
-                    interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
-                }
-                if interp.lookup_var(&symbol_name, env).is_none() {
-                    interp.set_variable(&symbol_name, args[1], &mut crate::lisp::types::Env::new());
-                }
-                Ok(Value::Symbol(symbol_name.into()))
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                let init = args[1];
+                interp.defvar_symbol(
+                    &symbol,
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    |_, _| Ok(init),
+                    env,
+                )?;
+                Ok(args[0])
             }
             "defconst-1" => {
                 if args.len() < 2 || args.len() > 3 {
@@ -2210,7 +2221,10 @@ fn documentation(
     let raw = args.get(1).is_some_and(Value::is_truthy);
     if let Kind::Symbol(symbol) = args[0].kind()
         && interp
-            .get_symbol_property(&symbol, "function-documentation")
+            .get_symbol_property_of(
+                &symbol,
+                &cached_symbol!("function-documentation").with(Clone::clone),
+            )
             .is_some_and(|value| !value.is_nil())
     {
         return documentation_property(
@@ -2227,7 +2241,7 @@ fn documentation(
     let function = resolve_callable(interp, &args[0], env)?;
     // doc.c Fdocumentation: a macro's documentation lives on the function
     // inside its (macro . FUNCTION) cons, unwrapped before the dispatch.
-    let function = if matches!(function.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "macro")
+    let function = if matches!(function.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name.is_named("macro"))
     {
         function.cdr()?
     } else {
@@ -2270,7 +2284,7 @@ fn documentation(
     if doc.is_nil()
         && let Kind::Symbol(symbol) = args[0].kind()
     {
-        doc = fallback_function_documentation(interp, &symbol)
+        doc = fallback_function_documentation(interp, symbol.as_str())
             .map(|value| Value::String(value.into()))
             .unwrap_or(Value::Nil);
     }

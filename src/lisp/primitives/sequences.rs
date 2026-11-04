@@ -118,7 +118,8 @@ pub(crate) fn sort_sequence_items(
     }
     let predicate = match lessp.copied().unwrap_or(Value::Nil) {
         value
-            if value.is_nil() || matches!(value.kind(), Kind::Symbol(name) if name == "value<") =>
+            if value.is_nil()
+                || matches!(value.kind(), Kind::Symbol(name) if name.is_named("value<")) =>
         {
             Value::Nil
         }
@@ -132,7 +133,7 @@ pub(crate) fn sort_sequence_items(
     let key_function = match key.copied().unwrap_or(Value::Nil) {
         value
             if value.is_nil()
-                || matches!(value.kind(), Kind::Symbol(name) if name == "identity") =>
+                || matches!(value.kind(), Kind::Symbol(name) if name.is_named("identity")) =>
         {
             Value::Nil
         }

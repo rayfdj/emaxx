@@ -357,9 +357,16 @@ impl CharTableRef {
         }
     }
 
+    /// chartab.c:char_table_ref below the ASCII cache: the top-level slot,
+    /// then sub_char_table_ref down its subtables.  UNIPROP_TABLE_P only
+    /// matters at a compressed entry, so it is read there.
+    #[inline(always)]
     fn contents_get(&self, character: u32) -> Value {
         let value = self.standard_slot(CONTENTS + (character >> SHIFTS[0]) as usize);
-        subtable(value).map_or(value, |sub| sub.get(character, self.is_uniprop()))
+        match subtable(value) {
+            Some(sub) => sub.get(character, || self.is_uniprop()),
+            None => value,
+        }
     }
 
     /// chartab.c:char_table_ref_and_range reads this tree and its default,
@@ -659,19 +666,41 @@ impl SubCharTableRef {
         note_char_table_store();
     }
 
+    #[inline]
     pub(crate) fn child(&self, index: usize, uniprop: bool) -> Value {
         let value = self.slot(index);
         if uniprop && compressed(value) {
-            self.uncompress(index, value).value()
+            self.uncompressed_child(index, value)
         } else {
             value
         }
     }
 
-    fn get(&self, character: u32, uniprop: bool) -> Value {
-        let index = ((character - self.min_char()) >> SHIFTS[self.depth()]) as usize;
-        let value = self.child(index, uniprop);
-        subtable(value).map_or(value, |sub| sub.get(character, uniprop))
+    /// The bottom subtable that replaces the compressed entry VALUE at
+    /// INDEX, made once (uniprop_table_uncompress).
+    #[cold]
+    #[inline(never)]
+    fn uncompressed_child(&self, index: usize, value: Value) -> Value {
+        self.uncompress(index, value).value()
+    }
+
+    /// chartab.c:sub_char_table_ref, iterated down the levels: the slot
+    /// for CHARACTER at each depth, a compressed entry of a uniprop table
+    /// (UNIPROP, asked only there) uncompressed on the way.
+    #[inline(always)]
+    fn get(&self, character: u32, uniprop: impl Fn() -> bool) -> Value {
+        let mut table = *self;
+        loop {
+            let index = ((character - table.min_char()) >> SHIFTS[table.depth()]) as usize;
+            let mut value = table.slot(index);
+            if compressed(value) && uniprop() {
+                value = table.uncompressed_child(index, value);
+            }
+            match subtable(value) {
+                Some(sub) => table = sub,
+                None => return value,
+            }
+        }
     }
 
     fn ref_and_range(&self, character: u32, query: &mut RangeQuery) -> Value {

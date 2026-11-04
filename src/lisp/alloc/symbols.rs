@@ -106,10 +106,6 @@ const PLAIN_STORE: u16 = 4;
 // symbol with the same name must not inherit that slot. The remaining slot
 // implementation is a migration adapter, not a negative name-lookup cache.
 const C_SLOT: u16 = 8;
-// Temporary startup adapter: consumers distinguish Lisp fset from defsubr.
-// Remove after those consumers use the actual function capability. No separate
-// payload, id index, enumeration position or per-symbol allocation is involved.
-const FUNCTION_DEFINITION: u16 = 16;
 // lisp.h: Lisp_Symbol.interned is object state, not an identity-number bit.
 // Standard-obarray removal still has its separate membership adapter.
 const UNINTERNED: u16 = 32;
@@ -472,18 +468,6 @@ impl SymbolCell {
             return None;
         }
         self.value().or_else(|| self.alias().map(Value::Symbol))
-    }
-
-    pub(crate) fn has_function_definition(&self) -> bool {
-        self.state.get() & FUNCTION_DEFINITION != 0
-    }
-
-    pub(crate) fn set_function_definition(&self, defined: bool) {
-        self.state.set(if defined {
-            self.state.get() | FUNCTION_DEFINITION
-        } else {
-            self.state.get() & !FUNCTION_DEFINITION
-        });
     }
 
     pub(crate) fn has_c_slot(&self) -> bool {

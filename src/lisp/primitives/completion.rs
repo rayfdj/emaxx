@@ -28,7 +28,7 @@ pub(crate) fn interaction_allowed(interp: &Interpreter, env: &Env) -> bool {
 }
 
 pub(crate) fn is_window_value(interp: &Interpreter, value: &Value) -> bool {
-    matches!(value.kind(), Kind::Symbol(symbol) if symbol == "window")
+    matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("window"))
         || matches!(value.kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record|
             record.kind == crate::lisp::eval::RecordKind::Window))
 }
@@ -134,7 +134,7 @@ pub(crate) fn obarray_symbol_matches(value: &Value, symbol_name: &str) -> bool {
         (Kind::Nil, "nil") | (Kind::T, "t")
     ) || matches!(
         value.kind(),
-        Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == symbol_name
+        Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(name.as_str()) == symbol_name
     )
 }
 
@@ -614,7 +614,9 @@ pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError
         Kind::StringObject(_) => string_text(value),
         Kind::Nil => Ok("nil".into()),
         Kind::T => Ok("t".into()),
-        Kind::Symbol(symbol) => Ok(crate::lisp::types::visible_symbol_name(&symbol).to_string()),
+        Kind::Symbol(symbol) => {
+            Ok(crate::lisp::types::visible_symbol_name(symbol.as_str()).to_string())
+        }
         _ => Err(LispError::TypeError(
             "string-or-symbol".into(),
             value.type_name(),
@@ -1451,10 +1453,10 @@ pub(crate) fn internal_complete_buffer(
                 Ok(Value::list(visible))
             }
         }
-        Kind::Symbol(flag) if flag == "lambda" => {
+        Kind::Symbol(flag) if flag.is_named("lambda") => {
             test_completion(interp, &[args[0], buffer_alist, args[1]], env)
         }
-        Kind::Symbol(flag) if flag == "metadata" => Ok(Value::list([
+        Kind::Symbol(flag) if flag.is_named("metadata") => Ok(Value::list([
             Value::Symbol("metadata".into()),
             Value::cons(
                 Value::Symbol("category".into()),
@@ -2245,7 +2247,7 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     // interactive_form handles unevaluated lambda expressions; advice.el's
     // ad-interactive-form probes stored advice bodies this way).
     if let Ok(items) = func.to_vec()
-        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "lambda")
+        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head.is_named("lambda"))
     {
         return items.get(2..).and_then(interactive_form_in_body);
     }
@@ -2303,7 +2305,7 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
         }
         // Internal evaluator closure markers precede the interactive form
         // in lowered bodies.
-        if matches!(form.kind(), Kind::Symbol(marker) if marker.starts_with(":closure-")) {
+        if matches!(form.kind(), Kind::Symbol(marker) if marker.as_str().starts_with(":closure-")) {
             continue;
         }
         if is_declare_form(form) {
@@ -2312,7 +2314,7 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
         let Ok(items) = form.to_vec() else {
             break;
         };
-        if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "interactive")
+        if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.is_named("interactive"))
         {
             return Some(items);
         }
@@ -2332,7 +2334,7 @@ pub(crate) fn completion_table_is_function(
         Kind::Record(_) => callable_value_p(interp, collection, env),
         Kind::Cons(_) => matches!(
             collection.car().map(|v| v.kind()),
-            Ok(Kind::Symbol(head)) if head == "lambda" || head == "closure"
+            Ok(Kind::Symbol(head)) if head.is_named("lambda") || head.is_named("closure")
         ),
         _ => false,
     }
@@ -2537,10 +2539,10 @@ fn apply_minibuffer_edit_key(contents: &mut Vec<char>, cursor: &mut usize, ch: c
 pub(crate) fn history_variable_name(spec: &Value) -> Option<String> {
     match spec.kind() {
         Kind::Nil => Some("minibuffer-history".to_string()),
-        Kind::Symbol(name) if name == "t" => None,
+        Kind::Symbol(name) if name.is_named("t") => None,
         Kind::Symbol(name) => Some(name.to_string()),
         Kind::Cons(_) => match spec.car().map(|v| v.kind()) {
-            Ok(Kind::Symbol(name)) if name == "t" => None,
+            Ok(Kind::Symbol(name)) if name.is_named("t") => None,
             Ok(Kind::Symbol(name)) => Some(name.to_string()),
             _ => Some("minibuffer-history".to_string()),
         },
@@ -2743,7 +2745,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
                     .map_err(LispError::into_kind)
                     {
                         Ok(()) => {}
-                        Err(LispErrorKind::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(name) if name == "exit") =>
+                        Err(LispErrorKind::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(name) if name.is_named("exit")) =>
                         {
                             return Ok(value);
                         }

@@ -8,7 +8,7 @@
 //! compiler proves every GNU 30.2 opcode has an execution arm.
 
 use super::super::eval::roots::{LispRootMarker, TraceLispRoots};
-use super::super::eval::{Interpreter, LabeledRestriction};
+use super::super::eval::{Interpreter, UnwindAction};
 use super::super::primitives;
 use super::super::types::{Env, LispError, SymbolName, Value};
 use super::{ArgSpec, ByteCodeObject, Op};
@@ -608,7 +608,7 @@ fn bytecode_call(
                 program: std::mem::replace(*program, Running::of(&callee)),
                 base: args_start - 1,
                 handlers_len: interp.bc_handlers.len(),
-                unwinds_len: interp.bc_unwinds.len(),
+                unwinds_len: interp.specpdl_index(),
                 backtrace_depth,
                 op_error_frames: std::mem::take(*op_error_frames),
                 code_changes: usize::MAX,
@@ -934,7 +934,7 @@ fn enter_closure_frame(
         program: *vm.program,
         base: args_start - 1,
         handlers_len: state.bc_handlers.len(),
-        unwinds_len: state.bc_unwinds.len(),
+        unwinds_len: state.specpdl_index(),
         backtrace_depth,
         op_error_frames: std::mem::take(vm.op_error_frames),
         code_changes: if verified_return {
@@ -962,7 +962,7 @@ fn enter_closure_frame(
 /// caller runs under the nil environment, so that funcall_lambda binds no
 /// internal-interpreter-environment, the callee's frame is entered here
 /// as a lexical function's is (`enter_closure_frame'), its bindings on
-/// the unwind list above the frame's watermark, where Breturn
+/// the specpdl above the frame's watermark, where Breturn
 /// (`return_unbinding') or the unwinding of a signal undoes them; the
 /// backtrace record is below them, as record_in_backtrace leaves it.
 /// Otherwise None, with nothing changed but the stack's TOP, for the full
@@ -1004,7 +1004,7 @@ fn enter_dynamic_frame(
         program: *vm.program,
         base: args_start - 1,
         handlers_len: state.bc_handlers.len(),
-        unwinds_len: state.bc_unwinds.len(),
+        unwinds_len: state.specpdl_index(),
         backtrace_depth,
         op_error_frames: std::mem::take(vm.op_error_frames),
         code_changes: if verified_return {
@@ -1019,8 +1019,7 @@ fn enter_dynamic_frame(
     for binding in &bindings[..count] {
         // SAFETY: `plain_dynamic_bindings' wrote the first COUNT.
         let (symbol, value) = unsafe { binding.assume_init() };
-        let binding_id = interp.specbind_plain_store(&symbol, value);
-        interp.bc_unwinds.push(UnwindEntry::BindingId(binding_id));
+        interp.specbind_plain_store(&symbol, value);
     }
     Some((interp.bc_stack.top, 0))
 }
@@ -1117,7 +1116,7 @@ fn return_to_bytecode_frame(
 ) -> Option<(usize, usize, usize, bool)> {
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
-    let unwinds = state.bc_unwinds.len();
+    let unwinds = state.specpdl_index();
     // The frame is read in place and its slot released by the length. A
     // frame moved out whole (`pop', an Option) was copied in pieces offset
     // by its argument list's tag byte, and the loop's next read of the
@@ -1167,7 +1166,7 @@ fn return_unbinding(
     value: Value,
     unwinds_len: usize,
 ) -> Option<(usize, usize, usize, bool)> {
-    while vm.interp.bc_unwinds.len() > unwinds_len {
+    while vm.interp.specpdl_index() > unwinds_len {
         if !unbind_plain(vm.interp) {
             return None;
         }
@@ -1249,7 +1248,7 @@ impl<T> Suspended<T> {
 /// still run), so the last signal is the one that leaves.
 #[inline]
 fn leave_frame(interp: &mut Interpreter, env: &mut Env, frame: &BcFrame) -> Result<(), LispError> {
-    if interp.bc_unwinds.len() > frame.unwinds_len {
+    if interp.specpdl_index() > frame.unwinds_len {
         return leave_frame_unwinding(interp, env, frame);
     }
     interp.truncate_backtrace_frames(frame.backtrace_depth);
@@ -1264,166 +1263,17 @@ fn leave_frame_unwinding(
     frame: &BcFrame,
 ) -> Result<(), LispError> {
     let mut last_error = None;
-    while interp.bc_unwinds.len() > frame.unwinds_len {
-        let Some(entry) = interp.bc_unwinds.pop() else {
+    while interp.specpdl_index() > frame.unwinds_len {
+        let Some(entry) = interp.pop_specpdl_entry() else {
             break;
         };
-        if let Err(error) = unwind_one(interp, entry, env) {
+        if let Err(error) = interp.undo_specpdl_entry(entry, env) {
             last_error = Some(error);
         }
     }
     interp.truncate_backtrace_frames(frame.backtrace_depth);
     interp.end_funcall();
     last_error.map_or(Ok(()), Err)
-}
-
-/// One specpdl-style entry the VM must undo on Bunbind or error unwind.
-#[derive(Clone, Debug)]
-pub(crate) enum UnwindEntry {
-    /// A binding with its restore record in hand (the rare bindings of a
-    /// name that is not a symbol constant): boxed, so the common entries
-    /// stay a few words.
-    Binding(Box<super::super::eval::SpecialBindingRestore>),
-    /// Bvarbind of a symbol: the record stays on the interpreter's binding
-    /// stack alone, unbound by its id (`Interpreter::unbind_special_id').
-    BindingId(u64),
-    /// Bsave_excursion: restore buffer and (marker-tracked) point.
-    Excursion {
-        buffer_id: u64,
-        marker_id: crate::lisp::types::MarkerRef,
-        saved_pt: usize,
-    },
-    /// Bsave_current_buffer: restore the current buffer only.
-    CurrentBuffer { buffer_id: u64 },
-    /// Bsave_restriction on a wide buffer: re-widen on exit.
-    RestrictionWide {
-        buffer_id: u64,
-        labeled: Vec<LabeledRestriction>,
-    },
-    /// Bsave_restriction on a narrowed buffer: marker-tracked bounds.
-    Restriction {
-        buffer_id: u64,
-        beg_id: crate::lisp::types::MarkerRef,
-        end_id: crate::lisp::types::MarkerRef,
-        saved_begv: usize,
-        saved_zv: usize,
-        labeled: Vec<LabeledRestriction>,
-    },
-    /// Bunwind_protect: a handler function (24.4+) or list of forms.
-    Protect(Value),
-}
-
-impl TraceLispRoots for UnwindEntry {
-    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
-        match self {
-            // These are restore tokens, not an alternate binding stack.
-            // A thread switch updates the canonical interpreter specpdl.
-            Self::Binding(_) | Self::BindingId(_) | Self::CurrentBuffer { .. } => {}
-            Self::Excursion { marker_id, .. } => marker.value(&Value::Marker(*marker_id)),
-            Self::RestrictionWide { labeled, .. } | Self::Restriction { labeled, .. } => {
-                if let Self::Restriction { beg_id, end_id, .. } = self {
-                    marker.value(&Value::Marker(*beg_id));
-                    marker.value(&Value::Marker(*end_id));
-                }
-                for restriction in labeled {
-                    restriction.trace_lisp_roots(marker);
-                }
-            }
-            Self::Protect(handler) => marker.value(handler),
-        }
-    }
-}
-
-/// Undo one specpdl-style entry (GNU's do_one_unbind).
-fn unwind_one(
-    interp: &mut Interpreter,
-    entry: UnwindEntry,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    match entry {
-        UnwindEntry::Binding(restore) => interp.restore_special_binding(*restore, env),
-        UnwindEntry::BindingId(binding_id) => interp.unbind_special_id(binding_id, env),
-        UnwindEntry::Excursion {
-            buffer_id,
-            marker_id,
-            saved_pt,
-        } => {
-            if interp.has_buffer_id(buffer_id) {
-                let _ = interp.set_current_buffer_id(buffer_id);
-                let restore_pt = interp.marker_position(marker_id).unwrap_or(saved_pt).clamp(
-                    interp.buffer.borrow().point_min(),
-                    interp.buffer.borrow().point_max(),
-                );
-                interp.buffer.borrow_mut().goto_char(restore_pt);
-            }
-            let _ = interp.set_marker(marker_id, None, None);
-            Ok(())
-        }
-        UnwindEntry::CurrentBuffer { buffer_id } => {
-            if interp.has_buffer_id(buffer_id) {
-                let _ = interp.set_current_buffer_id(buffer_id);
-            }
-            Ok(())
-        }
-        UnwindEntry::RestrictionWide { buffer_id, labeled } => {
-            let final_buffer_id = interp.current_buffer_id();
-            if interp.has_buffer_id(buffer_id) {
-                if final_buffer_id != buffer_id {
-                    let _ = interp.set_current_buffer_id(buffer_id);
-                }
-                let full_end = interp.buffer.borrow().size_total() + 1;
-                interp.buffer.borrow_mut().restore_restriction(1, full_end);
-                interp.restore_labeled_restrictions(buffer_id, labeled);
-                if final_buffer_id != buffer_id && interp.has_buffer_id(final_buffer_id) {
-                    let _ = interp.set_current_buffer_id(final_buffer_id);
-                }
-            }
-            Ok(())
-        }
-        UnwindEntry::Restriction {
-            buffer_id,
-            beg_id,
-            end_id,
-            saved_begv,
-            saved_zv,
-            labeled,
-        } => {
-            let final_buffer_id = interp.current_buffer_id();
-            let restore_begv = interp.marker_position(beg_id).unwrap_or(saved_begv);
-            let restore_zv = interp.marker_position(end_id).unwrap_or(saved_zv);
-            if interp.has_buffer_id(buffer_id) {
-                if final_buffer_id != buffer_id {
-                    let _ = interp.set_current_buffer_id(buffer_id);
-                }
-                interp
-                    .buffer
-                    .borrow_mut()
-                    .restore_restriction(restore_begv, restore_zv);
-                interp.restore_labeled_restrictions(buffer_id, labeled);
-                if final_buffer_id != buffer_id && interp.has_buffer_id(final_buffer_id) {
-                    let _ = interp.set_current_buffer_id(final_buffer_id);
-                }
-            }
-            let _ = interp.set_marker(beg_id, None, None);
-            let _ = interp.set_marker(end_id, None, None);
-            Ok(())
-        }
-        UnwindEntry::Protect(handler) => {
-            // GNU records bcall0 for functions (24.4+) and prog_ignore
-            // for the obsolete forms-list shape.
-            interp.with_lisp_stack_roots(&handler, |interp| {
-                let is_function = prim(interp, "functionp", [handler], env)?;
-                if is_function.is_truthy() {
-                    interp.call_function_value(handler, None, &[], env)?;
-                } else if let Ok(forms) = handler.to_vec() {
-                    for form in &forms {
-                        interp.eval(form, env)?;
-                    }
-                }
-                Ok(())
-            })
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -2871,8 +2721,16 @@ fn run_verified(
                     }
                     at += 1;
                 }
+                // Bunbind 2 to 5 of such entries (`unbind_plain_n'), the
+                // count in the opcode.
+                0o052 | 0o053 | 0o054 | 0o055 => {
+                    if !unbind_plain_n(vm.interp, usize::from(byte - 0o050)) {
+                        slow!();
+                    }
+                    at += 1;
+                }
                 // Bsave_current_buffer (and its obsolete opcode): the
-                // current buffer on the unwind list.
+                // current buffer on the specpdl.
                 0o162 | 0o141 => {
                     save_current_buffer(vm.interp);
                     at += 1;
@@ -3044,15 +2902,14 @@ fn run_verified(
                 // pattern with comparisons ahead of the switch, which
                 // brought back the range check and sent constants and
                 // calls through branches before the table.
-                0o000 | 0o050 | 0o052 | 0o053 | 0o054 | 0o055 | 0o056 | 0o057 | 0o063 | 0o064
-                | 0o065 | 0o066 | 0o067 | 0o112 | 0o113 | 0o114 | 0o115 | 0o117 | 0o120 | 0o121
-                | 0o122 | 0o135 | 0o136 | 0o143 | 0o146 | 0o151 | 0o152 | 0o153 | 0o163 | 0o164
-                | 0o165 | 0o166 | 0o167 | 0o170 | 0o171 | 0o172 | 0o173 | 0o174 | 0o175 | 0o176
-                | 0o177 | 0o200 | 0o212 | 0o213 | 0o214 | 0o215 | 0o216 | 0o217 | 0o220 | 0o221
-                | 0o222 | 0o223 | 0o224 | 0o225 | 0o226 | 0o227 | 0o230 | 0o231 | 0o232 | 0o233
-                | 0o235 | 0o237 | 0o244 | 0o251 | 0o252 | 0o253 | 0o254 | 0o255 | 0o256 | 0o257
-                | 0o260 | 0o261 | 0o264 | 0o265 | 0o270 | 0o271 | 0o272 | 0o273 | 0o274 | 0o275
-                | 0o276 | 0o277 => slow!(),
+                0o000 | 0o050 | 0o056 | 0o057 | 0o063 | 0o064 | 0o065 | 0o066 | 0o067 | 0o112
+                | 0o113 | 0o114 | 0o115 | 0o117 | 0o120 | 0o121 | 0o122 | 0o135 | 0o136 | 0o143
+                | 0o146 | 0o151 | 0o152 | 0o153 | 0o163 | 0o164 | 0o165 | 0o166 | 0o167 | 0o170
+                | 0o171 | 0o172 | 0o173 | 0o174 | 0o175 | 0o176 | 0o177 | 0o200 | 0o212 | 0o213
+                | 0o214 | 0o215 | 0o216 | 0o217 | 0o220 | 0o221 | 0o222 | 0o223 | 0o224 | 0o225
+                | 0o226 | 0o227 | 0o230 | 0o231 | 0o232 | 0o233 | 0o235 | 0o237 | 0o244 | 0o251
+                | 0o252 | 0o253 | 0o254 | 0o255 | 0o256 | 0o257 | 0o260 | 0o261 | 0o264 | 0o265
+                | 0o270 | 0o271 | 0o272 | 0o273 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
             }
         };
         if let FastExit::Continued(new_top) = exit {
@@ -3173,48 +3030,47 @@ fn assq_in_place(interp: &Interpreter, env: &Env, key: Value, alist: Value) -> O
 }
 
 /// Bvarbind of a symbol whose let is a plain store
-/// (`Interpreter::specbind_plain'), its record on the unwind list.
+/// (`Interpreter::specbind_plain'), its record on the specpdl.
 #[inline(never)]
 fn varbind_plain(interp: &mut Interpreter, symbol: &SymbolName, value: Value) -> bool {
-    let Some(binding_id) = interp.specbind_plain(symbol, value) else {
-        return false;
-    };
-    interp.bc_unwinds.push(UnwindEntry::BindingId(binding_id));
-    true
+    interp.specbind_plain(symbol, value)
 }
 
-/// Bunbind 1 of the unwind list's last entry when undoing it runs nothing:
-/// a plain binding's restore (`Interpreter::unbind_plain_special_id') or a
-/// saved current buffer's (`unwind_one's).
+/// Bunbind 1 of the innermost specpdl entry when undoing it runs nothing:
+/// a plain binding's restore or a saved current buffer's
+/// (`Interpreter::unbind_quiet_innermost').
 #[inline(never)]
 fn unbind_plain(interp: &mut Interpreter) -> bool {
-    match interp.bc_unwinds.last() {
-        Some(&UnwindEntry::BindingId(binding_id)) => {
-            if !interp.unbind_plain_special_id(binding_id) {
-                return false;
-            }
-        }
-        Some(&UnwindEntry::CurrentBuffer { buffer_id }) => {
-            if interp.has_buffer_id(buffer_id) {
-                let _ = interp.set_current_buffer_id(buffer_id);
-            }
-        }
-        _ => return false,
+    interp.unbind_quiet_innermost()
+}
+
+/// Bunbind COUNT when undoing each of the innermost COUNT entries runs
+/// nothing (`unbind_plain'): true with all undone, false with none.
+#[inline(never)]
+fn unbind_plain_n(interp: &mut Interpreter, count: usize) -> bool {
+    if !interp.innermost_entries_quiet(count) {
+        return false;
     }
-    let len = interp.bc_unwinds.len();
-    // SAFETY: the last entry, a binding's id or a buffer's, owns nothing
-    // to drop.
-    unsafe { interp.bc_unwinds.set_len(len - 1) };
+    for _ in 0..count {
+        interp.unbind_quiet_innermost();
+    }
     true
 }
 
-/// Bsave_current_buffer: the current buffer on the unwind list.
+/// unbind_to's undo of the innermost specpdl entry, for Bunbind; an empty
+/// stack is the byte code's error.
+fn unbind_innermost(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    match interp.pop_specpdl_entry() {
+        Some(entry) => interp.undo_specpdl_entry(entry, env),
+        None => Err(LispError::Signal("byte code unbind underflow".into())),
+    }
+}
+
+/// Bsave_current_buffer: record_unwind_current_buffer.
 #[inline(never)]
 fn save_current_buffer(interp: &mut Interpreter) {
     let buffer_id = interp.current_buffer_id();
-    interp
-        .bc_unwinds
-        .push(UnwindEntry::CurrentBuffer { buffer_id });
+    interp.record_unwind(UnwindAction::CurrentBuffer(buffer_id));
 }
 
 /// Bset_buffer of a live buffer object: buffer.c:Fset_buffer's
@@ -3401,7 +3257,7 @@ fn push_catch(interp: &mut Interpreter, tag: Value, dest: usize, stack_len: usiz
         kind: HandlerKind::Catch(tag),
         dest,
         stack_len,
-        unwind_len: interp.bc_unwinds.len(),
+        unwind_len: interp.specpdl_index(),
         registry_start: None,
     };
     interp.bc_handlers.push(handler);
@@ -3420,7 +3276,7 @@ fn push_condition_case(interp: &mut Interpreter, conditions: Value, dest: usize,
         kind: HandlerKind::ConditionCase(conditions),
         dest,
         stack_len,
-        unwind_len: interp.bc_unwinds.len(),
+        unwind_len: interp.specpdl_index(),
         registry_start: Some(registry_start),
     };
     interp.bc_handlers.push(handler);
@@ -3523,83 +3379,47 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             // Bvarref and Bvarset read and set it, uninterned or not.
             let name = program.constant(index);
             let value = pop!();
-            let entry = match name.symbol_cell() {
-                Some(symbol) => {
-                    UnwindEntry::BindingId(interp.specbind_symbol_id(&symbol, value, env)?)
-                }
+            match name.symbol_cell() {
+                Some(symbol) => interp.specbind_symbol(&symbol, value, env)?,
                 None => {
                     let name = name.as_symbol().map_err(|_| {
                         LispError::Signal("varbind constant must be a symbol".into())
                     })?;
-                    UnwindEntry::Binding(Box::new(interp.bind_special_variable(name, value, env)?))
+                    interp.bind_special_variable(name, value, env)?;
                 }
-            };
-            interp.bc_unwinds.push(entry);
+            }
         }
         Op::Unbind(count) => {
+            // unbind_to (SPECPDL_INDEX () - COUNT).
             for _ in 0..count {
-                match interp.bc_unwinds.pop() {
-                    Some(entry) => unwind_one(interp, entry, env)?,
-                    None => {
-                        return Err(LispError::Signal("byte code unbind underflow".into()));
-                    }
+                if !unbind_plain(interp) {
+                    unbind_innermost(interp, env)?;
                 }
             }
         }
         Op::SaveExcursion => {
-            let buffer_id = interp.current_buffer_id();
-            let saved_pt = interp.buffer.borrow().point();
-            let Kind::Marker(marker_id) = interp.make_marker().kind() else {
-                unreachable!("make_marker returns a marker")
-            };
-            interp.set_marker(marker_id, Some(saved_pt), Some(buffer_id))?;
-            interp.bc_unwinds.push(UnwindEntry::Excursion {
-                buffer_id,
-                marker_id,
-                saved_pt,
-            });
+            // record_unwind_protect_excursion.
+            let saved = interp.save_excursion_state();
+            interp.record_unwind(UnwindAction::Excursion(saved));
         }
-        Op::SaveCurrentBuffer | Op::SaveCurrentBufferObsolete => {
-            let buffer_id = interp.current_buffer_id();
-            interp
-                .bc_unwinds
-                .push(UnwindEntry::CurrentBuffer { buffer_id });
-        }
+        Op::SaveCurrentBuffer | Op::SaveCurrentBufferObsolete => save_current_buffer(interp),
         Op::SaveRestriction => {
-            let buffer_id = interp.current_buffer_id();
-            let saved_begv = interp.buffer.borrow().point_min();
-            let saved_zv = interp.buffer.borrow().point_max();
-            let labeled = interp.labeled_restrictions_snapshot(buffer_id);
-            // Mirrors sf_save_restriction: a wide buffer records "no
-            // restriction" (marker-tracking would spuriously
-            // re-narrow after edits at BEGV).
-            if saved_begv == 1 && saved_zv == interp.buffer.borrow().size_total() + 1 {
-                interp
-                    .bc_unwinds
-                    .push(UnwindEntry::RestrictionWide { buffer_id, labeled });
-            } else {
-                let Kind::Marker(beg_id) = interp.make_marker().kind() else {
-                    unreachable!("make_marker returns a marker")
-                };
-                let Kind::Marker(end_id) = interp.make_marker().kind() else {
-                    unreachable!("make_marker returns a marker")
-                };
-                let _ = interp.set_marker(beg_id, Some(saved_begv), Some(buffer_id));
-                let _ = interp.set_marker(end_id, Some(saved_zv), Some(buffer_id));
-                interp.set_marker_insertion_type(end_id, true);
-                interp.bc_unwinds.push(UnwindEntry::Restriction {
-                    buffer_id,
-                    beg_id,
-                    end_id,
-                    saved_begv,
-                    saved_zv,
-                    labeled,
-                });
-            }
+            // Fsave_restriction's record_unwind_protect of
+            // save_restriction_save.
+            let saved = interp.save_restriction_state();
+            interp.record_unwind(UnwindAction::Restriction(Box::new(saved)));
         }
         Op::UnwindProtect => {
+            // bytecode.c:Bunwind_protect: bcall0 for a function (24.4+),
+            // prog_ignore for the obsolete list of forms.
             let handler = pop!();
-            interp.bc_unwinds.push(UnwindEntry::Protect(handler));
+            let function = interp.with_lisp_stack_roots(&handler, |interp| {
+                prim(interp, "functionp", [handler], env).map(|value| value.is_truthy())
+            })?;
+            interp.record_unwind(UnwindAction::Cleanup {
+                function,
+                value: handler,
+            });
         }
         Op::SaveWindowExcursion => {
             // Obsolete since 24.1: TOP is a list of body forms;
@@ -3665,10 +3485,7 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             let _ = interp.set_current_buffer_id(buffer_id);
             prim(interp, "erase-buffer", [], env)?;
             let _ = interp.set_current_buffer_id(saved);
-            let restore = interp.bind_special_variable("standard-output", buffer, env)?;
-            interp
-                .bc_unwinds
-                .push(UnwindEntry::Binding(Box::new(restore)));
+            interp.bind_special_variable("standard-output", buffer, env)?;
             push!(buffer);
         }
         Op::TempOutputBufferShow => {
@@ -3688,12 +3505,7 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
                 Ok::<_, LispError>(())
             })?;
             push!(value);
-            match interp.bc_unwinds.pop() {
-                Some(entry) => unwind_one(interp, entry, env)?,
-                None => {
-                    return Err(LispError::Signal("byte code unbind underflow".into()));
-                }
-            }
+            unbind_innermost(interp, env)?;
         }
         Op::InteractiveP => {
             // Obsolete since 24.1: GNU call0s the Lisp function.
@@ -4439,7 +4251,7 @@ fn run_entered_with(
                     // caller's frame to restore, as exec_byte_code's return
                     // to its caller restores bc->fp.
                     if interp.backtrace_frames_len() == marks.backtrace
-                        && interp.bc_unwinds.len() == marks.unwinds
+                        && interp.specpdl_index() == marks.unwinds
                     {
                         (
                             interp.bc_stack.frame,
@@ -4494,7 +4306,7 @@ impl EntryMarks {
                 interp.bc_stack.base,
                 interp.bc_stack.top,
             ),
-            unwinds: interp.bc_unwinds.len(),
+            unwinds: interp.specpdl_index(),
             backtrace: interp.backtrace_frames_len(),
             suspended: interp.bc_frames.len(),
             handlers: interp.bc_handlers.len(),
@@ -4523,8 +4335,8 @@ fn finish_activation(
     // restoring saved buffer state on the way out.
     // The innermost entries whose undoing runs nothing (a dynamic-binding
     // function's argument bindings, mostly) are undone in place.
-    while interp.bc_unwinds.len() > marks.unwinds && unbind_plain(interp) {}
-    let result = if interp.bc_unwinds.len() > marks.unwinds {
+    while interp.specpdl_index() > marks.unwinds && unbind_plain(interp) {}
+    let result = if interp.specpdl_index() > marks.unwinds {
         unwind_activation(interp, env, result, marks.unwinds)
     } else {
         result
@@ -4552,11 +4364,11 @@ fn unwind_activation(
 ) -> Result<Value, LispError> {
     let balance = interp.with_lisp_stack_roots(&result, |interp| {
         let mut last_error = None;
-        while interp.bc_unwinds.len() > unwinds_at_entry {
-            let Some(entry) = interp.bc_unwinds.pop() else {
+        while interp.specpdl_index() > unwinds_at_entry {
+            let Some(entry) = interp.pop_specpdl_entry() else {
                 break;
             };
-            if let Err(error) = unwind_one(interp, entry, env) {
+            if let Err(error) = interp.undo_specpdl_entry(entry, env) {
                 last_error = Some(error);
             }
         }
@@ -4570,7 +4382,7 @@ fn unwind_activation(
 
 /// eval.c:funcall_lambda's binding of a dynamic-binding function's formal
 /// ARGUMENTS to ARGS, walked in place: each symbol specbound in turn, its
-/// record on the unwind list for the activation's exit to unbind, one
+/// record on the specpdl for the activation's exit to unbind, one
 /// after `&optional' past the arguments to nil, one after `&rest' to the
 /// list of the rest (and any later one to nil).  A formal that is not a
 /// symbol, a repeated or misplaced `&optional' or `&rest', a dotted list
@@ -4630,11 +4442,9 @@ fn bind_dynamic_arguments(
             } else {
                 return Err(legacy_arity_error(&function, args.len()));
             };
-            let binding_id = match interp.specbind_plain(&symbol, value) {
-                Some(binding_id) => binding_id,
-                None => interp.specbind_symbol_id(&symbol, value, env)?,
-            };
-            interp.bc_unwinds.push(UnwindEntry::BindingId(binding_id));
+            if !interp.specbind_plain(&symbol, value) {
+                interp.specbind_symbol(&symbol, value, env)?;
+            }
             previous_rest = false;
         }
         arguments = cell.cdr.get();
@@ -4648,8 +4458,8 @@ fn bind_dynamic_arguments(
     Ok(())
 }
 
-/// bytecode.c:exec_byte_code.  The operand stack and the specpdl-style
-/// unwind list are the thread's (`interp.bc_stack', `interp.bc_unwinds');
+/// bytecode.c:exec_byte_code.  The operand stack and the specpdl are the
+/// thread's (`interp.bc_stack', the interpreter's specpdl);
 /// a call to a byte-code function pushes a frame and continues in this
 /// loop (`goto setup_frame'), its return pops it.
 fn run_frames(
@@ -5137,11 +4947,11 @@ fn run_loop(
                                 interp.pop_backtrace_frame();
                                 op_error_frames -= 1;
                             }
-                            while interp.bc_unwinds.len() > handler.unwind_len {
-                                match interp.bc_unwinds.pop() {
+                            while interp.specpdl_index() > handler.unwind_len {
+                                match interp.pop_specpdl_entry() {
                                     Some(entry) => interp
                                         .with_lisp_stack_roots(&(&error, &value), |interp| {
-                                            unwind_one(interp, entry, env)
+                                            interp.undo_specpdl_entry(entry, env)
                                         })?,
                                     None => break,
                                 }

@@ -9,7 +9,7 @@ fn unquote(value: &Value) -> Value {
         Kind::Cons(_) => {
             if let Ok(items) = value.to_vec()
                 && items.len() == 2
-                && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "quote")
+                && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.is_named("quote"))
             {
                 return items[1];
             }
@@ -263,7 +263,7 @@ impl Interpreter {
             // GNU wraps each test body in (catch 'ert--pass ...); `ert-pass'
             // terminates the test successfully by throwing to that tag.
             if let Err(LispErrorKind::Throw(tag, _)) = result.as_ref().map_err(LispError::kind)
-                && matches!(tag.kind(), Kind::Symbol(name) if name == "ert--pass")
+                && matches!(tag.kind(), Kind::Symbol(name) if name.is_named("ert--pass"))
             {
                 result = Ok(Value::Nil);
             }
@@ -291,7 +291,7 @@ impl Interpreter {
                     let status = match e.kind() {
                         LispErrorKind::SignalValue(condition)
                             if matches!(condition.car().map(|v| v.kind()), Ok(Kind::Symbol(kind))
-                                if kind == "ert-test-skipped") =>
+                                if kind.is_named("ert-test-skipped")) =>
                         {
                             TestStatus::Skipped
                         }
@@ -350,9 +350,9 @@ fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {
     match unquote(selector).kind() {
         Kind::Nil => false,
         Kind::T => true,
-        Kind::Symbol(name) if name == "t" => true,
-        Kind::Symbol(name) if name == "nil" => false,
-        Kind::Symbol(name) => test.name == name,
+        Kind::Symbol(name) if name.is_named("t") => true,
+        Kind::Symbol(name) if name.is_named("nil") => false,
+        Kind::Symbol(name) => name.is_named(&test.name),
         Kind::StringObject(pattern) => Regex::new(&pattern.borrow().text())
             .map(|regex| regex.is_match(&test.name))
             .unwrap_or(false),

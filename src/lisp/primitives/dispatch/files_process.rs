@@ -156,8 +156,8 @@ impl AddressFamily {
     fn parse(value: Option<&Value>) -> Result<Self, LispError> {
         match value.map(|v| v.kind()) {
             None | Some(Kind::Nil) => Ok(Self::Both),
-            Some(Kind::Symbol(family)) if family == "ipv4" => Ok(Self::Ipv4),
-            Some(Kind::Symbol(family)) if family == "ipv6" => Ok(Self::Ipv6),
+            Some(Kind::Symbol(family)) if family.is_named("ipv4") => Ok(Self::Ipv4),
+            Some(Kind::Symbol(family)) if family.is_named("ipv6") => Ok(Self::Ipv6),
             _ => Err(LispError::Signal("Unsupported family".into())),
         }
     }
@@ -2462,7 +2462,7 @@ define_dispatch!(
                 // KEY nil the (HOST SERVICE) pair, any other KEY a plist_get.
                 need_arg_range(name, args, 1, 3)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                if matches!(args.get(1).map(|v| v.kind()), Some(Kind::Symbol(key)) if key == ":remote")
+                if matches!(args.get(1).map(|v| v.kind()), Some(Kind::Symbol(key)) if key.is_named(":remote"))
                     && let Some(address) = interp.process_datagram_address(process_id)?
                 {
                     return Ok(sockaddr_vector(address));
@@ -2548,7 +2548,7 @@ define_dispatch!(
                 let family = AddressFamily::parse(args.get(1))?;
                 let numeric = match args.get(2).map(|v| v.kind()) {
                     None | Some(Kind::Nil) => false,
-                    Some(Kind::Symbol(hint)) if hint == "numeric" => true,
+                    Some(Kind::Symbol(hint)) if hint.is_named("numeric") => true,
                     _ => return Err(LispError::Signal("Unsupported hints value".into())),
                 };
                 let addresses = match network_lookup_addresses(&host, family, numeric) {
@@ -3347,7 +3347,7 @@ fn make_process_value(
         .as_chunks::<2>()
         .0
         .iter()
-        .find(|pair| matches!(pair[0].kind(), Kind::Symbol(key) if key == ":file-handler"))
+        .find(|pair| matches!(pair[0].kind(), Kind::Symbol(key) if key.is_named(":file-handler")))
         .is_some_and(|pair| pair[1].is_truthy());
     if file_handler {
         let default_directory = interp

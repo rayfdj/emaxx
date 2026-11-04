@@ -292,21 +292,9 @@ impl Interpreter {
         self.update_forwarded_eval_cell(name, value);
     }
 
-    /// Restore the actual function cell, including a voided builtin. An
-    /// unchanged static subr needs no entry in the Lisp-definition index.
+    /// Restore the actual function cell, including a voided builtin.
     fn install_function_cell(&mut self, symbol: &SymbolName, function: &Value) {
-        if function.is_nil() {
-            self.set_function_binding_symbol(symbol, None);
-            return;
-        }
-        if let Kind::BuiltinFunc(subr) = function.kind()
-            && subr.as_str() == symbol.as_str()
-        {
-            self.set_function_binding_symbol(symbol, None);
-            self.globals.set_function(symbol, Some(*function));
-            return;
-        }
-        self.set_function_binding_symbol(symbol, Some(*function));
+        self.set_function_binding_symbol(symbol, (!function.is_nil()).then_some(*function));
     }
 
     fn install_plist(&mut self, symbol: &SymbolName, plist: &Value) {

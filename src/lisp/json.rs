@@ -65,8 +65,7 @@ pub(crate) fn parse_args(
         null_object: Value::symbol(":null"),
         false_object: Value::symbol(":false"),
     };
-    let is =
-        |value: &Value, name: &str| matches!(value.kind(), Kind::Symbol(symbol) if symbol == name);
+    let is = |value: &Value, name: &str| matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named(name));
     for pair in args.as_chunks::<2>().0.iter().rev() {
         let (key, value) = (pair[0], pair[1]);
         if parse_object_types && is(&key, ":object-type") {

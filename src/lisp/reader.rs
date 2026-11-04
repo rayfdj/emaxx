@@ -8,7 +8,7 @@ pub(crate) use input::ReaderStream;
 
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use unicode_names2::character as unicode_character;
 
@@ -125,6 +125,10 @@ pub(crate) trait ReadContext {
     fn read_circle(&mut self) -> bool {
         true
     }
+    /// read_char_literal's record of an unescaped `(', `)', `[', `]', `"'
+    /// or `;' CHARACTER on `lread--unescaped-character-literals', as it is
+    /// read.
+    fn unescaped_character_literal(&mut self, character: u8) -> Result<(), LispError>;
 }
 
 /// One of lread.c's saved_strings: the bytes `#@' skipped in a file while
@@ -469,7 +473,6 @@ pub struct Reader<'a> {
     symbol_shorthands: Vec<(String, String)>,
     context: Option<&'a mut dyn ReadContext>,
     backquote_depth: usize,
-    unescaped_character_literals: BTreeSet<u8>,
     /// read0's LOCATE_SYMS: allocate a symbol-with-position for each
     /// occurrence except the canonical nil symbol.
     locate_symbols: bool,
@@ -537,7 +540,6 @@ impl<'a> Reader<'a> {
             // GNU's reader always encodes quote shorthands with the raw
             // `\``/`\,'/`\,@' symbols; pcase.el's pattern expanders are
             // registered under those names.
-            unescaped_character_literals: BTreeSet::new(),
             emitted_reader_forms: false,
             read_objects_map: HashMap::default(),
             read_objects_completed: HashSet::default(),
@@ -818,13 +820,6 @@ impl<'a> Reader<'a> {
         Ok(Value::ReaderForm(
             crate::lisp::alloc::VectorlikeRef::allocate(form),
         ))
-    }
-
-    pub(crate) fn unescaped_character_literals(&self) -> impl Iterator<Item = i64> + '_ {
-        self.unescaped_character_literals
-            .iter()
-            .copied()
-            .map(i64::from)
     }
 
     fn peek(&mut self) -> Result<Option<u8>, LispError> {
@@ -1672,8 +1667,10 @@ impl<'a> Reader<'a> {
             }
             Some(ch) if ch < 0x80 => {
                 self.advance()?;
-                if matches!(ch, b'(' | b')' | b'[' | b']' | b'"' | b';') {
-                    self.unescaped_character_literals.insert(ch);
+                if matches!(ch, b'(' | b')' | b'[' | b']' | b'"' | b';')
+                    && let Some(context) = self.read_context()
+                {
+                    context.unescaped_character_literal(ch)?;
                 }
                 Ok(Some(Value::Integer(ch as i64)))
             }
@@ -2148,7 +2145,8 @@ impl<'a> Reader<'a> {
                 })();
                 self.locate_symbols = saved_locate;
                 let (kind, fields) = result?;
-                if matches!(kind.kind(), Kind::Symbol(kind_name) if kind_name == "hash-table") {
+                if matches!(kind.kind(), Kind::Symbol(kind_name) if kind_name.is_named("hash-table"))
+                {
                     self.literal_object(ReaderForm::HashTable { fields })
                         .map(Some)
                 } else {
@@ -2716,9 +2714,12 @@ mod tests {
         let Kind::Symbol(symbol) = value.kind() else {
             panic!("expected symbol");
         };
-        assert_eq!(crate::lisp::types::visible_symbol_name(&symbol), "a");
-        assert_ne!(symbol, "a");
-        assert_ne!(symbol, ":a");
+        assert_eq!(
+            crate::lisp::types::visible_symbol_name(symbol.as_str()),
+            "a"
+        );
+        assert!(!symbol.is_named("a"));
+        assert!(!symbol.is_named(":a"));
     }
 
     #[test]
@@ -2828,7 +2829,7 @@ mod tests {
         assert_eq!(*kind, ReaderClosureKind::Interpreted);
         assert!(slots.first().is_some_and(|params| {
             params.to_vec().ok().is_some_and(
-                |params| matches!(params.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "_tag"),
+                |params| matches!(params.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.is_named("_tag")),
             )
         }));
     }
@@ -2911,16 +2912,6 @@ mod tests {
                 Err(LispErrorKind::ReadError(message)) if message == expected
             ));
         }
-    }
-
-    #[test]
-    fn reader_tracks_only_actual_unescaped_character_literals() {
-        let mut reader = Reader::new("?) ?\\( \"?[\" ; ?] in comment\n?;");
-        reader.read_all().unwrap();
-        assert_eq!(
-            reader.unescaped_character_literals().collect::<Vec<_>>(),
-            [41, 59]
-        );
     }
 
     #[test]
@@ -3123,7 +3114,7 @@ mod tests {
         let items = value.to_vec().expect("quote form");
         assert!(matches!(
             items.first().map(|v| v.kind()),
-            Some(Kind::Symbol(symbol)) if symbol == "quote"
+            Some(Kind::Symbol(symbol)) if symbol.is_named("quote")
         ));
         let (_, tail) = items[1].cons_values().expect("the labelled list");
         assert!(tail.eq_value(items[1]));
@@ -3164,7 +3155,7 @@ mod tests {
 
         for (object, expected_head) in objects.iter().zip(["a", "b"]) {
             let (head, tail) = object.cons_values().expect("circular list head");
-            assert!(matches!(head.kind(), Kind::Symbol(symbol) if symbol == expected_head));
+            assert!(matches!(head.kind(), Kind::Symbol(symbol) if symbol.is_named(expected_head)));
             let (recursive, end) = tail.cons_values().expect("circular list tail");
             assert_eq!(end, Value::Nil);
             assert_eq!(
@@ -3219,12 +3210,12 @@ mod tests {
         assert!(matches!(
             slots.as_slice().iter().map(|v| v.kind()).collect::<Vec<_>>().as_slice(),
             [Kind::Symbol(kind), Kind::Symbol(field), Kind::ReaderForm(nested), vector]
-                if kind == "a"
-                    && field == "b"
+                if kind.is_named("a")
+                    && field.is_named("b")
                     && matches!(nested.as_ref(), ReaderForm::Record { .. })
                     && crate::lisp::primitives::vector_items(&vector.value()).is_ok_and(|items| matches!(
                         crate::lisp::types::kinds(&items).as_slice(),
-                        [Kind::Symbol(item)] if item == "e"
+                        [Kind::Symbol(item)] if item.is_named("e")
                     ))
         ));
     }

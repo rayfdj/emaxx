@@ -1038,8 +1038,8 @@ impl Interpreter {
                     break resolution;
                 }
                 Kind::Cons(cell) => match cell.car.get().kind() {
-                    Kind::Symbol(name) if name == "lambda" => break resolution,
-                    Kind::Symbol(name) if name == "autoload" => {
+                    Kind::Symbol(name) if name.is_named("lambda") => break resolution,
+                    Kind::Symbol(name) if name.is_named("autoload") => {
                         let result = primitives::call(
                             self,
                             "autoload-do-load",
@@ -1052,7 +1052,7 @@ impl Interpreter {
                         // GNU retries the original callee after loading:
                         // the file can define a subr alias, lambda or macro.
                     }
-                    Kind::Symbol(name) if name == "macro" => {
+                    Kind::Symbol(name) if name.is_named("macro") => {
                         let result = self.with_macro_lexical_binding(
                             super::macros::MacroCaller::EvalSub,
                             env,
@@ -1795,7 +1795,7 @@ impl Interpreter {
         } else {
             self.set_symbol_value_cell("quit-flag", Value::Nil);
         }
-        if matches!(flag.kind(), Kind::Symbol(name) if name == "kill-emacs") {
+        if matches!(flag.kind(), Kind::Symbol(name) if name.is_named("kill-emacs")) {
             return primitives::call(self, "kill-emacs", &[Value::Nil, Value::Nil], env).map(drop);
         }
 
@@ -2401,13 +2401,13 @@ impl Interpreter {
                         .callable_symbol_name(&value, env)
                         .ok_or_else(|| invalid_function(function))?,
                 };
-                if parameter == "&rest" {
+                if parameter.is_named("&rest") {
                     if rest || previous_rest {
                         return Err(invalid_function(function));
                     }
                     rest = true;
                     previous_rest = true;
-                } else if parameter == "&optional" {
+                } else if parameter.is_named("&optional") {
                     if optional || rest || previous_rest {
                         return Err(invalid_function(function));
                     }

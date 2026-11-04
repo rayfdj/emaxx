@@ -563,7 +563,7 @@ impl Printer {
     ) -> Result<Step, LispError> {
         self.out.push_str("#s(hash-table");
         let test = table.test_name();
-        if !matches!(test.kind(), Kind::Symbol(name) if name == "eql") {
+        if !matches!(test.kind(), Kind::Symbol(name) if name.is_named("eql")) {
             self.out.push_str(" test ");
             self.print_object(interp, env, test, escape)?;
         }

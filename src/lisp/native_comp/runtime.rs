@@ -12,7 +12,7 @@ use super::abi::{
     HANDLER_JMP_OFFSET, HANDLER_NEXT_OFFSET, HANDLER_SIZE, HANDLER_VALUE_OFFSET, SYS_JMP_BUF_SIZE,
     THREAD_HANDLERLIST_OFFSET, THREAD_STATE_SIZE,
 };
-use crate::lisp::eval::{SavedExcursion, SavedRestriction, SpecialBindingRestore};
+use crate::lisp::eval::UnwindAction;
 use crate::lisp::primitives::wrong_type_argument;
 #[cfg(test)]
 use crate::lisp::types::SharedCons;
@@ -961,19 +961,21 @@ pub(crate) const MEMORY_FULL_CONS_THRESHOLD: i64 = 32_744;
 
 /// The `gc-cons-threshold' and `gc-cons-percentage' values alloc.c reads
 /// when it retunes the consing counter.
-pub(crate) fn gc_tuning(interpreter: &Interpreter, environment: &Env) -> (i64, Option<f64>) {
+pub(crate) fn gc_tuning(interpreter: &Interpreter) -> (i64, Option<f64>) {
+    // Vmemory_full, gc_cons_threshold and Vgc_cons_percentage: the C
+    // variables' current values, read from their symbols.
     MEMORY_FULL.store(
         interpreter
-            .lookup_var("memory-full", environment)
+            .symbol_value_key(cached_symbol!("memory-full"))
             .is_some_and(|value| !value.is_nil()),
         std::sync::atomic::Ordering::Relaxed,
     );
     let threshold = interpreter
-        .lookup_var("gc-cons-threshold", environment)
+        .symbol_value_key(cached_symbol!("gc-cons-threshold"))
         .and_then(|value| value.integer_value())
         .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
     let percentage = match interpreter
-        .lookup_var("gc-cons-percentage", environment)
+        .symbol_value_key(cached_symbol!("gc-cons-percentage"))
         .map(|v| v.kind())
     {
         Some(Kind::Float(value)) => Some(value.get()),
@@ -1047,7 +1049,7 @@ fn maybe_garbage_collect(interpreter: &mut Interpreter, environment: &mut Env) {
     if interpreter.garbage_collection_is_inhibited() {
         return;
     }
-    let (threshold, percentage) = gc_tuning(interpreter, environment);
+    let (threshold, percentage) = gc_tuning(interpreter);
     let due = with_current_runtime(|runtime| runtime.garbage_collection_due(threshold, percentage))
         .unwrap_or_else(|| {
             interpreter
@@ -1186,28 +1188,6 @@ impl HandlerEntry {
     }
 }
 
-/// Each entry is moved on every push and pop: the records of the rare
-/// actions are boxed, so the common ones stay a few words.
-enum UnwindAction {
-    Special(Box<SpecialBindingRestore>),
-    /// A binding whose record stays on the interpreter's binding stack
-    /// alone, unbound by its id (`Interpreter::unbind_special_id').
-    SpecialId(u64),
-    Excursion(SavedExcursion),
-    Restriction(Box<SavedRestriction>),
-    CurrentBuffer(u64),
-    Cleanup {
-        function: bool,
-        value: Value,
-    },
-}
-
-struct UnwindEntry {
-    action: UnwindAction,
-    backtrace_depth: usize,
-    lisp_eval_depth: usize,
-}
-
 /// Native execution shell. The shared allocation can move to a different
 /// shell at a suspension boundary while this thread's live call state stays
 /// with its Rust/native frames. The scheduler must also switch TLS and roots;
@@ -1225,7 +1205,6 @@ pub(crate) struct NativeRuntime {
     /// this vector and a handler entry.
     #[allow(clippy::vec_box)]
     spare_handlers: Vec<Box<NativeHandler>>,
-    unwind: Vec<UnwindEntry>,
     /// The innermost call's record (`NativeCallFrame'), or null.
     call: *const NativeCallFrame,
     ephemeral_root_ranges: Vec<NativeRootRange>,
@@ -1424,7 +1403,6 @@ impl Default for NativeRuntime {
             handlers: Vec::new(),
             top_handler: std::ptr::null_mut(),
             spare_handlers: Vec::new(),
-            unwind: Vec::new(),
             call: std::ptr::null(),
             ephemeral_root_ranges: Vec::new(),
         }
@@ -1434,7 +1412,6 @@ impl Default for NativeRuntime {
 impl NativeRuntime {
     pub(crate) fn is_pristine(&self) -> bool {
         self.handlers.is_empty()
-            && self.unwind.is_empty()
             && self.call.is_null()
             && !self.linked_code
             && self.ephemeral_root_ranges.is_empty()
@@ -1493,17 +1470,25 @@ impl NativeRuntime {
         CallFrames::of(&self.call)
     }
 
-    /// The depth of the stack that KIND (a `PUSHED_' bit) names when the
-    /// innermost call began (`NativeCallFrame::depth'), or its length with
-    /// no call.
+    /// The depth of the stack that KIND (a `PUSHED_' bit other than
+    /// `PUSHED_UNWIND') names when the innermost call began
+    /// (`NativeCallFrame::depth'), or its length with no call.
     fn call_depth(&self, kind: u8) -> usize {
+        debug_assert_ne!(kind, PUSHED_UNWIND);
         let len = match kind {
             PUSHED_HANDLERS => self.handlers.len(),
-            PUSHED_UNWIND => self.unwind.len(),
             _ => self.ephemeral_root_ranges.len(),
         };
         self.current_call()
             .map_or(len, |call| call.depth(kind, len))
+    }
+
+    /// The depth of INTERPRETER's specpdl when the innermost call began:
+    /// its entries lie above it.
+    fn call_specpdl_depth(&self, interpreter: &Interpreter) -> usize {
+        let len = interpreter.specpdl_index();
+        self.current_call()
+            .map_or(len, |call| call.depth(PUSHED_UNWIND, len))
     }
 
     /// Before a push on the stack that KIND (a `PUSHED_' bit) names:
@@ -1522,11 +1507,25 @@ impl NativeRuntime {
         call.state.set(state | kind);
         match kind {
             PUSHED_HANDLERS => call.handler_depth.set(self.handlers.len()),
-            PUSHED_UNWIND => call.unwind_depth.set(self.unwind.len()),
             _ => call
                 .ephemeral_root_depth
                 .set(self.ephemeral_root_ranges.len()),
         }
+    }
+
+    /// `note_call_push' before a push on INTERPRETER's specpdl: its depth,
+    /// if this is the innermost call's first entry there.
+    #[inline(always)]
+    fn note_specpdl_push(&self, interpreter: &Interpreter) {
+        let Some(call) = self.current_call() else {
+            return;
+        };
+        let state = call.state.get();
+        if state & PUSHED_UNWIND != 0 {
+            return;
+        }
+        call.state.set(state | PUSHED_UNWIND);
+        call.unwind_depth.set(interpreter.specpdl_index());
     }
 
     fn collect_native_heap_now(
@@ -1551,7 +1550,6 @@ impl NativeRuntime {
         self.suspended_stacks.append_words(&mut roots);
         let lisp_roots = suspension::NativeLispRoots {
             handlers: &self.handlers,
-            unwind: &self.unwind,
             calls: CallFrames::of(&self.call),
             environment: None,
         };
@@ -1989,8 +1987,9 @@ impl NativeRuntime {
                 .truncate(frame.ephemeral_root_depth.get());
         }
         sync_result?;
+        let specpdl = interpreter.specpdl_index();
         if frame.depth(PUSHED_HANDLERS, self.handlers.len()) != self.handlers.len()
-            || frame.depth(PUSHED_UNWIND, self.unwind.len()) != self.unwind.len()
+            || frame.depth(PUSHED_UNWIND, specpdl) != specpdl
         {
             return Err(super::lisp::native_ice(
                 "generated function returned with an unbalanced dynamic stack",
@@ -2133,7 +2132,7 @@ impl NativeRuntime {
         }
         // The call's depths, the handlers' once the popped ones are gone.
         let handler_depth = self.call_depth(PUSHED_HANDLERS);
-        let unwind_depth = self.call_depth(PUSHED_UNWIND);
+        let unwind_depth = self.call_specpdl_depth(interpreter);
         'dispatch: loop {
             let target_index = self.matching_handler(interpreter, environment, &error);
             let retained_handlers = target_index.map_or(handler_depth, |index| index + 1);
@@ -2143,7 +2142,7 @@ impl NativeRuntime {
             // Removing all inner handlers first changes that control flow.
             while self.handlers.len() > retained_handlers {
                 let boundary = self.handlers.last().expect("inner handler").unwind_depth;
-                while self.unwind.len() > boundary {
+                while interpreter.specpdl_index() > boundary {
                     // The error is not in pending_error or handler storage
                     // yet. Cleanup can collect its boxed Lisp payload.
                     let result = interpreter.with_lisp_stack_roots(&error, |interpreter| {
@@ -2168,7 +2167,7 @@ impl NativeRuntime {
             }
             let boundary =
                 target_index.map_or(unwind_depth, |index| self.handlers[index].unwind_depth);
-            while self.unwind.len() > boundary {
+            while interpreter.specpdl_index() > boundary {
                 let result = interpreter.with_lisp_stack_roots(&error, |interpreter| {
                     self.unwind_one(interpreter, environment)
                 });
@@ -2208,68 +2207,29 @@ impl NativeRuntime {
         }
     }
 
-    fn record_unwind(&mut self, interpreter: &Interpreter, action: UnwindAction) {
-        self.note_call_push(PUSHED_UNWIND);
-        self.unwind.push(UnwindEntry {
-            action,
-            backtrace_depth: interpreter.backtrace_frames_len(),
-            lisp_eval_depth: interpreter.lisp_eval_depth,
-        });
+    /// record_unwind_protect and its kin: ACTION on INTERPRETER's
+    /// specpdl, where the call's bindings are.
+    fn record_unwind(&mut self, interpreter: &mut Interpreter, action: UnwindAction) {
+        self.note_specpdl_push(interpreter);
+        interpreter.record_unwind(action);
     }
 
+    /// unbind_to's step over the innermost entry of INTERPRETER's specpdl,
+    /// one of the call's own.
     fn unwind_one(
         &mut self,
         interpreter: &mut Interpreter,
         environment: &mut Env,
     ) -> Result<(), LispError> {
-        let Some(entry) = self.unwind.pop() else {
+        let Some(entry) = interpreter.pop_specpdl_entry() else {
             return Err(super::lisp::native_ice(
                 "native byte-unbind exceeded the dynamic binding stack",
             ));
         };
         // GNU's specpdl interleaves backtraces and unwind records. Retire
         // younger activations before a cleanup or variable watcher runs.
-        interpreter.truncate_backtrace_frames(entry.backtrace_depth);
-        interpreter.lisp_eval_depth = entry.lisp_eval_depth;
-        match entry.action {
-            UnwindAction::Special(restore) => {
-                interpreter.restore_special_dynamic(*restore, environment)
-            }
-            UnwindAction::SpecialId(binding_id) => {
-                if interpreter.unbind_plain_special_id(binding_id) {
-                    Ok(())
-                } else {
-                    interpreter.unbind_special_id(binding_id, environment)
-                }
-            }
-            UnwindAction::Excursion(saved) => {
-                interpreter.restore_excursion_state(saved);
-                Ok(())
-            }
-            UnwindAction::Restriction(saved) => {
-                interpreter.restore_restriction_state(*saved);
-                Ok(())
-            }
-            UnwindAction::CurrentBuffer(buffer_id) => {
-                if interpreter.has_buffer_id(buffer_id) {
-                    interpreter.set_current_buffer_id(buffer_id)?;
-                }
-                Ok(())
-            }
-            UnwindAction::Cleanup { function, value } => {
-                if function {
-                    interpreter
-                        .call_function_value(value, None, &[], environment)
-                        .map(|_| ())
-                } else {
-                    value.to_vec().and_then(|forms| {
-                        forms
-                            .iter()
-                            .try_for_each(|form| interpreter.eval(form, environment).map(|_| ()))
-                    })
-                }
-            }
-        }
+        interpreter.truncate_backtrace_frames(entry.backtrace_depth());
+        interpreter.undo_specpdl_entry(entry, environment)
     }
 }
 
@@ -3167,26 +3127,16 @@ pub(super) extern "C" fn direct_native_type_of(value: NativeWord) -> NativeWord 
 }
 
 /// data.c:Faref's AREF of a vector or a record at a fixnum index within
-/// it, and its CHAR_TABLE_REF of a char-table at a character, read in
-/// place; any other array or index takes the subr's own path.
+/// it, its character of a string and its CHAR_TABLE_REF of a char-table
+/// at a character, read in place as the VM's Baref reads them; any other
+/// array or index takes the subr's own path.
 pub(super) extern "C" fn direct_native_aref(array: NativeWord, index: NativeWord) -> NativeWord {
-    if let Some(index) = decode_fixnum(index) {
-        let slot = usize::try_from(index).ok();
+    if let Some(slot) = decode_fixnum(index).and_then(|index| usize::try_from(index).ok())
         // SAFETY: the caller's argument word is live.
-        let value = match unsafe { Value::from_word(array) }.kind() {
-            Kind::Vector(vector) => slot.and_then(|slot| vector.get(slot)),
-            Kind::LispRecord(record) => slot.and_then(|slot| record.get(slot)),
-            Kind::CharTable(table) => u32::try_from(index)
-                .ok()
-                .filter(|&character| {
-                    character <= crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_CHAR
-                })
-                .map(|character| table.get(character)),
-            _ => None,
-        };
-        if let Some(value) = value {
-            return value.word();
-        }
+        && let Some(value) =
+            crate::lisp::primitives::vector_aref_fast(&unsafe { Value::from_word(array) }, slot)
+    {
+        return value.word();
     }
     invoke_subr(subr_index(&AREF_SUBR_INDEX, "aref"), &[array, index])
 }
@@ -5113,7 +5063,7 @@ extern "C" fn runtime_push_handler(match_value: NativeWord, kind: i32) -> *mut N
                 storage,
                 kind,
                 match_value,
-                unwind_depth: runtime.unwind.len(),
+                unwind_depth: interpreter.specpdl_index(),
                 lisp_eval_depth: interpreter.lisp_eval_depth,
                 backtrace_depth: interpreter.backtrace_frames_len(),
                 registration,
@@ -5150,14 +5100,15 @@ extern "C" fn runtime_unbind_n(count: NativeWord) -> NativeWord {
                 super::lisp::native_ice("native byte-unbind received a negative count")
             })?;
             let interpreter = unsafe { &mut *active.interpreter };
-            let environment = unsafe { &mut *active.environment.get() };
-            let runtime = unsafe { &mut *active.runtime };
-            // helper_unbind_n can call an interpreted cleanup without
-            // crossing invoke_subr or NativeRuntime::invoke. Retire handlers
-            // already popped by generated code before that cleanup runs.
-            runtime.sync_handlers(interpreter)?;
-            for _ in 0..count {
-                runtime.unwind_one(interpreter, environment)?;
+            // eval.c:unbind_to (SPECPDL_INDEX () - COUNT): the call's own
+            // entries on the specpdl, innermost first.  A plain binding's
+            // unbind is a store that runs nothing.
+            let mut left = count;
+            while left > 0 && interpreter.unbind_plain_innermost() {
+                left -= 1;
+            }
+            if left > 0 {
+                unbind_n_running(active, left)?;
             }
             Ok(0)
         })();
@@ -5169,6 +5120,25 @@ extern "C" fn runtime_unbind_n(count: NativeWord) -> NativeWord {
             }
         }
     })
+}
+
+/// `runtime_unbind_n' from the first of COUNT entries whose undo can run
+/// Lisp: a watcher, a cleanup, or a store more than plain.
+#[inline(never)]
+fn unbind_n_running(active: &ActiveCall, count: usize) -> Result<(), LispError> {
+    let interpreter = unsafe { &mut *active.interpreter };
+    let environment = unsafe { &mut *active.environment.get() };
+    let runtime = unsafe { &mut *active.runtime };
+    // helper_unbind_n can call an interpreted cleanup without crossing
+    // invoke_subr or NativeRuntime::invoke. Retire handlers already popped
+    // by generated code before that cleanup runs.
+    runtime.sync_handlers(interpreter)?;
+    for _ in 0..count {
+        if !interpreter.unbind_plain_innermost() {
+            runtime.unwind_one(interpreter, environment)?;
+        }
+    }
+    Ok(())
 }
 
 extern "C" fn runtime_save_restriction() {
@@ -5302,7 +5272,7 @@ extern "C" fn runtime_unwind_protect(value: NativeWord) {
             )?
             .is_truthy();
             unsafe { &mut *active.runtime }.record_unwind(
-                unsafe { &*active.interpreter },
+                unsafe { &mut *active.interpreter },
                 UnwindAction::Cleanup { function, value },
             );
             Ok(())
@@ -5315,45 +5285,35 @@ extern "C" fn runtime_unwind_protect(value: NativeWord) {
 
 extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
     with_active(|active| {
+        let interpreter = unsafe { &mut *active.interpreter };
+        // The binding's record goes on the specpdl, where the call's
+        // entries begin at the depth noted at its first.
+        unsafe { &*active.runtime }.note_specpdl_push(interpreter);
         // eval.c:specbind's plain SPECPDL_LET of a symbol cell: the old
-        // value saved in the binding stack's record and the new one stored,
-        // nothing notified or run (`Interpreter::specbind_plain').
+        // value saved in the record and the new one stored, nothing
+        // notified or run (`Interpreter::specbind_plain').
         // SAFETY: generated code passes live Lisp_Object words.
-        if let Some(name) = unsafe { Value::from_word(symbol) }.symbol_cell() {
-            let interpreter = unsafe { &mut *active.interpreter };
-            if let Some(binding_id) =
-                interpreter.specbind_plain(&name, unsafe { Value::from_word(value) })
-            {
-                unsafe { &mut *active.runtime }
-                    .record_unwind(interpreter, UnwindAction::SpecialId(binding_id));
-                return;
-            }
+        if let Some(name) = unsafe { Value::from_word(symbol) }.symbol_cell()
+            && interpreter.specbind_plain(&name, unsafe { Value::from_word(value) })
+        {
+            return;
         }
         let result = (|| {
             let symbol = decode_word(active, symbol)?;
             let value = decode_word(active, value)?;
             let interpreter = unsafe { &mut *active.interpreter };
             let environment = unsafe { &mut *active.environment.get() };
-            // A symbol's record stays on the binding stack alone, as
-            // specbind's specpdl entry; the unwind list holds its id.
-            let action = match symbol.symbol_cell() {
-                Some(name) => UnwindAction::SpecialId(interpreter.specbind_symbol_id(
-                    &name,
-                    value,
-                    environment,
-                )?),
+            match symbol.symbol_cell() {
+                Some(name) => {
+                    interpreter.specbind_symbol(&name, value, environment)?;
+                }
                 None => {
                     let name = symbol
                         .as_symbol()
                         .map_err(|_| wrong_type_argument("symbolp", symbol))?;
-                    UnwindAction::Special(Box::new(interpreter.bind_special_dynamic(
-                        name,
-                        value,
-                        environment,
-                    )?))
+                    interpreter.bind_special_dynamic(name, value, environment)?;
                 }
-            };
-            unsafe { &mut *active.runtime }.record_unwind(unsafe { &*active.interpreter }, action);
+            }
             Ok(())
         })();
         if let Err(error) = result {
@@ -9769,7 +9729,7 @@ mod tests {
     #[test]
     fn native_gc_retains_pending_unwind_cleanup_and_reclaims_it_after_execution() {
         #[inline(never)]
-        fn record_cleanup(runtime: &mut NativeRuntime, interpreter: &Interpreter) -> usize {
+        fn record_cleanup(runtime: &mut NativeRuntime, interpreter: &mut Interpreter) -> usize {
             let name = Value::symbol("native-cleanup-collection-count");
             let cleanup = Value::lambda(
                 Vec::new(),
@@ -9817,7 +9777,7 @@ mod tests {
         let mut environment = Env::new();
         interpreter.define_special_variable("native-cleanup-collection-count", Value::Integer(0));
         let mut runtime = NativeRuntime::default();
-        let hidden = record_cleanup(&mut runtime, &interpreter);
+        let hidden = record_cleanup(&mut runtime, &mut interpreter);
         for _ in 0..3 {
             crate::lisp::alloc::clobber_stack();
             runtime.begin_garbage_collection(&mut interpreter, &environment);
@@ -9831,7 +9791,7 @@ mod tests {
             interpreter.lookup_var("native-cleanup-collection-count", &environment),
             Some(Value::Integer(1))
         );
-        assert!(runtime.unwind.is_empty());
+        assert_eq!(interpreter.specpdl_index(), 0);
         crate::lisp::alloc::clobber_stack();
         runtime.begin_garbage_collection(&mut interpreter, &environment);
         assert!(

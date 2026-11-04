@@ -5234,6 +5234,19 @@ fn load_warns_about_unescaped_character_literals_on_the_eval_buffer_path() {
 }
 
 #[test]
+fn reader_records_only_actual_unescaped_character_literals() {
+    // read_char_literal records a literal `?)' or `?;', not an escaped
+    // `?\(', nor `?[' in a string or `?]' in a comment.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((lread--unescaped-character-literals nil))
+             (read-from-string "(?) ?\\( \"?[\" ; ?] in comment\n?;)")
+             lread--unescaped-character-literals)"#,
+        "(59 41)",
+        "unescaped character literals outside strings and comments",
+    );
+}
+
+#[test]
 fn sqlite_values_are_a_list_or_a_vector() {
     // sqlite.c bind_values walks VALUES as a vector (AREF) or a list
     // (XCAR/XCDR); Fsqlite_execute and Fsqlite_select signal `sqlite-error'
@@ -13816,7 +13829,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
             if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(), Some([
                 Kind::Symbol(name),
                 Kind::Buffer(_),
-            ]) if name == "buffer-read-only")
+            ]) if name.is_named("buffer-read-only"))
     ));
 
     interp.set_variable("inhibit-read-only", Value::T, &mut env);
@@ -16941,7 +16954,7 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
     assert!(
         matches!(
             items.get(4).and_then(|error| error.car().ok()).map(|v| v.kind()),
-            Some(Kind::Symbol(symbol)) if symbol == "error"
+            Some(Kind::Symbol(symbol)) if symbol.is_named("error")
         ),
         "hostname mismatch should be a catchable error: {actual:?}"
     );
@@ -32706,7 +32719,7 @@ fn text_conversion_c_store_does_not_localize_or_duplicate_the_field() {
         interp
             .buffer_local_cells(current)
             .iter()
-            .all(|(name, _)| name != "text-conversion-style")
+            .all(|(name, _)| !name.is_named("text-conversion-style"))
     );
     assert_eq!(interp.default_value("text-conversion-style"), Some(default));
     assert_eq!(
@@ -36201,4 +36214,42 @@ fn gc_variables_are_watched_by_alloc_c_s_own_subrs() {
         r#"((("watch_gc_cons_threshold") ("watch_gc_cons_percentage")) ((4 . 4)) nil t)"#,
         "GC variable watchers",
     );
+}
+
+#[test]
+fn rust_bindings_are_undone_by_unbind_to_their_depth() {
+    // eval.c:unbind_to (count): a C caller's restore undoes its binding
+    // and whatever was bound above it, innermost first, so the variable
+    // ends at its value before the outer binding however the caller orders
+    // its restores, and the later restore of the inner binding is a no-op.
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    interp.define_special_variable("unbind-to-depth-test", Value::Integer(0));
+    let base = interp.specpdl_index();
+    let outer = interp
+        .bind_special_dynamic("unbind-to-depth-test", Value::Integer(1), &mut env)
+        .expect("outer binding");
+    let inner = interp
+        .bind_special_dynamic("unbind-to-depth-test", Value::Integer(2), &mut env)
+        .expect("inner binding");
+    assert_eq!(
+        interp.lookup_var("unbind-to-depth-test", &env),
+        Some(Value::Integer(2))
+    );
+    interp
+        .restore_special_dynamic(outer, &mut env)
+        .expect("outer restored first");
+    assert_eq!(
+        interp.lookup_var("unbind-to-depth-test", &env),
+        Some(Value::Integer(0))
+    );
+    assert_eq!(interp.specpdl_index(), base);
+    interp
+        .restore_special_dynamic(inner, &mut env)
+        .expect("inner restore after it was undone");
+    assert_eq!(
+        interp.lookup_var("unbind-to-depth-test", &env),
+        Some(Value::Integer(0))
+    );
+    assert_eq!(interp.specpdl_index(), base);
 }

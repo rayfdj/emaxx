@@ -205,7 +205,7 @@ fn key_binding_value(
             && let Some((start, _)) = parameters.cons_values()
             && let Kind::Symbol(name) = head.kind()
             && interp
-                .get_symbol_property(&name, "event-kind")
+                .get_symbol_property_of(&name, &cached_symbol!("event-kind").with(Clone::clone))
                 .is_some_and(|kind| kind.eq_value(Value::symbol("mouse-click")))
         {
             position = start;
@@ -1369,7 +1369,7 @@ define_dispatch!(
                         .with(|property| interp.get_symbol_property_of(name, property))
                         .filter(|value| !kill_permanent && value.is_truthy());
                     interp.notify_variable_watchers(
-                        name,
+                        name.as_str(),
                         Value::Nil,
                         "makunbound",
                         Some(buffer_id),
@@ -1381,7 +1381,7 @@ define_dispatch!(
                         Some(prop) if prop.eq_value(Value::symbol("permanent-local-hook")) => {
                             let newlist = permanent_hook_elements(interp, *value, env)?;
                             interp.notify_variable_watchers(
-                                name,
+                                name.as_str(),
                                 newlist,
                                 "makunbound",
                                 Some(buffer_id),
@@ -1421,14 +1421,14 @@ define_dispatch!(
             "watch_gc_cons_threshold" => {
                 need_args(name, args, 4)?;
                 if let Some(threshold) = args[1].integer_value() {
-                    let (_, percentage) = crate::lisp::native_comp::gc_tuning(interp, env);
+                    let (_, percentage) = crate::lisp::native_comp::gc_tuning(interp);
                     crate::lisp::native_comp::bump_consing_until_gc(interp, threshold, percentage);
                 }
                 Ok(Value::Nil)
             }
             "watch_gc_cons_percentage" => {
                 need_args(name, args, 4)?;
-                let (threshold, _) = crate::lisp::native_comp::gc_tuning(interp, env);
+                let (threshold, _) = crate::lisp::native_comp::gc_tuning(interp);
                 let percentage = match args[1].kind() {
                     Kind::Float(value) => Some(value.get()),
                     _ => None,
@@ -1580,7 +1580,7 @@ pub(crate) fn value_is_oclosure(
         return true;
     }
     matches!(value.kind(), Kind::Record(_) | Kind::Closure(_))
-        && interp.has_lisp_function("oclosure-type")
+        && interp.is_fbound("oclosure-type")
         && interp
             .call_function_value(
                 Value::Symbol("oclosure-type".into()),

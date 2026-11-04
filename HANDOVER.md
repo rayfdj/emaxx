@@ -14088,6 +14088,356 @@ setup_process_coding_systems's check now refuses). A 13-form
   run, on whatever the byte held. Local validation: the grouped gate's
   3,501 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 294: `ash' as data.c's Fash, char-table reads as
+  chartab.c's.** `(ash 0 COUNT)' with a fixnum COUNT of 63 or more
+  returned 0 at once, where Fash takes every left shift through
+  emacs_mpz_mul_2exp, whose limb limit refuses a COUNT past it whatever
+  the value: `(ash 0 137438953408)' and `(ash 0 most-positive-fixnum)'
+  now signal `overflow-error' as in GNU, while `(ash 0 137438953407)'
+  stays 0. A char-table read past ASCII asked UNIPROP_TABLE_P (a symbol
+  key's lookup) at every call and descended the subtables by a recursive
+  call holding uniprop_table_uncompress inline; it now asks only at a
+  compressed entry, walks the levels in a loop and keeps the
+  uncompression out of line, and the VM's Baref reads a char-table at a
+  character index in place, as native code's `aref' did, which now also
+  reads a string in place; `aref' itself checks a char-table's index
+  before its other cases, as Faref does. unidata-gen's name decoder,
+  once its 128-character block is decoded, takes 895 instructions a
+  character against 1,316 (GNU's 923); `ucs-names' 1,100M instructions
+  against 1,110M (GNU's 1,047M); print-tests 2.164G against 2.176G and
+  textsec-tests 2.269G against 2.298G (GNU's 1.962G and 2.023G). The
+  rest of those two files' gap is in loading them from source:
+  print-tests.el loads in 1.52G instructions against 1.40G, and in 1.38G
+  against 1.16G without the collections (149M against 241M), spread over
+  `ucs-names' (the reader's `\N{...}' names, 969M against 837M),
+  `macroexp--expand-all' (177M against 147M) and the calls below them;
+  `cl-generic-define-method''s apparent doubling there is two
+  collections that began inside it. Command-line comparisons cover `ash'
+  and `aref' of char-tables interpreted, from byte code and through
+  native code. Local validation: the grouped gate's 3,501 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 295: one specpdl for the bindings and the unwind records.**
+  Native code kept each dynamic binding twice, its record on the
+  interpreter's binding stack and an id token on the native runtime's
+  own unwind list, and byte code did the same on a list of its own
+  (`bc_unwinds'), each popping its token and finding the record by id: a
+  `let' of a special variable from native code took 117 instructions to
+  bind and 130 to unbind (GNU's specbind and helper_unbind_n take 57 and
+  83), and byte code undid only a Bunbind 1 in its verified loop, so a
+  two-variable `let' left through op_in_place and the id path at about
+  163 instructions a binding (GNU's unbind_to takes 49). The
+  interpreter's binding stack is now eval.c's specpdl: its entries are
+  the bindings' records and the unwind records byte code and native code
+  make (record_unwind_protect_excursion, save_restriction_save,
+  record_unwind_current_buffer and an unwind-protect's handler), both
+  pushing there and undoing the innermost entries by depth as unbind_to
+  does, their handlers and frames holding specpdl depths; the id tokens
+  and both lists are gone. Native code's bind is the record alone (117
+  instructions to 92) and its helper_unbind_n undoes a plain binding
+  with one store in place (130 to 62); Bunbind 2 to 5 of entries whose
+  undo runs nothing are undone in the verified loop (56 instructions a
+  binding), and a byte-code loop binding two variables around a call
+  takes 803 instructions an iteration against 1,089 (GNU's 721).
+  Bunwind_protect now decides between a function and a list of forms
+  when it records the handler, as GNU's FUNCTIONP test does, and the
+  forms run as prog_ignore's Fprogn, walked while they are a cons;
+  Bsave_restriction's record is save_restriction_save's, whose undo also
+  drops the recorded current column. Three macroexpand-all passes over
+  print-tests.el's forms take 215.1M instructions against 226.9M (GNU's
+  202.6M) and print-tests 2.093G against 2.103G (GNU's 1.962G). A
+  command-line comparison covers a throw and a signal through bindings,
+  an unwind-protect, a saved current buffer, a watched variable's `let'
+  and `unlet' notifications, a buffer-local binding undone from another
+  buffer, and save-excursion and save-restriction in recursion,
+  interpreted and byte-compiled. Local validation: the grouped gate's
+  3,501 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
+- **Round 296: a regexp call's setup in fewer steps.** `(looking-at
+  "x")' at a failing position took 1,489 instructions a call (GNU's
+  1,129) and `(string-match "x" STRING)' 1,628 (GNU's 1,418), the
+  matching itself cheaper than GNU's and the excess in the call's setup.
+  The match environment, 136 bytes, was moved out to be dropped once the
+  match was done (`drop(menv)', a memcpy and the drop at every
+  looking-at, string-match, re-search, fast_string_match and
+  fast_looking_at); it now ends with the block that made it and is
+  dropped where it lies. The buffer snapshot borrowed the buffer's text
+  once for each of its reads (the shared bytes, the region's extended
+  characters, the modification tick); `Buffer::match_view' reads them
+  under one borrow, as looking_at_1 takes BEGV, ZV, PT and their bytes.
+  The matcher's text and its object computed the accessible range and
+  point's offset each, and now share them. `looking-at' takes 1,385
+  instructions and `string-match' 1,593; `re-search-forward' of a
+  missing string 2,226 against 2,244 (GNU's 2,553). A battery of 880
+  looking-at, re-search-forward, re-search-backward, narrowed and
+  string-match results over multibyte, unibyte, raw-byte and CJK text,
+  with and without case folding and with the gap inside the text,
+  matches GNU's. Local validation: the grouped gate's 3,501 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 297: Rust's bindings undone as a C caller's unbind_to undoes
+  them.** The primitives written in Rust bound a variable through
+  `bind_special_symbol', which handed back a copy of its specpdl record,
+  and restored it by searching the specpdl for the record's id and
+  removing the record wherever it lay (or applying the copy when it was
+  gone): two bindings of one variable restored outer first left the
+  value the inner one had saved. A bind now answers the specpdl's depth
+  before it (eval.c's specpdl_ref, from SPECPDL_INDEX), and the restore
+  is unbind_to of that depth, which undoes the binding and whatever lies
+  above it, innermost first, as a C caller's `unbind_to (count, val)'
+  does: restored out of order, the variable ends at its value before the
+  outer binding and the later restore does nothing. The records lose
+  their ids, so a binding's entry is 8 bytes smaller, a bind no longer
+  counts, and the image no longer saves the counter; `prin1-to-string'
+  takes 9,233 instructions a call against 9,342 (GNU's 17,837). A unit
+  test binds one variable twice and restores the outer binding first.
+  3,000 generated programs of `let', `setq', `set-default',
+  `make-local-variable', `kill-local-variable' and `setq-local' over two
+  global variables and a buffer-local one in two buffers, under buffer
+  switches, unwind-protect, catch and throw and condition-case,
+  interpreted and byte-compiled, print GNU's states and warnings, and
+  2,000 of save-excursion, save-restriction, narrowing, insertion,
+  deletion and point motion under the same exits print GNU's points,
+  bounds and texts; a command-line comparison runs forty programs of the
+  first kind, generated in Lisp from one `random' seed. Local
+  validation: the grouped gate's 3,502 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass. The primitives group's first run failed
+  `stderr_pipe_process_and_status_notify_as_process_c' once, on the
+  Emaxx side, while a release build and a check build ran beside it; the
+  gate's filter kept no assertion text (the local gate now keeps each
+  group's whole output), and the test passed alone 15 times, 12 of them
+  beside four busy loops, and in its whole group again, 473 of 473.
+- **Round 298: the reader records an unescaped character literal as
+  read_char_literal does.** lread.c:read_char_literal, on reading an
+  unescaped `?(', `?)', `?[', `?]', `?"' or `?;', checks that
+  `lread--unescaped-character-literals' is a list (CHECK_LIST) and
+  conses the character onto it unless Fmemq finds it there, by a C
+  assignment, before it reads on. The reader kept the characters in a
+  sorted set and the `read' entry points merged them into the variable
+  after a read that succeeded: a read failing after a literal recorded
+  none, so a `load' whose read failed warned of nothing; the characters
+  arrived in code order, `(40 34)' where GNU has `(34 40)'; the merge
+  rebuilt the list, and a value that was not a list was replaced rather
+  than signalled about, a dotted one too; a function stream saw no
+  literal until the read ended; and a byte-code object's string, read by
+  a reader of its own, lost its literals. The reader now asks its read
+  context (`ReadContext::unescaped_character_literal') at each literal,
+  and the context does read_char_literal's check, Fmemq and C assignment
+  of the current binding at once; the merges after a read are gone. A
+  command-line comparison reads literals before invalid syntax from
+  strings, buffers, markers and function streams, into an existing list
+  (whose tail is the old list), into non-lists and dotted lists, in a
+  buffer-local binding, and loads a file whose read fails after two
+  literals; a unit test reads literals beside an escaped one, one in a
+  string and one in a comment. 3,600 generated strings of reader syntax,
+  six new seeds of the round's fuzzer, print GNU's `read-from-string'
+  results. Local validation: the grouped gate's 3,502 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 299: variable watchers hear a store as data.c tells them.**
+  data.c:notify_variable_watchers takes the WHERE its caller passes and,
+  given none for an operation other than `set_default' or `makunbound',
+  names the current buffer when the variable is local there if set;
+  Emaxx's callers chose the buffer each for itself, so a `setq' of a
+  variable local when set, under a let of its default made in the same
+  buffer, named none, and a `makunbound' of a variable local in a buffer
+  named it. The buffer is now found in the notification alone, from the
+  redirect GNU's symbol has (`Redirect': plain, localized, a buffer's
+  slot, a keyboard's slot or a C variable), and each caller passes the
+  WHERE GNU's does. do_one_unbind restores a SPECPDL_LET of a symbol
+  still plain through set_internal, its watchers hearing `unlet', and
+  any other record through set_default_internal, which tells them `set'
+  and for a C variable stores through set_internal again: unbinding a
+  let of `gc-cons-threshold' tells `set' then `unlet', of a variable
+  made local within the let `set' alone, of a keyboard's slot `set'
+  alone, where Emaxx told `unlet'. `set-default' tells the watchers
+  through set_default_internal for a symbol not plain, an alias among
+  them, and again through set_internal for a plain or C variable. `set'
+  of a buffer's slot not local in the current buffer, under a let made
+  for it there, tells `set' and set_default_internal's `set', which
+  Emaxx did for `text-conversion-style' alone. specbind makes its record
+  before do_specbind stores, so a store that signals, a non-integer
+  bound to a DEFVAR_INT, leaves the record for the unwind, whose
+  watchers hear the old value back, where Emaxx signalled before
+  recording and told nothing; and every store tells the value as given
+  before store_symval_forwarding checks or converts it, where a
+  DEFVAR_BOOL's watchers heard t and a DEFVAR_INT's `set' of a
+  non-integer signalled unheard. make-local-variable and
+  make-variable-buffer-local refuse a keyboard's slot ("Symbol
+  last-command may not be buffer-local"), which Emaxx made local. `setq'
+  loses a branch for `setq-local' that nothing took. A command-line
+  comparison runs fifteen operations on each of eleven variables (plain,
+  local when set, made local in one buffer, an alias, a Lisp, an integer
+  and a boolean C variable, two buffer slots, `case-fold-search' and a
+  keyboard's slot), interpreted and byte-compiled, printing every
+  notification, value and error and GNU's messages. Local validation:
+  the grouped gate's 3,502 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 300: variable stores read their C-side state by symbol, and a
+  binding's record is GNU's four words.** alloc.c's watchers of
+  `gc-cons-threshold' and `gc-cons-percentage' read gc_cons_threshold,
+  Vgc_cons_percentage and Vmemory_full, C variables; Emaxx's
+  `gc_tuning', which those watchers and every GC retune share, looked
+  each up by name, about 256 instructions a lookup, and now reads it
+  from its symbol (`symbol_value_key', find_symbol_value's) by a cached
+  key. notify_variable_watchers passes Qset, Qlet, Qunlet, Qmakunbound
+  or Qdefvaralias, where Emaxx interned the operation's name for each
+  watcher it called. store_symval_forwarding's check of a buffer slot's
+  predicate is Fget of its `choice' and `range' properties, then
+  FUNCTIONP and call1; Emaxx called `get' and `functionp' through the
+  dispatcher by name and interned the predicate and the two property
+  names at each store, and now reads the plist directly with the
+  predicates' symbols cached. A loop of 20,000 `(setq gc-cons-percentage
+  0.1)' takes 794 instructions a store more than one of an unwatched
+  variable, against 1,604 (GNU's 491), and a `setq' of `left-margin'
+  where it is not local 1,317 against 2,373 (GNU's 701). A binding's
+  specpdl record is eval.c's let member in its four words: the symbol,
+  the value saved (with a flag for a void binding that saved none),
+  `where' (the buffer current, or for a keyboard's slot its terminal),
+  and the kind (SPECPDL_LET, SPECPDL_LET_LOCAL or SPECPDL_LET_DEFAULT)
+  beside the backtrace depth and the flags for a symbol local when set,
+  a keyboard's slot and a local killed meanwhile; it was 96 bytes,
+  carrying the buffer three times, the terminal and the saved value each
+  in an Option, and a 64-bit depth. With an unwind record's two depths
+  in 32 bits, a specpdl entry takes 40 bytes against 96. A byte-code
+  loop binding two special variables takes 436 instructions and 178 data
+  references an iteration against 442 and 198 (GNU's 489 instructions);
+  2,000 generated binding programs and 1,000 of excursions and
+  restrictions, interpreted and byte-compiled, print GNU's states. Local
+  validation: the grouped gate's 3,502 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 301: `defvar' as eval.c's defvar, and a void default as
+  buffer_local_value finds it.** eval.c:defvar asks Fdefault_boundp
+  first; then Finternal__define_uninitialized_variable refuses a symbol
+  that an interpreter environment an inner binding saved binds lexically
+  (lexbound_p, "Defining as dynamic an already lexical var"), declares
+  the symbol as given special, puts its documentation on it and attaches
+  it to the load history; and the value becomes the default when the
+  default is void, or, when lets of the symbol as given bind it, the
+  value the outermost of them saved when that saved none (an alias finds
+  none, a binding recording the variable it names). `defvar-1', which
+  byte code calls, tested the current value, so a buffer-local one kept
+  the default void, stored with a plain set, never reached a let's saved
+  top-level value, and skipped the lexical check and the load history;
+  the special form counted a let's binding as one after `makunbound' had
+  voided it, dropping the value, stored an alias's value into a let of
+  its base, and put an alias's documentation on its base. Both are now
+  one `defvar_symbol', and the `internal--define-uninitialized-variable'
+  primitive is its definition step. data.c:buffer_local_value of a
+  buffer without a binding of a localized variable is Fdefault_value,
+  void when the default is; Emaxx fell back to the variable's current
+  value, so another buffer's lookup answered the current buffer's
+  binding. Generated programs of let, setq, set-default, makunbound,
+  make-local-variable, kill-local-variable, kill-all-local-variables,
+  defvar, set-default-toplevel-value and an alias over two buffers under
+  nonlocal exits, 1,500 of them interpreted and byte-compiled, print
+  GNU's values, defaults, top-level values, localness and
+  buffer-local-variables and its messages, where 24 of them (35 runs)
+  had differed; a command-line comparison runs the probes and a hundred
+  such programs generated in Lisp. Fuzzes of case conversion and
+  character widths over eighteen Unicode ranges, arithmetic and number
+  conversion (6,000 cases), strings and hash tables (5,300), buffer
+  editing with text properties, markers, overlays and undo (400
+  sequences), the printer under its variables (3,000) and syntax
+  scanning in five modes (2,500) print GNU's results. Local validation:
+  the grouped gate's 3,502 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 302: `defalias' leaves the cycle check to Ffset, and a
+  gensym's name costs less.** data.c:defalias hands an advised symbol's
+  new definition to the symbol's `defalias-fset-function' (nadvice's
+  `advice--defalias-fset', which wraps the definition in the advice
+  already there), and only Ffset, called when there is no such function,
+  checks the definition for a cycle; Emaxx checked first, so redefining
+  an advised function as a symbol naming itself signalled
+  `cyclic-function-indirection' where GNU installs the advice around it,
+  and the program then saw a different function cell. The check is
+  Ffset's alone, and the `&str' wrapper of it that only a test called is
+  gone. 600 generated programs that defalias, fset, advise, unadvise,
+  fmakunbound and document four symbols, printing each one's fboundp,
+  arity, commandp, interactive form, documentation, alias chain, advice
+  and the results of calling it, print GNU's output, where 36 had
+  differed; a command-line comparison runs 150 of them, generated in
+  Lisp. An uninterned symbol's internal name (the visible name, a marker
+  and a counter), and a private obarray's, is built by pushing its parts
+  where `format!' took about 966 instructions of a `make-symbol' call: a
+  byte-compiled loop of 100,000 `(make-symbol "abc")' takes 2,796
+  instructions a call against 3,354, collections included, and 1,328
+  against 1,886 without them (GNU's 1,525 and 408). Fuzzes of `load',
+  `require', `provide', autoloads, after-load forms and the load
+  history, of 52 errors and `handler-bind', of 2,500 encodings and
+  decodings across 31 coding systems and of 3,000 time conversions and
+  formats across sixteen zones print GNU's results. Local validation:
+  the grouped gate's 3,502 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 303: symbols no longer pass for their names, the
+  function-definition flag is gone, and `let' leaves constants to
+  specbind.** The symbol state's FUNCTION_DEFINITION bit, a startup
+  adapter that told a Lisp `fset' from defsubr's store, is removed: the
+  function cell is the one store, as set_symbol_function's, and the C
+  paths that call preloaded Lisp only where a runtime loaded it
+  (`internal--syntax-propertize', `syntax-ppss', the OClosure generics,
+  `uniquify--rename-buffer-advice', `undo-auto--undoable-change',
+  `byte-run--set-speed', none of them a subr) ask Ffboundp. SymbolName
+  no longer dereferences to its host text, so no name-keyed call takes a
+  symbol unseen: the hundred places that did now read the symbol itself
+  (`lookup_function_symbol', `get_symbol_property_of', the thread
+  switch's and `makunbound''s stores, `defvaralias''s and
+  `kill-all-local-variables''s watchers, `make-variable-buffer-local')
+  or say `as_str' where the text is what they mean. Traced under gdb
+  over twenty test files, 40,286 lookups found an uninterned symbol
+  again by its marked name, 99% of them textprop.c:textget's read of a
+  `category' symbol's plist by the symbol's name (button.el makes its
+  category symbols uninterned); textget now takes Fget of the object, so
+  `get-text-property' through such a category costs 710 instructions
+  against 906 (GNU's 782), and `buffer-local-variables' lists the
+  alist's own symbols rather than interning their names again. eval.c's
+  let and let* leave constants to specbind, whose set_internal binds a
+  keyword to itself and signals for nil, t and any other value of a
+  keyword; Emaxx tested the name first and signalled `setting-constant'
+  for `(let ((:k :k)) ...)' and for an uninterned or private obarray
+  symbol named `:zz', which GNU binds as an ordinary variable (9 of 13
+  binding cases differed, interpreted lexically or dynamically). A
+  command-line comparison runs the cases. The fuzzes of variables,
+  function cells, fields, load, errors, buffers, case, numbers, strings,
+  printing and syntax print GNU's results as before. Local validation:
+  the grouped gate's 3,502 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass. As at
+  round 297, the primitives group failed
+  `stderr_pipe_process_and_status_notify_as_process_c' once while
+  callgrind runs and a check build ran beside it: its last program read
+  `t256-a' as live (`(run open listen connect stop)') when `t256-b''s
+  sentinel ran, where GNU's reads nil; the test passed alone 12 times
+  out of 12, and its whole group again (476 tests, the gate's local
+  skips included) on a quiet machine.
+- **Round 304: a symbol compared with a name says what it means, and
+  overlays read their category symbol by object.** SymbolName no longer
+  compares equal to a string. Its 286 comparisons with a name (`symbol
+  == "lambda"', `head != "defalias"', a plist key against a Rust
+  caller's property name) compared the host text, and so relied on the
+  marker an uninterned or private obarray symbol's text carries to keep
+  `#:lambda' from passing for `lambda'; they now call `is_named', EQ to
+  the initial obarray's symbol of that name as C compares a symbol with
+  its DEFSYM, the one place to change when the marked text goes.
+  buffer.c's Foverlay_get and lookup_char_property read an overlay's
+  `category' symbol with Fget of the object, as round 303 made textget
+  do, so `get-char-property' through an overlay with an uninterned
+  category (button.el's `make-button') costs 1,443 instructions against
+  1,811 (GNU's 1,115). `featurep''s subfeatures,
+  `find-operation-coding-system''s target index, a key event's
+  `event-symbol-element-mask' and `ascii-character', and `defvar''s
+  default-boundp read the symbol's own property or value rather than its
+  name's, and the name-keyed `get_symbol_property_by' is gone. A
+  command-line comparison runs the cases. The fuzzes of variables,
+  function cells, fields, load, errors, codings, times, buffers, case,
+  numbers, strings, printing and syntax print GNU's results as before.
+  Local validation: the grouped gate's 3,502 library tests and the
+  integration targets pass; clippy with `--all-targets --all-features -D
+  warnings' first found 41 needless borrows the rewrite had made
+  (`is_named(&name)' of a `&str'), its own fix removed them, and clippy
+  and the command-line tests pass on the result, whose compiled code the
+  borrows do not change.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16310,6 +16660,162 @@ against GNU's 4.90G, and 6.52G in the gate profile the frozen run
 builds: the two runs' 1.04 and 1.20 both sit under that profile's 1.33,
 the runner deciding how much of it shows.
 
+**On `d94c164`** (round 293): the full Rust gate (run 41784550672)
+passed; the frozen run (run 41784560126) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 85.8 s against 69.9 s (1.228),
+test bodies 309.7 s against 274.7 s (1.128), in all 1.136, with a
+per-file setup median of 130 ms against 109, on a runner slower again
+than round 292's (GNU's own setup 69.9 s against 61.1 and its bodies
+274.7 s against 263.1). The widest body gaps are ert-tests (46,750 ms
+against 38,050, its expensive batch test as in round 292's record),
+tramp-tests (23,440 against 19,660), comp-tests (17,900 against 14,720),
+semantic-utest-ia (4,500 against 3,180) and mule-tests (3,220 against
+2,020). semantic-utest-ia, whose `looking-at' calls round 293 cut, came
+to 1.41 times GNU's time against round 292's 1.57 on the same file, its
+doublens test 1,218 ms against 789.
+
+**On `7b9a6ef`** (round 294): the full Rust gate (run 41794489633)
+passed; the frozen run (run 41794493485) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 60.6 s against 51.0 s (1.188),
+test bodies 248.5 s against 233.1 s (1.066), in all 1.095, with a
+per-file setup median of 92 ms against 79, on a runner much faster than
+round 293's (GNU's own setup 51.0 s against 69.9 and its bodies 233.1 s
+against 274.7). The widest body gaps are comp-tests (13,528 ms against
+11,416), tramp-tests (16,690 against 14,614), ert-tests (33,222 against
+31,272), semantic-utest-ia (2,896 against 2,009) and mule-tests (2,334
+against 1,489). mule-tests, whose character-name decoding round 294 cut,
+came to 1.57 times GNU's time against round 293's 1.59: in the checked
+build the frozen run times, its cost is the liveness assertion on each
+cons of `char-code-property-alist''s walk (round 131's record), not the
+decoding.
+
+**On `105750d`** (round 295): the full Rust gate (run 41805197972)
+passed; the frozen run (run 41805202467) differed at its first attempt
+only in eglot-tests, where the oracle's
+`eglot-test-rust-completion-exit-function' failed with a jsonrpc-error
+and Emaxx's passed, and passed at its second, 7,928 of 7,928 outcomes
+matching. Setup 67.3 s against 50.1 s (1.342), test bodies 253.0 s
+against 232.0 s (1.091), in all 1.140, with a per-file setup median of
+104 ms against 78 (round 294's 92 against 79). The widest body gaps are
+comp-tests (14,898 ms against 11,134), ert-tests (33,183 against
+31,291), tramp-tests (16,967 against 15,220), semantic-utest-ia (3,187
+against 2,043) and simple-tests (3,569 against 2,508, round 294's 2,693
+against 2,757). Neither rise is the round's: the gate builds of rounds
+294 and 296, built as the frozen run builds them, start with `-l ert' in
+418.1M and 416.6M instructions and run simple-tests in 5.043G and
+5.019G.
+
+**On `b11a304`** (round 296): the full Rust gate (run 41813787462)
+passed; the frozen run (run 41813793113) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a runner slower than round 295's
+(the oracle's setup 64.0 s against 50.4, its bodies 262.2 s against
+232.5). Setup 76.8 s against 64.0 s (1.201), test bodies 285.4 s against
+262.2 s (1.089), in all 1.094, with a per-file setup median of 114 ms
+against 98. The widest body gaps are tramp-tests (20,621 ms against
+17,446), ert-tests (39,674 against 36,950), comp-tests (17,064 against
+14,582), semantic-utest-ia (3,781 against 2,689) and mule-tests (2,811
+against 1,833, the ratio of round 294's 2,334 against 1,489).
+
+**On `4c7b549`** (round 297): the full Rust gate (run 41818430634)
+passed; the frozen run (run 41818435912) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 65.2 s against 54.8 s (1.190),
+test bodies 266.4 s against 246.0 s (1.083), in all 1.116, with a
+per-file setup median of 98 ms against 84. The widest body gaps are
+ert-tests (36,759 ms against 33,120), tramp-tests (19,394 against
+16,472), comp-tests (14,786 against 12,486), semantic-utest-ia (3,042
+against 2,214) and mule-tests (2,334 against 1,551). icalendar-tests'
+bodies took 1,098 ms against 371 (round 296's 647 against 412), two
+tests, `icalendar-export-weekly-by-day' (213 ms against 7) and
+`icalendar-import-bug-6766' (113 against 5), holding most of it; the
+file is no slower locally, where the gate builds of rounds 296 and 297
+run its tests in 1.00 to 1.18 s and 0.96 to 1.13 s over two runs each
+(GNU in 0.56 to 0.66).
+
+**On `d18a2bb`** (round 298): the full Rust gate (run 41823287432)
+passed; the frozen run (run 41823292057) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a runner slower than round 297's
+(the oracle's bodies 263.5 s against 246.0). Setup 77.6 s against 63.0 s
+(1.233), test bodies 295.7 s against 263.5 s (1.123), in all 1.124, with
+a per-file setup median of 116 ms against 96. The widest body gaps are
+ert-tests (45,454 ms against 37,489), tramp-tests (22,183 against
+18,457), comp-tests (16,949 against 13,954), semantic-utest-ia (3,944
+against 2,485) and mule-tests (3,075 against 1,960). ert-tests' time is
+`ert-test-run-tests-batch-expensive' (44,394 ms against 36,922), whose
+ratio was 1.065 at round 296 and 1.100 at round 297; run alone outside
+the harness, where it takes some thirty times less, it takes 1.42 to
+1.65 s in round 296's gate build, 1.45 to 1.54 s in round 297's and 1.16
+to 1.30 s in round 299's over two runs each (GNU 1.12 to 1.17), so the
+local runs show no regression. icalendar-tests is back to 636 ms against
+418.
+
+**On `44d155d`** (round 299): the full Rust gate (run 41829405438)
+passed; the frozen run (run 41829410104) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 66.9 s against 56.5 s (1.184),
+test bodies 264.4 s against 250.1 s (1.057), in all 1.088, with a
+per-file setup median of 103 ms against 89. The widest body gaps are
+ert-tests (35,934 ms against 33,091), tramp-tests (18,595 against
+16,069), comp-tests (14,913 against 12,945), semantic-utest-ia (3,007
+against 2,105) and mule-tests (2,343 against 1,536).
+`ert-test-run-tests-batch-expensive' took 35,070 ms against 32,626
+(1.075), so round 298's 1.20 was its runner's. mule-tests' ratio is the
+checked build's: locally the release build runs the file in 20.58G
+instructions and GNU in 21.25G, the gate build in 31.43G, most of the
+excess in the interpreter's cons walks (`eval_sub' 6.15G against the
+release build's 2.54G, `direct_assq_family' 3.37G against 1.06G), each
+dereference asserting its cell is allocated.
+
+**On `8094b53`** (round 300): the full Rust gate (run 41839950969)
+passed; the frozen run (run 41839955907) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a runner as slow as round 298's
+(the oracle's bodies 267.4 s against 250.1 at round 299). Setup 79.2 s
+against 64.3 s (1.233), test bodies 297.6 s against 267.4 s (1.113), in
+all 1.115, with a per-file setup median of 119 ms against 100. The
+widest body gaps are ert-tests (45,617 ms against 37,988), tramp-tests
+(22,607 against 19,064), comp-tests (17,151 against 14,639),
+semantic-utest-ia (3,928 against 2,570) and mule-tests (3,153 against
+1,984). `ert-test-run-tests-batch-expensive' is 1.20 again on this
+runner, as on round 298's, and 1.075 to 1.10 on the faster ones of
+rounds 297 and 299.
+
+**On `85127e8`** (round 301): the full Rust gate (run 41847045584)
+passed; the frozen run (run 41847051990) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a runner slower again (the oracle's
+bodies 274.5 s against 267.4 at round 300). Setup 84.4 s against 69.0 s
+(1.223), test bodies 307.0 s against 274.5 s (1.119), in all 1.124, with
+a per-file setup median of 127 ms against 106. The widest body gaps are
+ert-tests (46,241 ms against 38,397), tramp-tests (23,537 against
+19,706), comp-tests (18,013 against 15,554), semantic-utest-ia (4,205
+against 2,704) and mule-tests (3,201 against 2,051);
+`ert-test-run-tests-batch-expensive' is 1.19 of GNU's time, as on the
+slower runners of rounds 298 and 300.
+
+**On `2044b3e`** (round 302): the full Rust gate (run 41854028856)
+passed; the frozen run (run 41854035430) failed at its first attempt on
+GNU's side alone, the oracle's
+`eglot-test-rust-completion-exit-function' ending in a jsonrpc-error
+where Emaxx's passed (7,927 of 7,928 outcomes matching), and passed at
+its second, 7,928 of 7,928. The two attempts timed the same commit at
+1.065 (setup 75.9 s against 63.5, 1.195; bodies 283.0 s against 269.2,
+1.051) and 1.197 (setup 88.9 s against 60.5, 1.468, a per-file setup
+median of 138 ms against 93; bodies 298.9 s against 259.0, 1.154): the
+spread of the runners. On the second the widest body gaps are ert-tests
+(44,373 ms against 35,817), comp-tests (19,099 against 14,248),
+tramp-tests (20,029 against 16,488), semantic-utest-ia (4,149 against
+2,719) and mule-tests (3,376 against 1,917), and
+`ert-test-run-tests-batch-expensive' is 1.23 of GNU's time.
+
+**On `db23b76`** (round 303): the full Rust gate (run 41866827154)
+passed; the frozen run (run 41866833189) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on the fastest runner in some rounds
+(the oracle's bodies 220.2 s against 259.0 at round 302's second
+attempt). Setup 53.1 s against 44.5 s (1.194), test bodies 231.2 s
+against 220.2 s (1.050), in all 1.058, with a per-file setup median of
+81 ms against 71. The widest body gaps are tramp-tests (14,751 ms
+against 12,952), comp-tests (11,941 against 10,461), ert-tests (28,966
+against 28,090), semantic-utest-ia (2,548 against 1,825) and mule-tests
+(1,918 against 1,267), and `ert-test-run-tests-batch-expensive' is 1.02
+of GNU's time on this runner, against 1.19 to 1.23 on the slow ones.
+
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal
   regions and a middle region of multibyte text moves the middle by its
@@ -16321,16 +16827,17 @@ the runner deciding how much of it shows.
   allocates at the same address (`buffer_before_last_command_or_undo' is
   never cleared), recording that stale point in its first change.
   Neither is reproducible faithfully; the fuzzes exclude them.
-- **A dynamic-binding byte-code call from byte code costs about 100
-  instructions more than GNU's (round 289).** A one-argument recursion
-  takes 763 instructions a call against GNU's 665 (exec_byte_code 375,
-  funcall_lambda 130, unbind_to 65, specbind 48, funcall_general 47):
-  `enter_dynamic_frame' 269, in which the binding's restore record (a
-  104-byte SpecialBindingRestore against specbind's four-word entry) and
-  the unwind list's 64-byte entry are about 40, the return's unbinding
-  172 (`return_unbinding' 119, which tests the frame again after the
-  unbinding, and `unbind_plain' 53) and the loop's own 322. A lexical
-  call takes 388 against GNU's 332.
+- **A dynamic-binding byte-code call from byte code costs about 80
+  instructions more than GNU's (rounds 289 and 295).** A one-argument
+  recursion takes 746 instructions a call against GNU's 665
+  (exec_byte_code 375, funcall_lambda 130, unbind_to 65, specbind 48,
+  funcall_general 47): `enter_dynamic_frame' 266, of which 33 are the
+  stores of the frame's bookkeeping, its backtrace record and the
+  binding's 104-byte record (specbind's entry is four words), the
+  return's unbinding 157 (`return_unbinding' 119, which tests the frame
+  again after the unbinding, and `unbind_plain' 38) and the loop's own
+  324. Round 295's one specpdl took the unwind list's entry away: 763
+  before. A lexical call takes 389 against GNU's 332.
 - **What a fatal signal does in GNU that it does not in Emaxx (rounds
   115 and 285).** A fault the kernel raises in Emaxx's own code (a
   SIGSEGV, SIGBUS, SIGFPE or SIGILL it did not send itself) ends Emacs
@@ -16363,18 +16870,21 @@ the runner deciding how much of it shows.
   bound to a non-list. There is no more of GNU's to follow: an insertion
   into propertized text with the variable bound to 5 makes GNU 30.2 die
   of a segmentation fault (round 256).
-- **A call of `looking-at' costs about 350 instructions more than GNU's
-  around the match (rounds 174 to 176).** `(looking-at "x")' at a
-  failing position costs 1,462 instructions against GNU's 1,116: the
-  buffer snapshot the matcher reads apart from the buffer (about 120:
-  the gap buffer's bytes shared, its positions and the matcher's text
-  and object made from them, where GNU takes BEGV_ADDR and the gap's
-  sizes), reading `case-fold-search' and `parse-sexp-lookup-properties'
-  through their loaded bindings (about 70, where GNU reads a buffer slot
-  and a C variable), the canonicalization table's cache (37), the
-  pooled match state (43), the pattern cell's release (34) and the match
-  environment's drop (21). In format-tests' 709,311 calls that is about
-  250M of its 0.28G excess.
+- **A call of `looking-at' costs about 250 instructions more than GNU's
+  around the match (rounds 174 to 176 and 296).** `(looking-at "x")' at
+  a failing position costs 1,385 instructions against GNU's 1,129: the
+  buffer snapshot the matcher reads apart from the buffer (78 to take
+  it, the gap buffer's bytes shared and its positions read under one
+  borrow, and about 60 more for the matcher's text and object made from
+  them, where GNU takes BEGV_ADDR and the gap's sizes), reading
+  `case-fold-search' and `parse-sexp-lookup-properties' through their
+  loaded bindings (34 each, where GNU reads a buffer slot and a C
+  variable), the canonicalization table's cache (37), the pooled match
+  state (43) and the match environment's drop (21); the pattern cell's
+  release (34) is cheaper than GNU's unbind_to of its frozen pattern
+  (140). `string-match''s own setup takes 276 instructions against
+  string_match_1's 87, spread over the string's text and the argument
+  checks.
 - **`make-symbol' costs about 690 instructions (round 173).** The name
   is copied out of its string and the uninterned symbol registered under
   a counter in the symbol tables, where GNU's Fmake_symbol allocates the
@@ -16408,21 +16918,24 @@ the runner deciding how much of it shows.
   each against the release build's 625, and the interpreter's own
   environment walks (`assq_binding', `environment_declares_special')
   come out of line at another 1.9G.
-- **A call from Rust into byte code costs about 240 instructions more
-  than GNU's (round 167).** `mapatoms' over 18,663 symbols with a
-  byte-compiled callback takes 596 instructions a symbol in the release
-  build against GNU's 435: funcall_closure 241, call_function_value 124,
-  the callee's run_verified 111 and `mapatoms' itself 26, where GNU
-  spends Ffuncall 61, funcall_general 47, funcall_lambda 40 and
-  exec_byte_code 154. The excess is spread over the entry's steps, none
-  more than a few dozen instructions: the frame-entry cache lookup and
-  its epoch checks, the copy of the cached program, the activation's
-  entry marks and their restoring, the frame and argument pushes, the
-  verified loop's frame record, and the backtrace frame and debugger
-  gates around it. It is most of what separates comp-cstr-tests (4.44G
-  against 3.65G; its 3.85M `mapatoms' callbacks), edebug-tests (4.78G
-  against 4.11G) and em-pred-tests (2.83G against 2.53G; 937K byte-code
-  callbacks) from GNU.
+- **A call from Rust into byte code costs about 120 instructions more
+  than GNU's (rounds 167 and 297).** `mapatoms' with a byte-compiled
+  callback takes 502 instructions a symbol in the release build over its
+  17,832 symbols against GNU's 382 over 18,155, and `maphash' 522 an
+  entry against 397: funcall_closure 210 and call_function_value 118
+  around the callee's run_verified 139 and `mapatoms' itself 23, where
+  GNU spends Ffuncall 61, funcall_general 42 and funcall_lambda 40
+  around exec_byte_code 200. The excess is spread over the entry's
+  steps, none more than a dozen instructions: the frame-entry cache
+  lookup and its epoch checks, the copy of the cached program, the
+  activation's entry marks and their restoring, the frame and argument
+  pushes, the verified loop's frame record, and the backtrace frame and
+  debugger gates around it. It is most of what separated comp-cstr-tests
+  (4.44G against 3.65G at round 167; its 3.85M `mapatoms' callbacks),
+  edebug-tests (4.78G against 4.11G) and em-pred-tests (2.83G against
+  2.53G; 937K byte-code callbacks) from GNU, and of comp-tests'
+  `ret-type-spec' tests' excess (one takes 138M instructions against
+  111M, 137K of them `mapatoms' callbacks).
 - **comp-tests' time is the instruction rate (round 166).** In the
   release build a `comp-tests-ret-type-spec-*' test takes about 330 ms
   of wall time against GNU's 267 ms and a third more user time, but

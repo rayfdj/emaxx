@@ -157,8 +157,8 @@ impl TraceLispRoots for WindowConfigurationSnapshot {
 
 impl TraceLispRoots for SpecialBindingRestore {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
-        if let Some(value) = &self.previous {
-            marker.value(value);
+        if let Some(value) = self.previous() {
+            marker.value(&value);
         }
     }
 }

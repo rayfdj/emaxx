@@ -486,7 +486,7 @@ fn text_conversion_buffer_fields_preserve_flags_sharing_and_cycles_in_images() {
             source
                 .buffer_local_cells(id)
                 .iter()
-                .all(|(name, _)| name != "text-conversion-style"),
+                .all(|(name, _)| !name.is_named("text-conversion-style")),
             "the native field has no duplicate local payload; unrelated locals remain"
         );
     }
@@ -805,7 +805,12 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
         .filter(|symbol| symbol.symbol.as_str().starts_with("gensym"))
         .count();
     assert_eq!(gensyms, 1);
-    assert!(image.symbols.iter().any(|symbol| symbol.symbol == "car"));
+    assert!(
+        image
+            .symbols
+            .iter()
+            .any(|symbol| symbol.symbol.is_named("car"))
+    );
 }
 
 #[test]
@@ -847,7 +852,7 @@ fn image_records_symbol_cells_from_the_interpreter() {
         image
             .symbols
             .iter()
-            .find(|symbol| symbol.symbol == name)
+            .find(|symbol| symbol.symbol.is_named(name))
             .unwrap_or_else(|| panic!("no record for {name}"))
             .clone()
     };
@@ -862,7 +867,10 @@ fn image_records_symbol_cells_from_the_interpreter() {
         .expect("the root list");
     let mapped = |index: usize, name: &str| {
         assert!(
-            image.symbols.iter().all(|symbol| symbol.symbol != name),
+            image
+                .symbols
+                .iter()
+                .all(|symbol| !symbol.symbol.is_named(name)),
             "{name} is mapped, not a record"
         );
         assert_eq!(loaded[index], Value::symbol(name), "{name} is interned");
@@ -1937,18 +1945,20 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         "the always-local slots, deactivate-mark, zz-dump-local: {locals:?}"
     );
     assert!(
-        locals.iter().any(|(symbol, value)| symbol == "mode-name"
-            && printed(&mut target, value) == "\"Fundamental\"")
+        locals
+            .iter()
+            .any(|(symbol, value)| symbol.is_named("mode-name")
+                && printed(&mut target, value) == "\"Fundamental\"")
     );
     assert!(
         locals
             .iter()
-            .any(|(symbol, value)| symbol == "deactivate-mark" && *value == Value::T)
+            .any(|(symbol, value)| symbol.is_named("deactivate-mark") && *value == Value::T)
     );
     assert!(
         locals
             .iter()
-            .any(|(symbol, value)| symbol == "zz-dump-local" && *value == Value::Integer(42))
+            .any(|(symbol, value)| symbol.is_named("zz-dump-local") && *value == Value::Integer(42))
     );
     let loaded_syntax_table = target
         .buffer_syntax_table_id(source_id)
@@ -1978,12 +1988,16 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         printed(&mut target, &Value::CharTable(loaded_category_table)),
         source_category
     );
-    assert!(!locals.iter().any(|(symbol, _)| symbol == "category-table"));
+    assert!(
+        !locals
+            .iter()
+            .any(|(symbol, _)| symbol.is_named("category-table"))
+    );
     // BVAR (b, keymap) likewise.
     assert!(
         !locals
             .iter()
-            .any(|(symbol, _)| symbol == "current-local-map")
+            .any(|(symbol, _)| symbol.is_named("current-local-map"))
     );
     let loaded_keymap = target
         .buffer_object(source_id)

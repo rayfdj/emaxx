@@ -1877,8 +1877,8 @@ fn process_connection_endpoint_uses_pty(
 ) -> Result<bool, LispError> {
     match value.kind() {
         Kind::Nil => Ok(default_pty),
-        Kind::Symbol(name) if name == "pty" => Ok(true),
-        Kind::Symbol(name) if name == "pipe" => Ok(false),
+        Kind::Symbol(name) if name.is_named("pty") => Ok(true),
+        Kind::Symbol(name) if name.is_named("pipe") => Ok(false),
         _ => Err(LispError::Signal(format!(
             "Unknown connection type: {value}"
         ))),
@@ -2180,7 +2180,7 @@ pub(crate) fn parse_make_process_args(
         args.as_chunks::<2>()
             .0
             .iter()
-            .find(|pair| matches!(pair[0].kind(), Kind::Symbol(key) if key == keyword))
+            .find(|pair| matches!(pair[0].kind(), Kind::Symbol(key) if key.is_named(keyword)))
             .map(|pair| pair[1])
     };
     // process.c:get_required_string_keyword_param for :name, after the
@@ -3768,7 +3768,7 @@ pub(crate) fn make_network_process(
             ":server" => is_server = value.is_truthy(),
             ":type" => match value.kind() {
                 Kind::Nil => datagram = false,
-                Kind::Symbol(kind) if kind == "datagram" => datagram = true,
+                Kind::Symbol(kind) if kind.is_named("datagram") => datagram = true,
                 _ => return Err(LispError::Signal("Unsupported connection type".into())),
             },
             ":nowait" => nowait = value.is_truthy(),
@@ -3780,14 +3780,17 @@ pub(crate) fn make_network_process(
                 tls_parameters = *value;
             }
             ":family" => {
-                family_local = matches!(value.kind(), Kind::Symbol(symbol) if symbol == "local");
-                family_ipv4 = matches!(value.kind(), Kind::Symbol(symbol) if symbol == "ipv4");
-                family_ipv6 = matches!(value.kind(), Kind::Symbol(symbol) if symbol == "ipv6");
+                family_local =
+                    matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("local"));
+                family_ipv4 =
+                    matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("ipv4"));
+                family_ipv6 =
+                    matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("ipv6"));
             }
             ":host" => {
                 host = match value.kind() {
                     Kind::Nil => None,
-                    Kind::Symbol(symbol) if symbol == "local" => {
+                    Kind::Symbol(symbol) if symbol.is_named("local") => {
                         host_local = true;
                         None
                     }
@@ -4177,8 +4180,8 @@ fn serial_data_bits(value: &Value) -> Result<serialport::DataBits, LispError> {
 fn serial_parity(interp: &Interpreter, value: &Value) -> Result<serialport::Parity, LispError> {
     match value.kind() {
         Kind::Nil => Ok(serialport::Parity::None),
-        Kind::Symbol(symbol) if symbol == "even" => Ok(serialport::Parity::Even),
-        Kind::Symbol(symbol) if symbol == "odd" => Ok(serialport::Parity::Odd),
+        Kind::Symbol(symbol) if symbol.is_named("even") => Ok(serialport::Parity::Even),
+        Kind::Symbol(symbol) if symbol.is_named("odd") => Ok(serialport::Parity::Odd),
         _ => Err(crate::lisp::primitives::values::doprnt_error(
             interp,
             ":parity must be nil (no parity), `even', or `odd'",
@@ -4203,8 +4206,8 @@ fn serial_flow_control(
 ) -> Result<serialport::FlowControl, LispError> {
     match value.kind() {
         Kind::Nil => Ok(serialport::FlowControl::None),
-        Kind::Symbol(symbol) if symbol == "hw" => Ok(serialport::FlowControl::Hardware),
-        Kind::Symbol(symbol) if symbol == "sw" => Ok(serialport::FlowControl::Software),
+        Kind::Symbol(symbol) if symbol.is_named("hw") => Ok(serialport::FlowControl::Hardware),
+        Kind::Symbol(symbol) if symbol.is_named("sw") => Ok(serialport::FlowControl::Software),
         _ => Err(crate::lisp::primitives::values::doprnt_error(
             interp,
             ":flowcontrol must be nil (no flowcontrol), `hw', or `sw'",
@@ -4255,8 +4258,8 @@ fn serial_configuration(
     plist_items_put(&mut contact_items, ":stopbits", stopbits);
     plist_items_put(&mut contact_items, ":flowcontrol", flowcontrol);
     let parity_summary = match parity.kind() {
-        Kind::Symbol(symbol) if symbol == "even" => 'E',
-        Kind::Symbol(symbol) if symbol == "odd" => 'O',
+        Kind::Symbol(symbol) if symbol.is_named("even") => 'E',
+        Kind::Symbol(symbol) if symbol.is_named("odd") => 'O',
         _ => 'N',
     };
     plist_items_put(

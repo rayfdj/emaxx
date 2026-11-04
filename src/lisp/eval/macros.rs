@@ -78,6 +78,10 @@ impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
     fn read_circle(&mut self) -> bool {
         self.interp.read_circle(self.env)
     }
+
+    fn unescaped_character_literal(&mut self, character: u8) -> Result<(), LispError> {
+        crate::lisp::primitives::note_unescaped_character_literal(self.interp, character, self.env)
+    }
 }
 
 impl Interpreter {
@@ -389,7 +393,8 @@ impl Interpreter {
         let name = crate::lisp::primitives::checked_symbol_name(self, &args[0], env)?;
         let mut function = args[1];
         let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
-        self.validate_function_binding(&name, &function)?;
+        // No cycle check here: data.c:defalias leaves it to Ffset, which
+        // a `defalias-fset-function' (advice's) takes the store from.
         if self
             .lookup_var("purify-flag", env)
             .is_some_and(|value| value.is_truthy())
@@ -402,7 +407,7 @@ impl Interpreter {
         // (loaddefs.el's would fill the image's `load-history').
         let autoload = matches!(
             function.cons_values().map(|(head, _)| head.kind()),
-            Some(Kind::Symbol(head)) if head == "autoload"
+            Some(Kind::Symbol(head)) if head.is_named("autoload")
         );
         if !autoload || !self.will_dump(env) {
             self.record_definition_in_load_history("defun", &name);
@@ -557,7 +562,7 @@ impl Interpreter {
             // GNU reads (macro . EXPANDER) from the current function cell.
             // Direct/native stores must be visible without notifying a
             // per-name cache. Resolve once, including symbol aliases.
-            if matches!(head.kind(), Kind::Symbol(name) if name == "macro") {
+            if matches!(head.kind(), Kind::Symbol(name) if name.is_named("macro")) {
                 let expanded = self.with_macro_lexical_binding(caller, env, |interp, env| {
                     interp.call_expander(expander, name, args, env)
                 })?;
@@ -565,7 +570,7 @@ impl Interpreter {
             }
 
             if attempted_autoload
-                || !matches!(head.kind(), Kind::Symbol(name) if name == "autoload")
+                || !matches!(head.kind(), Kind::Symbol(name) if name.is_named("autoload"))
             {
                 return Ok(None);
             }
@@ -597,7 +602,7 @@ impl Interpreter {
         };
         Ok(self
             .try_macroexpand_with_environment(
-                &name,
+                name.as_str(),
                 &items[1..],
                 macro_environment,
                 MacroCaller::Macroexpand,

@@ -475,7 +475,7 @@ define_dispatch!(
                 let Kind::NativeFunction(trampoline) = args[1].kind() else {
                     return Err(wrong_type_argument("subrp", args[1]));
                 };
-                let original = interp.lookup_function(&symbol, env)?;
+                let original = interp.lookup_function_symbol(&symbol, env)?;
                 let Kind::BuiltinFunc(original_name) = original.kind() else {
                     return Err(wrong_type_argument("subrp", original));
                 };

@@ -153,6 +153,7 @@ impl SymbolCells {
         symbol.cell().take_value()
     }
 
+    #[cfg(test)]
     pub(crate) fn remove_by_name(&mut self, name: &str) -> Option<Value> {
         self.remove(&SymbolName::find(name)?)
     }
@@ -174,53 +175,25 @@ impl SymbolCells {
         (!function.is_nil()).then_some(function)
     }
 
+    /// The function cell's store, `set_symbol_function': defsubr's subr and
+    /// a Lisp `fset' alike, nil for none.
     pub(crate) fn set_function(&mut self, symbol: &SymbolName, function: Option<Value>) {
-        let value = function.unwrap_or(Value::Nil);
-        symbol.cell().function.set(value);
-        if value.is_nil() {
-            symbol.cell().set_function_definition(false);
-        }
+        symbol.cell().function.set(function.unwrap_or(Value::Nil));
     }
 
-    /// Preserve the startup adapter's distinction between defsubr and a Lisp
-    /// installation in the existing state byte, without an id-table probe.
-    pub(crate) fn set_function_definition(&mut self, symbol: &SymbolName, function: Option<Value>) {
-        self.set_function(symbol, function);
-        symbol
-            .cell()
-            .set_function_definition(self.function(symbol).is_some());
+    /// The function cell of the symbol named NAME, if there is one and it
+    /// is not nil (Ffboundp of an interned name).
+    pub(crate) fn function_by_name(&self, name: &str) -> Option<Value> {
+        self.function(&SymbolName::find(name)?)
     }
 
-    pub(crate) fn has_function_definition(&self, symbol: &SymbolName) -> bool {
-        symbol.cell().has_function_definition()
-    }
-
-    pub(crate) fn function_definition_by_name(&self, name: &str) -> Option<Value> {
-        let symbol = SymbolName::find(name)?;
-        self.has_function_definition(&symbol)
-            .then(|| self.function(&symbol))
-            .flatten()
-    }
-
+    /// The symbols of the owner's obarray whose function cell is not nil,
+    /// with that cell, in obarray order.
     #[cfg(test)]
-    pub(crate) fn function_definitions_len(&self) -> usize {
-        self.function_definitions().count()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn function_definitions(&self) -> impl Iterator<Item = (SymbolName, Value)> + '_ {
-        self.names().into_iter().filter_map(|symbol| {
-            self.has_function_definition(&symbol)
-                .then(|| self.function(&symbol).map(|function| (symbol, function)))
-                .flatten()
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn function_values(&self) -> impl Iterator<Item = Value> + '_ {
+    pub(crate) fn functions(&self) -> impl Iterator<Item = (SymbolName, Value)> + '_ {
         self.names()
             .into_iter()
-            .filter_map(|symbol| self.function(&symbol))
+            .filter_map(|symbol| self.function(&symbol).map(|function| (symbol, function)))
     }
 
     pub(crate) fn plist(&self, symbol: &SymbolName) -> Value {
@@ -416,14 +389,14 @@ mod tests {
         let function = Value::vector([Value::Integer(23)]);
         let plist = Value::list([Value::symbol("payload"), Value::Integer(29)]);
         cells.insert(&symbol, old_value);
-        cells.set_function_definition(&symbol, Some(function));
-        assert!(cells.has_function_definition(&symbol));
+        cells.set_function(&symbol, Some(function));
+        assert_eq!(cells.function(&symbol), Some(function));
         symbol.cell().set_c_slot(false);
         cells.set_plist(&symbol, plist);
         cells.set_plain_store(&symbol, true);
         cells.set_alias(&symbol, first);
         assert!(!cells.plain_store(&symbol));
-        assert!(cells.has_function_definition(&symbol));
+        assert_eq!(cells.function(&symbol), Some(function));
         assert!(!symbol.cell().has_c_slot());
         assert!(cells.snapshot(&symbol).value.is_none());
         assert_eq!(cells.snapshot(&symbol).alias, Some(first));
@@ -461,7 +434,6 @@ mod tests {
         assert_eq!(cells.bound_len(), 1);
         assert_eq!(cells.aliases_len(), 0);
         assert_eq!(cells.function(&symbol), Some(function));
-        assert!(cells.has_function_definition(&symbol));
         assert!(!symbol.cell().has_c_slot());
         assert_eq!(cells.plist(&symbol), plist);
         assert_eq!(
@@ -483,11 +455,11 @@ mod tests {
         cells.insert(&symbol, Value::Nil);
         assert_eq!(cells.value(&symbol), Some(Value::Nil));
         assert_eq!(cells.bound_len(), 1);
-        cells.set_function_definition(&symbol, Some(Value::T));
+        cells.set_function(&symbol, Some(Value::T));
         assert_eq!(cells.function(&symbol), Some(Value::T));
-        cells.set_function_definition(&symbol, Some(Value::Nil));
+        cells.set_function(&symbol, Some(Value::Nil));
         assert!(cells.function(&symbol).is_none());
-        assert_eq!(cells.function_definitions_len(), 0);
+        assert_eq!(cells.functions().count(), 0);
         // The current localized-value adapter can install an explicitly
         // void default; keep it distinct from an absent binding until
         // that adapter is removed, including through the image snapshot.
@@ -580,59 +552,55 @@ mod tests {
             "function-order-third",
         ]
         .map(SymbolName::intern_str);
+        // defsubr's subr and a Lisp `fset' are one store of the cell.
         let direct = SymbolName::intern_str("function-order-direct");
         cells.set_function(&direct, Some(Value::Integer(71)));
-        assert_eq!(cells.function_definitions_len(), 0);
+        assert_eq!(cells.functions().count(), 1);
         assert_eq!(cells.function(&direct), Some(Value::Integer(71)));
         for (index, symbol) in symbols.iter().enumerate() {
-            cells.set_function_definition(symbol, Some(Value::Integer(index as i64)));
+            cells.set_function(symbol, Some(Value::Integer(index as i64)));
         }
-        cells.set_function_definition(&symbols[0], Some(Value::Integer(17)));
-        cells.set_function_definition(&symbols[1], Some(Value::Nil));
-        assert!(!cells.has_function_definition(&symbols[1]));
+        cells.set_function(&symbols[0], Some(Value::Integer(17)));
+        cells.set_function(&symbols[1], Some(Value::Nil));
         assert!(cells.function(&symbols[1]).is_none());
-        cells.set_function_definition(&symbols[1], Some(Value::Integer(43)));
+        cells.set_function(&symbols[1], Some(Value::Integer(43)));
         let transient = SymbolName::intern_str("function-order-transient");
         let owner_count = cells.names_len();
         let order = cells
-            .function_definitions()
+            .functions()
             .map(|(symbol, _)| symbol)
             .collect::<Vec<_>>();
         for index in 0..3000 {
-            cells.set_function_definition(&transient, Some(Value::Integer(index)));
-            cells.set_function_definition(&transient, None);
+            cells.set_function(&transient, Some(Value::Integer(index)));
+            cells.set_function(&transient, None);
         }
-        assert_eq!(cells.function_definitions_len(), 3);
+        assert_eq!(cells.functions().count(), 4);
         assert_eq!(cells.names_len(), owner_count);
         assert_eq!(
             cells
-                .function_definitions()
+                .functions()
                 .map(|(symbol, _)| symbol)
                 .collect::<Vec<_>>(),
             order
         );
         for (symbol, value) in [
-            (symbols[0], Value::Integer(17)),
-            (symbols[2], Value::Integer(2)),
-            (symbols[1], Value::Integer(43)),
+            (symbols[0], 17),
+            (symbols[2], 2),
+            (symbols[1], 43),
+            (direct, 71),
         ] {
             assert!(
                 cells
-                    .function_definitions()
-                    .any(|entry| entry == (symbol, value))
+                    .functions()
+                    .any(|entry| entry == (symbol, Value::Integer(value)))
             );
         }
-        // A direct void store also retires an enumeration entry. Repeating
-        // it must not decrement the live count or revive an older slot.
+        // A void store retires an enumeration entry, and repeating it
+        // changes nothing.
         cells.set_function(&symbols[0], None);
         cells.set_function(&symbols[0], None);
-        assert_eq!(cells.function_definitions_len(), 2);
-        assert_eq!(cells.function_values().count(), 3);
-        assert!(
-            cells
-                .function_definition_by_name(symbols[0].as_str())
-                .is_none()
-        );
+        assert_eq!(cells.functions().count(), 3);
+        assert!(cells.function_by_name(symbols[0].as_str()).is_none());
     }
 
     #[test]

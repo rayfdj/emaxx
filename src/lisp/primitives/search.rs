@@ -1040,35 +1040,21 @@ impl SnapshotRange<'_> {
 }
 
 impl BufferSnapshot {
+    #[inline]
     fn take(interp: &Interpreter) -> Self {
-        let buffer = interp.buffer.borrow();
-        let text = buffer.scan_text();
-        let (begv, zv, point) = (buffer.point_min(), buffer.point_max(), buffer.point());
-        let ascii = text.is_ascii();
-        // An ASCII text's bytes are its characters; otherwise the buffer's
-        // conversions, which know its ends, the gap and the positions
-        // converted since its last edit before them.
-        let byte = |pos: usize| {
-            if ascii {
-                return pos - 1;
-            }
-            buffer
-                .storage_byte_position(pos)
-                .expect("an accessible position")
-                - 1
-        };
+        let view = interp.buffer.borrow().match_view();
         BufferSnapshot {
-            begv,
-            begv_byte: byte(begv),
-            zv,
-            zv_byte: byte(zv),
-            point,
-            point_byte: byte(point),
-            multibyte: buffer.is_multibyte(),
-            side: buffer.has_extended_chars_in(begv, zv),
-            ascii,
-            tick: buffer.chars_modified_tick(),
-            text,
+            begv: view.begv,
+            begv_byte: view.begv_byte,
+            zv: view.zv,
+            zv_byte: view.zv_byte,
+            point: view.point,
+            point_byte: view.point_byte,
+            multibyte: view.multibyte,
+            side: view.side,
+            ascii: view.ascii,
+            tick: view.tick,
+            text: view.text,
         }
     }
 
@@ -1079,12 +1065,6 @@ impl BufferSnapshot {
             parts: crate::lisp::regex_emacs::GapRange::new(first, second),
             chars: self.zv - self.begv,
         }
-    }
-
-    /// The matcher's text for this snapshot's accessible text.
-    fn matcher_text(&self) -> Text<'_> {
-        Text::from_gap(self.range().parts, self.multibyte, self.side)
-            .with_latin1_bytes(!self.multibyte && !self.ascii)
     }
 
     /// The char and byte offsets the snapshot knows: point's and the
@@ -1147,16 +1127,23 @@ impl BufferSnapshot {
             .unwrap_or_else(|| self.position(offset))
     }
 
-    /// The matcher's object for this snapshot's text.
-    fn object(&self) -> Object<'_> {
+    /// The matcher's text for this snapshot's accessible text, its object
+    /// and point's offset in it, as looking_at_1 takes BEGV_ADDR, the
+    /// gap's sizes and PT_BYTE once.
+    #[inline]
+    fn matcher_parts(&self) -> (Text<'_>, Object<'_>, usize) {
+        let range = self.range();
         let point = self.offset(self.point);
-        Object::Buffer {
-            text: self.range(),
+        let text = Text::from_gap(range.parts, self.multibyte, self.side)
+            .with_latin1_bytes(!self.multibyte && !self.ascii);
+        let object = Object::Buffer {
+            text: range,
             begv: self.begv,
             point,
             ascii: self.ascii,
             known: Cell::new((point, self.point - self.begv)),
-        }
+        };
+        (text, object, point)
     }
 }
 
@@ -1313,27 +1300,28 @@ pub(super) fn looking_at_1(
         .then(|| interp.current_case_tables().canon);
     let buffer_id = interp.current_buffer_id();
     let snapshot = BufferSnapshot::take(interp);
-    let mut menv = LispMatchEnv::new(interp, env, case_table);
-    let mut entry = compile_pattern(&mut menv, regexp, posix)?;
-    // Do a pending quit right away, to avoid paradoxical behavior.
-    if let Err(error) = menv.maybe_quit() {
-        release_pattern(entry);
-        return Err(error);
-    }
-    let text = snapshot.matcher_text();
-    menv.object = snapshot.object();
-    let pos = snapshot.offset(snapshot.point);
-    let mut registers = take_registers(menv.interp, modify_match_data);
-    let result = rx::re_match(
-        &mut entry.pattern,
-        &text,
-        pos,
-        text.len(),
-        registers.as_mut(),
-        &mut menv,
-    );
-    let pending = menv.error.take();
-    drop(menv);
+    // The environment ends with its block, dropped where it lies.
+    let (entry, registers, result, pending) = {
+        let mut menv = LispMatchEnv::new(interp, env, case_table);
+        let mut entry = compile_pattern(&mut menv, regexp, posix)?;
+        // Do a pending quit right away, to avoid paradoxical behavior.
+        if let Err(error) = menv.maybe_quit() {
+            release_pattern(entry);
+            return Err(error);
+        }
+        let (text, object, pos) = snapshot.matcher_parts();
+        menv.object = object;
+        let mut registers = take_registers(menv.interp, modify_match_data);
+        let result = rx::re_match(
+            &mut entry.pattern,
+            &text,
+            pos,
+            text.len(),
+            registers.as_mut(),
+            &mut menv,
+        );
+        (entry, registers, result, menv.error.take())
+    };
     release_pattern(entry);
     let found = match (pending, result.map_err(match_error)) {
         (Some(error), _) | (None, Err(error)) => Err(error),
@@ -1403,25 +1391,27 @@ pub(super) fn string_match_1(
         !string_text.extended().is_empty(),
     );
 
-    let mut menv = LispMatchEnv::new(interp, env, case_table);
-    let mut entry = compile_pattern(&mut menv, regexp, posix)?;
-    menv.object = Object::String {
-        text: haystack,
-        extended: string_text.extended(),
-        in_place: string_text.in_place(),
-        string: Some(*string),
+    let (entry, registers, result) = {
+        let mut menv = LispMatchEnv::new(interp, env, case_table);
+        let mut entry = compile_pattern(&mut menv, regexp, posix)?;
+        menv.object = Object::String {
+            text: haystack,
+            extended: string_text.extended(),
+            in_place: string_text.in_place(),
+            string: Some(*string),
+        };
+        let mut registers = take_registers(menv.interp, modify_match_data);
+        let result = rx::re_search(
+            &mut entry.pattern,
+            &text,
+            pos_byte,
+            (text.len() - pos_byte) as isize,
+            text.len(),
+            registers.as_mut(),
+            &mut menv,
+        );
+        (entry, registers, result)
     };
-    let mut registers = take_registers(menv.interp, modify_match_data);
-    let result = rx::re_search(
-        &mut entry.pattern,
-        &text,
-        pos_byte,
-        (text.len() - pos_byte) as isize,
-        text.len(),
-        registers.as_mut(),
-        &mut menv,
-    );
-    drop(menv);
     release_pattern(entry);
     let to_char = |offset: usize| {
         if ascii {
@@ -1590,64 +1580,66 @@ fn search_buffer_re(
         .case_fold_search_active()
         .then(|| interp.current_case_tables().canon);
     let snapshot = BufferSnapshot::take(interp);
-    let mut menv = LispMatchEnv::new(interp, env, case_table);
-    let mut entry = compile_pattern(&mut menv, regexp, posix)?;
-    let text = snapshot.matcher_text();
-    menv.object = snapshot.object();
-    let lim_byte = snapshot.offset(lim);
-    let mut pos_byte = snapshot.offset(pos);
-    // search_regs, or search_regs_1 when the match data is to stay: each
-    // match needs its group 0 to go on from.
-    let mut registers = std::mem::take(&mut menv.interp.search_registers);
-    let mut found_any = false;
+    // The environment ends with its block, dropped where it lies.
+    let (entry, registers, found_any, outcome, pending) = {
+        let mut menv = LispMatchEnv::new(interp, env, case_table);
+        let mut entry = compile_pattern(&mut menv, regexp, posix)?;
+        let (text, object, _) = snapshot.matcher_parts();
+        menv.object = object;
+        let lim_byte = snapshot.offset(lim);
+        let mut pos_byte = snapshot.offset(pos);
+        // search_regs, or search_regs_1 when the match data is to stay: each
+        // match needs its group 0 to go on from.
+        let mut registers = std::mem::take(&mut menv.interp.search_registers);
+        let mut found_any = false;
 
-    // The count left, or (every match found) the last match's end, to
-    // convert once the matching is done.
-    let outcome = (|| -> Result<Result<i64, usize>, LispError> {
-        menv.maybe_quit()?;
-        while n < 0 {
-            let found = rx::re_search(
-                &mut entry.pattern,
-                &text,
-                pos_byte,
-                lim_byte as isize - pos_byte as isize,
-                // Don't allow a match past the current point.
-                pos_byte,
-                Some(&mut registers),
-                &mut menv,
-            )
-            .map_err(match_error)?;
-            if found.is_none() {
-                return Ok(Ok(n));
-            }
-            pos_byte = registers.regs[0].expect("group 0").0;
-            found_any = true;
-            n += 1;
+        // The count left, or (every match found) the last match's end, to
+        // convert once the matching is done.
+        let outcome = (|| -> Result<Result<i64, usize>, LispError> {
             menv.maybe_quit()?;
-        }
-        while n > 0 {
-            let found = rx::re_search(
-                &mut entry.pattern,
-                &text,
-                pos_byte,
-                lim_byte as isize - pos_byte as isize,
-                lim_byte,
-                Some(&mut registers),
-                &mut menv,
-            )
-            .map_err(match_error)?;
-            if found.is_none() {
-                return Ok(Ok(-n));
+            while n < 0 {
+                let found = rx::re_search(
+                    &mut entry.pattern,
+                    &text,
+                    pos_byte,
+                    lim_byte as isize - pos_byte as isize,
+                    // Don't allow a match past the current point.
+                    pos_byte,
+                    Some(&mut registers),
+                    &mut menv,
+                )
+                .map_err(match_error)?;
+                if found.is_none() {
+                    return Ok(Ok(n));
+                }
+                pos_byte = registers.regs[0].expect("group 0").0;
+                found_any = true;
+                n += 1;
+                menv.maybe_quit()?;
             }
-            pos_byte = registers.regs[0].expect("group 0").1;
-            found_any = true;
-            n -= 1;
-            menv.maybe_quit()?;
-        }
-        Ok(Err(pos_byte))
-    })();
-    let pending = menv.error.take();
-    drop(menv);
+            while n > 0 {
+                let found = rx::re_search(
+                    &mut entry.pattern,
+                    &text,
+                    pos_byte,
+                    lim_byte as isize - pos_byte as isize,
+                    lim_byte,
+                    Some(&mut registers),
+                    &mut menv,
+                )
+                .map_err(match_error)?;
+                if found.is_none() {
+                    return Ok(Ok(-n));
+                }
+                pos_byte = registers.regs[0].expect("group 0").1;
+                found_any = true;
+                n -= 1;
+                menv.maybe_quit()?;
+            }
+            Ok(Err(pos_byte))
+        })();
+        (entry, registers, found_any, outcome, menv.error.take())
+    };
     release_pattern(entry);
     // Each match found updated the match data, the last one standing.
     if preserve_match_data && found_any {
@@ -1772,24 +1764,26 @@ fn text_match(
     signal_overflow: bool,
 ) -> Result<Option<usize>, LispError> {
     let text = Text::from_str(haystack, multibyte, !extended.is_empty());
-    let mut menv = LispMatchEnv::new(interp, env, case_table);
-    let mut entry = compile_pattern(&mut menv, regexp, false)?;
-    menv.object = Object::String {
-        text: haystack,
-        extended,
-        in_place,
-        string,
+    let (entry, result) = {
+        let mut menv = LispMatchEnv::new(interp, env, case_table);
+        let mut entry = compile_pattern(&mut menv, regexp, false)?;
+        menv.object = Object::String {
+            text: haystack,
+            extended,
+            in_place,
+            string,
+        };
+        let result = rx::re_search(
+            &mut entry.pattern,
+            &text,
+            0,
+            text.len() as isize,
+            text.len(),
+            None,
+            &mut menv,
+        );
+        (entry, result)
     };
-    let result = rx::re_search(
-        &mut entry.pattern,
-        &text,
-        0,
-        text.len() as isize,
-        text.len(),
-        None,
-        &mut menv,
-    );
-    drop(menv);
     release_pattern(entry);
     let start = match result {
         Ok(Some(start)) => start,
@@ -2199,20 +2193,22 @@ pub(crate) fn fast_looking_at(
 ) -> Result<Option<usize>, LispError> {
     if string.is_nil() {
         let snapshot = BufferSnapshot::take(interp);
-        let text = snapshot.matcher_text();
-        let mut menv = LispMatchEnv::new(interp, env, None);
-        let mut entry = compile_pattern(&mut menv, regexp, false)?;
-        menv.object = snapshot.object();
-        let start = snapshot.offset(pos);
-        let result = rx::re_match(
-            &mut entry.pattern,
-            &text,
-            start,
-            snapshot.offset(limit),
-            None,
-            &mut menv,
-        );
-        drop(menv);
+        let (entry, result) = {
+            let (text, object, _) = snapshot.matcher_parts();
+            let mut menv = LispMatchEnv::new(interp, env, None);
+            let mut entry = compile_pattern(&mut menv, regexp, false)?;
+            menv.object = object;
+            let start = snapshot.offset(pos);
+            let result = rx::re_match(
+                &mut entry.pattern,
+                &text,
+                start,
+                snapshot.offset(limit),
+                None,
+                &mut menv,
+            );
+            (entry, result)
+        };
         release_pattern(entry);
         let Some(end) = result.map_err(match_error)? else {
             return Ok(None);
@@ -2233,23 +2229,25 @@ pub(crate) fn fast_looking_at(
         }
     };
     let text = Text::from_str(haystack, multibyte, !string_text.extended().is_empty());
-    let mut menv = LispMatchEnv::new(interp, env, None);
-    let mut entry = compile_pattern(&mut menv, regexp, false)?;
-    menv.object = Object::String {
-        text: haystack,
-        extended: string_text.extended(),
-        in_place: string_text.in_place(),
-        string: Some(*string),
+    let (entry, result) = {
+        let mut menv = LispMatchEnv::new(interp, env, None);
+        let mut entry = compile_pattern(&mut menv, regexp, false)?;
+        menv.object = Object::String {
+            text: haystack,
+            extended: string_text.extended(),
+            in_place: string_text.in_place(),
+            string: Some(*string),
+        };
+        let result = rx::re_match(
+            &mut entry.pattern,
+            &text,
+            byte(pos),
+            byte(limit),
+            None,
+            &mut menv,
+        );
+        (entry, result)
     };
-    let result = rx::re_match(
-        &mut entry.pattern,
-        &text,
-        byte(pos),
-        byte(limit),
-        None,
-        &mut menv,
-    );
-    drop(menv);
     release_pattern(entry);
     let Some(end) = result.map_err(match_error)? else {
         return Ok(None);

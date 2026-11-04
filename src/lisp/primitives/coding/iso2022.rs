@@ -136,7 +136,7 @@ fn make_iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAttribut
         })
         .collect();
     let full_support =
-        matches!(state.charset_list.kind(), Kind::Symbol(name) if name == "iso-2022");
+        matches!(state.charset_list.kind(), Kind::Symbol(name) if name.is_named("iso-2022"));
     let flags = args
         .get(3)
         .and_then(|flags| flags.integer_value())

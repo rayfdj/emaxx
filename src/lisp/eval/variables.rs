@@ -733,7 +733,11 @@ impl Interpreter {
     /// local carries `Value::Unbound'.
     #[cfg(test)]
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
-        let mut values = self.buffer_alist_local_variables(buffer_id);
+        let mut values = self
+            .buffer_alist_local_variables(buffer_id)
+            .into_iter()
+            .map(|(symbol, value)| (symbol.as_str().to_owned(), value))
+            .collect::<Vec<_>>();
         if let Some(style) = self.text_conversion_style_slot(buffer_id) {
             values.insert(0, ("text-conversion-style".into(), style));
         }
@@ -743,13 +747,13 @@ impl Interpreter {
     /// The cells of BUFFER_ID's local_var_alist and the slots kept with
     /// them, in first-binding order, without the `text-conversion-style'
     /// field.
-    pub(crate) fn buffer_alist_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
+    pub(crate) fn buffer_alist_local_variables(&self, buffer_id: u64) -> Vec<(SymbolName, Value)> {
         self.buffer_locals
             .get(&buffer_id)
             .map(|locals| {
                 locals
                     .iter()
-                    .map(|(name, value)| (name.as_str().to_owned(), value))
+                    .map(|(symbol, value)| (*symbol, value))
                     .collect()
             })
             .unwrap_or_default()
@@ -771,6 +775,11 @@ impl Interpreter {
     pub fn mark_auto_buffer_local(&mut self, name: &str) {
         self.globals
             .set_flag_by_name(name, LOCAL_IF_SET | LOCALIZED);
+    }
+
+    /// `mark_auto_buffer_local' of the symbol in hand.
+    pub(crate) fn mark_auto_buffer_local_symbol(&mut self, symbol: &SymbolName) {
+        self.globals.set_flag(symbol, LOCAL_IF_SET | LOCALIZED);
     }
 
     pub fn is_auto_buffer_local(&self, name: &str) -> bool {
@@ -880,15 +889,59 @@ impl Interpreter {
         self.globals.has_flag(symbol, LOCALIZED)
     }
 
+    /// The redirect of SYMBOL, a variable that is no alias: how its value
+    /// is held, which decides the record specbind makes and which of
+    /// set_internal and set_default_internal tell its watchers of a store.
+    pub(crate) fn symbol_redirect(&self, symbol: &SymbolName) -> super::Redirect {
+        use super::Redirect;
+        let cell = symbol.cell();
+        if !cell.has_c_slot() {
+            return if self.globals.has_flag(symbol, LOCALIZED) {
+                Redirect::Localized
+            } else {
+                Redirect::Plain
+            };
+        }
+        // A buffer's slot stays SYMBOL_FORWARDED when made local
+        // (Fmake_local_variable sets its flag alone); Emaxx flags it
+        // LOCALIZED once a buffer holds a value of its own.
+        if self.globals.has_flag(symbol, PER_BUFFER | ALWAYS_LOCAL)
+            || self.has_native_text_conversion_style(symbol.as_str())
+        {
+            Redirect::BufferSlot
+        } else if self.globals.has_flag(symbol, LOCALIZED) {
+            Redirect::Localized
+        } else if cell.is_kboard_forwarded() && Self::is_keyboard_variable(symbol) {
+            Redirect::KeyboardSlot
+        } else {
+            Redirect::Forwarded
+        }
+    }
+
+    /// data.c:Flocal_variable_if_set_p of SYMBOL, no alias, in BUFFER_ID:
+    /// a buffer's slot always is, a localized variable when it is local
+    /// if set or has a binding there, any other never.
+    pub(crate) fn local_variable_if_set_p(&self, symbol: &SymbolName, buffer_id: u64) -> bool {
+        use super::Redirect;
+        match self.symbol_redirect(symbol) {
+            Redirect::Plain | Redirect::KeyboardSlot | Redirect::Forwarded => false,
+            Redirect::BufferSlot => true,
+            Redirect::Localized => {
+                self.globals.has_flag(symbol, LOCAL_IF_SET)
+                    || self.has_buffer_local_binding_symbol(buffer_id, symbol)
+            }
+        }
+    }
+
     /// eval.c:let_shadows_buffer_binding_p: a SPECPDL_LET_DEFAULT
     /// record for NAME made in the current buffer (not LET_LOCAL).
     pub(crate) fn let_shadows_buffer_binding(&self, name: &str) -> bool {
         let current = self.current_buffer_id();
-        self.active_special_restores.iter().any(|restore| {
-            restore.name == name
-                && restore.let_default
-                && matches!(restore.scope, SpecialBindingScope::Global)
-                && restore.where_buffer_id == current
+        self.let_records().any(|restore| {
+            restore.name.is_named(name)
+                && restore.let_default()
+                && matches!(restore.scope(), SpecialBindingScope::Global)
+                && restore.where_buffer_id() == current
         })
     }
 
@@ -998,8 +1051,8 @@ impl Interpreter {
         loop {
             let matches = match cell.car.get().kind() {
                 Kind::Symbol(key) => key == *property,
-                Kind::Nil => property == "nil",
-                Kind::T => property == "t",
+                Kind::Nil => property.is_named("nil"),
+                Kind::T => property.is_named("t"),
                 _ => false,
             };
             let next = {
@@ -1033,22 +1086,32 @@ impl Interpreter {
     pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
         self.symbol_plist_find(
             name,
-            |key| matches!(key.kind(), Kind::Symbol(key) if key == property),
+            |key| matches!(key.kind(), Kind::Symbol(key) if key.is_named(property)),
         )
     }
 
-    /// fns.c:Fget with PROPERTY compared as plist_get compares it: EQ for
-    /// a property object, by interned name for a Rust caller's name.
-    pub fn get_symbol_property_by(
+    /// fns.c:Fget of SYMBOL, a symbol object (nil and t among them), with
+    /// PROPERTY compared as plist_get compares it; None for a non-symbol.
+    pub(crate) fn get_property_of_symbol_value(
         &self,
-        name: &str,
+        symbol: Value,
         property: impl crate::lisp::types::PropertyKey,
     ) -> Option<Value> {
-        self.symbol_plist_find(name, |key| property.is(key))
+        let symbol = match symbol.kind() {
+            Kind::Symbol(symbol) => symbol,
+            Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
+            Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+            _ => return None,
+        };
+        self.plist_find(self.globals.plist(&symbol), |key| property.is(key))
     }
 
     fn symbol_plist_find(&self, name: &str, matches: impl Fn(Value) -> bool) -> Option<Value> {
-        let mut tail = self.globals.plist_by_name(name);
+        self.plist_find(self.globals.plist_by_name(name), matches)
+    }
+
+    fn plist_find(&self, plist: Value, matches: impl Fn(Value) -> bool) -> Option<Value> {
+        let mut tail = plist;
         // fns.c:plist_get walks with FOR_EACH_TAIL_SAFE: Brent's cycle
         // detection (a tortoise moved at powers of two), no allocation.
         let mut tortoise = Brent::new(&tail);
@@ -1086,7 +1149,7 @@ impl Interpreter {
             let Some((value_cell, next_cell)) = rest.cons_cells() else {
                 return;
             };
-            if matches!(cell.car.get().kind(), Kind::Symbol(key) if key == property) {
+            if matches!(cell.car.get().kind(), Kind::Symbol(key) if key.is_named(property)) {
                 value_cell.set(value);
                 return;
             }
@@ -1136,8 +1199,10 @@ impl Interpreter {
 
         while let Some(current) = pending.pop() {
             match current.kind() {
-                Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == name => {
-                    self.intern_symbol_name(&name);
+                Kind::Symbol(name)
+                    if crate::lisp::types::visible_symbol_name(name.as_str()) == name.as_str() =>
+                {
+                    self.intern_symbol_name(name.as_str());
                 }
                 Kind::Cons(cons_cell) => {
                     let car = &cons_cell.car;
@@ -1256,8 +1321,11 @@ impl Interpreter {
         Ok(())
     }
 
-    /// `notify_variable_watchers' of the variable that is SYMBOL itself (no
-    /// alias): nothing to do unless its stores are trapped.
+    /// data.c:notify_variable_watchers of the variable that is SYMBOL
+    /// itself (no alias), nothing to do unless its stores are trapped:
+    /// BUFFER_ID is the WHERE its caller passes, and none, but for a
+    /// `set_default' or a `makunbound', is the current buffer when SYMBOL
+    /// is local there if set; a `set_default' is told as `set'.
     pub(crate) fn notify_variable_watchers_symbol(
         &mut self,
         symbol: &SymbolName,
@@ -1269,6 +1337,20 @@ impl Interpreter {
         if !symbol.cell().is_trapped_write() {
             return Ok(());
         }
+        let buffer_id = match buffer_id {
+            None if action != "set_default"
+                && action != "makunbound"
+                && self.local_variable_if_set_p(symbol, self.current_buffer_id()) =>
+            {
+                Some(self.current_buffer_id())
+            }
+            buffer_id => buffer_id,
+        };
+        let action = if action == "set_default" {
+            "set"
+        } else {
+            action
+        };
         // Avoid recursion: a watcher's own stores to the variable notify
         // no one.  restore_symbol_trapped_write traps it again however the
         // watchers return, and a store made meanwhile learned no plain path
@@ -1291,7 +1373,7 @@ impl Interpreter {
         let buffer = buffer_id
             .and_then(|id| self.buffer_identity_value(id))
             .unwrap_or(Value::Nil);
-        let operation = Value::symbol(action);
+        let operation = watcher_operation(action);
         let mut watchers = self.watchers_property(symbol);
         while let Some((watcher, rest)) = watchers.cons_values() {
             self.with_lisp_stack_roots(&(rest, (value, buffer)), |interp| {
@@ -1307,31 +1389,26 @@ impl Interpreter {
         Ok(())
     }
 
-    /// data.c:set_internal notifies before changing locality. Its native
-    /// per-buffer path can then call set_default_internal under LET_DEFAULT,
-    /// which emits a second notification with no buffer.
+    /// data.c:set_internal's notifications of Fset's store of VALUE into
+    /// SYMBOL (no alias), before any is made: `set', then, for a buffer's
+    /// slot that is not always local and not local in the current buffer
+    /// under a let made for it there, set_default_internal's.
     pub(crate) fn notify_assignment_symbol(
         &mut self,
         symbol: &SymbolName,
         value: Value,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        // data.c:set_internal notifies only a SYMBOL_TRAPPED_WRITE symbol;
-        // the store's buffer is found for its watchers alone.
         if !symbol.cell().is_trapped_write() {
             return Ok(());
         }
-        let buffer_id = if self.has_native_text_conversion_style(symbol.as_str()) {
-            Some(self.current_buffer_id())
-        } else {
-            self.assignment_buffer_id_symbol(symbol)
-        };
-        self.notify_variable_watchers_symbol(symbol, value, "set", buffer_id, env)?;
-        if self.has_native_text_conversion_style(symbol.as_str())
-            && !self.buffer.borrow().text_conversion_style_is_local
+        self.notify_variable_watchers_symbol(symbol, value, "set", None, env)?;
+        if self.symbol_redirect(symbol) == super::Redirect::BufferSlot
+            && !self.globals.has_flag(symbol, ALWAYS_LOCAL)
+            && !self.has_buffer_local_binding_symbol(self.current_buffer_id(), symbol)
             && self.let_shadows_buffer_binding(symbol.as_str())
         {
-            self.notify_variable_watchers_symbol(symbol, value, "set", None, env)?;
+            self.notify_variable_watchers_symbol(symbol, value, "set_default", None, env)?;
         }
         Ok(())
     }
@@ -1519,9 +1596,7 @@ impl Interpreter {
 
     /// Whether a `SPECPDL_LET*' record for NAME is on the binding stack.
     pub(crate) fn is_let_bound_special(&self, name: &SymbolName) -> bool {
-        self.active_special_restores
-            .iter()
-            .any(|restore| restore.name == *name)
+        self.let_records().any(|restore| restore.name == *name)
     }
 
     #[cfg(test)]
@@ -1550,6 +1625,7 @@ impl Interpreter {
             .or_else(|| self.builtin_symbol_value(&resolved)))
     }
 
+    #[cfg(test)]
     pub fn remove_global_binding(&mut self, name: &str) {
         for terminal in &mut self.terminals {
             terminal.borrow_mut().keyboard.remove(name);
@@ -1870,10 +1946,11 @@ impl Interpreter {
         name: &str,
     ) -> Option<SpecialBindingScope> {
         let current = self.current_buffer_id();
-        self.active_special_restores
-            .iter()
+        self.let_records()
             .any(|restore| {
-                restore.let_default && restore.where_buffer_id == current && restore.name == name
+                restore.let_default()
+                    && restore.where_buffer_id() == current
+                    && restore.name.is_named(name)
             })
             .then_some(SpecialBindingScope::Global)
     }
@@ -1885,10 +1962,11 @@ impl Interpreter {
         symbol: &SymbolName,
     ) -> Option<SpecialBindingScope> {
         let current = self.current_buffer_id();
-        self.active_special_restores
-            .iter()
+        self.let_records()
             .any(|restore| {
-                restore.let_default && restore.where_buffer_id == current && restore.name == *symbol
+                restore.let_default()
+                    && restore.where_buffer_id() == current
+                    && restore.name == *symbol
             })
             .then_some(SpecialBindingScope::Global)
     }
@@ -1906,17 +1984,17 @@ impl Interpreter {
         let mut value = self.global_value(name);
         let current_buffer_id = self.current_buffer_id();
         let mut found = false;
-        for restore in self.active_special_restores.iter().rev().filter(|restore| {
-            !restore.local_binding_killed
-                && restore.name == name
-                && matches!(restore.scope, SpecialBindingScope::Global)
+        for restore in self.let_records().rev().filter(|restore| {
+            !restore.local_binding_killed()
+                && restore.name.is_named(name)
+                && matches!(restore.scope(), SpecialBindingScope::Global)
         }) {
             found = true;
             if restore
-                .binding_buffer_id
+                .binding_buffer_id()
                 .is_some_and(|buffer_id| buffer_id != current_buffer_id)
             {
-                value = restore.previous;
+                value = restore.previous();
             } else {
                 break;
             }
@@ -1936,17 +2014,17 @@ impl Interpreter {
         let mut value = self.global_binding_value_symbol(symbol);
         let current_buffer_id = self.current_buffer_id();
         let mut found = false;
-        for restore in self.active_special_restores.iter().rev().filter(|restore| {
-            !restore.local_binding_killed
+        for restore in self.let_records().rev().filter(|restore| {
+            !restore.local_binding_killed()
                 && restore.name == *symbol
-                && matches!(restore.scope, SpecialBindingScope::Global)
+                && matches!(restore.scope(), SpecialBindingScope::Global)
         }) {
             found = true;
             if restore
-                .binding_buffer_id
+                .binding_buffer_id()
                 .is_some_and(|buffer_id| buffer_id != current_buffer_id)
             {
-                value = restore.previous;
+                value = restore.previous();
             } else {
                 break;
             }
@@ -1955,14 +2033,13 @@ impl Interpreter {
     }
 
     pub(super) fn active_global_toplevel_value(&self, name: &str) -> Option<Option<Value>> {
-        self.active_special_restores
-            .iter()
+        self.let_records()
             .find(|restore| {
-                !restore.local_binding_killed
-                    && restore.name == name
-                    && matches!(restore.scope, SpecialBindingScope::Global)
+                !restore.local_binding_killed()
+                    && restore.name.is_named(name)
+                    && matches!(restore.scope(), SpecialBindingScope::Global)
             })
-            .map(|restore| restore.previous)
+            .map(|restore| restore.previous())
     }
 
     pub(super) fn active_buffer_local_toplevel_value(
@@ -1970,14 +2047,13 @@ impl Interpreter {
         buffer_id: u64,
         name: &str,
     ) -> Option<Option<Value>> {
-        self.active_special_restores
-            .iter()
+        self.let_records()
             .find(|restore| {
-                !restore.local_binding_killed
-                    && restore.name == name
-                    && matches!(restore.scope, SpecialBindingScope::BufferLocal(id) if id == buffer_id)
+                !restore.local_binding_killed()
+                    && restore.name.is_named(name)
+                    && matches!(restore.scope(), SpecialBindingScope::BufferLocal(id) if id == buffer_id)
             })
-            .map(|restore| restore.previous)
+            .map(|restore| restore.previous())
     }
 
     pub(super) fn set_active_global_toplevel_value(
@@ -1985,29 +2061,15 @@ impl Interpreter {
         name: &str,
         value: Option<Value>,
     ) -> bool {
-        let Some(index) = self.active_special_restores.iter().position(|restore| {
-            !restore.local_binding_killed
-                && restore.name == name
-                && matches!(restore.scope, SpecialBindingScope::Global)
+        let Some(restore) = self.let_records_mut().find(|restore| {
+            !restore.local_binding_killed()
+                && restore.name.is_named(name)
+                && matches!(restore.scope(), SpecialBindingScope::Global)
         }) else {
             return false;
         };
-        self.active_special_restores[index].previous = value;
+        restore.set_previous(value);
         true
-    }
-
-    /// Whether NAME has a real global default binding, ignoring the
-    /// synthesized builtin fallback table.  `defvar' consults this: a table
-    /// answer is not a binding and must not suppress a loaded file's
-    /// init form.
-    pub fn global_default_binding_exists(&self, name: &str) -> bool {
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        if let Some(previous) = self.active_global_toplevel_value(&resolved) {
-            return previous.is_some();
-        }
-        self.global_value(&resolved).is_some()
     }
 
     pub fn default_toplevel_value(&self, name: &str) -> Option<Value> {
@@ -2022,12 +2084,12 @@ impl Interpreter {
     ) -> Result<Option<Value>, LispError> {
         // eval.c:default_toplevel_binding matches the original symbol in
         // the specpdl. Only the fallback default_value follows aliases.
-        if let Some(restore) = self.active_special_restores.iter().find(|restore| {
-            !restore.local_binding_killed
+        if let Some(restore) = self.let_records().find(|restore| {
+            !restore.local_binding_killed()
                 && restore.name == *symbol
-                && matches!(restore.scope, SpecialBindingScope::Global)
+                && matches!(restore.scope(), SpecialBindingScope::Global)
         }) {
-            return Ok(restore.previous);
+            return Ok(restore.previous());
         }
         self.default_value_symbol(symbol)
     }
@@ -2037,14 +2099,14 @@ impl Interpreter {
         symbol: &SymbolName,
         value: Value,
     ) -> bool {
-        let Some(restore) = self.active_special_restores.iter_mut().find(|restore| {
-            !restore.local_binding_killed
+        let Some(restore) = self.let_records_mut().find(|restore| {
+            !restore.local_binding_killed()
                 && restore.name == *symbol
-                && matches!(restore.scope, SpecialBindingScope::Global)
+                && matches!(restore.scope(), SpecialBindingScope::Global)
         }) else {
             return false;
         };
-        restore.previous = (!matches!(value.kind(), Kind::Unbound)).then_some(value);
+        restore.set_previous((!matches!(value.kind(), Kind::Unbound)).then_some(value));
         true
     }
 
@@ -2119,29 +2181,11 @@ impl Interpreter {
         None
     }
 
-    /// `assignment_buffer_id' for a resolved symbol.
-    pub(crate) fn assignment_buffer_id_symbol(&self, resolved: &SymbolName) -> Option<u64> {
-        match self.assignment_scope_symbol(resolved) {
-            Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
-            _ => None,
-        }
-    }
-
     pub fn assignment_buffer_id(&self, name: &str) -> Option<u64> {
         match self.assignment_scope(name) {
             Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
             _ => None,
         }
-    }
-
-    /// specbind resolves aliases before do_specbind checks trapped_write.
-    pub(crate) fn prepare_variable_assignment_symbol(
-        &self,
-        symbol: &SymbolName,
-        value: Value,
-    ) -> Result<Value, LispError> {
-        self.check_constant_assignment_symbol(symbol, value)?;
-        self.prepare_forwarded_assignment_symbol(symbol, value)
     }
 
     /// set_internal/set_default_internal check the original symbol before
@@ -2231,9 +2275,13 @@ impl Interpreter {
         let Some(predicate) = per_buffer_predicate(symbol.as_str()) else {
             return Ok(());
         };
-        let predicate = Value::symbol(predicate);
-        let choice =
-            crate::lisp::primitives::call(self, "get", &[predicate, Value::symbol("choice")], env)?;
+        // Fget of the predicate's `choice' and `range' properties, read
+        // from its plist as the C function reads it.
+        let predicate_symbol = predicate.with(Clone::clone);
+        let predicate = Value::Symbol(predicate_symbol);
+        let choice = cached_symbol!("choice")
+            .with(|property| self.get_symbol_property_of(&predicate_symbol, property))
+            .unwrap_or(Value::Nil);
         if !choice.is_nil() {
             let allowed = crate::lisp::primitives::call(self, "memq", &[value, choice], env)?;
             if allowed.is_nil() {
@@ -2241,8 +2289,9 @@ impl Interpreter {
             }
             return Ok(());
         }
-        let range =
-            crate::lisp::primitives::call(self, "get", &[predicate, Value::symbol("range")], env)?;
+        let range = cached_symbol!("range")
+            .with(|property| self.get_symbol_property_of(&predicate_symbol, property))
+            .unwrap_or(Value::Nil);
         if let Some((min, max)) = range.cons_values() {
             let within = crate::lisp::primitives::call(self, "numberp", &[value], env)?.is_truthy()
                 && crate::lisp::primitives::call(self, "<=", &[min, value, max], env)?.is_truthy();
@@ -2270,7 +2319,7 @@ impl Interpreter {
             }
             return Ok(());
         }
-        if crate::lisp::primitives::call(self, "functionp", &[predicate], env)?.is_truthy()
+        if crate::lisp::primitives::function_value_p(self, &predicate, env)
             && crate::lisp::primitives::call_function_value(self, &predicate, &[value], env)?
                 .is_nil()
         {
@@ -2314,7 +2363,7 @@ impl Interpreter {
         name: &str,
         value: Value,
         env: &mut Env,
-    ) -> Result<SpecialBindingRestore, LispError> {
+    ) -> Result<SpecpdlRef, LispError> {
         self.bind_special_symbol(&SymbolName::intern_str(name), value, env)
     }
 
@@ -2441,13 +2490,6 @@ impl Interpreter {
             .is_some_and(|stored| self.globals.replace_bound_value(symbol, stored))
     }
 
-    /// eval.c's SPECPDL_INDEX: the depth of the binding stack, for
-    /// `unbind_to'.
-    #[inline]
-    pub(crate) fn specpdl_index(&self) -> usize {
-        self.active_special_restores.len()
-    }
-
     /// eval.c's specbind for the symbol in hand: the record is left on
     /// the binding stack and nothing is returned; the caller unwinds to
     /// the index it took with `unbind_to' (a copy of the record was
@@ -2462,14 +2504,13 @@ impl Interpreter {
         self.specbind_symbol_record(symbol, value, env).map(|_| ())
     }
 
-    /// eval.c's unbind_to: every record above COUNT popped and restored,
-    /// innermost first; the first restore error is reported after all
-    /// have run.
+    /// eval.c's unbind_to: every entry above COUNT popped and undone,
+    /// innermost first; the first error is reported after all have run.
     pub(crate) fn unbind_to(&mut self, count: usize, env: &mut Env) -> Result<(), LispError> {
         let mut first_error = None;
-        while self.active_special_restores.len() > count {
-            let restore = self.active_special_restores.pop().expect("above count");
-            if let Err(error) = self.apply_special_restore(restore, env)
+        while self.specpdl.len() > count {
+            let entry = self.specpdl.pop().expect("above count");
+            if let Err(error) = self.undo_specpdl_entry(entry, env)
                 && first_error.is_none()
             {
                 first_error = Some(error);
@@ -2478,93 +2519,28 @@ impl Interpreter {
         first_error.map_or(Ok(()), Err)
     }
 
-    /// `specbind_symbol' with a copy of the record handed back, for the
-    /// callers outside the evaluator that keep it (the VM's unwind list,
-    /// the native runtime, the loaders).
-    /// eval.c's specbind for a caller that unbinds by the record's id
-    /// (`unbind_special_id'): the record stays on the binding stack alone,
-    /// where `bind_special_symbol' hands back a copy as well.
-    #[inline]
-    pub(crate) fn specbind_symbol_id(
-        &mut self,
-        symbol: &SymbolName,
-        value: Value,
-        env: &mut Env,
-    ) -> Result<u64, LispError> {
-        self.specbind_symbol_record(symbol, value, env)
-    }
-
-    /// The unbind of the record `specbind_symbol_id' answered BINDING_ID
-    /// for: taken off the binding stack (the last record nearly always, as
-    /// eval.c's specpdl pops) and restored.  A record no longer there was
-    /// restored already, by an unbind_to below it, as GNU's specpdl entry
-    /// is popped once.
-    pub(crate) fn unbind_special_id(
-        &mut self,
-        binding_id: u64,
-        env: &mut Env,
-    ) -> Result<(), LispError> {
-        let restore = if self
-            .active_special_restores
-            .last()
-            .is_some_and(|active| active.binding_id == binding_id)
-        {
-            self.active_special_restores.pop().expect("checked last")
-        } else if let Some(index) = self
-            .active_special_restores
-            .iter()
-            .rposition(|active| active.binding_id == binding_id)
-        {
-            self.active_special_restores.remove(index)
-        } else {
-            return Ok(());
-        };
-        self.apply_special_restore(restore, env)
-    }
-
-    /// `unbind_special_id' of BINDING_ID's record when it is the innermost
-    /// one and its restore is a plain store (`is_plain_restore'), which
-    /// notifies no watcher and runs nothing: true when done, false with
-    /// nothing done otherwise.
-    #[inline]
-    pub(crate) fn unbind_plain_special_id(&mut self, binding_id: u64) -> bool {
-        let Some(restore) = self.active_special_restores.last() else {
-            return false;
-        };
-        if restore.binding_id != binding_id || !self.is_plain_restore(restore) {
-            return false;
-        }
-        // The record is read in place and dropped there, as specpdl_ptr
-        // moves back over its entry, not moved out first.
-        let (name, previous) = (restore.name, restore.previous);
-        let depth = self.active_special_restores.len() - 1;
-        self.active_special_restores.truncate(depth);
-        self.store_plain_value(&name, previous);
-        true
-    }
-
     /// Whether RESTORE undoes a plain symbol's SPECPDL_LET: the saved value
     /// back into the cell (a watcher added since cleared the bit).  A plain
     /// C variable's restore is the same store: its saved value is one its
     /// slot holds, and it has no watcher to hear `unlet'.
     #[inline]
-    fn is_plain_restore(&self, restore: &SpecialBindingRestore) -> bool {
-        matches!(restore.scope, SpecialBindingScope::Global)
-            && restore.keyboard_terminal_id.is_none()
+    pub(super) fn is_plain_restore(&self, restore: &SpecialBindingRestore) -> bool {
+        matches!(restore.scope(), SpecialBindingScope::Global)
+            && restore.keyboard_terminal_id().is_none()
             && (self.globals.plain_store(&restore.name)
-                || (restore.previous.is_some() && restore.name.cell().is_plain_c_slot()))
+                || (restore.previous().is_some() && restore.name.cell().is_plain_c_slot()))
     }
 
     /// The store of a restore `is_plain_restore' accepts.
     #[inline]
     fn store_plain_restore(&mut self, restore: SpecialBindingRestore) {
-        self.store_plain_value(&restore.name, restore.previous);
+        self.store_plain_value(&restore.name, restore.previous());
     }
 
     /// `store_plain_restore's store of PREVIOUS, the value a plain binding
     /// of NAME saved (None for a void one), back into NAME's cell.
     #[inline(always)]
-    fn store_plain_value(&mut self, name: &SymbolName, previous: Option<Value>) {
+    pub(super) fn store_plain_value(&mut self, name: &SymbolName, previous: Option<Value>) {
         // The usual restore: a saved value into a cell that holds one.
         if let Some(value) = previous
             && self.globals.replace_bound_value(name, value)
@@ -2591,13 +2567,10 @@ impl Interpreter {
         symbol: &SymbolName,
         value: Value,
         env: &mut Env,
-    ) -> Result<SpecialBindingRestore, LispError> {
+    ) -> Result<SpecpdlRef, LispError> {
+        let count = SpecpdlRef(self.specpdl_index());
         self.specbind_symbol_record(symbol, value, env)?;
-        Ok(self
-            .active_special_restores
-            .last()
-            .cloned()
-            .expect("the record just pushed"))
+        Ok(count)
     }
 
     /// The value a `let' or `set' of SYMBOL stores, when SYMBOL is a C
@@ -2624,165 +2597,136 @@ impl Interpreter {
     /// binding stack's record, the value stored, nothing notified or run.
     /// None, with nothing done, for any other symbol, which
     /// `specbind_symbol_record' binds.
-    #[inline]
-    pub(crate) fn specbind_plain(&mut self, symbol: &SymbolName, value: Value) -> Option<u64> {
+    #[inline(always)]
+    pub(crate) fn specbind_plain(&mut self, symbol: &SymbolName, value: Value) -> bool {
         let value = if self.globals.plain_store(symbol) {
             value
         } else {
-            self.plain_c_slot_value(symbol, value)?
+            match self.plain_c_slot_value(symbol, value) {
+                Some(value) => value,
+                None => return false,
+            }
         };
-        Some(self.specbind_plain_store(symbol, value))
+        self.specbind_plain_store(symbol, value);
+        true
     }
 
     /// `specbind_plain' of SYMBOL, whose cell holds its value
     /// (`plain_store'), to VALUE: the store and the record.
     #[inline(always)]
-    pub(crate) fn specbind_plain_store(&mut self, symbol: &SymbolName, value: Value) -> u64 {
-        let binding_id = self.next_special_binding_id;
-        self.next_special_binding_id += 1;
+    pub(crate) fn specbind_plain_store(&mut self, symbol: &SymbolName, value: Value) {
         let previous = self.globals.value(symbol);
         if !self.globals.replace_bound_value(symbol, value) {
             self.globals.insert(symbol, value);
         }
         let where_buffer_id = self.current_buffer_id();
         let frame_depth = self.backtrace_frames.len();
-        self.active_special_restores.push(SpecialBindingRestore {
-            binding_id,
-            name: *symbol,
-            scope: SpecialBindingScope::Global,
-            binding_buffer_id: None,
-            keyboard_terminal_id: None,
-            previous,
-            let_default: false,
-            where_buffer_id,
-            local_binding_killed: false,
-            frame_depth,
-        });
-        binding_id
+        self.specpdl
+            .push(SpecpdlEntry::Let(SpecialBindingRestore::new(
+                *symbol,
+                super::BindingKind::Let,
+                previous,
+                where_buffer_id,
+                frame_depth,
+            )));
     }
 
     /// eval.c:specbind for the symbol in hand: the alias chain, the
     /// forwarding flags, the buffer-local cell and the global cell are
     /// read and written by id; the record, holding the symbol, is pushed
-    /// on the binding stack and its id returned.
+    /// on the specpdl.
     fn specbind_symbol_record(
         &mut self,
         symbol: &SymbolName,
         value: Value,
         env: &mut Env,
-    ) -> Result<u64, LispError> {
-        if let Some(binding_id) = self.specbind_plain(symbol, value) {
-            return Ok(binding_id);
+    ) -> Result<(), LispError> {
+        if self.specbind_plain(symbol, value) {
+            return Ok(());
         }
         let resolved = self.resolve_variable_symbol(symbol)?;
         let unaliased = resolved == *symbol;
-        let value = self.prepare_variable_assignment_symbol(&resolved, value)?;
+        self.check_constant_assignment_symbol(&resolved, value)?;
         let name = resolved.as_str();
         let buffer_id = self.current_buffer_id();
-        let binding_id = self.next_special_binding_id;
-        self.next_special_binding_id += 1;
-        if resolved.cell().has_c_slot() && name == "buffer-undo-list" {
-            let previous = crate::lisp::primitives::buffer_undo_list_value(&self.buffer.borrow());
-            self.notify_variable_watchers(name, value, "let", Some(buffer_id), env)?;
-            self.set_symbol_value_cell_resolved(&resolved, value);
-            let restore = SpecialBindingRestore {
-                binding_id,
-                name: resolved,
-                scope: SpecialBindingScope::BufferLocal(buffer_id),
-                binding_buffer_id: None,
-                keyboard_terminal_id: None,
-                previous: Some(previous),
-                let_default: false,
-                where_buffer_id: buffer_id,
-                local_binding_killed: false,
-                frame_depth: self.backtrace_frames.len(),
-            };
-            self.active_special_restores.push(restore);
-            return Ok(binding_id);
-        }
-        // eval.c:specbind SYMBOL_LOCALIZED: a binding cell in this buffer,
-        // bound or void, makes the let SPECPDL_LET_LOCAL.
-        let restore = if let Some(local) = self.buffer_local_binding_symbol(buffer_id, &resolved) {
-            let previous = Some(local.unwrap_or(Value::Unbound));
-            self.notify_variable_watchers_symbol(&resolved, value, "let", Some(buffer_id), env)?;
-            // SPECPDL_LET_LOCAL's set_internal checks a per-buffer
-            // variable's predicate (a let of its default does not).
-            self.check_per_buffer_predicate(&resolved, value, env)?;
-            self.set_buffer_local_value_symbol(buffer_id, &resolved, value);
-            SpecialBindingRestore {
-                binding_id,
-                name: resolved,
-                scope: SpecialBindingScope::BufferLocal(buffer_id),
-                binding_buffer_id: None,
-                keyboard_terminal_id: None,
-                previous,
-                let_default: false,
-                where_buffer_id: buffer_id,
-                local_binding_killed: false,
-                frame_depth: self.backtrace_frames.len(),
-            }
+        let frame_depth = self.backtrace_frames.len();
+        let undo_list = resolved.cell().has_c_slot() && name == "buffer-undo-list";
+        // eval.c:specbind: a binding cell in this buffer, bound or void,
+        // makes the let SPECPDL_LET_LOCAL; else a localized symbol or a
+        // buffer's slot makes it SPECPDL_LET_DEFAULT, and any other
+        // SPECPDL_LET.  The value saved is find_symbol_value's, which for
+        // a buffer's slot without a value here may differ from its
+        // default after a bset.
+        let local = if undo_list {
+            Some(Some(crate::lisp::primitives::buffer_undo_list_value(
+                &self.buffer.borrow(),
+            )))
         } else {
-            // specbind saves find_symbol_value even for LET_DEFAULT.
-            // A prior bset may differ from the per-buffer default.
-            let native_style =
-                resolved.cell().has_c_slot() && self.has_native_text_conversion_style(name);
-            let previous = if native_style {
+            self.buffer_local_binding_symbol(buffer_id, &resolved)
+        };
+        let restore = if let Some(local) = local {
+            SpecialBindingRestore::new(
+                resolved,
+                super::BindingKind::LetLocal,
+                Some(local.unwrap_or(Value::Unbound)),
+                buffer_id,
+                frame_depth,
+            )
+        } else {
+            let previous = if self.has_native_text_conversion_style(name) {
                 Some(self.buffer.borrow().text_conversion_style)
             } else {
                 self.global_binding_value_symbol(&resolved)
             };
-            let binding_buffer_id = if self.globals.has_flag(&resolved, LOCAL_IF_SET) {
-                Some(buffer_id)
-            } else {
-                None
-            };
-            // eval.c:specbind: a localized symbol (or a per-buffer one)
-            // without a cell here makes the let SPECPDL_LET_DEFAULT.  The
-            // store is set_internal's, whose watchers hear `let' in the
-            // current buffer when the symbol is local if set there
-            // (data.c:notify_variable_watchers).
-            let let_default = self.globals.has_flag(
+            let kind = if self.globals.has_flag(
                 &resolved,
                 LOCALIZED | LOCAL_IF_SET | ALWAYS_LOCAL | PER_BUFFER,
-            );
-            let where_heard = self
-                .globals
-                .has_flag(&resolved, LOCAL_IF_SET | PER_BUFFER)
-                .then_some(buffer_id);
-            let buffer_objfwd = self.is_buffer_objfwd_symbol(&resolved);
-            let (action, where_heard) = if native_style || buffer_objfwd {
-                // do_specbind's BUFFER_OBJFWD/LET_DEFAULT path calls
-                // set_default_internal, whose watcher operation is set.
-                ("set", None)
+            ) {
+                super::BindingKind::LetDefault
             } else {
-                ("let", where_heard)
+                super::BindingKind::Let
             };
-            self.notify_variable_watchers_symbol(&resolved, value, action, where_heard, env)?;
-            self.set_global_binding_resolved(&resolved, value);
-            SpecialBindingRestore {
-                binding_id,
-                keyboard_terminal_id: if resolved.cell().is_kboard_forwarded()
-                    && Self::is_keyboard_variable(&resolved)
-                {
+            let keyboard =
+                if resolved.cell().is_kboard_forwarded() && Self::is_keyboard_variable(&resolved) {
                     self.keyboard_binding_terminal(name)
                 } else {
                     None
-                },
-                name: resolved,
-                scope: SpecialBindingScope::Global,
-                binding_buffer_id,
-                previous,
-                let_default,
-                where_buffer_id: buffer_id,
-                local_binding_killed: false,
-                frame_depth: self.backtrace_frames.len(),
-            }
+                };
+            SpecialBindingRestore::new(resolved, kind, previous, buffer_id, frame_depth)
+                .local_if_set(self.globals.has_flag(&resolved, LOCAL_IF_SET))
+                .keyboard(keyboard)
         };
-        self.active_special_restores.push(restore);
+        let scope = restore.scope();
+        // do_specbind runs once the record is made: a store that signals
+        // (a watcher, or store_symval_forwarding's check of a C variable's
+        // value) leaves it for the unwind to undo, its watchers told.
+        // set_internal tells them `let' (WHERE nil), but a buffer's slot
+        // bound for its default stores through set_default_internal.
+        let action = if restore.let_default()
+            && resolved.cell().is_trapped_write()
+            && self.symbol_redirect(&resolved) == super::Redirect::BufferSlot
+        {
+            "set_default"
+        } else {
+            "let"
+        };
+        self.specpdl.push(SpecpdlEntry::Let(restore));
+        self.notify_variable_watchers_symbol(&resolved, value, action, None, env)?;
+        let stored = self.prepare_forwarded_assignment_symbol(&resolved, value)?;
+        match scope {
+            _ if undo_list => self.set_symbol_value_cell_resolved(&resolved, stored),
+            SpecialBindingScope::BufferLocal(buffer_id) => {
+                // SPECPDL_LET_LOCAL's set_internal checks a per-buffer
+                // variable's predicate (a let of its default does not).
+                self.check_per_buffer_predicate(&resolved, stored, env)?;
+                self.set_buffer_local_value_symbol(buffer_id, &resolved, stored);
+            }
+            SpecialBindingScope::Global => self.set_global_binding_resolved(&resolved, stored),
+        }
         if unaliased {
             self.learn_plain_store(symbol);
         }
-        Ok(binding_id)
+        Ok(())
     }
 
     /// Public wrappers so primitives outside the eval module can make
@@ -2793,36 +2737,45 @@ impl Interpreter {
         name: &str,
         value: Value,
         env: &mut Env,
-    ) -> Result<SpecialBindingRestore, LispError> {
+    ) -> Result<SpecpdlRef, LispError> {
         self.bind_special_variable(name, value, env)
     }
 
     pub(crate) fn restore_special_dynamic(
         &mut self,
-        restore: SpecialBindingRestore,
+        count: SpecpdlRef,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        self.restore_special_binding(restore, env)
+        self.restore_special_binding(count, env)
     }
 
     /// Detach every active dynamic binding from a local cell removed by
     /// `kill-all-local-variables'.  The restore record remains on the stack:
     /// if the body creates a fresh local cell before unwinding, GNU restores
     /// the pre-binding value into that cell; otherwise unwind is a no-op.
-    pub(crate) fn mark_buffer_local_special_binding_killed(&mut self, buffer_id: u64, name: &str) {
-        for restore in &mut self.active_special_restores {
-            if restore.name == name && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
+    pub(crate) fn mark_buffer_local_special_binding_killed(
+        &mut self,
+        buffer_id: u64,
+        symbol: &SymbolName,
+    ) {
+        for restore in self.let_records_mut() {
+            if restore.name == *symbol
+                && restore.scope() == SpecialBindingScope::BufferLocal(buffer_id)
             {
-                restore.local_binding_killed = true;
+                restore.kill_local_binding();
             }
         }
         for thread in &mut self.thread_states {
             if let Some(context) = &mut thread.context {
-                for restore in &mut context.active_special_restores {
-                    if restore.name == name
-                        && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
+                for restore in context
+                    .specpdl
+                    .iter_mut()
+                    .filter_map(SpecpdlEntry::as_let_mut)
+                {
+                    if restore.name == *symbol
+                        && restore.scope() == SpecialBindingScope::BufferLocal(buffer_id)
                     {
-                        restore.local_binding_killed = true;
+                        restore.kill_local_binding();
                     }
                 }
             }
@@ -2837,9 +2790,8 @@ impl Interpreter {
     /// on purpose: a child `setq' writes the real global, and when the
     /// parent's `let' later exits, the value it restores is whatever the
     /// child left there (probed: GNU's cell ends `child-wrote', not the
-    /// pre-let value).  `restore_special_binding' already prefers the LIVE
-    /// stack entry by binding_id, so updating `previous' in place is exactly
-    /// what let-exit will consult.
+    /// pre-let value).  The unbind reads the live stack entry, so updating
+    /// `previous' in place is exactly what let-exit will consult.
     ///
     /// GNU performs these swaps with SET_INTERNAL_THREAD_SWITCH, which skips
     /// variable watchers; cells are therefore written directly here.
@@ -2849,7 +2801,7 @@ impl Interpreter {
     /// thread's own specpdl (thread.c:94-100); the shared stack needs the
     /// boundary made explicit.
     pub(crate) fn swap_special_bindings_for_thread_switch(&mut self, start: usize, rebind: bool) {
-        let mut records = std::mem::take(&mut self.active_special_restores);
+        let mut records = std::mem::take(&mut self.specpdl);
         let end = records.len();
         let start = start.min(end);
         let indices: Vec<usize> = if rebind {
@@ -2858,71 +2810,59 @@ impl Interpreter {
             (start..end).rev().collect()
         };
         for index in indices {
-            let record = &mut records[index];
-            if record.local_binding_killed {
+            let SpecpdlEntry::Let(record) = &mut records[index] else {
+                continue;
+            };
+            if record.local_binding_killed() {
                 continue;
             }
-            if let Some(terminal) = record.keyboard_terminal_id {
-                let current = self.keyboard_binding_value_on(terminal, &record.name);
-                self.set_keyboard_binding_on(
-                    terminal,
-                    &record.name,
-                    record.previous.take().unwrap_or(Value::Unbound),
-                );
-                record.previous = current;
+            if let Some(terminal) = record.keyboard_terminal_id() {
+                let current = self.keyboard_binding_value_on(terminal, record.name.as_str());
+                let previous = record.take_previous().unwrap_or(Value::Unbound);
+                self.set_keyboard_binding_on(terminal, record.name.as_str(), previous);
+                record.set_previous(current);
                 continue;
             }
-            match record.scope {
+            match record.scope() {
                 SpecialBindingScope::Global => {
-                    let current = self.global_value(&record.name);
-                    match record.previous.take() {
-                        Some(value) => self.set_global_binding(&record.name, value),
+                    let current = self.global_binding_value_symbol(&record.name);
+                    match record.take_previous() {
+                        Some(value) => self.set_global_binding_resolved(&record.name, value),
                         None => {
-                            self.remove_global_binding(&record.name);
+                            self.remove_global_binding_symbol(&record.name);
                         }
                     }
-                    record.previous = current;
+                    record.set_previous(current);
                 }
                 SpecialBindingScope::BufferLocal(buffer_id) => {
-                    let current = self.buffer_local_value(buffer_id, &record.name);
-                    match record.previous.take() {
-                        Some(value) => self.set_buffer_local_value(buffer_id, &record.name, value),
-                        None => self.remove_buffer_local_value(buffer_id, &record.name),
+                    let current = self.buffer_local_value(buffer_id, record.name.as_str());
+                    match record.take_previous() {
+                        Some(value) => {
+                            self.set_buffer_local_value_symbol(buffer_id, &record.name, value)
+                        }
+                        None => self.remove_buffer_local_value(buffer_id, record.name.as_str()),
                     }
-                    record.previous = current;
+                    record.set_previous(current);
                 }
             }
         }
-        self.active_special_restores = records;
+        self.specpdl = records;
     }
 
+    /// unbind_to (COUNT): the binding the bind that answered COUNT made
+    /// undone, and whatever was bound or recorded above it, innermost
+    /// first, as a C caller's `unbind_to (count, val)' undoes what it
+    /// specbound since SPECPDL_INDEX.
     pub(crate) fn restore_special_binding(
         &mut self,
-        restore: SpecialBindingRestore,
+        count: SpecpdlRef,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        // Bindings unwind in order: the record is the last one nearly
-        // always (eval.c's specpdl pops), the scan is for the rest.
-        let restore = if self
-            .active_special_restores
-            .last()
-            .is_some_and(|active| active.binding_id == restore.binding_id)
-        {
-            self.active_special_restores.pop().expect("checked last")
-        } else if let Some(index) = self
-            .active_special_restores
-            .iter()
-            .rposition(|active| active.binding_id == restore.binding_id)
-        {
-            self.active_special_restores.remove(index)
-        } else {
-            restore
-        };
-        self.apply_special_restore(restore, env)
+        self.unbind_to(count.0, env)
     }
 
     /// The unbind of one record taken off the binding stack.
-    fn apply_special_restore(
+    pub(super) fn apply_special_restore(
         &mut self,
         restore: SpecialBindingRestore,
         env: &mut Env,
@@ -2931,55 +2871,60 @@ impl Interpreter {
             self.store_plain_restore(restore);
             return Ok(());
         }
-        if restore.name == "text-conversion-style"
-            && matches!(restore.scope, SpecialBindingScope::BufferLocal(buffer_id)
+        if restore.name.is_named("text-conversion-style")
+            && matches!(restore.scope(), SpecialBindingScope::BufferLocal(buffer_id)
                 if !self.has_buffer_local_binding(buffer_id, restore.name.as_str()))
         {
             // SPECPDL_LET_LOCAL restores only if Flocal_variable_p still
             // holds; the raw field alone is not a local Lisp binding.
             return Ok(());
         }
-        if restore.local_binding_killed
-            && matches!(restore.scope, SpecialBindingScope::BufferLocal(buffer_id)
-                if self.buffer_local_value(buffer_id, &restore.name).is_none())
+        if restore.local_binding_killed()
+            && matches!(restore.scope(), SpecialBindingScope::BufferLocal(buffer_id)
+                if self.buffer_local_value(buffer_id, restore.name.as_str()).is_none())
         {
             return Ok(());
         }
-        match restore.scope {
+        match restore.scope() {
             SpecialBindingScope::Global => {
-                // eval.c:unbind_to: SPECPDL_LET_DEFAULT writes the default
-                // back through set_default_internal (watchers hear `set',
-                // no buffer); SPECPDL_LET through set_internal (`unlet',
-                // the current buffer when the symbol is local if set there).
-                let detached_style = restore.name == "text-conversion-style"
-                    && self
-                        .detached_forwarded_variables
-                        .contains_key(restore.name.as_str())
-                    && !self.globals.has_flag(&restore.name, LOCALIZED);
-                let (action, where_heard) = if restore.let_default && !detached_style {
-                    ("set", None)
-                } else {
-                    (
-                        "unlet",
-                        self.globals
-                            .has_flag(&restore.name, LOCAL_IF_SET | PER_BUFFER)
-                            .then(|| self.current_buffer_id()),
-                    )
-                };
-                self.notify_variable_watchers_symbol(
-                    &restore.name,
-                    restore.previous.unwrap_or(Value::Nil),
-                    action,
-                    where_heard,
-                    env,
-                )?;
-                if let Some(terminal) = restore.keyboard_terminal_id {
+                // eval.c:do_one_unbind: a SPECPDL_LET of a symbol that is
+                // still SYMBOL_PLAINVAL restores through set_internal, whose
+                // watchers hear `unlet'; any other record, and a let of one
+                // made local since, through set_default_internal, whose
+                // watchers hear `set' and which for a plain one or a C
+                // variable stores through set_internal again.
+                if restore.name.cell().is_trapped_write() {
+                    let previous = restore.previous().unwrap_or(Value::Nil);
+                    let redirect = self.symbol_redirect(&restore.name);
+                    if redirect != super::Redirect::Plain {
+                        self.notify_variable_watchers_symbol(
+                            &restore.name,
+                            previous,
+                            "set_default",
+                            None,
+                            env,
+                        )?;
+                    }
+                    if matches!(
+                        redirect,
+                        super::Redirect::Plain | super::Redirect::Forwarded
+                    ) {
+                        self.notify_variable_watchers_symbol(
+                            &restore.name,
+                            previous,
+                            "unlet",
+                            None,
+                            env,
+                        )?;
+                    }
+                }
+                if let Some(terminal) = restore.keyboard_terminal_id() {
                     self.set_keyboard_binding_on(
                         terminal,
-                        &restore.name,
-                        restore.previous.unwrap_or(Value::Unbound),
+                        restore.name.as_str(),
+                        restore.previous().unwrap_or(Value::Unbound),
                     );
-                } else if let Some(value) = restore.previous {
+                } else if let Some(value) = restore.previous() {
                     self.set_global_binding_resolved(&restore.name, value);
                 } else {
                     self.remove_global_binding_symbol(&restore.name);
@@ -2998,15 +2943,15 @@ impl Interpreter {
                 }
                 self.notify_variable_watchers_symbol(
                     &restore.name,
-                    restore.previous.unwrap_or(Value::Nil),
+                    restore.previous().unwrap_or(Value::Nil),
                     "unlet",
                     Some(buffer_id),
                     env,
                 )?;
-                if let Some(value) = restore.previous {
+                if let Some(value) = restore.previous() {
                     self.set_buffer_local_value_symbol(buffer_id, &restore.name, value);
                 } else {
-                    self.remove_buffer_local_value(buffer_id, &restore.name);
+                    self.remove_buffer_local_value(buffer_id, restore.name.as_str());
                 }
             }
         }
@@ -3090,7 +3035,7 @@ impl Interpreter {
     pub(super) fn record_profiler_samples(frames: &[BacktraceFrame]) {
         let top_is_gc = frames.last().is_some_and(|frame| {
             matches!(frame.function_snapshot().kind(),
-                Kind::Symbol(name) if name == crate::lisp::primitives::profiler::AUTOMATIC_GC)
+                Kind::Symbol(name) if name.is_named(crate::lisp::primitives::profiler::AUTOMATIC_GC))
         });
         crate::lisp::primitives::profiler::record_pending_samples(top_is_gc, |trace| {
             let mut functions = frames.iter().rev().map(BacktraceFrame::function_snapshot);
@@ -3524,7 +3469,7 @@ impl Interpreter {
     /// bindings, a bare symbol in it passed over.
     pub(crate) fn backtrace_frame_locals(&self, index: usize) -> Value {
         let depth = index + 1;
-        let restores = &self.active_special_restores;
+        let restores = &self.specpdl;
         let installed = self.frame_environments_of(index);
         // The entries newest first, each consed in front, as the C walks
         // from the next frame's record down to this one's.
@@ -3550,15 +3495,18 @@ impl Interpreter {
                 break;
             };
             record = below;
-            let restore = &restores[record];
-            if restore.frame_depth != depth {
+            let Some(restore) = restores[record].as_let() else {
+                continue;
+            };
+            if restore.frame_depth() != depth {
                 continue;
             }
             let value = restores[record + 1..]
                 .iter()
-                .find(|later| later.name == restore.name && later.scope == restore.scope)
+                .filter_map(SpecpdlEntry::as_let)
+                .find(|later| later.name == restore.name && later.scope() == restore.scope())
                 .map_or_else(
-                    || match restore.scope {
+                    || match restore.scope() {
                         SpecialBindingScope::Global => {
                             self.global_binding_value_symbol(&restore.name)
                         }
@@ -3566,7 +3514,7 @@ impl Interpreter {
                             self.buffer_local_value(buffer_id, restore.name.as_str())
                         }
                     },
-                    |later| later.previous,
+                    |later| later.previous(),
                 )
                 .unwrap_or(Value::Unbound);
             result = Value::cons(Value::cons(Value::Symbol(restore.name), value), result);
@@ -3594,7 +3542,7 @@ impl Interpreter {
     pub(crate) fn install_frame_environment(&mut self, environment: Value) -> usize {
         let mark = self.frame_environments.len();
         let frame = self.backtrace_frames.len().wrapping_sub(1);
-        let specpdl = self.active_special_restores.len();
+        let specpdl = self.specpdl.len();
         self.frame_environments.push(FrameEnvironment {
             frame,
             specpdl,
@@ -3633,9 +3581,13 @@ impl Interpreter {
         let mut context = self.backtrace_frame_context(index);
         let depth = index + 1;
         let start = self
-            .active_special_restores
+            .specpdl
             .iter()
-            .rposition(|restore| restore.frame_depth < depth)
+            .rposition(|entry| {
+                entry
+                    .as_let()
+                    .is_some_and(|restore| restore.frame_depth() < depth)
+            })
             .map_or(0, |below| below + 1);
         self.swap_special_bindings_for_thread_switch(start, false);
         let result = self.eval(form, &mut context);
@@ -3957,7 +3909,7 @@ impl Interpreter {
             let mut frames = self.backtrace_frames.iter().rev().skip(1);
             let mut frame = frames.next();
             if frame.is_some_and(|frame| {
-                matches!(frame.function_snapshot().kind(), Kind::Symbol(name) if name == "error")
+                matches!(frame.function_snapshot().kind(), Kind::Symbol(name) if name.is_named("error"))
             }) {
                 frame = frames.next();
             }
@@ -4510,9 +4462,9 @@ fn wants_debugger(list: Value, conditions: &[SymbolName]) -> bool {
 }
 
 /// buffer.c's DEFVAR_PER_BUFFER predicates other than nil, by variable.
-fn per_buffer_predicate(name: &str) -> Option<&'static str> {
+fn per_buffer_predicate(name: &str) -> Option<crate::lisp::types::symbols::SymbolKey> {
     Some(match name {
-        "major-mode" => "symbolp",
+        "major-mode" => cached_symbol!("symbolp"),
         "fill-column"
         | "left-margin"
         | "tab-width"
@@ -4523,15 +4475,15 @@ fn per_buffer_predicate(name: &str) -> Option<&'static str> {
         | "right-fringe-width"
         | "scroll-bar-width"
         | "scroll-bar-height"
-        | "buffer-display-count" => "integerp",
+        | "buffer-display-count" => cached_symbol!("integerp"),
         "default-directory"
         | "buffer-file-name"
         | "buffer-file-truename"
-        | "buffer-auto-save-file-name" => "stringp",
-        "overwrite-mode" => "overwrite-mode",
-        "vertical-scroll-bar" => "vertical-scroll-bar",
-        "scroll-up-aggressively" | "scroll-down-aggressively" => "fraction",
-        "line-spacing" => "numberp",
+        | "buffer-auto-save-file-name" => cached_symbol!("stringp"),
+        "overwrite-mode" => cached_symbol!("overwrite-mode"),
+        "vertical-scroll-bar" => cached_symbol!("vertical-scroll-bar"),
+        "scroll-up-aggressively" | "scroll-down-aggressively" => cached_symbol!("fraction"),
+        "line-spacing" => cached_symbol!("numberp"),
         _ => return None,
     })
 }
@@ -4576,6 +4528,20 @@ fn set_symbol_trapped_write(symbol: &SymbolName) -> Result<(), LispError> {
         ])));
     }
     Ok(())
+}
+
+/// The OPERATION notify_variable_watchers passes, data.c's Qlet, Qunlet,
+/// Qset, Qmakunbound or Qdefvaralias, without interning its name.
+fn watcher_operation(action: &str) -> Value {
+    let key = match action {
+        "set" => cached_symbol!("set"),
+        "let" => cached_symbol!("let"),
+        "unlet" => cached_symbol!("unlet"),
+        "makunbound" => cached_symbol!("makunbound"),
+        "defvaralias" => cached_symbol!("defvaralias"),
+        other => return Value::symbol(other),
+    };
+    Value::Symbol(key.with(Clone::clone))
 }
 
 #[cfg(test)]

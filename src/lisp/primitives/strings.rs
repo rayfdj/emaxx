@@ -1146,12 +1146,11 @@ pub(crate) fn property_from_props_with_category(
         if prop.is(tem) {
             return Ok(Some(value).filter(|value| !value.is_nil()));
         }
-        // A category symbol gives every property but `category'.
-        if tem.word() == category.word()
-            && let Some(name) = value.symbol_str()
-        {
+        // A category symbol gives every property but `category': Fget of
+        // the symbol object itself.
+        if tem.word() == category.word() && value.is_symbol() {
             fallback = interp
-                .get_symbol_property_by(name, prop)
+                .get_property_of_symbol_value(value, prop)
                 .unwrap_or(Value::Nil);
         }
         let Some(rest) = rest else {
@@ -1329,11 +1328,13 @@ pub(crate) fn overlay_property_with_category(
         if prop.is(name) {
             return Ok(Some(value).filter(|value| !value.is_nil()));
         }
-        if matches!(name.kind(), Kind::Symbol(symbol) if symbol == "category")
-            && let Some(category) = value.symbol_str()
+        // A category symbol gives every property but `category': Fget of
+        // the symbol object itself.
+        if matches!(name.kind(), Kind::Symbol(symbol) if symbol.is_named("category"))
+            && value.is_symbol()
         {
             fallback = interp
-                .get_symbol_property_by(category, prop)
+                .get_property_of_symbol_value(value, prop)
                 .unwrap_or(Value::Nil);
         }
         let Kind::Cons(rest) = rest.kind() else {

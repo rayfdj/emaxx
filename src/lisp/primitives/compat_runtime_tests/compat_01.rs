@@ -230,7 +230,7 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
                 Kind::Integer(-1),
                 Kind::Integer(1),
                 Kind::Integer(11),
-            ]) if name == "args-out-of-range")
+            ]) if name.is_named("args-out-of-range"))
     ));
     assert!(matches!(
         call(
@@ -245,7 +245,7 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
                 Kind::Integer(100),
                 Kind::Integer(1),
                 Kind::Integer(11),
-            ]) if name == "args-out-of-range")
+            ]) if name.is_named("args-out-of-range"))
     ));
 }
 
@@ -765,13 +765,13 @@ fn random_matches_emacs_limit_and_seed_behavior() {
         call(&mut interp, "random", &[Value::Integer(0)], &mut env).map_err(LispError::into_kind),
         Err(LispErrorKind::SignalValue(value))
             if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(),
-                Some([Kind::Symbol(name), Kind::Integer(0)]) if name == "args-out-of-range")
+                Some([Kind::Symbol(name), Kind::Integer(0)]) if name.is_named("args-out-of-range"))
     ));
     assert!(matches!(
         call(&mut interp, "random", &[Value::Integer(-1)], &mut env).map_err(LispError::into_kind),
         Err(LispErrorKind::SignalValue(value))
             if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(),
-                Some([Kind::Symbol(name), Kind::Integer(-1)]) if name == "args-out-of-range")
+                Some([Kind::Symbol(name), Kind::Integer(-1)]) if name.is_named("args-out-of-range"))
     ));
 
     let seeded_a = call(

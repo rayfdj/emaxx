@@ -51,7 +51,7 @@ pub(super) fn composition_gstring_parts(
     }
     let font = header[0];
     if !font.is_nil()
-        && !matches!(font.kind(), Kind::Symbol(name) if interp.has_coding_system(&name))
+        && !matches!(font.kind(), Kind::Symbol(name) if interp.has_coding_system(name.as_str()))
         && font::font_kind(interp, &font) != Some(font::FontKind::Object)
     {
         return None;
@@ -132,7 +132,7 @@ define_dispatch!(
                             "font-spec" | "font-entity" | "font-object"
                         ) =>
                     {
-                        font_type.as_deref() == Some(&expected)
+                        font_type.as_deref() == Some(expected.as_str())
                     }
                     Some(extra_type) => {
                         return Err(wrong_type_argument("font-extra-type", extra_type.value()));

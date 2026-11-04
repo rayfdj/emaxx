@@ -119,7 +119,7 @@ fn execute_kbd_macro(
             {
                 // GNU's outermost command loop catches `top-level`, terminating
                 // the keyboard macro without propagating an error.
-                Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "top-level") => {
+                Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol.is_named("top-level")) => {
                     Ok(())
                 }
                 other => other,
@@ -680,12 +680,11 @@ fn ascii_event_code(interp: &Interpreter, event: Value) -> Option<i64> {
     if let Kind::Integer(code) = event.kind() {
         return Some(code);
     }
-    let name = event.symbol_str()?;
     let mask = interp
-        .get_symbol_property(name, "event-symbol-element-mask")
+        .get_property_of_symbol_value(event, "event-symbol-element-mask")
         .filter(|mask| !mask.is_nil())?;
     let base = mask.car().ok()?;
-    let ascii = interp.get_symbol_property(base.symbol_str()?, "ascii-character")?;
+    let ascii = interp.get_property_of_symbol_value(base, "ascii-character")?;
     let modifiers = mask.cdr().ok()?.car().ok()?;
     Some(ascii.as_integer().ok()? | modifiers.as_integer().ok()?)
 }
@@ -800,7 +799,7 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
     });
     interp.pop_handler_bindings(handler_start);
     let outcome = match result.map_err(LispError::into_kind) {
-        Err(LispErrorKind::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "exit") => {
+        Err(LispErrorKind::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol.is_named("exit")) => {
             recursive_edit_exit_value(interp, env, value)
         }
         Err(error) => Err(LispError::from(error)),
@@ -906,7 +905,7 @@ fn execute_kbd_macro_resolved_command(
     }
     let command_result = if dispatched_command.is_nil() {
         call_function_value(interp, &Value::symbol("undefined"), &[], env)
-    } else if matches!(dispatched_command.kind(), Kind::Symbol(name) if name == "narrow-to-region")
+    } else if matches!(dispatched_command.kind(), Kind::Symbol(name) if name.is_named("narrow-to-region"))
     {
         prepare_native_kbd_command_body(interp, env)?;
         let mark = interp
@@ -1531,7 +1530,7 @@ define_dispatch!(
                 let valid = matches!(
                     event.as_slice().iter().map(|v| v.kind()).collect::<Vec<_>>().as_slice(),
                     [Kind::Symbol(kind), Kind::Frame(frame), ..]
-                        if kind == "focus-in" && interp.frame_is_live(*frame)
+                        if kind.is_named("focus-in") && interp.frame_is_live(*frame)
                 );
                 if !valid {
                     return Err(LispError::Signal("invalid focus-in event".into()));
@@ -2039,7 +2038,7 @@ define_dispatch!(
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
                 let default = match default.kind() {
                     Kind::Symbol(symbol) => Value::String(
-                        crate::lisp::types::visible_symbol_name(&symbol)
+                        crate::lisp::types::visible_symbol_name(symbol.as_str())
                             .to_string()
                             .into(),
                     ),

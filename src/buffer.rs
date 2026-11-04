@@ -432,6 +432,24 @@ impl PositionCache {
 /// change.
 pub type ScanText = GapText;
 
+/// `Buffer::match_view': the accessible text a regexp match reads, its
+/// region's ends and point (1-based) with their offsets in the stored
+/// bytes (0-based), and what the matcher needs to know of the text.
+pub(crate) struct MatchView {
+    pub(crate) text: ScanText,
+    pub(crate) begv: usize,
+    pub(crate) begv_byte: usize,
+    pub(crate) zv: usize,
+    pub(crate) zv_byte: usize,
+    pub(crate) point: usize,
+    pub(crate) point_byte: usize,
+    pub(crate) multibyte: bool,
+    /// Characters beyond Unicode lie in the region.
+    pub(crate) side: bool,
+    pub(crate) ascii: bool,
+    pub(crate) tick: ModCount,
+}
+
 /// What an insertion puts in the text: characters, or a unibyte
 /// insertion's bytes, HIGH of them above 0x7F, written into the gap as
 /// their characters.
@@ -1893,6 +1911,47 @@ impl Buffer {
         let start = self.begv - 1;
         let end = self.zv - 1;
         self.text.borrow().string(start..end)
+    }
+
+    /// What a regexp match reads of the buffer before it starts, the text
+    /// borrowed once: the accessible region's text, shared, with its ends'
+    /// and point's positions and stored bytes, as looking_at_1 and
+    /// search_buffer_re take BEGV, ZV, PT and their bytes.
+    pub(crate) fn match_view(&self) -> MatchView {
+        let text = self.text.borrow();
+        let scan = text.scan_text();
+        let ascii = scan.is_ascii();
+        let (begv, zv, point) = (self.begv, self.zv, self.pt);
+        // An ASCII text's bytes are its characters; otherwise the text's
+        // conversions, which know its ends, the gap and the positions
+        // converted since its last edit before them.
+        let byte = |pos: usize| {
+            if ascii {
+                pos - 1
+            } else {
+                text.char_to_byte(pos - 1)
+            }
+        };
+        let first = text
+            .extended_chars
+            .partition_point(|(position, _)| *position < begv);
+        let side = text
+            .extended_chars
+            .get(first)
+            .is_some_and(|(position, _)| *position < zv);
+        MatchView {
+            begv,
+            begv_byte: byte(begv),
+            zv,
+            zv_byte: byte(zv),
+            point,
+            point_byte: byte(point),
+            multibyte: self.multibyte,
+            side,
+            ascii,
+            tick: text.chars_modiff,
+            text: scan,
+        }
     }
 
     /// The text for a scan apart from the buffer: the gap buffer's bytes,

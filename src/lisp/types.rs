@@ -693,6 +693,15 @@ impl SymbolName {
         self.0.internal.as_str()
     }
 
+    /// EQ to the symbol named TEXT in the initial obarray, as C compares a
+    /// symbol with its DEFSYM: the name alone does not make an uninterned
+    /// symbol or a private obarray's one that symbol.  (Their host text
+    /// carries a marker, so it never equals a plain name.)
+    #[inline]
+    pub fn is_named(&self, text: &str) -> bool {
+        self.as_str() == text
+    }
+
     pub(crate) fn identity_ptr(&self) -> usize {
         self.0.identity()
     }
@@ -769,14 +778,6 @@ impl std::hash::Hash for SymbolName {
     }
 }
 
-impl Deref for SymbolName {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.internal.as_str()
-    }
-}
-
 impl AsRef<str> for SymbolName {
     fn as_ref(&self) -> &str {
         self.as_str()
@@ -835,42 +836,6 @@ impl From<SharedText> for SymbolName {
 impl From<SymbolName> for SharedText {
     fn from(name: SymbolName) -> Self {
         name.as_str().into()
-    }
-}
-
-impl PartialEq<str> for SymbolName {
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl PartialEq<&str> for SymbolName {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl PartialEq<String> for SymbolName {
-    fn eq(&self, other: &String) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl PartialEq<SymbolName> for String {
-    fn eq(&self, other: &SymbolName) -> bool {
-        self == other.as_str()
-    }
-}
-
-impl PartialEq<SymbolName> for str {
-    fn eq(&self, other: &SymbolName) -> bool {
-        self == other.as_str()
-    }
-}
-
-impl PartialEq<SymbolName> for &str {
-    fn eq(&self, other: &SymbolName) -> bool {
-        *self == other.as_str()
     }
 }
 
@@ -2411,11 +2376,34 @@ pub(crate) fn environment_declares_special(environment: &Value, symbol: &SymbolN
 }
 
 pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
-    format!("{base}{UNINTERNED_SYMBOL_MARKER}{id}")
+    marked_symbol_name(base, UNINTERNED_SYMBOL_MARKER, id)
 }
 
 pub(crate) fn make_obarray_symbol_name(base: &str, obarray_id: u64) -> String {
-    format!("{base}{OBARRAY_SYMBOL_MARKER}{obarray_id}")
+    marked_symbol_name(base, OBARRAY_SYMBOL_MARKER, obarray_id)
+}
+
+/// BASE, MARKER and ID in decimal, each pushed in turn: through `format!'
+/// the text cost most of a `make-symbol'.
+fn marked_symbol_name(base: &str, marker: &str, id: u64) -> String {
+    let mut digits = [0_u8; 20];
+    let mut start = digits.len();
+    let mut rest = id;
+    loop {
+        start -= 1;
+        digits[start] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let digits = &digits[start..];
+    let mut name = String::with_capacity(base.len() + marker.len() + digits.len());
+    name.push_str(base);
+    name.push_str(marker);
+    // The digits are ASCII.
+    name.extend(digits.iter().map(|&digit| char::from(digit)));
+    name
 }
 
 static FRESH_OBARRAY_SYMBOL_SERIAL: std::sync::atomic::AtomicU64 =
@@ -3240,7 +3228,7 @@ fn format_value(
         Kind::StringObject(state) => {
             write!(f, "\"{}\"", state.borrow().text())
         }
-        Kind::Symbol(s) => write!(f, "{}", visible_symbol_name(&s)),
+        Kind::Symbol(s) => write!(f, "{}", visible_symbol_name(s.as_str())),
         Kind::Vector(vector) => {
             let id = vector.identity();
             if !seen.insert(id) {
@@ -3260,11 +3248,11 @@ fn format_value(
             // GNU prints reader shorthands: (quote X) as 'X and
             // (function X) as #'X.
             if let Kind::Symbol(head) = cell.car.get().kind()
-                && (head == "quote" || head == "function")
+                && (head.is_named("quote") || head.is_named("function"))
                 && let Kind::Cons(inner) = cell.cdr.get().kind()
                 && matches!(inner.cdr.get().kind(), Kind::Nil)
             {
-                write!(f, "{}", if head == "quote" { "'" } else { "#'" })?;
+                write!(f, "{}", if head.is_named("quote") { "'" } else { "#'" })?;
                 return format_value(&inner.car.get(), f, seen);
             }
             write!(f, "(")?;
@@ -3440,7 +3428,7 @@ impl fmt::Display for LispErrorKind {
             LispErrorKind::SignalValue(value) => match value.to_vec() {
                 Ok(items)
                     if items.len() == 2
-                        && matches!(items[0].kind(), Kind::Symbol(kind) if kind == "void-variable") =>
+                        && matches!(items[0].kind(), Kind::Symbol(kind) if kind.is_named("void-variable")) =>
                 {
                     // Preserve the host diagnostic when Fsymbol_value
                     // carries its original Lisp object instead of a name.
@@ -3448,7 +3436,7 @@ impl fmt::Display for LispErrorKind {
                 }
                 Ok(items)
                     if items.len() >= 2
-                        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind == "search-failed") =>
+                        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind.is_named("search-failed")) =>
                 {
                     match items[1].kind() {
                         Kind::StringObject(object) => {
@@ -3459,7 +3447,7 @@ impl fmt::Display for LispErrorKind {
                 }
                 Ok(items)
                     if items.len() >= 4
-                        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind == "file-error" || kind == "file-missing") =>
+                        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind.is_named("file-error") || kind.is_named("file-missing")) =>
                 {
                     let message = match items[1].kind() {
                         Kind::StringObject(text) => text.borrow().text(),

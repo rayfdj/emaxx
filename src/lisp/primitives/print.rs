@@ -300,11 +300,12 @@ pub(crate) fn render_prin1_symbol(
     options: PrintOptions,
     out: &mut PrintOutput,
 ) {
-    let visible = crate::lisp::types::visible_symbol_name(symbol);
+    let visible = crate::lisp::types::visible_symbol_name(symbol.as_str());
     // print.c: `#:' under `print-gensym' for a symbol not interned in the
     // initial obarray, else `##' for the empty name.
     let gensym = options.gensym
-        && (symbol.cell().is_uninterned() || crate::lisp::types::is_private_obarray_symbol(symbol));
+        && (symbol.cell().is_uninterned()
+            || crate::lisp::types::is_private_obarray_symbol(symbol.as_str()));
     if gensym {
         out.push_str("#:");
     } else if visible.is_empty() {
@@ -677,7 +678,7 @@ pub(crate) fn is_end_of_file_error(error: &LispError) -> bool {
     match error.kind() {
         LispErrorKind::EndOfInput => true,
         LispErrorKind::SignalValue(data) => {
-            matches!(data.car().map(|head| head.kind()), Ok(Kind::Symbol(name)) if name == "end-of-file")
+            matches!(data.car().map(|head| head.kind()), Ok(Kind::Symbol(name)) if name.is_named("end-of-file"))
         }
         _ => false,
     }
@@ -751,18 +752,13 @@ fn read_one_from_reader(
                 return Err(error);
             }
         };
-        let unescaped = reader
-            .unescaped_character_literals()
-            .map(Value::Integer)
-            .collect::<Vec<_>>();
         Ok((
             value,
             reader.emitted_reader_forms(),
-            unescaped,
             reader.characters_consumed(),
         ))
     })();
-    let (value, needs_materialization, unescaped, consumed) =
+    let (value, needs_materialization, consumed) =
         read.map_err(|error| reader_end_of_file(interp, error, env))?;
     let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
     // Allocate identity-bearing literals before resolving references into them.
@@ -771,13 +767,6 @@ fn read_one_from_reader(
     } else {
         value
     };
-    // read_char_literal conses each new literal onto the variable, which
-    // `load' (or the caller) binds; `read' itself never resets it.
-    record_unescaped_character_literals(
-        interp,
-        unescaped.iter().filter_map(Value::integer_value),
-        env,
-    );
     Ok((value, consumed))
 }
 
@@ -1045,22 +1034,11 @@ fn read_one_positioned_form(
             }
         };
         let consumed = reader.characters_consumed();
-        let unescaped = reader
-            .unescaped_character_literals()
-            .map(Value::Integer)
-            .collect::<Vec<_>>();
-        Ok((value, consumed, unescaped, reader.emitted_reader_forms()))
+        Ok((value, consumed, reader.emitted_reader_forms()))
     })();
-    let (value, consumed, unescaped, needs_materialization) =
+    let (value, consumed, needs_materialization) =
         read.map_err(|error| reader_end_of_file(interp, error, env))?;
     let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
-    // read_char_literal conses each new literal onto the variable, which
-    // `load' (or the caller) binds; `read' itself never resets it.
-    record_unescaped_character_literals(
-        interp,
-        unescaped.iter().filter_map(Value::integer_value),
-        env,
-    );
     // GNU's reader constructs `#s(...)', `#^[...]', and bool-vector objects
     // before read-positioning-symbols returns.  In particular, the byte
     // compiler must receive an actual hash table constant rather than
@@ -1096,7 +1074,7 @@ pub(crate) fn record_literal_slot_data(value: &Value) -> Value {
             .map(|v| v.kind())
             .collect::<Vec<_>>()
             .as_slice()
-        && symbol == "quote"
+        && symbol.is_named("quote")
     {
         return inner.value();
     }
@@ -1171,6 +1149,10 @@ impl crate::lisp::reader::ReadContext for CallableReader<'_> {
     fn read_circle(&mut self) -> bool {
         self.interp.read_circle(self.env)
     }
+
+    fn unescaped_character_literal(&mut self, character: u8) -> Result<(), LispError> {
+        note_unescaped_character_literal(self.interp, character, self.env)
+    }
 }
 
 impl crate::lisp::reader::ReaderStream for CallableReader<'_> {
@@ -1211,7 +1193,7 @@ fn read_callable_source(
     env: &mut Env,
     locate_symbols: bool,
 ) -> Result<Value, LispError> {
-    let (value, unescaped, needs_materialization) = {
+    let (value, needs_materialization) = {
         let mut stream = CallableReader {
             interp,
             source: *source,
@@ -1220,20 +1202,9 @@ fn read_callable_source(
         let mut reader = crate::lisp::reader::Reader::from_stream(&mut stream, locate_symbols);
         let value = reader.read()?;
         reader.finish_stream()?;
-        let unescaped = reader
-            .unescaped_character_literals()
-            .map(Value::Integer)
-            .collect::<Vec<_>>();
-        (value, unescaped, reader.emitted_reader_forms())
+        (value, reader.emitted_reader_forms())
     };
     let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
-    // read_char_literal conses each new literal onto the variable, which
-    // `load' (or the caller) binds; `read' itself never resets it.
-    record_unescaped_character_literals(
-        interp,
-        unescaped.iter().filter_map(Value::integer_value),
-        env,
-    );
     if needs_materialization {
         interp.materialize_read_object_literals(value, env)
     } else {
@@ -1425,7 +1396,7 @@ fn quoted_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
     let [Kind::Symbol(head), literal] = kinds.as_slice() else {
         return None;
     };
-    if head != "quote" {
+    if !head.is_named("quote") {
         return None;
     }
     match *literal {
@@ -1785,7 +1756,7 @@ pub(crate) fn md5_source_bytes(
         }
         coding = validate(interp, coding)?;
         *source
-    } else if matches!(source.kind(), Kind::Symbol(name) if name == "iv-auto") {
+    } else if matches!(source.kind(), Kind::Symbol(name) if name.is_named("iv-auto")) {
         let Kind::Integer(length @ 0..) = start.kind() else {
             return Err(crate::lisp::primitives::values::doprnt_error(
                 interp,

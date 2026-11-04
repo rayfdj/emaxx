@@ -540,7 +540,7 @@ fn plist_integer(plist: &Value, property: &str) -> Option<i64> {
     while let Kind::Cons(cell) = current.kind() {
         let rest = cell.cdr.get();
         let (value, tail) = rest.cons_cells()?;
-        if matches!(cell.car.get().kind(), Kind::Symbol(name) if name == property) {
+        if matches!(cell.car.get().kind(), Kind::Symbol(name) if name.is_named(property)) {
             return value.get().integer_value();
         }
         current = tail.get();
@@ -555,7 +555,7 @@ fn digest_spec(method: &Value) -> Option<&'static DigestSpec> {
             let name = string_text(method).ok()?;
             return DIGESTS.iter().find(|spec| spec.name == name);
         }
-        Kind::Symbol(name) => return DIGESTS.iter().find(|spec| spec.name == name),
+        Kind::Symbol(name) => return DIGESTS.iter().find(|spec| name.is_named(spec.name)),
         Kind::Cons(..) => plist_integer(method, ":digest-algorithm-id"),
         _ => None,
     };
@@ -694,7 +694,7 @@ fn mac_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, LispE
         Kind::Integer(id) => c_int::try_from(id).ok(),
         Kind::Symbol(name) => algorithm_ids(library.api.mac_list).into_iter().find(|id| {
             // SAFETY: Every candidate came from `gnutls_mac_list`.
-            c_string(unsafe { (library.api.mac_name)(*id) }).as_deref() == Some(&name)
+            c_string(unsafe { (library.api.mac_name)(*id) }).as_deref() == Some(name.as_str())
         }),
         Kind::Cons(..) => {
             plist_integer(&normalized, ":mac-algorithm-id").and_then(|id| c_int::try_from(id).ok())
@@ -729,7 +729,8 @@ fn cipher_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, Li
             .into_iter()
             .find(|id| {
                 // SAFETY: Every candidate came from `gnutls_cipher_list`.
-                c_string(unsafe { (library.api.cipher_name)(*id) }).as_deref() == Some(&name)
+                c_string(unsafe { (library.api.cipher_name)(*id) }).as_deref()
+                    == Some(name.as_str())
             }),
         Kind::Cons(..) => {
             plist_integer(&normalized, ":cipher-id").and_then(|id| c_int::try_from(id).ok())
@@ -1023,7 +1024,9 @@ fn gnutls_symmetric(
 
 fn gnutls_error_code(interp: &Interpreter, error: &Value) -> Result<c_int, &'static str> {
     let resolved = match error.kind() {
-        Kind::Symbol(symbol) => match interp.get_symbol_property(&symbol, "gnutls-code") {
+        Kind::Symbol(symbol) => match interp
+            .get_symbol_property_of(&symbol, &cached_symbol!("gnutls-code").with(Clone::clone))
+        {
             Some(code)
                 if matches!(
                     code.kind(),
@@ -1164,7 +1167,7 @@ fn contains_symbol(value: &Value, wanted: &str) -> bool {
     value.to_vec().is_ok_and(|items| {
         items
             .iter()
-            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol == wanted))
+            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol.is_named(wanted)))
     })
 }
 
@@ -1173,7 +1176,7 @@ fn plist_has_key(value: &Value, wanted: &str) -> bool {
         items
             .iter()
             .step_by(2)
-            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol == wanted))
+            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol.is_named(wanted)))
     })
 }
 
@@ -1990,7 +1993,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(
                     if matches!(args[0].kind(), Kind::T)
-                        || matches!(args[0].kind(), Kind::Symbol(symbol) if symbol == "gnutls-e-again")
+                        || matches!(args[0].kind(), Kind::Symbol(symbol) if symbol.is_named("gnutls-e-again"))
                     {
                         Value::Nil
                     } else {
@@ -2095,7 +2098,7 @@ define_dispatch!(
                 let Kind::Symbol(status) = args[0].kind() else {
                     return Err(wrong_type_argument("symbolp", args[0]));
                 };
-                Ok(peer_status_warning_description(&status)
+                Ok(peer_status_warning_description(status.as_str())
                     .map(Value::string)
                     .unwrap_or(Value::Nil))
             }

@@ -516,7 +516,7 @@ define_dispatch!(
                 // after installing the provisional name.  Uniquify uses
                 // that boundary to replace a generated `<N>' suffix with
                 // directory-derived policy; keep that policy in uniquify.el.
-                if interp.has_lisp_function("uniquify--rename-buffer-advice") {
+                if interp.is_fbound("uniquify--rename-buffer-advice") {
                     let callback = interp.lookup_function("uniquify--rename-buffer-advice", env)?;
                     interp.call_function_value(
                         callback,
@@ -602,9 +602,7 @@ define_dispatch!(
                     } else if let Some(value) = killed {
                         (!matches!(value.kind(), Kind::Unbound)).then_some(value)
                     } else {
-                        interp
-                            .default_value_symbol(&symbol)?
-                            .or_else(|| interp.symbol_value_cell_symbol(&symbol).ok())
+                        default_value_here(interp, &symbol)?
                     };
                     return value.ok_or_else(|| {
                         LispError::SignalValue(Value::list([
@@ -630,9 +628,7 @@ define_dispatch!(
                 } else {
                     match interp.buffer_local_binding_symbol(buffer_id, &symbol) {
                         Some(local) => local,
-                        None => interp
-                            .default_value_symbol(&symbol)?
-                            .or_else(|| interp.symbol_value_cell_symbol(&symbol).ok()),
+                        None => default_value_here(interp, &symbol)?,
                     }
                 };
                 value.ok_or_else(|| {
@@ -689,11 +685,18 @@ define_dispatch!(
                     interp
                         .buffer_alist_local_variables(buffer_id)
                         .into_iter()
-                        .filter(|(name, _)| {
-                            name == "text-conversion-style"
-                                || crate::lisp::eval::native_per_buffer_slot(name).is_none()
+                        .filter(|(symbol, _)| {
+                            symbol.is_named("text-conversion-style")
+                                || crate::lisp::eval::native_per_buffer_slot(symbol.as_str())
+                                    .is_none()
                         })
-                        .map(|(name, value)| entry(&name, value)),
+                        .map(|(symbol, value)| {
+                            if matches!(value.kind(), Kind::Unbound) {
+                                Value::Symbol(symbol)
+                            } else {
+                                Value::cons(Value::Symbol(symbol), value)
+                            }
+                        }),
                 );
                 Ok(Value::list(vars))
             }
@@ -749,6 +752,7 @@ define_dispatch!(
                 // already; a let made for this buffer draws a message.
                 let checked = checked_symbol_identity(interp, &args[0], env)?;
                 let symbol = interp.resolve_variable_symbol(&checked)?;
+                check_may_be_buffer_local(interp, &checked, &symbol)?;
                 if interp.is_constant_symbol(&symbol) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("setting-constant"),
@@ -756,7 +760,7 @@ define_dispatch!(
                     ])));
                 }
                 let buffer_id = interp.current_buffer_id();
-                if interp.has_native_text_conversion_style(&symbol) {
+                if interp.has_native_text_conversion_style(symbol.as_str()) {
                     // BUFFER_OBJFWD has a field already: only set its flag.
                     interp.buffer.borrow_mut().text_conversion_style_is_local = true;
                     return Ok(args[0]);
@@ -770,13 +774,15 @@ define_dispatch!(
                     // A BUFFER_OBJFWD variable has its per-buffer flag set
                     // and returns; the message is a SYMBOL_LOCALIZED one's.
                     let buffer_objfwd = interp.is_buffer_objfwd_symbol(&symbol);
-                    if !buffer_objfwd && interp.let_shadows_buffer_binding(&symbol) {
+                    if !buffer_objfwd && interp.let_shadows_buffer_binding(symbol.as_str()) {
                         call_named_function(
                             interp,
                             "message",
                             &[
                                 Value::string("Making %s buffer-local while locally let-bound!"),
-                                Value::string(crate::lisp::types::visible_symbol_name(&symbol)),
+                                Value::string(crate::lisp::types::visible_symbol_name(
+                                    symbol.as_str(),
+                                )),
                             ],
                             env,
                         )?;
@@ -829,12 +835,14 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let mut function = args[0];
                 while let Kind::Symbol(symbol) = function.kind() {
-                    if let Some(modes) = interp.get_symbol_property(&symbol, "command-modes")
-                        && !modes.is_nil()
+                    if let Some(modes) = interp.get_symbol_property_of(
+                        &symbol,
+                        &cached_symbol!("command-modes").with(Clone::clone),
+                    ) && !modes.is_nil()
                     {
                         return Ok(modes);
                     }
-                    function = match interp.lookup_function(&symbol, env) {
+                    function = match interp.lookup_function_symbol(&symbol, env) {
                         Ok(function) => function,
                         Err(_) => return Ok(Value::Nil),
                     };
@@ -870,7 +878,7 @@ define_dispatch!(
                     }
                     seen.push(symbol);
                     match interp
-                        .lookup_function(&symbol, env)
+                        .lookup_function_symbol(&symbol, env)
                         .map_err(LispError::into_kind)
                     {
                         Ok(resolved) if matches!(resolved.kind(), Kind::Symbol(_)) => {
@@ -1193,7 +1201,7 @@ define_dispatch!(
                 let Kind::Symbol(symbol) = args[0].kind() else {
                     return Ok(Value::Nil);
                 };
-                Ok(if interp.has_charset(&symbol) {
+                Ok(if interp.has_charset(symbol.as_str()) {
                     Value::T
                 } else {
                     Value::Nil
@@ -1816,4 +1824,37 @@ pub(crate) fn other_buffer(
     )?;
     super::call(interp, "set-buffer-major-mode", &[scratch], env)?;
     Ok(scratch)
+}
+
+/// Fmake_local_variable's and Fmake_variable_buffer_local's refusal of a
+/// keyboard's slot (KBOARD_OBJFWDP), named by VARIABLE as given, before
+/// any other check.
+pub(super) fn check_may_be_buffer_local(
+    interp: &Interpreter,
+    variable: &crate::lisp::types::SymbolName,
+    symbol: &crate::lisp::types::SymbolName,
+) -> Result<(), LispError> {
+    if interp.symbol_redirect(symbol) != crate::lisp::eval::Redirect::KeyboardSlot {
+        return Ok(());
+    }
+    Err(crate::lisp::primitives::values::doprnt_error(
+        interp,
+        "Symbol {} may not be buffer-local",
+        &[&crate::lisp::types::visible_symbol_name(variable.as_str())],
+    ))
+}
+
+/// data.c:buffer_local_value's Fdefault_value of SYMBOL (no alias) for a
+/// buffer without a binding of it: a localized variable's default, void
+/// when that is (the current buffer's own binding must not answer), and
+/// any other's value as its cell holds it.
+fn default_value_here(
+    interp: &Interpreter,
+    symbol: &crate::lisp::types::SymbolName,
+) -> Result<Option<Value>, LispError> {
+    Ok(match interp.default_value_symbol(symbol)? {
+        Some(value) => Some(value),
+        None if interp.symbol_redirect(symbol) == crate::lisp::eval::Redirect::Localized => None,
+        None => interp.symbol_value_cell_symbol(symbol).ok(),
+    })
 }

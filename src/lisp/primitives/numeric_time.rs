@@ -1475,7 +1475,7 @@ pub(crate) fn tzlookup(interp: &Interpreter, zone: &Value) -> Result<TimeZone, L
     let zone = super::values::bare_symbol(interp, *zone);
     match zone.kind() {
         Kind::T | Kind::Integer(0) => Ok(TimeZone::Utc),
-        Kind::Symbol(symbol) if symbol == "wall" => Ok(TimeZone::Tz(None)),
+        Kind::Symbol(symbol) if symbol.is_named("wall") => Ok(TimeZone::Tz(None)),
         _ if zone.is_string() => Ok(TimeZone::Tz(Some(Rc::from(string_text(&zone)?.as_str())))),
         Kind::Integer(offset) => Ok(TimeZone::Tz(Some(Rc::from(
             offset_zone_string(offset, None).as_str(),
@@ -1738,10 +1738,10 @@ fn time_convert(interp: &Interpreter, time: &Value, form: &Value) -> Result<Valu
     } else {
         Value::T
     };
-    if matches!(form.kind(), Kind::Symbol(symbol) if symbol == "list") {
+    if matches!(form.kind(), Kind::Symbol(symbol) if symbol.is_named("list")) {
         return exact_time_to_old_style(&decoded);
     }
-    if matches!(form.kind(), Kind::Symbol(symbol) if symbol == "integer") {
+    if matches!(form.kind(), Kind::Symbol(symbol) if symbol.is_named("integer")) {
         return Ok(if time.is_integer() {
             *time
         } else {

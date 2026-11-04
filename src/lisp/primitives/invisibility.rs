@@ -109,7 +109,7 @@ pub(crate) fn invisibility_spec_of(spec: Value) -> InvisibilitySpec {
         Kind::Nil => InvisibilitySpec::default(),
         value
             if matches!(value.value().kind(), Kind::T)
-                || matches!(value.value().kind(), Kind::Symbol(name) if name == "t") =>
+                || matches!(value.value().kind(), Kind::Symbol(name) if name.is_named("t")) =>
         {
             InvisibilitySpec {
                 all: true,
