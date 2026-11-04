@@ -711,17 +711,20 @@ define_dispatch!(
             }
             "kill-local-variable" => {
                 need_args(name, args, 1)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                // CHECK_SYMBOL, then the alias chain followed by the symbols.
+                let checked = checked_symbol_identity(interp, &args[0], env)?;
+                let symbol = interp.resolve_variable_symbol(&checked)?;
                 // data.c:Fkill_local_variable's BUFFER_OBJFWD branch: an
                 // indexed slot returns to its default with its flag
                 // cleared, an always-local one (index -1) stays as it is;
                 // no watcher is told, and VARIABLE comes back as supplied,
                 // an alias included, before the alist branch rewrites it.
-                if let Some(slot) = crate::lisp::eval::native_per_buffer_slot(&symbol)
-                    && interp.is_per_buffer_special(&symbol)
+                if let Some(slot) = crate::lisp::eval::native_per_buffer_slot(symbol.as_str())
+                    && interp.is_per_buffer_symbol(&symbol)
                 {
                     if !slot.always_local {
-                        interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
+                        interp
+                            .remove_buffer_local_value_symbol(interp.current_buffer_id(), &symbol);
                     }
                     return Ok(args[0]);
                 }
@@ -729,19 +732,18 @@ define_dispatch!(
                 // binding in any buffer: VARIABLE comes back unchanged and
                 // no watcher hears of it.  Only a localized one is told
                 // makunbound, whether or not this buffer has a cell.
-                if !interp.is_localized_symbol(&crate::lisp::types::SymbolName::intern_str(&symbol))
-                {
+                if !interp.is_localized_symbol(&symbol) {
                     return Ok(args[0]);
                 }
-                interp.notify_variable_watchers(
+                interp.notify_variable_watchers_symbol(
                     &symbol,
                     Value::Nil,
                     "makunbound",
                     Some(interp.current_buffer_id()),
                     env,
                 )?;
-                interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
-                Ok(Value::Symbol(symbol.into()))
+                interp.remove_buffer_local_value_symbol(interp.current_buffer_id(), &symbol);
+                Ok(Value::Symbol(symbol))
             }
             "make-local-variable" => {
                 need_args(name, args, 1)?;

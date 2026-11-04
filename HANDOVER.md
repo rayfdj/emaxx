@@ -14438,6 +14438,43 @@ setup_process_coding_systems's check now refuses). A 13-form
   (`is_named(&name)' of a `&str'), its own fix removed them, and clippy
   and the command-line tests pass on the result, whose compiled code the
   borrows do not change.
+- **Round 305: the uninterned symbols' name lookups counted and taken
+  out, and `defconst' as Fdefconst_1.** A traced build marked each
+  lookup that found an uninterned or private obarray symbol again by its
+  marked text, and gdb counted them by caller over 439 upstream test
+  files under ERT (the four longest, tramp, eglot, comp and
+  semantic-utest-ia's, apart): past round 304's fixes, 300 lookups in 21
+  files, from seven places (235 of them `kill-all-local-variables'
+  telling a variable's watchers, 53 `defalias'). They now hold the
+  symbol: `kill-all-local-variables' and, found reading the same code,
+  `kill-local-variable' tell a variable's watchers and kill its binding
+  by the object (`kill-local-variable' found its variable by name,
+  killed the binding by name and returned the symbol interned again),
+  `defalias' reads the old definition, records the load history and
+  `function-history', asks `defalias-fset-function', stores, documents
+  and queues an unloaded defsubst by the symbol, `interactive-form'
+  walks an alias chain by the symbols, a local `(defvar SYM)' pushes SYM
+  itself, CCL reads a program symbol's properties from the object, and
+  `clone-buffer''s copy of the local variables keeps their symbols; the
+  name-keyed `notify_variable_watchers', `fset_function' and
+  `record_definition_in_load_history' are gone. One remains: an error's
+  `void-function' or `void-variable' carries its symbol's name, so a
+  void uninterned function's error names a symbol found again by that
+  name. eval.c's Fdefconst_1 declares the symbol as given with
+  internal--define-uninitialized-variable (the lexical-binding refusal
+  and the load history included) and stores with Fset_default; Emaxx's
+  special form stored the top-level value, so `(let ((x 1)) (defconst x
+  2) x)' gave 1 and left 2 behind where GNU gives 2 and restores the old
+  value, and put an alias's documentation and `risky-local-variable' on
+  its base, and `defconst-1' recorded no load history and returned the
+  symbol interned again. A local `(defvar SYM)' is pushed only for a
+  symbol not already special, as Fdefvar's `!declared_special' test
+  asks. A command-line comparison runs the cases. The fuzzes of
+  variables, function cells, fields, load, errors, codings, buffers,
+  case, numbers, strings, printing and syntax print GNU's results as
+  before. Local validation: the grouped gate's 3,502 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16816,7 +16853,31 @@ against 28,090), semantic-utest-ia (2,548 against 1,825) and mule-tests
 (1,918 against 1,267), and `ert-test-run-tests-batch-expensive' is 1.02
 of GNU's time on this runner, against 1.19 to 1.23 on the slow ones.
 
+**On `8a35490`** (round 304): the full Rust gate (run 41876569383)
+passed; the frozen run (run 41876576061) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a slow runner again (the oracle's
+bodies 274.8 s against round 303's 220.2). Setup 84.0 s against 68.9 s
+(1.219), test bodies 303.2 s against 274.8 s (1.103), in all 1.113, with
+a per-file setup median of 128 ms against 108. The widest body gaps are
+ert-tests (45,851 ms against 38,316), tramp-tests (23,065 against
+19,302), comp-tests (17,020 against 14,745), semantic-utest-ia (4,392
+against 3,073) and mule-tests (3,154 against 2,029), and
+`ert-test-run-tests-batch-expensive' is 1.19 of GNU's time.
+
 **Findings recorded, not fixed:**
+- **Hot functions first at link time (round 305).** LLD's
+  `--symbol-ordering-file' with the 3,046 functions four test files'
+  callgrind runs touched, the hottest first (99% of their instructions
+  in 603 functions and 1.39 MB, 99.9% in 1,292 and 2.05 MB), put
+  `run_verified' and the rest at the head of `.text'. Callgrind's cache
+  simulation of a test file's setup (fns-tests.el under ERT) then read
+  3.38M first-level instruction-cache misses against the linker's own
+  order's 3.03M (GNU's 0.83M), and the wall times of five workloads
+  moved within the noise of a loaded host. The hot code is larger than
+  the first-level cache in either order, and packing it hottest first
+  adds conflicts there; the order is left as the linker makes it. The
+  host has no hardware counters (Firecracker exposes none), so
+  instruction-TLB effects went unmeasured.
 - **Found, not fixed (GNU faults):** transpose-regions with unequal
   regions and a middle region of multibyte text moves the middle by its
   character count where its byte count belongs (editfns.c's `memmove

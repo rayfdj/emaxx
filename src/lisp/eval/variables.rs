@@ -521,12 +521,20 @@ impl Interpreter {
     }
 
     pub fn remove_buffer_local_value(&mut self, buffer_id: u64, name: &str) {
-        if self.has_native_text_conversion_style(name) {
+        // No symbol of that name, no binding of it anywhere.
+        if let Some(symbol) = SymbolName::find(name) {
+            self.remove_buffer_local_value_symbol(buffer_id, &symbol);
+        }
+    }
+
+    /// The binding of SYMBOL in BUFFER_ID killed: its alist cell, or the
+    /// `text-conversion-style' field's flag; a slot on the buffer record is
+    /// never unmade (buffer_local_flags index -1: always local).
+    pub(crate) fn remove_buffer_local_value_symbol(&mut self, buffer_id: u64, symbol: &SymbolName) {
+        if self.has_native_text_conversion_style(symbol.as_str()) {
             self.reset_buffer_text_conversion_style(buffer_id);
         }
-        // A slot on the buffer record is never unmade (buffer_local_flags
-        // index -1: always local).
-        if self.buffer_field_slot_named(name).is_some() {
+        if self.buffer_field_slot_of(symbol).is_some() {
             return;
         }
         let state = &mut **self;
@@ -534,20 +542,20 @@ impl Interpreter {
             .buffer_locals
             .get_mut(&buffer_id)
             .is_some_and(|locals| {
-                locals.remove(name, &state.loaded_bindings);
+                locals.remove(symbol, &state.loaded_bindings);
                 locals.is_empty()
             });
         if remove_buffer {
             self.buffer_locals.remove(&buffer_id);
         }
         if buffer_id == self.current_buffer_id()
-            && let Some(value) = self.global_binding_value(name)
+            && let Some(value) = self.global_binding_value_symbol(symbol)
         {
-            self.update_forwarded_eval_cell(name, &value);
+            self.update_forwarded_eval_cell(symbol.as_str(), &value);
         }
         // Buffer-local hooks are part of the local binding: killing the
         // local variable discards them, as in GNU Emacs.
-        self.remove_buffer_local_hook(buffer_id, name);
+        self.remove_buffer_local_hook(buffer_id, symbol.as_str());
     }
 
     pub fn clear_buffer_local_state(&mut self, buffer_id: u64) {
@@ -669,10 +677,10 @@ impl Interpreter {
             .get(&from_buffer_id)
             .into_iter()
             .flat_map(|locals| locals.iter())
-            .map(|(name, value)| (name.as_str().to_owned(), value))
+            .map(|(symbol, value)| (*symbol, value))
             .collect::<Vec<_>>();
-        for (name, value) in locals {
-            self.set_buffer_local_value(to_buffer_id, &name, value);
+        for (symbol, value) in locals {
+            self.set_buffer_local_value_symbol(to_buffer_id, &symbol, value);
         }
 
         let hooks = self
@@ -830,6 +838,7 @@ impl Interpreter {
         self.globals.set_flag_by_name(name, ALWAYS_LOCAL);
     }
 
+    #[cfg(test)]
     pub fn is_per_buffer_special(&self, name: &str) -> bool {
         self.globals.has_flag_by_name(name, PER_BUFFER)
     }
@@ -975,9 +984,9 @@ impl Interpreter {
     /// the declaration lasts to the end of the enclosing scope (the file,
     /// at top level).  `let's of the name in that scope bind dynamically
     /// (Flet's Fmemq) without the global special flag.
-    pub(crate) fn push_local_special_declaration(&mut self, name: &str, env: &mut Env) {
+    pub(crate) fn push_local_special_declaration(&mut self, symbol: &SymbolName, env: &mut Env) {
         let declared = Value::cons(
-            Value::Symbol(name.into()),
+            Value::Symbol(*symbol),
             crate::lisp::types::current_environment_value(env),
         );
         match env.last_mut() {
@@ -1416,18 +1425,6 @@ impl Interpreter {
     /// data.c:notify_variable_watchers: the variable NAME is an alias of
     /// (or NAME itself) tells its watchers, as the variable it is, of the
     /// store of VALUE by ACTION in the buffer BUFFER_ID.
-    pub fn notify_variable_watchers(
-        &mut self,
-        name: &str,
-        value: Value,
-        action: &str,
-        buffer_id: Option<u64>,
-        env: &mut Env,
-    ) -> Result<(), LispError> {
-        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
-        self.notify_variable_watchers_symbol(&symbol, value, action, buffer_id, env)
-    }
-
     pub(super) fn direct_variable_alias(&self, name: &str) -> Option<String> {
         self.globals
             .alias_by_name(name)

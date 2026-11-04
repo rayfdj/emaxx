@@ -2775,10 +2775,6 @@ impl Interpreter {
         self.set_global_binding_resolved(&symbol, list);
     }
 
-    pub(crate) fn record_definition_in_load_history(&mut self, kind: &str, name: &str) {
-        self.record_symbol_definition_in_load_history(kind, &SymbolName::intern_str(name));
-    }
-
     pub(crate) fn record_symbol_definition_in_load_history(
         &mut self,
         kind: &str,
@@ -2813,13 +2809,17 @@ impl Interpreter {
     /// defines a symbol repeatedly, unloading it must restore the definition
     /// from before that file first touched the symbol, not an intermediate
     /// definition from the same load.
-    pub(crate) fn record_function_redefinition(&mut self, name: &str, old_definition: Value) {
+    pub(crate) fn record_function_redefinition(
+        &mut self,
+        symbol: &SymbolName,
+        old_definition: Value,
+    ) {
         if old_definition.is_nil() {
             return;
         }
         // data.c:defalias queues the symbol for un_autoload first.
         if !self.autoload_queue.is_nil() {
-            self.autoload_queue = Value::cons(Value::symbol(name), self.autoload_queue);
+            self.autoload_queue = Value::cons(Value::Symbol(*symbol), self.autoload_queue);
         }
         // data.c's add_to_function_history walks `current-load-list' to
         // its last element and takes it when it is a string; the walk
@@ -2844,12 +2844,12 @@ impl Interpreter {
             }
             tail = next;
         }
-        let past = self
-            .get_symbol_property(name, "function-history")
+        let past = cached_symbol!("function-history")
+            .with(|property| self.get_symbol_property_of(symbol, property))
             .unwrap_or(Value::Nil);
         let Ok(mut entries) = past.to_vec() else {
-            self.put_symbol_property(
-                name,
+            self.put_symbol_property_on(
+                symbol,
                 "function-history",
                 Value::cons(file, Value::cons(old_definition, past)),
             );
@@ -2869,7 +2869,7 @@ impl Interpreter {
         }
         entries.insert(0, old_definition);
         entries.insert(0, file);
-        self.put_symbol_property(name, "function-history", Value::list(entries));
+        self.put_symbol_property_on(symbol, "function-history", Value::list(entries));
     }
 
     /// Commit the definitions accumulated in `current-load-list`.

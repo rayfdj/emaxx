@@ -390,7 +390,7 @@ impl Interpreter {
         // GNU 30.2 data.c:Fdefalias uses CHECK_SYMBOL/XSYMBOL.  Preserve the
         // original object for its return value while installing the function
         // on the positioned symbol's bare owner.
-        let name = crate::lisp::primitives::checked_symbol_name(self, &args[0], env)?;
+        let name = crate::lisp::primitives::checked_symbol_identity(self, &args[0], env)?;
         let mut function = args[1];
         let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
         // No cycle check here: data.c:defalias leaves it to Ffset, which
@@ -402,7 +402,7 @@ impl Interpreter {
         {
             function = crate::lisp::primitives::purecopy_value(self, &function, env)?;
         }
-        let old_definition = self.logical_function_binding(&name, &Env::new());
+        let old_definition = self.raw_function_binding_symbol(&name, &Env::new());
         // data.c:defalias records no autoload in the dumping process
         // (loaddefs.el's would fill the image's `load-history').
         let autoload = matches!(
@@ -410,7 +410,7 @@ impl Interpreter {
             Some(Kind::Symbol(head)) if head.is_named("autoload")
         );
         if !autoload || !self.will_dump(env) {
-            self.record_definition_in_load_history("defun", &name);
+            self.record_symbol_definition_in_load_history("defun", &name);
         }
         if let Some(old_definition) = old_definition {
             self.record_function_redefinition(&name, old_definition);
@@ -429,11 +429,11 @@ impl Interpreter {
                         args[0],
                     ])));
                 }
-                self.fset_function(&name, function, env)?;
+                self.fset_function_symbol(&name, function, env)?;
             }
         }
         if !docstring.is_nil() {
-            self.put_symbol_property(&name, "function-documentation", docstring);
+            self.put_symbol_property_on(&name, "function-documentation", docstring);
         }
         Ok(args[0])
     }

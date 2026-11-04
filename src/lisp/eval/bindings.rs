@@ -1302,27 +1302,26 @@ impl Interpreter {
     // directly.  Returns true when the property handled the definition.
     pub(crate) fn defalias_fset_function_handles(
         &mut self,
-        name: &str,
+        symbol: &SymbolName,
         definition: &Value,
         env: &mut Env,
     ) -> bool {
-        let Some(fsetfun) = self.get_symbol_property(name, "defalias-fset-function") else {
+        let Some(fsetfun) = cached_symbol!("defalias-fset-function")
+            .with(|property| self.get_symbol_property_of(symbol, property))
+        else {
             return false;
         };
         if !fsetfun.is_truthy() {
             return false;
         }
-        let handled = self.call_function_value(
-            fsetfun,
-            None,
-            &[Value::Symbol(name.to_string().into()), *definition],
-            env,
-        );
+        let handled =
+            self.call_function_value(fsetfun, None, &[Value::Symbol(*symbol), *definition], env);
         handled.is_ok()
     }
 
     /// GNU keeps macro-ness and callable identity in the same function
     /// cell. Rebinding changes that payload without changing the obarray.
+    #[cfg(test)]
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {
         let symbol = SymbolName::intern_str(name);
         self.set_function_binding_symbol(&symbol, function);
@@ -1342,15 +1341,6 @@ impl Interpreter {
     /// Lisp `comp-subr-trampoline-install' before replacing an ordinary
     /// primitive, so the Rust runtime must do the same while leaving all
     /// trampoline policy and synthesis in comp-run.el/comp.el.
-    pub(crate) fn fset_function(
-        &mut self,
-        name: &str,
-        definition: Value,
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        self.fset_function_symbol(&SymbolName::intern_str(name), definition, env)
-    }
-
     pub(crate) fn fset_function_symbol(
         &mut self,
         symbol: &SymbolName,
@@ -1397,26 +1387,29 @@ impl Interpreter {
         self.timer_callback_depth += 1;
     }
 
-    pub(crate) fn defer_unloaded_defsubst(&mut self, name: &str, env: &Env) -> bool {
+    pub(crate) fn defer_unloaded_defsubst(&mut self, symbol: &SymbolName, env: &Env) -> bool {
         if self.timer_callback_depth == 0
             || !self
                 .lookup_var("loadhist-unload-filename", env)
                 .is_some_and(|value| value.is_truthy())
-            || self.get_symbol_property(name, "byte-optimizer")
-                != Some(Value::Symbol("byte-compile-inline-expand".into()))
+            || !cached_symbol!("byte-optimizer")
+                .with(|property| self.get_symbol_property_of(symbol, property))
+                .is_some_and(|optimizer| {
+                    matches!(optimizer.kind(), Kind::Symbol(name) if name.is_named("byte-compile-inline-expand"))
+                })
         {
             return false;
         }
-        let Some(definition) = self.globals.function_by_name(name) else {
+        let Some(definition) = self.globals.function(symbol) else {
             return false;
         };
         if !self
             .deferred_defsubst_unbindings
             .iter()
-            .any(|(queued, _)| queued == name)
+            .any(|(queued, _)| queued == symbol)
         {
             self.deferred_defsubst_unbindings
-                .push((name.to_string(), definition));
+                .push((*symbol, definition));
         }
         true
     }
@@ -1427,9 +1420,9 @@ impl Interpreter {
         if self.timer_callback_depth != 0 {
             return;
         }
-        for (name, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
-            if self.globals.function_by_name(&name) == Some(definition) {
-                self.set_function_binding(&name, None);
+        for (symbol, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
+            if self.globals.function(&symbol) == Some(definition) {
+                self.set_function_binding_symbol(&symbol, None);
             }
         }
     }

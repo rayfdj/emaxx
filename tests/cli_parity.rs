@@ -1647,3 +1647,63 @@ fn overlay_categories_and_symbol_properties_are_read_by_object() {
         ],
     );
 }
+
+#[test]
+fn defconst_stores_with_set_default_and_uninterned_symbols_are_kept_as_objects() {
+    // eval.c:Fdefconst_1 declares the symbol as given and stores with
+    // Fset_default, so into a `let''s binding of the variable; and an
+    // uninterned symbol keeps its identity through `kill-local-variable',
+    // `kill-all-local-variables', `defalias' with advice and an
+    // `interactive-form' alias chain, each reading the object rather than
+    // its name.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defvar t5-log nil)
+(defun t5-watch (sym val op where) (push (list (symbol-name sym) val op (and where t)) t5-log))
+;; kill-local-variable and kill-all-local-variables of an uninterned
+;; variable tell its own watchers and return it.
+(let ((v (make-symbol "t5-local")))
+  (add-variable-watcher v #'t5-watch)
+  (with-temp-buffer
+    (set (make-local-variable v) 1)
+    (prin1 (list (eq (kill-local-variable v) v) (local-variable-p v)))
+    (set (make-local-variable v) 2)
+    (kill-all-local-variables)
+    (prin1 (list (local-variable-p v) (nreverse t5-log))))
+  (terpri))
+;; defalias of an uninterned symbol: its history, docstring and advice.
+(let ((f (make-symbol "t5-fn")))
+  (defalias f (lambda (x) (* x 2)) "Doubles.")
+  (advice-add f :around (lambda (orig x) (1+ (funcall orig x))))
+  (defalias f (lambda (x) (* x 3)))
+  (prin1 (list (funcall f 2) (documentation f) (and (advice-member-p (lambda (orig x) (1+ (funcall orig x))) f) t)
+               (eq (car-safe (get f 'function-history)) nil)))
+  (terpri))
+;; interactive-form along an alias chain of uninterned symbols.
+(let ((a (make-symbol "t5-a")) (b (make-symbol "t5-b")))
+  (defalias b (lambda () (interactive "p") 1))
+  (defalias a b)
+  (put b 'interactive-form '(interactive "P"))
+  (prin1 (list (interactive-form a) (commandp a)))
+  (terpri))
+;; defconst stores with set-default, and declares the symbol as given.
+(defvar t5-c 0)
+(prin1 (list (let ((t5-c 1)) (defconst t5-c 2) t5-c) t5-c))
+(terpri)
+(defvaralias 't5-al 't5-base)
+(defconst t5-al 7 "Alias doc.")
+(prin1 (list t5-base (get 't5-al 'variable-documentation) (get 't5-base 'variable-documentation)
+             (get 't5-al 'risky-local-variable) (get 't5-base 'risky-local-variable)))
+(terpri)
+(prin1 (list (defconst-1 't5-c1 3 "C1 doc.") t5-c1 (get 't5-c1 'variable-documentation) (special-variable-p 't5-c1)))
+(terpri)
+)"#,
+        ],
+    );
+}

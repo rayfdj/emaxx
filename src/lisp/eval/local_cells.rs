@@ -227,10 +227,10 @@ impl LocalCells {
         }
     }
 
-    /// Kill NAME's binding, unloading its symbol's binding in LOADED (the
-    /// node it names is reused).
-    pub(crate) fn remove(&mut self, name: &str, loaded: &LoadedBindings) -> Option<Value> {
-        let symbol = SymbolName::find(name)?;
+    /// Kill SYMBOL's binding, unloading it in LOADED (the node it names is
+    /// reused).
+    pub(crate) fn remove(&mut self, symbol: &SymbolName, loaded: &LoadedBindings) -> Option<Value> {
+        let symbol = *symbol;
         let removed = match self.fixed_slot(&symbol) {
             Some(slot) => {
                 if self.present & (1 << slot) == 0 {

@@ -1001,14 +1001,20 @@ define_dispatch!(
                 // diverge from GNU at the 64th link, and the sibling
                 // `command-modes' walk is likewise uncapped.
                 let mut probe = args[0];
-                while let Ok(symbol) = probe.as_symbol() {
-                    let symbol = symbol.to_string();
-                    if let Some(form) = interp.get_symbol_property(&symbol, "interactive-form")
+                loop {
+                    let symbol = match probe.kind() {
+                        Kind::Symbol(symbol) => symbol,
+                        Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
+                        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+                        _ => break,
+                    };
+                    if let Some(form) = cached_symbol!("interactive-form")
+                        .with(|property| interp.get_symbol_property_of(&symbol, property))
                         && !matches!(form.kind(), Kind::Nil)
                     {
                         return Ok(form);
                     }
-                    match interp.logical_function_binding(&symbol, env) {
+                    match interp.raw_function_binding_symbol(&symbol, env) {
                         Some(next) => probe = next,
                         None => break,
                     }
@@ -1388,19 +1394,13 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let symbol = args[0].as_symbol()?;
-                let symbol_name = symbol.to_string();
-                interp.mark_special_variable(symbol);
-                if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
-                    let doc = purecopy_value(interp, doc, env)?;
-                    interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
-                }
-                let value = purecopy_value(interp, &args[1], env)?;
-                // eval.c:Fdefconst_1 stores with Fset_default, which refuses
-                // a constant.
-                super::call(interp, "set-default", &[args[0], value], env)?;
-                interp.put_symbol_property(&symbol_name, "risky-local-variable", Value::T);
-                Ok(Value::Symbol(symbol_name.into()))
+                // eval.c:Fdefconst_1: CHECK_SYMBOL, then SYMBOL as given
+                // declared and stored with Fset_default (which refuses a
+                // constant); SYMBOL itself comes back.
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                let doc = args.get(2).copied().unwrap_or(Value::Nil);
+                interp.defconst_1(&symbol, args[1], doc, env)?;
+                Ok(args[0])
             }
             "internal-make-var-non-special" => {
                 need_args(name, args, 1)?;

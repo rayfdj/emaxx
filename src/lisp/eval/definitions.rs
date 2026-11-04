@@ -69,8 +69,7 @@ impl Interpreter {
         // symbols are enabled, that means the definition is installed on
         // the underlying bare symbol while the original object is returned.
         let name_value = list_car(args);
-        let name = crate::lisp::primitives::checked_symbol_name(self, &name_value, env)?;
-        let resolved = self.resolve_variable_name(&name)?;
+        let symbol = crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
         if nargs > 3 {
             return Err(LispError::Signal("Too many arguments".into()));
         }
@@ -86,18 +85,21 @@ impl Interpreter {
             // it is wanted.
             let init = list_nth(args, 1);
             self.defvar_symbol(
-                &SymbolName::intern_str(&name),
+                &symbol,
                 list_nth(args, 2),
                 |interp, env| interp.eval(&init, env),
                 env,
             )?;
             return Ok(name_value);
-        } else if self.interpreter_environment_is_lexical(env) {
-            // GNU eval.c prepends the bare symbol to the current interpreter
-            // environment.  At file top level that environment is the
-            // per-load `(t)' scope installed by lread.c; it is never a
-            // process-wide special-variable declaration.
-            self.push_local_special_declaration(&resolved, env);
+        } else if self.interpreter_environment_is_lexical(env)
+            && !self.is_special_variable_symbol(&symbol)
+        {
+            // GNU eval.c prepends the bare symbol, as given, to the current
+            // interpreter environment unless it is declared special.  At
+            // file top level that environment is the per-load `(t)' scope
+            // installed by lread.c; it is never a process-wide
+            // special-variable declaration.
+            self.push_local_special_declaration(&symbol, env);
         }
         Ok(name_value)
     }
@@ -164,9 +166,27 @@ impl Interpreter {
         self.mark_special_variable_symbol(symbol);
         if !doc.is_nil() {
             let doc = crate::lisp::primitives::purecopy_value(self, &doc, env)?;
-            self.put_symbol_property(symbol.as_str(), "variable-documentation", doc);
+            self.put_symbol_property_on(symbol, "variable-documentation", doc);
         }
-        self.record_definition_in_load_history("defvar", symbol.as_str());
+        self.record_symbol_definition_in_load_history("defvar", symbol);
+        Ok(())
+    }
+
+    /// eval.c:Fdefconst_1: SYMBOL as given declared by
+    /// internal--define-uninitialized-variable, VALUE (purecopied while
+    /// `purify-flag' is set) stored with Fset_default, so into a `let''s
+    /// binding of it, and SYMBOL marked `risky-local-variable'.
+    pub(crate) fn defconst_1(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+        doc: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        self.define_uninitialized_variable(symbol, doc, env)?;
+        let value = crate::lisp::primitives::purecopy_value(self, &value, env)?;
+        crate::lisp::primitives::call(self, "set-default", &[Value::Symbol(*symbol), value], env)?;
+        self.put_symbol_property_on(symbol, "risky-local-variable", Value::T);
         Ok(())
     }
 
@@ -190,22 +210,12 @@ impl Interpreter {
         // eval.c:Fdefconst has the same CHECK_SYMBOL/XSYMBOL contract as
         // defvar for source-position symbols.
         let name_value = list_car(args);
-        let name = crate::lisp::primitives::checked_symbol_name(self, &name_value, env)?;
-        let resolved = self.resolve_variable_name(&name)?;
+        let symbol = crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
         if nargs > 3 {
             return Err(LispError::Signal("Too many arguments".into()));
         }
         let value = self.eval(&list_nth(args, 1), env)?;
-        self.mark_special_variable(&resolved);
-        let doc = list_nth(args, 2);
-        if !doc.is_nil() {
-            let doc = crate::lisp::primitives::purecopy_value(self, &doc, env)?;
-            self.put_symbol_property(&resolved, "variable-documentation", doc);
-        }
-        let value = crate::lisp::primitives::purecopy_value(self, &value, env)?;
-        self.set_default_toplevel_value(&resolved, value);
-        self.put_symbol_property(&resolved, "risky-local-variable", Value::T);
-        self.record_definition_in_load_history("defvar", &resolved);
+        self.defconst_1(&symbol, value, list_nth(args, 2), env)?;
         Ok(name_value)
     }
 

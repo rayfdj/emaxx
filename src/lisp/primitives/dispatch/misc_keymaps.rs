@@ -1368,8 +1368,8 @@ define_dispatch!(
                     let prop = cached_symbol!("permanent-local")
                         .with(|property| interp.get_symbol_property_of(name, property))
                         .filter(|value| !kill_permanent && value.is_truthy());
-                    interp.notify_variable_watchers(
-                        name.as_str(),
+                    interp.notify_variable_watchers_symbol(
+                        name,
                         Value::Nil,
                         "makunbound",
                         Some(buffer_id),
@@ -1380,8 +1380,8 @@ define_dispatch!(
                         // elements that want to be kept.
                         Some(prop) if prop.eq_value(Value::symbol("permanent-local-hook")) => {
                             let newlist = permanent_hook_elements(interp, *value, env)?;
-                            interp.notify_variable_watchers(
-                                name.as_str(),
+                            interp.notify_variable_watchers_symbol(
+                                name,
                                 newlist,
                                 "makunbound",
                                 Some(buffer_id),

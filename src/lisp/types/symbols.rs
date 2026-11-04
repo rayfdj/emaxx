@@ -418,6 +418,9 @@ const KEY_NAMES: &[&str] = &[
     "gnutls-code",
     "function-documentation",
     "suppress-keymap",
+    "defalias-fset-function",
+    "function-history",
+    "byte-optimizer",
 ];
 
 struct Symbols {

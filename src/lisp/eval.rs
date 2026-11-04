@@ -4747,7 +4747,8 @@ impl Interpreter {
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
-        for (_, value) in &self.deferred_defsubst_unbindings {
+        for (symbol, value) in &self.deferred_defsubst_unbindings {
+            mark(&Value::Symbol(*symbol));
             mark(value);
         }
         if let Some(value) = &self.last_thread_error {
@@ -5236,8 +5237,8 @@ impl Interpreter {
                 c.copy(&clone.alternative_font_family_alist.clone());
             clone.alternative_font_registry_alist =
                 c.copy(&clone.alternative_font_registry_alist.clone());
-            for (name, value) in &mut clone.deferred_defsubst_unbindings {
-                c.copy_symbol_spelling(name);
+            for (symbol, value) in &mut clone.deferred_defsubst_unbindings {
+                *symbol = c.copy_symbol(*symbol);
                 *value = c.copy(value);
             }
             if let Some(error) = &clone.last_thread_error {
@@ -6096,7 +6097,7 @@ pub struct InterpreterState {
     /// defsubst definitions removed by loadhist alive until the active timer
     /// returns, matching calls that GNU compiled inline into the callback.
     timer_callback_depth: usize,
-    deferred_defsubst_unbindings: Vec<(String, Value)>,
+    deferred_defsubst_unbindings: Vec<(SymbolName, Value)>,
     pending_file_notifications: Vec<PendingFileNotification>,
     file_notify_watches: HashMap<i64, FileNotifyWatch>,
     #[cfg(target_os = "macos")]

@@ -327,9 +327,10 @@ fn is_index(value: &Option<Value>) -> bool {
     value.as_ref().and_then(int_fixnum).is_some_and(|n| n >= 0)
 }
 
-/// fns.c:Fget of SYMBOL's PROPERTY.
+/// fns.c:Fget of SYMBOL's PROPERTY: the symbol object's plist, PROPERTY
+/// compared as plist_get compares a Rust caller's name.
 fn fget(interp: &Interpreter, symbol: &Value, property: &str) -> Option<Value> {
-    interp.get_symbol_property(symbol.as_symbol().ok()?, property)
+    interp.get_property_of_symbol_value(*symbol, property)
 }
 
 /// What resolve_symbol_ccl_program makes of a vector.
