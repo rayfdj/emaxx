@@ -13923,6 +13923,50 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 289: Bcall's quit check before every call, and dynamic-binding
+  byte code entered in place.** bytecode.c's Bcall runs maybe_quit
+  before it looks at the callee, so an atimer or a fatal signal whose
+  handler left pending_signals set is processed at the next call of any
+  kind. The verified loop's plain entries (a lexical closure entered in
+  place, a subr or native function called from the loop) tested only the
+  quit flag, through `plain_bcall_entry''s depth gate: a
+  `funcall-with-delayed-message' whose timeout expired during a
+  byte-code recursion with no loop in it never showed its message, which
+  GNU shows at the next call, and a SIGTERM there waited for the next
+  backward jump or full call. `plain_bcall_entry' now tests the pending
+  signals too, for every plain entry (the separate tests round 287 put
+  in the Rust funcall and native paths fold into it), and the full Call
+  arm's maybe_quit runs the handlers. Bcall reaches a dynamic-binding
+  function through funcall_general, whose funcall_lambda specbinds the
+  formals and runs the code with no arguments; Emaxx went through the
+  general funcall (`bytecode_call', `call_function_value_inner',
+  `run_dynamic' with its own activation and `bind_dynamic_arguments'),
+  1,226 instructions a call of a one-argument recursion against GNU's
+  665. When the walk of the formals binds and does nothing else (each
+  bound formal a symbol whose cell holds its value, at most eight, the
+  keywords where funcall_lambda takes them, the arguments taken, and the
+  caller under the nil environment, so that no
+  internal-interpreter-environment binding is made),
+  `enter_dynamic_frame' now enters the callee's frame in the loop as a
+  lexical one's is, with the bindings on the unwind list above the
+  frame's watermark and the backtrace record below them; Breturn undoes
+  them in place (`return_unbinding'), and a signal or throw through the
+  frame undoes them as it undoes any frame's entries. Any other walk,
+  including every one that signals, takes the full call as before. The
+  usual restore of a plain binding (`store_plain_value') is inline and
+  `unbind_plain' drops its entry without the drop glue. A
+  dynamic-binding call now costs 763 instructions (enter 269, the
+  return's unbinding 172, the loop 322) and a lexical one 388 against
+  383 before, the pending-signal test. A 60-case comparison of
+  dynamic-binding calls (optional and rest formals, arity and arglist
+  errors, constants, C, buffer-local and watched variables, setq and
+  make-local-variable of a formal, signals and throws through the
+  frames, backtrace locals, the depth limit, a mutated arglist) matches
+  GNU; two command-line comparisons cover the delayed message during
+  lexical and dynamic recursions and the binding cases. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16080,7 +16124,28 @@ tramp-tests (20,150 against 16,400), comp-tests (16,920 against 13,520),
 semantic-utest-ia (4,140 against 2,530), mule-tests (3,490 against
 1,920) and package-tests (6,950 against 6,020).
 
+**On `ea14844`** (round 288): the full Rust gate (run 41764081651)
+passed; the frozen run (run 41764084690) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 85.7 s against 68.8 s (1.246),
+test bodies 308.3 s against 273.1 s (1.129), in all 1.137, with a
+per-file setup median of 129 ms against 106, on a slower runner still
+(GNU's own setup 68.8 s, its bodies 273.1 s). The widest body gaps are
+ert-tests (46,120 ms against 38,830), tramp-tests (23,920 against
+20,070), comp-tests (17,520 against 15,020), semantic-utest-ia (4,190
+against 2,630), mule-tests (3,380 against 2,030) and package-tests
+(7,180 against 6,280).
+
 **Findings recorded, not fixed:**
+- **A dynamic-binding byte-code call from byte code costs about 100
+  instructions more than GNU's (round 289).** A one-argument recursion
+  takes 763 instructions a call against GNU's 665 (exec_byte_code 375,
+  funcall_lambda 130, unbind_to 65, specbind 48, funcall_general 47):
+  `enter_dynamic_frame' 269, in which the binding's restore record (a
+  104-byte SpecialBindingRestore against specbind's four-word entry) and
+  the unwind list's 64-byte entry are about 40, the return's unbinding
+  172 (`return_unbinding' 119, which tests the frame again after the
+  unbinding, and `unbind_plain' 53) and the loop's own 322. A lexical
+  call takes 388 against GNU's 332.
 - **What a fatal signal does in GNU that it does not in Emaxx (rounds
   115 and 285).** A fault the kernel raises in Emaxx's own code (a
   SIGSEGV, SIGBUS, SIGFPE or SIGILL it did not send itself) ends Emacs

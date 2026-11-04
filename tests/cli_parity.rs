@@ -657,6 +657,105 @@ fn atimer_is_atimer_c_s() {
     );
 }
 
+#[test]
+#[cfg(target_os = "linux")]
+fn byte_code_calls_check_for_pending_signals() {
+    // bytecode.c's Bcall runs maybe_quit before every call, however the
+    // callee is entered: a delayed message's atimer that expires during a
+    // byte-code recursion with no loop in it shows at the next call, of a
+    // lexical-binding function entered in place or of a dynamic-binding
+    // one through funcall_lambda.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (defun pend-lex (n) (if (< n 2) n (+ (pend-lex (- n 1)) (pend-lex (- n 2)))))
+  (eval '(defun pend-dyn (n) (if (< n 2) n (+ (pend-dyn (- n 1)) (pend-dyn (- n 2))))) nil)
+  (require 'bytecomp)
+  (setq byte-compile-warnings nil)
+  (byte-compile 'pend-lex)
+  (byte-compile 'pend-dyn)
+  (dolist (f '(pend-lex pend-dyn))
+    (with-current-buffer "*Messages*"
+      (let ((inhibit-read-only t)) (erase-buffer))
+      (princ (format "%S %S" f (funcall-with-delayed-message 0.01 (format "%s ran long" f)
+                                   (lambda () (funcall f 30)))))
+      (princ (format " %S\n" (string-trim (buffer-string)))))))"#,
+        ],
+    );
+}
+
+#[test]
+fn dynamic_binding_byte_code_binds_as_funcall_lambda() {
+    // eval.c:funcall_lambda's binding of a dynamic-binding function's
+    // formals, for byte code called from byte code: each specbound for the
+    // call and its callees, &optional ones to nil, the first after &rest to
+    // the list of the rest, unbound on return, signal and throw; the
+    // arity and arglist errors, a constant's `setting-constant', a C
+    // variable's and a watched variable's bindings, a binding made local
+    // inside, the backtrace's locals, the depth limit, and the live arglist.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (require 'bytecomp)
+  (setq byte-compile-warnings nil)
+  (eval '(progn
+    (defvar dz-a 'outer-a) (defvar dz-b 'outer-b) (defvar dz-w 1) (defvar dz-log nil)
+    (defun dz-peek () (list dz-a dz-b))
+    (defun dz-basic (dz-a dz-b) (list dz-a dz-b (dz-peek)))
+    (defun dz-opt (dz-a &optional dz-b c) (list dz-a dz-b c (dz-peek)))
+    (defun dz-rest (dz-a &rest dz-b) (list dz-a dz-b (dz-peek)))
+    (defun dz-optrest (dz-a &optional dz-b &rest c) (list dz-a dz-b c))
+    (defun dz-setq (dz-a) (setq dz-a (* dz-a 10)) (list dz-a (dz-peek)))
+    (defun dz-err (dz-a) (if (> dz-a 0) (dz-err (1- dz-a)) (signal 'error (list "bottom" (dz-peek)))))
+    (defun dz-throw (dz-a) (if (> dz-a 0) (dz-throw (1- dz-a)) (throw 'dz-tag (dz-peek))))
+    (defun dz-local (dz-a) (make-local-variable 'dz-a) (setq dz-a 99) (list dz-a))
+    (defun dz-cfs (case-fold-search) (list case-fold-search (string-match "A" "a")))
+    (defun dz-locals (dz-a dz-b)
+      (let ((n 0) found)
+        (while (and (< n 40) (not found))
+          (when (eq (cadr (backtrace-frame n)) 'dz-locals) (setq found (backtrace--locals n)))
+          (setq n (1+ n)))
+        (assq 'dz-a found)))
+    (defun dz-deep (n) (if (= n 0) 0 (1+ (dz-deep (1- n)))))
+    (defun dz-many (a b c d e f g h i j) (list a b c d e f g h i j))
+    (defun dz-watch (dz-w) (list dz-w))
+    (defun dz-mut (p q) (list p q))
+    (defun dz-caller (x) (list (dz-basic x 'y) (dz-opt x) (dz-rest x 1 2) (dz-optrest x 1 2 3)
+                               (dz-setq 5) (condition-case e (dz-err 3) (error e)) (catch 'dz-tag (dz-throw 3))
+                               (dz-local 1) (dz-cfs nil) (dz-cfs t) (dz-locals 1 2) (dz-deep 100)
+                               (dz-many 1 2 3 4 5 6 7 8 9 10) (dz-watch 5) (dz-mut 1 2) (dz-peek))))
+    nil)
+  (dolist (f '(dz-peek dz-basic dz-opt dz-rest dz-optrest dz-setq dz-err dz-throw dz-local dz-cfs
+               dz-locals dz-deep dz-many dz-watch dz-mut dz-caller))
+    (byte-compile f))
+  (add-variable-watcher 'dz-w (lambda (s n o w) (push (list s n o w) dz-log)))
+  (dolist (form '((dz-caller 'x) (list dz-a dz-b case-fold-search (local-variable-p 'dz-a))
+                  (dz-basic 1) (dz-basic 1 2 3) (dz-opt 1 2 3 4) (dz-many 1 2)
+                  (let ((max-lisp-eval-depth 100)) (dz-deep 500))
+                  (progn (setcar (aref (symbol-function 'dz-mut) 0) 'pp) (dz-mut 1 2))
+                  (list (boundp 'pp) (boundp 'p))
+                  (progn (defalias 'dz-bad (make-byte-code '(a &rest) "\300\207" [nil] 2)) (dz-bad 1))
+                  (progn (defalias 'dz-bad2 (make-byte-code '(a . b) "\300\207" [nil] 2)) (dz-bad2 1))
+                  (progn (defalias 'dz-bad3 (make-byte-code '(a 5) "\300\207" [nil] 2)) (dz-bad3 1 2))
+                  (progn (defalias 'dz-kw (make-byte-code '(:k) "\300\207" [nil] 2)) (dz-kw 1))
+                  (progn (defalias 'dz-nil (make-byte-code '(nil) "\300\207" [nil] 2)) (dz-nil 1))
+                  (funcall (byte-compile (lambda (x) (dz-basic x 3))) 4)
+                  (reverse dz-log)))
+    (princ (format "%S\n" (condition-case e (eval form t) (error (list 'error e)))))))"#,
+        ],
+    );
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

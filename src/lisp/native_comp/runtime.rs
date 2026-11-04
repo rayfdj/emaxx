@@ -3833,7 +3833,6 @@ fn invoke_plain_native_funcall(
     let native = RegisteredNative(callee.native_function_ref()?);
     if !native.admits(arguments.len())
         || !interpreter.plain_bcall_entry(name)
-        || crate::lisp::primitives::atimer::signals_pending()
         || !runtime.heap.collection_cannot_be_due()
     {
         return None;

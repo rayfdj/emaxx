@@ -1470,7 +1470,6 @@ impl Interpreter {
         if let Some(closure) = function.closure_ref() {
             if !closure.is_bytecode()
                 || !self.plain_bcall_entry(name)
-                || primitives::atimer::signals_pending()
                 || !crate::lisp::native_comp::collection_cannot_be_due(self)
             {
                 return None;
@@ -1482,9 +1481,7 @@ impl Interpreter {
             return Some(result);
         }
         let callee = self.plain_bcall_callee(func, function)?;
-        if primitives::atimer::signals_pending()
-            || !crate::lisp::native_comp::collection_cannot_be_due(self)
-        {
+        if !crate::lisp::native_comp::collection_cannot_be_due(self) {
             return None;
         }
         let depth = self.enter_plain_funcall(func, args);
@@ -2510,7 +2507,8 @@ impl InterpreterState {
     }
 
     /// The entry tests of a Bcall when nothing else happens on the way
-    /// in: Ffuncall's maybe_quit finds no quit, the depth stays within
+    /// in: Ffuncall's maybe_quit finds no quit and no signal a handler
+    /// left pending (an atimer's, a fatal one's), the depth stays within
     /// max-lisp-eval-depth, no termination is pending, the debugger is not
     /// to be entered at this call (debug_on_next_call), no debugger context
     /// is captured (Edebug is not entered and the callee is not
@@ -2523,6 +2521,7 @@ impl InterpreterState {
         // eval_sub's compare); the gate holds the quit, termination,
         // debug-on-next-call and profiler tests.
         (self.lisp_eval_depth as i64) < self.call_depth_gate
+            && !primitives::atimer::signals_pending()
             && !self.edebug_may_be_entered()
             && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
     }

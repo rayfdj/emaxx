@@ -2563,13 +2563,24 @@ impl Interpreter {
 
     /// `store_plain_restore's store of PREVIOUS, the value a plain binding
     /// of NAME saved (None for a void one), back into NAME's cell.
-    #[inline]
+    #[inline(always)]
     fn store_plain_value(&mut self, name: &SymbolName, previous: Option<Value>) {
+        // The usual restore: a saved value into a cell that holds one.
+        if let Some(value) = previous
+            && self.globals.replace_bound_value(name, value)
+        {
+            return;
+        }
+        self.store_plain_value_into_cell(name, previous);
+    }
+
+    /// `store_plain_value' into a cell that holds no value, or of a void
+    /// one's PREVIOUS.
+    #[inline(never)]
+    fn store_plain_value_into_cell(&mut self, name: &SymbolName, previous: Option<Value>) {
         match previous {
             Some(value) => {
-                if !self.globals.replace_bound_value(name, value) {
-                    self.globals.insert(name, value);
-                }
+                self.globals.insert(name, value);
             }
             None => self.remove_global_binding_symbol(name),
         }
@@ -2620,6 +2631,13 @@ impl Interpreter {
         } else {
             self.plain_c_slot_value(symbol, value)?
         };
+        Some(self.specbind_plain_store(symbol, value))
+    }
+
+    /// `specbind_plain' of SYMBOL, whose cell holds its value
+    /// (`plain_store'), to VALUE: the store and the record.
+    #[inline(always)]
+    pub(crate) fn specbind_plain_store(&mut self, symbol: &SymbolName, value: Value) -> u64 {
         let binding_id = self.next_special_binding_id;
         self.next_special_binding_id += 1;
         let previous = self.globals.value(symbol);
@@ -2640,7 +2658,7 @@ impl Interpreter {
             local_binding_killed: false,
             frame_depth,
         });
-        Some(binding_id)
+        binding_id
     }
 
     /// eval.c:specbind for the symbol in hand: the alias chain, the
