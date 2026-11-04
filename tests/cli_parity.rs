@@ -599,6 +599,30 @@ fn profiler_is_profiler_c_s() {
 }
 
 #[test]
+fn huge_years_keep_glibcs_daylight_saving_rules() {
+    // glibc's tzset.c:compute_change counts the days to a year's January
+    // 1st in int; from year 5,881,581 the count wraps, and the daylight
+    // saving time changes it gives, wherever they land, are what
+    // `decode-time' and `format-time-string' report, for a TZ rule as for
+    // a TZif file's footer.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(dolist (zone '("EST5EDT,M3.2.0,M11.1.0" "America/New_York" "Australia/Sydney"
+                         "NZST-12NZDT,M9.5.0,M4.1.0/3" "EST5EDT,J60/2,J300/2"))
+  (dolist (time '(1690000000 157722601487760 157722622223760 185650509191760
+                  1125899906842624 -1125899906842624 36028797018963968))
+    (princ (format "%S %S %S %S\n" zone time (decode-time time zone)
+                   (format-time-string "%Y-%m-%d %T %Z %z" time zone)))))"#,
+        ],
+    );
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn atimer_is_atimer_c_s() {
     // atimer.c and keyboard.c: `funcall-with-delayed-message' starts a

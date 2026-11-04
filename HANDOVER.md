@@ -13896,6 +13896,33 @@ setup_process_coding_systems's check now refuses). A 13-form
   its own after them, with Gnulib's rounding ported in place of a
   floor), the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 288: tzset.c's int day count.** glibc's compute_change sums
+  the days from 1970 to a year's January 1st in int (`(year - 1970) *
+  365' and the leap days, YEAR being the int `1900 + tm->tm_year') and
+  only then widens the sum by SECSPERDAY, a __time64_t. From year
+  5,881,581 the sum wraps, the year's daylight saving changes land where
+  the wrapped count puts them, and a summer time there is standard time.
+  Round 117's port summed in 64 bits and kept the rule's true changes,
+  so `decode-time' and `format-time-string' of a time past that year, in
+  a zone with daylight saving time (a POSIX rule, or a TZif file's
+  footer past its last transition), gave daylight saving time where GNU
+  gives standard time: 6 cases of a 10,000-case time-function fuzz, 51
+  of another aimed at huge times, all of them in year 35 million or
+  later. Now as the compiled glibc 2.39: the year as an int and the day
+  count in wrapping int arithmetic, which matches glibc's localtime_r
+  under TZ=EST5EDT in 80 of 80 samples from year 5 million to year 2
+  billion, where the 64-bit sum matched 27. Six 10,000-case fuzzes of
+  `format-time-string' (random directives with flags and widths),
+  `decode-time' (each FORM), `encode-time', `time-convert' and the time
+  arithmetic, over times from bignum ticks and (TICKS . HZ) pairs to
+  floats and NaN and zones from integers and (OFFSET ABBR) to 26 POSIX
+  rules (J, n and M dates, negative and past-24-hour change times, both
+  hemispheres) and TZif files, now match GNU in every case, under TZ=UTC
+  and TZ=America/Los_Angeles. A unit test pins six of glibc's answers,
+  and a command-line comparison covers five zones at huge years. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16041,6 +16068,17 @@ tramp-tests (17,410 ms against 14,890), comp-tests (13,850 against
 11,730), ert-tests (33,550 against 31,630), semantic-utest-ia (3,060
 against 2,090), mule-tests (2,420 against 1,520) and package-tests
 (6,230 against 5,670).
+
+**On `6219f85`** (round 287): the full Rust gate (run 41758789771)
+passed; the frozen run (run 41758793118) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 79.5 s against 59.5 s (1.335),
+test bodies 293.0 s against 256.9 s (1.141), in all 1.165, with a
+per-file setup median of 119 ms against 91, on a slower runner (GNU's
+own setup 59.5 s against round 286's 51.0, its bodies 256.9 s against
+234.2). The widest body gaps are ert-tests (44,310 ms against 35,930),
+tramp-tests (20,150 against 16,400), comp-tests (16,920 against 13,520),
+semantic-utest-ia (4,140 against 2,530), mule-tests (3,490 against
+1,920) and package-tests (6,950 against 6,020).
 
 **Findings recorded, not fixed:**
 - **What a fatal signal does in GNU that it does not in Emaxx (rounds
