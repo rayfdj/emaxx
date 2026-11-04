@@ -11,6 +11,9 @@ use super::*;
 /// emacs_re_max_failures * TYPICAL_FAILURE_SIZE: the failure stack's
 /// largest size, in items.
 const FAIL_STACK_LIMIT: usize = 40_000 * 20;
+/// The failure stack's first allocation, in items (INIT_FAILURE_ALLOC
+/// failures of TYPICAL_FAILURE_SIZE items).
+const INIT_FAIL_STACK: usize = 20 * 20;
 
 /// REG_UNSET, and GNU's NULL string position.
 const UNSET: isize = -1;
@@ -190,23 +193,56 @@ impl MatchState {
         }
     }
 
-    /// ENSURE_FAIL_STACK: room for SPACE more items, or GNU's -2.
+    /// ENSURE_FAIL_STACK (3) and then the three items of one record (a
+    /// failure point, a register or a counter) written into the room it
+    /// made, as the PUSH_FAILURE_* macros store at `fail_stack.avail++'
+    /// with no further test; GNU's -2 past the limit.
     #[inline(always)]
-    fn ensure(&self, space: usize) -> Result<(), MatchError> {
-        if FAIL_STACK_LIMIT - self.stack.len() <= space {
-            Err(MatchError::Overflow)
-        } else {
-            Ok(())
+    fn push3(&mut self, first: isize, second: isize, third: isize) -> Result<(), MatchError> {
+        let len = self.stack.len();
+        if FAIL_STACK_LIMIT - len <= 3 {
+            return Err(MatchError::Overflow);
         }
+        if self.stack.capacity() - len < 3 {
+            self.grow();
+        }
+        // SAFETY: the capacity test above leaves at least three items of
+        // spare capacity past LEN, which these writes fill before the
+        // length takes them in.
+        unsafe {
+            let end = self.stack.as_mut_ptr().add(len);
+            end.write(first);
+            end.add(1).write(second);
+            end.add(2).write(third);
+            self.stack.set_len(len + 3);
+        }
+        Ok(())
+    }
+
+    /// GROW_FAIL_STACK: double the stack's room (the limit is tested by
+    /// the push).
+    #[cold]
+    #[inline(never)]
+    fn grow(&mut self) {
+        self.stack
+            .reserve(self.stack.capacity().max(INIT_FAIL_STACK));
+    }
+
+    /// The top record's three items, last pushed first, popped together.
+    #[inline(always)]
+    fn pop3(&mut self) -> [isize; 3] {
+        let len = self.stack.len();
+        let &[first, second, third] = &self.stack[len - 3..] else {
+            unreachable!("a record has three items")
+        };
+        self.stack.truncate(len - 3);
+        [third, second, first]
     }
 
     /// PUSH_FAILURE_POINT.
     #[inline(always)]
     fn push_failure_point(&mut self, pattern: usize, string: isize) -> Result<(), MatchError> {
-        self.ensure(3)?;
-        self.stack.push(self.frame as isize);
-        self.stack.push(string);
-        self.stack.push(pattern as isize);
+        self.push3(self.frame as isize, string, pattern as isize)?;
         self.frame = self.stack.len();
         Ok(())
     }
@@ -214,42 +250,34 @@ impl MatchState {
     /// PUSH_FAILURE_REG.
     #[inline(always)]
     fn push_failure_reg(&mut self, n: usize) -> Result<(), MatchError> {
-        self.ensure(3)?;
-        self.stack.push(self.regstart[n]);
-        self.stack.push(self.regend[n]);
-        self.stack.push(n as isize);
-        Ok(())
+        self.push3(self.regstart[n], self.regend[n], n as isize)
     }
 
     /// PUSH_NUMBER: set the counter at AT to VALUE, restored on backtrack.
     #[inline(always)]
     fn push_number(&mut self, buf: &mut [u8], at: usize, value: i32) -> Result<(), MatchError> {
-        self.ensure(3)?;
-        self.stack
-            .extend_from_slice(&[extract_number(buf, at) as isize, at as isize, -1]);
+        self.push3(extract_number(buf, at) as isize, at as isize, -1)?;
         store_number(buf, at, value);
         Ok(())
     }
 
     /// POP_FAILURE_POINT: restore the registers and counters the top frame
     /// saved; its string and pattern positions.
+    #[inline(always)]
     fn pop_failure_point(&mut self, buf: &mut [u8]) -> (isize, usize) {
         while self.frame < self.stack.len() {
-            let reg = self.stack.pop().expect("in the frame");
-            if reg == -1 {
-                let at = self.stack.pop().expect("a counter's place") as usize;
-                let value = self.stack.pop().expect("a counter's value") as i32;
-                store_number(buf, at, value);
-            } else {
-                let reg = reg as usize;
-                self.regend[reg] = self.stack.pop().expect("a register's end");
-                self.regstart[reg] = self.stack.pop().expect("a register's start");
+            match self.pop3() {
+                [-1, at, value] => store_number(buf, at as usize, value as i32),
+                [reg, end, start] => {
+                    let reg = reg as usize;
+                    self.regend[reg] = end;
+                    self.regstart[reg] = start;
+                }
             }
         }
-        let pattern = self.stack.pop().expect("a failure point") as usize;
-        let string = self.stack.pop().expect("a failure point");
-        self.frame = self.stack.pop().expect("a failure point") as usize;
-        (string, pattern)
+        let [pattern, string, frame] = self.pop3();
+        self.frame = frame as usize;
+        (string, pattern as usize)
     }
 
     /// CHECK_INFINITE_LOOP: whether a failure point for PAT_CUR at the same
@@ -425,6 +453,30 @@ fn re_match_2_internal<E: MatchEnv + ?Sized>(
                         if d == stop {
                             d = dfail;
                             break 'exactn Next::Fail;
+                        }
+                        let (pat_lead, text_lead) = (buf[p], rd.byte(d));
+                        if pat_lead < 0x80 && text_lead < 0x80 {
+                            // Two ASCII characters, each its own code and
+                            // one byte long: the general test below with
+                            // nothing to decode.
+                            let folded = tr!(u32::from(text_lead));
+                            let same = if target_multibyte {
+                                folded == u32::from(pat_lead)
+                            } else {
+                                char_to_unibyte(folded).unwrap_or(u32::from(text_lead))
+                                    == u32::from(pat_lead)
+                            };
+                            if !same {
+                                d = dfail;
+                                break 'exactn Next::Fail;
+                            }
+                            p += 1;
+                            d += 1;
+                            mcnt -= 1;
+                            if mcnt == 0 {
+                                break 'exactn Next::Continue;
+                            }
+                            continue;
                         }
                         let (pat_stored, pat_len) = decode_stored(&buf[p..]);
                         let pat_mb = code_of_stored(pat_stored);

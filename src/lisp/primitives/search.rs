@@ -757,7 +757,11 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
 
     #[inline]
     fn maybe_quit(&mut self) -> Result<(), LispError> {
-        if let Some(error) = self.error.take() {
+        // Tested before it is taken: the matcher asks at every failure,
+        // and a take would store the empty slot back each time.
+        if self.error.is_some()
+            && let Some(error) = self.error.take()
+        {
             return Err(error);
         }
         self.interp.maybe_quit(self.env)

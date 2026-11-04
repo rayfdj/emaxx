@@ -919,6 +919,37 @@ fn arithmetic_is_data_c_arith_driver() {
     );
 }
 
+#[test]
+fn matcher_backtracks_and_folds_as_regex_emacs() {
+    // re_match_2_internal's failure stack (failure points, saved
+    // registers, `\{n,m\}' counters) and a case-folded EXACTN over ASCII
+    // and other text, in multibyte and unibyte buffers and strings.
+    // No pattern ends in a loop: a POSIX one has no final `succeed', and
+    // GNU's forall_firstchar reads the stale byte past it there.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(dolist (case-fold-search '(nil t))
+  (dolist (s '("abAB!=->foo" "FOOfooFoO" "éÉéa xXy" "ıİiI kK" "ßSSss" "ABABAB" "->->!=" "x.y.z"))
+    (dolist (re '("\\(?:!=\\|##\\|->\\|[-+*/]\\)" "\\(ab\\|AB\\)\\{1,3\\}" "\\(fo\\|FO\\)+o" "\\(É\\|é\\)\\{0,2\\}a"
+                  "\\(K\\|\\w\\|SS\\)?\\(K\\)\\{0,2\\}ı*[ k]" "\\(x\\|X\\)\\(\\.\\|y\\)*?z" "ß\\|SS\\|ss" "\\(a\\|b\\)*\\1"))
+      (print (list case-fold-search s re (string-match re s) (match-data t)
+                   (with-temp-buffer
+                     (insert s)
+                     (let (r) (dotimes (i (1+ (buffer-size))) (goto-char (1+ i)) (push (and (looking-at re) (match-data t)) r)) r))
+                   (with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert (encode-coding-string s 'utf-8))
+                     (let (r) (dotimes (i (1+ (buffer-size))) (goto-char (1+ i)) (push (and (looking-at re) (match-data t)) r)) r))
+                   (posix-string-match re s) (match-data t))))))"#,
+        ],
+    );
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

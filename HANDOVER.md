@@ -14058,6 +14058,36 @@ setup_process_coding_systems's check now refuses). A 13-form
   and the one-argument forms. Local validation: the grouped gate's
   3,501 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 293: the matcher's failure stack as regex-emacs.c keeps it.**
+  semantic-utest-ia's doublens test calls `looking-at' 754,000 times,
+  628,000 of them with cc-mode's punctuation-token alternation, whose
+  twenty-odd alternatives each push a failure point, test a first
+  character and pop the point again (`looking-at' uses no fastmap). The
+  PUSH_FAILURE_* macros store their three items at `fail_stack.avail++'
+  after one ENSURE_FAIL_STACK, where Emaxx pushed each item onto a Vec
+  that tested its capacity and stored its length again; a record is now
+  written into the room one test makes (`push3') and read back with one
+  bounds test (`pop3'), the stack doubling when full as GROW_FAIL_STACK
+  doubles it, its limit unchanged. The quit check at each failure tests
+  the environment's pending error before taking it, where it stored the
+  empty slot back every time, and a case-folded EXACTN compares an ASCII
+  pattern character with an ASCII text character through the translation
+  without decoding either. For that pattern the matcher takes 2,579
+  instructions a call against 3,286 (GNU's re_match_2_internal 2,852)
+  and `looking-at' 3,609 against 4,317 (GNU's looking_at_1 3,350, the
+  rest of the difference spread over the snapshot, the case table, the
+  pattern cell and the registers); the doublens test with its setup
+  takes 7.08G instructions against 7.31G (GNU's 6.99G). Regex fuzzes
+  (eight seeds) and case-folded backtracking fuzzes (eight seeds over
+  failure points, saved registers and interval counters in multibyte and
+  unibyte buffers and strings) match GNU; a command-line comparison
+  covers the same paths. Its patterns keep a loop off their end, where a
+  POSIX pattern has no final `succeed' and GNU's forall_firstchar reads
+  the stale byte past it (as recorded under the regex findings): with
+  one such pattern the oracle itself aborted in the first integration
+  run, on whatever the byte held. Local validation: the grouped gate's
+  3,501 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16262,6 +16292,23 @@ that took 120 to 420 ms each where round 290's took 6 to 38 ms and the
 file's later tests took their usual time: a stall of the runner (GNU's
 first two export tests took 399 and 207 ms in round 290's run), since
 the file runs in the same time locally in builds of rounds 287 and 292.
+
+**On `c37d92b`** (round 292): the full Rust gate (run 41779226464)
+passed; the frozen run (run 41779229607) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 76.4 s against 61.1 s (1.250),
+test bodies 292.3 s against 263.1 s (1.111), in all 1.126, with a
+per-file setup median of 114 ms against 94, on a slower runner than
+round 291's (GNU's own setup 61.1 s against 50.9 and its bodies 263.1 s
+against 240.4). The widest body gaps are ert-tests (44,720 ms against
+37,010), tramp-tests (22,460 against 18,730), comp-tests (16,280 against
+13,740), semantic-utest-ia (3,770 against 2,400) and mule-tests (3,050
+against 1,880). ert-tests' gap is ert-test-run-tests-batch-expensive
+(43,680 ms against 36,450, where round 291's run took 31,910 against
+30,790), whose `cl-search' over the failing test's backtrace messages
+takes 4.59G instructions in release builds of rounds 287 and 292 alike
+against GNU's 4.90G, and 6.52G in the gate profile the frozen run
+builds: the two runs' 1.04 and 1.20 both sit under that profile's 1.33,
+the runner deciding how much of it shows.
 
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal
