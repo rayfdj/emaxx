@@ -983,6 +983,74 @@ fn aref_of_a_char_table_is_char_table_ref() {
 }
 
 #[test]
+fn bindings_and_unwind_records_share_one_specpdl() {
+    // eval.c's one specpdl: a throw or a signal undoes the bindings and
+    // the unwind records above its catch innermost first, so an
+    // unwind-protect's handler runs after the inner bindings are gone and
+    // before the outer ones, and a watcher hears each `unlet' in that
+    // order; Bunbind over a saved current buffer, a buffer-local binding
+    // undone from another buffer, save-excursion and save-restriction in
+    // recursion, interpreted and byte-compiled.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (defvar sp-1 'g1) (defvar sp-2 'g2) (defvar sp-3 'g3) (defvar sp-4 'g4)
+  (defvar sp-log nil)
+  (add-variable-watcher 'sp-3 (lambda (sym new op where)
+                                (push (list 'watch sym new op (and where (buffer-name where))) sp-log)))
+  (defun sp-f1 (b2)
+    (catch 'k
+      (let ((sp-1 'l1))
+        (unwind-protect
+            (let ((sp-2 'l2) (sp-3 'l3))
+              (save-current-buffer
+                (set-buffer b2)
+                (push (list 'inner sp-1 sp-2 sp-3 (buffer-name)) sp-log)
+                (throw 'k (list sp-1 sp-2 sp-3))))
+          (push (list 'cleanup sp-1 sp-2 sp-3 (buffer-name)) sp-log)))))
+  (defun sp-f2 (b2)
+    (let ((sp-1 1) (sp-2 2))
+      (save-current-buffer
+        (set-buffer b2)
+        (let ((sp-4 4))
+          (list sp-1 sp-2 sp-4 (buffer-name))))))
+  (defun sp-f3 (b2)
+    (with-temp-buffer
+      (rename-buffer "sp-home" t)
+      (setq-local sp-4 'local)
+      (list (let ((sp-4 'bound)) (set-buffer b2) (list sp-4 (buffer-name)))
+            sp-4 (buffer-name) (with-current-buffer "sp-home" sp-4))))
+  (defun sp-f4 ()
+    (condition-case err
+        (let ((sp-1 'e1))
+          (unwind-protect (let ((sp-2 'e2) (sp-3 'e3)) (signal 'error (list sp-1 sp-2 sp-3)))
+            (push (list 'f4-cleanup sp-1 sp-2 sp-3) sp-log)))
+      (error (list 'caught err sp-1 sp-2 sp-3))))
+  (defun sp-f5 (n)
+    (if (= n 0) (list sp-1 sp-2)
+      (let ((sp-1 n))
+        (save-excursion
+          (let ((sp-2 (* 2 n)))
+            (save-restriction
+              (sp-f5 (1- n))))))))
+  (let ((b2 (get-buffer-create "b2")) results)
+    (dolist (compiled '(nil t))
+      (when compiled (dolist (f '(sp-f1 sp-f2 sp-f3 sp-f4 sp-f5)) (byte-compile f)))
+      (setq sp-log nil)
+      (push (list compiled (sp-f1 b2) (sp-f2 b2) (sp-f3 b2) (sp-f4) (sp-f5 3) (nreverse sp-log)
+                  sp-1 sp-2 sp-3 sp-4 (buffer-name))
+            results))
+    (dolist (r (nreverse results)) (print r))))"#,
+        ],
+    );
+}
+
+#[test]
 fn matcher_backtracks_and_folds_as_regex_emacs() {
     // re_match_2_internal's failure stack (failure points, saved
     // registers, `\{n,m\}' counters) and a case-folded EXACTN over ASCII

@@ -151,12 +151,12 @@ impl Drop for SuspendedStackGuard {
     }
 }
 
-/// eval.c:mark_specpdl applies to executing and suspended native frames.
-/// Both paths trace the same live fields; binding restore tokens are copies
-/// of the canonical specbindings already traced by the interpreter.
+/// The Lisp roots of executing and suspended native frames: their
+/// handlers and pending errors.  Their bindings and unwind records are
+/// entries of the interpreter's specpdl, which eval.c:mark_specpdl reaches
+/// with the thread.
 pub(super) struct NativeLispRoots<'a> {
     pub(super) handlers: &'a [HandlerEntry],
-    pub(super) unwind: &'a [UnwindEntry],
     pub(super) calls: CallFrames<'a>,
     pub(super) environment: Option<&'a Env>,
 }
@@ -165,19 +165,6 @@ impl TraceLispRoots for NativeLispRoots<'_> {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         for handler in self.handlers {
             marker.value(&handler.match_value);
-        }
-        for entry in self.unwind {
-            match &entry.action {
-                // The canonical specbinding lives in InterpreterState (and
-                // then in its owning thread context). This unwind action
-                // carries a restore token with a historical copy: tracing
-                // that copy would retain values replaced by thread swaps.
-                UnwindAction::Special(_) | UnwindAction::SpecialId(_) => {}
-                UnwindAction::Excursion(saved) => saved.trace_lisp_roots(marker),
-                UnwindAction::Restriction(saved) => saved.trace_lisp_roots(marker),
-                UnwindAction::Cleanup { value, .. } => marker.value(value),
-                UnwindAction::CurrentBuffer(_) => {}
-            }
         }
         for call in self.calls {
             if let Some(error) = call.pending_error() {
@@ -278,7 +265,6 @@ pub(crate) fn with_thread_suspended<R>(
             };
             let roots = NativeLispRoots {
                 handlers: &runtime.handlers,
-                unwind: &runtime.unwind,
                 calls: runtime.call_frames(),
                 environment,
             };
@@ -349,7 +335,9 @@ pub(crate) fn invoke_suspension_probe(interpreter: &mut Interpreter) -> Result<V
                 &[],
             )
         });
-    state.runtime.unwind.pop().expect("test unwind root");
+    // The record leaves the specpdl the two probes of one test share
+    // whichever order their stacks return in.
+    assert!(interpreter.remove_cleanup_record(key), "test unwind root");
     interpreter.native_compiler = state;
     result
 }

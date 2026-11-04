@@ -16,11 +16,10 @@ pub(super) struct ThreadExecutionContext {
     saved_search_regs: SavedSearchRegs,
     interactive_call_depth: usize,
     lambda_capture_overrides: Vec<bool>,
-    pub(super) active_special_restores: Vec<SpecialBindingRestore>,
+    pub(super) specpdl: Vec<SpecpdlEntry>,
     bc_stack: crate::lisp::bytecode::vm::BcStack,
     bc_frames: crate::lisp::bytecode::vm::BcFrames,
     bc_handlers: crate::lisp::bytecode::vm::BcHandlers,
-    bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
     pub(super) backtrace_frames: Vec<BacktraceFrame>,
     frame_environments: Vec<FrameEnvironment>,
     batch_error_backtrace: Option<BatchErrorBacktrace>,
@@ -51,11 +50,10 @@ impl ThreadExecutionContext {
             saved_search_regs,
             interactive_call_depth,
             lambda_capture_overrides,
-            active_special_restores,
+            specpdl,
             bc_stack,
             bc_frames,
             bc_handlers,
-            bc_unwinds,
             backtrace_frames,
             frame_environments,
             batch_error_backtrace,
@@ -71,13 +69,10 @@ impl ThreadExecutionContext {
 
 impl TraceLispRoots for ThreadExecutionContext {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
-        for restore in &self.active_special_restores {
-            restore.trace_lisp_roots(marker);
-        }
-        self.bc_stack.trace_lisp_roots(marker);
-        for entry in &self.bc_unwinds {
+        for entry in &self.specpdl {
             entry.trace_lisp_roots(marker);
         }
+        self.bc_stack.trace_lisp_roots(marker);
         for frame in &self.backtrace_frames {
             marker.value(&frame.function);
             if let Some(arguments) = frame.lisp_values() {

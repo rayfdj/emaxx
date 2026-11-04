@@ -884,7 +884,7 @@ impl Interpreter {
     /// record for NAME made in the current buffer (not LET_LOCAL).
     pub(crate) fn let_shadows_buffer_binding(&self, name: &str) -> bool {
         let current = self.current_buffer_id();
-        self.active_special_restores.iter().any(|restore| {
+        self.let_records().any(|restore| {
             restore.name == name
                 && restore.let_default
                 && matches!(restore.scope, SpecialBindingScope::Global)
@@ -1519,9 +1519,7 @@ impl Interpreter {
 
     /// Whether a `SPECPDL_LET*' record for NAME is on the binding stack.
     pub(crate) fn is_let_bound_special(&self, name: &SymbolName) -> bool {
-        self.active_special_restores
-            .iter()
-            .any(|restore| restore.name == *name)
+        self.let_records().any(|restore| restore.name == *name)
     }
 
     #[cfg(test)]
@@ -1870,8 +1868,7 @@ impl Interpreter {
         name: &str,
     ) -> Option<SpecialBindingScope> {
         let current = self.current_buffer_id();
-        self.active_special_restores
-            .iter()
+        self.let_records()
             .any(|restore| {
                 restore.let_default && restore.where_buffer_id == current && restore.name == name
             })
@@ -1885,8 +1882,7 @@ impl Interpreter {
         symbol: &SymbolName,
     ) -> Option<SpecialBindingScope> {
         let current = self.current_buffer_id();
-        self.active_special_restores
-            .iter()
+        self.let_records()
             .any(|restore| {
                 restore.let_default && restore.where_buffer_id == current && restore.name == *symbol
             })
@@ -1906,7 +1902,7 @@ impl Interpreter {
         let mut value = self.global_value(name);
         let current_buffer_id = self.current_buffer_id();
         let mut found = false;
-        for restore in self.active_special_restores.iter().rev().filter(|restore| {
+        for restore in self.let_records().rev().filter(|restore| {
             !restore.local_binding_killed
                 && restore.name == name
                 && matches!(restore.scope, SpecialBindingScope::Global)
@@ -1936,7 +1932,7 @@ impl Interpreter {
         let mut value = self.global_binding_value_symbol(symbol);
         let current_buffer_id = self.current_buffer_id();
         let mut found = false;
-        for restore in self.active_special_restores.iter().rev().filter(|restore| {
+        for restore in self.let_records().rev().filter(|restore| {
             !restore.local_binding_killed
                 && restore.name == *symbol
                 && matches!(restore.scope, SpecialBindingScope::Global)
@@ -1955,8 +1951,7 @@ impl Interpreter {
     }
 
     pub(super) fn active_global_toplevel_value(&self, name: &str) -> Option<Option<Value>> {
-        self.active_special_restores
-            .iter()
+        self.let_records()
             .find(|restore| {
                 !restore.local_binding_killed
                     && restore.name == name
@@ -1970,8 +1965,7 @@ impl Interpreter {
         buffer_id: u64,
         name: &str,
     ) -> Option<Option<Value>> {
-        self.active_special_restores
-            .iter()
+        self.let_records()
             .find(|restore| {
                 !restore.local_binding_killed
                     && restore.name == name
@@ -1985,14 +1979,14 @@ impl Interpreter {
         name: &str,
         value: Option<Value>,
     ) -> bool {
-        let Some(index) = self.active_special_restores.iter().position(|restore| {
+        let Some(restore) = self.let_records_mut().find(|restore| {
             !restore.local_binding_killed
                 && restore.name == name
                 && matches!(restore.scope, SpecialBindingScope::Global)
         }) else {
             return false;
         };
-        self.active_special_restores[index].previous = value;
+        restore.previous = value;
         true
     }
 
@@ -2022,7 +2016,7 @@ impl Interpreter {
     ) -> Result<Option<Value>, LispError> {
         // eval.c:default_toplevel_binding matches the original symbol in
         // the specpdl. Only the fallback default_value follows aliases.
-        if let Some(restore) = self.active_special_restores.iter().find(|restore| {
+        if let Some(restore) = self.let_records().find(|restore| {
             !restore.local_binding_killed
                 && restore.name == *symbol
                 && matches!(restore.scope, SpecialBindingScope::Global)
@@ -2037,7 +2031,7 @@ impl Interpreter {
         symbol: &SymbolName,
         value: Value,
     ) -> bool {
-        let Some(restore) = self.active_special_restores.iter_mut().find(|restore| {
+        let Some(restore) = self.let_records_mut().find(|restore| {
             !restore.local_binding_killed
                 && restore.name == *symbol
                 && matches!(restore.scope, SpecialBindingScope::Global)
@@ -2441,13 +2435,6 @@ impl Interpreter {
             .is_some_and(|stored| self.globals.replace_bound_value(symbol, stored))
     }
 
-    /// eval.c's SPECPDL_INDEX: the depth of the binding stack, for
-    /// `unbind_to'.
-    #[inline]
-    pub(crate) fn specpdl_index(&self) -> usize {
-        self.active_special_restores.len()
-    }
-
     /// eval.c's specbind for the symbol in hand: the record is left on
     /// the binding stack and nothing is returned; the caller unwinds to
     /// the index it took with `unbind_to' (a copy of the record was
@@ -2462,14 +2449,13 @@ impl Interpreter {
         self.specbind_symbol_record(symbol, value, env).map(|_| ())
     }
 
-    /// eval.c's unbind_to: every record above COUNT popped and restored,
-    /// innermost first; the first restore error is reported after all
-    /// have run.
+    /// eval.c's unbind_to: every entry above COUNT popped and undone,
+    /// innermost first; the first error is reported after all have run.
     pub(crate) fn unbind_to(&mut self, count: usize, env: &mut Env) -> Result<(), LispError> {
         let mut first_error = None;
-        while self.active_special_restores.len() > count {
-            let restore = self.active_special_restores.pop().expect("above count");
-            if let Err(error) = self.apply_special_restore(restore, env)
+        while self.specpdl.len() > count {
+            let entry = self.specpdl.pop().expect("above count");
+            if let Err(error) = self.undo_specpdl_entry(entry, env)
                 && first_error.is_none()
             {
                 first_error = Some(error);
@@ -2478,77 +2464,12 @@ impl Interpreter {
         first_error.map_or(Ok(()), Err)
     }
 
-    /// `specbind_symbol' with a copy of the record handed back, for the
-    /// callers outside the evaluator that keep it (the VM's unwind list,
-    /// the native runtime, the loaders).
-    /// eval.c's specbind for a caller that unbinds by the record's id
-    /// (`unbind_special_id'): the record stays on the binding stack alone,
-    /// where `bind_special_symbol' hands back a copy as well.
-    #[inline]
-    pub(crate) fn specbind_symbol_id(
-        &mut self,
-        symbol: &SymbolName,
-        value: Value,
-        env: &mut Env,
-    ) -> Result<u64, LispError> {
-        self.specbind_symbol_record(symbol, value, env)
-    }
-
-    /// The unbind of the record `specbind_symbol_id' answered BINDING_ID
-    /// for: taken off the binding stack (the last record nearly always, as
-    /// eval.c's specpdl pops) and restored.  A record no longer there was
-    /// restored already, by an unbind_to below it, as GNU's specpdl entry
-    /// is popped once.
-    pub(crate) fn unbind_special_id(
-        &mut self,
-        binding_id: u64,
-        env: &mut Env,
-    ) -> Result<(), LispError> {
-        let restore = if self
-            .active_special_restores
-            .last()
-            .is_some_and(|active| active.binding_id == binding_id)
-        {
-            self.active_special_restores.pop().expect("checked last")
-        } else if let Some(index) = self
-            .active_special_restores
-            .iter()
-            .rposition(|active| active.binding_id == binding_id)
-        {
-            self.active_special_restores.remove(index)
-        } else {
-            return Ok(());
-        };
-        self.apply_special_restore(restore, env)
-    }
-
-    /// `unbind_special_id' of BINDING_ID's record when it is the innermost
-    /// one and its restore is a plain store (`is_plain_restore'), which
-    /// notifies no watcher and runs nothing: true when done, false with
-    /// nothing done otherwise.
-    #[inline]
-    pub(crate) fn unbind_plain_special_id(&mut self, binding_id: u64) -> bool {
-        let Some(restore) = self.active_special_restores.last() else {
-            return false;
-        };
-        if restore.binding_id != binding_id || !self.is_plain_restore(restore) {
-            return false;
-        }
-        // The record is read in place and dropped there, as specpdl_ptr
-        // moves back over its entry, not moved out first.
-        let (name, previous) = (restore.name, restore.previous);
-        let depth = self.active_special_restores.len() - 1;
-        self.active_special_restores.truncate(depth);
-        self.store_plain_value(&name, previous);
-        true
-    }
-
     /// Whether RESTORE undoes a plain symbol's SPECPDL_LET: the saved value
     /// back into the cell (a watcher added since cleared the bit).  A plain
     /// C variable's restore is the same store: its saved value is one its
     /// slot holds, and it has no watcher to hear `unlet'.
     #[inline]
-    fn is_plain_restore(&self, restore: &SpecialBindingRestore) -> bool {
+    pub(super) fn is_plain_restore(&self, restore: &SpecialBindingRestore) -> bool {
         matches!(restore.scope, SpecialBindingScope::Global)
             && restore.keyboard_terminal_id.is_none()
             && (self.globals.plain_store(&restore.name)
@@ -2564,7 +2485,7 @@ impl Interpreter {
     /// `store_plain_restore's store of PREVIOUS, the value a plain binding
     /// of NAME saved (None for a void one), back into NAME's cell.
     #[inline(always)]
-    fn store_plain_value(&mut self, name: &SymbolName, previous: Option<Value>) {
+    pub(super) fn store_plain_value(&mut self, name: &SymbolName, previous: Option<Value>) {
         // The usual restore: a saved value into a cell that holds one.
         if let Some(value) = previous
             && self.globals.replace_bound_value(name, value)
@@ -2594,8 +2515,8 @@ impl Interpreter {
     ) -> Result<SpecialBindingRestore, LispError> {
         self.specbind_symbol_record(symbol, value, env)?;
         Ok(self
-            .active_special_restores
-            .last()
+            .let_records()
+            .next_back()
             .cloned()
             .expect("the record just pushed"))
     }
@@ -2624,7 +2545,7 @@ impl Interpreter {
     /// binding stack's record, the value stored, nothing notified or run.
     /// None, with nothing done, for any other symbol, which
     /// `specbind_symbol_record' binds.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn specbind_plain(&mut self, symbol: &SymbolName, value: Value) -> Option<u64> {
         let value = if self.globals.plain_store(symbol) {
             value
@@ -2646,7 +2567,7 @@ impl Interpreter {
         }
         let where_buffer_id = self.current_buffer_id();
         let frame_depth = self.backtrace_frames.len();
-        self.active_special_restores.push(SpecialBindingRestore {
+        self.specpdl.push(SpecpdlEntry::Let(SpecialBindingRestore {
             binding_id,
             name: *symbol,
             scope: SpecialBindingScope::Global,
@@ -2657,7 +2578,7 @@ impl Interpreter {
             where_buffer_id,
             local_binding_killed: false,
             frame_depth,
-        });
+        }));
         binding_id
     }
 
@@ -2697,7 +2618,7 @@ impl Interpreter {
                 local_binding_killed: false,
                 frame_depth: self.backtrace_frames.len(),
             };
-            self.active_special_restores.push(restore);
+            self.specpdl.push(SpecpdlEntry::Let(restore));
             return Ok(binding_id);
         }
         // eval.c:specbind SYMBOL_LOCALIZED: a binding cell in this buffer,
@@ -2778,7 +2699,7 @@ impl Interpreter {
                 frame_depth: self.backtrace_frames.len(),
             }
         };
-        self.active_special_restores.push(restore);
+        self.specpdl.push(SpecpdlEntry::Let(restore));
         if unaliased {
             self.learn_plain_store(symbol);
         }
@@ -2810,7 +2731,7 @@ impl Interpreter {
     /// if the body creates a fresh local cell before unwinding, GNU restores
     /// the pre-binding value into that cell; otherwise unwind is a no-op.
     pub(crate) fn mark_buffer_local_special_binding_killed(&mut self, buffer_id: u64, name: &str) {
-        for restore in &mut self.active_special_restores {
+        for restore in self.let_records_mut() {
             if restore.name == name && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
             {
                 restore.local_binding_killed = true;
@@ -2818,7 +2739,11 @@ impl Interpreter {
         }
         for thread in &mut self.thread_states {
             if let Some(context) = &mut thread.context {
-                for restore in &mut context.active_special_restores {
+                for restore in context
+                    .specpdl
+                    .iter_mut()
+                    .filter_map(SpecpdlEntry::as_let_mut)
+                {
                     if restore.name == name
                         && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
                     {
@@ -2849,7 +2774,7 @@ impl Interpreter {
     /// thread's own specpdl (thread.c:94-100); the shared stack needs the
     /// boundary made explicit.
     pub(crate) fn swap_special_bindings_for_thread_switch(&mut self, start: usize, rebind: bool) {
-        let mut records = std::mem::take(&mut self.active_special_restores);
+        let mut records = std::mem::take(&mut self.specpdl);
         let end = records.len();
         let start = start.min(end);
         let indices: Vec<usize> = if rebind {
@@ -2858,7 +2783,9 @@ impl Interpreter {
             (start..end).rev().collect()
         };
         for index in indices {
-            let record = &mut records[index];
+            let SpecpdlEntry::Let(record) = &mut records[index] else {
+                continue;
+            };
             if record.local_binding_killed {
                 continue;
             }
@@ -2893,7 +2820,7 @@ impl Interpreter {
                 }
             }
         }
-        self.active_special_restores = records;
+        self.specpdl = records;
     }
 
     pub(crate) fn restore_special_binding(
@@ -2903,26 +2830,34 @@ impl Interpreter {
     ) -> Result<(), LispError> {
         // Bindings unwind in order: the record is the last one nearly
         // always (eval.c's specpdl pops), the scan is for the rest.
-        let restore = if self
-            .active_special_restores
-            .last()
-            .is_some_and(|active| active.binding_id == restore.binding_id)
-        {
-            self.active_special_restores.pop().expect("checked last")
-        } else if let Some(index) = self
-            .active_special_restores
-            .iter()
-            .rposition(|active| active.binding_id == restore.binding_id)
-        {
-            self.active_special_restores.remove(index)
-        } else {
-            restore
-        };
+        let restore = self
+            .take_special_binding_record(restore.binding_id)
+            .unwrap_or(restore);
         self.apply_special_restore(restore, env)
     }
 
+    /// The record BINDING_ID names taken off the specpdl: the innermost
+    /// entry nearly always, as eval.c's specpdl pops; None for a record no
+    /// longer there, restored already by an unbind_to below it.
+    fn take_special_binding_record(&mut self, binding_id: u64) -> Option<SpecialBindingRestore> {
+        let index = match self.specpdl.last() {
+            Some(SpecpdlEntry::Let(active)) if active.binding_id == binding_id => {
+                self.specpdl.len() - 1
+            }
+            _ => self.specpdl.iter().rposition(|entry| {
+                entry
+                    .as_let()
+                    .is_some_and(|active| active.binding_id == binding_id)
+            })?,
+        };
+        match self.specpdl.remove(index) {
+            SpecpdlEntry::Let(restore) => Some(restore),
+            SpecpdlEntry::Unwind(_) => unreachable!("the index is a binding's"),
+        }
+    }
+
     /// The unbind of one record taken off the binding stack.
-    fn apply_special_restore(
+    pub(super) fn apply_special_restore(
         &mut self,
         restore: SpecialBindingRestore,
         env: &mut Env,
@@ -3524,7 +3459,7 @@ impl Interpreter {
     /// bindings, a bare symbol in it passed over.
     pub(crate) fn backtrace_frame_locals(&self, index: usize) -> Value {
         let depth = index + 1;
-        let restores = &self.active_special_restores;
+        let restores = &self.specpdl;
         let installed = self.frame_environments_of(index);
         // The entries newest first, each consed in front, as the C walks
         // from the next frame's record down to this one's.
@@ -3550,12 +3485,15 @@ impl Interpreter {
                 break;
             };
             record = below;
-            let restore = &restores[record];
+            let Some(restore) = restores[record].as_let() else {
+                continue;
+            };
             if restore.frame_depth != depth {
                 continue;
             }
             let value = restores[record + 1..]
                 .iter()
+                .filter_map(SpecpdlEntry::as_let)
                 .find(|later| later.name == restore.name && later.scope == restore.scope)
                 .map_or_else(
                     || match restore.scope {
@@ -3594,7 +3532,7 @@ impl Interpreter {
     pub(crate) fn install_frame_environment(&mut self, environment: Value) -> usize {
         let mark = self.frame_environments.len();
         let frame = self.backtrace_frames.len().wrapping_sub(1);
-        let specpdl = self.active_special_restores.len();
+        let specpdl = self.specpdl.len();
         self.frame_environments.push(FrameEnvironment {
             frame,
             specpdl,
@@ -3633,9 +3571,13 @@ impl Interpreter {
         let mut context = self.backtrace_frame_context(index);
         let depth = index + 1;
         let start = self
-            .active_special_restores
+            .specpdl
             .iter()
-            .rposition(|restore| restore.frame_depth < depth)
+            .rposition(|entry| {
+                entry
+                    .as_let()
+                    .is_some_and(|restore| restore.frame_depth < depth)
+            })
             .map_or(0, |below| below + 1);
         self.swap_special_bindings_for_thread_switch(start, false);
         let result = self.eval(form, &mut context);

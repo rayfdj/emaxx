@@ -14117,6 +14117,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   native code. Local validation: the grouped gate's 3,501 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 295: one specpdl for the bindings and the unwind records.**
+  Native code kept each dynamic binding twice, its record on the
+  interpreter's binding stack and an id token on the native runtime's
+  own unwind list, and byte code did the same on a list of its own
+  (`bc_unwinds'), each popping its token and finding the record by id: a
+  `let' of a special variable from native code took 117 instructions to
+  bind and 130 to unbind (GNU's specbind and helper_unbind_n take 57 and
+  83), and byte code undid only a Bunbind 1 in its verified loop, so a
+  two-variable `let' left through op_in_place and the id path at about
+  163 instructions a binding (GNU's unbind_to takes 49). The
+  interpreter's binding stack is now eval.c's specpdl: its entries are
+  the bindings' records and the unwind records byte code and native code
+  make (record_unwind_protect_excursion, save_restriction_save,
+  record_unwind_current_buffer and an unwind-protect's handler), both
+  pushing there and undoing the innermost entries by depth as unbind_to
+  does, their handlers and frames holding specpdl depths; the id tokens
+  and both lists are gone. Native code's bind is the record alone (117
+  instructions to 92) and its helper_unbind_n undoes a plain binding
+  with one store in place (130 to 62); Bunbind 2 to 5 of entries whose
+  undo runs nothing are undone in the verified loop (56 instructions a
+  binding), and a byte-code loop binding two variables around a call
+  takes 803 instructions an iteration against 1,089 (GNU's 721).
+  Bunwind_protect now decides between a function and a list of forms
+  when it records the handler, as GNU's FUNCTIONP test does, and the
+  forms run as prog_ignore's Fprogn, walked while they are a cons;
+  Bsave_restriction's record is save_restriction_save's, whose undo also
+  drops the recorded current column. Three macroexpand-all passes over
+  print-tests.el's forms take 215.1M instructions against 226.9M (GNU's
+  202.6M) and print-tests 2.093G against 2.103G (GNU's 1.962G). A
+  command-line comparison covers a throw and a signal through bindings,
+  an unwind-protect, a saved current buffer, a watched variable's `let'
+  and `unlet' notifications, a buffer-local binding undone from another
+  buffer, and save-excursion and save-restriction in recursion,
+  interpreted and byte-compiled. Local validation: the grouped gate's
+  3,501 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16353,6 +16389,21 @@ semantic-utest-ia (4,500 against 3,180) and mule-tests (3,220 against
 to 1.41 times GNU's time against round 292's 1.57 on the same file, its
 doublens test 1,218 ms against 789.
 
+**On `7b9a6ef`** (round 294): the full Rust gate (run 41794489633)
+passed; the frozen run (run 41794493485) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 60.6 s against 51.0 s (1.188),
+test bodies 248.5 s against 233.1 s (1.066), in all 1.095, with a
+per-file setup median of 92 ms against 79, on a runner much faster than
+round 293's (GNU's own setup 51.0 s against 69.9 and its bodies 233.1 s
+against 274.7). The widest body gaps are comp-tests (13,528 ms against
+11,416), tramp-tests (16,690 against 14,614), ert-tests (33,222 against
+31,272), semantic-utest-ia (2,896 against 2,009) and mule-tests (2,334
+against 1,489). mule-tests, whose character-name decoding round 294 cut,
+came to 1.57 times GNU's time against round 293's 1.59: in the checked
+build the frozen run times, its cost is the liveness assertion on each
+cons of `char-code-property-alist''s walk (round 131's record), not the
+decoding.
+
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal
   regions and a middle region of multibyte text moves the middle by its
@@ -16364,16 +16415,17 @@ doublens test 1,218 ms against 789.
   allocates at the same address (`buffer_before_last_command_or_undo' is
   never cleared), recording that stale point in its first change.
   Neither is reproducible faithfully; the fuzzes exclude them.
-- **A dynamic-binding byte-code call from byte code costs about 100
-  instructions more than GNU's (round 289).** A one-argument recursion
-  takes 763 instructions a call against GNU's 665 (exec_byte_code 375,
-  funcall_lambda 130, unbind_to 65, specbind 48, funcall_general 47):
-  `enter_dynamic_frame' 269, in which the binding's restore record (a
-  104-byte SpecialBindingRestore against specbind's four-word entry) and
-  the unwind list's 64-byte entry are about 40, the return's unbinding
-  172 (`return_unbinding' 119, which tests the frame again after the
-  unbinding, and `unbind_plain' 53) and the loop's own 322. A lexical
-  call takes 388 against GNU's 332.
+- **A dynamic-binding byte-code call from byte code costs about 80
+  instructions more than GNU's (rounds 289 and 295).** A one-argument
+  recursion takes 746 instructions a call against GNU's 665
+  (exec_byte_code 375, funcall_lambda 130, unbind_to 65, specbind 48,
+  funcall_general 47): `enter_dynamic_frame' 266, of which 33 are the
+  stores of the frame's bookkeeping, its backtrace record and the
+  binding's 104-byte record (specbind's entry is four words), the
+  return's unbinding 157 (`return_unbinding' 119, which tests the frame
+  again after the unbinding, and `unbind_plain' 38) and the loop's own
+  324. Round 295's one specpdl took the unwind list's entry away: 763
+  before. A lexical call takes 389 against GNU's 332.
 - **What a fatal signal does in GNU that it does not in Emaxx (rounds
   115 and 285).** A fault the kernel raises in Emaxx's own code (a
   SIGSEGV, SIGBUS, SIGFPE or SIGILL it did not send itself) ends Emacs

@@ -41,6 +41,8 @@ mod record_registry;
 mod resource_forms;
 pub(crate) mod roots;
 pub(crate) mod runtime;
+mod specpdl;
+pub(crate) use specpdl::{SpecpdlEntry, UnwindAction};
 pub(crate) mod terminal;
 mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
@@ -1836,6 +1838,7 @@ pub(crate) struct LabeledRestriction {
 
 /// Rust representation of the state saved by GNU C's
 /// `record_unwind_protect_excursion`/`save_excursion_save` pair.
+#[derive(Clone, Debug)]
 pub(crate) struct SavedExcursion {
     buffer_id: u64,
     point: usize,
@@ -1845,12 +1848,14 @@ pub(crate) struct SavedExcursion {
 /// Rust representation of the state saved by GNU C's
 /// `save_restriction_save`.  Marker-backed bounds retain their position
 /// across edits exactly like the interpreter's `save-restriction` path.
+#[derive(Clone, Debug)]
 pub(crate) struct SavedRestriction {
     buffer_id: u64,
     bounds: SavedRestrictionBounds,
     labeled: Vec<LabeledRestriction>,
 }
 
+#[derive(Clone, Debug)]
 enum SavedRestrictionBounds {
     Wide,
     Narrow {
@@ -4367,12 +4372,9 @@ impl Interpreter {
             other_marked.retaining = true;
             other.mark_static_roots_into(&mut other_marked);
         }
-        // The thread's bytecode stack and its activations' specpdl entries
-        // (alloc.c marks them with the thread).
+        // The thread's bytecode stack (alloc.c marks it with the thread;
+        // its activations' specpdl entries are the static roots').
         roots::mark_source(self, &mut marked, &self.bc_stack);
-        for entry in &self.bc_unwinds {
-            roots::mark_source(self, &mut marked, entry);
-        }
         for thread in &self.thread_states {
             if let Some(context) = &thread.context {
                 roots::mark_source(self, &mut marked, &**context);
@@ -4687,10 +4689,8 @@ impl Interpreter {
         for test in &self.ert_tests {
             mark(&test.body);
         }
-        for restore in &self.active_special_restores {
-            if let Some(value) = &restore.previous {
-                mark(value);
-            }
+        for entry in &self.specpdl {
+            entry.mark_values(&mut mark);
         }
         // editfns.c keeps a buffer's labeled restrictions (`with-restriction'
         // with a label) in `labeled_restrictions', an alist of the buffer,
@@ -5178,7 +5178,12 @@ impl Interpreter {
             for test in &mut clone.ert_tests {
                 test.body = c.copy(&test.body.clone());
             }
-            for restore in &mut clone.active_special_restores {
+            // A template is copied between top-level forms: its specpdl
+            // holds bindings alone, no native activation being under way.
+            clone
+                .specpdl
+                .retain(|entry| matches!(entry, SpecpdlEntry::Let(_)));
+            for restore in clone.let_records_mut() {
                 restore.name = c.copy_symbol(restore.name);
                 if let Some(previous) = &restore.previous {
                     restore.previous = Some(c.copy(previous));
@@ -5221,7 +5226,6 @@ impl Interpreter {
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_frames = Default::default();
         clone.bc_handlers = Default::default();
-        clone.bc_unwinds.clear();
 
         // Identity-bearing keys acquire new addresses in the test image.
         // Rehash only after the complete graph is relocated, preserving
@@ -5725,7 +5729,6 @@ pub struct InterpreterState {
     /// clauses are rooted by the registries of active catches and
     /// handlers).
     pub(crate) bc_handlers: crate::lisp::bytecode::vm::BcHandlers,
-    pub(crate) bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
     /// Live Rust-owned operand/context roots, independent of the reusable pool.
     stack_roots: roots::StackRoots,
     /// Recycled argument buffers for backtrace frames, same idea.
@@ -5772,8 +5775,9 @@ pub struct InterpreterState {
     /// standard one (buffer_defaults'), keyed by buffer id: a slot, not a
     /// Lisp variable.
     buffer_category_tables: coding::BufferCharTables,
-    /// Active dynamic special bindings in stack order.
-    active_special_restores: Vec<SpecialBindingRestore>,
+    /// eval.c's specpdl: the dynamic bindings and native code's unwind
+    /// records, innermost last.
+    specpdl: Vec<SpecpdlEntry>,
     next_special_binding_id: u64,
     /// Marker-tracked labeled restrictions, with the innermost entry last.
     labeled_restrictions: Vec<LabeledRestriction>,
@@ -6603,7 +6607,6 @@ impl Interpreter {
             bc_stack: crate::lisp::bytecode::vm::BcStack::new(),
             bc_frames: Default::default(),
             bc_handlers: Default::default(),
-            bc_unwinds: Vec::new(),
             stack_roots: roots::StackRoots::default(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),
@@ -6620,7 +6623,7 @@ impl Interpreter {
             loaded_bindings: LoadedBindings::default(),
             buffer_syntax_tables: coding::BufferCharTables::default(),
             buffer_category_tables: coding::BufferCharTables::default(),
-            active_special_restores: Vec::new(),
+            specpdl: Vec::new(),
             next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),

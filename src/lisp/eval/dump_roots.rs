@@ -50,10 +50,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "bytecode.c: bc_thread_state is the running thread's, allocated by init_bc_thread at thread creation and never written by pdumper.c; Fdump_emacs_portable runs from loadup.el with no byte-code activation below it beyond its own",
     ),
     (
-        "bc_unwinds",
-        "eval.c:init_eval_once_for_pdumper recreates the specpdl; the entries of the byte-code activations in progress are the running thread's",
-    ),
-    (
         "frame_states",
         "frame.c:init_frame_once_for_pdumper resets Vframe_list and selected_frame; frames are nilled in the image, their windows and face hash tables with them (window.c:init_window_once_for_pdumper)",
     ),
@@ -98,7 +94,7 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "queued events of the old process's descriptors, as file_notify_watches",
     ),
     (
-        "active_special_restores",
+        "specpdl",
         "eval.c:init_eval_once_for_pdumper allocates a fresh specpdl; the dump runs inside its own specbind",
     ),
     (
