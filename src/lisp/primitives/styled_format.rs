@@ -607,15 +607,6 @@ fn c_symbol_name(interp: &Interpreter, arg: &Value, env: &Env) -> Option<Value> 
         .map(|symbol| symbol.lisp_name())
 }
 
-/// The text a %s substitutes: a Lisp string (the argument, a symbol's
-/// name, `prin1-to-string''s output or `char-to-string''s), or the
-/// printed digits of a number, which are the unibyte ASCII string
-/// `prin1-to-string' would make.
-enum SpecText {
-    String(Value),
-    Number(Printed),
-}
-
 /// A range of a string's text properties, as text_property_list gives
 /// it: its start, end and the interval's own plist.
 type PropertyRange = (usize, usize, Value);
@@ -821,7 +812,16 @@ pub(crate) fn styled_format(
                 && !matches!(arg.kind(), Kind::StringObject(_))
                 && c_symbol_name(interp, &arg, env).is_none())
         {
-            text = Some(spec_print(interp, env, &arg, conversion == b's')?);
+            // Fprin1_to_string of every one, numbers included: the printer
+            // writes into the hidden prin1 buffer and reads its variables
+            // there, and takes whatever text that buffer held before.
+            text = Some(prin1_to_string(
+                interp,
+                env,
+                &arg,
+                conversion == b's',
+                None,
+            )?);
             conversion = b's';
         } else if conversion == b'c' {
             if let Kind::Integer(code) = arg.kind()
@@ -831,7 +831,7 @@ pub(crate) fn styled_format(
                     StringObjectRef::from_characters(&[arg])
                         .map_err(|error| string_storage_error(interp, env, error))?,
                 );
-                text = Some(SpecText::String(arg));
+                text = Some(arg);
                 conversion = b's';
             }
             zero_flag = false;
@@ -851,10 +851,10 @@ pub(crate) fn styled_format(
                 }
             }
             if conversion == b's' {
-                text = Some(SpecText::String(name));
+                text = Some(name);
             }
         }
-        if let Some(SpecText::String(string)) = &text
+        if let Some(string) = &text
             && string_is_multibyte(string) == Some(true)
             && !multibyte
         {
@@ -863,26 +863,16 @@ pub(crate) fn styled_format(
         }
 
         if conversion == b's' {
-            let text = match text {
-                Some(text) => text,
-                None => SpecText::String(arg),
-            };
+            // The text a %s substitutes: the argument, a symbol's name,
+            // or `prin1-to-string''s or `char-to-string''s output.
+            let text = text.unwrap_or(arg);
             if at == format.len() && at == 2 && !fmt_props {
-                return match text {
-                    SpecText::String(string) => Ok(string),
-                    SpecText::Number(digits) => Ok(Value::StringObject(
-                        StringObjectRef::from_storage(digits.to_vec(), digits.len(), false)
-                            .map_err(|error| string_storage_error(interp, env, error))?,
-                    )),
-                };
+                return Ok(text);
             }
-            let (argument, intervals) = match &text {
-                SpecText::String(string) => (
-                    *string,
-                    matches!(string.kind(), Kind::StringObject(state) if state.borrow().props.has_intervals()),
-                ),
-                SpecText::Number(_) => (Value::Nil, false),
-            };
+            let (argument, intervals) = (
+                text,
+                matches!(text.kind(), Kind::StringObject(state) if state.borrow().props.has_intervals()),
+            );
 
             // lisp_string_width ignores a precision of 0, but GNU libc
             // functions print 0 characters when the precision is 0.
@@ -890,40 +880,19 @@ pub(crate) fn styled_format(
             let (width, nchars_string, nbytes) = if prec == 0 {
                 (0, 0, 0)
             } else {
-                let (whole_chars, whole_bytes) = match &text {
-                    SpecText::String(string) => {
-                        let Kind::StringObject(state) = string.kind() else {
-                            unreachable!("a %s text is a string")
-                        };
-                        let state = state.borrow();
-                        (state.len(), state.bytes().len())
-                    }
-                    SpecText::Number(digits) => (digits.len(), digits.len()),
+                let (whole_chars, whole_bytes) = {
+                    let Kind::StringObject(state) = text.kind() else {
+                        unreachable!("a %s text is a string")
+                    };
+                    let state = state.borrow();
+                    (state.len(), state.bytes().len())
                 };
                 // The width only pads to a field width or stops at a
                 // precision; without either nothing reads it.
                 if prec < 0 && field_width == 0 {
                     (0, whole_chars, whole_bytes)
                 } else {
-                    let measured = match &text {
-                        SpecText::String(string) => {
-                            lisp_string_width(interp, env, string, 0, whole_chars, prec)?
-                        }
-                        SpecText::Number(digits) => {
-                            let dp = buffer_display_table(interp, env);
-                            string_width_walk(
-                                interp,
-                                env,
-                                dp,
-                                digits,
-                                false,
-                                0,
-                                digits.len(),
-                                prec,
-                                |_, _| Ok(None),
-                            )?
-                        }
-                    };
+                    let measured = lisp_string_width(interp, env, &text, 0, whole_chars, prec)?;
                     if prec < 0 {
                         (measured.width, whole_chars, whole_bytes)
                     } else {
@@ -947,20 +916,17 @@ pub(crate) fn styled_format(
             if !fmt_props {
                 start = nchars;
             }
-            match &text {
-                SpecText::String(string) => {
-                    let Kind::StringObject(state) = string.kind() else {
-                        unreachable!("a %s text is a string")
-                    };
-                    let state = state.borrow();
-                    copy_text(
-                        &mut buf,
-                        &state.bytes()[..nbytes],
-                        state.is_multibyte(),
-                        multibyte,
-                    );
-                }
-                SpecText::Number(digits) => buf.extend_from_slice(&digits[..nbytes]),
+            {
+                let Kind::StringObject(state) = text.kind() else {
+                    unreachable!("a %s text is a string")
+                };
+                let state = state.borrow();
+                copy_text(
+                    &mut buf,
+                    &state.bytes()[..nbytes],
+                    state.is_multibyte(),
+                    multibyte,
+                );
             }
             nchars += nchars_string;
             if minus_flag {
@@ -988,8 +954,10 @@ pub(crate) fn styled_format(
         if !(matches!(arg.kind(), Kind::Integer(_))
             || (matches!(arg.kind(), Kind::BigInteger(_) | Kind::Float(_)) && conversion != b'c'))
         {
-            return Err(LispError::Signal(
-                "Format specifier doesn't match argument type".into(),
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                interp,
+                "Format specifier doesn't match argument type",
+                &[],
             ));
         }
 
@@ -1270,43 +1238,6 @@ pub(crate) fn styled_format(
         add_format_properties(&val, &args[0], &discarded, &specs)?;
     }
     Ok(val)
-}
-
-/// The text a %s or %S of a non-string ARG substitutes, as
-/// `prin1-to-string' writes it (NOESCAPE for %s): a number's digits
-/// directly, which print.c prints with no Lisp and no object.
-fn spec_print(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    arg: &Value,
-    noescape: bool,
-) -> Result<SpecText, LispError> {
-    match arg.kind() {
-        Kind::Integer(n)
-            if !interp
-                .symbol_value_key(cached_symbol!("print-integers-as-characters"))
-                .is_some_and(|value| value.is_truthy()) =>
-        {
-            let mut digits: Printed = SmallVec::new();
-            sprintf_integer(
-                &mut digits,
-                b'd',
-                n < 0,
-                n.unsigned_abs(),
-                -1,
-                false,
-                false,
-                false,
-            );
-            Ok(SpecText::Number(digits))
-        }
-        Kind::Float(f) => Ok(SpecText::Number(SmallVec::from_slice(
-            float_to_string(interp, f.get()).as_bytes(),
-        ))),
-        _ => Ok(SpecText::String(prin1_to_string(
-            interp, env, arg, noescape, None,
-        )?)),
-    }
 }
 
 /// The end of styled_format: the format's text properties onto the

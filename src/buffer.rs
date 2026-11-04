@@ -198,6 +198,11 @@ pub struct Buffer {
     /// records into the first change after a boundary.
     point_before_last_command_or_undo: Option<usize>,
 
+    /// undo.c's `undo_inhibit_record_point' (`undo-inhibit-record-point'),
+    /// a C variable each buffer holds as the interpreter last stored it,
+    /// which turns record_point off.
+    undo_inhibit_record_point: bool,
+
     /// Overlays attached to this buffer.
     pub overlays: crate::overlay::OverlayTree,
 
@@ -242,6 +247,7 @@ impl Clone for Buffer {
             undo_list: self.undo_list,
             keymap: self.keymap,
             point_before_last_command_or_undo: self.point_before_last_command_or_undo,
+            undo_inhibit_record_point: self.undo_inhibit_record_point,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: self.inhibit_hooks,
             text_conversion_style: self.text_conversion_style,
@@ -1139,6 +1145,7 @@ impl Buffer {
             undo_list: Value::Nil,
             keymap: Value::Nil,
             point_before_last_command_or_undo: None,
+            undo_inhibit_record_point: false,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -1175,6 +1182,7 @@ impl Buffer {
             undo_list: Value::Nil,
             keymap: Value::Nil,
             point_before_last_command_or_undo: None,
+            undo_inhibit_record_point: false,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -2385,6 +2393,65 @@ impl Buffer {
         }
     }
 
+    /// add_text_properties_1's interval analysis of [START, END) before
+    /// its modify_text_properties: the intervals made where there are none
+    /// (validate_interval_range with HARD) and, when PROPERTIES
+    /// (validated) would change the range, the interval at START split
+    /// there unless it has them all.  Whether they would change it.
+    pub(crate) fn prepare_add_text_properties(
+        &mut self,
+        start: usize,
+        end: usize,
+        properties: Value,
+    ) -> Result<bool, crate::lisp::types::LispError> {
+        if properties.is_nil() {
+            return Ok(false);
+        }
+        let Some((start, end)) = self.intervals_for_change(start, end, true) else {
+            return Ok(false);
+        };
+        let mut stored = self.text.borrow_mut();
+        let intervals = stored.intervals.as_mut().expect("intervals for the change");
+        intervals::split_for_add(intervals, start, end - start, properties)
+    }
+
+    /// set_text_properties' validation of [START, END) before its
+    /// modify_text_properties: the intervals made where there are none
+    /// when PROPERTIES (validated) are to be set.
+    pub(crate) fn prepare_set_text_properties(
+        &mut self,
+        start: usize,
+        end: usize,
+        properties: Value,
+    ) {
+        self.intervals_for_change(start, end, !properties.is_nil());
+    }
+
+    /// Fremove_text_properties' (PLIST the properties) and
+    /// Fremove_list_of_text_properties' (PLIST nil, LIST the names)
+    /// interval analysis of [START, END) before their
+    /// modify_text_properties, splitting as they split there: whether a
+    /// property would go.
+    pub(crate) fn prepare_remove_text_properties(
+        &mut self,
+        start: usize,
+        end: usize,
+        plist: Value,
+        list: Value,
+    ) -> Result<bool, crate::lisp::types::LispError> {
+        let (start, end) = (start.max(self.point_min()), end.min(self.point_max()));
+        if start >= end {
+            return Ok(false);
+        }
+        let mut stored = self.text.borrow_mut();
+        match stored.intervals.as_mut() {
+            Some(intervals) => {
+                intervals::split_for_remove(intervals, start, end - start, plist, list)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// textprop.c:add_text_properties_1's change of the buffer, after its
     /// hooks: PROPERTIES (validated, non-nil) over [START, END), counted
     /// and recorded for undo as modify_text_properties and add_properties
@@ -3587,6 +3654,21 @@ impl Buffer {
         self.visited_file_modtime = modtime;
     }
 
+    /// COUNT one-byte insertions or deletions that record nothing and run
+    /// no hooks, as Fset_buffer_multibyte's insert_1_both and del_range_2
+    /// change an eight-bit character's form: MODIFF advanced by
+    /// `modiff_incr (&MODIFF, 1)' for each, and CHARS_MODIFF = MODIFF.
+    pub(crate) fn count_unrecorded_byte_edits(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let mut text = self.text.borrow_mut();
+        for _ in 0..count {
+            modiff_incr(&mut text.modiff, 1);
+        }
+        text.chars_modiff = text.modiff;
+    }
+
     /// Frestore_buffer_modified_p's non-nil FLAG: when SAVE_MODIFF >=
     /// MODIFF, SAVE_MODIFF = modiff_incr (&MODIFF, 1).
     pub fn set_modified(&mut self) {
@@ -3690,12 +3772,22 @@ impl Buffer {
         self.point_before_last_command_or_undo = point;
     }
 
+    /// The value of `undo-inhibit-record-point' as the interpreter stores
+    /// it.
+    pub(crate) fn set_undo_inhibit_record_point(&mut self, inhibit: bool) {
+        self.undo_inhibit_record_point = inhibit;
+    }
+
     /// undo.c:record_point: a change after a boundary (or into an empty
     /// list) records where point stood before the last command or
     /// `undo-boundary', when that was in this buffer and is not BEG; the
     /// first change since the buffer was saved records its (t . TIME)
-    /// first, the boundary test made before it.
+    /// first, the boundary test made before it.  Under
+    /// `undo-inhibit-record-point' it records neither.
     fn record_point(&mut self, beg: usize) {
+        if self.undo_inhibit_record_point {
+            return;
+        }
         let at_boundary = self
             .undo_list
             .cons_values()
@@ -3903,6 +3995,7 @@ impl Buffer {
             undo_list: parts.undo_list,
             keymap: parts.keymap,
             point_before_last_command_or_undo: None,
+            undo_inhibit_record_point: false,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: parts.inhibit_hooks,
             text_conversion_style: parts.text_conversion_style,

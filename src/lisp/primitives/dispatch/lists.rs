@@ -1470,8 +1470,10 @@ define_dispatch!(
                     .lookup_var("defining-kbd-macro", env)
                     .is_some_and(|value| value.is_truthy())
                 {
-                    return Err(LispError::Signal(
-                        "Can't execute anonymous macro while defining one".into(),
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Can't execute anonymous macro while defining one",
+                        &[],
                     ));
                 }
                 if macro_value.is_nil() {

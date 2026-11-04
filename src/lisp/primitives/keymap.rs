@@ -871,8 +871,10 @@ pub(crate) fn store_in_keymap(
     interp.where_is_cache = Value::Nil;
     interp.where_is_cache_keymaps = Value::T;
     if idx.eq_value(qkeymap()) {
-        return Err(LispError::Signal(
-            "`keymap' is reserved for embedded parent maps".into(),
+        return Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "`keymap' is reserved for embedded parent maps",
+            &[],
         ));
     }
     if !is_keymap_list(keymap) {

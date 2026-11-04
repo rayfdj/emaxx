@@ -3361,9 +3361,11 @@ pub(crate) fn find_operation_coding_system_value(
         return Err(LispError::Signal("Invalid first argument".into()));
     };
     if args.len() <= 1 + index {
-        return Err(LispError::Signal(format!(
-            "Too few arguments for operation `{operation_name}'"
-        )));
+        return Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "Too few arguments for operation `{}'",
+            &[&operation_name],
+        ));
     }
     let insert = operation_name == "insert-file-contents";
     let network = operation_name == "open-network-stream";
@@ -3376,10 +3378,11 @@ pub(crate) fn find_operation_coding_system_value(
             }))
         || (network && (target.fixnum().is_some() || matches!(target.kind(), Kind::T)));
     if !valid {
-        return Err(LispError::Signal(format!(
-            "Invalid argument {} of operation `{operation_name}'",
-            index + 1
-        )));
+        return Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "Invalid argument {} of operation `{}'",
+            &[&(index + 1), &operation_name],
+        ));
     }
     if let Some((file, _)) = target.cons_values() {
         target = file;

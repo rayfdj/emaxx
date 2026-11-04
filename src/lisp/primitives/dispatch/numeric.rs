@@ -11,29 +11,169 @@ fn has_big_integer(args: &[Value]) -> bool {
         .any(|value| matches!(value.kind(), Kind::BigInteger(_)))
 }
 
-/// Fold ordinary integers and markers without allocating a `BigInt`.
-///
-/// `None` means an operand is already a bignum or the checked operation
-/// overflowed, in which case the caller restarts through the exact bignum
-/// path. Type errors are reported immediately and identically on both paths.
+/// data.c's arithmetic operations that `arith_driver' runs over floats.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArithOp {
+    Add,
+    Sub,
+    Mult,
+    Div,
+}
+
+/// floatop_arith_driver's `accum OP= next' as the x86-64 build computes
+/// it: a NaN operand gives its NaN, and when both are NaNs the later
+/// operand's wins for `+' and `*' (the compiled additions and products
+/// keep NEXT in the destination register) and the accumulator's for `-'
+/// and `/'.  The hardware rule for one NaN, made explicit here rather
+/// than left to the code generator.
 #[inline]
-fn checked_integer_fold(
-    interp: &Interpreter,
-    args: &[Value],
-    mut accumulator: i64,
-    mut operation: impl FnMut(i64, i64) -> Option<i64>,
-) -> Result<Option<i64>, LispError> {
-    for arg in args {
-        if matches!(arg.kind(), Kind::BigInteger(_)) {
-            return Ok(None);
-        }
-        let operand = integer_like_i64(interp, arg)?;
-        let Some(result) = operation(accumulator, operand) else {
-            return Ok(None);
-        };
-        accumulator = result;
+fn float_operation(code: ArithOp, accum: f64, next: f64) -> f64 {
+    let commutative = matches!(code, ArithOp::Add | ArithOp::Mult);
+    if commutative && next.is_nan() {
+        return next;
     }
-    Ok(Some(accumulator))
+    if accum.is_nan() {
+        return accum;
+    }
+    if next.is_nan() {
+        return next;
+    }
+    match code {
+        ArithOp::Add => accum + next,
+        ArithOp::Sub => accum - next,
+        ArithOp::Mult => accum * next,
+        ArithOp::Div => accum / next,
+    }
+}
+
+/// data.c:floatop_arith_driver: the arguments from ARGNUM on folded into
+/// ACCUM in double precision, NEXT the value of ARGS[ARGNUM] (taken as the
+/// accumulator when ARGNUM is 0), each later one coerced as it is reached.
+fn floatop_arith_driver(
+    interp: &Interpreter,
+    code: ArithOp,
+    args: &[Value],
+    mut argnum: usize,
+    accum: f64,
+    next: f64,
+) -> Result<Value, LispError> {
+    let mut accum = if argnum == 0 {
+        next
+    } else {
+        float_operation(code, accum, next)
+    };
+    loop {
+        argnum += 1;
+        if argnum == args.len() {
+            return Ok(Value::float(accum));
+        }
+        let next = numeric_to_f64(interp, &check_number_coerce_marker(interp, &args[argnum])?)?;
+        accum = float_operation(code, accum, next);
+    }
+}
+
+/// data.c:bignum_arith_driver: the integers from ARGNUM on folded exactly
+/// into an accumulator holding IACCUM (VAL itself when ARGNUM is 0), VAL
+/// the integer at ARGNUM; at a float the accumulator, rounded to the
+/// nearest double, goes on in floatop_arith_driver.
+fn bignum_arith_driver(
+    interp: &Interpreter,
+    code: ArithOp,
+    args: &[Value],
+    mut argnum: usize,
+    iaccum: i64,
+    val: Value,
+) -> Result<Value, LispError> {
+    let operate = |accum: BigInt, next: BigInt| -> Result<BigInt, LispError> {
+        Ok(match code {
+            ArithOp::Add => accum + next,
+            ArithOp::Sub => accum - next,
+            // emacs_mpz_mul refuses a product past GMP's limb limit.
+            ArithOp::Mult => emacs_mpz_mul(&accum, &next)?,
+            ArithOp::Div => {
+                if next.is_zero() {
+                    return Err(arith_error());
+                }
+                // mpz_tdiv_q: the quotient truncated toward zero.
+                accum / next
+            }
+        })
+    };
+    let mut accum = if argnum == 0 {
+        integer_like_bigint(interp, &val)?
+    } else {
+        operate(BigInt::from(iaccum), integer_like_bigint(interp, &val)?)?
+    };
+    loop {
+        argnum += 1;
+        if argnum == args.len() {
+            return make_integer(interp, accum);
+        }
+        let val = check_number_coerce_marker(interp, &args[argnum])?;
+        if let Kind::Float(next) = val.kind() {
+            let rounded = accum.to_f64().unwrap_or(f64::NAN);
+            return floatop_arith_driver(interp, code, args, argnum, rounded, next.get());
+        }
+        accum = operate(accum, integer_like_bigint(interp, &val)?)?;
+    }
+}
+
+/// data.c:arith_driver: ARGS (at least two) folded with CODE from VAL, the
+/// first coerced: in a machine integer while each value and result fits,
+/// the integers past that in a bignum, and from the first float on in
+/// double precision, the accumulator converted once, where it stands, as
+/// GNU converts it.
+fn arith_driver(
+    interp: &Interpreter,
+    code: ArithOp,
+    args: &[Value],
+    val: Value,
+) -> Result<Value, LispError> {
+    let mut argnum = 0;
+    let mut accum = 0_i64;
+    let mut val = val;
+    if let Some(first) = val.fixnum() {
+        accum = first;
+        loop {
+            argnum += 1;
+            if argnum == args.len() {
+                return Ok(normalize_integer_value(accum));
+            }
+            val = check_number_coerce_marker(interp, &args[argnum])?;
+            // integer_to_intmax: a fixnum, or a bignum within intmax_t.
+            let next = match val.kind() {
+                Kind::Integer(next) => next,
+                Kind::BigInteger(next) => match BigInt::from(next).to_i64() {
+                    Some(next) => next,
+                    None => break,
+                },
+                _ => break,
+            };
+            let result = match code {
+                ArithOp::Add => accum.checked_add(next),
+                ArithOp::Sub => accum.checked_sub(next),
+                ArithOp::Mult => accum.checked_mul(next),
+                ArithOp::Div => {
+                    if next == 0 {
+                        return Err(arith_error());
+                    }
+                    // No overflow: ACCUM is never INTMAX_MIN.
+                    accum /= next;
+                    continue;
+                }
+            };
+            match result {
+                Some(result) => accum = result,
+                None => break,
+            }
+        }
+    }
+    match val.kind() {
+        Kind::Float(next) => {
+            floatop_arith_driver(interp, code, args, argnum, accum as f64, next.get())
+        }
+        _ => bignum_arith_driver(interp, code, args, argnum, accum, val),
+    }
 }
 
 /// data.c:Frem/Fmod coerce operands in order before calculating a remainder.
@@ -75,56 +215,30 @@ define_dispatch!(
             "-" => direct_minus(interp, args, env),
             "*" => direct_times(interp, args, env),
             "/" => {
-                if args.is_empty() {
+                // data.c:Fquo.
+                let Some(first) = args.first() else {
                     return Err(LispError::WrongNumberOfArgs("/".into(), args.len()));
+                };
+                let first = check_number_coerce_marker(interp, first)?;
+                if args.len() == 1 {
+                    return match first.kind() {
+                        Kind::Integer(0) => Err(arith_error()),
+                        Kind::Integer(value) => Ok(Value::Integer(1 / value)),
+                        Kind::Float(value) => Ok(Value::float(1.0 / value.get())),
+                        // Dividing 1 by any bignum yields 0.
+                        _ => Ok(Value::Integer(0)),
+                    };
                 }
-                if has_float(args) {
-                    let mut result = if args.len() == 1 {
-                        1.0 / numeric_to_f64(interp, &args[0])?
-                    } else {
-                        numeric_to_f64(interp, &args[0])?
-                    };
-                    for a in &args[1..] {
-                        result /= numeric_to_f64(interp, a)?;
-                    }
-                    Ok(Value::float(result))
-                } else if has_big_integer(args) {
-                    let mut result = if args.len() == 1 {
-                        let divisor = integer_like_bigint(interp, &args[0])?;
-                        if divisor.is_zero() {
-                            return Err(arith_error());
-                        }
-                        BigInt::from(1u8) / divisor
-                    } else {
-                        integer_like_bigint(interp, &args[0])?
-                    };
-                    for a in &args[1..] {
-                        let divisor = integer_like_bigint(interp, a)?;
-                        if divisor.is_zero() {
-                            return Err(arith_error());
-                        }
-                        result /= divisor;
-                    }
-                    make_integer(interp, result)
-                } else {
-                    let mut result = if args.len() == 1 {
-                        let divisor = integer_like_i64(interp, &args[0])?;
-                        if divisor == 0 {
-                            return Err(arith_error());
-                        }
-                        1 / divisor
-                    } else {
-                        integer_like_i64(interp, &args[0])?
-                    };
-                    for a in &args[1..] {
-                        let divisor = integer_like_i64(interp, a)?;
-                        if divisor == 0 {
-                            return Err(arith_error());
-                        }
-                        result /= divisor;
-                    }
-                    Ok(normalize_integer_value(result))
+                // All of it in floating point if a divisor past the first is
+                // a float.
+                if args[2..]
+                    .iter()
+                    .any(|value| matches!(value.kind(), Kind::Float(_)))
+                {
+                    let first = numeric_to_f64(interp, &first)?;
+                    return floatop_arith_driver(interp, ArithOp::Div, args, 0, 0.0, first);
                 }
+                arith_driver(interp, ArithOp::Div, args, first)
             }
             "%" | "mod" => {
                 need_args(name, args, 2)?;
@@ -785,27 +899,14 @@ pub(super) fn direct_plus(
     if let Some((x, y)) = two_fixnums(args) {
         return Ok(Value::Integer(x + y));
     }
-    if has_float(args) {
-        // data.c arith_driver: the accumulator starts from the
-        // FIRST argument, not from 0.0 -- (+ -0.0) is -0.0,
-        // while seeding with 0.0 turns it into +0.0 (IEEE
-        // 0.0 + -0.0 = +0.0).  Exposed by the bytecomp
-        // signed-zero cases once `equal' stopped conflating
-        // the zero signs.
-        let mut sum = numeric_to_f64(interp, &args[0])?;
-        for a in &args[1..] {
-            sum += numeric_to_f64(interp, a)?;
-        }
-        Ok(Value::float(sum))
-    } else if let Some(sum) = checked_integer_fold(interp, args, 0, i64::checked_add)? {
-        Ok(normalize_integer_value(sum))
-    } else {
-        let mut sum = BigInt::zero();
-        for a in args {
-            sum += integer_like_bigint(interp, a)?;
-        }
-        make_integer(interp, sum)
+    let Some(first) = args.first() else {
+        return Ok(Value::Integer(0));
+    };
+    let first = check_number_coerce_marker(interp, first)?;
+    if args.len() == 1 {
+        return Ok(first);
     }
+    arith_driver(interp, ArithOp::Add, args, first)
 }
 
 /// The subr behind `-', by pointer (data.c/fns.c: called through
@@ -818,41 +919,18 @@ pub(super) fn direct_minus(
     if let Some((x, y)) = two_fixnums(args) {
         return Ok(Value::Integer(x - y));
     }
-    if args.is_empty() {
+    let Some(first) = args.first() else {
         return Ok(Value::Integer(0));
+    };
+    let first = check_number_coerce_marker(interp, first)?;
+    if args.len() == 1 {
+        return match first.kind() {
+            Kind::Integer(value) => Ok(normalize_integer_value(-value)),
+            Kind::Float(value) => Ok(Value::float(-value.get())),
+            _ => make_integer(interp, -integer_like_bigint(interp, &first)?),
+        };
     }
-    if has_float(args) {
-        if args.len() == 1 {
-            return Ok(Value::float(-numeric_to_f64(interp, &args[0])?));
-        }
-        let mut result = numeric_to_f64(interp, &args[0])?;
-        for a in &args[1..] {
-            result -= numeric_to_f64(interp, a)?;
-        }
-        Ok(Value::float(result))
-    } else {
-        if args.len() == 1 {
-            if !matches!(args[0].kind(), Kind::BigInteger(_)) {
-                let value = integer_like_i64(interp, &args[0])?;
-                if let Some(result) = value.checked_neg() {
-                    return Ok(normalize_integer_value(result));
-                }
-            }
-            return make_integer(interp, -integer_like_bigint(interp, &args[0])?);
-        }
-        if !matches!(args[0].kind(), Kind::BigInteger(_)) {
-            let first = integer_like_i64(interp, &args[0])?;
-            if let Some(result) = checked_integer_fold(interp, &args[1..], first, i64::checked_sub)?
-            {
-                return Ok(normalize_integer_value(result));
-            }
-        }
-        let mut result = integer_like_bigint(interp, &args[0])?;
-        for a in &args[1..] {
-            result -= integer_like_bigint(interp, a)?;
-        }
-        make_integer(interp, result)
-    }
+    arith_driver(interp, ArithOp::Sub, args, first)
 }
 
 /// The subr behind `*', by pointer (data.c/fns.c: called through
@@ -865,25 +943,16 @@ pub(super) fn direct_times(
     if let Some((x, y)) = two_fixnums(args)
         && let Some(product) = x.checked_mul(y)
     {
-        return Ok(Value::Integer(product));
+        return Ok(normalize_integer_value(product));
     }
-    if has_float(args) {
-        let mut product = 1.0;
-        for a in args {
-            product *= numeric_to_f64(interp, a)?;
-        }
-        Ok(Value::float(product))
-    } else if let Some(product) = checked_integer_fold(interp, args, 1, i64::checked_mul)? {
-        Ok(normalize_integer_value(product))
-    } else {
-        // data.c:bignum_arith_driver's Amult: emacs_mpz_mul refuses a
-        // product past GMP's limb limit.
-        let mut product = BigInt::from(1u8);
-        for a in args {
-            product = emacs_mpz_mul(&product, &integer_like_bigint(interp, a)?)?;
-        }
-        make_integer(interp, product)
+    let Some(first) = args.first() else {
+        return Ok(Value::Integer(1));
+    };
+    let first = check_number_coerce_marker(interp, first)?;
+    if args.len() == 1 {
+        return Ok(first);
     }
+    arith_driver(interp, ArithOp::Mult, args, first)
 }
 
 /// The subr behind `=', by pointer (data.c/fns.c: called through

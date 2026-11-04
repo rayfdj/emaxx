@@ -42,66 +42,367 @@ pub(crate) fn install_user_signal_handlers() {
 }
 
 /// The signal sysdep.c:init_signals' process_fatal_action caught (SIGHUP,
-/// SIGTERM, or SIGINT in batch) and the next quit check has not yet acted
-/// on; -1 once it has.  A fatal signal after that is dropped, as GNU's
-/// handler, running Fkill_emacs with every signal blocked (its sa_mask is
-/// full), never sees one.
+/// SIGINT, SIGTERM, SIGQUIT, SIGVTALRM, SIGXCPU or SIGXFSZ) and the next
+/// quit check has not yet acted on; -1 once it has.  A fatal signal after
+/// that is dropped, as GNU's handler, running terminate_due_to_signal with
+/// every signal blocked (its sa_mask is full), never sees one.
 #[cfg(unix)]
 static PENDING_FATAL_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
-/// sysdep.c:init_signals' maybe_fatal_sig for SIGHUP and SIGTERM, and
-/// SIGINT when NONINTERACTIVE (keyboard.c takes it otherwise): a handler
-/// unless the signal was inherited ignored.  GNU's handler runs
-/// Fkill_emacs at once; this one records the signal for the next quit
-/// check (`maybe_quit', the waits' passes), which runs it.
+/// emacs.c's fatal_error_in_progress: the orderly shutdown of a fatal
+/// signal has begun, so a later one only re-raises.
+#[cfg(unix)]
+static FATAL_ERROR_IN_PROGRESS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// keyboard.c's DEFVAR_BOOL attempt_orderly_shutdown_on_fatal_signal, as
+/// the interpreter last stored it (`set_attempt_orderly_shutdown'), for a
+/// fault's handler, which has no interpreter to read it from.
+#[cfg(unix)]
+static ATTEMPT_ORDERLY_SHUTDOWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// The store of `attempt-orderly-shutdown-on-fatal-signal' into its C
+/// variable.
+pub(crate) fn set_attempt_orderly_shutdown(attempt: bool) {
+    #[cfg(unix)]
+    ATTEMPT_ORDERLY_SHUTDOWN.store(attempt, UserSignalOrdering::Relaxed);
+    #[cfg(not(unix))]
+    let _ = attempt;
+}
+
+/// The C variable `attempt-orderly-shutdown-on-fatal-signal' forwards to.
+pub(crate) fn attempt_orderly_shutdown() -> bool {
+    #[cfg(unix)]
+    {
+        ATTEMPT_ORDERLY_SHUTDOWN.load(UserSignalOrdering::Relaxed)
+    }
+    #[cfg(not(unix))]
+    true
+}
+
+/// The signals sysdep.c:init_signals gives process_fatal_action beyond the
+/// three maybe_fatal_sig handles: each ends Emacs through
+/// terminate_due_to_signal.
+#[cfg(unix)]
+const PROCESS_FATAL_SIGNALS: [libc::c_int; 4] =
+    [libc::SIGQUIT, libc::SIGVTALRM, libc::SIGXCPU, libc::SIGXFSZ];
+
+/// The signals init_signals gives thread_fatal_action (SIGSEGV through
+/// init_sigsegv's handler): a fault of the thread they arrive on.
+#[cfg(unix)]
+const THREAD_FATAL_SIGNALS: [libc::c_int; 7] = [
+    libc::SIGILL,
+    libc::SIGTRAP,
+    libc::SIGFPE,
+    libc::SIGABRT,
+    libc::SIGBUS,
+    libc::SIGSEGV,
+    libc::SIGSYS,
+];
+
+/// sysdep.c:init_signals and the handlers the rest of startup adds.
+///
+/// maybe_fatal_sig gives SIGHUP and SIGINT (SIGINT only when
+/// NONINTERACTIVE, keyboard.c taking it otherwise) process_fatal_action
+/// unless batch inherited them ignored; SIGTERM gets it whatever it
+/// inherited, and so do SIGQUIT, SIGVTALRM, SIGXCPU and SIGXFSZ.  GNU's
+/// handler runs terminate_due_to_signal at once; this one records the
+/// signal for the next quit check (`maybe_quit', the waits' passes),
+/// which runs it.  The faults (SIGILL, SIGTRAP, SIGFPE, SIGABRT, SIGBUS,
+/// SIGSEGV, SIGSYS) cannot be returned to and end Emacs in their handler,
+/// on a stack of their own as init_sigsegv's.  SIGPROF is ignored until a
+/// profiler takes it (atimer.c:init_atimer, which runs next, catches
+/// SIGALRM).
 pub(crate) fn install_fatal_signal_handlers(noninteractive: bool) {
     #[cfg(unix)]
-    for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
-        if signal == libc::SIGINT && !noninteractive {
-            continue;
+    {
+        NONINTERACTIVE.store(noninteractive, UserSignalOrdering::Relaxed);
+        for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
+            if signal == libc::SIGINT && !noninteractive {
+                continue;
+            }
+            if noninteractive && signal != libc::SIGTERM && inherited_ignored(signal) {
+                continue;
+            }
+            install_process_fatal_handler(signal);
         }
-        // SAFETY: querying the disposition writes only OLD.
-        let ignored = unsafe {
-            let mut old: libc::sigaction = std::mem::zeroed();
-            libc::sigaction(signal, std::ptr::null(), &mut old) != 0
-                || old.sa_sigaction == libc::SIG_IGN
-        };
-        if ignored {
-            continue;
+        for signal in PROCESS_FATAL_SIGNALS {
+            install_process_fatal_handler(signal);
         }
-        // SAFETY: the callback performs an atomic compare-and-swap and, for
-        // a second signal, signal-hook's async-signal-safe default action.
-        let registered = unsafe {
-            signal_hook::low_level::register(signal, move || {
-                if let Err(previous) = PENDING_FATAL_SIGNAL.compare_exchange(
-                    0,
-                    signal,
-                    UserSignalOrdering::Relaxed,
-                    UserSignalOrdering::Relaxed,
-                ) && previous > 0
-                {
-                    // The first still waits for a quit check: a process
-                    // busy in a primitive that never reaches one (a native
-                    // walk of a circular list) ends at the second.
+        install_thread_fatal_handlers(noninteractive);
+        // SAFETY: setting a disposition has no other effect.
+        unsafe {
+            libc::signal(libc::SIGPROF, libc::SIG_IGN);
+        }
+        // emacs.c:main's emacs_backtrace (-1): `backtrace' loads what it
+        // needs now, not in a handler.
+        emacs_backtrace(-1);
+    }
+    #[cfg(not(unix))]
+    let _ = noninteractive;
+}
+
+/// Whether SIGNAL's disposition, as the process inherited it, is SIG_IGN.
+#[cfg(unix)]
+fn inherited_ignored(signal: libc::c_int) -> bool {
+    // SAFETY: querying the disposition writes only OLD.
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(signal, std::ptr::null(), &mut old) != 0
+            || old.sa_sigaction == libc::SIG_IGN
+    }
+}
+
+/// process_fatal_action for SIGNAL: the signal recorded for the next quit
+/// check; a second one while the first still waits takes the signal's
+/// default action, so a primitive that never reaches a check (a native
+/// walk of a circular list) cannot leave the process running.
+#[cfg(unix)]
+fn install_process_fatal_handler(signal: libc::c_int) {
+    // SAFETY: the callback performs an atomic compare-and-swap and, for a
+    // second signal, signal-hook's async-signal-safe default action.
+    let registered = unsafe {
+        signal_hook::low_level::register(signal, move || {
+            match PENDING_FATAL_SIGNAL.compare_exchange(
+                0,
+                signal,
+                UserSignalOrdering::Relaxed,
+                UserSignalOrdering::Relaxed,
+            ) {
+                Ok(_) => super::atimer::note_pending_signal(),
+                Err(previous) if previous > 0 => {
                     let _ = signal_hook::low_level::emulate_default_handler(signal);
                 }
-            })
-        };
-        if let Err(error) = registered {
-            panic!("install the fatal signal handlers: {error}");
+                Err(_) => {}
+            }
+        })
+    };
+    if let Err(error) = registered {
+        panic!("install the fatal signal handlers: {error}");
+    }
+    // GNU's handler acts inside an interrupted system call; this one
+    // returns, so a slow call it interrupts must fail with EINTR rather
+    // than restart, for emacs_open's, emacs_read_quit's and
+    // emacs_write_quit's maybe_quit and the waits' passes to run it.
+    // SAFETY: rewrites only the flags of the action just installed.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(signal, std::ptr::null(), &mut action) == 0 {
+            action.sa_flags &= !libc::SA_RESTART;
+            libc::sigaction(signal, &action, std::ptr::null_mut());
         }
-        // GNU's handler acts inside an interrupted system call; this one
-        // returns, so a slow call it interrupts must fail with EINTR rather
-        // than restart, for emacs_open's, emacs_read_quit's and
-        // emacs_write_quit's maybe_quit and the waits' passes to run it.
-        // SAFETY: rewrites only the flags of the action just installed.
-        unsafe {
-            let mut action: libc::sigaction = std::mem::zeroed();
-            if libc::sigaction(signal, std::ptr::null(), &mut action) == 0 {
-                action.sa_flags &= !libc::SA_RESTART;
-                libc::sigaction(signal, &action, std::ptr::null_mut());
+    }
+}
+
+/// sysdep.c:emacs_sigaction_flags: restartable calls in batch, whose
+/// input is stdio's; interrupted ones interactively, where input is
+/// polled.
+#[cfg(unix)]
+fn emacs_sigaction_flags(noninteractive: bool) -> libc::c_int {
+    if noninteractive { libc::SA_RESTART } else { 0 }
+}
+
+/// Whether the session is a batch one, as `install_fatal_signal_handlers'
+/// was told (batch until then).
+#[cfg(unix)]
+static NONINTERACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// emacs_sigaction_flags for a handler installed after startup.
+#[cfg(unix)]
+pub(crate) fn current_sigaction_flags() -> libc::c_int {
+    emacs_sigaction_flags(NONINTERACTIVE.load(UserSignalOrdering::Relaxed))
+}
+
+/// init_signals' thread_fatal_action for the faults, with init_sigsegv's
+/// alternate stack (64 KiB, its sigsegv_stack) so a handler runs when the
+/// fault is the stack's own overflow.
+#[cfg(unix)]
+fn install_thread_fatal_handlers(noninteractive: bool) {
+    const SIGSEGV_STACK_SIZE: usize = 64 * 1024;
+    static SIGSEGV_STACK: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let stack = *SIGSEGV_STACK.get_or_init(|| {
+        Box::leak(vec![0u8; SIGSEGV_STACK_SIZE].into_boxed_slice()).as_mut_ptr() as usize
+    });
+    // SAFETY: the stack lives for the process; the actions name a handler
+    // that only makes async-signal-safe calls.
+    unsafe {
+        let alternate = libc::stack_t {
+            ss_sp: stack as *mut libc::c_void,
+            ss_flags: 0,
+            ss_size: SIGSEGV_STACK_SIZE,
+        };
+        let on_stack = if libc::sigaltstack(&alternate, std::ptr::null_mut()) == 0 {
+            libc::SA_ONSTACK
+        } else {
+            0
+        };
+        let mut action: libc::sigaction = std::mem::zeroed();
+        libc::sigfillset(&mut action.sa_mask);
+        action.sa_sigaction = deliver_fatal_thread_signal as *const () as usize;
+        action.sa_flags = libc::SA_SIGINFO | on_stack | emacs_sigaction_flags(noninteractive);
+        for signal in THREAD_FATAL_SIGNALS {
+            libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
+    }
+}
+
+/// sysdep.c:deliver_fatal_thread_signal's handle_fatal_signal for a fault:
+/// terminate_due_to_signal with the 40-frame backtrace, in the handler for
+/// a fault the thread made.  Its orderly shutdown's Lisp half (the
+/// processes hung up, the auto-saves, the files unlocked) needs the
+/// interpreter the fault interrupted, which a handler cannot take, so only
+/// the diagnostic and the backtrace remain there.
+#[cfg(unix)]
+extern "C" fn deliver_fatal_thread_signal(
+    signal: libc::c_int,
+    info: *mut libc::siginfo_t,
+    _context: *mut libc::c_void,
+) {
+    // SAFETY: the calls below are async-signal-safe but for glibc's
+    // backtrace, whose loading emacs_backtrace (-1) did at startup; INFO
+    // is the kernel's.
+    unsafe {
+        // A fault another process or `signal-process' sent (kill, sigqueue)
+        // can be returned to, so the next quit check runs the whole
+        // terminate_due_to_signal as for a process signal; glibc's own
+        // abort (a raise, SI_TKILL from this process) cannot.
+        let sent = (*info).si_code <= 0
+            && !(signal == libc::SIGABRT
+                && (*info).si_code == libc::SI_TKILL
+                && (*info).si_pid() == libc::getpid());
+        if sent {
+            match PENDING_FATAL_SIGNAL.compare_exchange(
+                0,
+                signal,
+                UserSignalOrdering::Relaxed,
+                UserSignalOrdering::Relaxed,
+            ) {
+                Ok(_) => {
+                    super::atimer::note_pending_signal();
+                    return;
+                }
+                Err(previous) if previous < 0 => return,
+                Err(_) => {}
             }
         }
+        libc::signal(signal, libc::SIG_DFL);
+        if attempt_orderly_shutdown()
+            && !FATAL_ERROR_IN_PROGRESS.swap(true, UserSignalOrdering::Relaxed)
+        {
+            fatal_error_diagnostic(signal);
+            emacs_backtrace(40);
+        }
+        raise_unblocked(signal);
+    }
+}
+
+/// emacs.c:shut_down_emacs's "Fatal error NUM: DESC" for SIGNAL (not
+/// SIGTERM), written with one write, when Emacs's process group is the
+/// foreground of the terminal on standard input.
+#[cfg(unix)]
+fn fatal_error_diagnostic(signal: libc::c_int) {
+    // SAFETY: tcgetpgrp, getpgrp and write are async-signal-safe.
+    unsafe {
+        let foreground = libc::tcgetpgrp(libc::STDIN_FILENO);
+        if foreground == -1 || foreground != libc::getpgrp() || signal == libc::SIGTERM {
+            return;
+        }
+        let mut buffer = [0u8; 256];
+        let mut length = 0;
+        let mut put = |bytes: &[u8]| {
+            let take = bytes.len().min(buffer.len() - length);
+            buffer[length..length + take].copy_from_slice(&bytes[..take]);
+            length += take;
+        };
+        put(b"Fatal error ");
+        let mut digits = [0u8; 12];
+        let mut at = digits.len();
+        let mut number = signal.unsigned_abs();
+        loop {
+            at -= 1;
+            digits[at] = b'0' + (number % 10) as u8;
+            number /= 10;
+            if number == 0 {
+                break;
+            }
+        }
+        put(&digits[at..]);
+        put(b": ");
+        let description = safe_strsignal(signal);
+        put(std::ffi::CStr::from_ptr(description).to_bytes());
+        put(b"\n");
+        libc::write(libc::STDERR_FILENO, buffer.as_ptr().cast(), length);
+    }
+}
+
+/// sysdep.c:safe_strsignal: sigdescr_np's description, "Unknown signal"
+/// for a number it does not know.
+#[cfg(unix)]
+fn safe_strsignal(signal: libc::c_int) -> *const libc::c_char {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: sigdescr_np returns a static string or null.
+    let description = unsafe {
+        unsafe extern "C" {
+            fn sigdescr_np(signal: libc::c_int) -> *const libc::c_char;
+        }
+        sigdescr_np(signal)
+    };
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    // SAFETY: strsignal returns a string valid until its next call.
+    let description = unsafe { libc::strsignal(signal) }.cast_const();
+    if description.is_null() {
+        c"Unknown signal".as_ptr()
+    } else {
+        description
+    }
+}
+
+/// sysdep.c:emacs_backtrace: "Backtrace:" and up to LIMIT + 1 frames on
+/// standard error as backtrace_symbols_fd writes them, then "..." when
+/// LIMIT cut them; a negative LIMIT only makes `backtrace' load what it
+/// needs.
+#[cfg(unix)]
+pub(crate) fn emacs_backtrace(limit: i32) {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        const BACKTRACE_LIMIT_MAX: i32 = 500;
+        let mut buffer = [std::ptr::null_mut::<libc::c_void>(); BACKTRACE_LIMIT_MAX as usize + 1];
+        let bounded = limit.min(BACKTRACE_LIMIT_MAX);
+        // SAFETY: BUFFER holds BOUNDED + 1 entries; the writes take owned
+        // bytes.
+        unsafe {
+            if bounded < 0 {
+                libc::backtrace(buffer.as_mut_ptr(), 1);
+                return;
+            }
+            let count = libc::backtrace(buffer.as_mut_ptr(), bounded + 1);
+            if count > 0 {
+                libc::write(libc::STDERR_FILENO, b"Backtrace:\n".as_ptr().cast(), 11);
+                libc::backtrace_symbols_fd(buffer.as_ptr(), count, libc::STDERR_FILENO);
+                if bounded < count {
+                    libc::write(libc::STDERR_FILENO, b"...\n".as_ptr().cast(), 4);
+                }
+            }
+        }
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    let _ = limit;
+}
+
+/// emacs.c:terminate_due_to_signal's end: SIGNAL unblocked and raised at
+/// its default action, which ends the process.
+#[cfg(unix)]
+fn raise_unblocked(signal: libc::c_int) -> ! {
+    // SAFETY: async-signal-safe calls on owned storage.
+    unsafe {
+        let mut unblocked: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut unblocked);
+        libc::sigaddset(&mut unblocked, signal);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &unblocked, std::ptr::null_mut());
+        libc::raise(signal);
+        // This shouldn't be executed.
+        libc::_exit(1)
     }
 }
 
@@ -116,8 +417,13 @@ pub(crate) fn fatal_signal_pending() -> bool {
     false
 }
 
-/// emacs.c:terminate_due_to_signal for SIGTERM, SIGHUP and SIGINT:
-/// Fkill_emacs with the signal number, whatever `inhibit-quit' says.
+/// emacs.c:terminate_due_to_signal for the signal process_fatal_action
+/// recorded.  With `attempt-orderly-shutdown-on-fatal-signal', SIGTERM, SIGHUP and SIGINT
+/// run Fkill_emacs with the signal number, whatever `inhibit-quit' says,
+/// and the others shut_down_emacs (no hook runs from then on; the
+/// diagnostic, the processes hung up, every buffer auto-saved, the files
+/// unlocked) and write the backtrace.  The signal, at its default action,
+/// then ends the process.
 #[cold]
 pub(crate) fn run_pending_fatal_signal(
     interp: &mut Interpreter,
@@ -127,13 +433,30 @@ pub(crate) fn run_pending_fatal_signal(
     {
         let signal = PENDING_FATAL_SIGNAL.swap(-1, UserSignalOrdering::Relaxed);
         if signal > 0 {
-            return call(
-                interp,
-                "kill-emacs",
-                &[Value::Integer(i64::from(signal))],
-                env,
-            )
-            .map(drop);
+            if attempt_orderly_shutdown()
+                && !FATAL_ERROR_IN_PROGRESS.swap(true, UserSignalOrdering::Relaxed)
+            {
+                if matches!(signal, libc::SIGTERM | libc::SIGHUP | libc::SIGINT) {
+                    return call(
+                        interp,
+                        "kill-emacs",
+                        &[Value::Integer(i64::from(signal))],
+                        env,
+                    )
+                    .map(drop);
+                }
+                shut_down_for_signal(interp, signal, env);
+                emacs_backtrace(40);
+            }
+            // The default action, as terminate_due_to_signal set it first:
+            // the handler, which drops a later fatal signal as GNU's full
+            // sa_mask blocks it, stays until the raise.  What stdio has
+            // buffered for standard output is lost, as in GNU.
+            // SAFETY: setting a disposition has no other effect.
+            unsafe {
+                libc::signal(signal, libc::SIG_DFL);
+            }
+            raise_unblocked(signal);
         }
         if signal == 0 {
             PENDING_FATAL_SIGNAL.store(0, UserSignalOrdering::Relaxed);
@@ -141,6 +464,19 @@ pub(crate) fn run_pending_fatal_signal(
     }
     let _ = (interp, env);
     Ok(())
+}
+
+/// emacs.c:shut_down_emacs for SIGNAL: Vrun_hooks cleared, so no hook runs
+/// from now on; the diagnostic; kill_buffer_processes' SIGHUP to each
+/// subprocess, sentinels inhibited; Fdo_auto_save (t, nil); and
+/// unlock_all_files.  An error in a step does not stop the others.
+#[cfg(unix)]
+fn shut_down_for_signal(interp: &mut Interpreter, signal: libc::c_int, env: &mut Env) {
+    interp.hooks_cleared = true;
+    fatal_error_diagnostic(signal);
+    interp.hang_up_processes_and_reset_terminals();
+    let _ = super::file_io::do_auto_save(interp, env, Value::T, Value::Nil);
+    let _ = super::filelock::unlock_all_files(interp, env);
 }
 
 #[cfg(unix)]
@@ -600,8 +936,10 @@ pub(crate) fn parse_interactive_string(
     loop {
         match rest.chars().next() {
             Some('+') => {
-                return Err(LispError::Signal(
-                    "`+' is not used in `interactive' for ordinary commands".into(),
+                return Err(crate::lisp::primitives::values::doprnt_error(
+                    interp,
+                    "`+' is not used in `interactive' for ordinary commands",
+                    &[],
                 ));
             }
             Some('*') => {
@@ -689,7 +1027,7 @@ pub(crate) fn parse_interactive_string(
     for line in lines {
         let mut chars = line.chars();
         let Some(code) = chars.next() else {
-            return Err(invalid_interactive_control_letter('\n'));
+            return Err(invalid_interactive_control_letter(interp, '\n'));
         };
         // Codes that read nothing from the terminal mark their argument.
         let mut vary: i8 = 0;
@@ -976,7 +1314,7 @@ pub(crate) fn parse_interactive_string(
                     vary = -1;
                 }
             }
-            _ => return Err(invalid_interactive_control_letter(code)),
+            _ => return Err(invalid_interactive_control_letter(interp, code)),
         }
         if seen.is_nil()
             && let Some(Kind::StringObject(_)) = values.last().map(|v| v.kind())
@@ -2013,14 +2351,16 @@ pub(crate) fn is_declare_form(form: &Value) -> bool {
     )
 }
 
-pub(crate) fn invalid_interactive_control_letter(ch: char) -> LispError {
+pub(crate) fn invalid_interactive_control_letter(interp: &Interpreter, ch: char) -> LispError {
     let code = raw_byte_from_regex_char(ch)
         .map(u32::from)
         .unwrap_or(ch as u32);
     let display = char::from_u32(code).unwrap_or(ch);
-    LispError::Signal(format!(
-        "Invalid control letter `{display}' (#o{code:03o}, #x{code:04x}) in interactive calling string"
-    ))
+    crate::lisp::primitives::values::doprnt_error(
+        interp,
+        "Invalid control letter `{}' (#o{}, #x{}) in interactive calling string",
+        &[&display, &format!("{:03o}", code), &format!("{:04x}", code)],
+    )
 }
 
 #[inline]

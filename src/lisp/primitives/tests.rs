@@ -1315,6 +1315,206 @@ fn file_attributes_and_quoted_names_are_dired_c_and_fileio_c() {
 }
 
 #[test]
+fn c_error_messages_are_requoted_as_doprnt() {
+    // eval.c:error goes through verror and vformat_string to doprnt, which
+    // turns the format's own grave accents and apostrophes into the quotes
+    // of the effective `text-quoting-style' and copies a `%s' or `%c'
+    // argument as it is.  The styles are bound, so the locale's default
+    // does not matter.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((forms '((let ((tb (make-category-table)))
+                 (define-category ?Z "zz" tb)
+                 (define-category ?Z "zz" tb))
+               (char-table-range (make-char-table 'zz) "x")
+               (set-char-table-range (make-char-table 'zz) "x" 1)
+               (define-key (make-sparse-keymap) [keymap] 'ignore)
+               (progn (string-match "a" "a") (replace-match "\\q" nil nil "a"))
+               (with-temp-buffer (insert "a") (subst-char-in-region 1 2 ?a ?é))
+               (with-temp-buffer
+                 (let ((ind (make-indirect-buffer (current-buffer) "zz-ind")))
+                   (unwind-protect
+                       (with-current-buffer ind (set-buffer-multibyte nil))
+                     (kill-buffer ind))))
+               (find-operation-coding-system 'write-region 1 2)
+               (find-operation-coding-system 'open-network-stream "x" nil "h" 'bad)
+               (iso-charset 1 94 ?/)
+               (call-interactively (lambda (x) (interactive "+p") x))
+               (call-interactively (lambda (x) (interactive "Qfoo") x))
+               (set-fontset-font "fontset-zz-none" 'ascii "x")
+               (with-temp-buffer (recenter 1))
+               (let ((w (selected-window))
+                     (old (window-buffer)))
+                 (set-window-buffer w (get-buffer-create "zz-a"))
+                 (set-window-dedicated-p w t)
+                 (unwind-protect
+                     (set-window-buffer w (get-buffer-create "zz-b"))
+                   (set-window-dedicated-p w nil)
+                   (set-window-buffer w old)))))
+      (out nil))
+  (dolist (style '(curve straight grave))
+    (let ((text-quoting-style style))
+      (push (cons style
+                  (mapcar (lambda (form)
+                            (condition-case e (progn (eval form t) 'ok) (error e)))
+                          forms))
+            out)))
+  (nreverse out))"##,
+        r##"((curve (error "Category ‘Z’ is already defined") (error "Invalid RANGE argument to ‘char-table-range’") (error "Invalid RANGE argument to ‘set-char-table-range’") (error "‘keymap’ is reserved for embedded parent maps") (error "Invalid use of ‘\\’ in replacement text") (error "Characters in ‘subst-char-in-region’ have different byte-lengths") (error "Cannot do ‘set-buffer-multibyte’ on an indirect buffer") (error "Too few arguments for operation ‘write-region’") (error "Invalid argument 4 of operation ‘open-network-stream’") (error "Invalid FINAL-CHAR ‘/’, it should be ‘0’..‘~’") (error "‘+’ is not used in ‘interactive’ for ordinary commands") (error "Invalid control letter ‘Q’ (#o121, #x0051) in interactive calling string") (error "Fontset ‘fontset-zz-none’ does not exist") (error "‘recenter’ing a window that does not display current-buffer.") (error "Window is dedicated to ‘zz-a’")) (straight (error "Category 'Z' is already defined") (error "Invalid RANGE argument to 'char-table-range'") (error "Invalid RANGE argument to 'set-char-table-range'") (error "'keymap' is reserved for embedded parent maps") (error "Invalid use of '\\' in replacement text") (error "Characters in 'subst-char-in-region' have different byte-lengths") (error "Cannot do 'set-buffer-multibyte' on an indirect buffer") (error "Too few arguments for operation 'write-region'") (error "Invalid argument 4 of operation 'open-network-stream'") (error "Invalid FINAL-CHAR '/', it should be '0'..'~'") (error "'+' is not used in 'interactive' for ordinary commands") (error "Invalid control letter 'Q' (#o121, #x0051) in interactive calling string") (error "Fontset 'fontset-zz-none' does not exist") (error "'recenter'ing a window that does not display current-buffer.") (error "Window is dedicated to 'zz-a'")) (grave (error "Category `Z' is already defined") (error "Invalid RANGE argument to `char-table-range'") (error "Invalid RANGE argument to `set-char-table-range'") (error "`keymap' is reserved for embedded parent maps") (error "Invalid use of `\\' in replacement text") (error "Characters in `subst-char-in-region' have different byte-lengths") (error "Cannot do `set-buffer-multibyte' on an indirect buffer") (error "Too few arguments for operation `write-region'") (error "Invalid argument 4 of operation `open-network-stream'") (error "Invalid FINAL-CHAR `/', it should be `0'..`~'") (error "`+' is not used in `interactive' for ordinary commands") (error "Invalid control letter `Q' (#o121, #x0051) in interactive calling string") (error "Fontset `fontset-zz-none' does not exist") (error "`recenter'ing a window that does not display current-buffer.") (error "Window is dedicated to `zz-a'")))"##,
+        "C error messages through doprnt's quoting",
+    );
+}
+
+#[test]
+fn word_boundaries_follow_category_c_word_boundary_p() {
+    // category.c:word_boundary_p under the categories `forward-word' and
+    // `backward-word' consult: characters of one script are separated by
+    // a `word-separating-categories' pair, of two scripts joined by a
+    // `word-combining-categories' pair, and a (nil . nil) pair holds even
+    // between characters sharing one category set.
+    assert_oracle_contract_matches_interpreter(
+        r##"(with-temp-buffer
+  (insert "alpha beta \u65e5\u672c\u8a9e\u304b\u306a \u30ab\u30ca\u6f22\u5b57 \u03b5\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac")
+  (mapcar (lambda (cats)
+            (let ((word-separating-categories (car cats))
+                  (word-combining-categories (cdr cats))
+                  (out nil))
+              (goto-char 1)
+              (while (forward-word 1) (push (point) out))
+              (goto-char (point-max))
+              (push 'back out)
+              (while (backward-word 1) (push (point) out))
+              (nreverse out)))
+          '((nil . nil)
+            (((nil . nil)) . nil)
+            (((?H . ?K) (?K . ?H)) . ((nil . ?^) (?^ . nil) (?C . ?H) (?C . ?K)))
+            (((?l . nil) (nil . nil)) . ((nil . nil)))
+            (((?l . ?l)) . ((?C . nil)))
+            ((foo (nil . nil)) . (bar)))))"##,
+        r##"((6 11 15 17 20 22 31 back 23 20 18 15 12 7 1) (2 3 4 5 6 8 9 10 11 13 14 15 16 17 19 20 21 22 24 25 26 27 28 29 30 31 back 30 29 28 27 26 25 24 23 21 20 19 18 16 15 14 13 12 10 9 8 7 5 4 3 2 1) (6 11 17 20 22 31 back 23 20 18 12 7 1) (2 3 4 5 6 8 9 10 11 13 14 16 17 19 21 22 24 25 26 27 28 29 30 31 back 30 29 28 27 26 25 24 23 21 19 18 16 14 13 12 10 9 8 7 5 4 3 2 1) (6 11 17 20 22 31 back 23 20 18 12 7 1) (2 3 4 5 6 8 9 10 11 13 14 15 16 17 19 20 21 22 24 25 26 27 28 29 30 31 back 30 29 28 27 26 25 24 23 21 20 19 18 16 15 14 13 12 10 9 8 7 5 4 3 2 1))"##,
+        "word boundaries as category.c",
+    );
+}
+
+#[test]
+fn prin1_and_error_message_strings_print_into_the_hidden_prin1_buffer() {
+    // print.c's Vprin1_to_string_buffer: prin1-to-string and %S insert
+    // at its point with modification hooks inhibited, error-message-string
+    // a piece at a time with them live, and each takes and erases the
+    // whole buffer, text left by an earlier escape included; the printer
+    // reads its variables there, print-unreadable-function runs in the
+    // caller's buffer, and the buffer is on no buffer list.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((hidden nil) (log nil)
+       (pieces
+        (let ((after-change-functions
+               (list (lambda (b e l)
+                       (setq hidden (current-buffer))
+                       (push (list b e l (buffer-string)) log)))))
+          (list (error-message-string '(wrong-type-argument 1 "x"))
+                (prin1-to-string 'p) (format "%S" 'q) (nreverse log)))))
+  (list
+   pieces
+   (list (buffer-name hidden) (memq hidden (buffer-list)) (get-buffer " prin1")
+         (with-current-buffer hidden
+           (list (buffer-size) default-directory buffer-undo-list (buffer-modified-p)
+                 (local-variable-p 'buffer-access-fontify-functions))))
+   (let ((print-unreadable-function (lambda (_o _e) (buffer-name))))
+     (with-temp-buffer (rename-buffer "caller") (prin1-to-string (list 1 (make-marker)))))
+   (list (condition-case e (let ((err (list 'error))) (setcdr err err) (error-message-string err))
+           (error (car e)))
+         (prin1-to-string 'foo)
+         (condition-case e (let ((d (list 'void-variable 'x))) (setcdr (cdr d) (cdr d))
+                             (error-message-string d))
+           (error (car e)))
+         (format "%S" 'after))
+   (with-temp-buffer
+     (setq-local print-escape-newlines t print-length 2 print-quoted nil)
+     (list (prin1-to-string "a\nb") (prin1-to-string '(1 2 3 4)) (prin1-to-string ''x)
+           (error-message-string '(wrong-type-argument "e\nf" (1 2 3 4)))))
+   (progn (with-current-buffer hidden (insert "abcdef") (narrow-to-region 2 4) (goto-char 3))
+          (list (prin1-to-string 'Y) (with-current-buffer hidden (list (point-min) (point-max) (buffer-size)))))
+   (progn (with-current-buffer hidden (insert "z")) (list (format "%s" "str") (format "%s" 'sym) (format "%d" 5) (format "%s" 1.5)))
+   (list (multibyte-string-p (prin1-to-string 'abc)) (multibyte-string-p (prin1-to-string "" t))
+         (multibyte-string-p (prin1-to-string "\u00e9" t)))
+   (progn (with-current-buffer hidden (setq buffer-read-only t))
+          (prog1 (condition-case e (prin1-to-string 'ro) (error (car e)))
+            (with-current-buffer hidden (setq buffer-read-only nil))))
+   (progn (with-current-buffer hidden (setq-local print-length 1))
+          (prog1 (list (prin1-to-string '(1 2 3)) (error-message-string '(error "x" (1 2 3))))
+            (with-current-buffer hidden (kill-local-variable 'print-length))))
+   (let ((deactivate-mark 'keep)) (prin1-to-string 'dm) deactivate-mark)))"##,
+        r##"(("Wrong type argument: 1, \"x\"" "p" "q" ((1 20 0 "Wrong type argument") (20 22 0 "Wrong type argument: ") (22 23 0 "Wrong type argument: 1") (23 25 0 "Wrong type argument: 1, ") (25 28 0 "Wrong type argument: 1, \"x\"") (1 1 27 ""))) (" prin1" nil nil (0 nil t t t)) "(1 caller)" (circular-list "peculiar error: errorfoo" circular-list "Symbol's value as variable is void: xafter") ("\"a
+b\"" "(1 2 3 4)" "'x" "Wrong type argument: \"e
+f\", (1 2 3 4)") ("bYc" (1 1 0)) ("str" "sym" "5" "z1.5") (nil nil t) buffer-read-only ("(1 ...)" "x: (1 ...)") keep)"##,
+        "prin1 buffer as print.c",
+    );
+    // Killed, it stays killed (the C variable keeps the dead buffer): both
+    // printers fail in print_prepare's Fset_buffer, and only the (error
+    // STRING) shortcut still answers.  GNU prints this text for it.
+    let program = r##"(let (hidden) (let ((after-change-functions (list (lambda (&rest _) (setq hidden (current-buffer)))))) (error-message-string '(wrong-type-argument 1))) (kill-buffer hidden) (concat (condition-case e (prin1-to-string 'dead) (error (cadr e))) "|" (condition-case e (error-message-string '(error "x" 1)) (error (cadr e))) "|" (error-message-string '(error "only")) "|" (if (buffer-live-p hidden) "live" "dead")))"##;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let (form, _) =
+        super::print::read_encoded_form_in_env(&mut interp, program.as_bytes(), false, &mut env)
+            .expect("killed prin1 buffer program should read");
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("killed prin1 buffer program should evaluate");
+    assert_eq!(
+        string_like(&result).map(|text| text.text).as_deref(),
+        Some("Selecting deleted buffer|Selecting deleted buffer|only|dead")
+    );
+}
+
+#[test]
+fn undo_inhibit_record_point_turns_record_point_off() {
+    // undo.c:record_point returns at once under undo_inhibit_record_point,
+    // so an insertion or deletion records neither point before the last
+    // command or boundary nor the unmodified buffer's (t . TIME), however
+    // the variable is bound, set or made local, and in every buffer.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((entries (lambda () (mapcar (lambda (e) (if (eq (car-safe e) t) 'first e)) buffer-undo-list)))
+       (probe (lambda (inhibit how)
+         (with-temp-buffer
+           (buffer-enable-undo)
+           (insert "abcdef")
+           (set-buffer-modified-p nil)
+           (setq buffer-undo-list nil)
+           (goto-char 2)
+           (undo-boundary)
+           (goto-char 4)
+           (cond
+            ((eq how 'let) (let ((undo-inhibit-record-point inhibit)) (insert "x") (delete-char 1)))
+            ((eq how 'setq) (setq undo-inhibit-record-point inhibit) (insert "x") (delete-char 1)
+             (setq undo-inhibit-record-point nil))
+            (t (setq-local undo-inhibit-record-point inhibit) (insert "x") (delete-char 1)
+               (kill-local-variable 'undo-inhibit-record-point)))
+           (funcall entries))))
+       (old (generate-new-buffer "old")) new)
+  (prog1
+      (list
+       (mapcar (lambda (how) (mapcar (lambda (inhibit) (funcall probe inhibit how)) '(nil t 5)))
+               '(let setq local))
+       (let ((undo-inhibit-record-point 7)) undo-inhibit-record-point)
+       (progn
+         (setq undo-inhibit-record-point t
+               new (generate-new-buffer "new"))
+         (prog1
+             (mapcar (lambda (b)
+                       (with-current-buffer b
+                         (buffer-enable-undo)
+                         (insert "ab")
+                         (funcall entries)))
+                     (list old new))
+           (setq undo-inhibit-record-point nil)))
+       undo-inhibit-record-point)
+    (kill-buffer old) (kill-buffer new)))"##,
+        r##"((((("d" . 5) (4 . 5) 2 first) (("d" . 5) (4 . 5)) (("d" . 5) (4 . 5))) ((("d" . 5) (4 . 5) 2 first) (("d" . 5) (4 . 5)) (("d" . 5) (4 . 5))) ((("d" . 5) (4 . 5) 2 first) (("d" . 5) (4 . 5)) (("d" . 5) (4 . 5)))) t (((1 . 3)) ((1 . 3))) nil)"##,
+        "undo-inhibit-record-point as undo.c",
+    );
+}
+
+#[test]
 fn file_readable_p_tests_access_without_opening_a_fifo() {
     // fileio.c:Ffile_readable_p is faccessat (R_OK): a FIFO with no
     // writer is readable without the open that would wait for one.
@@ -24623,7 +24823,9 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
     );
     interp.kill_buffer_id(id);
     let killed = interp.live_object_census();
-    assert_eq!(killed.buffers, after.buffers);
+    // alloc.c:sweep_buffers counts the live buffers of Vbuffer_alist; the
+    // killed one stays a vector of its size.
+    assert_eq!(killed.buffers, after.buffers - 1);
     assert_eq!(killed.vectors, after.vectors);
     assert_eq!(killed.vector_slots, after.vector_slots);
     assert!(matches!(buffer.kind(), Kind::Buffer(_)));

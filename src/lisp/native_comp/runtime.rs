@@ -3833,7 +3833,6 @@ fn invoke_plain_native_funcall(
     let native = RegisteredNative(callee.native_function_ref()?);
     if !native.admits(arguments.len())
         || !interpreter.plain_bcall_entry(name)
-        || crate::lisp::primitives::fatal_signal_pending()
         || !runtime.heap.collection_cannot_be_due()
     {
         return None;
@@ -5397,13 +5396,18 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
     if !due {
         return;
     }
-    // alloc.c:garbage_collect's compact_buffer pass, before the marking.
+    // alloc.c:garbage_collect records its `Automatic GC' frame, then
+    // makes its compact_buffer pass, before the marking.
     // SAFETY: as above; no reference into the activation is held across it.
+    let gc_frame = unsafe { (*interpreter).push_automatic_gc_frame() };
     let compacted = unsafe { (*interpreter).compact_buffers(&mut *environment) };
     if let Err(error) = compacted {
+        // SAFETY: as above.
+        unsafe { (*interpreter).truncate_backtrace_frames(gc_frame) };
         with_active(|active| remember_helper_error(active, error));
         return;
     }
+    let tot_before = crate::lisp::primitives::profiler::collection_tot_before();
     let started = {
         // SAFETY: as above. This scope ends before the shared completion
         // path can invoke Lisp.
@@ -5411,12 +5415,14 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
         let runtime = unsafe { &mut *runtime };
         let started = std::time::Instant::now();
         runtime.collect_native_heap_now(stack_top, interpreter, unsafe { &*environment });
+        interpreter.truncate_backtrace_frames(gc_frame);
         started
     };
     // SAFETY: these are the same owning activation's pointers, reborrowed
     // after the collecting runtime reference has ended.
-    let result =
-        unsafe { super::finish_garbage_collection(&mut *interpreter, &mut *environment, started) };
+    let result = unsafe {
+        super::finish_garbage_collection(&mut *interpreter, &mut *environment, started, tot_before)
+    };
     if let Err(error) = result {
         with_active(|active| remember_helper_error(active, error));
     }

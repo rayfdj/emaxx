@@ -804,7 +804,21 @@ impl Printer {
         }
         let restore = key.with(|symbol| interp.bind_special_symbol(symbol, Value::Nil, env))?;
         let flag = if escape { Value::T } else { Value::Nil };
+        // The function runs in print--unreadable-callback-buffer, the buffer
+        // current when the print began, not the secret " prin1" buffer
+        // prin1-to-string prints into ("this will make Emacs segfault").
+        let current = interp.current_buffer_id();
+        let switched = match interp.print_unreadable_callback_buffer {
+            Some(callback) if callback != current && interp.has_buffer_id(callback) => {
+                interp.set_current_buffer_id(callback)?;
+                true
+            }
+            _ => false,
+        };
         let result = call_function_value(interp, &function, &[*obj, flag], env);
+        if switched && interp.has_buffer_id(current) {
+            interp.set_current_buffer_id(current)?;
+        }
         let restored = interp.restore_special_dynamic(restore, env);
         self.escapes = StringEscapes::current(interp);
         let result = result?;

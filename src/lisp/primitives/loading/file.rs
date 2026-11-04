@@ -240,10 +240,11 @@ fn load_with_context(
                 if version < 0 {
                     version = safe_to_load_version(interp, &request.file, file, env)?;
                     if version == 0 {
-                        return Err(LispError::Signal(format!(
+                        return Err(crate::lisp::primitives::values::doprnt_error(
+                            interp,
                             "File `{}' was not compiled in Emacs",
-                            string_text(&found.name)?
-                        )));
+                            &[&string_text(&found.name)?],
+                        ));
                     }
                 }
                 // openp already checked for newness with load-prefer-newer.

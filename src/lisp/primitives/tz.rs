@@ -133,16 +133,25 @@ struct TzRule {
 
 impl TzRule {
     /// tzset.c:compute_change: when in YEAR the change to this rule
-    /// happens.
+    /// happens.  YEAR is tzset.c's int (`1900 + tm->tm_year'), and the
+    /// days to January 1st are summed in int before SECSPERDAY, a
+    /// __time64_t, widens them: from year 5,881,581 the sum wraps as the
+    /// compiled glibc's does, and the change is where the wrapped count
+    /// puts it.
     fn change(&self, year: i64) -> i64 {
+        let year = year as i32;
         // First set T to January 1st, 0:00:00 GMT in YEAR.
         let mut t = if year > 1970 {
-            ((year - 1970) * 365 + ((year - 1) / 4 - 1970 / 4) - ((year - 1) / 100 - 1970 / 100)
-                + ((year - 1) / 400 - 1970 / 400))
-                * SECS_PER_DAY
+            let days = (year - 1970)
+                .wrapping_mul(365)
+                .wrapping_add((year - 1) / 4 - 1970 / 4)
+                .wrapping_sub((year - 1) / 100 - 1970 / 100)
+                .wrapping_add((year - 1) / 400 - 1970 / 400);
+            i64::from(days) * SECS_PER_DAY
         } else {
             0
         };
+        let year = i64::from(year);
         match self.kind {
             RuleKind::J1 => {
                 t += (i64::from(self.d) - 1) * SECS_PER_DAY;
@@ -1205,5 +1214,30 @@ pub(crate) fn mktime_z(tz: &TimeZone, tm: &mut Tm) -> Result<i64, TimeOverflow> 
             *tm = tm_1;
             Ok(t)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TimeZone, localtime_rz};
+
+    #[test]
+    fn huge_years_change_as_glibcs_int_day_count_wraps() {
+        // glibc 2.39 with TZ set to this rule: tzset.c's compute_change
+        // sums the days to January 1st in int, which overflows from year
+        // 5,881,581 and leaves no daylight saving time after it.
+        let tz = TimeZone::Tz(Some("EST5EDT,M3.2.0,M11.1.0".into()));
+        let isdst = |timer| {
+            let tm = localtime_rz(&tz, timer).expect("representable");
+            (tm.isdst, tm.gmtoff)
+        };
+        assert_eq!(isdst(1_690_000_000), (1, -14_400));
+        assert_eq!(isdst(1_700_000_000), (0, -18_000));
+        // Year 5,000,000: April, December.
+        assert_eq!(isdst(157_722_601_487_760), (1, -14_400));
+        assert_eq!(isdst(157_722_622_223_760), (0, -18_000));
+        // Year 5,885,000 (June) and 35,680,317 (September).
+        assert_eq!(isdst(185_650_509_191_760), (0, -18_000));
+        assert_eq!(isdst(1_125_899_906_842_624), (0, -18_000));
     }
 }

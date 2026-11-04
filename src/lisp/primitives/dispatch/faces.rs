@@ -743,11 +743,12 @@ fn checked_face_attribute(
         ":foreground" | ":distant-foreground" | ":background" => {
             // HANDLE_INVALID_NIL_VALUE: compatibility with 20.x.
             if value.is_nil() {
-                let message = format!(
-                    "Warning: setting attribute `{attribute}' of face `{}': nil value is invalid, use `unspecified' instead.",
-                    face.symbol_str().unwrap_or("nil")
-                );
-                log_message_text(interp, &message, env);
+                super::display::add_to_log(
+                    interp,
+                    "Warning: setting attribute `%s' of face `%s': nil value is invalid, use `unspecified' instead.",
+                    &[Value::symbol(attribute), face],
+                    env,
+                )?;
                 value = Value::symbol("unspecified");
             }
             if !special_face_value(&value) && check_string(value)?.is_empty() {

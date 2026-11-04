@@ -1646,6 +1646,29 @@ pub(crate) fn would_add_properties(
     Ok(true)
 }
 
+/// add_text_properties_1's interval analysis up to its
+/// modify_text_properties: whether PROPERTIES (validated, non-nil) would
+/// change [S, S + LEN), and, when the interval at S lacks one of them and
+/// S is inside it, that interval split at S, as GNU splits it before the
+/// buffer's hooks can signal.
+pub(crate) fn split_for_add(
+    intervals: &mut Intervals,
+    s: usize,
+    len: usize,
+    properties: Value,
+) -> Result<bool, LispError> {
+    let i = intervals.find(s);
+    if interval_has_all_properties(properties, intervals.plist(i))? {
+        return would_add_properties(intervals, s, len, properties);
+    }
+    if intervals.start(i) != s {
+        let unchanged = i;
+        let i = intervals.split_right(unchanged, s - intervals.start(unchanged));
+        intervals.copy_properties(intervals.plist(unchanged), i)?;
+    }
+    Ok(true)
+}
+
 /// textprop.c:add_text_properties_1 from its interval analysis on:
 /// PROPERTIES (validated, non-nil) given the text [S, S + LEN), the
 /// intervals at either end split where the range does not start or end
@@ -1794,6 +1817,56 @@ pub(crate) fn would_remove_properties(
         len -= got;
         i += 1;
         got = intervals.length(i);
+    }
+    Ok(true)
+}
+
+/// Fremove_text_properties' (PLIST the properties) and
+/// Fremove_list_of_text_properties' (PLIST nil, LIST the names) interval
+/// analysis up to their modify_text_properties: whether a property of
+/// [S, S + LEN) would go, and, as GNU splits them before the buffer's
+/// hooks can signal, the interval at S split there when it has one and S
+/// is inside it, and for the list form the first interval with one split
+/// at the range's end when it goes past it.
+pub(crate) fn split_for_remove(
+    intervals: &mut Intervals,
+    s: usize,
+    len: usize,
+    plist: Value,
+    list: Value,
+) -> Result<bool, LispError> {
+    let list_form = plist.is_nil();
+    let has_some = |iplist: Value| -> Result<bool, LispError> {
+        if list_form {
+            Ok(interval_has_some_properties_list(list, iplist))
+        } else {
+            interval_has_some_properties(plist, iplist)
+        }
+    };
+    let mut i = intervals.find(s);
+    let mut len = len;
+    if !has_some(intervals.plist(i))? {
+        let mut got = intervals.length(i) - (s - intervals.start(i));
+        loop {
+            if got >= len {
+                return Ok(false);
+            }
+            len -= got;
+            i += 1;
+            got = intervals.length(i);
+            if has_some(intervals.plist(i))? {
+                break;
+            }
+        }
+    } else if intervals.start(i) != s {
+        let unchanged = i;
+        i = intervals.split_right(unchanged, s - intervals.start(unchanged));
+        intervals.copy_properties(intervals.plist(unchanged), i)?;
+    }
+    if list_form && intervals.length(i) > len {
+        let unchanged = i;
+        let i = intervals.split_left(unchanged, len);
+        intervals.copy_properties(intervals.plist(unchanged + 1), i)?;
     }
     Ok(true)
 }

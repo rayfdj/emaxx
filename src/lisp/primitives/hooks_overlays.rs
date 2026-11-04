@@ -107,22 +107,32 @@ pub(crate) fn flush_combined_after_change(
         unchanged_after = unchanged_after.min(after);
         net_change += change;
     }
+    // Neither clipped: a deletion's end count includes the deleted text,
+    // so END can fall before BEGIN and the counts go negative, as GNU's.
     let begin = 1 + unchanged_before;
-    let end = (size + 1 - unchanged_after).max(begin);
-    let change = AfterChange::new(
-        begin as usize,
-        (end - begin - net_change).max(0) as usize,
-        (end - begin) as usize,
-    );
-    let restore = interp.bind_special_dynamic("combine-after-change-calls", Value::Nil, env)?;
-    let result = signal_after_change(interp, change, &OverlayHookCalls::none(), env)
-        .and_then(|()| update_compositions(interp, begin as usize, end as usize, CHECK_ALL, env));
-    let restore_result = interp.restore_special_dynamic(restore, env);
+    let end = size + 1 - unchanged_after;
+    let change = AfterChange::signed(begin, end - begin - net_change, end - begin);
+    // The flag is not turned off (despite insdel.c's comment): under a
+    // non-nil `combine-after-change-calls' the combined change is deferred
+    // again.  Fcombine_after_change_execute_1 sets back the value it had.
+    let flag = interp
+        .symbol_value_key(cached_symbol!("combine-after-change-calls"))
+        .unwrap_or(Value::Nil);
+    let result = interp.with_lisp_stack_roots(&[flag], |interp| {
+        let result =
+            signal_after_change(interp, change, &OverlayHookCalls::none(), env).and_then(|()| {
+                if begin < 1 || end < begin {
+                    return Ok(());
+                }
+                update_compositions(interp, begin as usize, end as usize, CHECK_ALL, env)
+            });
+        interp.set_symbol_value_cell("combine-after-change-calls", flag);
+        result
+    });
     if interp.has_buffer_id(saved_buffer_id) {
         interp.switch_to_buffer_id(saved_buffer_id)?;
     }
     result?;
-    restore_result?;
     Ok(Value::Nil)
 }
 
@@ -617,7 +627,9 @@ fn delete_region_with_hooks_then<R>(
     })
 }
 
-/// textprop.c's buffer case of a property change, when CHANGES finds that
+/// textprop.c's buffer case of a property change, when PREPARE, the
+/// primitive's interval analysis up to its modify_text_properties (with
+/// the splits it makes there, which stay when a hook signals), finds that
 /// the properties of [START, END) in BUFFER_ID would change, with that
 /// buffer current throughout (the primitives' set_buffer_internal, bug
 /// 36190) and the caller's restored after:
@@ -631,7 +643,7 @@ pub(crate) fn modify_buffer_text_properties(
     buffer_id: u64,
     start: usize,
     end: usize,
-    changes: &dyn Fn(&crate::buffer::Buffer) -> bool,
+    prepare: &dyn Fn(&mut crate::buffer::Buffer) -> Result<bool, LispError>,
     apply: &dyn Fn(&mut crate::buffer::Buffer),
     env: &mut crate::lisp::types::Env,
 ) -> Result<bool, LispError> {
@@ -642,11 +654,12 @@ pub(crate) fn modify_buffer_text_properties(
     };
     let original = interp.current_buffer_id();
     let changing = if buffer_id == original {
-        changes(&interp.buffer.borrow())
+        prepare(&mut interp.buffer.borrow_mut())?
     } else {
-        interp
-            .get_buffer_by_id(buffer_id)
-            .is_some_and(|buffer| changes(&buffer))
+        match interp.get_buffer_by_id_mut(buffer_id) {
+            Some(mut buffer) => prepare(&mut buffer)?,
+            None => false,
+        }
     };
     if !changing {
         return Ok(false);

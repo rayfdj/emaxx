@@ -13609,6 +13609,485 @@ setup_process_coding_systems's check now refuses). A 13-form
   give GNU's results. Local validation: the grouped gate's 3,493
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 281: C error messages requoted as doprnt requotes them.**
+  GNU's `error' runs its format through verror, vformat_string and
+  doprnt, which turns the format's own grave accents and apostrophes
+  into the quotes of the effective `text-quoting-style' (curve: U+2018
+  and U+2019, straight: apostrophes, grave: as written) and copies a
+  `%s' or `%c' argument as it is. Emaxx's C-level messages kept the
+  grave accents and apostrophes they were written with, so under
+  `curve', the default in a UTF-8 locale, `define-category' said
+  "Category `Z' is already defined" where GNU says "Category ‘Z’ is
+  already defined", and likewise `char-table-range', `define-key' of
+  [keymap], `replace-match', `subst-char-in-region',
+  `set-buffer-multibyte' in an indirect buffer,
+  `find-operation-coding-system', the ISO charset functions,
+  `call-interactively' with a "+" or bad control letter,
+  `set-fontset-font', `recenter', the frame and display checks, serial
+  process parameters, a `handler-bind' with trailing conditions, the
+  file-name-handler check and others. The frozen run's LANG=C makes the
+  style grave, which is why it never showed. A doprnt_error helper
+  requotes only the literal format, its `{}' arguments copied as they
+  are, and 58 messages in 29 files go through it; the `require' nesting
+  errors and set-window-buffer's dedicated-window error, which picked
+  their quote pairs themselves, take the helper's. xfaces.c's warning
+  for a nil :foreground, :distant-foreground or :background is
+  add_to_log's, so `format-message' formats it (Emaxx wrote it with its
+  grave quotes). A probe of 30 forms under each style in a C.UTF-8
+  locale and a contract of 15 messages under the three styles bound
+  match GNU. Local validation: the grouped gate's 3,494 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 282: forward-word's boundary test and scan setup.**
+  category.c's word_boundary_p tests each pair of
+  `word-separating-categories' (or, across scripts,
+  `word-combining-categories') against the two characters' category
+  sets, and modify-category-entry's hash_get_category_set makes equal
+  sets one object, so the letters of one script share a set. When the
+  two sets are that one object no category is in one and not the other,
+  and of GNU's tests only a (nil . nil) pair can hold: word_boundary_p
+  now answers so from the list alone, 184 instructions a call becoming
+  120 (GNU's, with its char_category_set calls, 144). scan_words' setup
+  read point's, BEGV's and ZV's byte positions and the buffer's extended
+  characters through the buffer even when every character of the text is
+  one byte, where each position is its own byte. On 20,000 lines of six
+  words, scan_words (Emaxx's entry, with the Scanner it makes) went from
+  268.9M instructions to 222.4M for 120,000 calls, 1,854 a call against
+  GNU's 1,268. What remains is the setup a call makes and GNU's does
+  not: Scanner::new's own work (158), the gl_state's reads of
+  `parse-sexp-lookup-properties' and `syntax-propertize--done' as
+  buffer-local variables (68 of read_state's 133), the three variables
+  word_boundary_p reads (92) and `find-word-boundary-function-table'
+  (70), where GNU reads C variables. A contract of `forward-word' and
+  `backward-word' over Latin, Japanese and Greek text under six category
+  lists, (nil . nil) pairs among them, matches GNU. Local validation:
+  the grouped gate's 3,495 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 283: the printer's hidden " prin1" buffer.** print.c's
+  Fprin1_to_string and Ferror_message_string print into
+  Vprin1_to_string_buffer, the buffer buffer.c:init_buffer_once makes as
+  " prin1" (a space name, so no undo, its hooks inhibited, its directory
+  nil) just before it empties Vbuffer_alist, so no buffer list or name
+  finds it; editfns.c makes buffer-access-fontify-functions local (nil)
+  in it. prin1-to-string binds `inhibit-modification-hooks' and
+  OVERRIDES, prints through print_prepare and print_finish into that
+  buffer, so the printer reads its variables there (a `print-length' or
+  `print-escape-newlines' local to the caller's buffer is not seen) and
+  inserts at its point, read-only check included, then takes
+  Fbuffer_string of the whole buffer (unibyte when its bytes are its
+  characters; an empty result is empty_unibyte_string itself,
+  STRING_SET_UNIBYTE being a macro), erases it and keeps
+  `deactivate-mark'. error-message-string writes each piece (the message
+  or "peculiar error", each separator, each datum) through a
+  print_prepare of its own with modification hooks live, so
+  `after-change-functions' sees every piece, and what a circular tail or
+  a printing error leaves inserted stays for the next prin1-to-string to
+  take ("peculiar error: errorfoo"). styled_format sends every %S
+  argument and every %s argument that is not a string or symbol, numbers
+  included, through Fprin1_to_string; Emaxx's digits-only shortcut for
+  numbers is gone. print_prepare binds print--unreadable-callback-buffer
+  to the buffer current when a print starts, and
+  `print-unreadable-function' runs there. Emaxx had rendered both
+  functions in the caller's buffer and inserted nothing. print_finish
+  inserts octets strout counted as characters (a C string's non-ASCII
+  bytes, as a native subr's name) a character each, so a buffer holding
+  only them gives the unibyte string of those octets; a buffer here
+  holds characters, so prin1-to-string returns the octets when the
+  buffer was empty before the print. The buffer is a dumped root
+  (RootSlot 63); a session without an image makes it at its first print;
+  killed, it stays killed and both printers signal "Selecting deleted
+  buffer". A buffer live on no list showed that Emaxx took a live buffer
+  to be one in the buffer list: has_buffer_id (80 callers, among them
+  save-current-buffer's restore and kill-buffer) now counts that one
+  buffer live while it is held, as BUFFER_LIVE_P does, and the image
+  loader keeps a dumped killed buffer's id from the buffers made after
+  the load, an id being a buffer's `eq' identity (in a pdumper round
+  trip the hidden buffer, made at the first print, had taken a killed
+  buffer's id). GC's `buffers' count is alloc.c:sweep_buffers'
+  FOR_EACH_LIVE_BUFFER, the buffers of Vbuffer_alist (Emaxx counted
+  every allocated buffer object, 5 against GNU's 4 under `-Q --batch
+  -l'). In the release build, against GNU (microseconds a call): format
+  "%S" of a symbol 1.48 against 1.78, format "%s" of an integer 1.28
+  against 1.72 (0.39 with the shortcut), prin1-to-string of a small list
+  2.04 against 2.45, error-message-string 14.2 against 16.3. A contract
+  of the protocol (the hooks each function runs, leftover text,
+  buffer-local print variables, the callback's buffer, narrowing,
+  read-only, unibyte results, `deactivate-mark') and a check of the
+  killed buffer match GNU, as do the outcomes of print-, editfns-,
+  cl-print-, buffer-, ert- and subr-tests. Not matched: the buffer's
+  modification ticks, which in GNU count loadup's prints (9,946 at
+  startup). Local validation: the grouped gate's 3,496 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 284: `undo-inhibit-record-point' and the open-files limit.**
+  undo.c:record_point returns at once while undo_inhibit_record_point is
+  set, so an insertion or a deletion then records neither where point
+  stood before the last command or `undo-boundary' nor an unmodified
+  buffer's (t . TIME) (record_property_change's first change does not
+  consult it). Emaxx read no such variable. It is now one of the
+  evaluator's forwarded cells, as `inhibit-quit' is: each store, `let'
+  and its unbinding, a buffer-local value and each switch of the current
+  buffer reach the interpreter's copy of the C variable and the copy
+  each buffer holds for its record_point (every buffer takes a store;
+  the current buffer is given the value again at each switch, so a
+  buffer made since the last store holds it once current).
+  process.c:init_process_emacs lowers a soft RLIMIT_NOFILE above
+  FD_SETSIZE to FD_SETSIZE, so Emacs itself gets EMFILE where an fd_set
+  could not hold the descriptor; a child made through posix_spawn
+  (`call-process', a pipe process, `shell-command') keeps the lowered
+  limit, and one made through a pty's vfork gets the limit Emacs started
+  with back (callproc.c:child_setup's restore_nofile_limit). Emaxx kept
+  the limit it was given: with a hard limit of 20,000, GNU's own soft
+  limit and its three kinds of children read 1024, 1024, 1024 and 20000,
+  Emaxx's 20000 in all four; now as GNU (Emaxx made a pty child with
+  posix_spawn too, which sets no limit, so a pty child owed one is made
+  on the fork path, GNU's vfork path). A contract of the variable
+  (bound, set and made local; a buffer made before and one made after a
+  store) and a command-line comparison of the four limits match GNU. A
+  release timing sweep of the 68 longest test files (ERT's run of each,
+  the frozen runner's selector, best of one): 67 with the same outcomes
+  in both, 173.4 s against GNU's 186.6 s, the median ratio 0.999, 34
+  faster; the widest are electric-tests 1.26, epg-tests 1.26, mule-tests
+  1.17 (its tests' own times equal, 1.10 s for the two ucs-names tests
+  in both, the rest being the files' setup) and edebug-tests 1.14.
+  electric-tests runs 6.39G instructions against GNU's 6.44G, with
+  instruction-cache misses 135.7M against 33.5M and mispredicted
+  branches 100.2M against 72.7M in cachegrind's simulation. Tried and
+  not kept: a link order of the hot functions, lld's
+  `--symbol-ordering-file' from electric-tests' own profile (3,706
+  sections, 3.7 MB, first in `.text'), which left the simulated misses
+  at 138.4M and the time at 1.563 s against 1.557 s (best of seven): the
+  misses are spread over the hot code (`run_verified' 5.7%, then a long
+  tail), whose size and not its order is the excess, as rounds 181 and
+  194 found. Fuzz sweeps of printing, `format', editing, regular
+  expressions and syntax scans (800 and 681 cases a sweep) found no
+  difference from GNU. Local validation: the grouped gate's 3,497
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 285: the rest of init_signals, terminate_due_to_signal and
+  shut_down_emacs.** sysdep.c:init_signals gives process_fatal_action to
+  SIGHUP and (in batch) SIGINT unless inherited ignored, and to SIGTERM,
+  SIGQUIT, SIGVTALRM, SIGXCPU and SIGXFSZ whatever was inherited;
+  thread_fatal_action to SIGILL, SIGTRAP, SIGFPE, SIGABRT, SIGBUS,
+  SIGSEGV (init_sigsegv's, on a 64 KiB alternate stack) and SIGSYS; it
+  ignores SIGPROF until a profiler takes it, and atimer.c:init_atimer
+  catches SIGALRM, whose handler with no atimer pending does nothing.
+  Emaxx caught HUP, INT and TERM (round 115) and left the rest at their
+  defaults, so a SIGPROF or SIGALRM killed it where GNU carries on, a
+  SIGTERM inherited ignored was ignored, and a fault or SIGQUIT ended it
+  without GNU's shutdown. emacs.c:terminate_due_to_signal, with
+  `attempt-orderly-shutdown-on-fatal-signal' and no fatal error already
+  in progress, runs Fkill_emacs for SIGTERM, SIGHUP and SIGINT and
+  otherwise shut_down_emacs (Vrun_hooks cleared, "Fatal error N: DESC"
+  when Emacs's process group is the terminal's foreground, every
+  subprocess hung up, Fdo_auto_save (t, nil), unlock_all_files) and
+  emacs_backtrace (40), "Backtrace:" and backtrace_symbols_fd's frames
+  on standard error; it then raises the signal at its default action, so
+  the status is the signal's and what stdio buffered for standard output
+  is lost. The process signals and a fault another process sent (si_code
+  <= 0, but not glibc's own abort) wait for the next quit check, which
+  runs all of it; a fault the thread made cannot be returned to, and its
+  handler writes the diagnostic and the backtrace and raises the signal.
+  Fkill_emacs's shut_down_emacs now auto-saves too (it only unlocked),
+  with no `auto-save-hook' and no directory made for the list file once
+  Vrun_hooks is nil, and deletes `auto-save-list-file-name'.
+  `attempt-orderly-shutdown-on-fatal-signal' is a forwarded cell read by
+  the handlers. A command-line comparison (an edited file buffer in
+  `auto-save-mode' with a `kill-emacs-hook', then self-sent SIGTERM,
+  SIGQUIT, SIGXFSZ, SIGSEGV and SIGABRT, a normal end, SIGPROF, SIGALRM
+  and an inherited-ignored SIGTERM) gives GNU 30.2's statuses, standard
+  output, first line of standard error and files left (`#f.txt#' after
+  each signal, none after `kill-emacs'). Not done: a fault the kernel
+  raises cannot run shut_down_emacs's Lisp half (the auto-saves, the
+  unlocks), which GNU runs in the handler; sysdep.c's stack-overflow
+  recovery ("Re-entering top level after C stack overflow") is not
+  ported; profiler.c's sampling is not ported, so SIGPROF is never
+  taken. Local validation: the grouped gate's 3,497 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
+- **Round 286: profiler.c.** GNU's CPU profiler takes SIGPROF from a
+  POSIX timer on the first clock that makes one (CLOCK_THREAD_CPUTIME_ID
+  first, setitimer's ITIMER_PROF failing that), each signal counting one
+  sample and one more for each overrun; its memory profiler counts the
+  bytes each xmalloc, xzalloc, xrealloc, lisp_malloc and
+  lisp_align_malloc asks for, and garbage_collect counts the bytes a
+  collection freed. Each sample goes into a log_t, a fixed table of
+  `profiler-log-size' call stacks of `profiler-max-stack-depth'
+  functions (eval.c:get_backtrace's, innermost first, padded with nil),
+  keyed by function-equal; a full table evicts every entry at or below
+  its approximate_median into `Discarded Samples', and a sample whose
+  innermost frame is garbage_collect's `Automatic GC' counts toward it.
+  `profiler-cpu-log' and `profiler-memory-log' stop the profiler, export
+  the log as an `equal' hash table (each count read into an int) and
+  restart it with a fresh one. Emaxx had stubs: both logs were empty
+  hash tables, `profiler-cpu-start' took any interval and set
+  `profiler-sampling-interval', and the "already running" errors lacked
+  their "is". Now as profiler.c, with one change of mechanism: GNU's
+  handler and probes walk the backtrace where they stand, which a signal
+  handler or the allocator cannot do to Emaxx's interpreter, so they
+  only count, and the interpreter files what they counted at its next
+  backtrace push or pop (and before a Lisp thread switch), when the
+  frames are still the ones that stood when the sample was taken. The
+  probe is the global allocator's, so every Rust allocation counts as
+  every C one does in GNU; garbage_collect's `Automatic GC' frame
+  (record_in_backtrace (QAutomatic_GC, 0, 0)) is now recorded over
+  compact_buffer and the mark and sweep, and the logs are a collection's
+  roots (mark_profiler). The test of a frame push and pop costs 1.9M
+  instructions in a byte-code and interpreted `fib' run of 432.7M
+  (0.43%). A command-line comparison of the errors and protocol, a busy
+  loop's call stacks, a three-entry log's eviction, a memory log's
+  `make-string', `Automatic GC' and `garbage-collect' entries and
+  `function-equal' matches GNU, as do the call stacks of the samples
+  themselves (the same four traces of a `while' loop in both). Not as
+  GNU: GNU's export with no log (a second `profiler-cpu-log' after a
+  stop) reads through a null pointer and crashes, where Emaxx answers
+  nil; a `profiler-log-size' of 0 writes before GNU's arrays, where
+  Emaxx counts every sample as discarded. Local validation: the grouped
+  gate's 3,499 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 287: atimer.c.** GNU's init_atimer makes a timerfd (unless
+  EMACS_IGNORE_TIMERFD is set; descriptor 3 of a batch session) and a
+  timer_create POSIX timer that sends SIGALRM, and catches SIGALRM with
+  handle_alarm_signal, which only sets keyboard.c's pending_signals.
+  start_atimer keeps the atimers sorted by expiration and set_alarm arms
+  both clocks for the first (setitimer's ITIMER_REAL without them, or a
+  raise at once for one overdue); maybe_quit's probably_quit runs
+  process_pending_signals whenever pending_signals is set, as
+  wait_reading_process_output does at the top of each pass, and its
+  do_pending_atimers runs each ripe atimer, puts a continuous one back
+  for its next time and arms the alarm for the first left. eval.c's
+  `funcall-with-delayed-message' starts a relative atimer of its timeout
+  (Gnulib's dtotimespec: the seconds truncated toward zero, the
+  nanoseconds rounded up, NaN and out-of-range values clipped to
+  time_t's extremes) over a copy of the message (xstrdup of its bytes,
+  so up to the first NUL, and build_string, so multibyte as make_string
+  decides), calls the function and cancels the atimer however the call
+  ends; the atimer's message3 shows the message (on standard error and
+  in *Messages* in batch) at the first quit check after the timeout, in
+  a busy loop or in a `sleep-for'. Emaxx had no atimers:
+  `funcall-with-delayed-message' timed the call and, when it had
+  outlasted the timeout, rewrote *Messages* to put the message before
+  whatever the call had logged there, never showing it, and copied the
+  message as decoded text. Now as atimer.c: the SIGALRM handler and the
+  fatal-signal handlers set one pending flag, which maybe_quit's fast
+  check reads beside the quit flag (GNU's `!NILP (Vquit_flag) ||
+  pending_signals'); probably_quit takes it, runs a pending fatal
+  signal's terminate_due_to_signal, then the quit (which leaves
+  pending_signals set, as GNU's does) or process_pending_signals with
+  collection inhibited; the process wait runs the same at the top of
+  each pass, and an atimer's message is a collection root
+  (mark_atimers). process.c's child_signal_init now opens the
+  child-signal pipe at the first create_process or call_process (and
+  signals "Creating pipe for child signal" when it cannot), where Emaxx
+  opened it at its first wait, so a `sleep-for' in a session without
+  children leaves Emaxx's descriptors as GNU leaves its own, GLib's
+  eventfd aside (Findings). The pending flag replaces the fatal-signal
+  flag in the checks, so the byte-code and interpreted `fib' run takes
+  434.03M instructions against round 286's 434.04M (callgrind, release
+  build), and an empty batch run 134.415M against 134.404M
+  (init_atimer). A command-line comparison of a call that finishes
+  before its timeout, calls that outlast it in a busy loop and in
+  `sleep-for', zero and negative timeouts, the argument errors, a
+  function's value, a message with a NUL, raw bytes or `%', throws
+  through the call and descriptor 3 matches GNU, as does eval-tests.el's
+  `eval-tests/funcall-with-delayed-message' (26 of 26 in both); a unit
+  test pins dtotimespec to Gnulib's results. Local validation: the
+  grouped gate's 3,499 library tests (the dtotimespec test run on
+  its own after them, with Gnulib's rounding ported in place of a
+  floor), the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 288: tzset.c's int day count.** glibc's compute_change sums
+  the days from 1970 to a year's January 1st in int (`(year - 1970) *
+  365' and the leap days, YEAR being the int `1900 + tm->tm_year') and
+  only then widens the sum by SECSPERDAY, a __time64_t. From year
+  5,881,581 the sum wraps, the year's daylight saving changes land where
+  the wrapped count puts them, and a summer time there is standard time.
+  Round 117's port summed in 64 bits and kept the rule's true changes,
+  so `decode-time' and `format-time-string' of a time past that year, in
+  a zone with daylight saving time (a POSIX rule, or a TZif file's
+  footer past its last transition), gave daylight saving time where GNU
+  gives standard time: 6 cases of a 10,000-case time-function fuzz, 51
+  of another aimed at huge times, all of them in year 35 million or
+  later. Now as the compiled glibc 2.39: the year as an int and the day
+  count in wrapping int arithmetic, which matches glibc's localtime_r
+  under TZ=EST5EDT in 80 of 80 samples from year 5 million to year 2
+  billion, where the 64-bit sum matched 27. Six 10,000-case fuzzes of
+  `format-time-string' (random directives with flags and widths),
+  `decode-time' (each FORM), `encode-time', `time-convert' and the time
+  arithmetic, over times from bignum ticks and (TICKS . HZ) pairs to
+  floats and NaN and zones from integers and (OFFSET ABBR) to 26 POSIX
+  rules (J, n and M dates, negative and past-24-hour change times, both
+  hemispheres) and TZif files, now match GNU in every case, under TZ=UTC
+  and TZ=America/Los_Angeles. A unit test pins six of glibc's answers,
+  and a command-line comparison covers five zones at huge years. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 289: Bcall's quit check before every call, and dynamic-binding
+  byte code entered in place.** bytecode.c's Bcall runs maybe_quit
+  before it looks at the callee, so an atimer or a fatal signal whose
+  handler left pending_signals set is processed at the next call of any
+  kind. The verified loop's plain entries (a lexical closure entered in
+  place, a subr or native function called from the loop) tested only the
+  quit flag, through `plain_bcall_entry''s depth gate: a
+  `funcall-with-delayed-message' whose timeout expired during a
+  byte-code recursion with no loop in it never showed its message, which
+  GNU shows at the next call, and a SIGTERM there waited for the next
+  backward jump or full call. `plain_bcall_entry' now tests the pending
+  signals too, for every plain entry (the separate tests round 287 put
+  in the Rust funcall and native paths fold into it), and the full Call
+  arm's maybe_quit runs the handlers. Bcall reaches a dynamic-binding
+  function through funcall_general, whose funcall_lambda specbinds the
+  formals and runs the code with no arguments; Emaxx went through the
+  general funcall (`bytecode_call', `call_function_value_inner',
+  `run_dynamic' with its own activation and `bind_dynamic_arguments'),
+  1,226 instructions a call of a one-argument recursion against GNU's
+  665. When the walk of the formals binds and does nothing else (each
+  bound formal a symbol whose cell holds its value, at most eight, the
+  keywords where funcall_lambda takes them, the arguments taken, and the
+  caller under the nil environment, so that no
+  internal-interpreter-environment binding is made),
+  `enter_dynamic_frame' now enters the callee's frame in the loop as a
+  lexical one's is, with the bindings on the unwind list above the
+  frame's watermark and the backtrace record below them; Breturn undoes
+  them in place (`return_unbinding'), and a signal or throw through the
+  frame undoes them as it undoes any frame's entries. Any other walk,
+  including every one that signals, takes the full call as before. The
+  usual restore of a plain binding (`store_plain_value') is inline and
+  `unbind_plain' drops its entry without the drop glue. A
+  dynamic-binding call now costs 763 instructions (enter 269, the
+  return's unbinding 172, the loop 322) and a lexical one 388 against
+  383 before, the pending-signal test. A 60-case comparison of
+  dynamic-binding calls (optional and rest formals, arity and arglist
+  errors, constants, C, buffer-local and watched variables, setq and
+  make-local-variable of a formal, signals and throws through the
+  frames, backtrace locals, the depth limit, a mutated arglist) matches
+  GNU; two command-line comparisons cover the delayed message during
+  lexical and dynamic recursions and the binding cases. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 290: set-buffer-multibyte in Fset_buffer_multibyte's order,
+  its conversion counted as GNU counts it.** Fset_buffer_multibyte reads
+  the restriction, the modified flag and the undo list first, sets the
+  undo list to t before it signals for a narrowed buffer (so the error
+  leaves the list t, as GNU's does), converts each eight-bit character's
+  bytes by insert_1_both or del_range_2 calls that record nothing but
+  each advance MODIFF by one (and CHARS_MODIFF with it), takes its
+  indirect buffers along, puts one `apply' entry on a list it kept for
+  undo, and restores an unmodified buffer to unmodified. Emaxx signalled
+  before touching the list and advanced no tick for the conversion;
+  `count_unrecorded_byte_edits' now advances the ticks once per
+  eight-bit character converted (a raw byte's character in the text or a
+  code from 0x3FFF80 among those its view cannot carry), the arm runs
+  the steps in GNU's order, and the restore keeps an unmodified buffer
+  unmodified across the counted edits. A command-line comparison
+  converts four texts (ASCII, a multibyte character, a unibyte raw byte,
+  a multibyte text with eight-bit characters) with each flag, undo kept
+  or not and the buffer modified or not, printing the ticks, the undo
+  list, the modified flag and a marker, then the narrowed error and the
+  list it leaves. Local validation: the grouped gate's 3,501
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 291: textprop.c's interval analysis before
+  modify_text_properties, and combine-after-change-calls as insdel.c
+  keeps it.** add_text_properties_1 (add-text-properties,
+  put-text-property, add-face-text-property and compose-region's
+  Fput_text_property) splits the interval at START when it lacks one of
+  the properties and START is inside it, Fremove_text_properties when it
+  has one, and Fremove_list_of_text_properties also splits the first
+  interval with one at END when it goes past it; validate_interval_range
+  makes the buffer's root interval (with HARD, as the adding primitives
+  and a set-text-properties with properties ask) and
+  interval_has_some_properties signals for a malformed plist, all before
+  modify_text_properties runs the read-only checks and the change hooks,
+  so a hook's error or a text-read-only signal leaves the splits and the
+  root in place and a malformed plist signals before any hook runs.
+  Emaxx ran the hooks first and split in the change after them;
+  `modify_buffer_text_properties' now takes the primitive's analysis up
+  to that point (`prepare_add_text_properties',
+  `prepare_set_text_properties', `prepare_remove_text_properties' over
+  `intervals::split_for_add' and `split_for_remove') in place of a pure
+  test, and propagates its error. Under `combine-after-change-calls', a
+  deferred change records its unchanged ends as insdel.c computes them,
+  Z less charpos - lendel + lenins, so a deletion counts its text as
+  unchanged at the end, and Fcombine_after_change_execute signals the
+  combined change without clipping: its end can fall before its start
+  and its counts go negative, as `after-change-functions' then receive
+  them (AfterChange's counts are ptrdiff_t now). The execution leaves
+  the flag as it is (insdel.c's comment says it turns it off, but only
+  Fcombine_after_change_execute_1 sets back the value it had), so under
+  a non-nil flag the combined change is deferred again; a change in
+  another buffer runs the pending ones and then joins the list, which
+  takes the new buffer, where Emaxx dropped the deferral and started a
+  fresh list. Text-property (eight seeds), undo (six runs),
+  modification-hook (four seeds), regex, casing and printer fuzzes match
+  GNU but for the GNU faults recorded below; two command-line
+  comparisons cover the splits and errors and the combined calls. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 292: data.c's arith_driver for `+', `-', `*' and `/', and two
+  cuts on the callback entry.** arith_driver folds the arguments in
+  intmax_t while they are integers, goes on in a bignum when a result
+  leaves that range (bignum_arith_driver) and converts the accumulated
+  integer to a float only at the first float argument, which
+  floatop_arith_driver then folds with the rest; Emaxx converted every
+  integer argument to a float as soon as any argument was one, so `(+
+  (1- most-negative-fixnum) most-positive-fixnum 0.5)' was 0.5 where
+  GNU's is -1.5 and `(* -1 0 3.0)' was -0.0 where GNU's integer product
+  0 makes 0.0. Fquo is the exception: when any divisor after the first
+  is a float, the whole quotient is taken in floats from the first
+  argument, so `(/ 6 4 2.0)' is 0.75 and `(/ 7 2 0.5)' 7.0 and `(/ 5 0
+  1.0)' 1.0e+INF; a zero integer divisor signals `arith-error' only in
+  the integer fold. Of two NaNs, GNU 30.2's x86-64 build keeps the later
+  operand's for `+' and `*' (the compiler commutes `accum += next' and
+  `accum *= next' into an addsd or mulsd whose destination, the NaN that
+  survives, is NEXT) and the accumulator's for `-' and `/', so `(+
+  0.0e+NaN -0.0e+NaN)' is -0.0e+NaN; `float_operation' makes that choice
+  explicitly rather than leave it to the code generator. The entry of a
+  byte-code callback pushes its arguments within the depth the frame
+  reserved (`push_arguments_within', on the invariant that a verified
+  program's entry depth covers its arity and enter_frame wrote the
+  frame's footer), and `call_function_value' keeps its plain funcall
+  inline with the general call out of line: a `mapc' callback costs 578
+  instructions against 584 (GNU's 446), a `mapatoms' callback 595
+  against 601 (GNU's 476). Arithmetic fuzzes (eight seeds over fixnums,
+  bignums, floats, NaNs, markers and errors) match GNU; a command-line
+  comparison covers the integer prefix, Fquo's floats, the NaN choice
+  and the one-argument forms. Local validation: the grouped gate's
+  3,501 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
+- **Round 293: the matcher's failure stack as regex-emacs.c keeps it.**
+  semantic-utest-ia's doublens test calls `looking-at' 754,000 times,
+  628,000 of them with cc-mode's punctuation-token alternation, whose
+  twenty-odd alternatives each push a failure point, test a first
+  character and pop the point again (`looking-at' uses no fastmap). The
+  PUSH_FAILURE_* macros store their three items at `fail_stack.avail++'
+  after one ENSURE_FAIL_STACK, where Emaxx pushed each item onto a Vec
+  that tested its capacity and stored its length again; a record is now
+  written into the room one test makes (`push3') and read back with one
+  bounds test (`pop3'), the stack doubling when full as GROW_FAIL_STACK
+  doubles it, its limit unchanged. The quit check at each failure tests
+  the environment's pending error before taking it, where it stored the
+  empty slot back every time, and a case-folded EXACTN compares an ASCII
+  pattern character with an ASCII text character through the translation
+  without decoding either. For that pattern the matcher takes 2,579
+  instructions a call against 3,286 (GNU's re_match_2_internal 2,852)
+  and `looking-at' 3,609 against 4,317 (GNU's looking_at_1 3,350, the
+  rest of the difference spread over the snapshot, the case table, the
+  pattern cell and the registers); the doublens test with its setup
+  takes 7.08G instructions against 7.31G (GNU's 6.99G). Regex fuzzes
+  (eight seeds) and case-folded backtracking fuzzes (eight seeds over
+  failure points, saved registers and interval counters in multibyte and
+  unibyte buffers and strings) match GNU; a command-line comparison
+  covers the same paths. Its patterns keep a loop off their end, where a
+  POSIX pattern has no final `succeed' and GNU's forall_firstchar reads
+  the stale byte past it (as recorded under the regex findings): with
+  one such pattern the oracle itself aborted in the first integration
+  run, on whatever the byte held. Local validation: the grouped gate's
+  3,501 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15671,7 +16150,196 @@ file's earlier tests: in the release build the whole file runs in 9.9 s
 against GNU's 12.3 s here and that test in 9.1 s against 11.5, so the
 frozen run's excess there is the gate build's checks.
 
+**On `78a575d`** (round 280): the full Rust gate (run 41686546748)
+passed; the frozen run (run 41686551678) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 85.9 s against 71.7 s (1.198),
+test bodies 307.2 s against 283.5 s (1.084), in all 1.101, on a runner
+slower again for both (GNU's setup 71.7 s against 66.2 and 60.7 in the
+last two runs); setup has a per-file median of 133 ms against 114. The
+widest body gaps are ert-tests (45,950 ms against 41,010), tramp-tests
+(23,280 against 20,150), comp-tests (20,050 against 17,350), mule-tests
+(3,140 against 2,020) and semantic-utest-ia (4,080 against 3,090), the
+same files as at round 279, where ert-tests' gap was shown to be the
+gate build's checks.
+
+**On `19834af`** (round 281): the full Rust gate (run 41696662887)
+passed; the frozen run (run 41696669054) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 83.3 s against 67.4 s (1.237),
+test bodies 301.1 s against 270.0 s (1.115), in all 1.120, with a
+per-file setup median of 125 ms against 103. The widest body gaps are
+again ert-tests (45,560 ms against 37,910), tramp-tests (22,580 against
+19,320), comp-tests (17,480 against 15,240), semantic-utest-ia (3,940
+against 2,620) and mule-tests (3,260 against 2,040). In the release
+build here semantic-utest-ia runs in 3.05 s against GNU's 3.48 s,
+mule-tests' two ucs-names tests take 1.25 and 1.17 s against 1.11 and
+1.09 (one `ucs-names' 0.119 s against 0.100), and edebug-tests runs
+4.36G instructions against 3.69G with loading (853M against 840M),
+reading (254M against 238M) and regexp search (488M against 471M) level
+and garbage collection cheaper (259M against 454M): its excess is spread
+through the instrumentation's Lisp.
+
+**On `7b48531`** (round 282): the full Rust gate (run 41703514411)
+passed; the frozen run (run 41703520533) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 59.0 s against 50.6 s (1.165),
+test bodies 239.1 s against 226.7 s (1.054), in all 1.081, with a
+per-file setup median of 92 ms against 80, on a faster runner than round
+281's. The widest body gaps are comp-tests (12,840 ms against 10,910),
+tramp-tests (16,990 against 15,500), semantic-utest-ia (2,930 against
+2,070), ert-tests (27,730 against 26,880), package-tests (6,130 against
+5,470) and mule-tests (1,830 against 1,190).
+
+**On `f61f0f4`** (round 283): the full Rust gate (run 41724476976)
+passed; the frozen run (run 41724481937) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 71.8 s against 60.0 s (1.198),
+test bodies 270.8 s against 249.2 s (1.087), in all 1.097, with a
+per-file setup median of 109 ms against 93, on a slower runner than
+round 282's. The widest body gaps are ert-tests (36,450 ms against
+33,060), tramp-tests (19,510 against 16,720), comp-tests (15,420 against
+13,780), mule-tests (2,410 against 1,540), semantic-utest-ia (3,400
+against 2,640) and package-tests (6,580 against 5,850).
+
+**On `65876a7`** (round 284): the full Rust gate (run 41738831061)
+passed; the frozen run (run 41738835434) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 82.8 s against 65.9 s (1.255),
+test bodies 303.8 s against 271.0 s (1.121), in all 1.125, with a
+per-file setup median of 125 ms against 103, on a runner slower again
+than round 283's (GNU's own bodies took 271.0 s against 249.2 s). The
+widest body gaps are ert-tests (45,670 ms against 38,070), tramp-tests
+(22,980 against 19,090), comp-tests (18,020 against 15,060),
+semantic-utest-ia (4,030 against 2,610), mule-tests (3,270 against
+2,010) and package-tests (7,160 against 6,150).
+
+**On `2e9292c`** (round 285): the full Rust gate (run 41745840878)
+passed; the frozen run (run 41745844815) failed its first attempt on the
+oracle's side only, GNU's `eglot-test-rust-completion-exit-function'
+failing with a jsonrpc-error from rust-analyzer where Emaxx passed
+(7,927 of 7,928), and passed at its second, 7,928 of 7,928 outcomes
+matching. The two attempts ran on very different runners: the first took
+setup 47.7 s against GNU's 40.7 s (1.173) and test bodies 220.4 s
+against 215.9 s (1.021), in all 1.034; the second, whose GNU setup took
+70.7 s, setup 95.3 s (1.348) and bodies 312.7 s against 276.0 s (1.133),
+in all 1.173, with a per-file setup median of 148 ms against 109. The
+second attempt's widest body gaps are ert-tests (46,850 ms against
+40,910), comp-tests (19,950 against 16,090), tramp-tests (23,160 against
+19,430), simple-tests (5,530 against 4,340), semantic-utest-ia (3,850
+against 2,670) and mule-tests (3,130 against 1,990).
+
+**On `7f96556`** (round 286): the full Rust gate (run 41754319950)
+passed; the frozen run (run 41754323758) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 61.4 s against 51.0 s (1.202),
+test bodies 252.8 s against 234.2 s (1.079), in all 1.110, with a
+per-file setup median of 92 ms against 79. The widest body gaps are
+tramp-tests (17,410 ms against 14,890), comp-tests (13,850 against
+11,730), ert-tests (33,550 against 31,630), semantic-utest-ia (3,060
+against 2,090), mule-tests (2,420 against 1,520) and package-tests
+(6,230 against 5,670).
+
+**On `6219f85`** (round 287): the full Rust gate (run 41758789771)
+passed; the frozen run (run 41758793118) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 79.5 s against 59.5 s (1.335),
+test bodies 293.0 s against 256.9 s (1.141), in all 1.165, with a
+per-file setup median of 119 ms against 91, on a slower runner (GNU's
+own setup 59.5 s against round 286's 51.0, its bodies 256.9 s against
+234.2). The widest body gaps are ert-tests (44,310 ms against 35,930),
+tramp-tests (20,150 against 16,400), comp-tests (16,920 against 13,520),
+semantic-utest-ia (4,140 against 2,530), mule-tests (3,490 against
+1,920) and package-tests (6,950 against 6,020).
+
+**On `ea14844`** (round 288): the full Rust gate (run 41764081651)
+passed; the frozen run (run 41764084690) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 85.7 s against 68.8 s (1.246),
+test bodies 308.3 s against 273.1 s (1.129), in all 1.137, with a
+per-file setup median of 129 ms against 106, on a slower runner still
+(GNU's own setup 68.8 s, its bodies 273.1 s). The widest body gaps are
+ert-tests (46,120 ms against 38,830), tramp-tests (23,920 against
+20,070), comp-tests (17,520 against 15,020), semantic-utest-ia (4,190
+against 2,630), mule-tests (3,380 against 2,030) and package-tests
+(7,180 against 6,280).
+
+**On `958d88e`** (round 289): the full Rust gate (run 41767921208)
+passed; the frozen run (run 41767924394) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 90.4 s against 68.4 s (1.321),
+test bodies 314.4 s against 274.1 s (1.147), in all 1.168, with a
+per-file setup median of 136 ms against 106, on a slower runner still
+(GNU's own bodies 274.1 s). The widest body gaps are ert-tests (45,330
+ms against 37,110), comp-tests (19,040 against 15,040), tramp-tests
+(22,420 against 20,120), semantic-utest-ia (4,420 against 2,840),
+mule-tests (3,560 against 1,980) and package-tests (7,260 against
+6,040).
+
+**On `555e0e9`** (round 290): the full Rust gate (run 41771890931)
+passed; the frozen run (run 41771894131) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 69.5 s against 58.8 s (1.181),
+test bodies 273.9 s against 266.7 s (1.027), in all 1.054, with a
+per-file setup median of 107 ms against 93, on a faster runner than
+round 289's (GNU's own setup 58.8 s against 68.4). The widest body gaps
+are ert-tests (36,670 ms against 34,040), tramp-tests (19,300 against
+16,860), comp-tests (16,390 against 14,330), semantic-utest-ia (3,340
+against 2,400), mule-tests (2,370 against 1,530) and files-tests (1,970
+against 1,430).
+
+**On `046e23c`** (round 291): the full Rust gate (run 41775574385)
+passed; the frozen run (run 41775577346) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 61.2 s against 50.9 s (1.201),
+test bodies 252.2 s against 240.4 s (1.049), in all 1.085, with a
+per-file setup median of 93 ms against 79, on a faster runner than round
+290's (GNU's own setup 50.9 s against 58.8). The widest body gaps are
+tramp-tests (17,110 ms against 14,910), icalendar-tests (2,070 against
+370), comp-tests (13,530 against 12,080), ert-tests (32,650 against
+31,250), semantic-utest-ia (2,910 against 2,110) and mule-tests (2,200
+against 1,450). icalendar-tests' gap is seven consecutive export tests
+that took 120 to 420 ms each where round 290's took 6 to 38 ms and the
+file's later tests took their usual time: a stall of the runner (GNU's
+first two export tests took 399 and 207 ms in round 290's run), since
+the file runs in the same time locally in builds of rounds 287 and 292.
+
+**On `c37d92b`** (round 292): the full Rust gate (run 41779226464)
+passed; the frozen run (run 41779229607) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 76.4 s against 61.1 s (1.250),
+test bodies 292.3 s against 263.1 s (1.111), in all 1.126, with a
+per-file setup median of 114 ms against 94, on a slower runner than
+round 291's (GNU's own setup 61.1 s against 50.9 and its bodies 263.1 s
+against 240.4). The widest body gaps are ert-tests (44,720 ms against
+37,010), tramp-tests (22,460 against 18,730), comp-tests (16,280 against
+13,740), semantic-utest-ia (3,770 against 2,400) and mule-tests (3,050
+against 1,880). ert-tests' gap is ert-test-run-tests-batch-expensive
+(43,680 ms against 36,450, where round 291's run took 31,910 against
+30,790), whose `cl-search' over the failing test's backtrace messages
+takes 4.59G instructions in release builds of rounds 287 and 292 alike
+against GNU's 4.90G, and 6.52G in the gate profile the frozen run
+builds: the two runs' 1.04 and 1.20 both sit under that profile's 1.33,
+the runner deciding how much of it shows.
+
 **Findings recorded, not fixed:**
+- **Found, not fixed (GNU faults):** transpose-regions with unequal
+  regions and a middle region of multibyte text moves the middle by its
+  character count where its byte count belongs (editfns.c's `memmove
+  (start1_addr + len2_byte, start1_addr + len1_byte, len_mid)'),
+  corrupting the buffer's text, and in long undo and hook fuzzes GNU
+  30.2 segfaults after such calls; the point an undo boundary recorded
+  for a killed buffer reaches a later temporary buffer that GNU
+  allocates at the same address (`buffer_before_last_command_or_undo' is
+  never cleared), recording that stale point in its first change.
+  Neither is reproducible faithfully; the fuzzes exclude them.
+- **A dynamic-binding byte-code call from byte code costs about 100
+  instructions more than GNU's (round 289).** A one-argument recursion
+  takes 763 instructions a call against GNU's 665 (exec_byte_code 375,
+  funcall_lambda 130, unbind_to 65, specbind 48, funcall_general 47):
+  `enter_dynamic_frame' 269, in which the binding's restore record (a
+  104-byte SpecialBindingRestore against specbind's four-word entry) and
+  the unwind list's 64-byte entry are about 40, the return's unbinding
+  172 (`return_unbinding' 119, which tests the frame again after the
+  unbinding, and `unbind_plain' 53) and the loop's own 322. A lexical
+  call takes 388 against GNU's 332.
+- **What a fatal signal does in GNU that it does not in Emaxx (rounds
+  115 and 285).** A fault the kernel raises in Emaxx's own code (a
+  SIGSEGV, SIGBUS, SIGFPE or SIGILL it did not send itself) ends Emacs
+  from its handler with the diagnostic and the backtrace only, where
+  GNU's handler also runs shut_down_emacs's hang-ups, auto-saves and
+  unlocks: those need the interpreter the fault interrupted.
+  sysdep.c:handle_sigsegv's recovery from a C stack overflow (a longjmp
+  to the command loop and "Re-entering top level after C stack
+  overflow") is not ported.
 - **Allocations outside the Lisp object makers still abort when the
   system refuses them (round 277).** GNU's lisp_align_malloc and xmalloc
   reach memory_full, which signals, for every block and buffer; in Emaxx
@@ -15762,11 +16430,16 @@ frozen run's excess there is the gate build's checks.
   instructions in process against GNU's 3.30G, and neither runs
   libgccjit for them: the gap is the instructions per cycle the setup
   finding below measures, not work Emaxx does that GNU does not.
-- **What undo.c does that Emaxx's undo list does not (rounds 166 and
-  247).** record_point does not consult `undo-inhibit-record-point',
-  which nothing in the tree sets. (Round 247 runs compact_buffer's
-  truncate_undo_list at every collection; its gap shrinking is not
-  done.)
+- **What undo.c does that Emaxx's undo list does not (rounds 166, 247,
+  284 and 287).** Nothing left: round 247 runs compact_buffer's
+  truncate_undo_list at every collection and round 284 made record_point
+  consult `undo-inhibit-record-point'. compact_buffer's gap shrinking is
+  make_gap with a negative size, which shrinks only under
+  USE_MMAP_FOR_BUFFERS, REL_ALLOC or DOUG_LEA_MALLOC; the oracle's glibc
+  build has none of them, so its gaps never shrink at a collection, and
+  `gap-size' and `gap-position' around collections (after an insertion,
+  a deletion that leaves a 92K gap, an `erase-buffer') match it in Emaxx
+  (round 287).
 - **undo-tests' million insertions (rounds 165, 175).** Most of
   undo-tests is `undo-test4''s interpreted `dotimes' of 1,048,576
   `insert's at the end of the buffer. At round 165 the release build ran
@@ -15867,19 +16540,21 @@ frozen run's excess there is the gate build's checks.
   overflow checks and the other debug assertions, spread thin. They
   are the gate's safety nets and stay; a frozen run of the release
   build would time what a user runs, which is the project's call.
-- **Pipe processes hold no descriptors (round 119).** Fmake_pipe_process
-  opens two pipes, four descriptors, at once, and every process channel
-  at or above FD_SETSIZE (1024) is EMFILE ("Creating pipe", "Opening
-  pty", the serial port, sockets, accept), with the soft RLIMIT_NOFILE
-  lowered to FD_SETSIZE at startup (init_process_emacs) and restored in
-  children (restore_nofile_limit). Emaxx's pipe process opens a pipe
-  only when a module asks for its channel, and nothing checks
-  FD_SETSIZE: process-tests' fd-setsize tests make 1,025 pipe processes
-  where GNU stops at its 255th ("Creating pipe" "Too many open files"),
-  and start all ten `cat's of each connection type where GNU starts one
-  or two, so the three tests take 1,067 ms against GNU's 352 here. A
-  child given a pipe process as :stderr writes into that pipe process's
-  own pipe, in Emaxx too since round 256.
+- **Process descriptors (rounds 119, 160, 284 and 287).** As in GNU, a
+  pipe process holds its two pipes from the start and every process
+  channel at or above FD_SETSIZE (1024) is EMFILE (both make 255 pipe
+  processes before "Creating pipe" fails with "Too many open files"),
+  the soft RLIMIT_NOFILE is FD_SETSIZE for the process itself and its
+  posix_spawn children, a pty child gets the limit the process started
+  with, atimer.c's init_atimer holds its timerfd at descriptor 3 of a
+  batch session, and child_signal_init opens the child-signal pipe at
+  the first create_process or call_process (Emaxx opened it at its first
+  wait until round 287). One descriptor differs: the oracle is a
+  HAVE_GLIB build, whose waits go through xgselect.c's xg_select, and
+  its first g_main_context_default opens GLib's wakeup eventfd, which
+  Emaxx, without GLib, never holds; after a first wait GNU makes 254
+  pipe processes and Emaxx still 255, and Emaxx's later descriptors are
+  numbered one lower.
 - **The frozen run times the gate profile (round 112).** The frozen
   workflow's harness builds the Emaxx it runs with `--profile gate'
   (thin LTO, 16 codegen units, debug assertions and overflow checks;

@@ -1431,6 +1431,19 @@ impl Interpreter {
         {
             return result;
         }
+        self.call_function_value_general(func, original_name, args, env)
+    }
+
+    /// `call_function_value' past its plain funcall: out of line, so that
+    /// the plain call's caller saves only the registers that call uses.
+    #[inline(never)]
+    fn call_function_value_general(
+        &mut self,
+        func: Value,
+        original_name: Option<&str>,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
         self.begin_funcall(env)?;
         let result = match original_name {
             None => self.funcall_unnamed(func, args, env),
@@ -1470,7 +1483,6 @@ impl Interpreter {
         if let Some(closure) = function.closure_ref() {
             if !closure.is_bytecode()
                 || !self.plain_bcall_entry(name)
-                || primitives::fatal_signal_pending()
                 || !crate::lisp::native_comp::collection_cannot_be_due(self)
             {
                 return None;
@@ -1482,9 +1494,7 @@ impl Interpreter {
             return Some(result);
         }
         let callee = self.plain_bcall_callee(func, function)?;
-        if primitives::fatal_signal_pending()
-            || !crate::lisp::native_comp::collection_cannot_be_due(self)
-        {
+        if !crate::lisp::native_comp::collection_cannot_be_due(self) {
             return None;
         }
         let depth = self.enter_plain_funcall(func, args);
@@ -1722,8 +1732,10 @@ impl Interpreter {
         self.lisp_eval_depth += 1;
         if self.lisp_eval_depth_exceeded() {
             self.lisp_eval_depth -= 1;
-            return Err(LispError::Signal(
-                "Lisp nesting exceeds `max-lisp-eval-depth'".into(),
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                self,
+                "Lisp nesting exceeds `max-lisp-eval-depth'",
+                &[],
             ));
         }
         Ok(())
@@ -1738,25 +1750,42 @@ impl Interpreter {
         // lisp.h:maybe_quit first reads Vquit_flag directly and returns on
         // the overwhelmingly common nil case.  These are eval.c's forwarded
         // cells, not symbol-name lookups.
-        if self.quit_flag_is_nil() && !primitives::fatal_signal_pending() {
+        if self.quit_flag_is_nil() && !primitives::atimer::signals_pending() {
             return Ok(());
         }
-        self.process_quit_flag(env)
+        self.probably_quit(env)
     }
 
-    /// eval.c:process_quit_flag, reached only with a non-nil quit-flag.
+    /// eval.c:probably_quit: a fatal signal's terminate_due_to_signal (whose
+    /// handler here left it to this check), then process_quit_flag for a
+    /// quit not inhibited, else process_pending_signals for what the
+    /// handlers left (`pending_signals', which a quit leaves set).
     #[cold]
-    fn process_quit_flag(&mut self, env: &mut Env) -> Result<(), LispError> {
+    fn probably_quit(&mut self, env: &mut Env) -> Result<(), LispError> {
+        let pending = primitives::atimer::take_pending_signals();
         if primitives::fatal_signal_pending() {
             primitives::run_pending_fatal_signal(self, env)?;
-            if self.quit_flag_is_nil() {
-                return Ok(());
+        }
+        if !self.quit_flag_is_nil() && !self.inhibit_quit_is_truthy() {
+            if pending {
+                primitives::atimer::note_pending_signal();
             }
+            return self.process_quit_flag(env);
         }
+        if pending {
+            // probably_quit's inhibit_garbage_collection around it.
+            self.inhibit_garbage_collection();
+            primitives::atimer::process_pending_signals(self, env);
+            self.allow_garbage_collection();
+        }
+        Ok(())
+    }
+
+    /// eval.c:process_quit_flag, reached only with a non-nil quit-flag
+    /// that `inhibit-quit' does not hold back.
+    #[cold]
+    fn process_quit_flag(&mut self, env: &mut Env) -> Result<(), LispError> {
         let flag = self.quit_flag_value();
-        if self.inhibit_quit_is_truthy() {
-            return Ok(());
-        }
 
         // process_quit_flag writes Vquit_flag, not a possibly detached plain
         // Lisp binding with the same name.
@@ -2491,7 +2520,8 @@ impl InterpreterState {
     }
 
     /// The entry tests of a Bcall when nothing else happens on the way
-    /// in: Ffuncall's maybe_quit finds no quit, the depth stays within
+    /// in: Ffuncall's maybe_quit finds no quit and no signal a handler
+    /// left pending (an atimer's, a fatal one's), the depth stays within
     /// max-lisp-eval-depth, no termination is pending, the debugger is not
     /// to be entered at this call (debug_on_next_call), no debugger context
     /// is captured (Edebug is not entered and the callee is not
@@ -2504,6 +2534,7 @@ impl InterpreterState {
         // eval_sub's compare); the gate holds the quit, termination,
         // debug-on-next-call and profiler tests.
         (self.lisp_eval_depth as i64) < self.call_depth_gate
+            && !primitives::atimer::signals_pending()
             && !self.edebug_may_be_entered()
             && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
     }

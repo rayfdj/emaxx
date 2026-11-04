@@ -284,18 +284,20 @@ fn store_frame_parameter(
                     unreachable!()
                 };
                 if !super::display::window_is_minibuffer(interp, window.id) {
-                    return Err(LispError::Signal(
-                        "The `minibuffer' parameter does not specify a valid minibuffer window"
-                            .into(),
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "The `minibuffer' parameter does not specify a valid minibuffer window",
+                        &[],
                     ));
                 }
                 // A text frame has its own minibuffer window.
                 if mini.is_some_and(|mini| mini.eq_value(val)) {
                     val = Value::T;
                 } else {
-                    return Err(LispError::Signal(
-                        "Can't change the minibuffer window of a frame with its own minibuffer"
-                            .into(),
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Can't change the minibuffer window of a frame with its own minibuffer",
+                        &[],
                     ));
                 }
             } else {
@@ -304,8 +306,10 @@ fn store_frame_parameter(
                     if is_window_record(interp, old) && val.is_nil() {
                         val = old;
                     } else if !old.eq_value(val) {
-                        return Err(LispError::Signal(
-                            "Can't change the `minibuffer' parameter of this frame".into(),
+                        return Err(crate::lisp::primitives::values::doprnt_error(
+                            interp,
+                            "Can't change the `minibuffer' parameter of this frame",
+                            &[],
                         ));
                     }
                 }
@@ -316,18 +320,22 @@ fn store_frame_parameter(
             if !old.eq_value(val) && !val.is_nil() {
                 let live = |value: Value| matches!(value.kind(), Kind::Frame(frame) if interp.frame_is_live(frame));
                 if !live(val) {
-                    return Err(LispError::Signal(format!(
-                        "Invalid `{name}' frame parameter"
-                    )));
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Invalid `{}' frame parameter",
+                        &[&name],
+                    ));
                 }
                 let mut frame = val;
                 while let Kind::Frame(next) = frame.kind()
                     && interp.frame_is_live(next)
                 {
                     if next == id {
-                        return Err(LispError::Signal(format!(
-                            "Circular specification of `{name}' frame parameter"
-                        )));
+                        return Err(crate::lisp::primitives::values::doprnt_error(
+                            interp,
+                            "Circular specification of `{}' frame parameter",
+                            &[&name],
+                        ));
                     }
                     frame = get_frame_param(next, prop);
                 }
@@ -676,7 +684,7 @@ pub(super) fn check_x_display_info(
             if let Err(error) = validate_x_resource_name(interp, env) {
                 return error;
             }
-            display_cannot_be_opened(&object)
+            display_cannot_be_opened(interp, &object)
         }
         _ => window_system_frame_error(interp, Some(&object)),
     }
@@ -695,9 +703,13 @@ pub(super) fn check_x_display_info(
 /// xterm.c's x_term_init when x_display_ok cannot open DISPLAY_NAME,
 /// which for Emaxx is every display.
 #[cfg(target_os = "linux")]
-pub(super) fn display_cannot_be_opened(display_name: &Value) -> LispError {
+pub(super) fn display_cannot_be_opened(interp: &Interpreter, display_name: &Value) -> LispError {
     match string_text(display_name) {
-        Ok(name) => LispError::Signal(format!("Display {name} can't be opened")),
+        Ok(name) => crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "Display {} can't be opened",
+            &[&name],
+        ),
         Err(error) => error,
     }
 }

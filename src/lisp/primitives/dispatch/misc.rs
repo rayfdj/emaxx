@@ -567,8 +567,31 @@ define_dispatch!(
                     env,
                     Some(interp.current_buffer_id()),
                 )?;
-                // shut_down_emacs.
+                // shut_down_emacs (0, ...): no hook runs from now on, each
+                // buffer is auto-saved and the files unlocked (the
+                // subprocesses are hung up when the process ends).
+                interp.hooks_cleared = true;
+                crate::lisp::primitives::file_io::do_auto_save(interp, env, Value::T, Value::Nil)?;
                 unlock_all_files(interp, env)?;
+                // The auto-save list goes, Emacs exiting deliberately.
+                if let Some(list_file) = interp
+                    .lookup_var("auto-save-list-file-name", env)
+                    .filter(Value::is_string)
+                {
+                    let list_file = crate::lisp::primitives::call(
+                        interp,
+                        "expand-file-name",
+                        &[list_file, Value::Nil],
+                        env,
+                    )?;
+                    if let Ok(host) = crate::lisp::primitives::system::host_file_name(
+                        interp,
+                        env,
+                        &string_text(&list_file)?,
+                    ) {
+                        let _ = std::fs::remove_file(host);
+                    }
+                }
 
                 // emacs.c accepts only a fixnum here.  Preserve its explicit
                 // INT_MIN/INT_MAX masking before the CLI boundary narrows the
@@ -1194,10 +1217,11 @@ define_dispatch!(
                 if (flags & LOCALIZED != 0 && flags & PER_BUFFER == 0)
                     || (alias.cell().has_c_slot() && interp.is_localized_at_startup_in_gnu(&alias))
                 {
-                    return Err(LispError::Signal(format!(
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
                         "Don't know how to make a buffer-local variable an alias: {}",
-                        visible(&alias)
-                    )));
+                        &[&visible(&alias)],
+                    ));
                 }
                 if flags & FORWARDED != 0 {
                     return Err(LispError::Signal(format!(
@@ -1206,10 +1230,11 @@ define_dispatch!(
                     )));
                 }
                 if flags & LOCALIZED != 0 {
-                    return Err(LispError::Signal(format!(
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
                         "Don't know how to make a buffer-local variable an alias: {}",
-                        visible(&alias)
-                    )));
+                        &[&visible(&alias)],
+                    ));
                 }
                 // https://lists.gnu.org/r/emacs-devel/2008-04/msg00834.html
                 let alias_value = interp.symbol_value_cell_symbol(&alias).ok();
@@ -1273,10 +1298,11 @@ define_dispatch!(
                     }
                 }
                 if interp.is_let_bound_special(&alias) {
-                    return Err(LispError::Signal(format!(
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
                         "Don't know how to make a let-bound variable an alias: {}",
-                        visible(&alias)
-                    )));
+                        &[&visible(&alias)],
+                    ));
                 }
                 interp.notify_variable_watchers(
                     &alias,

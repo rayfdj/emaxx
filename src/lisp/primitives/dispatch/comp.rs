@@ -224,8 +224,10 @@ fn comp_el_to_eln_filename(
         }
     }
     let Some(mut base_dir) = base_dir else {
-        return Err(LispError::Signal(
-            "Cannot find suitable directory for output in `native-comp-eln-load-path'.".into(),
+        return Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            "Cannot find suitable directory for output in `native-comp-eln-load-path'.",
+            &[],
         ));
     };
     if !c_primitive(interp, env, "file-name-absolute-p", &[base_dir])?.is_truthy() {

@@ -341,6 +341,19 @@ fn unibyte_text_bytes(text: &str) -> Vec<u8> {
     bytes
 }
 
+/// The eight-bit characters of a buffer's TEXT, whose EXTENDED holds the
+/// codes its view cannot carry: each raw byte's character, and any code
+/// from BYTE8_TO_CHAR (0x80) up.
+fn eight_bit_chars(text: &str, extended: &[(usize, u32)]) -> usize {
+    text.chars()
+        .filter(|&character| raw_byte_from_regex_char(character).is_some())
+        .count()
+        + extended
+            .iter()
+            .filter(|&&(_, code)| code >= 0x3F_FF80)
+            .count()
+}
+
 /// buffer.c:Fset_buffer_multibyte's conversion to multibyte: each byte of
 /// the unibyte TEXT kept, an ASCII one as itself, the bytes of a valid
 /// internal sequence (multibyte_length without ALLOW_8BIT, so not a byte8
@@ -836,25 +849,31 @@ define_dispatch!(
             "set-buffer-multibyte" => {
                 need_args(name, args, 1)?;
                 let enabled = args[0].is_truthy();
+                // buffer.c:Fset_buffer_multibyte reads the restriction, the
+                // modified flag and the undo list before anything else.
+                let (narrowed, modified_p, old_undo) = {
+                    let buffer = interp.buffer.borrow();
+                    (
+                        buffer.restriction() != (1, buffer.size_total() + 1),
+                        buffer.is_modified(),
+                        buffer.undo_list(),
+                    )
+                };
                 if interp.buffer_base_id(interp.current_buffer_id()).is_some() {
-                    return Err(LispError::Signal(
-                        "Cannot do `set-buffer-multibyte' on an indirect buffer".into(),
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Cannot do `set-buffer-multibyte' on an indirect buffer",
+                        &[],
                     ));
                 }
                 if enabled == interp.buffer.borrow().is_multibyte() {
                     return Ok(args[0]);
                 }
-                // A buffer shown in a window makes redisplay consider the
-                // other windows.
-                if interp.buffer_window_count(interp.current_buffer_id()) > 0 {
-                    interp.redisplay_other_windows();
-                }
-                if interp.buffer.borrow().restriction()
-                    != (
-                        1,
-                        interp.buffer.borrow().full_buffer_string().chars().count() + 1,
-                    )
-                {
+                // The changes below are not recorded; an entry for the
+                // whole conversion stands for them.  The list stays t when
+                // the narrowed buffer's error leaves.
+                interp.buffer.borrow_mut().set_undo_list(Value::T);
+                if narrowed {
                     return Err(LispError::Signal(
                         "Changing multibyteness in a narrowed buffer".into(),
                     ));
@@ -862,20 +881,26 @@ define_dispatch!(
 
                 let original = interp.buffer.borrow().full_buffer_string();
                 let preserve_utf8_sequences = matches!(args[0].kind(), Kind::T);
-                let (converted, positions, extended) = if enabled {
-                    multibyte_buffer_text(&original, preserve_utf8_sequences)
+                // Each eight-bit character converted is one byte inserted
+                // (insert_1_both) or deleted (del_range_2) as the buffer's
+                // bytes change form, each a modification of the text.
+                let (converted, positions, extended, converted_bytes) = if enabled {
+                    let (converted, positions, extended) =
+                        multibyte_buffer_text(&original, preserve_utf8_sequences);
+                    let eight_bit = eight_bit_chars(&converted, &extended);
+                    (converted, positions, extended, eight_bit)
                 } else {
                     let buffer = interp.buffer.borrow();
-                    let (converted, positions) = unibyte_buffer_text(
-                        &original,
-                        &buffer.substring_extended_chars(1, usize::MAX),
-                    );
-                    (converted, positions, Vec::new())
+                    let original_extended = buffer.substring_extended_chars(1, usize::MAX);
+                    let eight_bit = eight_bit_chars(&original, &original_extended);
+                    let (converted, positions) = unibyte_buffer_text(&original, &original_extended);
+                    (converted, positions, Vec::new(), eight_bit)
                 };
-                interp
-                    .buffer
-                    .borrow_mut()
-                    .set_multibyte_representation(enabled, converted, &positions, extended);
+                {
+                    let mut buffer = interp.buffer.borrow_mut();
+                    buffer.set_multibyte_representation(enabled, converted, &positions, extended);
+                    buffer.count_unrecorded_byte_edits(converted_bytes);
+                }
                 // Its indirect buffers take its new multibyte status, and
                 // their point and bounds from their converted markers.
                 let current_id = interp.current_buffer_id();
@@ -888,9 +913,6 @@ define_dispatch!(
                     }
                 }
                 interp.fetch_family_positions(&related);
-                // The conversion is not recorded; a list kept for undo
-                // takes one entry for it instead.
-                let old_undo = interp.buffer.borrow().undo_list();
                 if !matches!(old_undo.kind(), Kind::T) {
                     let entry = Value::list([
                         Value::Symbol(cached_symbol!("apply").with(Clone::clone)),
@@ -901,6 +923,15 @@ define_dispatch!(
                         .buffer
                         .borrow_mut()
                         .set_undo_list(Value::cons(entry, old_undo));
+                }
+                // A buffer shown in a window makes redisplay consider the
+                // other windows.
+                if interp.buffer_window_count(interp.current_buffer_id()) > 0 {
+                    interp.redisplay_other_windows();
+                }
+                // The modifiedness of the buffer restored.
+                if !modified_p && interp.buffer.borrow().is_modified() {
+                    restore_buffer_modified_p(interp, env, Value::Nil)?;
                 }
                 Ok(args[0])
             }

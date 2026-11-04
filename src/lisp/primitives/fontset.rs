@@ -191,8 +191,10 @@ pub(crate) fn check_fontset_name(
     match name.kind() {
         Kind::T => return Ok(default_fontset(interp)),
         Kind::Nil => {
-            return Err(LispError::Signal(
-                "Can't use fontsets in non-GUI frames".into(),
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                interp,
+                "Can't use fontsets in non-GUI frames",
+                &[],
             ));
         }
         _ => {}
@@ -207,10 +209,11 @@ pub(crate) fn check_fontset_name(
         None => match fs_query_fontset(interp, name, 0, env)? {
             Some(id) => id,
             None => {
-                return Err(LispError::Signal(format!(
+                return Err(crate::lisp::primitives::values::doprnt_error(
+                    interp,
                     "Fontset `{}' does not exist",
-                    string_text(name)?
-                )));
+                    &[&string_text(name)?],
+                ));
             }
         },
     };
@@ -478,8 +481,10 @@ pub(crate) fn set_fontset_font(
         && is_character(&characters)
     {
         if c < 0x80 {
-            return Err(LispError::Signal(
-                "Can't set a font for partial ASCII range".into(),
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                interp,
+                "Can't set a font for partial ASCII range",
+                &[],
             ));
         }
         range_list.push(Some((c as u32, c as u32)));
@@ -495,8 +500,10 @@ pub(crate) fn set_fontset_font(
         };
         if from < 0x80 {
             if from != 0 || to < 0x7f {
-                return Err(LispError::Signal(
-                    "Can't set a font for partial ASCII range".into(),
+                return Err(crate::lisp::primitives::values::doprnt_error(
+                    interp,
+                    "Can't set a font for partial ASCII range",
+                    &[],
                 ));
             }
             ascii_changed = true;
@@ -542,7 +549,11 @@ pub(crate) fn set_fontset_font(
 
     if ascii_changed {
         if font_spec.is_nil() {
-            return Err(LispError::Signal("Can't set ASCII font to nil".into()));
+            return Err(crate::lisp::primitives::values::doprnt_error(
+                interp,
+                "Can't set ASCII font to nil",
+                &[],
+            ));
         }
         let val = char_table(&fontset_obj).get(0);
         if !val.is_nil() && add.eq_value(Value::symbol("append")) {

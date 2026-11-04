@@ -1016,129 +1016,54 @@ define_dispatch!(
                 }
                 Ok(Value::list(buckets))
             }
-            "profiler-memory-running-p" => Ok(if interp.profiler_memory_running {
-                Value::T
-            } else {
-                Value::Nil
-            }),
+            "profiler-memory-running-p" => {
+                need_args(name, args, 0)?;
+                Ok(crate::lisp::primitives::profiler::profiler_memory_running_p())
+            }
             "profiler-memory-start" => {
-                if interp.profiler_memory_running {
-                    return Err(LispError::Signal("Memory profiler already running".into()));
-                }
-                interp.profiler_memory_running = true;
-                interp.profiler_memory_log_pending = true;
-                // profiler.c Fprofiler_memory_start returns t.
-                Ok(Value::T)
+                need_args(name, args, 0)?;
+                crate::lisp::primitives::profiler::profiler_memory_start(interp, env)
             }
             "profiler-memory-stop" => {
-                let was_running = interp.profiler_memory_running;
-                interp.profiler_memory_running = false;
-                Ok(if was_running { Value::T } else { Value::Nil })
+                need_args(name, args, 0)?;
+                Ok(crate::lisp::primitives::profiler::profiler_memory_stop())
             }
             "profiler-memory-log" => {
-                if interp.profiler_memory_running || interp.profiler_memory_log_pending {
-                    if !interp.profiler_memory_running {
-                        interp.profiler_memory_log_pending = false;
-                    }
-                    // GNU's log is a real hash table.  Emaxx collects no
-                    // samples, so the honest log is a real EMPTY hash table
-                    // of the same test -- never a string spelled to print
-                    // like one (2026-08-23 audit finding 78).
-                    call(
-                        interp,
-                        "make-hash-table",
-                        &[Value::symbol(":test"), Value::symbol("equal")],
-                        env,
-                    )
-                } else {
-                    Ok(Value::Nil)
-                }
+                need_args(name, args, 0)?;
+                crate::lisp::primitives::profiler::profiler_memory_log(interp, env)
             }
-            "profiler-cpu-running-p" => Ok(if interp.profiler_cpu_running {
-                Value::T
-            } else {
-                Value::Nil
-            }),
+            "profiler-cpu-running-p" => {
+                need_args(name, args, 0)?;
+                Ok(crate::lisp::primitives::profiler::profiler_cpu_running_p())
+            }
             "profiler-cpu-start" => {
-                if interp.profiler_cpu_running {
-                    return Err(LispError::Signal("CPU profiler already running".into()));
-                }
-                interp.profiler_cpu_running = true;
-                interp.profiler_cpu_log_pending = true;
-                if let Some(interval) = args.first() {
-                    interp.set_variable(
-                        "profiler-sampling-interval",
-                        *interval,
-                        &mut crate::lisp::types::Env::new(),
-                    );
-                }
-                // profiler.c Fprofiler_cpu_start returns t.
-                Ok(Value::T)
+                need_args(name, args, 1)?;
+                crate::lisp::primitives::profiler::profiler_cpu_start(interp, args[0], env)
             }
             "profiler-cpu-stop" => {
-                let was_running = interp.profiler_cpu_running;
-                interp.profiler_cpu_running = false;
-                Ok(if was_running { Value::T } else { Value::Nil })
+                need_args(name, args, 0)?;
+                Ok(crate::lisp::primitives::profiler::profiler_cpu_stop())
             }
             "profiler-cpu-log" => {
-                if interp.profiler_cpu_running || interp.profiler_cpu_log_pending {
-                    if !interp.profiler_cpu_running {
-                        interp.profiler_cpu_log_pending = false;
-                    }
-                    call(
-                        interp,
-                        "make-hash-table",
-                        &[Value::symbol(":test"), Value::symbol("equal")],
-                        env,
-                    )
-                } else {
-                    Ok(Value::Nil)
-                }
+                need_args(name, args, 0)?;
+                crate::lisp::primitives::profiler::profiler_cpu_log(interp, env)
             }
 
             "funcall-with-delayed-message" => {
                 need_args(name, args, 3)?;
-                let timeout = extract_float(interp, &args[0])?;
-                let delayed = string_text(&args[1])?;
-                let callback = resolve_callable(interp, &args[2], env)?;
-                let buffer_id = interp
-                    .find_buffer("*Messages*")
-                    .map(|(id, _)| id)
-                    .unwrap_or_else(|| interp.create_buffer("*Messages*").0);
-                let before = interp
-                    .get_buffer_by_id(buffer_id)
-                    .map(|buffer| buffer.buffer_string())
-                    .unwrap_or_default();
-                let start = Instant::now();
-                let result = interp.call_function_value(callback, None, &[], env)?;
-                let elapsed = start.elapsed().as_secs_f64();
-                if elapsed >= timeout
-                    && let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id)
-                {
-                    let current = buffer.buffer_string();
-                    let suffix = current
-                        .strip_prefix(&before)
-                        .map(str::to_string)
-                        .unwrap_or(current);
-                    let rewritten = if suffix.is_empty() {
-                        format!("{delayed}\n")
-                    } else {
-                        format!("{delayed}\n{suffix}")
-                    };
-                    let end = buffer.point_max();
-                    let _ = buffer.delete_region(1, end);
-                    buffer.goto_char(1);
-                    buffer.insert(&(before + &rewritten));
-                }
-                Ok(result)
+                crate::lisp::primitives::atimer::funcall_with_delayed_message(
+                    interp, args[0], args[1], args[2], env,
+                )
             }
             "handler-bind-1" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 if args.len().is_multiple_of(2) {
-                    return Err(LispError::Signal(
-                        "Trailing CONDITIONS without HANDLER in `handler-bind`".into(),
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Trailing CONDITIONS without HANDLER in `handler-bind`",
+                        &[],
                     ));
                 }
                 let mut active = Vec::with_capacity(args.len() / 2);

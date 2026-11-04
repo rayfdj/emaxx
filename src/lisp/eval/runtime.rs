@@ -62,11 +62,19 @@ impl Interpreter {
         self.buffer_list.iter().any(|(_, n)| n == name)
     }
 
-    /// Check if a buffer ID exists in the live buffer list.
+    /// buffer.c:BUFFER_LIVE_P of the buffer ID names: a buffer of
+    /// Vbuffer_alist, or print.c's hidden prin1 buffer, the one live
+    /// buffer on no list, while it is held.
     pub fn has_buffer_id(&self, id: u64) -> bool {
         self.buffer_list
             .iter()
             .any(|(buffer_id, _)| *buffer_id == id)
+            || (self.prin1_to_string_buffer == Some(id)
+                && (id == self.current_buffer_id
+                    || self
+                        .inactive_buffers
+                        .iter()
+                        .any(|(buffer_id, _)| *buffer_id == id)))
     }
 
     /// Find a buffer by name, returning (id, name).
@@ -390,11 +398,7 @@ impl Interpreter {
     /// The quote characters `error' will requote a message with, per the
     /// effective `text-quoting-style' (doc.c:679, doprnt.c:490).
     fn effective_quote_pair(&self) -> (char, char) {
-        match crate::lisp::primitives::values::effective_text_quoting_style(self) {
-            "curve" => ('\u{2018}', '\u{2019}'),
-            "straight" => ('\'', '\''),
-            _ => ('`', '\''),
-        }
+        crate::lisp::primitives::values::doprnt_quote_pair(self)
     }
 
     fn with_require_nesting<T>(
@@ -625,6 +629,11 @@ impl Interpreter {
             current_buffer.borrow_mut().leave_position_markers();
             self.buffer.borrow_mut().enter_position_markers();
         }
+        // The C variable record_point reads, which a buffer made since its
+        // last store has yet to hold.
+        self.buffer
+            .borrow_mut()
+            .set_undo_inhibit_record_point(self.undo_inhibit_record_point);
         // A localized GNU forwarding symbol loads the newly current
         // buffer's cell into its C variable during a buffer switch.
         self.refresh_forwarded_eval_cells_after_switch(current_id);
@@ -2998,10 +3007,18 @@ impl Interpreter {
         self.combined_after_change.as_ref()
     }
 
+    /// insdel.c's `combine_after_change_list = Fcons (elt, ...)' and
+    /// `combine_after_change_buffer = Fcurrent_buffer ()': the change
+    /// joins those pending, whichever buffer they were recorded in (one
+    /// Fcombine_after_change_execute re-deferred), and BUFFER_ID is the
+    /// buffer they are signalled in.
     pub(crate) fn record_combined_after_change(&mut self, buffer_id: u64, change: (i64, i64, i64)) {
         match self.combined_after_change.as_mut() {
-            Some(pending) if pending.buffer_id == buffer_id => pending.changes.push(change),
-            _ => {
+            Some(pending) => {
+                pending.changes.push(change);
+                pending.buffer_id = buffer_id;
+            }
+            None => {
                 self.combined_after_change = Some(CombinedAfterChangeState {
                     buffer_id,
                     changes: vec![change],

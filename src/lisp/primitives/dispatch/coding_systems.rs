@@ -241,9 +241,11 @@ pub(crate) fn define_coding_system_internal(
                     _ => false,
                 };
                 if unhandled {
-                    return Err(LispError::Signal(format!(
-                        "Can't handle charset `{canonical}'"
-                    )));
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Can't handle charset `{}'",
+                        &[&canonical],
+                    ));
                 }
                 names.push(Value::symbol(&canonical));
                 tail = rest;

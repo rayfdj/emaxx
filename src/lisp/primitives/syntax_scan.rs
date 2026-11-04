@@ -981,14 +981,20 @@ impl<'a, 'r> Scanner<'a, 'r> {
     ) -> Self {
         let buffer = interp.buffer.borrow();
         let multibyte = buffer.is_multibyte();
+        // In text of one-byte characters a position's byte is the position,
+        // and no character is past the stored range.
+        let ascii = text.is_ascii();
         let known = [buffer.point(), buffer.point_min(), buffer.point_max()].map(|pos| {
+            if ascii {
+                return (pos - 1, pos - 1);
+            }
             let byte = buffer
                 .storage_byte_position(pos)
                 .expect("an accessible position");
             (pos - 1, byte - 1)
         });
         let z = buffer.size_total() + 1;
-        let extended = if buffer.has_extended_chars_in(1, z) {
+        let extended = if !ascii && buffer.has_extended_chars_in(1, z) {
             buffer
                 .substring_extended_chars(1, z)
                 .into_iter()

@@ -168,18 +168,8 @@ impl BcStack {
         self.top += 1;
     }
 
-    /// A new frame's first ENTRY_DEPTH slots: ARGS, then nils.
-    #[inline(always)]
-    fn push_arguments(&mut self, args: &[Value], entry_depth: usize) {
-        assert!(
-            args.len() <= entry_depth && self.top + entry_depth <= self.frame,
-            "byte code exceeded its declared stack depth"
-        );
-        // SAFETY: as asserted.
-        unsafe { self.push_arguments_within(args, entry_depth) }
-    }
-
-    /// `push_arguments' into a frame known to hold them.
+    /// A new frame's first ENTRY_DEPTH slots, in a frame known to hold
+    /// them: ARGS, then nils.
     ///
     /// # Safety
     /// ARGS are at most ENTRY_DEPTH, and ENTRY_DEPTH slots fit below the
@@ -908,8 +898,21 @@ fn enter_closure_frame(
     // SAFETY: nothing below enters a closure or collects a string before
     // the program is copied into the frame.
     let callee = unsafe { super::verify::entry_program(closure)?.as_ref() };
-    if !callee.takes(argc) || !crate::lisp::native_comp::collection_cannot_be_due(state) {
+    if !crate::lisp::native_comp::collection_cannot_be_due(state) {
         return None;
+    }
+    if !callee.takes(argc) {
+        let arguments = callee.arguments?;
+        return enter_dynamic_frame(
+            vm,
+            args_start,
+            return_pc,
+            func,
+            function,
+            callee,
+            arguments,
+            verified_return,
+        );
     }
     let entry_depth = callee.entry_depth;
     // SAFETY: as the Call arm's: the caller's argument slots stay as they
@@ -950,13 +953,162 @@ fn enter_closure_frame(
     Some((state.bc_stack.top, entry_depth))
 }
 
-/// Breturn into a byte-code caller when the callee left no specpdl
-/// entries above its watermark and its backtrace record is not marked to
-/// enter the debugger on exit: the frame and its backtrace record are
+/// Bcall of a dynamic-binding function, which bytecode.c calls through
+/// funcall_general: funcall_lambda specbinds the formal ARGUMENTS of
+/// FUNCTION (FUNC's function, CALLEE its program) to the arguments from
+/// ARGS_START, runs the code with none (`exec_byte_code (fun, 0, 0,
+/// NULL)') and undoes the bindings with unbind_to when it returns.  When
+/// the binding does nothing else (`plain_dynamic_bindings') and the
+/// caller runs under the nil environment, so that funcall_lambda binds no
+/// internal-interpreter-environment, the callee's frame is entered here
+/// as a lexical function's is (`enter_closure_frame'), its bindings on
+/// the unwind list above the frame's watermark, where Breturn
+/// (`return_unbinding') or the unwinding of a signal undoes them; the
+/// backtrace record is below them, as record_in_backtrace leaves it.
+/// Otherwise None, with nothing changed but the stack's TOP, for the full
+/// Call arm to take.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn enter_dynamic_frame(
+    vm: &mut VmFrames<'_>,
+    args_start: usize,
+    return_pc: usize,
+    func: Value,
+    function: Value,
+    callee: &super::verify::EntryProgram,
+    arguments: Value,
+    verified_return: bool,
+) -> Option<(usize, usize)> {
+    if crate::lisp::types::current_environment(vm.env).is_some() {
+        return None;
+    }
+    let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
+    // SAFETY: as `enter_closure_frame's: the caller's argument slots stay
+    // as they are below the callee's frame until it returns or unwinds.
+    let call_args = unsafe {
+        state
+            .bc_stack
+            .slice_from_unchecked(args_start, state.bc_stack.len() - args_start)
+    };
+    let mut bindings = [std::mem::MaybeUninit::uninit(); DYNAMIC_BINDINGS];
+    let count = plain_dynamic_bindings(arguments, call_args, &mut bindings)?;
+    if state
+        .bc_stack
+        .enter_frame(callee.stack_depth, function, return_pc)
+        .is_err()
+    {
+        return None;
+    }
+    let backtrace_depth = state.enter_plain_funcall(func, call_args);
+    let frame = BcFrame {
+        program: *vm.program,
+        base: args_start - 1,
+        handlers_len: state.bc_handlers.len(),
+        unwinds_len: state.bc_unwinds.len(),
+        backtrace_depth,
+        op_error_frames: std::mem::take(vm.op_error_frames),
+        code_changes: if verified_return {
+            crate::lisp::alloc::code_changes()
+        } else {
+            usize::MAX
+        },
+    };
+    state.bc_frames.push(frame);
+    *vm.program = Running::entered(callee);
+    let interp: &mut Interpreter = vm.interp;
+    for binding in &bindings[..count] {
+        // SAFETY: `plain_dynamic_bindings' wrote the first COUNT.
+        let (symbol, value) = unsafe { binding.assume_init() };
+        let binding_id = interp.specbind_plain_store(&symbol, value);
+        interp.bc_unwinds.push(UnwindEntry::BindingId(binding_id));
+    }
+    Some((interp.bc_stack.top, 0))
+}
+
+/// The most formals `enter_dynamic_frame' binds; a function with more
+/// takes the full call.
+const DYNAMIC_BINDINGS: usize = 8;
+
+/// funcall_lambda's walk of the formal ARGUMENTS of a dynamic-binding
+/// function called with ARGS, into BINDINGS: each formal it binds with
+/// the value it gets (its argument, nil after `&optional', the list of
+/// the rest after `&rest'), and their count.  None when the walk would do
+/// anything else -- signal `invalid-function' or
+/// `wrong-number-of-arguments', bind a formal whose cell does not hold its
+/// value (`plain_store'), whose specbind is more than the store, or more
+/// formals than BINDINGS holds.  Its maybe_quit finds nothing to do, as
+/// the call's entry tests found.
+#[inline(always)]
+fn plain_dynamic_bindings(
+    mut arguments: Value,
+    args: &[Value],
+    bindings: &mut [std::mem::MaybeUninit<(SymbolName, Value)>; DYNAMIC_BINDINGS],
+) -> Option<usize> {
+    let (mut index, mut count) = (0, 0);
+    let (mut optional, mut rest, mut previous_rest) = (false, false, false);
+    // The binding that gets the list of the rest, and where the rest
+    // starts: the list is made once the walk is known to bind.
+    let mut rest_list = None;
+    while let Some(cell) = arguments.cons_ref() {
+        let symbol = cell.car.get().symbol_cell()?;
+        // Only a name that starts with `&' can be either keyword.
+        let keyword = symbol.as_str().starts_with('&');
+        if keyword && cached_symbol!("&rest").with(|key| *key == symbol) {
+            if rest || previous_rest {
+                return None;
+            }
+            rest = true;
+            previous_rest = true;
+        } else if keyword && cached_symbol!("&optional").with(|key| *key == symbol) {
+            if optional || rest || previous_rest {
+                return None;
+            }
+            optional = true;
+        } else {
+            let value = if rest {
+                if index < args.len() {
+                    rest_list = Some((count, index));
+                }
+                index = args.len();
+                Value::Nil
+            } else if let Some(&value) = args.get(index) {
+                index += 1;
+                value
+            } else if optional {
+                Value::Nil
+            } else {
+                return None;
+            };
+            if count == DYNAMIC_BINDINGS || !symbol.cell().plain_store() {
+                return None;
+            }
+            bindings[count].write((symbol, value));
+            count += 1;
+            previous_rest = false;
+        }
+        arguments = cell.cdr.get();
+    }
+    if !arguments.is_nil() || previous_rest || index != args.len() {
+        return None;
+    }
+    if let Some((binding, from)) = rest_list {
+        // SAFETY: BINDING is one of the COUNT written.
+        let (symbol, _) = unsafe { bindings[binding].assume_init() };
+        bindings[binding].write((symbol, Value::list_of(&args[from..])));
+    }
+    Some(count)
+}
+
+/// Breturn into a byte-code caller when the callee's backtrace record is
+/// not marked to enter the debugger on exit and the entries it left above
+/// its watermark (a dynamic-binding function's argument bindings,
+/// `enter_dynamic_frame') are undone by unbind_to without running
+/// anything (`return_unbinding'): the frame and its backtrace record are
 /// popped and the caller gets VALUE; the answer is the pc it resumes at,
 /// the stack's top, the frame's depth and whether the verified loop's
-/// call is still current (`BcFrame::code_changes').  Otherwise the full return path runs the
-/// unwinding; nothing changes but the stack's TOP, which is stored.
+/// call is still current (`BcFrame::code_changes').  Otherwise the full
+/// return path runs the rest of the unwinding; nothing else changes but
+/// the stack's TOP, which is stored.
 #[inline(always)]
 fn return_to_bytecode_frame(
     vm: &mut VmFrames<'_>,
@@ -970,9 +1122,14 @@ fn return_to_bytecode_frame(
     // frame moved out whole (`pop', an Option) was copied in pieces offset
     // by its argument list's tag byte, and the loop's next read of the
     // caller's constants spanned two of those stores.
-    let frame = state.bc_frames.last_above(vm.frames_base).filter(|frame| {
-        unwinds <= frame.unwinds_len && !state.frame_debug_on_exit(frame.backtrace_depth)
-    })?;
+    let frame = state
+        .bc_frames
+        .last_above(vm.frames_base)
+        .filter(|frame| !state.frame_debug_on_exit(frame.backtrace_depth))?;
+    let unwinds_len = frame.unwinds_len;
+    if unwinds > unwinds_len {
+        return return_unbinding(vm, top, value, unwinds_len);
+    }
     let (backtrace_depth, base, program, op_error_frames, handlers_len, code_changes) = (
         frame.backtrace_depth,
         frame.base,
@@ -996,6 +1153,26 @@ fn return_to_bytecode_frame(
     // SAFETY: FRAME is the last, which needs no drop.
     unsafe { state.bc_frames.0.set_len(state.bc_frames.len() - 1) };
     Some((resume, state.bc_stack.top, state.bc_stack.len(), unchanged))
+}
+
+/// `return_to_bytecode_frame' when the callee left entries above its
+/// watermark, UNWINDS_LEN: each undone in place while undoing it runs
+/// nothing (funcall_lambda's unbind_to of a dynamic-binding function's
+/// argument bindings), then the return; None, for the full return path
+/// to undo the rest, at the first that runs something.
+#[inline(never)]
+fn return_unbinding(
+    vm: &mut VmFrames<'_>,
+    top: usize,
+    value: Value,
+    unwinds_len: usize,
+) -> Option<(usize, usize, usize, bool)> {
+    while vm.interp.bc_unwinds.len() > unwinds_len {
+        if !unbind_plain(vm.interp) {
+            return None;
+        }
+    }
+    return_to_bytecode_frame(vm, top, value)
 }
 
 // A frame's slot is released by the length alone, and neither list's
@@ -3024,7 +3201,10 @@ fn unbind_plain(interp: &mut Interpreter) -> bool {
         }
         _ => return false,
     }
-    interp.bc_unwinds.pop();
+    let len = interp.bc_unwinds.len();
+    // SAFETY: the last entry, a binding's id or a buffer's, owns nothing
+    // to drop.
+    unsafe { interp.bc_unwinds.set_len(len - 1) };
     true
 }
 
@@ -4158,9 +4338,15 @@ fn run_entered_inline(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     run_entered_with(interp, program, function, env, |interp, _| {
-        // The caller checked the count against the list and the list's
-        // slots against the frame's depth.
-        interp.bc_stack.push_arguments(args, program.entry_depth);
+        // SAFETY: the caller's `takes' admits at most the list's ENTRY_DEPTH
+        // arguments, which `entry_program' gives only a program whose
+        // STACK_DEPTH holds them, and `enter_frame' has just put the frame's
+        // footer that depth above its first slot.
+        unsafe {
+            interp
+                .bc_stack
+                .push_arguments_within(args, program.entry_depth)
+        };
         Ok(())
     })
 }

@@ -1009,7 +1009,8 @@ impl Loader<'_> {
                     let flags = self.reader.word(offset + 8 * BUFFER_FLAGS)?;
                     if flags & BUFFER_FLAG_DEAD != 0 {
                         // A killed buffer: the object, and nothing to
-                        // install.
+                        // install but its id's reservation.
+                        self.interp.reserve_buffer_id(id);
                         self.objects[number] =
                             Value::Buffer(crate::lisp::types::BufferRef::for_restore(
                                 id,

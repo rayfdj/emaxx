@@ -39,6 +39,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use unicode_width::UnicodeWidthChar;
 
 mod accessors_random;
+pub(crate) mod atimer;
 pub(crate) mod batch_stdout;
 mod buffers;
 mod case;
@@ -176,6 +177,7 @@ mod numeric_time;
 pub(crate) mod pdumper;
 pub(crate) mod print;
 mod processes;
+pub(crate) mod profiler;
 mod purecopy;
 mod regexp;
 mod search;

@@ -315,15 +315,18 @@ define_dispatch!(
                 // empty.
                 let new_name = string_text(&args[1])?;
                 if interp.find_buffer_id(&new_name).is_some() {
-                    return Err(LispError::Signal(format!(
-                        "Buffer name `{new_name}' is in use"
-                    )));
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Buffer name `{}' is in use",
+                        &[&new_name],
+                    ));
                 }
                 let base = interp.get_buffer(&args[0])?.ok_or_else(|| {
-                    LispError::Signal(format!(
+                    crate::lisp::primitives::values::doprnt_error(
+                        interp,
                         "No such buffer: `{}'",
-                        string_text(&args[0]).unwrap_or_default()
-                    ))
+                        &[&string_text(&args[0]).unwrap_or_default()],
+                    )
                 })?;
                 let base_id = interp
                     .live_buffer_id(base)
@@ -469,9 +472,11 @@ define_dispatch!(
                         return Ok(Value::String(old_name.into()));
                     }
                     if !unique {
-                        return Err(LispError::Signal(format!(
-                            "Buffer name `{new_name}' is in use"
-                        )));
+                        return Err(crate::lisp::primitives::values::doprnt_error(
+                            interp,
+                            "Buffer name `{}' is in use",
+                            &[&new_name],
+                        ));
                     }
                     // Fgenerate_new_buffer_name with the old name as the
                     // one that may be kept, so a buffer already in NAME's
@@ -546,15 +551,21 @@ define_dispatch!(
                 let Kind::Buffer(other) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("bufferp".into(), args[0]));
                 };
-                let other_id = interp
-                    .live_buffer_id(other)
-                    .ok_or_else(|| LispError::Signal("Cannot swap a dead buffer's text".into()))?;
+                let other_id = interp.live_buffer_id(other).ok_or_else(|| {
+                    crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Cannot swap a dead buffer's text",
+                        &[],
+                    )
+                })?;
                 let current_id = interp.current_buffer_id();
                 if interp.buffer_base_id(other_id).is_some()
                     || interp.buffer_base_id(current_id).is_some()
                 {
-                    return Err(LispError::Signal(
-                        "Cannot swap indirect buffers's text".into(),
+                    return Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
+                        "Cannot swap indirect buffers's text",
+                        &[],
                     ));
                 }
                 if interp.related_buffer_ids(other_id).len() > 1
@@ -1603,10 +1614,11 @@ define_dispatch!(
                     .find_map(|charset| encode_charset_char(interp, charset, character as u32));
                 match code {
                     Some(code) => Ok(Value::Integer(i64::from(jis_to_sjis(code)))),
-                    None => Err(LispError::Signal(format!(
+                    None => Err(crate::lisp::primitives::values::doprnt_error(
+                        interp,
                         "Can't encode by shift_jis encoding: {}",
-                        char::from_u32(character as u32).unwrap_or('?')
-                    ))),
+                        &[&char::from_u32(character as u32).unwrap_or('?')],
+                    )),
                 }
             }
             "decode-big5-char" => {
@@ -1657,10 +1669,11 @@ define_dispatch!(
                     .find_map(|charset| encode_charset_char(interp, charset, character as u32))
                     .map(|code| Value::Integer(i64::from(code)))
                     .ok_or_else(|| {
-                        LispError::Signal(format!(
+                        crate::lisp::primitives::values::doprnt_error(
+                            interp,
                             "Can't encode by Big5 encoding: {}",
-                            char::from_u32(character as u32).unwrap_or('?')
-                        ))
+                            &[&char::from_u32(character as u32).unwrap_or('?')],
+                        )
                     })
             }
             "terminal-coding-system" | "keyboard-coding-system" => {

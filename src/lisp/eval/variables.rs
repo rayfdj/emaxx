@@ -8,7 +8,7 @@ use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SymbolName;
 
 /// The variables forwarded to evaluator cells (`update_forwarded_eval_cell').
-const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 8] = [
+const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 10] = [
     cached_symbol!("quit-flag"),
     cached_symbol!("inhibit-quit"),
     cached_symbol!("throw-on-input"),
@@ -17,6 +17,8 @@ const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 8] = [
     cached_symbol!("max-lisp-eval-depth"),
     cached_symbol!("debug-on-next-call"),
     cached_symbol!("symbols-with-pos-enabled"),
+    cached_symbol!("undo-inhibit-record-point"),
+    cached_symbol!("attempt-orderly-shutdown-on-fatal-signal"),
 ];
 
 /// Whether SYMBOL is one of the variables whose evaluator cells hold the
@@ -35,6 +37,8 @@ pub(super) fn is_forwarded_eval_cell(symbol: &SymbolName) -> bool {
             | "max-lisp-eval-depth"
             | "debug-on-next-call"
             | "symbols-with-pos-enabled"
+            | "undo-inhibit-record-point"
+            | "attempt-orderly-shutdown-on-fatal-signal"
     ) && FORWARDED_EVAL_CELLS
         .iter()
         .any(|key| key.name() == symbol.as_str() && key.with(|cell| cell == symbol))
@@ -1615,6 +1619,10 @@ impl Interpreter {
             "symbols-with-pos-enabled" => {
                 self.symbols_with_positions_enabled.set(value.is_truthy());
             }
+            "undo-inhibit-record-point" => self.set_undo_inhibit_record_point(value.is_truthy()),
+            "attempt-orderly-shutdown-on-fatal-signal" => {
+                crate::lisp::primitives::set_attempt_orderly_shutdown(value.is_truthy());
+            }
             _ => {}
         }
     }
@@ -1639,6 +1647,18 @@ impl Interpreter {
             } else {
                 Value::Nil
             }),
+            "undo-inhibit-record-point" => Some(if self.undo_inhibit_record_point {
+                Value::T
+            } else {
+                Value::Nil
+            }),
+            "attempt-orderly-shutdown-on-fatal-signal" => {
+                Some(if crate::lisp::primitives::attempt_orderly_shutdown() {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
             _ => None,
         }
     }
@@ -1673,6 +1693,19 @@ impl Interpreter {
             || self.has_forwarded_eval_local(self.current_buffer_id())
         {
             self.refresh_forwarded_eval_cells();
+        }
+    }
+
+    /// undo.c's `undo_inhibit_record_point', which record_point reads in
+    /// whichever buffer it records: every buffer holds the C variable's
+    /// value, the current one again at each switch (a buffer made since
+    /// the last store learns it there).
+    fn set_undo_inhibit_record_point(&mut self, inhibit: bool) {
+        self.undo_inhibit_record_point = inhibit;
+        for buffer in std::iter::once(self.buffer)
+            .chain(self.inactive_buffers.iter().map(|(_, buffer)| *buffer))
+        {
+            buffer.borrow_mut().set_undo_inhibit_record_point(inhibit);
         }
     }
 
@@ -2530,13 +2563,24 @@ impl Interpreter {
 
     /// `store_plain_restore's store of PREVIOUS, the value a plain binding
     /// of NAME saved (None for a void one), back into NAME's cell.
-    #[inline]
+    #[inline(always)]
     fn store_plain_value(&mut self, name: &SymbolName, previous: Option<Value>) {
+        // The usual restore: a saved value into a cell that holds one.
+        if let Some(value) = previous
+            && self.globals.replace_bound_value(name, value)
+        {
+            return;
+        }
+        self.store_plain_value_into_cell(name, previous);
+    }
+
+    /// `store_plain_value' into a cell that holds no value, or of a void
+    /// one's PREVIOUS.
+    #[inline(never)]
+    fn store_plain_value_into_cell(&mut self, name: &SymbolName, previous: Option<Value>) {
         match previous {
             Some(value) => {
-                if !self.globals.replace_bound_value(name, value) {
-                    self.globals.insert(name, value);
-                }
+                self.globals.insert(name, value);
             }
             None => self.remove_global_binding_symbol(name),
         }
@@ -2587,6 +2631,13 @@ impl Interpreter {
         } else {
             self.plain_c_slot_value(symbol, value)?
         };
+        Some(self.specbind_plain_store(symbol, value))
+    }
+
+    /// `specbind_plain' of SYMBOL, whose cell holds its value
+    /// (`plain_store'), to VALUE: the store and the record.
+    #[inline(always)]
+    pub(crate) fn specbind_plain_store(&mut self, symbol: &SymbolName, value: Value) -> u64 {
         let binding_id = self.next_special_binding_id;
         self.next_special_binding_id += 1;
         let previous = self.globals.value(symbol);
@@ -2607,7 +2658,7 @@ impl Interpreter {
             local_binding_killed: false,
             frame_depth,
         });
-        Some(binding_id)
+        binding_id
     }
 
     /// eval.c:specbind for the symbol in hand: the alias chain, the
@@ -3021,6 +3072,34 @@ impl Interpreter {
         }
     }
 
+    /// alloc.c:garbage_collect's record_in_backtrace (QAutomatic_GC, 0, 0):
+    /// the frame a collection runs under, for the profiler.  Returns the
+    /// depth that pops it.
+    pub(crate) fn push_automatic_gc_frame(&mut self) -> usize {
+        let depth = self.backtrace_frames.len();
+        let function = Value::symbol(crate::lisp::primitives::profiler::AUTOMATIC_GC);
+        self.push_backtrace_frame_borrowed(function, &[]);
+        depth
+    }
+
+    /// The profiler's pending samples filed under FRAMES (see
+    /// `profiler'): eval.c:get_backtrace's functions, innermost first, and
+    /// whether the innermost is garbage_collect's `Automatic GC'.
+    #[cold]
+    #[inline(never)]
+    pub(super) fn record_profiler_samples(frames: &[BacktraceFrame]) {
+        let top_is_gc = frames.last().is_some_and(|frame| {
+            matches!(frame.function_snapshot().kind(),
+                Kind::Symbol(name) if name == crate::lisp::primitives::profiler::AUTOMATIC_GC)
+        });
+        crate::lisp::primitives::profiler::record_pending_samples(top_is_gc, |trace| {
+            let mut functions = frames.iter().rev().map(BacktraceFrame::function_snapshot);
+            for slot in trace {
+                *slot = functions.next().unwrap_or(Value::Nil);
+            }
+        });
+    }
+
     /// record_in_backtrace's stores into `specpdl_ptr': the frame's four
     /// words written into the vector's next slot (a frame built on the
     /// stack and copied in was a stall per interpreted call): FUNCTION,
@@ -3033,6 +3112,9 @@ impl Interpreter {
         args: *const usize,
         shape: usize,
     ) {
+        if crate::lisp::primitives::profiler::samples_pending() {
+            Self::record_profiler_samples(frames);
+        }
         frames.reserve(1);
         let len = frames.len();
         // SAFETY: one slot past the length was reserved above; every field
@@ -3265,6 +3347,10 @@ impl InterpreterState {
     /// been dispatched.
     #[inline(always)]
     pub fn truncate_backtrace_frames(&mut self, len: usize) {
+        // A sample taken while the frames stood is filed under them.
+        if crate::lisp::primitives::profiler::samples_pending() {
+            Interpreter::record_profiler_samples(&self.backtrace_frames);
+        }
         // Lisp words need no destructor, but copied frames can own argument
         // vectors even when their function is immediate and detail is empty.
         // Dropping every removed frame releases those Rust allocations; a

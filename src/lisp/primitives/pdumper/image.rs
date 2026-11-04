@@ -579,6 +579,8 @@ pub(crate) enum RootSlot {
     /// font.c's staticpro'd font_style_table.
     FontStyleTable = 61,
     EmacsMuleCharsetList = 62,
+    /// print.c's staticpro'd Vprin1_to_string_buffer.
+    Prin1ToStringBuffer = 63,
 }
 
 impl RootSlot {
@@ -641,6 +643,7 @@ impl RootSlot {
             60 => Self::FundamentalModeName,
             61 => Self::FontStyleTable,
             62 => Self::EmacsMuleCharsetList,
+            63 => Self::Prin1ToStringBuffer,
             _ => return None,
         })
     }

@@ -44,37 +44,77 @@ fn configure_emacs_spawn(command: &mut Command, controlling_pty: bool) {
 /// process.c's child_signal_read_fd: the pipe handle_child_signal writes a
 /// byte to, which wait_reading_process_output selects on beside the
 /// processes' channels, so a SIGCHLD arriving before or during the select
-/// ends the wait.  catch_child_signal installs the handler before the
-/// first child is made; the first spawn does it here (None when the pipe
-/// or the handler cannot be had, leaving the waits to their timeouts).
+/// ends the wait.  -1 (None) until child_signal_init makes it.
+#[cfg(unix)]
+static CHILD_SIGNAL_READ_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// The child signal pipe's read end, once child_signal_init has made it.
 #[cfg(unix)]
 pub(crate) fn child_signal_read_fd() -> Option<std::os::fd::RawFd> {
-    static CHILD_SIGNAL_READ_FD: OnceLock<Option<std::os::fd::RawFd>> = OnceLock::new();
-    *CHILD_SIGNAL_READ_FD.get_or_init(|| {
-        use std::os::fd::{FromRawFd, OwnedFd};
-        let mut fds = [-1; 2];
-        // SAFETY: PIPE writes exactly two descriptors to FDS, each owned at
-        // once below.
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return None;
+    let fd = CHILD_SIGNAL_READ_FD.load(std::sync::atomic::Ordering::Acquire);
+    (fd >= 0).then_some(fd)
+}
+
+/// process.c:child_signal_init, which create_process and call_process run
+/// before their first child: the pipe, both ends non-blocking, its read
+/// end within an fd_set, and SIGCHLD's handler writing to it.  "We leave
+/// the file descriptors open until the Emacs process exits."
+#[cfg(unix)]
+pub(crate) fn child_signal_init() -> Result<(), LispError> {
+    use std::os::fd::{AsRawFd, IntoRawFd};
+    static INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = INIT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if child_signal_read_fd().is_some() {
+        return Ok(()); // "already done"
+    }
+    let (reader, writer) = emacs_pipe().map_err(|error| {
+        LispError::SignalValue(file_operation_error_value_without_file(
+            "Creating pipe for child signal",
+            &error,
+        ))
+    })?;
+    if FD_SETSIZE <= reader.as_raw_fd() {
+        // "Since we need to `pselect' on the read end, it has to fit
+        // into an `fd_set'."
+        return Err(fd_setsize_error("Creating pipe for child signal"));
+    }
+    for fd in [reader.as_raw_fd(), writer.as_raw_fd()] {
+        // SAFETY: FD is one of the two live descriptors above.
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) } != 0 {
+            emacs_perror("fcntl", &std::io::Error::last_os_error());
         }
-        let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-        let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
-        for fd in fds {
-            // SAFETY: FD is one of the two live descriptors above.
-            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-            if flags == -1
-                || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
-                || unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1
-            {
-                return None;
-            }
+    }
+    // signal-hook's pipe handler is handle_child_signal's
+    // child_signal_notify: one non-blocking write, its errors ignored.
+    match signal_hook::low_level::pipe::register(libc::SIGCHLD, writer) {
+        Ok(_) => {
+            CHILD_SIGNAL_READ_FD.store(reader.into_raw_fd(), std::sync::atomic::Ordering::Release);
         }
-        // signal-hook's pipe handler is child_signal_notify: one
-        // non-blocking write, its errors ignored.
-        signal_hook::low_level::pipe::register(libc::SIGCHLD, writer).ok()?;
-        Some(std::os::fd::IntoRawFd::into_raw_fd(reader))
-    })
+        Err(error) => emacs_perror("sigaction", &error),
+    }
+    Ok(())
+}
+
+/// sysdep.c:emacs_perror: "COMMAND: MESSAGE: strerror (errno)" on standard
+/// error in one write, ERROR's errno standing for errno.
+#[cfg(unix)]
+fn emacs_perror(message: &str, error: &std::io::Error) {
+    use std::io::Write;
+    use std::os::unix::ffi::OsStrExt;
+    let errno = error.raw_os_error().unwrap_or(0);
+    // SAFETY: strerror returns a NUL-terminated string valid until the
+    // next call on this thread, copied at once.
+    let error_string = unsafe { std::ffi::CStr::from_ptr(libc::strerror(errno)) }
+        .to_bytes()
+        .to_vec();
+    let command = std::env::args_os().next().unwrap_or_else(|| "emacs".into());
+    let mut line = command.as_bytes().to_vec();
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(message.as_bytes());
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(&error_string);
+    line.push(b'\n');
+    let _ = std::io::stderr().write_all(&line);
 }
 
 /// process.c:child_signal_read: empty the child signal pipe once the wait
@@ -206,11 +246,20 @@ fn exec_like_gnu(
         return;
     };
 
-    // SAFETY: the child only calls execve, write, strerror and _exit on data
-    // owned by `image', which the closure owns whole; GNU's own vfork child
-    // makes the same strerror call.
+    // callproc.c:child_setup's restore_nofile_limit: the vfork path a pty
+    // takes gives the child the limit Emacs started with; a posix_spawn
+    // child keeps the lowered one.
+    let nofile_limit = if pty { nofile_limit_to_restore() } else { None };
+    // SAFETY: the child only calls setrlimit, execve, write, strerror and
+    // _exit on data owned by `image' and the closure; GNU's own vfork child
+    // makes the same calls.
     unsafe {
-        command.pre_exec(move || image.exec_in_child(pty));
+        command.pre_exec(move || {
+            if let Some(limit) = &nofile_limit {
+                libc::setrlimit(libc::RLIMIT_NOFILE, limit);
+            }
+            image.exec_in_child(pty)
+        });
     }
 }
 
@@ -821,7 +870,7 @@ pub(crate) fn call_process(
     };
     let environment = child_environment(interp, env, directory)?;
     #[cfg(unix)]
-    let _ = child_signal_read_fd();
+    child_signal_init()?;
     let mut child = spawn_call_process(
         &program,
         &argv,
@@ -1220,7 +1269,7 @@ pub(crate) fn spawn_persistent_process(
     crate::test_support::mark_process_test();
 
     #[cfg(unix)]
-    let _ = child_signal_read_fd();
+    child_signal_init()?;
     let mut command = Command::new(program);
     add_command_arguments(&mut command, argv);
     let (environment, directory) = configure_external_command(interp, env, &mut command)?;
@@ -1434,6 +1483,45 @@ fn finish_spawned_runtime(runtime: RunningProcess) -> Result<RunningProcess, Lis
 pub(crate) const FD_SETSIZE: std::os::fd::RawFd = 10000;
 #[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) const FD_SETSIZE: std::os::fd::RawFd = libc::FD_SETSIZE as std::os::fd::RawFd;
+
+/// process.c's `nofile_limit': RLIMIT_NOFILE as the process found it,
+/// kept when init_process_emacs lowered its soft limit to FD_SETSIZE (GNU
+/// leaves a soft limit of 0 there otherwise, which restores nothing).
+#[cfg(unix)]
+static NOFILE_LIMIT: OnceLock<Option<libc::rlimit>> = OnceLock::new();
+
+/// process.c:init_process_emacs's "Don't allocate more than FD_SETSIZE
+/// file descriptors for Emacs itself": a soft RLIMIT_NOFILE above
+/// FD_SETSIZE comes down to it, so a descriptor no fd_set can hold is
+/// EMFILE wherever Emacs opens one.  The limit found is restore_nofile_limit's.
+#[cfg(unix)]
+pub(crate) fn init_process_nofile_limit() {
+    NOFILE_LIMIT.get_or_init(|| {
+        let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        // SAFETY: getrlimit fills LIMIT on success, the only case read.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        // SAFETY: the successful call above initialized LIMIT.
+        let found = unsafe { limit.assume_init() };
+        if found.rlim_cur <= FD_SETSIZE as libc::rlim_t {
+            return None;
+        }
+        let lowered = libc::rlimit {
+            rlim_cur: FD_SETSIZE as libc::rlim_t,
+            ..found
+        };
+        // SAFETY: LOWERED is a valid rlimit, no larger than the one found.
+        (unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lowered) } == 0).then_some(found)
+    });
+}
+
+/// The limit process.c:restore_nofile_limit gives back to a child:
+/// RLIMIT_NOFILE as Emacs started, when init_process_emacs lowered it.
+#[cfg(unix)]
+fn nofile_limit_to_restore() -> Option<libc::rlimit> {
+    NOFILE_LIMIT.get().copied().flatten()
+}
 
 /// report_file_errno (WHAT, Qnil, EMFILE): the error of a channel
 /// FD_SETSIZE refuses.
@@ -1660,8 +1748,9 @@ fn emacs_posix_spawn(
 /// pipes (or the pty) its connection type asks for, and the child's
 /// standard error on its own pipe when it goes to a process or buffer of
 /// its own, else where its output goes.  None leaves the spawn to the fork
-/// path: an argument with a NUL, a pty without a name, or an exec on the
-/// pty that fails, whose report the vfork path's child makes.
+/// path: an argument with a NUL, a pty without a name, a pty child owed
+/// the open-files limit Emacs started with, or an exec on the pty that
+/// fails, whose report the vfork path's child makes.
 #[cfg(target_os = "linux")]
 fn posix_spawn_process(
     program: &std::ffi::OsStr,
@@ -1685,6 +1774,12 @@ fn posix_spawn_process(
             &error,
         ))
     };
+    // A pty child takes callproc.c's vfork path, whose child_setup gives
+    // it back the open-files limit Emacs started with: no spawn attribute
+    // sets a limit, so such a child is made on the fork path.
+    if (input_pty || output_pty) && nofile_limit_to_restore().is_some() {
+        return Ok(None);
+    }
     let (pty_master, pty_slave, pty_name) = if input_pty || output_pty {
         let (master, slave, name) = open_emacs_pty()?;
         let Some(name) = name.and_then(|name| std::ffi::CString::new(name).ok()) else {
@@ -4079,13 +4174,15 @@ fn serial_data_bits(value: &Value) -> Result<serialport::DataBits, LispError> {
     }
 }
 
-fn serial_parity(value: &Value) -> Result<serialport::Parity, LispError> {
+fn serial_parity(interp: &Interpreter, value: &Value) -> Result<serialport::Parity, LispError> {
     match value.kind() {
         Kind::Nil => Ok(serialport::Parity::None),
         Kind::Symbol(symbol) if symbol == "even" => Ok(serialport::Parity::Even),
         Kind::Symbol(symbol) if symbol == "odd" => Ok(serialport::Parity::Odd),
-        _ => Err(LispError::Signal(
-            ":parity must be nil (no parity), `even', or `odd'".into(),
+        _ => Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            ":parity must be nil (no parity), `even', or `odd'",
+            &[],
         )),
     }
 }
@@ -4100,13 +4197,18 @@ fn serial_stop_bits(value: &Value) -> Result<serialport::StopBits, LispError> {
     }
 }
 
-fn serial_flow_control(value: &Value) -> Result<serialport::FlowControl, LispError> {
+fn serial_flow_control(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<serialport::FlowControl, LispError> {
     match value.kind() {
         Kind::Nil => Ok(serialport::FlowControl::None),
         Kind::Symbol(symbol) if symbol == "hw" => Ok(serialport::FlowControl::Hardware),
         Kind::Symbol(symbol) if symbol == "sw" => Ok(serialport::FlowControl::Software),
-        _ => Err(LispError::Signal(
-            ":flowcontrol must be nil (no flowcontrol), `hw', or `sw'".into(),
+        _ => Err(crate::lisp::primitives::values::doprnt_error(
+            interp,
+            ":flowcontrol must be nil (no flowcontrol), `hw', or `sw'",
+            &[],
         )),
     }
 }
@@ -4120,6 +4222,7 @@ struct SerialConfiguration {
 }
 
 fn serial_configuration(
+    interp: &Interpreter,
     updates: &[Value],
     stored_contact: &Value,
 ) -> Result<(SerialConfiguration, Value), LispError> {
@@ -4142,9 +4245,9 @@ fn serial_configuration(
     let config = SerialConfiguration {
         speed,
         data_bits: serial_data_bits(&bytesize)?,
-        parity: serial_parity(&parity)?,
+        parity: serial_parity(interp, &parity)?,
         stop_bits: serial_stop_bits(&stopbits)?,
-        flow_control: serial_flow_control(&flowcontrol)?,
+        flow_control: serial_flow_control(interp, &flowcontrol)?,
     };
     plist_items_put(&mut contact_items, ":speed", Value::Integer(speed.into()));
     plist_items_put(&mut contact_items, ":bytesize", bytesize);
@@ -4347,7 +4450,7 @@ pub(crate) fn serial_process_configure(
     if contact_plist_get(&stored_contact, ":speed").is_nil() {
         return Ok(Value::Nil);
     }
-    let (configuration, contact) = serial_configuration(args, &stored_contact)?;
+    let (configuration, contact) = serial_configuration(interp, args, &stored_contact)?;
     #[cfg(unix)]
     configure_serial_descriptor(interp.serial_process_fd(process_id)?, &configuration)?;
     interp.set_process_contact_plist(process_id, contact)?;
@@ -4380,7 +4483,7 @@ pub(crate) fn make_serial_process(
     let serial = open_serial_port(&port_name)?;
     let contact = Value::list(args.iter().cloned());
     let contact = if speed.is_some() {
-        let (configuration, contact) = serial_configuration(args, &contact)?;
+        let (configuration, contact) = serial_configuration(interp, args, &contact)?;
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
@@ -4519,9 +4622,11 @@ pub(crate) fn wait_pumping_processes(
     let mut timer_check_at = Some(std::time::Instant::now());
     loop {
         // A fatal signal ends the wait as GNU's handler, run in the middle
-        // of the select, does.
-        if crate::lisp::primitives::fatal_signal_pending() {
-            crate::lisp::primitives::run_pending_fatal_signal(interp, env)?;
+        // of the select, does; the other pending signals (a ripe atimer's
+        // SIGALRM) are processed as wait_reading_process_output's maybe_quit
+        // or process_pending_signals processes them at each iteration.
+        if crate::lisp::primitives::atimer::signals_pending() {
+            crate::lisp::primitives::atimer::process_pending_signals_in_wait(interp, env)?;
         }
         let mut progressed = pump_external_process_output_for(interp, env, only_process_id)?;
         progressed |= pump_connection_processes_for(interp, env, only_process_id)?;
