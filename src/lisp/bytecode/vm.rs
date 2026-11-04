@@ -168,18 +168,8 @@ impl BcStack {
         self.top += 1;
     }
 
-    /// A new frame's first ENTRY_DEPTH slots: ARGS, then nils.
-    #[inline(always)]
-    fn push_arguments(&mut self, args: &[Value], entry_depth: usize) {
-        assert!(
-            args.len() <= entry_depth && self.top + entry_depth <= self.frame,
-            "byte code exceeded its declared stack depth"
-        );
-        // SAFETY: as asserted.
-        unsafe { self.push_arguments_within(args, entry_depth) }
-    }
-
-    /// `push_arguments' into a frame known to hold them.
+    /// A new frame's first ENTRY_DEPTH slots, in a frame known to hold
+    /// them: ARGS, then nils.
     ///
     /// # Safety
     /// ARGS are at most ENTRY_DEPTH, and ENTRY_DEPTH slots fit below the
@@ -4348,9 +4338,15 @@ fn run_entered_inline(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     run_entered_with(interp, program, function, env, |interp, _| {
-        // The caller checked the count against the list and the list's
-        // slots against the frame's depth.
-        interp.bc_stack.push_arguments(args, program.entry_depth);
+        // SAFETY: the caller's `takes' admits at most the list's ENTRY_DEPTH
+        // arguments, which `entry_program' gives only a program whose
+        // STACK_DEPTH holds them, and `enter_frame' has just put the frame's
+        // footer that depth above its first slot.
+        unsafe {
+            interp
+                .bc_stack
+                .push_arguments_within(args, program.entry_depth)
+        };
         Ok(())
     })
 }

@@ -889,6 +889,36 @@ fn combined_after_change_calls_as_insdel() {
     );
 }
 
+#[test]
+fn arithmetic_is_data_c_arith_driver() {
+    // data.c:arith_driver folds the integers before the first float
+    // exactly (in intmax_t, then a bignum) and converts that once, so
+    // (* -1 0 3.0) is 0.0 and a bignum's sum survives; `/' is all floats
+    // when a later divisor is one; floatop_arith_driver's NaN is the later
+    // operand's for `+' and `*' and the accumulator's for `-' and `/'.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(let ((p 0.0e+NaN) (n (/ 0.0 0.0)))
+  (dolist (f '(+ - * / min max))
+    (print (list f (funcall f p n) (funcall f n p) (funcall f p p 1.0 n) (funcall f n 2 p) (funcall f 1 n))))
+  (print (list (+ (1- most-negative-fixnum) most-positive-fixnum 0.5)
+               (+ (1- most-negative-fixnum) most-positive-fixnum 5e-324)
+               (+ most-positive-fixnum 1 0.5) (* (expt 2 70) 2 0.5) (- (expt 2 70) 1 0.5)
+               (* -1 0 3.0) (* -1 0.0 3) (- 0 0 0.0) (* 0 -1.0) (* -1.0 0)
+               (/ 6 4 2.0) (/ 6 4.0 2) (/ 7 2 0.5) (/ (expt 2 70) 3 2.0) (/ 7 (expt 2 70))
+               (- 5 (expt 2 70) 1.0) (+ 1 (expt 2 62) 0.5) (* 3 (expt 2 61) 1.5)
+               (condition-case e (/ 5 0 1.0) (error e)) (condition-case e (/ 5 0.0 1) (error e))
+               (condition-case e (+ 1.0 'x 2) (error e)) (condition-case e (* (expt 2 70) 'y) (error e))
+               (/ 5) (/ 5.0) (/ (expt 2 70)) (- (expt 2 70)) (- 0.0) (* 2) (+ 2.5))))"#,
+        ],
+    );
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

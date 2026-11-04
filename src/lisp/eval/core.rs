@@ -1431,6 +1431,19 @@ impl Interpreter {
         {
             return result;
         }
+        self.call_function_value_general(func, original_name, args, env)
+    }
+
+    /// `call_function_value' past its plain funcall: out of line, so that
+    /// the plain call's caller saves only the registers that call uses.
+    #[inline(never)]
+    fn call_function_value_general(
+        &mut self,
+        func: Value,
+        original_name: Option<&str>,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
         self.begin_funcall(env)?;
         let result = match original_name {
             None => self.funcall_unnamed(func, args, env),

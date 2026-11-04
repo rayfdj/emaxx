@@ -14027,6 +14027,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 292: data.c's arith_driver for `+', `-', `*' and `/', and two
+  cuts on the callback entry.** arith_driver folds the arguments in
+  intmax_t while they are integers, goes on in a bignum when a result
+  leaves that range (bignum_arith_driver) and converts the accumulated
+  integer to a float only at the first float argument, which
+  floatop_arith_driver then folds with the rest; Emaxx converted every
+  integer argument to a float as soon as any argument was one, so `(+
+  (1- most-negative-fixnum) most-positive-fixnum 0.5)' was 0.5 where
+  GNU's is -1.5 and `(* -1 0 3.0)' was -0.0 where GNU's integer product
+  0 makes 0.0. Fquo is the exception: when any divisor after the first
+  is a float, the whole quotient is taken in floats from the first
+  argument, so `(/ 6 4 2.0)' is 0.75 and `(/ 7 2 0.5)' 7.0 and `(/ 5 0
+  1.0)' 1.0e+INF; a zero integer divisor signals `arith-error' only in
+  the integer fold. Of two NaNs, GNU 30.2's x86-64 build keeps the later
+  operand's for `+' and `*' (the compiler commutes `accum += next' and
+  `accum *= next' into an addsd or mulsd whose destination, the NaN that
+  survives, is NEXT) and the accumulator's for `-' and `/', so `(+
+  0.0e+NaN -0.0e+NaN)' is -0.0e+NaN; `float_operation' makes that choice
+  explicitly rather than leave it to the code generator. The entry of a
+  byte-code callback pushes its arguments within the depth the frame
+  reserved (`push_arguments_within', on the invariant that a verified
+  program's entry depth covers its arity and enter_frame wrote the
+  frame's footer), and `call_function_value' keeps its plain funcall
+  inline with the general call out of line: a `mapc' callback costs 578
+  instructions against 584 (GNU's 446), a `mapatoms' callback 595
+  against 601 (GNU's 476). Arithmetic fuzzes (eight seeds over fixnums,
+  bignums, floats, NaNs, markers and errors) match GNU; a command-line
+  comparison covers the integer prefix, Fquo's floats, the NaN choice
+  and the one-argument forms. Local validation: the grouped gate's
+  3,501 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16216,6 +16247,21 @@ are ert-tests (36,670 ms against 34,040), tramp-tests (19,300 against
 16,860), comp-tests (16,390 against 14,330), semantic-utest-ia (3,340
 against 2,400), mule-tests (2,370 against 1,530) and files-tests (1,970
 against 1,430).
+
+**On `046e23c`** (round 291): the full Rust gate (run 41775574385)
+passed; the frozen run (run 41775577346) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 61.2 s against 50.9 s (1.201),
+test bodies 252.2 s against 240.4 s (1.049), in all 1.085, with a
+per-file setup median of 93 ms against 79, on a faster runner than round
+290's (GNU's own setup 50.9 s against 58.8). The widest body gaps are
+tramp-tests (17,110 ms against 14,910), icalendar-tests (2,070 against
+370), comp-tests (13,530 against 12,080), ert-tests (32,650 against
+31,250), semantic-utest-ia (2,910 against 2,110) and mule-tests (2,200
+against 1,450). icalendar-tests' gap is seven consecutive export tests
+that took 120 to 420 ms each where round 290's took 6 to 38 ms and the
+file's later tests took their usual time: a stall of the runner (GNU's
+first two export tests took 399 and 207 ms in round 290's run), since
+the file runs in the same time locally in builds of rounds 287 and 292.
 
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal
