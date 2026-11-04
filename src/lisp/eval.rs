@@ -4467,6 +4467,7 @@ impl Interpreter {
             marked.mark(self, value);
         };
         self.globals.mark_symbol_roots(&mut mark);
+        crate::lisp::primitives::profiler::mark_profiler(&mut mark);
         // The obarray's entries are the process's interned symbols, a root
         // of every collection (`mark_interned_symbol_roots'); the
         // enumeration of every symbol a table of this state keys by was
@@ -5845,10 +5846,6 @@ pub struct InterpreterState {
     /// before a search converts them to positions), held between searches
     /// so their allocation serves every search.
     pub(crate) search_registers: crate::lisp::regex_emacs::Registers,
-    pub profiler_memory_running: bool,
-    pub profiler_memory_log_pending: bool,
-    pub profiler_cpu_running: bool,
-    pub profiler_cpu_log_pending: bool,
     pub message_capture_stack: Vec<MessageCapture>,
     /// Last character written to the batch `standard-output' stream.
     ///
@@ -6648,10 +6645,6 @@ impl Interpreter {
             last_known_column: (0, 0, 0),
             buffer_before_last_command_or_undo: None,
             search_registers: Default::default(),
-            profiler_memory_running: false,
-            profiler_memory_log_pending: false,
-            profiler_cpu_running: false,
-            profiler_cpu_log_pending: false,
             message_capture_stack: Vec::new(),
             batch_standard_output_last_char: None,
             batch_stdout_need_newline: false,

@@ -13805,6 +13805,46 @@ setup_process_coding_systems's check now refuses). A 13-form
   taken. Local validation: the grouped gate's 3,497 library tests,
   the integration targets and clippy with `--all-targets --all-features
   -D warnings' pass.
+- **Round 286: profiler.c.** GNU's CPU profiler takes SIGPROF from a
+  POSIX timer on the first clock that makes one (CLOCK_THREAD_CPUTIME_ID
+  first, setitimer's ITIMER_PROF failing that), each signal counting one
+  sample and one more for each overrun; its memory profiler counts the
+  bytes each xmalloc, xzalloc, xrealloc, lisp_malloc and
+  lisp_align_malloc asks for, and garbage_collect counts the bytes a
+  collection freed. Each sample goes into a log_t, a fixed table of
+  `profiler-log-size' call stacks of `profiler-max-stack-depth'
+  functions (eval.c:get_backtrace's, innermost first, padded with nil),
+  keyed by function-equal; a full table evicts every entry at or below
+  its approximate_median into `Discarded Samples', and a sample whose
+  innermost frame is garbage_collect's `Automatic GC' counts toward it.
+  `profiler-cpu-log' and `profiler-memory-log' stop the profiler, export
+  the log as an `equal' hash table (each count read into an int) and
+  restart it with a fresh one. Emaxx had stubs: both logs were empty
+  hash tables, `profiler-cpu-start' took any interval and set
+  `profiler-sampling-interval', and the "already running" errors lacked
+  their "is". Now as profiler.c, with one change of mechanism: GNU's
+  handler and probes walk the backtrace where they stand, which a signal
+  handler or the allocator cannot do to Emaxx's interpreter, so they
+  only count, and the interpreter files what they counted at its next
+  backtrace push or pop (and before a Lisp thread switch), when the
+  frames are still the ones that stood when the sample was taken. The
+  probe is the global allocator's, so every Rust allocation counts as
+  every C one does in GNU; garbage_collect's `Automatic GC' frame
+  (record_in_backtrace (QAutomatic_GC, 0, 0)) is now recorded over
+  compact_buffer and the mark and sweep, and the logs are a collection's
+  roots (mark_profiler). The test of a frame push and pop costs 1.9M
+  instructions in a byte-code and interpreted `fib' run of 432.7M
+  (0.43%). A command-line comparison of the errors and protocol, a busy
+  loop's call stacks, a three-entry log's eviction, a memory log's
+  `make-string', `Automatic GC' and `garbage-collect' entries and
+  `function-equal' matches GNU, as do the call stacks of the samples
+  themselves (the same four traces of a `while' loop in both). Not as
+  GNU: GNU's export with no log (a second `profiler-cpu-log' after a
+  stop) reads through a null pointer and crashes, where Emaxx answers
+  nil; a `profiler-log-size' of 0 writes before GNU's arrays, where
+  Emaxx counts every sample as discarded. Local validation: the grouped
+  gate's 3,499 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15926,6 +15966,21 @@ widest body gaps are ert-tests (45,670 ms against 38,070), tramp-tests
 semantic-utest-ia (4,030 against 2,610), mule-tests (3,270 against
 2,010) and package-tests (7,160 against 6,150).
 
+**On `2e9292c`** (round 285): the full Rust gate (run 41745840878)
+passed; the frozen run (run 41745844815) failed its first attempt on the
+oracle's side only, GNU's `eglot-test-rust-completion-exit-function'
+failing with a jsonrpc-error from rust-analyzer where Emaxx passed
+(7,927 of 7,928), and passed at its second, 7,928 of 7,928 outcomes
+matching. The two attempts ran on very different runners: the first took
+setup 47.7 s against GNU's 40.7 s (1.173) and test bodies 220.4 s
+against 215.9 s (1.021), in all 1.034; the second, whose GNU setup took
+70.7 s, setup 95.3 s (1.348) and bodies 312.7 s against 276.0 s (1.133),
+in all 1.173, with a per-file setup median of 148 ms against 109. The
+second attempt's widest body gaps are ert-tests (46,850 ms against
+40,910), comp-tests (19,950 against 16,090), tramp-tests (23,160 against
+19,430), simple-tests (5,530 against 4,340), semantic-utest-ia (3,850
+against 2,670) and mule-tests (3,130 against 1,990).
+
 **Findings recorded, not fixed:**
 - **What a fatal signal does in GNU that it does not in Emaxx (rounds
   115 and 285).** A fault the kernel raises in Emaxx's own code (a
@@ -15935,9 +15990,7 @@ semantic-utest-ia (4,030 against 2,610), mule-tests (3,270 against
   unlocks: those need the interpreter the fault interrupted.
   sysdep.c:handle_sigsegv's recovery from a C stack overflow (a longjmp
   to the command loop and "Re-entering top level after C stack
-  overflow") is not ported. profiler.c's CPU and memory profilers
-  collect no samples (their logs are empty hash tables), so SIGPROF
-  stays ignored.
+  overflow") is not ported.
 - **Allocations outside the Lisp object makers still abort when the
   system refuses them (round 277).** GNU's lisp_align_malloc and xmalloc
   reach memory_full, which signals, for every block and buffer; in Emaxx

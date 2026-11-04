@@ -3054,6 +3054,34 @@ impl Interpreter {
         }
     }
 
+    /// alloc.c:garbage_collect's record_in_backtrace (QAutomatic_GC, 0, 0):
+    /// the frame a collection runs under, for the profiler.  Returns the
+    /// depth that pops it.
+    pub(crate) fn push_automatic_gc_frame(&mut self) -> usize {
+        let depth = self.backtrace_frames.len();
+        let function = Value::symbol(crate::lisp::primitives::profiler::AUTOMATIC_GC);
+        self.push_backtrace_frame_borrowed(function, &[]);
+        depth
+    }
+
+    /// The profiler's pending samples filed under FRAMES (see
+    /// `profiler'): eval.c:get_backtrace's functions, innermost first, and
+    /// whether the innermost is garbage_collect's `Automatic GC'.
+    #[cold]
+    #[inline(never)]
+    pub(super) fn record_profiler_samples(frames: &[BacktraceFrame]) {
+        let top_is_gc = frames.last().is_some_and(|frame| {
+            matches!(frame.function_snapshot().kind(),
+                Kind::Symbol(name) if name == crate::lisp::primitives::profiler::AUTOMATIC_GC)
+        });
+        crate::lisp::primitives::profiler::record_pending_samples(top_is_gc, |trace| {
+            let mut functions = frames.iter().rev().map(BacktraceFrame::function_snapshot);
+            for slot in trace {
+                *slot = functions.next().unwrap_or(Value::Nil);
+            }
+        });
+    }
+
     /// record_in_backtrace's stores into `specpdl_ptr': the frame's four
     /// words written into the vector's next slot (a frame built on the
     /// stack and copied in was a stall per interpreted call): FUNCTION,
@@ -3066,6 +3094,9 @@ impl Interpreter {
         args: *const usize,
         shape: usize,
     ) {
+        if crate::lisp::primitives::profiler::samples_pending() {
+            Self::record_profiler_samples(frames);
+        }
         frames.reserve(1);
         let len = frames.len();
         // SAFETY: one slot past the length was reserved above; every field
@@ -3298,6 +3329,10 @@ impl InterpreterState {
     /// been dispatched.
     #[inline(always)]
     pub fn truncate_backtrace_frames(&mut self, len: usize) {
+        // A sample taken while the frames stood is filed under them.
+        if crate::lisp::primitives::profiler::samples_pending() {
+            Interpreter::record_profiler_samples(&self.backtrace_frames);
+        }
         // Lisp words need no destructor, but copied frames can own argument
         // vectors even when their function is immediate and detail is empty.
         // Dropping every removed frame releases those Rust allocations; a

@@ -351,17 +351,23 @@ fn garbage_collect_now_below_top(
     } else {
         None
     };
-    // alloc.c:garbage_collect: "Don't keep undo information around
-    // forever.  Do this early on, so it is no problem if the user quits."
+    // alloc.c:garbage_collect: "Record this function, so it appears on
+    // the profiler's backtraces."
+    let gc_frame = interpreter.push_automatic_gc_frame();
+    // "Don't keep undo information around forever.  Do this early on, so
+    // it is no problem if the user quits."
     if let Err(error) = interpreter.compact_buffers(environment) {
+        interpreter.truncate_backtrace_frames(gc_frame);
         if let Some(restore) = symbols_with_pos_restore {
             interpreter.restore_special_dynamic(restore, environment)?;
         }
         return Err(error);
     }
+    let tot_before = crate::lisp::primitives::profiler::collection_tot_before();
     let started = std::time::Instant::now();
     begin_garbage_collection(interpreter, environment);
-    let result = finish_garbage_collection(interpreter, environment, started).map(Some);
+    interpreter.truncate_backtrace_frames(gc_frame);
+    let result = finish_garbage_collection(interpreter, environment, started, tot_before).map(Some);
     if let Some(restore) = symbols_with_pos_restore {
         interpreter.restore_special_dynamic(restore, environment)?;
     }
@@ -376,17 +382,17 @@ pub(super) fn finish_garbage_collection(
     interpreter: &mut Interpreter,
     environment: &mut Env,
     started: std::time::Instant,
+    tot_before: Option<usize>,
 ) -> Result<crate::lisp::eval::LiveObjectCensus, LispError> {
     let census = interpreter.live_object_census();
+    let tot_after = census.total_bytes_of_live_objects();
+    crate::lisp::primitives::profiler::note_live_bytes(tot_after);
     let (threshold, percentage) = gc_tuning(interpreter, environment);
-    garbage_collection_finished(
-        interpreter,
-        census.total_bytes_of_live_objects(),
-        threshold,
-        percentage,
-    );
+    garbage_collection_finished(interpreter, tot_after, threshold, percentage);
     interpreter.run_doomed_finalizers(environment)?;
     interpreter.note_collection_done(started.elapsed());
+    // "Collect profiling data."
+    crate::lisp::primitives::profiler::probe_collection(tot_before, tot_after);
     // GNU inhibits collection, including explicit garbage-collect, for the
     // hook's dynamic extent. Hook errors follow the existing safe-run path.
     if interpreter

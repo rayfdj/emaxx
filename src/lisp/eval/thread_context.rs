@@ -33,6 +33,10 @@ pub(super) struct ThreadExecutionContext {
 
 impl ThreadExecutionContext {
     fn exchange(&mut self, interpreter: &mut Interpreter) {
+        // A profiler sample taken in the outgoing thread is its own.
+        if crate::lisp::primitives::profiler::samples_pending() {
+            Interpreter::record_profiler_samples(&interpreter.backtrace_frames);
+        }
         macro_rules! exchange {
             ($($field:ident),* $(,)?) => {
                 $(std::mem::swap(&mut self.$field, &mut interpreter.$field);)*

@@ -526,6 +526,78 @@ fn open_file_limit_is_init_process_emacs_s() {
     );
 }
 
+#[test]
+fn profiler_is_profiler_c_s() {
+    // profiler.c: the start and stop protocol and its errors, a CPU log of
+    // a busy loop (each key a vector of `profiler-max-stack-depth'
+    // functions, innermost first, padded with nil), a full log's eviction
+    // into `Discarded Samples', the memory profiler's call stacks and its
+    // `Automatic GC' entry, and `function-equal'.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (defun pp-work (n) (let ((i 0)) (while (< i n) (setq i (1+ i)))))
+  (defun pp-keys (log)
+    (let (keys) (maphash (lambda (k v) (push (cons (append k nil) v) keys)) log) keys))
+  (let (out)
+    (dolist (interval '(0 -5 1.5 nil))
+      (push (condition-case e (profiler-cpu-start interval) (error e)) out))
+    (push (condition-case e (profiler-cpu-start (expt 2 70)) (error e)) out)
+    (push (profiler-cpu-running-p) out)
+    (push (profiler-cpu-start 1000000) out)
+    (push (condition-case e (profiler-cpu-start 1000000) (error e)) out)
+    (push (profiler-cpu-running-p) out)
+    (pp-work 3000000)
+    (let ((keys (pp-keys (profiler-cpu-log))))
+      (push (profiler-cpu-running-p) out)
+      (push (seq-uniq (mapcar (lambda (k) (length (car k))) keys)) out)
+      (push (seq-every-p (lambda (k) (and (natnump (cdr k)) (> (cdr k) 0))) keys) out)
+      (push (and (seq-find (lambda (k) (equal (seq-take (car k) 4) '(< while let pp-work))) keys) t)
+            out)
+      (push (seq-every-p (lambda (k) (let ((tail (memq nil (car k))))
+                                       (seq-every-p #'null tail)))
+                         keys)
+            out))
+    (push (profiler-cpu-stop) out)
+    (push (profiler-cpu-stop) out)
+    (push (profiler-cpu-running-p) out)
+    (push (hash-table-p (profiler-cpu-log)) out)
+    (let ((profiler-log-size 3) (profiler-max-stack-depth 2))
+      (profiler-cpu-start 100000)
+      (dotimes (_ 5)
+        (pp-work 200000)
+        (let ((i 0)) (while (< i 200000) (setq i (+ i 1))))
+        (let ((i 0)) (while (< i 200000) (setq i (- i -1))))
+        (let ((i 0)) (while (< i 200000) (setq i (1+ i)) (car nil))))
+      (let ((keys (pp-keys (profiler-cpu-log))))
+        (profiler-cpu-stop)
+        (push (seq-uniq (mapcar (lambda (k) (length (car k))) keys)) out)
+        (push (and (assoc '(Discarded\ Samples nil) keys) t) out)
+        (push (<= (length (seq-remove (lambda (k) (memq (caar k) '(Discarded\ Samples Automatic\ GC))) keys)) 3) out)))
+    (push (condition-case e (progn (profiler-memory-start) (profiler-memory-start)) (error e)) out)
+    (push (profiler-memory-running-p) out)
+    (let ((l nil)) (dotimes (_ 300000) (push (make-string 10 ?a) l)) (setq l nil))
+    (garbage-collect)
+    (let ((keys (pp-keys (profiler-memory-log))))
+      (push (profiler-memory-running-p) out)
+      (push (and (seq-find (lambda (k) (eq (caar k) 'make-string)) keys) t) out)
+      (push (and (assoc '(Automatic\ GC nil) keys) t) out)
+      (push (and (seq-find (lambda (k) (eq (caar k) 'garbage-collect)) keys) t) out))
+    (push (list (profiler-memory-stop) (profiler-memory-stop) (profiler-memory-running-p)) out)
+    (push (list (function-equal 'car 'car)
+                (function-equal (lambda () 1) (lambda () 1))
+                (let ((f (lambda (x) (lambda () x)))) (function-equal (funcall f 1) (funcall f 2))))
+          out)
+    (princ (format "%S\n" (nreverse out)))))"#,
+        ],
+    );
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

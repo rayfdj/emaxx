@@ -176,6 +176,7 @@ mod numeric_time;
 pub(crate) mod pdumper;
 pub(crate) mod print;
 mod processes;
+pub(crate) mod profiler;
 mod purecopy;
 mod regexp;
 mod search;

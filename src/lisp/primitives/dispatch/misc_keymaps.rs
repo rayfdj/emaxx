@@ -1016,84 +1016,37 @@ define_dispatch!(
                 }
                 Ok(Value::list(buckets))
             }
-            "profiler-memory-running-p" => Ok(if interp.profiler_memory_running {
-                Value::T
-            } else {
-                Value::Nil
-            }),
+            "profiler-memory-running-p" => {
+                need_args(name, args, 0)?;
+                Ok(crate::lisp::primitives::profiler::profiler_memory_running_p())
+            }
             "profiler-memory-start" => {
-                if interp.profiler_memory_running {
-                    return Err(LispError::Signal("Memory profiler already running".into()));
-                }
-                interp.profiler_memory_running = true;
-                interp.profiler_memory_log_pending = true;
-                // profiler.c Fprofiler_memory_start returns t.
-                Ok(Value::T)
+                need_args(name, args, 0)?;
+                crate::lisp::primitives::profiler::profiler_memory_start(interp, env)
             }
             "profiler-memory-stop" => {
-                let was_running = interp.profiler_memory_running;
-                interp.profiler_memory_running = false;
-                Ok(if was_running { Value::T } else { Value::Nil })
+                need_args(name, args, 0)?;
+                Ok(crate::lisp::primitives::profiler::profiler_memory_stop())
             }
             "profiler-memory-log" => {
-                if interp.profiler_memory_running || interp.profiler_memory_log_pending {
-                    if !interp.profiler_memory_running {
-                        interp.profiler_memory_log_pending = false;
-                    }
-                    // GNU's log is a real hash table.  Emaxx collects no
-                    // samples, so the honest log is a real EMPTY hash table
-                    // of the same test -- never a string spelled to print
-                    // like one (2026-08-23 audit finding 78).
-                    call(
-                        interp,
-                        "make-hash-table",
-                        &[Value::symbol(":test"), Value::symbol("equal")],
-                        env,
-                    )
-                } else {
-                    Ok(Value::Nil)
-                }
+                need_args(name, args, 0)?;
+                crate::lisp::primitives::profiler::profiler_memory_log(interp, env)
             }
-            "profiler-cpu-running-p" => Ok(if interp.profiler_cpu_running {
-                Value::T
-            } else {
-                Value::Nil
-            }),
+            "profiler-cpu-running-p" => {
+                need_args(name, args, 0)?;
+                Ok(crate::lisp::primitives::profiler::profiler_cpu_running_p())
+            }
             "profiler-cpu-start" => {
-                if interp.profiler_cpu_running {
-                    return Err(LispError::Signal("CPU profiler already running".into()));
-                }
-                interp.profiler_cpu_running = true;
-                interp.profiler_cpu_log_pending = true;
-                if let Some(interval) = args.first() {
-                    interp.set_variable(
-                        "profiler-sampling-interval",
-                        *interval,
-                        &mut crate::lisp::types::Env::new(),
-                    );
-                }
-                // profiler.c Fprofiler_cpu_start returns t.
-                Ok(Value::T)
+                need_args(name, args, 1)?;
+                crate::lisp::primitives::profiler::profiler_cpu_start(interp, args[0], env)
             }
             "profiler-cpu-stop" => {
-                let was_running = interp.profiler_cpu_running;
-                interp.profiler_cpu_running = false;
-                Ok(if was_running { Value::T } else { Value::Nil })
+                need_args(name, args, 0)?;
+                Ok(crate::lisp::primitives::profiler::profiler_cpu_stop())
             }
             "profiler-cpu-log" => {
-                if interp.profiler_cpu_running || interp.profiler_cpu_log_pending {
-                    if !interp.profiler_cpu_running {
-                        interp.profiler_cpu_log_pending = false;
-                    }
-                    call(
-                        interp,
-                        "make-hash-table",
-                        &[Value::symbol(":test"), Value::symbol("equal")],
-                        env,
-                    )
-                } else {
-                    Ok(Value::Nil)
-                }
+                need_args(name, args, 0)?;
+                crate::lisp::primitives::profiler::profiler_cpu_log(interp, env)
             }
 
             "funcall-with-delayed-message" => {

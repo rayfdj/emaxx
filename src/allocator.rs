@@ -180,9 +180,10 @@ impl HostAllocator {
 // Each operation is a function of its own, called as libc's malloc and
 // free are: inlined, it went into every cold allocating path of a hot
 // function (a fixnum `1+' kept two more registers for its bignum case).
-unsafe impl GlobalAlloc for HostAllocator {
-    #[inline(never)]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+impl HostAllocator {
+    /// An allocation the memory profiler has counted already.
+    #[inline(always)]
+    unsafe fn alloc_unprobed(&self, layout: Layout) -> *mut u8 {
         if let Some(class) = small_class(layout) {
             let block = Self::take_small(class);
             if !block.is_null() {
@@ -191,6 +192,16 @@ unsafe impl GlobalAlloc for HostAllocator {
             return unsafe { System.alloc(class_layout(class)) };
         }
         unsafe { System.alloc(layout) }
+    }
+}
+
+// Each allocation is alloc.c's MALLOC_PROBE for the memory profiler, as
+// GNU's xmalloc, xzalloc and xrealloc are (`profiler::malloc_probe').
+unsafe impl GlobalAlloc for HostAllocator {
+    #[inline(never)]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        crate::lisp::primitives::profiler::malloc_probe(layout.size());
+        unsafe { self.alloc_unprobed(layout) }
     }
 
     #[inline(never)]
@@ -203,6 +214,7 @@ unsafe impl GlobalAlloc for HostAllocator {
 
     #[inline(never)]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        crate::lisp::primitives::profiler::malloc_probe(layout.size());
         if let Some(class) = small_class(layout) {
             let block = Self::take_small(class);
             if !block.is_null() {
@@ -220,12 +232,13 @@ unsafe impl GlobalAlloc for HostAllocator {
         // SAFETY: the caller's contract makes NEW_SIZE, with LAYOUT's
         // alignment, a valid layout.
         let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+        crate::lisp::primitives::profiler::malloc_probe(new_size);
         if let Some(class) = small_class(layout)
             && small_class(new_layout) == Some(class)
         {
             return pointer;
         }
-        let new_pointer = unsafe { self.alloc(new_layout) };
+        let new_pointer = unsafe { self.alloc_unprobed(new_layout) };
         if !new_pointer.is_null() {
             // SAFETY: both blocks hold at least the smaller size, and they
             // are distinct allocations.

@@ -116,6 +116,7 @@ const THREAD_FATAL_SIGNALS: [libc::c_int; 7] = [
 pub(crate) fn install_fatal_signal_handlers(noninteractive: bool) {
     #[cfg(unix)]
     {
+        NONINTERACTIVE.store(noninteractive, UserSignalOrdering::Relaxed);
         for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
             if signal == libc::SIGINT && !noninteractive {
                 continue;
@@ -197,6 +198,17 @@ fn install_process_fatal_handler(signal: libc::c_int) {
 #[cfg(unix)]
 fn emacs_sigaction_flags(noninteractive: bool) -> libc::c_int {
     if noninteractive { libc::SA_RESTART } else { 0 }
+}
+
+/// Whether the session is a batch one, as `install_fatal_signal_handlers'
+/// was told (batch until then).
+#[cfg(unix)]
+static NONINTERACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// emacs_sigaction_flags for a handler installed after startup.
+#[cfg(unix)]
+pub(crate) fn current_sigaction_flags() -> libc::c_int {
+    emacs_sigaction_flags(NONINTERACTIVE.load(UserSignalOrdering::Relaxed))
 }
 
 /// init_signals' thread_fatal_action for the faults, with init_sigsegv's

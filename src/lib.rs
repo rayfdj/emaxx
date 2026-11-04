@@ -14,7 +14,40 @@ static GLOBAL_ALLOCATOR: allocator::HostAllocator = allocator::HostAllocator;
 
 #[cfg(not(target_os = "linux"))]
 #[global_allocator]
-static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL_ALLOCATOR: ProbedMiMalloc = ProbedMiMalloc;
+
+/// mimalloc with alloc.c's MALLOC_PROBE on each allocation, as the Linux
+/// host allocator has it.
+#[cfg(not(target_os = "linux"))]
+struct ProbedMiMalloc;
+
+#[cfg(not(target_os = "linux"))]
+// SAFETY: every operation is mimalloc's; the probe only counts.
+unsafe impl std::alloc::GlobalAlloc for ProbedMiMalloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        lisp::primitives::profiler::malloc_probe(layout.size());
+        unsafe { std::alloc::GlobalAlloc::alloc(&mimalloc::MiMalloc, layout) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::GlobalAlloc::dealloc(&mimalloc::MiMalloc, pointer, layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        lisp::primitives::profiler::malloc_probe(layout.size());
+        unsafe { std::alloc::GlobalAlloc::alloc_zeroed(&mimalloc::MiMalloc, layout) }
+    }
+
+    unsafe fn realloc(
+        &self,
+        pointer: *mut u8,
+        layout: std::alloc::Layout,
+        new_size: usize,
+    ) -> *mut u8 {
+        lisp::primitives::profiler::malloc_probe(new_size);
+        unsafe { std::alloc::GlobalAlloc::realloc(&mimalloc::MiMalloc, pointer, layout, new_size) }
+    }
+}
 
 /// mimalloc gives freed pages back to the host `purge_delay' milliseconds
 /// after they empty (10 ms in mimalloc 2, a second in mimalloc 3), so a

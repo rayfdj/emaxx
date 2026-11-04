@@ -418,10 +418,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "bc_handlers",
         "eval.c: handlerlist is the running thread's, rebuilt empty by init_eval_once_for_pdumper; a byte-code activation's handlers leave with it, their tags and clauses rooted by the registries of active catches and handlers",
     ),
-    ("profiler_memory_running", "the running profiler"),
-    ("profiler_memory_log_pending", "the running profiler"),
-    ("profiler_cpu_running", "the running profiler"),
-    ("profiler_cpu_log_pending", "the running profiler"),
     ("message_capture_stack", "the running ERT session"),
     (
         "batch_standard_output_last_char",
