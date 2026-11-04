@@ -396,15 +396,14 @@ pub(super) fn finish_garbage_collection(
     // GNU inhibits collection, including explicit garbage-collect, for the
     // hook's dynamic extent. Hook errors follow the existing safe-run path.
     if interpreter
-        .lookup_var("post-gc-hook", environment)
+        .symbol_value_key(cached_symbol!("post-gc-hook"))
         .is_some_and(|hook| hook.is_truthy())
     {
         interpreter.inhibit_garbage_collection();
-        let result = crate::lisp::primitives::safe_run_named_hooks(
+        let result = crate::lisp::primitives::safe_run_hooks(
             interpreter,
-            "post-gc-hook",
+            &cached_symbol!("post-gc-hook").symbol(),
             environment,
-            None,
         );
         interpreter.allow_garbage_collection();
         result?;

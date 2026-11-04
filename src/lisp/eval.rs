@@ -17,7 +17,6 @@ use super::types::{
 use crate::compat::DiscoveredTest;
 #[cfg(test)]
 use crate::compat::{BatchSummary, TestOutcome, TestStatus};
-use hashlink::LinkedHashMap;
 #[cfg(test)]
 use regex::Regex;
 
@@ -3029,16 +3028,7 @@ fn tty_default_lisp_face_vector() -> Value {
     Value::vector(attributes)
 }
 
-type OrderedHooks = LinkedHashMap<String, Vec<Value>, crate::lisp::primitives::FnvBuildHasher>;
-
-fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> OrderedHooks {
-    let mut hooks = OrderedHooks::with_hasher(Default::default());
-    hooks.extend(entries);
-    hooks
-}
-
 type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::types::IdentityBuildHasher>;
-type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
 
 /// A snapshot for callbacks that may intern further symbols while enumerating.
 /// Membership comes only from the owning obarray; field stores cannot invalidate it.
@@ -4299,20 +4289,6 @@ impl Interpreter {
             .unwrap_or_default()
     }
 
-    /// The buffer's local hook lists (GNU: the local bindings of the
-    /// hook variables), in first-binding order.
-    pub(crate) fn buffer_local_hook_lists(&self, id: u64) -> Vec<(String, Vec<Value>)> {
-        self.buffer_local_hooks
-            .get(&id)
-            .map(|hooks| {
-                hooks
-                    .iter()
-                    .map(|(name, functions)| (name.clone(), functions.clone()))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// BVAR (b, syntax_table) when the buffer has set one.
     pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<CharTableRef> {
         self.buffer_syntax_tables.get(id)
@@ -4660,13 +4636,6 @@ impl Interpreter {
         for bindings in self.buffer_locals.values() {
             for (_, value) in bindings.iter() {
                 mark(&value);
-            }
-        }
-        for hooks in self.buffer_local_hooks.values() {
-            for (_, functions) in hooks {
-                for function in functions {
-                    mark(function);
-                }
             }
         }
         for value in &self.kbd_macro_definition {
@@ -5114,18 +5083,6 @@ impl Interpreter {
                 for value in bindings.values_mut() {
                     *value = c.copy(value);
                 }
-            }
-            for hooks in clone.buffer_local_hooks.values_mut() {
-                *hooks = std::mem::take(hooks)
-                    .into_iter()
-                    .map(|(mut name, mut functions)| {
-                        c.copy_symbol_spelling(&mut name);
-                        for function in &mut functions {
-                            *function = c.copy(function);
-                        }
-                        (name, functions)
-                    })
-                    .collect();
             }
             for value in &mut clone.kbd_macro_definition {
                 *value = c.copy(value);
@@ -5912,7 +5869,6 @@ pub struct InterpreterState {
     /// Next generated symbol ID used by built-in macro expansion helpers.
     /// Buffer-local hook lists grouped by buffer, in per-buffer insertion
     /// order.  This is the sole backing store for local hook metadata.
-    buffer_local_hooks: BufferLocalHooks,
     /// Buffer-local variable cells grouped by buffer, in per-buffer insertion
     /// order.  GNU's buffer slot lookup is constant-time; mode-heavy code must
     /// not scan every other live buffer's locals on each variable read.
@@ -6769,7 +6725,6 @@ impl Interpreter {
             finalizers_run: 0,
             image_reconstruction_handoff: false,
             pdumper_loaded: None,
-            buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             loaded_bindings: LoadedBindings::default(),
             buffer_syntax_tables: coding::BufferCharTables::default(),

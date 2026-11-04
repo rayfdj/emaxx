@@ -1857,7 +1857,6 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         panic!("buffer")
     };
     let source_id = source_buffer.id;
-    interp.set_buffer_local_hook(source_id, "zz-dump-hook", vec![Value::symbol("car")]);
     let source_undo_value = interp
         .get_buffer_by_id(source_id)
         .expect("live")
@@ -2100,12 +2099,6 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     );
     assert_eq!(overlay.plist().word(), slots[8].word());
     assert!(ov.buffer().is_none());
-
-    // The local hook list came with the buffer.
-    assert_eq!(
-        target.buffer_local_hook_lists(source_id),
-        vec![("zz-dump-hook".to_owned(), vec![Value::symbol("car")])]
-    );
 
     // The killed buffer is an object with no buffer behind it.
     let Kind::Buffer(killed) = slots[7].kind() else {

@@ -1340,7 +1340,11 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let buffer_id = interp.current_buffer_id();
                 let kill_permanent = args.first().is_some_and(Value::is_truthy);
-                run_named_hooks(interp, "change-major-mode-hook", env, Some(buffer_id))?;
+                run_hook(
+                    interp,
+                    &cached_symbol!("change-major-mode-hook").symbol(),
+                    env,
+                )?;
                 // buffer.c:reset_buffer_local_variables.  Only the alist
                 // cells (ordinary buffer-local variables) participate in
                 // watchers and `permanent-local' properties; the

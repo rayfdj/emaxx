@@ -2043,8 +2043,8 @@ impl DumpContext {
                     WEIGHT_STRONG,
                 );
             }
-            // No locals, hooks or markers.
-            words.extend([0, 0, 0]);
+            // No locals or markers.
+            words.extend([0, 0]);
             return self.object_finish(&words);
         };
         if buffer.overlays.iter().any(|overlay| !overlay.is_dead()) {
@@ -2071,7 +2071,6 @@ impl DumpContext {
             case_tables.map_or(Value::Nil, |tables| Value::CharTable(pick(&tables)))
         };
         let locals = interp.buffer_local_cells(id);
-        let hooks = interp.buffer_local_hook_lists(id);
         let markers = interp.buffer_marker_ids(id);
 
         let mut flags = 0;
@@ -2214,18 +2213,6 @@ impl DumpContext {
             words.push(0);
             fields.push((words.len(), *value, WEIGHT_STRONG));
             words.push(0);
-        }
-        // The buffer-local hook lists are local bindings of the hook
-        // variables in GNU; Emaxx keeps them beside the cells.
-        words.push(hooks.len() as u64);
-        for (name, functions) in &hooks {
-            fields.push((words.len(), Value::symbol(name), WEIGHT_STRONG));
-            words.push(0);
-            words.push(functions.len() as u64);
-            for function in functions {
-                fields.push((words.len(), *function, WEIGHT_STRONG));
-                words.push(0);
-            }
         }
         words.push(markers.len() as u64);
         for marker in &markers {

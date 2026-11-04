@@ -259,7 +259,11 @@ define_dispatch!(
                     // across hooks and collection, after it leaves buffer-list.
                     interp.with_lisp_stack_roots(&buffer, |interp| {
                         if !inhibit_hooks {
-                            run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
+                            run_hook(
+                                interp,
+                                &cached_symbol!("buffer-list-update-hook").symbol(),
+                                env,
+                            )?;
                         }
                         Ok(buffer)
                     })
@@ -452,7 +456,11 @@ define_dispatch!(
                     interp.run_clone_indirect_buffer_hook(new_id, env)?;
                 }
                 if !inhibit_hooks {
-                    run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
+                    run_hook(
+                        interp,
+                        &cached_symbol!("buffer-list-update-hook").symbol(),
+                        env,
+                    )?;
                 }
                 Ok(interp.buffer_value(new_id).expect("live buffer object"))
             }
@@ -511,7 +519,11 @@ define_dispatch!(
                         env,
                     )?;
                 }
-                run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
+                run_hook(
+                    interp,
+                    &cached_symbol!("buffer-list-update-hook").symbol(),
+                    env,
+                )?;
                 // GNU buffer.c calls the preloaded Elisp owner directly
                 // after installing the provisional name.  Uniquify uses
                 // that boundary to replace a generated `<N>' suffix with

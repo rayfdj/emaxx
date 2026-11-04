@@ -1494,15 +1494,9 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
     let mut undocumented = Vec::new();
     for capture in field_pattern.captures_iter(&source[struct_start..struct_end]) {
         let (name, kind) = (&capture[1], &capture[2]);
-        let holds_objects = [
-            "Value",
-            "SymbolCells",
-            "LocalCells",
-            "BufferLocalBindings",
-            "BufferLocalHooks",
-        ]
-        .iter()
-        .any(|marker| kind.contains(marker));
+        let holds_objects = ["Value", "SymbolCells", "LocalCells", "BufferLocalBindings"]
+            .iter()
+            .any(|marker| kind.contains(marker));
         if !holds_objects {
             continue;
         }

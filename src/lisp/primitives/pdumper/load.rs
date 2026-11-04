@@ -2333,20 +2333,6 @@ impl Loader<'_> {
             locals.push((symbol, value));
             at += 16;
         }
-        let nhooks = self.reader.word(at)? as usize;
-        at += 8;
-        let mut hooks = Vec::with_capacity(nhooks);
-        for _ in 0..nhooks {
-            let name = symbol_of(self.value_at(at)?, "buffer-local hook")?;
-            let nfunctions = self.reader.word(at + 8)? as usize;
-            at += 16;
-            let mut functions = Vec::with_capacity(nfunctions);
-            for _ in 0..nfunctions {
-                functions.push(self.value_at(at)?);
-                at += 8;
-            }
-            hooks.push((name.as_str().to_owned(), functions));
-        }
         let nmarkers = self.reader.word(at)? as usize;
         at += 8;
         let mut marker_chain = Vec::with_capacity(nmarkers);
@@ -2399,9 +2385,6 @@ impl Loader<'_> {
             self.interp.register_indirect_buffer(id, base);
         }
         self.interp.install_buffer_local_cells(id, locals);
-        for (name, functions) in hooks {
-            self.interp.set_buffer_local_hook(id, &name, functions);
-        }
         if let Some(table) = syntax_table {
             self.interp.install_buffer_syntax_table(id, table);
         }

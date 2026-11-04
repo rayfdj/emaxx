@@ -1745,3 +1745,193 @@ fn void_errors_carry_their_symbol_through_a_collection() {
         ],
     );
 }
+
+#[test]
+fn hooks_run_as_eval_c_walks_them() {
+    // eval.c:run_hook_with_args reads the hook symbol's value as C reads
+    // a variable: a lambda value is the one function, a `t' (in a local
+    // or a global value) runs the default's functions in its place, a void
+    // default signals, the conses are walked as they stand while the
+    // functions run, and every argument of `run-hooks' must be a symbol.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defvar zlog nil)
+(defun zl (&rest a) (push (cons 'zl a) zlog) nil)
+(defun zm (&rest a) (push (cons 'zm a) zlog) nil)
+(defun zt (&rest a) (push (cons 'zt a) zlog) t)
+(defmacro zrun (&rest body) `(progn (setq zlog nil) (let ((r (condition-case e (progn ,@body) (error (list 'err e))))) (list r (reverse zlog)))))
+(defvar zh1 nil) (defvar zh2 nil) (defvar zh3 nil)
+;; A lambda value is the one function.
+(setq zh1 '(lambda (&rest a) (push (cons 'lam a) zlog)))
+(prin1 (zrun (run-hook-with-args 'zh1 1 2))) (terpri)
+;; A t in the global value runs the default in its place.
+(setq zh2 '(zl t zm))
+(prin1 (zrun (run-hooks 'zh2))) (terpri)
+;; A non-symbol argument.
+(prin1 (zrun (run-hooks 'zh2 1))) (terpri)
+(prin1 (zrun (run-hook-with-args 2))) (terpri)
+;; A local list with t, a default that is a lambda.
+(with-temp-buffer
+  (setq-default zh3 '(lambda () (push 'deflam zlog)))
+  (setq-local zh3 '(zl t zm))
+  (prin1 (zrun (run-hooks 'zh3))) (terpri)
+  (setq-default zh3 'zm)
+  (prin1 (zrun (run-hooks 'zh3))) (terpri)
+  (setq-default zh3 nil)
+  (prin1 (zrun (run-hook-with-args-until-success 'zh3))) (terpri))
+;; A local t with a void default.
+(let ((s (make-symbol "zgen")))
+  (with-temp-buffer
+    (set (make-local-variable s) (list 'zl t))
+    (prin1 (zrun (run-hooks s))) (terpri)
+    (prin1 (zrun (run-hook-with-args s 7))) (terpri))
+  (set s (list 'zm 'zl))
+  (prin1 (zrun (run-hook-with-args s 8))) (terpri)
+  (prin1 (zrun (run-hook-with-args-until-failure s 8))) (terpri)
+  (prin1 (zrun (run-hook-wrapped s (lambda (f &rest a) (push (cons 'wrap f) zlog) nil) 9))) (terpri))
+;; Destructive change of the list while it runs.
+(defvar zh4 nil)
+(defun zcut () (push 'cut zlog) (setcdr zh4 (list 'zm)))
+(setq zh4 (list 'zcut 'zl 'zl))
+(prin1 (zrun (run-hooks 'zh4))) (terpri)
+;; A hook that removes itself.
+(defvar zh5 nil)
+(defun zself () (push 'self zlog) (remove-hook 'zh5 'zself))
+(setq zh5 (list 'zself 'zl))
+(prin1 (zrun (run-hooks 'zh5) (run-hooks 'zh5))) (terpri)
+;; until-success / until-failure with t
+(setq zh2 '(zl zt zm))
+(prin1 (zrun (run-hook-with-args-until-success 'zh2 3))) (terpri)
+(prin1 (zrun (run-hook-with-args-until-failure 'zh2 3))) (terpri)
+;; Lexical binding of the hook name is not read.
+(prin1 (zrun (funcall (eval '(lambda () (let ((zh-lex '(zl))) (run-hooks 'zh-lex))) t)))) (terpri)
+;; dotted list, non-list value
+(setq zh1 (cons 'zl 'zm))
+(prin1 (zrun (run-hooks 'zh1))) (terpri)
+(setq zh1 "str")
+(prin1 (zrun (run-hooks 'zh1))) (terpri)
+(setq zh1 '(t))
+(prin1 (zrun (run-hooks 'zh1))) (terpri)
+;; void hook
+(prin1 (zrun (run-hooks 'zh-void-never))) (terpri)
+(prin1 (zrun (run-mode-hooks 'zh2))) (terpri)
+)"#,
+        ],
+    );
+}
+
+#[test]
+fn safe_run_hooks_binds_inhibit_quit_and_drops_a_failing_function() {
+    // keyboard.c:safe_run_hooks runs `kill-emacs-hook' in batch with
+    // `inhibit-quit' bound to t; a function's error is reported and the
+    // function deleted from the hook, the others still running.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defun zk1 () (princ (format "k1 %S\n" inhibit-quit)))
+(defun zk2 () (error "boom %d" 2))
+(defun zk3 () (princ (format "k3 %S\n" kill-emacs-hook)))
+(setq kill-emacs-hook (list 'zk1 'zk2 'zk3))
+(let ((s (make-symbol "zg")))
+  (set s (list 'zk1 'zk2 'zk3))
+  (setq post-gc-hook nil))
+(kill-emacs 0))"#,
+        ],
+    );
+}
+
+#[test]
+fn an_invalid_function_error_names_the_function_called() {
+    // eval.c:funcall_general signals `invalid-function' with ORIGINAL_FUN:
+    // the symbol called (an alias included) when its definition is a
+    // macro, a cons that is no lambda or any other non-function, and the
+    // definition itself only when that was what was called.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defalias 'zz-when 'when)
+(defalias 'zz-junk '(foo . bar))
+(defalias 'zz-junk2 "str")
+(defalias 'zz-junk3 '((x) 1))
+(defalias 'zz-sf 'if)
+(dolist (form '((funcall 'when 1) (funcall 'zz-when 1) (funcall (symbol-function 'when) 1) (apply 'lambda '(5)) (funcall 'zz-junk) (funcall 'zz-junk2) (funcall 'zz-junk3)
+                (funcall 'zz-sf 1) (funcall 'if 1) (mapcar 'when '(1)) (zz-junk) (zz-junk3) (funcall (byte-compile '(lambda () (zz-junk3)))) (funcall (byte-compile '(lambda () (funcall 'when 1))))
+                (run-hooks 'zz-junk) (funcall '(macro . car) 1) (funcall '(closure) 1)))
+  (prin1 (list form (condition-case e (eval form t) (error (if (memq (car e) '(invalid-function void-function)) (list (car e) (if (symbolp (cadr e)) (cadr e) (type-of (cadr e)))) e))))) (terpri)))"#,
+        ],
+    );
+}
+
+#[test]
+fn generated_hook_programs_run_as_gnu_runs_them() {
+    // 150 generated programs that add, remove and set hook functions
+    // locally and globally (`t' markers, lambdas, a function that edits
+    // the list it is run from, one that removes itself, one that signals),
+    // run them by every runner and print each run's answer and calls.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(random "hook-fuzz")
+(defvar hk-log nil)
+(defun hk-try (f &rest args) (condition-case e (apply f args) (error (list 'err (car e) (cdr e)))))
+(dolist (n '(hk-a hk-b hk-c hk-d))
+  (defalias n (let ((n n)) (lambda (&rest args) (push (cons n args) hk-log) (eq n 'hk-c)))))
+(defalias 'hk-x (lambda (&rest _) (push 'x hk-log) (error "hk-x failed")))
+(defalias 'hk-cut (lambda (&rest _) (push 'cut hk-log) (when (consp hk-h) (setcdr hk-h nil)) nil))
+(defalias 'hk-self (lambda (&rest _) (push 'self hk-log) (remove-hook 'hk-h 'hk-self) (remove-hook 'hk-h 'hk-self t) nil))
+(defvar hk-h nil)
+(defun hk-fn () (nth (random 8) '(hk-a hk-b hk-c hk-d hk-x hk-cut hk-self (lambda (&rest a) (push (cons 'lam a) hk-log) nil))))
+(defun hk-run ()
+  (setq hk-log nil)
+  (let ((r (pcase (random 7)
+             (0 (hk-try #'run-hooks 'hk-h))
+             (1 (hk-try #'run-hook-with-args 'hk-h 1 2))
+             (2 (hk-try #'run-hook-with-args-until-success 'hk-h 3))
+             (3 (hk-try #'run-hook-with-args-until-failure 'hk-h 4))
+             (4 (hk-try #'run-hook-wrapped 'hk-h (lambda (f &rest a) (push (list 'w f a) hk-log) (eq f 'hk-b)) 5))
+             (5 (hk-try #'run-hooks 'hk-h 'hk-h))
+             (_ (hk-try #'run-mode-hooks 'hk-h)))))
+    (list r (reverse hk-log))))
+(dotimes (i 150)
+  (makunbound 'hk-h) (defvar hk-h nil) (setq-default hk-h nil)
+  (with-temp-buffer
+    (let ((log nil))
+      (dotimes (_ (+ 1 (random 6)))
+        (push (pcase (random 9)
+                (0 (hk-try #'add-hook 'hk-h (hk-fn)))
+                (1 (hk-try #'add-hook 'hk-h (hk-fn) (nth (random 4) '(nil t 90 -90)) t))
+                (2 (hk-try #'remove-hook 'hk-h (hk-fn) (zerop (random 2))))
+                (3 (hk-try #'set 'hk-h (nth (random 5) (list nil (hk-fn) (list (hk-fn) t (hk-fn)) (cons (hk-fn) (hk-fn)) '(t)))))
+                (4 (hk-try #'set-default 'hk-h (nth (random 5) (list nil (hk-fn) (list (hk-fn) t) '(lambda () (push 'deflam hk-log)) '(t hk-a)))))
+                (5 (hk-try #'kill-local-variable 'hk-h))
+                (6 (hk-try #'make-local-variable 'hk-h))
+                (7 (hk-run))
+                (_ (hk-try #'makunbound 'hk-h)))
+              log))
+      (prin1 (list i (nreverse log) (hk-run) (hk-try #'symbol-value 'hk-h) (hk-try #'default-value 'hk-h) (local-variable-p 'hk-h)))
+      (terpri))))
+)"#,
+        ],
+    );
+}

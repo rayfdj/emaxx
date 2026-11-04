@@ -322,54 +322,16 @@ fn macroexpand_dispatch(
     }
 }
 
+/// eval.c:Frun_hooks: each HOOK run in turn by run_hook, whose
+/// find_symbol_value is CHECK_SYMBOL's.
 fn run_hooks_dispatch(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut crate::lisp::types::Env,
-    mode_hooks: bool,
 ) -> Result<Value, LispError> {
-    if mode_hooks
-        && interp
-            .lookup_var("delay-mode-hooks", env)
-            .is_some_and(|value| value.is_truthy())
-    {
-        let mut delayed = interp
-            .lookup_var("delayed-mode-hooks", env)
-            .and_then(|value| value.to_vec().ok())
-            .unwrap_or_default();
-        delayed.extend(args.iter().cloned());
-        interp.set_variable("delayed-mode-hooks", Value::list(delayed), env);
-        return Ok(Value::Nil);
-    }
     for hook in args {
-        if let Ok(hook_name) = hook.as_symbol() {
-            run_named_hooks(interp, hook_name, env, Some(interp.current_buffer_id()))?;
-        }
-    }
-    if mode_hooks {
-        let delayed = interp
-            .lookup_var("delayed-mode-hooks", env)
-            .and_then(|value| value.to_vec().ok())
-            .unwrap_or_default();
-        if !delayed.is_empty() {
-            interp.set_variable("delayed-mode-hooks", Value::Nil, env);
-            for hook in delayed {
-                if let Ok(hook_name) = hook.as_symbol() {
-                    run_named_hooks(interp, hook_name, env, Some(interp.current_buffer_id()))?;
-                }
-            }
-        }
-        let mut after_hooks = interp
-            .lookup_var("delayed-after-hook-functions", env)
-            .and_then(|value| value.to_vec().ok())
-            .unwrap_or_default();
-        if !after_hooks.is_empty() {
-            interp.set_variable("delayed-after-hook-functions", Value::Nil, env);
-            after_hooks.reverse();
-            for hook in after_hooks {
-                call_function_value(interp, &hook, &[], env)?;
-            }
-        }
+        let hook = checked_symbol_identity(interp, hook, env)?;
+        run_hook(interp, &hook, env)?;
     }
     Ok(Value::Nil)
 }
@@ -408,7 +370,7 @@ pub(crate) fn set_internal_symbol(
 
 /// data.c:set_default_internal checks the original object's trapped_write,
 /// then follows its alias redirect to the actual default cell.
-fn set_default_internal_symbol(
+pub(crate) fn set_default_internal_symbol(
     interp: &mut Interpreter,
     symbol: &crate::lisp::types::SymbolName,
     value: Value,
@@ -575,12 +537,7 @@ define_dispatch!(
                 // In supported Emaxx use the Lisp runtime is owned by the batch
                 // process.  GNU uses safe_run_hooks in this mode: an ordinary
                 // hook error is reported but cannot cancel orderly shutdown.
-                safe_run_named_hooks(
-                    interp,
-                    "kill-emacs-hook",
-                    env,
-                    Some(interp.current_buffer_id()),
-                )?;
+                safe_run_hooks(interp, &cached_symbol!("kill-emacs-hook").symbol(), env)?;
                 // shut_down_emacs (0, ...): no hook runs from now on, each
                 // buffer is auto-saved and the files unlocked (the
                 // subprocesses are hung up when the process ends).
@@ -1536,64 +1493,66 @@ define_dispatch!(
                 }
                 Ok(Value::Integer(interp.lossage_size))
             }
-            "run-hooks" => run_hooks_dispatch(interp, args, env, false),
+            "run-hooks" => run_hooks_dispatch(interp, args, env),
 
             "run-hook-with-args" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let hook_name = args[0].as_symbol()?;
-                for hook in hook_values(interp, hook_name, env, Some(interp.current_buffer_id())) {
-                    call_function_value(interp, &hook, &args[1..], env)?;
-                }
+                let hook = checked_symbol_identity(interp, &args[0], env)?;
+                run_hook_with_args(interp, &hook, env, |interp, function, env| {
+                    call_function_value(interp, &function, &args[1..], env)?;
+                    Ok(Value::Nil)
+                })?;
                 Ok(Value::Nil)
             }
             "run-hook-with-args-until-success" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let hook_name = args[0].as_symbol()?;
-                for hook in hook_values(interp, hook_name, env, Some(interp.current_buffer_id())) {
-                    let result = call_function_value(interp, &hook, &args[1..], env)?;
-                    if result.is_truthy() {
-                        return Ok(result);
-                    }
-                }
-                Ok(Value::Nil)
+                let hook = checked_symbol_identity(interp, &args[0], env)?;
+                run_hook_with_args(interp, &hook, env, |interp, function, env| {
+                    call_function_value(interp, &function, &args[1..], env)
+                })
             }
             "run-hook-with-args-until-failure" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let hook_name = args[0].as_symbol()?;
-                for hook in hook_values(interp, hook_name, env, Some(interp.current_buffer_id())) {
-                    let result = call_function_value(interp, &hook, &args[1..], env)?;
-                    if result.is_nil() {
-                        return Ok(Value::Nil);
-                    }
-                }
-                Ok(Value::T)
+                // run_hook_with_args_until_failure_funcall: a nil answer
+                // stops the run.
+                let hook = checked_symbol_identity(interp, &args[0], env)?;
+                let failed = run_hook_with_args(interp, &hook, env, |interp, function, env| {
+                    let answer = call_function_value(interp, &function, &args[1..], env)?;
+                    Ok(if answer.is_nil() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    })
+                })?;
+                Ok(if failed.is_nil() {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
 
             "run-hook-wrapped" => {
                 if args.len() < 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let hook_name = args[0].as_symbol()?;
-                let wrapper = resolve_callable(interp, &args[1], env)?;
-                // Merge global and buffer-local members like `run-hooks'
-                // (also strips the local-hook `t' sentinel).
-                let hook_values =
-                    hook_values(interp, hook_name, env, Some(interp.current_buffer_id()));
-                for hook in hook_values {
-                    let mut wrapper_args = vec![hook];
-                    wrapper_args.extend_from_slice(&args[2..]);
-                    let value = interp.call_function_value(wrapper, None, &wrapper_args, env)?;
-                    if value.is_truthy() {
-                        return Ok(value);
-                    }
-                }
-                Ok(Value::Nil)
+                // run_hook_wrapped_funcall: WRAP-FUNCTION called with
+                // each function and ARGS, its non-nil answer stopping the
+                // run.
+                let hook = checked_symbol_identity(interp, &args[0], env)?;
+                let wrapper = args[1];
+                // The function's slot is filled from the list, which the
+                // run holds; the other arguments are the caller's.
+                let mut wrapper_args = args[1..].to_vec();
+                run_hook_with_args(interp, &hook, env, |interp, function, env| {
+                    wrapper_args[0] = function;
+                    call_function_value(interp, &wrapper, &wrapper_args, env)
+                })
             }
 
             "mapatoms" => {

@@ -525,9 +525,12 @@ fn run_owned(
     // available, then the editing loop. Do not replay Lisp startup actions.
     // emacs.c runs after-pdump-load-hook after init_display. Hook code can
     // therefore inspect the real terminal or read events before top-level.
-    let startup = batch::safe_run_hooks(&mut interpreter, "after-pdump-load-hook")
-        .and_then(|()| crate::lisp::primitives::set_initial_minibuffer_mode(&mut interpreter))
-        .and_then(|()| batch::run_startup_top_level(&mut interpreter, command_line_args));
+    let startup = batch::safe_run_hooks(
+        &mut interpreter,
+        &crate::lisp::types::symbols::SymbolKey::new("after-pdump-load-hook").symbol(),
+    )
+    .and_then(|()| crate::lisp::primitives::set_initial_minibuffer_mode(&mut interpreter))
+    .and_then(|()| batch::run_startup_top_level(&mut interpreter, command_line_args));
     let termination = match startup.map_err(LispError::into_kind) {
         Err(LispErrorKind::Terminate(termination)) => Some(termination),
         Err(error) => {
@@ -4051,7 +4054,7 @@ fn run_window_scroll_functions(
     let window = interpreter.record_value(window_id);
     let _ = batch::safe_run_hooks_with_args(
         interpreter,
-        "window-scroll-functions",
+        &crate::lisp::types::symbols::SymbolKey::new("window-scroll-functions").symbol(),
         &[window, Value::Integer(start as i64)],
     );
     if interpreter.current_buffer_id() != saved && interpreter.has_buffer_id(saved) {

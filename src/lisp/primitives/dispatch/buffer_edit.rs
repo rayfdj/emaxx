@@ -288,11 +288,10 @@ fn internal_self_insert(
         }
     }
 
-    run_named_hooks(
+    run_hook(
         interp,
-        "post-self-insert-hook",
+        &cached_symbol!("post-self-insert-hook").symbol(),
         env,
-        Some(interp.current_buffer_id()),
     )?;
     Ok(hairy)
 }

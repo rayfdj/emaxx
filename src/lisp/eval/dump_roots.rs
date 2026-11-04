@@ -130,10 +130,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "written per buffer (dump_buffer's local_var_alist)",
     ),
     (
-        "buffer_local_hooks",
-        "written per buffer with the local bindings",
-    ),
-    (
         "buffer_syntax_tables",
         "actual CharTableRef roots, written in dump_buffer's BUFFER_SYNTAX_TABLE slot and restored by load_buffer through install_buffer_syntax_table",
     ),

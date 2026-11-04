@@ -2348,10 +2348,12 @@ impl Interpreter {
                 Value::Symbol("void-function".into()),
                 Value::Nil,
             ]))),
-            other => Err(LispError::SignalValue(Value::list([
-                Value::Symbol("invalid-function".into()),
-                other.value(),
-            ]))),
+            // eval.c:funcall_general: a cons that is no lambda or
+            // autoload, and any other object that is no function, signal
+            // with ORIGINAL_FUN, the symbol called when there was one.
+            _ => Err(invalid_function(
+                original_name.map_or(func, CallName::original_symbol_value),
+            )),
         }
     }
 

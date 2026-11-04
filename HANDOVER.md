@@ -14500,6 +14500,50 @@ setup_process_coding_systems's check now refuses). A 13-form
   strings and syntax print GNU's results as before. Local validation:
   the grouped gate's 3,502 library tests, the integration targets
   and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 307: hooks run as eval.c's run_hook_with_args runs them, by
+  symbol, and the separate store of buffer-local hook values is gone.**
+  eval.c:run_hook_with_args reads the hook symbol's value as
+  find_symbol_value does and walks the conses as they stand: a value
+  that is not a cons, or is a lambda, is the one function; a `t', in a
+  local value or a global one, runs the default value's functions in its
+  place through Fdefault_value, so a void default signals; the next tail
+  is read after each call, so a function's `setcdr' of the list is seen;
+  a dotted tail ends the run; and `run-hooks' and its relatives check
+  each argument with CHECK_SYMBOL. Emaxx copied the functions into a
+  vector by the hook's name first: it called a lambda value's elements
+  as functions, spliced a `t' only when the buffer had a local binding
+  and ran nothing for a void default, never saw a change to the list,
+  signalled for a dotted one, skipped a non-symbol argument of
+  `run-hooks', and found an uninterned hook again by its marked text.
+  The C-side runners (`first-change-hook', the command-loop hooks,
+  `kill-buffer-query-functions', `window-scroll-functions',
+  `buffer-list-update-hook' and the rest, about 30 places) hand
+  run_hook, run_hook_with_args or safe_run_hooks the symbol;
+  keyboard.c:safe_run_hooks binds `inhibit-quit' to t as GNU does, and
+  its second copy in the batch driver, used at startup and by redisplay,
+  is now the same function. `run-window-scroll-functions' passes the
+  hook its window argument as given, nil included.
+  eval.c:funcall_general signals `invalid-function' with the function
+  called, so `(funcall 'when 1)' names `when' where Emaxx named the
+  macro's definition. With run_hook_with_args now honouring a cleared
+  Vrun_hooks as GNU's does, the embedder session the test harness
+  continues past its batch run's `kill-emacs' (which no process
+  outlives) sets Vrun_hooks again; the first gate run, without that, ran
+  no hook in 88 library tests. The store of buffer-local hook lists
+  beside the local bindings, which nothing but a dump load ever filled,
+  goes with its tracing, copying and dump section, and so do the by-name
+  scope helpers left without callers. A byte-compiled loop of 100,000
+  `(run-hooks 'h)' over two functions takes 1,381 instructions a call
+  against 1,909 (GNU's 1,064), and `run-hook-with-args' over a local
+  list with `t' 3,624 against 4,499 (GNU's 2,904). 500 generated
+  programs that add, remove and set hook functions and run them by every
+  runner print GNU's output, where 491 had differed on round 302's
+  build; a command-line comparison runs 150 of them, and others run the
+  cases above. The fuzzes of variables, function cells, fields, loading,
+  errors, coding, time, buffers, case, numbers, strings, printing and
+  syntax print GNU's results as before. Local validation: the grouped
+  gate's 3,502 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16899,6 +16943,17 @@ ert-tests (46,508 ms against 39,143), tramp-tests (23,803 against
 20,012), comp-tests (18,035 against 15,672), semantic-utest-ia (4,370
 against 3,009) and mule-tests (3,131 against 2,050), and
 `ert-test-run-tests-batch-expensive' is 1.18 of GNU's time.
+
+**On `1375f20`** (round 306): the full Rust gate (run 41904892380)
+passed; the frozen run (run 41904906194) passed at its first attempt,
+7,928 of 7,928 outcomes matching (the oracle's bodies 272.1 s against
+round 305's 277.3). Setup 82.5 s against 67.7 s (1.218), test bodies
+304.1 s against 272.1 s (1.118), in all 1.119, with a per-file setup
+median of 124 ms against 105. The widest body gaps are ert-tests (45,628
+ms against 38,614), tramp-tests (23,341 against 19,610), comp-tests
+(17,715 against 15,015), semantic-utest-ia (4,082 against 2,707) and
+mule-tests (3,182 against 2,021), and
+`ert-test-run-tests-batch-expensive' is 1.17 of GNU's time.
 
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's

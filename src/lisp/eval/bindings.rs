@@ -1247,8 +1247,7 @@ impl Interpreter {
         let resolved = symbol.as_str();
 
         if !symbol.cell().has_c_slot() {
-            if let Some(SpecialBindingScope::BufferLocal(buffer_id)) =
-                self.assignment_scope_symbol(symbol)
+            if let Some(SpecialBindingScope::BufferLocal(buffer_id)) = self.assignment_scope(symbol)
             {
                 self.set_buffer_local_value_symbol(buffer_id, symbol, value);
             } else {
@@ -1283,7 +1282,7 @@ impl Interpreter {
             self.buffer.borrow_mut().set_undo_list(value);
             return;
         }
-        if let Some(scope) = self.assignment_scope_symbol(symbol) {
+        if let Some(scope) = self.assignment_scope(symbol) {
             match scope {
                 SpecialBindingScope::Global => {
                     self.set_global_binding_resolved(symbol, value);

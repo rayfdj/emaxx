@@ -1712,12 +1712,10 @@ fn execute_command_binding_inner(
     // pre-command-hook may rewrite `this-command' (isearch's exit path
     // does); GNU executes whatever the hook left there, nil (an undefined
     // key's command too) as `undefined'.
-    let buffer_id = interp.current_buffer_id();
-    crate::lisp::primitives::safe_run_named_hooks(
+    crate::lisp::primitives::safe_run_hooks(
         interp,
-        "pre-command-hook",
+        &cached_symbol!("pre-command-hook").symbol(),
         env,
-        Some(buffer_id),
     )?;
     let dispatched = interp.lookup_var("this-command", env).unwrap_or(Value::Nil);
     // keyboard.c command_loop_1 executes the command through simple.el's
@@ -2952,23 +2950,19 @@ pub(crate) fn run_post_command_hooks(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let buffer_id = interp.current_buffer_id();
-    crate::lisp::primitives::safe_run_named_hooks(
+    crate::lisp::primitives::safe_run_hooks(
         interp,
-        "post-command-hook",
+        &cached_symbol!("post-command-hook").symbol(),
         env,
-        Some(buffer_id),
     )?;
     if interp
         .lookup_var("delayed-warnings-list", env)
         .is_some_and(|value| value.is_truthy())
     {
-        let buffer_id = interp.current_buffer_id();
-        crate::lisp::primitives::safe_run_named_hooks(
+        crate::lisp::primitives::safe_run_hooks(
             interp,
-            "delayed-warnings-hook",
+            &cached_symbol!("delayed-warnings-hook").symbol(),
             env,
-            Some(buffer_id),
         )?;
     }
     Ok(())

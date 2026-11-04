@@ -178,45 +178,6 @@ impl Interpreter {
         self.buffer.borrow_mut().file = file;
     }
 
-    /// Whether `buffer_local_hook' has one, without its copy.
-    pub(crate) fn has_buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> bool {
-        self.buffer_local_hooks
-            .get(&buffer_id)
-            .is_some_and(|hooks| hooks.contains_key(hook_name))
-    }
-
-    pub fn buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> Option<Vec<Value>> {
-        self.buffer_local_hooks
-            .get(&buffer_id)
-            .and_then(|hooks| hooks.get(hook_name))
-            .cloned()
-    }
-
-    pub fn remove_buffer_local_hook(&mut self, buffer_id: u64, hook_name: &str) {
-        let remove_buffer = self
-            .buffer_local_hooks
-            .get_mut(&buffer_id)
-            .is_some_and(|hooks| {
-                hooks.remove(hook_name);
-                hooks.is_empty()
-            });
-        if remove_buffer {
-            self.buffer_local_hooks.remove(&buffer_id);
-        }
-    }
-
-    pub fn set_buffer_local_hook(&mut self, buffer_id: u64, hook_name: &str, hooks: Vec<Value>) {
-        let local_hooks = self
-            .buffer_local_hooks
-            .entry(buffer_id)
-            .or_insert_with(|| super::ordered_hooks([]));
-        if let Some(existing) = local_hooks.get_mut(hook_name) {
-            *existing = hooks;
-        } else {
-            local_hooks.insert(hook_name.to_string(), hooks);
-        }
-    }
-
     /// The Lisp symbol is still forwarded to buffer.h's native field.
     pub(crate) fn has_native_text_conversion_style(&self, name: &str) -> bool {
         name == "text-conversion-style" && self.is_forwarded_variable(name)
@@ -553,15 +514,11 @@ impl Interpreter {
         {
             self.update_forwarded_eval_cell(symbol.as_str(), &value);
         }
-        // Buffer-local hooks are part of the local binding: killing the
-        // local variable discards them, as in GNU Emacs.
-        self.remove_buffer_local_hook(buffer_id, symbol.as_str());
     }
 
     pub fn clear_buffer_local_state(&mut self, buffer_id: u64) {
         self.reset_buffer_text_conversion_style(buffer_id);
         self.remove_buffer_alist_locals(buffer_id);
-        self.buffer_local_hooks.remove(&buffer_id);
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
         self.reset_buffer_syntax_table(buffer_id);
         self.reset_buffer_category_table(buffer_id);
@@ -608,48 +565,9 @@ impl Interpreter {
         }
     }
 
-    // `kill-all-local-variables' keeps buffer-local hook functions whose
-    // hook variable is marked `permanent-local', like `write-file-functions'
-    // in an archive member buffer surviving `normal-mode'.
     pub fn clear_buffer_local_state_for_mode_change(&mut self, buffer_id: u64) {
         self.reset_buffer_text_conversion_style(buffer_id);
-        let permanent_hooks = self
-            .buffer_local_hooks
-            .get(&buffer_id)
-            .into_iter()
-            .flat_map(|hooks| hooks.iter())
-            .filter_map(|(name, values)| {
-                let prop = self
-                    .get_symbol_property(name, "permanent-local")
-                    .filter(|value| value.is_truthy())?;
-                // A partially permanent hook keeps t and the functions with
-                // a `permanent-local-hook' property, as
-                // reset_buffer_local_variables keeps them.
-                let values = if prop.eq_value(Value::symbol("permanent-local-hook")) {
-                    values
-                        .iter()
-                        .copied()
-                        .filter(|element| {
-                            matches!(element.kind(), Kind::T)
-                                || element.symbol_str().is_some_and(|function| {
-                                    self.get_symbol_property(function, "permanent-local-hook")
-                                        .is_some_and(|value| value.is_truthy())
-                                })
-                        })
-                        .collect()
-                } else {
-                    values.clone()
-                };
-                Some((name.clone(), values))
-            })
-            .collect::<Vec<_>>();
         self.remove_buffer_alist_locals(buffer_id);
-        if permanent_hooks.is_empty() {
-            self.buffer_local_hooks.remove(&buffer_id);
-        } else {
-            self.buffer_local_hooks
-                .insert(buffer_id, super::ordered_hooks(permanent_hooks));
-        }
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
         // The syntax and category tables' per-buffer indices are not
         // permanent (buffer_permanent_local_flags), so they return to the
@@ -683,17 +601,6 @@ impl Interpreter {
             self.set_buffer_local_value_symbol(to_buffer_id, &symbol, value);
         }
 
-        let hooks = self
-            .buffer_local_hooks
-            .get(&from_buffer_id)
-            .into_iter()
-            .flat_map(|hooks| hooks.iter())
-            .map(|(name, values)| (name.clone(), values.clone()))
-            .collect::<Vec<_>>();
-        for (name, values) in hooks {
-            self.set_buffer_local_hook(to_buffer_id, &name, values);
-        }
-
         if let Some(tables) = self.buffer_case_tables(from_buffer_id) {
             self.install_buffer_case_tables(to_buffer_id, tables);
         }
@@ -723,11 +630,10 @@ impl Interpreter {
     ) -> Result<(), LispError> {
         let saved_buffer_id = self.current_buffer_id();
         self.set_current_buffer_id(new_buffer_id)?;
-        let result = crate::lisp::primitives::run_named_hooks(
+        let result = crate::lisp::primitives::run_hook(
             self,
-            "clone-indirect-buffer-hook",
+            &cached_symbol!("clone-indirect-buffer-hook").symbol(),
             env,
-            Some(new_buffer_id),
         );
         let restore = self.set_current_buffer_id(saved_buffer_id);
         match (result, restore) {
@@ -788,10 +694,6 @@ impl Interpreter {
     /// `mark_auto_buffer_local' of the symbol in hand.
     pub(crate) fn mark_auto_buffer_local_symbol(&mut self, symbol: &SymbolName) {
         self.globals.set_flag(symbol, LOCAL_IF_SET | LOCALIZED);
-    }
-
-    pub fn is_auto_buffer_local(&self, name: &str) -> bool {
-        self.globals.has_flag_by_name(name, LOCAL_IF_SET)
     }
 
     pub(crate) fn is_auto_buffer_local_symbol(&self, symbol: &SymbolName) -> bool {
@@ -1942,23 +1844,8 @@ impl Interpreter {
     /// default (Some (Global)).  Any other binding, a buffer-local one made
     /// in another buffer included, leaves the store to the current
     /// buffer's own binding or the default.
+    /// The restore records carry symbols, so the match is by identity.
     pub(super) fn active_special_assignment_scope(
-        &self,
-        name: &str,
-    ) -> Option<SpecialBindingScope> {
-        let current = self.current_buffer_id();
-        self.let_records()
-            .any(|restore| {
-                restore.let_default()
-                    && restore.where_buffer_id() == current
-                    && restore.name.is_named(name)
-            })
-            .then_some(SpecialBindingScope::Global)
-    }
-
-    /// `active_special_assignment_scope' for a symbol in hand: the
-    /// restore records carry symbols, so the match is by identity.
-    pub(super) fn active_special_assignment_scope_symbol(
         &self,
         symbol: &SymbolName,
     ) -> Option<SpecialBindingScope> {
@@ -2111,15 +1998,6 @@ impl Interpreter {
         true
     }
 
-    pub fn set_default_toplevel_value(&mut self, name: &str, value: Value) {
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        if !self.set_active_global_toplevel_value(&resolved, Some(value)) {
-            self.set_global_binding(&resolved, value);
-        }
-    }
-
     pub fn buffer_local_toplevel_value(&self, buffer_id: u64, name: &str) -> Option<Value> {
         let resolved = self
             .resolve_variable_name(name)
@@ -2130,31 +2008,12 @@ impl Interpreter {
         self.buffer_local_value(buffer_id, &resolved)
     }
 
-    pub(super) fn assignment_scope(&self, name: &str) -> Option<SpecialBindingScope> {
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        // data.c:set_internal SYMBOL_LOCALIZED: an existing alist cell (bound
-        // or void) receives the store; otherwise a let made for this buffer
-        // keeps the default, and only then does local_if_set create a cell.
-        if self.has_buffer_local_binding(self.current_buffer_id(), &resolved) {
-            return Some(SpecialBindingScope::BufferLocal(self.current_buffer_id()));
-        }
-        if let Some(scope) = self.active_special_assignment_scope(&resolved) {
-            return Some(scope);
-        }
-        if self.is_auto_buffer_local(&resolved) {
-            return Some(SpecialBindingScope::BufferLocal(self.current_buffer_id()));
-        }
-        None
-    }
-
-    /// `assignment_scope' for a symbol whose alias chain is resolved: the
-    /// buffer-local cell and the auto-local flag are read by id.
-    pub(super) fn assignment_scope_symbol(
-        &self,
-        resolved: &SymbolName,
-    ) -> Option<SpecialBindingScope> {
+    /// The scope a store to RESOLVED, a symbol whose alias chain is
+    /// resolved, lands in.  data.c:set_internal SYMBOL_LOCALIZED: an
+    /// existing alist cell (bound or void) receives the store; otherwise a
+    /// let made for this buffer keeps the default, and only then does
+    /// local_if_set create a cell.
+    pub(super) fn assignment_scope(&self, resolved: &SymbolName) -> Option<SpecialBindingScope> {
         let buffer_id = self.current_buffer_id();
         if self.has_native_text_conversion_style(resolved.as_str())
             && self.buffer.borrow().text_conversion_style_is_local
@@ -2173,20 +2032,13 @@ impl Interpreter {
         {
             return Some(SpecialBindingScope::BufferLocal(buffer_id));
         }
-        if let Some(scope) = self.active_special_assignment_scope_symbol(resolved) {
+        if let Some(scope) = self.active_special_assignment_scope(resolved) {
             return Some(scope);
         }
         if self.globals.has_flag(resolved, LOCAL_IF_SET) {
             return Some(SpecialBindingScope::BufferLocal(buffer_id));
         }
         None
-    }
-
-    pub fn assignment_buffer_id(&self, name: &str) -> Option<u64> {
-        match self.assignment_scope(name) {
-            Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
-            _ => None,
-        }
     }
 
     /// set_internal/set_default_internal check the original symbol before
@@ -2461,9 +2313,7 @@ impl Interpreter {
             return true;
         }
         if !self.globals.has_flag(symbol, LOCAL_IF_SET)
-            || self
-                .active_special_assignment_scope_symbol(symbol)
-                .is_some()
+            || self.active_special_assignment_scope(symbol).is_some()
         {
             return false;
         }

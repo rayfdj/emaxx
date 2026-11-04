@@ -1811,11 +1811,10 @@ impl Interpreter {
             self.record_buffer_front(buffer_id);
             if !self.buffer_hooks_inhibited(buffer_id) {
                 self.set_current_buffer_id(buffer_id)?;
-                primitives::run_named_hooks(
+                primitives::run_hook(
                     self,
-                    "buffer-list-update-hook",
+                    &cached_symbol!("buffer-list-update-hook").symbol(),
                     &mut crate::lisp::types::Env::new(),
-                    None,
                 )?;
             }
         }
@@ -2011,7 +2010,6 @@ impl Interpreter {
             buffer.killed_locals = Some(slots);
         }
         self.remove_buffer_locals(id);
-        self.buffer_local_hooks.remove(&id);
         self.buffer_case_tables.remove(id);
         self.reset_buffer_syntax_table(id);
         self.reset_buffer_category_table(id);
@@ -3447,8 +3445,6 @@ mod runtime_index_tests {
         interp.set_buffer_local_value(42, "first", Value::Integer(20));
         interp.set_buffer_local_value(41, "second", Value::Integer(2));
         interp.set_buffer_local_value(41, "first", Value::Integer(10));
-        interp.set_buffer_local_hook(41, "first", vec![Value::symbol("local-hook")]);
-        interp.set_buffer_local_hook(42, "first", vec![Value::symbol("other-hook")]);
 
         assert_eq!(
             interp.buffer_local_variables(41),
@@ -3457,28 +3453,18 @@ mod runtime_index_tests {
                 ("second".into(), Value::Integer(2)),
             ]
         );
-        assert_eq!(
-            interp.buffer_local_hook(41, "first"),
-            Some(vec![Value::symbol("local-hook")])
-        );
 
         interp.remove_buffer_local_value(41, "first");
         assert_eq!(
             interp.buffer_local_variables(41),
             vec![("second".into(), Value::Integer(2))]
         );
-        assert!(interp.buffer_local_hook(41, "first").is_none());
         assert_eq!(
             interp.buffer_local_value(42, "first"),
             Some(Value::Integer(20))
         );
-        assert_eq!(
-            interp.buffer_local_hook(42, "first"),
-            Some(vec![Value::symbol("other-hook")])
-        );
 
         interp.clear_buffer_local_state(42);
         assert!(interp.buffer_local_variables(42).is_empty());
-        assert!(interp.buffer_local_hook(42, "first").is_none());
     }
 }

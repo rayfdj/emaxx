@@ -421,6 +421,27 @@ const KEY_NAMES: &[&str] = &[
     "defalias-fset-function",
     "function-history",
     "byte-optimizer",
+    "first-change-hook",
+    "kbd-macro-termination-hook",
+    "post-command-hook",
+    "pre-command-hook",
+    "suspend-hook",
+    "suspend-resume-hook",
+    "change-major-mode-hook",
+    "buffer-list-update-hook",
+    "window-scroll-functions",
+    "kill-buffer-query-functions",
+    "kill-buffer-hook",
+    "minibuffer-setup-hook",
+    "minibuffer-exit-hook",
+    "kill-emacs-hook",
+    "post-gc-hook",
+    "post-self-insert-hook",
+    "clone-indirect-buffer-hook",
+    "delayed-warnings-hook",
+    "after-pdump-load-hook",
+    "window-state-change-hook",
+    "auto-save-hook",
 ];
 
 struct Symbols {
@@ -785,6 +806,12 @@ impl SymbolKey {
     #[inline(never)]
     fn intern(self) -> SymbolName {
         with_current(|symbols| self.get(symbols))
+    }
+
+    /// The key's symbol itself (Qsymbol).
+    #[inline]
+    pub(crate) fn symbol(self) -> SymbolName {
+        self.with(|symbol| *symbol)
     }
 
     /// The name the key's symbol has.
