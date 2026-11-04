@@ -1629,7 +1629,7 @@ fn tty_supports_face_attributes(
         let Ok(items) = reference.to_vec() else {
             continue;
         };
-        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.starts_with(':'))
+        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.as_str().starts_with(':'))
         {
             pending.extend(items.into_iter().rev());
             continue;
@@ -1878,7 +1878,7 @@ fn resolve_tty_face_reference_options(
     let Ok(items) = face.to_vec() else {
         return TtyFaceAttrOptions::default();
     };
-    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.starts_with(':'))
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.as_str().starts_with(':'))
     {
         let mut merged = TtyFaceAttrOptions::default();
         for item in items.iter().rev() {

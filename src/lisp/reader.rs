@@ -2713,7 +2713,10 @@ mod tests {
         let Kind::Symbol(symbol) = value.kind() else {
             panic!("expected symbol");
         };
-        assert_eq!(crate::lisp::types::visible_symbol_name(&symbol), "a");
+        assert_eq!(
+            crate::lisp::types::visible_symbol_name(symbol.as_str()),
+            "a"
+        );
         assert_ne!(symbol, "a");
         assert_ne!(symbol, ":a");
     }

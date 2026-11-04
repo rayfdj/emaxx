@@ -715,7 +715,7 @@ impl Interpreter {
             // helpers; from that point its defvars must be allowed to bind
             // the authoritative registries.
             "defun-declarations-alist" | "macro-declarations-alist"
-                if !self.has_lisp_function("byte-run--set-speed") =>
+                if !self.is_fbound("byte-run--set-speed") =>
             {
                 Some(Value::Nil)
             }
@@ -926,9 +926,9 @@ impl Interpreter {
             })
     }
 
-    /// Whether SYMBOL has a user-level function definition (defun/fset).
-    pub(crate) fn has_lisp_function_symbol(&self, symbol: &SymbolName) -> bool {
-        self.globals.has_function_definition(symbol)
+    /// Ffboundp: SYMBOL's function cell is not nil.
+    pub(crate) fn is_fbound_symbol(&self, symbol: &SymbolName) -> bool {
+        self.globals.function(symbol).is_some()
     }
 
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
@@ -1333,7 +1333,7 @@ impl Interpreter {
         symbol: &SymbolName,
         function: Option<Value>,
     ) {
-        self.globals.set_function_definition(symbol, function);
+        self.globals.set_function(symbol, function);
         self.note_function_binding_changed();
     }
 
@@ -1407,7 +1407,7 @@ impl Interpreter {
         {
             return false;
         }
-        let Some(definition) = self.globals.function_definition_by_name(name) else {
+        let Some(definition) = self.globals.function_by_name(name) else {
             return false;
         };
         if !self
@@ -1428,7 +1428,7 @@ impl Interpreter {
             return;
         }
         for (name, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
-            if self.globals.function_definition_by_name(&name) == Some(definition) {
+            if self.globals.function_by_name(&name) == Some(definition) {
                 self.set_function_binding(&name, None);
             }
         }

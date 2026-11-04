@@ -300,11 +300,12 @@ pub(crate) fn render_prin1_symbol(
     options: PrintOptions,
     out: &mut PrintOutput,
 ) {
-    let visible = crate::lisp::types::visible_symbol_name(symbol);
+    let visible = crate::lisp::types::visible_symbol_name(symbol.as_str());
     // print.c: `#:' under `print-gensym' for a symbol not interned in the
     // initial obarray, else `##' for the empty name.
     let gensym = options.gensym
-        && (symbol.cell().is_uninterned() || crate::lisp::types::is_private_obarray_symbol(symbol));
+        && (symbol.cell().is_uninterned()
+            || crate::lisp::types::is_private_obarray_symbol(symbol.as_str()));
     if gensym {
         out.push_str("#:");
     } else if visible.is_empty() {

@@ -14371,6 +14371,46 @@ setup_process_coding_systems's check now refuses). A 13-form
   formats across sixteen zones print GNU's results. Local validation:
   the grouped gate's 3,502 library tests, the integration targets
   and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 303: symbols no longer pass for their names, the
+  function-definition flag is gone, and `let' leaves constants to
+  specbind.** The symbol state's FUNCTION_DEFINITION bit, a startup
+  adapter that told a Lisp `fset' from defsubr's store, is removed: the
+  function cell is the one store, as set_symbol_function's, and the C
+  paths that call preloaded Lisp only where a runtime loaded it
+  (`internal--syntax-propertize', `syntax-ppss', the OClosure generics,
+  `uniquify--rename-buffer-advice', `undo-auto--undoable-change',
+  `byte-run--set-speed', none of them a subr) ask Ffboundp. SymbolName
+  no longer dereferences to its host text, so no name-keyed call takes a
+  symbol unseen: the hundred places that did now read the symbol itself
+  (`lookup_function_symbol', `get_symbol_property_of', the thread
+  switch's and `makunbound''s stores, `defvaralias''s and
+  `kill-all-local-variables''s watchers, `make-variable-buffer-local')
+  or say `as_str' where the text is what they mean. Traced under gdb
+  over twenty test files, 40,286 lookups found an uninterned symbol
+  again by its marked name, 99% of them textprop.c:textget's read of a
+  `category' symbol's plist by the symbol's name (button.el makes its
+  category symbols uninterned); textget now takes Fget of the object, so
+  `get-text-property' through such a category costs 710 instructions
+  against 906 (GNU's 782), and `buffer-local-variables' lists the
+  alist's own symbols rather than interning their names again. eval.c's
+  let and let* leave constants to specbind, whose set_internal binds a
+  keyword to itself and signals for nil, t and any other value of a
+  keyword; Emaxx tested the name first and signalled `setting-constant'
+  for `(let ((:k :k)) ...)' and for an uninterned or private obarray
+  symbol named `:zz', which GNU binds as an ordinary variable (9 of 13
+  binding cases differed, interpreted lexically or dynamically). A
+  command-line comparison runs the cases. The fuzzes of variables,
+  function cells, fields, load, errors, buffers, case, numbers, strings,
+  printing and syntax print GNU's results as before. Local validation:
+  the grouped gate's 3,502 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass. As at
+  round 297, the primitives group failed
+  `stderr_pipe_process_and_status_notify_as_process_c' once while
+  callgrind runs and a check build ran beside it: its last program read
+  `t256-a' as live (`(run open listen connect stop)') when `t256-b''s
+  sentinel ran, where GNU's reads nil; the test passed alone 12 times
+  out of 12, and its whole group again (476 tests, the gate's local
+  skips included) on a quiet machine.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16721,6 +16761,21 @@ ert-tests (46,241 ms against 38,397), tramp-tests (23,537 against
 against 2,704) and mule-tests (3,201 against 2,051);
 `ert-test-run-tests-batch-expensive' is 1.19 of GNU's time, as on the
 slower runners of rounds 298 and 300.
+
+**On `2044b3e`** (round 302): the full Rust gate (run 41854028856)
+passed; the frozen run (run 41854035430) failed at its first attempt on
+GNU's side alone, the oracle's
+`eglot-test-rust-completion-exit-function' ending in a jsonrpc-error
+where Emaxx's passed (7,927 of 7,928 outcomes matching), and passed at
+its second, 7,928 of 7,928. The two attempts timed the same commit at
+1.065 (setup 75.9 s against 63.5, 1.195; bodies 283.0 s against 269.2,
+1.051) and 1.197 (setup 88.9 s against 60.5, 1.468, a per-file setup
+median of 138 ms against 93; bodies 298.9 s against 259.0, 1.154): the
+spread of the runners. On the second the widest body gaps are ert-tests
+(44,373 ms against 35,817), comp-tests (19,099 against 14,248),
+tramp-tests (20,029 against 16,488), semantic-utest-ia (4,149 against
+2,719) and mule-tests (3,376 against 1,917), and
+`ert-test-run-tests-batch-expensive' is 1.23 of GNU's time.
 
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal

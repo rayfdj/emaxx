@@ -1547,3 +1547,62 @@ fn signals_are_init_signals_s() {
         );
     }
 }
+
+#[test]
+fn let_binds_what_specbind_accepts_and_properties_follow_symbols() {
+    // eval.c's let and let* leave the constants to specbind's set_internal:
+    // a keyword bound to itself is no change, and a symbol that only looks
+    // like a keyword, an uninterned or private obarray one, is an ordinary
+    // variable.  A text property's `category' symbol gives its properties
+    // as Fget of the object, and `buffer-local-variables' lists an
+    // uninterned variable as itself.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defun t3-try (f) (condition-case e (funcall f) (error (list 'err e))))
+(defvar t3-dyn 5)
+(dolist (lexical '(nil t))
+  (dolist (form (list '(let ((:k :k)) (list :k))
+                      '(let* ((:k :k) (:j :j)) (list :k :j))
+                      '(let ((:k 2)) 1)
+                      '(let* ((:k nil)) 1)
+                      '(let ((nil nil)) 1)
+                      '(let* ((t t)) 1)
+                      '(let ((t3-dyn 1) (:k :k)) t3-dyn)
+                      '(let ((t3-dyn 1) (:k 3)) t3-dyn)
+                      (let ((x (make-symbol ":zz"))) (list 'let (list (list x 1)) x))
+                      (let ((x (make-symbol ":zz"))) (list 'let* (list (list x 1)) (list 'list x)))
+                      (let ((x (intern ":zz" (obarray-make)))) (list 'let (list (list x 1)) x))
+                      (let ((x (make-symbol "nil"))) (list 'let (list (list x 2)) x))
+                      (let ((x (make-symbol "t"))) (list 'let* (list (list x 3)) x))))
+    (prin1 (list lexical (t3-try (lambda () (eval form lexical)))))
+    (terpri)))
+(prin1 (list 'after t3-dyn (t3-try (lambda () (symbol-value :k)))))
+(terpri)
+;; A category symbol's plist by the symbol object, uninterned or interned.
+(dolist (cat (list (make-symbol "t3-cat") 't3-cat (intern "t3-cat" (obarray-make)) nil))
+  (when cat (put cat 'face 'bold) (put cat 'help-echo "help"))
+  (with-temp-buffer
+    (insert (propertize "abc" 'category cat 'mouse-face 'highlight))
+    (prin1 (list (get-text-property 1 'face) (get-char-property 2 'help-echo)
+                 (get-text-property 1 'mouse-face) (text-property-not-all 1 4 'face 'bold)
+                 (next-single-char-property-change 1 'face)))
+    (terpri)))
+;; buffer-local-variables lists an uninterned variable as itself.
+(with-temp-buffer
+  (let ((v (make-symbol "t3-local")) (w (make-symbol "t3-void")))
+    (set (make-local-variable v) 7)
+    (make-local-variable w)
+    (let ((locals (buffer-local-variables)))
+      (prin1 (list (eq (car (assq v locals)) v) (cdr (assq v locals))
+                   (and (memq w locals) t) (local-variable-p v) (buffer-local-value v (current-buffer)))))
+    (terpri)))
+)"#,
+        ],
+    );
+}

@@ -2736,7 +2736,10 @@ fn decode_translation_table_p(interp: &Interpreter, coding: &str, env: &Env) -> 
     }
     match table.kind() {
         Kind::Symbol(name) => interp
-            .get_symbol_property(&name, "translation-table")
+            .get_symbol_property_of(
+                &name,
+                &cached_symbol!("translation-table").with(Clone::clone),
+            )
             .is_some_and(|table| !table.is_nil()),
         Kind::T => interp
             .get_symbol_property("t", "translation-table")

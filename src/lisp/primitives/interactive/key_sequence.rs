@@ -122,7 +122,7 @@ impl KeySequenceReader {
         load_autoloaded_prefix_map(interp, &next, env)?;
         // access_keymap_keyremap accepts symbolic arrays and prefix maps.
         if let Kind::Symbol(name) = next.kind()
-            && let Ok(function) = interp.lookup_function(&name, env)
+            && let Ok(function) = interp.lookup_function_symbol(&name, env)
             && (function.is_string()
                 || matches!(function.kind(), Kind::Vector(_))
                 || keymap_reference_map(interp, &function, env).is_some())

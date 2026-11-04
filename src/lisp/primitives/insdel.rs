@@ -207,7 +207,7 @@ fn run_undoable_change(interp: &mut Interpreter, env: &mut Env) {
         return;
     }
     let symbol = cached_symbol!("undo-auto--undoable-change").with(Clone::clone);
-    if interp.has_lisp_function_symbol(&symbol) {
+    if interp.is_fbound_symbol(&symbol) {
         // The callee names its own frame (a name given here was interned
         // again per call).
         let _ = interp.call_function_value(Value::Symbol(symbol), None, &[], env);

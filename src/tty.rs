@@ -2334,8 +2334,8 @@ impl<'a> CharacterDisplayContext<'a> {
                 }
                 let value = self
                     .interpreter
-                    .buffer_local_toplevel_value(self.buffer_id, &name)
-                    .or_else(|| self.interpreter.default_toplevel_value(&name))
+                    .buffer_local_toplevel_value(self.buffer_id, name.as_str())
+                    .or_else(|| self.interpreter.default_toplevel_value(name.as_str()))
                     .unwrap_or(Value::Nil);
                 if matches!(value.kind(), Kind::Symbol(_)) {
                     // A symbol naming a symbol: GNU evaluates once.
@@ -2367,8 +2367,8 @@ impl<'a> CharacterDisplayContext<'a> {
                     }
                     car = self
                         .interpreter
-                        .buffer_local_toplevel_value(self.buffer_id, &name)
-                        .or_else(|| self.interpreter.default_toplevel_value(&name))
+                        .buffer_local_toplevel_value(self.buffer_id, name.as_str())
+                        .or_else(|| self.interpreter.default_toplevel_value(name.as_str()))
                         .unwrap_or(Value::Nil);
                 }
                 if matches!(car.kind(), Kind::Integer(_) | Kind::Float(_)) {

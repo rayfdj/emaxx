@@ -413,6 +413,11 @@ const KEY_NAMES: &[&str] = &[
     "overriding-local-map",
     "interactive",
     "interactive-form",
+    "translation-table",
+    "command-modes",
+    "gnutls-code",
+    "function-documentation",
+    "suppress-keymap",
 ];
 
 struct Symbols {

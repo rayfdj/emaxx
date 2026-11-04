@@ -1441,9 +1441,11 @@ pub(crate) fn resolve_callable(
         *value
     };
     match callable.kind() {
-        Kind::Symbol(name) => interp.lookup_function(&name, env),
+        Kind::Symbol(name) => interp.lookup_function_symbol(&name, env),
         // `t' is a symbol whose function cell `fset' may fill.
-        Kind::T => interp.lookup_function(&crate::lisp::types::symbols::builtin_boolean(true), env),
+        Kind::T => {
+            interp.lookup_function_symbol(&crate::lisp::types::symbols::builtin_boolean(true), env)
+        }
         _ => Ok(callable),
     }
 }
@@ -1850,7 +1852,7 @@ pub(crate) fn load_autoloaded_prefix_map(
     let Kind::Symbol(name) = binding.kind() else {
         return Ok(());
     };
-    let Ok(function) = interp.lookup_function(&name, env) else {
+    let Ok(function) = interp.lookup_function_symbol(&name, env) else {
         return Ok(());
     };
     if let Some((_, _, Kind::Symbol(kind))) =
@@ -2210,7 +2212,7 @@ fn describe_vector(
         let suppressed = || {
             partial
                 && matches!(definition.kind(), Kind::Symbol(symbol)
-                    if interp.get_symbol_property(&symbol, "suppress-keymap")
+                    if interp.get_symbol_property_of(&symbol, &cached_symbol!("suppress-keymap").with(Clone::clone))
                         .is_some_and(|value| value.is_truthy()))
         };
         if definition.is_nil() || suppressed() {

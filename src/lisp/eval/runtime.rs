@@ -2931,10 +2931,11 @@ impl Interpreter {
         Ok(Value::Symbol(feature.to_string().into()))
     }
 
-    // Whether NAME has an interpreted (Lisp-defined) function binding,
-    // as opposed to only a native dispatch arm.
-    pub(crate) fn has_lisp_function(&self, name: &str) -> bool {
-        self.globals.function_definition_by_name(name).is_some()
+    /// Ffboundp of the interned symbol NAME: its function cell is not nil.
+    /// The preloaded Lisp a C path calls (`syntax-ppss', the OClosure
+    /// generics) is absent from a runtime that did not load it.
+    pub(crate) fn is_fbound(&self, name: &str) -> bool {
+        self.globals.function_by_name(name).is_some()
     }
 
     /// Whether FEATURE names a symbol in `features' (read in place; a

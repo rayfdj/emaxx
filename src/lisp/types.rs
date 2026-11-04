@@ -769,14 +769,6 @@ impl std::hash::Hash for SymbolName {
     }
 }
 
-impl Deref for SymbolName {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.internal.as_str()
-    }
-}
-
 impl AsRef<str> for SymbolName {
     fn as_ref(&self) -> &str {
         self.as_str()
@@ -3263,7 +3255,7 @@ fn format_value(
         Kind::StringObject(state) => {
             write!(f, "\"{}\"", state.borrow().text())
         }
-        Kind::Symbol(s) => write!(f, "{}", visible_symbol_name(&s)),
+        Kind::Symbol(s) => write!(f, "{}", visible_symbol_name(s.as_str())),
         Kind::Vector(vector) => {
             let id = vector.identity();
             if !seen.insert(id) {

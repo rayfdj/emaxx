@@ -351,11 +351,16 @@ define_dispatch!(
                         args[0],
                     ])));
                 }
-                if !interp.is_per_buffer_special(&symbol) && interp.default_value(&symbol).is_none()
+                if !interp.is_per_buffer_symbol(&symbol)
+                    && interp
+                        .default_value_symbol(&symbol)
+                        .ok()
+                        .flatten()
+                        .is_none()
                 {
-                    interp.set_global_binding(&symbol, Value::Nil);
+                    interp.set_global_binding_resolved(&symbol, Value::Nil);
                 }
-                interp.mark_auto_buffer_local(&symbol);
+                interp.mark_auto_buffer_local_symbol(&symbol);
                 Ok(args[0])
             }
             "local-variable-p" => {

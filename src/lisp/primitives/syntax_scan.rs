@@ -549,7 +549,7 @@ impl GlState {
         let pos = charpos as i64;
         if self.propertize_done <= pos && self.propertize_done < zv {
             // A runtime without syntax.el has nothing to propertize with.
-            if !interp.has_lisp_function("internal--syntax-propertize") {
+            if !interp.is_fbound("internal--syntax-propertize") {
                 self.propertize_done = i64::MAX;
                 return Ok(());
             }
@@ -1109,7 +1109,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
             Some(value) => value,
             None => {
                 let value = self.bool_variable(cached_symbol!("comment-use-syntax-ppss"))
-                    && self.interp.has_lisp_function("syntax-ppss");
+                    && self.interp.is_fbound("syntax-ppss");
                 self.comment_use_syntax_ppss = Some(value);
                 value
             }

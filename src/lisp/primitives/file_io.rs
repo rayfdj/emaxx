@@ -1700,7 +1700,7 @@ pub(crate) fn native_print_updates_batch_last_char(
         }
         Kind::BigInteger(_) | Kind::Float(_) => false,
         Kind::StringObject(_) => escaped,
-        Kind::Symbol(name) => !name.is_empty(),
+        Kind::Symbol(name) => !name.as_str().is_empty(),
         _ => true,
     }
 }
@@ -3002,7 +3002,9 @@ pub(crate) fn finish_insert_file_contents(
         let mut cycle = super::values::ForEachTail::new(tail);
         while let Some((hook, next)) = tail.cons_values() {
             let (function, name) = match hook.kind() {
-                Kind::Symbol(symbol) => (interp.lookup_function(&symbol, env)?, Some(symbol)),
+                Kind::Symbol(symbol) => {
+                    (interp.lookup_function_symbol(&symbol, env)?, Some(symbol))
+                }
                 _ => (hook, None),
             };
             call_insert_format_function(

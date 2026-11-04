@@ -2039,7 +2039,7 @@ define_dispatch!(
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
                 let default = match default.kind() {
                     Kind::Symbol(symbol) => Value::String(
-                        crate::lisp::types::visible_symbol_name(&symbol)
+                        crate::lisp::types::visible_symbol_name(symbol.as_str())
                             .to_string()
                             .into(),
                     ),

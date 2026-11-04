@@ -602,7 +602,7 @@ impl Interpreter {
         };
         Ok(self
             .try_macroexpand_with_environment(
-                &name,
+                name.as_str(),
                 &items[1..],
                 macro_environment,
                 MacroCaller::Macroexpand,

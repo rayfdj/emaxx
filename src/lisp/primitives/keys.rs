@@ -466,7 +466,7 @@ pub(crate) fn single_key_description_text(
     match key.kind() {
         Kind::Nil => Ok(describe_symbolic_key("nil", no_angles)),
         Kind::Integer(code) => Ok(describe_key_code(code)),
-        Kind::Symbol(symbol) => Ok(describe_symbolic_key(&symbol, no_angles)),
+        Kind::Symbol(symbol) => Ok(describe_symbolic_key(symbol.as_str(), no_angles)),
         Kind::T => Ok(describe_symbolic_key("t", no_angles)),
         Kind::StringObject(state) => Ok(state.borrow().text()),
         Kind::Cons(_) => list_event_key_description_text(key, no_angles),
@@ -510,11 +510,11 @@ pub(crate) fn list_event_key_description_text(
     match base.kind() {
         Kind::Integer(code) => Ok(describe_key_code(code | bits)),
         Kind::Symbol(symbol) => {
-            if let Some(ch) = event_name_character(&symbol) {
+            if let Some(ch) = event_name_character(symbol.as_str()) {
                 Ok(describe_key_code(ch as i64 | bits))
             } else {
                 Ok(describe_symbolic_key(
-                    &symbolic_kbd_event(bits, &symbol),
+                    &symbolic_kbd_event(bits, symbol.as_str()),
                     no_angles,
                 ))
             }

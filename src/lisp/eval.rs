@@ -3161,9 +3161,6 @@ impl ImageGraphCopier {
         }
         copied
             .cell()
-            .set_function_definition(symbol.cell().has_function_definition());
-        copied
-            .cell()
             .function
             .set(self.copy(&symbol.cell().function.get()));
         copied

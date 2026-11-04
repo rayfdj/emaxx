@@ -435,7 +435,7 @@ fn merge_face_ref(
             }
             ok = false;
         }
-    } else if matches!(first.kind(), Kind::Symbol(symbol) if symbol.starts_with(':')) {
+    } else if matches!(first.kind(), Kind::Symbol(symbol) if symbol.as_str().starts_with(':')) {
         // The property list form.
         let mut plist = face_ref;
         while let Some((keyword, tail)) = plist.cons_values()

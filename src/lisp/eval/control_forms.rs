@@ -157,18 +157,6 @@ impl Interpreter {
         Ok(result)
     }
 
-    /// GNU signals `setting-constant' when a let/let* binding variable is
-    /// nil, t, or a keyword (subr-x's and-let* expands to such a let*).
-    fn check_let_binding_name(name: &str) -> Result<(), LispError> {
-        if matches!(name, "nil" | "t") || name.starts_with(':') {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("setting-constant".into()),
-                Value::Symbol(name.to_string().into()),
-            ])));
-        }
-        Ok(())
-    }
-
     /// eval.c's reading of one list element of a `let' varlist: the
     /// symbol and its value form.  A second value form signals as
     /// signal_error does (`error', the message, the element's own
@@ -276,7 +264,6 @@ impl Interpreter {
                 let name_value = if symbol { binding } else { binding.car()? };
                 let name =
                     crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
-                Self::check_let_binding_name(&name)?;
                 if self.binding_is_dynamic_symbol(&name, env) {
                     self.specbind_symbol(&name, *value, env)?;
                 } else {
@@ -349,7 +336,6 @@ impl Interpreter {
                 };
                 let name =
                     crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
-                Self::check_let_binding_name(&name)?;
                 if self.binding_is_dynamic_symbol(&name, env) {
                     self.specbind_symbol(&name, value, env)?;
                 } else {

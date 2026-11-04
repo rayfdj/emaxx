@@ -733,7 +733,11 @@ impl Interpreter {
     /// local carries `Value::Unbound'.
     #[cfg(test)]
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
-        let mut values = self.buffer_alist_local_variables(buffer_id);
+        let mut values = self
+            .buffer_alist_local_variables(buffer_id)
+            .into_iter()
+            .map(|(symbol, value)| (symbol.as_str().to_owned(), value))
+            .collect::<Vec<_>>();
         if let Some(style) = self.text_conversion_style_slot(buffer_id) {
             values.insert(0, ("text-conversion-style".into(), style));
         }
@@ -743,13 +747,13 @@ impl Interpreter {
     /// The cells of BUFFER_ID's local_var_alist and the slots kept with
     /// them, in first-binding order, without the `text-conversion-style'
     /// field.
-    pub(crate) fn buffer_alist_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
+    pub(crate) fn buffer_alist_local_variables(&self, buffer_id: u64) -> Vec<(SymbolName, Value)> {
         self.buffer_locals
             .get(&buffer_id)
             .map(|locals| {
                 locals
                     .iter()
-                    .map(|(name, value)| (name.as_str().to_owned(), value))
+                    .map(|(symbol, value)| (*symbol, value))
                     .collect()
             })
             .unwrap_or_default()
@@ -771,6 +775,11 @@ impl Interpreter {
     pub fn mark_auto_buffer_local(&mut self, name: &str) {
         self.globals
             .set_flag_by_name(name, LOCAL_IF_SET | LOCALIZED);
+    }
+
+    /// `mark_auto_buffer_local' of the symbol in hand.
+    pub(crate) fn mark_auto_buffer_local_symbol(&mut self, symbol: &SymbolName) {
+        self.globals.set_flag(symbol, LOCAL_IF_SET | LOCALIZED);
     }
 
     pub fn is_auto_buffer_local(&self, name: &str) -> bool {
@@ -1091,8 +1100,28 @@ impl Interpreter {
         self.symbol_plist_find(name, |key| property.is(key))
     }
 
+    /// fns.c:Fget of SYMBOL, a symbol object (nil and t among them), with
+    /// PROPERTY compared as plist_get compares it; None for a non-symbol.
+    pub(crate) fn get_property_of_symbol_value(
+        &self,
+        symbol: Value,
+        property: impl crate::lisp::types::PropertyKey,
+    ) -> Option<Value> {
+        let symbol = match symbol.kind() {
+            Kind::Symbol(symbol) => symbol,
+            Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
+            Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+            _ => return None,
+        };
+        self.plist_find(self.globals.plist(&symbol), |key| property.is(key))
+    }
+
     fn symbol_plist_find(&self, name: &str, matches: impl Fn(Value) -> bool) -> Option<Value> {
-        let mut tail = self.globals.plist_by_name(name);
+        self.plist_find(self.globals.plist_by_name(name), matches)
+    }
+
+    fn plist_find(&self, plist: Value, matches: impl Fn(Value) -> bool) -> Option<Value> {
+        let mut tail = plist;
         // fns.c:plist_get walks with FOR_EACH_TAIL_SAFE: Brent's cycle
         // detection (a tortoise moved at powers of two), no allocation.
         let mut tortoise = Brent::new(&tail);
@@ -1180,8 +1209,10 @@ impl Interpreter {
 
         while let Some(current) = pending.pop() {
             match current.kind() {
-                Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == name => {
-                    self.intern_symbol_name(&name);
+                Kind::Symbol(name)
+                    if crate::lisp::types::visible_symbol_name(name.as_str()) == name =>
+                {
+                    self.intern_symbol_name(name.as_str());
                 }
                 Kind::Cons(cons_cell) => {
                     let car = &cons_cell.car;
@@ -1604,6 +1635,7 @@ impl Interpreter {
             .or_else(|| self.builtin_symbol_value(&resolved)))
     }
 
+    #[cfg(test)]
     pub fn remove_global_binding(&mut self, name: &str) {
         for terminal in &mut self.terminals {
             terminal.borrow_mut().keyboard.remove(name);
@@ -2731,9 +2763,13 @@ impl Interpreter {
     /// `kill-all-local-variables'.  The restore record remains on the stack:
     /// if the body creates a fresh local cell before unwinding, GNU restores
     /// the pre-binding value into that cell; otherwise unwind is a no-op.
-    pub(crate) fn mark_buffer_local_special_binding_killed(&mut self, buffer_id: u64, name: &str) {
+    pub(crate) fn mark_buffer_local_special_binding_killed(
+        &mut self,
+        buffer_id: u64,
+        symbol: &SymbolName,
+    ) {
         for restore in self.let_records_mut() {
-            if restore.name == name
+            if restore.name == *symbol
                 && restore.scope() == SpecialBindingScope::BufferLocal(buffer_id)
             {
                 restore.kill_local_binding();
@@ -2746,7 +2782,7 @@ impl Interpreter {
                     .iter_mut()
                     .filter_map(SpecpdlEntry::as_let_mut)
                 {
-                    if restore.name == name
+                    if restore.name == *symbol
                         && restore.scope() == SpecialBindingScope::BufferLocal(buffer_id)
                     {
                         restore.kill_local_binding();
@@ -2791,28 +2827,30 @@ impl Interpreter {
                 continue;
             }
             if let Some(terminal) = record.keyboard_terminal_id() {
-                let current = self.keyboard_binding_value_on(terminal, &record.name);
+                let current = self.keyboard_binding_value_on(terminal, record.name.as_str());
                 let previous = record.take_previous().unwrap_or(Value::Unbound);
-                self.set_keyboard_binding_on(terminal, &record.name, previous);
+                self.set_keyboard_binding_on(terminal, record.name.as_str(), previous);
                 record.set_previous(current);
                 continue;
             }
             match record.scope() {
                 SpecialBindingScope::Global => {
-                    let current = self.global_value(&record.name);
+                    let current = self.global_binding_value_symbol(&record.name);
                     match record.take_previous() {
-                        Some(value) => self.set_global_binding(&record.name, value),
+                        Some(value) => self.set_global_binding_resolved(&record.name, value),
                         None => {
-                            self.remove_global_binding(&record.name);
+                            self.remove_global_binding_symbol(&record.name);
                         }
                     }
                     record.set_previous(current);
                 }
                 SpecialBindingScope::BufferLocal(buffer_id) => {
-                    let current = self.buffer_local_value(buffer_id, &record.name);
+                    let current = self.buffer_local_value(buffer_id, record.name.as_str());
                     match record.take_previous() {
-                        Some(value) => self.set_buffer_local_value(buffer_id, &record.name, value),
-                        None => self.remove_buffer_local_value(buffer_id, &record.name),
+                        Some(value) => {
+                            self.set_buffer_local_value_symbol(buffer_id, &record.name, value)
+                        }
+                        None => self.remove_buffer_local_value(buffer_id, record.name.as_str()),
                     }
                     record.set_previous(current);
                 }
@@ -2853,7 +2891,7 @@ impl Interpreter {
         }
         if restore.local_binding_killed()
             && matches!(restore.scope(), SpecialBindingScope::BufferLocal(buffer_id)
-                if self.buffer_local_value(buffer_id, &restore.name).is_none())
+                if self.buffer_local_value(buffer_id, restore.name.as_str()).is_none())
         {
             return Ok(());
         }
@@ -2893,7 +2931,7 @@ impl Interpreter {
                 if let Some(terminal) = restore.keyboard_terminal_id() {
                     self.set_keyboard_binding_on(
                         terminal,
-                        &restore.name,
+                        restore.name.as_str(),
                         restore.previous().unwrap_or(Value::Unbound),
                     );
                 } else if let Some(value) = restore.previous() {
@@ -2923,7 +2961,7 @@ impl Interpreter {
                 if let Some(value) = restore.previous() {
                     self.set_buffer_local_value_symbol(buffer_id, &restore.name, value);
                 } else {
-                    self.remove_buffer_local_value(buffer_id, &restore.name);
+                    self.remove_buffer_local_value(buffer_id, restore.name.as_str());
                 }
             }
         }

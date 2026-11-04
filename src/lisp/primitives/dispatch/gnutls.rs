@@ -694,7 +694,7 @@ fn mac_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, LispE
         Kind::Integer(id) => c_int::try_from(id).ok(),
         Kind::Symbol(name) => algorithm_ids(library.api.mac_list).into_iter().find(|id| {
             // SAFETY: Every candidate came from `gnutls_mac_list`.
-            c_string(unsafe { (library.api.mac_name)(*id) }).as_deref() == Some(&name)
+            c_string(unsafe { (library.api.mac_name)(*id) }).as_deref() == Some(name.as_str())
         }),
         Kind::Cons(..) => {
             plist_integer(&normalized, ":mac-algorithm-id").and_then(|id| c_int::try_from(id).ok())
@@ -729,7 +729,8 @@ fn cipher_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, Li
             .into_iter()
             .find(|id| {
                 // SAFETY: Every candidate came from `gnutls_cipher_list`.
-                c_string(unsafe { (library.api.cipher_name)(*id) }).as_deref() == Some(&name)
+                c_string(unsafe { (library.api.cipher_name)(*id) }).as_deref()
+                    == Some(name.as_str())
             }),
         Kind::Cons(..) => {
             plist_integer(&normalized, ":cipher-id").and_then(|id| c_int::try_from(id).ok())
@@ -1023,7 +1024,9 @@ fn gnutls_symmetric(
 
 fn gnutls_error_code(interp: &Interpreter, error: &Value) -> Result<c_int, &'static str> {
     let resolved = match error.kind() {
-        Kind::Symbol(symbol) => match interp.get_symbol_property(&symbol, "gnutls-code") {
+        Kind::Symbol(symbol) => match interp
+            .get_symbol_property_of(&symbol, &cached_symbol!("gnutls-code").with(Clone::clone))
+        {
             Some(code)
                 if matches!(
                     code.kind(),
@@ -2095,7 +2098,7 @@ define_dispatch!(
                 let Kind::Symbol(status) = args[0].kind() else {
                     return Err(wrong_type_argument("symbolp", args[0]));
                 };
-                Ok(peer_status_warning_description(&status)
+                Ok(peer_status_warning_description(status.as_str())
                     .map(Value::string)
                     .unwrap_or(Value::Nil))
             }

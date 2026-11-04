@@ -134,7 +134,7 @@ pub(crate) fn obarray_symbol_matches(value: &Value, symbol_name: &str) -> bool {
         (Kind::Nil, "nil") | (Kind::T, "t")
     ) || matches!(
         value.kind(),
-        Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == symbol_name
+        Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(name.as_str()) == symbol_name
     )
 }
 
@@ -614,7 +614,9 @@ pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError
         Kind::StringObject(_) => string_text(value),
         Kind::Nil => Ok("nil".into()),
         Kind::T => Ok("t".into()),
-        Kind::Symbol(symbol) => Ok(crate::lisp::types::visible_symbol_name(&symbol).to_string()),
+        Kind::Symbol(symbol) => {
+            Ok(crate::lisp::types::visible_symbol_name(symbol.as_str()).to_string())
+        }
         _ => Err(LispError::TypeError(
             "string-or-symbol".into(),
             value.type_name(),
@@ -2303,7 +2305,7 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
         }
         // Internal evaluator closure markers precede the interactive form
         // in lowered bodies.
-        if matches!(form.kind(), Kind::Symbol(marker) if marker.starts_with(":closure-")) {
+        if matches!(form.kind(), Kind::Symbol(marker) if marker.as_str().starts_with(":closure-")) {
             continue;
         }
         if is_declare_form(form) {

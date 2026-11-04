@@ -1460,7 +1460,7 @@ fn call_expand_file_name_handler(
 ) -> Result<Value, LispError> {
     // call3 (handler, ...): Ffuncall, which loads an autoloaded handler.
     let (function, original_name) = match handler.kind() {
-        Kind::Symbol(symbol) => (interp.lookup_function(&symbol, env)?, Some(symbol)),
+        Kind::Symbol(symbol) => (interp.lookup_function_symbol(&symbol, env)?, Some(symbol)),
         other => (other.value(), None),
     };
     let handled = interp.call_function_value(
@@ -2868,7 +2868,7 @@ pub(crate) fn dispatch_file_name_handler(
         };
         let (function, original_name) = match handler.kind() {
             Kind::Symbol(symbol) => {
-                let function = interp.lookup_function(&symbol, env)?;
+                let function = interp.lookup_function_symbol(&symbol, env)?;
                 (function, Some(symbol))
             }
             function => (function.value(), None),

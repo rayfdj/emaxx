@@ -1589,7 +1589,7 @@ fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> 
         Kind::Integer(value) => value,
         Kind::Float(value) => value.get() as i64,
         Kind::Symbol(name) => interp
-            .lookup_var(&name, env)
+            .lookup_var_symbol(&name, env)
             .map(|value| display_spec_width(interp, env, &value))
             .unwrap_or(0),
         Kind::Cons(_) => {
