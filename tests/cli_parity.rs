@@ -1707,3 +1707,41 @@ fn defconst_stores_with_set_default_and_uninterned_symbols_are_kept_as_objects()
         ],
     );
 }
+
+#[test]
+fn void_errors_carry_their_symbol_through_a_collection() {
+    // eval.c's `(void-variable SYMBOL)' and `(void-function SYMBOL)' hold
+    // the symbol object: an uninterned one is `eq' to itself in the
+    // handler, interpreted or byte-compiled, and the error alone keeps it
+    // through a collection while `unwind-protect' unwinds.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+;; A void uninterned function's or variable's error names the symbol itself.
+(let ((f (make-symbol "t6-nf")))
+  (prin1 (list (condition-case e (funcall f) (void-function (eq (cadr e) f)))
+               (condition-case e (symbol-value f) (void-variable (eq (cadr e) f)))
+               (condition-case e (eval f t) (void-variable (eq (cadr e) f)))
+               (condition-case e (eval (list f) t) (void-function (eq (cadr e) f)))
+               (condition-case e (funcall (byte-compile (list 'lambda () (list f)))) (void-function (eq (cadr e) f)))))
+  (terpri))
+;; The error alone holds the symbol across a collection during unwinding.
+(let ((r (condition-case e
+             (unwind-protect (funcall (make-symbol "t6-gone"))
+               (garbage-collect) (make-list 10000 nil) (garbage-collect))
+           (void-function e))))
+  (prin1 (list (car r) (symbolp (cadr r)) (symbol-name (cadr r)) (intern-soft (symbol-name (cadr r)))
+               (error-message-string r)))
+  (terpri))
+(prin1 (list (condition-case e (funcall nil) (error e)) (condition-case e (t6-undefined-fn 1) (error e))
+             (condition-case e t6-unbound-var (error e)) (error-message-string '(void-function \(setf\ x\)))))
+(terpri)
+)"#,
+        ],
+    );
+}

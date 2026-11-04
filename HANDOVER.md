@@ -14475,6 +14475,31 @@ setup_process_coding_systems's check now refuses). A 13-form
   before. Local validation: the grouped gate's 3,502 library tests,
   the integration targets and clippy with `--all-targets --all-features
   -D warnings' pass.
+- **Round 306: a void variable's or function's error holds the symbol,
+  and the reader and the watchers keep symbols as objects.** eval.c's
+  `(void-variable SYMBOL)' and data.c's `(void-function SYMBOL)' carry
+  the symbol object; Emaxx's error kinds carried its name, and the
+  condition the handler saw interned that name again, so a void
+  uninterned function's error named a symbol found by its marked text
+  (the last place round 305's census saw) or, once a collection during
+  unwinding had swept the symbol, a fresh one. The kinds now hold the
+  symbol (nil and t as themselves), traced as a root with the other
+  error payloads while `unwind-protect' unwinds, and the message prints
+  its name as before. The reader's `#:' and the empty `#:' make their
+  symbol directly rather than interning a fresh marked text, and
+  `add-variable-watcher', `remove-variable-watcher' and
+  `get-variable-watchers' read their argument with CHECK_SYMBOL and work
+  on the symbol rather than its name. Taking the uninterned registry
+  away at once, which a debug assertion on any lookup by marked text
+  would have guarded, was tried and put back: the watcher primitives
+  broke for an uninterned variable in the release build, and 133 more
+  `as_symbol' readings of a symbol argument, the hook machinery and its
+  separate store of buffer-local hook values among them, still find
+  their symbol by name. A command-line comparison runs the cases. The
+  fuzzes of variables, function cells, errors, buffers, printing,
+  strings and syntax print GNU's results as before. Local validation:
+  the grouped gate's 3,502 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16863,6 +16888,17 @@ ert-tests (45,851 ms against 38,316), tramp-tests (23,065 against
 19,302), comp-tests (17,020 against 14,745), semantic-utest-ia (4,392
 against 3,073) and mule-tests (3,154 against 2,029), and
 `ert-test-run-tests-batch-expensive' is 1.19 of GNU's time.
+
+**On `6fa174b`** (round 305): the full Rust gate (run 41895078978)
+passed; the frozen run (run 41895084049) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a runner as slow as round 304's
+(the oracle's bodies 277.3 s against 274.8). Setup 85.0 s against 70.7 s
+(1.202), test bodies 309.2 s against 277.3 s (1.115), in all 1.120, with
+a per-file setup median of 128 ms against 109. The widest body gaps are
+ert-tests (46,508 ms against 39,143), tramp-tests (23,803 against
+20,012), comp-tests (18,035 against 15,672), semantic-utest-ia (4,370
+against 3,009) and mule-tests (3,131 against 2,050), and
+`ert-test-run-tests-batch-expensive' is 1.18 of GNU's time.
 
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's

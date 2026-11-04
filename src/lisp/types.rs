@@ -678,6 +678,15 @@ impl SymbolName {
         Self::new_uninterned(name, make_uninterned_symbol_name(visible, id))
     }
 
+    /// Fmake_symbol under the private TEXT a caller marked
+    /// (`make_uninterned_symbol_name'), named LISP_NAME or, for none, a
+    /// string of TEXT's visible part.
+    pub(crate) fn make_uninterned_with_text(text: String, lisp_name: Option<Value>) -> Self {
+        let lisp_name = lisp_name
+            .unwrap_or_else(|| Value::String(SharedText::from(visible_symbol_name(&text))));
+        Self::new_uninterned(lisp_name, text)
+    }
+
     fn new_uninterned(lisp_name: Value, internal: String) -> Self {
         let name = Self::allocate(internal, lisp_name);
         name.cell().mark_uninterned();
@@ -2450,6 +2459,17 @@ pub(crate) fn visible_symbol_name(symbol: &str) -> &str {
         .unwrap_or(symbol)
 }
 
+/// An error datum's symbol as the message prints it: its name escaped as
+/// print.c escapes a symbol's, `nil' and `t' as themselves.
+fn render_error_symbol(symbol: &Value) -> String {
+    match symbol.kind() {
+        Kind::Symbol(symbol) => render_error_symbol_name(symbol.as_str()),
+        Kind::Nil => "nil".into(),
+        Kind::T => "t".into(),
+        _ => format!("{symbol}"),
+    }
+}
+
 fn render_error_symbol_name(symbol: &str) -> String {
     let visible = visible_symbol_name(symbol);
     if visible.is_empty() {
@@ -3349,10 +3369,11 @@ pub enum LispErrorKind {
     /// construction sites migrate here as their predicates are verified
     /// against the oracle.
     WrongTypeArgument(String, Value),
-    /// Unbound variable
-    Void(String),
-    /// Unbound function cell
-    VoidFunction(String),
+    /// eval.c's `(void-variable SYMBOL)': the symbol object itself, so a
+    /// void uninterned variable's error names that symbol.
+    Void(Value),
+    /// data.c's `(void-function SYMBOL)': the symbol object itself.
+    VoidFunction(Value),
     /// Wrong number of arguments
     WrongNumberOfArgs(String, usize),
     /// Generic error with a message (like Emacs's `error` function)
@@ -3409,16 +3430,16 @@ impl fmt::Display for LispErrorKind {
             LispErrorKind::WrongTypeArgument(predicate, value) => {
                 write!(f, "Wrong type argument: {}, {}", predicate, value)
             }
-            LispErrorKind::Void(name) => write!(
+            LispErrorKind::Void(symbol) => write!(
                 f,
                 "Symbol's value as variable is void: {}",
-                render_error_symbol_name(name)
+                render_error_symbol(symbol)
             ),
-            LispErrorKind::VoidFunction(name) => {
+            LispErrorKind::VoidFunction(symbol) => {
                 write!(
                     f,
                     "Symbol's function definition is void: {}",
-                    render_error_symbol_name(name)
+                    render_error_symbol(symbol)
                 )
             }
             LispErrorKind::WrongNumberOfArgs(name, n) => {
@@ -3568,11 +3589,11 @@ impl LispError {
         Self::boxed(LispErrorKind::WrongTypeArgument(a0, a1))
     }
 
-    pub fn Void(a0: String) -> Self {
+    pub fn Void(a0: Value) -> Self {
         Self::boxed(LispErrorKind::Void(a0))
     }
 
-    pub fn VoidFunction(a0: String) -> Self {
+    pub fn VoidFunction(a0: Value) -> Self {
         Self::boxed(LispErrorKind::VoidFunction(a0))
     }
 
@@ -4396,11 +4417,11 @@ mod tests {
     #[test]
     fn void_function_errors_print_function_symbols_readably() {
         assert_eq!(
-            LispError::VoidFunction("not-defined".into()).to_string(),
+            LispError::VoidFunction(Value::symbol("not-defined")).to_string(),
             "Symbol's function definition is void: not-defined"
         );
         assert_eq!(
-            LispError::VoidFunction("(setf gv-test-foo)".into()).to_string(),
+            LispError::VoidFunction(Value::symbol("(setf gv-test-foo)")).to_string(),
             r"Symbol's function definition is void: \(setf\ gv-test-foo\)"
         );
     }

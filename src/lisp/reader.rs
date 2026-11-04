@@ -1986,7 +1986,10 @@ impl<'a> Reader<'a> {
                     // lread.c's empty #: branch returns a bare fresh symbol.
                     let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
                     Ok(Some(Value::Symbol(
-                        make_uninterned_symbol_name("", id).into(),
+                        crate::lisp::types::SymbolName::make_uninterned_with_text(
+                            make_uninterned_symbol_name("", id),
+                            None,
+                        ),
                     )))
                 } else {
                     self.read_atom_in_syntax(AtomSyntax::Uninterned)
@@ -2305,7 +2308,7 @@ impl<'a> Reader<'a> {
                         crate::lisp::primitives::make_specified_string(bytes, multibyte).ok()
                     })
             };
-            Value::Symbol(crate::lisp::types::SymbolName::intern_with_lisp_name(
+            Value::Symbol(crate::lisp::types::SymbolName::make_uninterned_with_text(
                 marked, lisp_name,
             ))
         } else if let Input::Function(input) = &mut self.input {

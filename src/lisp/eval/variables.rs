@@ -1285,8 +1285,8 @@ impl Interpreter {
 
     /// data.c:Fget_variable_watchers: the variable's watchers while its
     /// stores are trapped (not while they are being notified).
-    pub fn variable_watchers(&self, name: &str) -> Result<Value, LispError> {
-        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
+    pub(crate) fn variable_watchers(&self, symbol: &SymbolName) -> Result<Value, LispError> {
+        let symbol = self.resolve_variable_symbol(symbol)?;
         Ok(if symbol.cell().is_trapped_write() {
             self.watchers_property(&symbol)
         } else {
@@ -1296,8 +1296,12 @@ impl Interpreter {
 
     /// data.c:Fadd_variable_watcher: the variable's stores are trapped, and
     /// WATCHER goes in front of its watchers unless one is `equal' to it.
-    pub fn add_variable_watcher(&mut self, name: &str, watcher: Value) -> Result<(), LispError> {
-        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
+    pub(crate) fn add_variable_watcher(
+        &mut self,
+        symbol: &SymbolName,
+        watcher: Value,
+    ) -> Result<(), LispError> {
+        let symbol = self.resolve_variable_symbol(symbol)?;
         set_symbol_trapped_write(&symbol)?;
         symbol.cell().set_trapped_write(true);
         self.globals.set_plain_store(&symbol, false);
@@ -1313,12 +1317,12 @@ impl Interpreter {
     /// data.c:Fremove_variable_watcher: WATCHER is deleted from the
     /// variable's watchers, and with the last of them its stores are no
     /// longer trapped.
-    pub fn remove_variable_watcher(
+    pub(crate) fn remove_variable_watcher(
         &mut self,
-        name: &str,
+        symbol: &SymbolName,
         watcher: &Value,
     ) -> Result<(), LispError> {
-        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
+        let symbol = self.resolve_variable_symbol(symbol)?;
         let watchers = self.watchers_property(&symbol);
         let watchers =
             crate::lisp::primitives::call(self, "delete", &[*watcher, watchers], &mut Env::new())?;

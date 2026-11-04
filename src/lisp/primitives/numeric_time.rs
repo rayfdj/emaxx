@@ -405,7 +405,7 @@ pub(crate) fn function_arity_value(
     let positions_enabled = symbols_with_pos_enabled(interp, env);
     if let Some(symbol) = arity_bare_symbol(interp, function, positions_enabled) {
         if symbol.is_nil() {
-            return Err(LispError::VoidFunction("nil".into()));
+            return Err(LispError::VoidFunction(Value::Nil));
         }
         let name = symbol.as_symbol().expect("SYMBOLP established a symbol");
         if let Some(arity) = special_form_arity_value(name) {

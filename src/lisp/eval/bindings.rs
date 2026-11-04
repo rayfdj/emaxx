@@ -339,8 +339,8 @@ impl Interpreter {
     }
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
-        let symbol =
-            SymbolName::interned_cached(name).ok_or_else(|| LispError::Void(name.to_owned()))?;
+        let symbol = SymbolName::interned_cached(name)
+            .ok_or_else(|| LispError::Void(Value::symbol(name)))?;
         self.symbol_value_cell_symbol(&symbol)
     }
 
@@ -378,7 +378,7 @@ impl Interpreter {
 
     pub(crate) fn symbol_value_cell_symbol(&self, name: &SymbolName) -> Result<Value, LispError> {
         if let Some(value) = self.loaded_local_value(name) {
-            return value.ok_or_else(|| LispError::Void(name.as_str().to_owned()));
+            return value.ok_or_else(|| LispError::Void(Value::Symbol(*name)));
         }
         let resolved_owned;
         let resolved = if self.globals.alias(name).is_none() {
@@ -388,7 +388,7 @@ impl Interpreter {
             &resolved_owned
         };
         self.resolved_dynamic_value(resolved)
-            .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()))
+            .ok_or_else(|| LispError::Void(Value::Symbol(*resolved)))
     }
 
     /// data.c:find_symbol_value of NAME's alias chain's end with no
@@ -886,7 +886,7 @@ impl Interpreter {
         // the end of its redirect chain.
         let resolved = self.resolve_variable_name(name)?;
         self.lookup_var_with_resolved_name(name, &resolved, env, None)?
-            .ok_or_else(|| LispError::Void(name.to_owned()))
+            .ok_or_else(|| LispError::Void(Value::symbol(name)))
     }
 
     /// Evaluate an already-interned symbol without rebuilding and rehashing
@@ -971,7 +971,7 @@ impl Interpreter {
         env: &Env,
     ) -> Result<Value, LispError> {
         let Some(binding) = self.raw_function_binding_symbol(symbol, env) else {
-            return Err(LispError::VoidFunction(symbol.as_str().to_string()));
+            return Err(LispError::VoidFunction(Value::Symbol(*symbol)));
         };
         let Kind::Symbol(next) = binding.kind() else {
             return Ok(binding);
@@ -991,7 +991,7 @@ impl Interpreter {
                 ])));
             }
             let Some(binding) = self.raw_function_binding_symbol(&current, env) else {
-                return Err(LispError::VoidFunction(symbol.as_str().to_string()));
+                return Err(LispError::VoidFunction(Value::Symbol(*symbol)));
             };
             match binding.kind() {
                 Kind::Symbol(next) => current = next,
@@ -1043,7 +1043,7 @@ impl Interpreter {
         // so don't pay for indirection-cycle bookkeeping until a symbol
         // chain actually appears.
         let Some(binding) = self.raw_function_binding(name, env) else {
-            return Err(LispError::VoidFunction(name.to_string()));
+            return Err(LispError::VoidFunction(Value::symbol(name)));
         };
         let Kind::Symbol(next) = binding.kind() else {
             return Ok(binding);
@@ -1061,7 +1061,7 @@ impl Interpreter {
             }
 
             let Some(binding) = self.raw_function_binding(&current, env) else {
-                return Err(LispError::VoidFunction(name.to_string()));
+                return Err(LispError::VoidFunction(Value::symbol(name)));
             };
             match binding.kind() {
                 Kind::Symbol(next) => current = next.to_string(),

@@ -6927,7 +6927,7 @@ impl Interpreter {
         {
             interp
                 .add_variable_watcher(
-                    variable,
+                    &SymbolName::intern_str(variable),
                     Value::BuiltinFunc(crate::lisp::types::BuiltinRef::from_subr(watcher)),
                 )
                 .expect("a C variable takes a watcher");
@@ -8484,14 +8484,12 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             Value::Symbol(predicate.clone().into()),
             *value,
         ]),
-        LispErrorKind::Void(symbol) => Value::list([
-            Value::Symbol("void-variable".into()),
-            Value::Symbol(symbol.clone().into()),
-        ]),
-        LispErrorKind::VoidFunction(symbol) => Value::list([
-            Value::Symbol("void-function".into()),
-            Value::Symbol(symbol.clone().into()),
-        ]),
+        LispErrorKind::Void(symbol) => {
+            Value::list([Value::Symbol("void-variable".into()), *symbol])
+        }
+        LispErrorKind::VoidFunction(symbol) => {
+            Value::list([Value::Symbol("void-function".into()), *symbol])
+        }
         LispErrorKind::WrongNumberOfArgs(name, count) => Value::list([
             Value::Symbol("wrong-number-of-arguments".into()),
             Value::Symbol(name.clone().into()),

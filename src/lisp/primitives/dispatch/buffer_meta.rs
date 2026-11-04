@@ -821,17 +821,20 @@ define_dispatch!(
             }
             "add-variable-watcher" => {
                 need_args(name, args, 2)?;
-                interp.add_variable_watcher(args[0].as_symbol()?, args[1])?;
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                interp.add_variable_watcher(&symbol, args[1])?;
                 Ok(Value::Nil)
             }
             "remove-variable-watcher" => {
                 need_args(name, args, 2)?;
-                interp.remove_variable_watcher(args[0].as_symbol()?, &args[1])?;
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                interp.remove_variable_watcher(&symbol, &args[1])?;
                 Ok(Value::Nil)
             }
             "get-variable-watchers" => {
                 need_args(name, args, 1)?;
-                interp.variable_watchers(args[0].as_symbol()?)
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                interp.variable_watchers(&symbol)
             }
             "command-modes" => {
                 need_args(name, args, 1)?;
