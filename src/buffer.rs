@@ -3595,6 +3595,21 @@ impl Buffer {
         self.visited_file_modtime = modtime;
     }
 
+    /// COUNT one-byte insertions or deletions that record nothing and run
+    /// no hooks, as Fset_buffer_multibyte's insert_1_both and del_range_2
+    /// change an eight-bit character's form: MODIFF advanced by
+    /// `modiff_incr (&MODIFF, 1)' for each, and CHARS_MODIFF = MODIFF.
+    pub(crate) fn count_unrecorded_byte_edits(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let mut text = self.text.borrow_mut();
+        for _ in 0..count {
+            modiff_incr(&mut text.modiff, 1);
+        }
+        text.chars_modiff = text.modiff;
+    }
+
     /// Frestore_buffer_modified_p's non-nil FLAG: when SAVE_MODIFF >=
     /// MODIFF, SAVE_MODIFF = modiff_incr (&MODIFF, 1).
     pub fn set_modified(&mut self) {

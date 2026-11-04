@@ -756,6 +756,44 @@ fn dynamic_binding_byte_code_binds_as_funcall_lambda() {
     );
 }
 
+#[test]
+fn set_buffer_multibyte_is_fset_buffer_multibyte() {
+    // buffer.c:Fset_buffer_multibyte: the undo list is t before the
+    // narrowed buffer's error, which leaves it so; each eight-bit
+    // character converted is a one-byte insertion (insert_1_both) or
+    // deletion (del_range_2) that advances the modification ticks; an
+    // unmodified buffer is restored to unmodified; a list kept for undo
+    // gets one `apply' entry for the conversion.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(dolist (text (list "abc" "aé" (string-to-unibyte "a\377b") (string-to-multibyte "a\377\200b")))
+  (dolist (flag '(nil t to))
+    (dolist (undo '(t nil))
+      (dolist (modified '(nil t))
+        (with-temp-buffer
+          (when undo (buffer-enable-undo))
+          (unless (multibyte-string-p text) (set-buffer-multibyte nil))
+          (insert text)
+          (unless modified (set-buffer-modified-p nil))
+          (let ((tick (buffer-modified-tick)) (chars (buffer-chars-modified-tick)) (marker (copy-marker 3)))
+            (goto-char 2)
+            (let ((value (condition-case e (set-buffer-multibyte flag) (error e))))
+              (princ (format "%S %S %S %S: %S %S %S %S %S %S %S %S %S\n" text flag undo modified value
+                             enable-multibyte-characters (buffer-string) (point) (buffer-modified-p)
+                             (- (buffer-modified-tick) tick) (- (buffer-chars-modified-tick) chars)
+                             buffer-undo-list (marker-position marker)))
+              (narrow-to-region 1 2)
+              (princ (format "  %S %S\n" (condition-case e (set-buffer-multibyte (not enable-multibyte-characters)) (error e))
+                             buffer-undo-list)))))))))"#,
+        ],
+    );
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

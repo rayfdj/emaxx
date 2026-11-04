@@ -13967,6 +13967,28 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 290: set-buffer-multibyte in Fset_buffer_multibyte's order,
+  its conversion counted as GNU counts it.** Fset_buffer_multibyte reads
+  the restriction, the modified flag and the undo list first, sets the
+  undo list to t before it signals for a narrowed buffer (so the error
+  leaves the list t, as GNU's does), converts each eight-bit character's
+  bytes by insert_1_both or del_range_2 calls that record nothing but
+  each advance MODIFF by one (and CHARS_MODIFF with it), takes its
+  indirect buffers along, puts one `apply' entry on a list it kept for
+  undo, and restores an unmodified buffer to unmodified. Emaxx signalled
+  before touching the list and advanced no tick for the conversion;
+  `count_unrecorded_byte_edits' now advances the ticks once per
+  eight-bit character converted (a raw byte's character in the text or a
+  code from 0x3FFF80 among those its view cannot carry), the arm runs
+  the steps in GNU's order, and the restore keeps an unmodified buffer
+  unmodified across the counted edits. A command-line comparison
+  converts four texts (ASCII, a multibyte character, a unibyte raw byte,
+  a multibyte text with eight-bit characters) with each flag, undo kept
+  or not and the buffer modified or not, printing the ticks, the undo
+  list, the modified flag and a marker, then the narrowed error and the
+  list it leaves. Local validation: the grouped gate's 3,501
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16134,6 +16156,17 @@ ert-tests (46,120 ms against 38,830), tramp-tests (23,920 against
 20,070), comp-tests (17,520 against 15,020), semantic-utest-ia (4,190
 against 2,630), mule-tests (3,380 against 2,030) and package-tests
 (7,180 against 6,280).
+
+**On `958d88e`** (round 289): the full Rust gate (run 41767921208)
+passed; the frozen run (run 41767924394) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 90.4 s against 68.4 s (1.321),
+test bodies 314.4 s against 274.1 s (1.147), in all 1.168, with a
+per-file setup median of 136 ms against 106, on a slower runner still
+(GNU's own bodies 274.1 s). The widest body gaps are ert-tests (45,330
+ms against 37,110), comp-tests (19,040 against 15,040), tramp-tests
+(22,420 against 20,120), semantic-utest-ia (4,420 against 2,840),
+mule-tests (3,560 against 1,980) and package-tests (7,260 against
+6,040).
 
 **Findings recorded, not fixed:**
 - **A dynamic-binding byte-code call from byte code costs about 100
