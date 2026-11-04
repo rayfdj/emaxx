@@ -525,3 +525,100 @@ fn open_file_limit_is_init_process_emacs_s() {
         ],
     );
 }
+
+/// One batch run of BINARY on PROGRAM in a fresh directory holding
+/// `f.txt', with no core files and with each of IGNORED inherited ignored:
+/// its standard output, the first line of its standard error, its exit
+/// status or the signal that ended it, and the directory's files after.
+#[cfg(target_os = "linux")]
+fn signal_run(
+    binary: &Path,
+    program: &str,
+    ignored: &[i32],
+) -> (String, String, String, Vec<String>) {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    let corpus = Corpus::new();
+    std::fs::write(corpus.directory.join("f.txt"), "text\n").unwrap();
+    let ignored = ignored.to_vec();
+    let mut command = Command::new(binary);
+    command
+        .args(["--batch", "-Q", "--eval", program])
+        .current_dir(&corpus.directory)
+        .env("HOME", &corpus.directory)
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null());
+    // SAFETY: setrlimit and signal are async-signal-safe.
+    unsafe {
+        command.pre_exec(move || {
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            libc::setrlimit(libc::RLIMIT_CORE, &none);
+            for signal in &ignored {
+                libc::signal(*signal, libc::SIG_IGN);
+            }
+            Ok(())
+        });
+    }
+    let output = command.output().unwrap();
+    let ended = match (output.status.code(), output.status.signal()) {
+        (Some(code), _) => format!("exit {code}"),
+        (None, Some(signal)) => format!("signal {signal}"),
+        _ => "unknown".to_string(),
+    };
+    let first_error_line = String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let mut files = std::fs::read_dir(&corpus.directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        first_error_line,
+        ended,
+        files,
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn signals_are_init_signals_s() {
+    // sysdep.c:init_signals ignores SIGPROF and atimer.c catches SIGALRM,
+    // so neither ends Emacs; SIGTERM is caught even when inherited
+    // ignored; SIGQUIT and SIGXFSZ (process_fatal_action) and the faults
+    // (thread_fatal_action) run terminate_due_to_signal: shut_down_emacs
+    // auto-saves and unlocks, and emacs_backtrace writes "Backtrace:"
+    // before the signal ends the process (no "Fatal error" line without a
+    // controlling terminal).  The backtraces' frames are each binary's own.
+    let edit = "(progn (find-file \"f.txt\") (auto-save-mode 1) (insert \"more\") (princ \"edited\\n\") (setq kill-emacs-hook (list (lambda () (princ \"hook\\n\")))))";
+    let mut cases: Vec<(String, Vec<i32>)> = vec![
+        (
+            "(progn (signal-process (emacs-pid) 'SIGPROF) (signal-process (emacs-pid) 'SIGALRM) (sleep-for 0.1) (princ \"survived\\n\"))".to_string(),
+            vec![],
+        ),
+        (
+            "(progn (signal-process (emacs-pid) 'SIGTERM) (sleep-for 1) (princ \"survived\\n\"))".to_string(),
+            vec![libc::SIGTERM],
+        ),
+        // kill-emacs's shut_down_emacs auto-saves and unlocks too.
+        (format!("(progn {edit} (princ \"done\\n\"))"), vec![]),
+    ];
+    for signal in ["SIGTERM", "SIGQUIT", "SIGXFSZ", "SIGSEGV", "SIGABRT"] {
+        cases.push((
+            format!("(progn {edit} (signal-process (emacs-pid) '{signal}) (sleep-for 1) (princ \"survived\\n\"))"),
+            vec![],
+        ));
+    }
+    for (program, ignored) in cases {
+        assert_eq!(
+            signal_run(emaxx(), &program, &ignored),
+            signal_run(&oracle(), &program, &ignored),
+            "Emaxx (left) and GNU (right) differ for {program}"
+        );
+    }
+}

@@ -13764,6 +13764,47 @@ setup_process_coding_systems's check now refuses). A 13-form
   difference from GNU. Local validation: the grouped gate's 3,497
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 285: the rest of init_signals, terminate_due_to_signal and
+  shut_down_emacs.** sysdep.c:init_signals gives process_fatal_action to
+  SIGHUP and (in batch) SIGINT unless inherited ignored, and to SIGTERM,
+  SIGQUIT, SIGVTALRM, SIGXCPU and SIGXFSZ whatever was inherited;
+  thread_fatal_action to SIGILL, SIGTRAP, SIGFPE, SIGABRT, SIGBUS,
+  SIGSEGV (init_sigsegv's, on a 64 KiB alternate stack) and SIGSYS; it
+  ignores SIGPROF until a profiler takes it, and atimer.c:init_atimer
+  catches SIGALRM, whose handler with no atimer pending does nothing.
+  Emaxx caught HUP, INT and TERM (round 115) and left the rest at their
+  defaults, so a SIGPROF or SIGALRM killed it where GNU carries on, a
+  SIGTERM inherited ignored was ignored, and a fault or SIGQUIT ended it
+  without GNU's shutdown. emacs.c:terminate_due_to_signal, with
+  `attempt-orderly-shutdown-on-fatal-signal' and no fatal error already
+  in progress, runs Fkill_emacs for SIGTERM, SIGHUP and SIGINT and
+  otherwise shut_down_emacs (Vrun_hooks cleared, "Fatal error N: DESC"
+  when Emacs's process group is the terminal's foreground, every
+  subprocess hung up, Fdo_auto_save (t, nil), unlock_all_files) and
+  emacs_backtrace (40), "Backtrace:" and backtrace_symbols_fd's frames
+  on standard error; it then raises the signal at its default action, so
+  the status is the signal's and what stdio buffered for standard output
+  is lost. The process signals and a fault another process sent (si_code
+  <= 0, but not glibc's own abort) wait for the next quit check, which
+  runs all of it; a fault the thread made cannot be returned to, and its
+  handler writes the diagnostic and the backtrace and raises the signal.
+  Fkill_emacs's shut_down_emacs now auto-saves too (it only unlocked),
+  with no `auto-save-hook' and no directory made for the list file once
+  Vrun_hooks is nil, and deletes `auto-save-list-file-name'.
+  `attempt-orderly-shutdown-on-fatal-signal' is a forwarded cell read by
+  the handlers. A command-line comparison (an edited file buffer in
+  `auto-save-mode' with a `kill-emacs-hook', then self-sent SIGTERM,
+  SIGQUIT, SIGXFSZ, SIGSEGV and SIGABRT, a normal end, SIGPROF, SIGALRM
+  and an inherited-ignored SIGTERM) gives GNU 30.2's statuses, standard
+  output, first line of standard error and files left (`#f.txt#' after
+  each signal, none after `kill-emacs'). Not done: a fault the kernel
+  raises cannot run shut_down_emacs's Lisp half (the auto-saves, the
+  unlocks), which GNU runs in the handler; sysdep.c's stack-overflow
+  recovery ("Re-entering top level after C stack overflow") is not
+  ported; profiler.c's sampling is not ported, so SIGPROF is never
+  taken. Local validation: the grouped gate's 3,497 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -15874,7 +15915,29 @@ round 282's. The widest body gaps are ert-tests (36,450 ms against
 13,780), mule-tests (2,410 against 1,540), semantic-utest-ia (3,400
 against 2,640) and package-tests (6,580 against 5,850).
 
+**On `65876a7`** (round 284): the full Rust gate (run 41738831061)
+passed; the frozen run (run 41738835434) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 82.8 s against 65.9 s (1.255),
+test bodies 303.8 s against 271.0 s (1.121), in all 1.125, with a
+per-file setup median of 125 ms against 103, on a runner slower again
+than round 283's (GNU's own bodies took 271.0 s against 249.2 s). The
+widest body gaps are ert-tests (45,670 ms against 38,070), tramp-tests
+(22,980 against 19,090), comp-tests (18,020 against 15,060),
+semantic-utest-ia (4,030 against 2,610), mule-tests (3,270 against
+2,010) and package-tests (7,160 against 6,150).
+
 **Findings recorded, not fixed:**
+- **What a fatal signal does in GNU that it does not in Emaxx (rounds
+  115 and 285).** A fault the kernel raises in Emaxx's own code (a
+  SIGSEGV, SIGBUS, SIGFPE or SIGILL it did not send itself) ends Emacs
+  from its handler with the diagnostic and the backtrace only, where
+  GNU's handler also runs shut_down_emacs's hang-ups, auto-saves and
+  unlocks: those need the interpreter the fault interrupted.
+  sysdep.c:handle_sigsegv's recovery from a C stack overflow (a longjmp
+  to the command loop and "Re-entering top level after C stack
+  overflow") is not ported. profiler.c's CPU and memory profilers
+  collect no samples (their logs are empty hash tables), so SIGPROF
+  stays ignored.
 - **Allocations outside the Lisp object makers still abort when the
   system refuses them (round 277).** GNU's lisp_align_malloc and xmalloc
   reach memory_full, which signals, for every block and buffer; in Emaxx

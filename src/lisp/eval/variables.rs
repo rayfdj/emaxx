@@ -8,7 +8,7 @@ use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SymbolName;
 
 /// The variables forwarded to evaluator cells (`update_forwarded_eval_cell').
-const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 9] = [
+const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 10] = [
     cached_symbol!("quit-flag"),
     cached_symbol!("inhibit-quit"),
     cached_symbol!("throw-on-input"),
@@ -18,6 +18,7 @@ const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 9] = [
     cached_symbol!("debug-on-next-call"),
     cached_symbol!("symbols-with-pos-enabled"),
     cached_symbol!("undo-inhibit-record-point"),
+    cached_symbol!("attempt-orderly-shutdown-on-fatal-signal"),
 ];
 
 /// Whether SYMBOL is one of the variables whose evaluator cells hold the
@@ -37,6 +38,7 @@ pub(super) fn is_forwarded_eval_cell(symbol: &SymbolName) -> bool {
             | "debug-on-next-call"
             | "symbols-with-pos-enabled"
             | "undo-inhibit-record-point"
+            | "attempt-orderly-shutdown-on-fatal-signal"
     ) && FORWARDED_EVAL_CELLS
         .iter()
         .any(|key| key.name() == symbol.as_str() && key.with(|cell| cell == symbol))
@@ -1618,6 +1620,9 @@ impl Interpreter {
                 self.symbols_with_positions_enabled.set(value.is_truthy());
             }
             "undo-inhibit-record-point" => self.set_undo_inhibit_record_point(value.is_truthy()),
+            "attempt-orderly-shutdown-on-fatal-signal" => {
+                crate::lisp::primitives::set_attempt_orderly_shutdown(value.is_truthy());
+            }
             _ => {}
         }
     }
@@ -1647,6 +1652,13 @@ impl Interpreter {
             } else {
                 Value::Nil
             }),
+            "attempt-orderly-shutdown-on-fatal-signal" => {
+                Some(if crate::lisp::primitives::attempt_orderly_shutdown() {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
             _ => None,
         }
     }

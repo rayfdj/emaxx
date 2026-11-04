@@ -240,6 +240,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "the forwarded C slot of debug-on-next-call, refilled likewise",
     ),
     (
+        "hooks_cleared",
+        "eval.c's Vrun_hooks cleared by shut_down_emacs, which a dumping process has not run",
+    ),
+    (
         "undo_inhibit_record_point",
         "the forwarded C slot of undo-inhibit-record-point, refilled likewise with the buffers' copies",
     ),

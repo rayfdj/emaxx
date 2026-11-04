@@ -164,6 +164,21 @@ impl Interpreter {
 }
 
 impl Interpreter {
+    /// emacs.c:shut_down_emacs's kill_buffer_processes (Qnil), each
+    /// subprocess sent SIGHUP with no sentinel run, and reset_all_sys_modes,
+    /// each terminal's modes restored.
+    pub(crate) fn hang_up_processes_and_reset_terminals(&mut self) {
+        if self.state.is_some() {
+            #[cfg(unix)]
+            for process in &mut self.process_states {
+                if let Some(runtime) = &mut process.runtime {
+                    runtime.hang_up_for_process_exit();
+                }
+            }
+            self.terminals.clear();
+        }
+    }
+
     /// Release resources with external effects before the batch CLI exits.
     /// The OS reclaims Lisp storage; embedded callers still drop it normally.
     pub(crate) fn release_external_resources_for_exit(&mut self) {

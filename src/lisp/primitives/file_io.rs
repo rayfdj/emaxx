@@ -3198,7 +3198,11 @@ pub(crate) fn do_auto_save(
     // Ordinarily don't quit within this function.
     let oquit = interp.lookup_var("quit-flag", env).unwrap_or(Value::Nil);
     interp.set_variable("quit-flag", Value::Nil, env);
-    crate::batch::safe_run_hooks(interp, "auto-save-hook")?;
+    // run_hook_with_args does nothing once shut_down_emacs has cleared
+    // Vrun_hooks.
+    if !interp.hooks_cleared {
+        crate::batch::safe_run_hooks(interp, "auto-save-hook")?;
+    }
     let mut stream = None;
     if let Some(list_file) = interp
         .lookup_var("auto-save-list-file-name", env)
@@ -3206,7 +3210,9 @@ pub(crate) fn do_auto_save(
     {
         let list_file = call(interp, "expand-file-name", &[list_file, Value::Nil], env)?;
         let dir = call(interp, "file-name-directory", &[list_file], env)?;
-        if !call(interp, "file-directory-p", &[dir], env)?.is_truthy() {
+        // Not when shutting down (Vrun_hooks cleared): an error there would
+        // leave Emacs in a strange state.
+        if !interp.hooks_cleared && !call(interp, "file-directory-p", &[dir], env)?.is_truthy() {
             // do_auto_save_make_dir under internal_condition_case_1:
             // private, and any error ignored.
             AUTO_SAVING_DIR_UMASK.set(0o077);
