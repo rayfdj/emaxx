@@ -1051,6 +1051,65 @@ fn bindings_and_unwind_records_share_one_specpdl() {
 }
 
 #[test]
+fn generated_dynamic_bindings_match_across_buffers() {
+    // Forty programs generated from one `random' seed: `let', `setq',
+    // `set-default', `make-local-variable', `kill-local-variable' and
+    // `setq-local' of two global variables and a buffer-local one in two
+    // buffers, under buffer switches, unwind-protect, catch and throw and
+    // condition-case, each run interpreted and byte-compiled, its states
+    // and GNU's warnings printed.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (defvar fz-a 'ga) (defvar fz-b 'gb) (defvar-local fz-c 'gc) (defvar fz-out nil)
+  (defun fz-log (x) (push x fz-out))
+  (defun fz-pick (l) (nth (random (length l)) l))
+  (defun fz-state ()
+    '(fz-log (list (buffer-name) fz-a fz-b fz-c (default-value 'fz-a)
+                   (default-value 'fz-c) (local-variable-p 'fz-a) (local-variable-p 'fz-c))))
+  (defun fz-stmt (d)
+    (let ((k (random (if (< d 4) 14 7))) (v (fz-pick '(fz-a fz-b fz-c)))
+          (x (fz-pick '('x 'y 'z 1 2 3))) (b (fz-pick '("fz1" "fz2"))))
+      (if (< k 7)
+          (nth k `((setq ,v ,x) (set-default ',v ,x) (make-local-variable ',v)
+                   (kill-local-variable ',v) (set-buffer ,b) ,(fz-state) (setq-local ,v ,x)))
+        (let ((body (let (l) (dotimes (_ (1+ (random 3))) (push (fz-stmt (1+ d)) l)) l)))
+          (nth (- k 7)
+               `((let ((,v ,x)) ,@body)
+                 (let ((,v ,x) (,(fz-pick '(fz-a fz-b fz-c)) ,x)) ,@body)
+                 (with-current-buffer ,b ,@body)
+                 (unwind-protect (progn ,@body) ,(fz-state))
+                 (catch 'fz-tag ,@body (throw 'fz-tag nil))
+                 (condition-case nil (progn ,@body (error "fz")) (error ,(fz-state)))
+                 (save-current-buffer ,@body)))))))
+  (get-buffer-create "fz1") (get-buffer-create "fz2")
+  (defun fz-run (f)
+    (dolist (b '("fz1" "fz2")) (with-current-buffer b (kill-all-local-variables)))
+    (set-buffer "fz1")
+    (setq-default fz-a 'ga fz-b 'gb fz-c 'gc)
+    (setq fz-out nil)
+    (condition-case e (funcall f) (error (fz-log (list 'err e))))
+    (set-buffer "fz1")
+    (nreverse fz-out))
+  (random "emaxx-specpdl")
+  (let ((programs (let (l) (dotimes (_ 40)
+                             (push `(lambda () ,@(let (s) (dotimes (_ (+ 3 (random 4))) (push (fz-stmt 0) s)) s)
+                                       ,(fz-state))
+                                   l))
+                    (nreverse l))))
+    (dolist (p programs)
+      (let ((f (eval p t)))
+        (print (list (fz-run f) (fz-run (byte-compile f))))))))"#,
+        ],
+    );
+}
+
+#[test]
 fn matcher_backtracks_and_folds_as_regex_emacs() {
     // re_match_2_internal's failure stack (failure points, saved
     // registers, `\{n,m\}' counters) and a case-folded EXACTN over ASCII

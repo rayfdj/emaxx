@@ -11,6 +11,11 @@ use super::*;
 // nothing to drop.
 const _: () = assert!(!std::mem::needs_drop::<SpecialBindingRestore>());
 
+/// eval.c's specpdl_ref: the depth of the specpdl a caller took before
+/// it bound, which `Interpreter::restore_special_binding' unbinds to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SpecpdlRef(pub(super) usize);
+
 /// eval.c's `union specbinding': a dynamic binding's record or an unwind
 /// record.
 #[derive(Clone, Debug)]

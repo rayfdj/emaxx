@@ -14175,6 +14175,39 @@ setup_process_coding_systems's check now refuses). A 13-form
   matches GNU's. Local validation: the grouped gate's 3,501 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 297: Rust's bindings undone as a C caller's unbind_to undoes
+  them.** The primitives written in Rust bound a variable through
+  `bind_special_symbol', which handed back a copy of its specpdl record,
+  and restored it by searching the specpdl for the record's id and
+  removing the record wherever it lay (or applying the copy when it was
+  gone): two bindings of one variable restored outer first left the
+  value the inner one had saved. A bind now answers the specpdl's depth
+  before it (eval.c's specpdl_ref, from SPECPDL_INDEX), and the restore
+  is unbind_to of that depth, which undoes the binding and whatever lies
+  above it, innermost first, as a C caller's `unbind_to (count, val)'
+  does: restored out of order, the variable ends at its value before the
+  outer binding and the later restore does nothing. The records lose
+  their ids, so a binding's entry is 8 bytes smaller, a bind no longer
+  counts, and the image no longer saves the counter; `prin1-to-string'
+  takes 9,233 instructions a call against 9,342 (GNU's 17,837). A unit
+  test binds one variable twice and restores the outer binding first.
+  3,000 generated programs of `let', `setq', `set-default',
+  `make-local-variable', `kill-local-variable' and `setq-local' over two
+  global variables and a buffer-local one in two buffers, under buffer
+  switches, unwind-protect, catch and throw and condition-case,
+  interpreted and byte-compiled, print GNU's states and warnings, and
+  2,000 of save-excursion, save-restriction, narrowing, insertion,
+  deletion and point motion under the same exits print GNU's points,
+  bounds and texts; a command-line comparison runs forty programs of the
+  first kind, generated in Lisp from one `random' seed. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass. The primitives group's first run failed
+  `stderr_pipe_process_and_status_notify_as_process_c' once, on the
+  Emaxx side, while a release build and a check build ran beside it; the
+  gate's filter kept no assertion text (the local gate now keeps each
+  group's whole output), and the test passed alone 15 times, 12 of them
+  beside four busy loops, and in its whole group again, 473 of 473.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16442,6 +16475,17 @@ against 2,757). Neither rise is the round's: the gate builds of rounds
 418.1M and 416.6M instructions and run simple-tests in 5.043G and
 5.019G.
 
+**On `b11a304`** (round 296): the full Rust gate (run 41813787462)
+passed; the frozen run (run 41813793113) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a runner slower than round 295's
+(the oracle's setup 64.0 s against 50.4, its bodies 262.2 s against
+232.5). Setup 76.8 s against 64.0 s (1.201), test bodies 285.4 s against
+262.2 s (1.089), in all 1.094, with a per-file setup median of 114 ms
+against 98. The widest body gaps are tramp-tests (20,621 ms against
+17,446), ert-tests (39,674 against 36,950), comp-tests (17,064 against
+14,582), semantic-utest-ia (3,781 against 2,689) and mule-tests (2,811
+against 1,833, the ratio of round 294's 2,334 against 1,489).
+
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal
   regions and a middle region of multibyte text moves the middle by its
@@ -16544,21 +16588,24 @@ against 2,757). Neither rise is the round's: the gate builds of rounds
   each against the release build's 625, and the interpreter's own
   environment walks (`assq_binding', `environment_declares_special')
   come out of line at another 1.9G.
-- **A call from Rust into byte code costs about 240 instructions more
-  than GNU's (round 167).** `mapatoms' over 18,663 symbols with a
-  byte-compiled callback takes 596 instructions a symbol in the release
-  build against GNU's 435: funcall_closure 241, call_function_value 124,
-  the callee's run_verified 111 and `mapatoms' itself 26, where GNU
-  spends Ffuncall 61, funcall_general 47, funcall_lambda 40 and
-  exec_byte_code 154. The excess is spread over the entry's steps, none
-  more than a few dozen instructions: the frame-entry cache lookup and
-  its epoch checks, the copy of the cached program, the activation's
-  entry marks and their restoring, the frame and argument pushes, the
-  verified loop's frame record, and the backtrace frame and debugger
-  gates around it. It is most of what separates comp-cstr-tests (4.44G
-  against 3.65G; its 3.85M `mapatoms' callbacks), edebug-tests (4.78G
-  against 4.11G) and em-pred-tests (2.83G against 2.53G; 937K byte-code
-  callbacks) from GNU.
+- **A call from Rust into byte code costs about 120 instructions more
+  than GNU's (rounds 167 and 297).** `mapatoms' with a byte-compiled
+  callback takes 502 instructions a symbol in the release build over its
+  17,832 symbols against GNU's 382 over 18,155, and `maphash' 522 an
+  entry against 397: funcall_closure 210 and call_function_value 118
+  around the callee's run_verified 139 and `mapatoms' itself 23, where
+  GNU spends Ffuncall 61, funcall_general 42 and funcall_lambda 40
+  around exec_byte_code 200. The excess is spread over the entry's
+  steps, none more than a dozen instructions: the frame-entry cache
+  lookup and its epoch checks, the copy of the cached program, the
+  activation's entry marks and their restoring, the frame and argument
+  pushes, the verified loop's frame record, and the backtrace frame and
+  debugger gates around it. It is most of what separated comp-cstr-tests
+  (4.44G against 3.65G at round 167; its 3.85M `mapatoms' callbacks),
+  edebug-tests (4.78G against 4.11G) and em-pred-tests (2.83G against
+  2.53G; 937K byte-code callbacks) from GNU, and of comp-tests'
+  `ret-type-spec' tests' excess (one takes 138M instructions against
+  111M, 137K of them `mapatoms' callbacks).
 - **comp-tests' time is the instruction rate (round 166).** In the
   release build a `comp-tests-ret-type-spec-*' test takes about 330 ms
   of wall time against GNU's 267 ms and a third more user time, but

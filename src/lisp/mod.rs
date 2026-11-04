@@ -1173,7 +1173,7 @@ fn read_lisp_file_bytes(
 
 fn restore_special_dynamic_bindings(
     interp: &mut eval::Interpreter,
-    restores: &mut Vec<eval::SpecialBindingRestore>,
+    restores: &mut Vec<eval::SpecpdlRef>,
     env: &mut types::Env,
 ) -> Result<(), types::LispError> {
     while let Some(restore) = restores.pop() {

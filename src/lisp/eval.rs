@@ -42,7 +42,7 @@ mod resource_forms;
 pub(crate) mod roots;
 pub(crate) mod runtime;
 mod specpdl;
-pub(crate) use specpdl::{SpecpdlEntry, UnwindAction};
+pub(crate) use specpdl::{SpecpdlEntry, SpecpdlRef, UnwindAction};
 pub(crate) mod terminal;
 mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
@@ -1487,7 +1487,6 @@ enum SpecialBindingScope {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SpecialBindingRestore {
-    binding_id: u64,
     /// The bound symbol, its alias chain resolved; the cells are read
     /// and written by its id on the way out as on the way in.
     name: SymbolName,
@@ -5778,7 +5777,6 @@ pub struct InterpreterState {
     /// eval.c's specpdl: the dynamic bindings and native code's unwind
     /// records, innermost last.
     specpdl: Vec<SpecpdlEntry>,
-    next_special_binding_id: u64,
     /// Marker-tracked labeled restrictions, with the innermost entry last.
     labeled_restrictions: Vec<LabeledRestriction>,
     /// Indirect buffer mapping: (buffer id, base buffer id).
@@ -6624,7 +6622,6 @@ impl Interpreter {
             buffer_syntax_tables: coding::BufferCharTables::default(),
             buffer_category_tables: coding::BufferCharTables::default(),
             specpdl: Vec::new(),
-            next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
             network_connect_counter: 0,

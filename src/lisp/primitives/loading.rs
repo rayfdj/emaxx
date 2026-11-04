@@ -239,7 +239,7 @@ fn call_interactively_bound(
     func: Value,
     spec: Value,
     saved_command_state: &[(&str, Value)],
-    minibuffer_command: &mut Option<crate::lisp::eval::SpecialBindingRestore>,
+    minibuffer_command: &mut Option<crate::lisp::eval::SpecpdlRef>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let string_spec = spec.is_string();

@@ -368,10 +368,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "image_reconstruction_handoff",
         "the startup reconstruction's flag",
     ),
-    (
-        "next_special_binding_id",
-        "carried in the remembered scalars",
-    ),
     ("indirect_buffers", "written as each buffer's base"),
     (
         "network_connect_counter",
@@ -875,10 +871,6 @@ impl Interpreter {
                 pair(
                     Value::String("next-record-id".into()),
                     Value::Integer(self.next_record_id as i64),
-                ),
-                pair(
-                    Value::String("next-special-binding-id".into()),
-                    Value::Integer(self.next_special_binding_id as i64),
                 ),
                 pair(
                     Value::String("lossage-size".into()),
@@ -1388,9 +1380,6 @@ mod install {
                             }
                             "next-record-id" => {
                                 self.next_record_id = self.next_record_id.max(id(&name)?)
-                            }
-                            "next-special-binding-id" => {
-                                self.next_special_binding_id = id(&name)?;
                             }
                             "lossage-size" => self.lossage_size = int(&name)?,
                             "builtin-doc-offsets" => {

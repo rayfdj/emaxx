@@ -36202,3 +36202,41 @@ fn gc_variables_are_watched_by_alloc_c_s_own_subrs() {
         "GC variable watchers",
     );
 }
+
+#[test]
+fn rust_bindings_are_undone_by_unbind_to_their_depth() {
+    // eval.c:unbind_to (count): a C caller's restore undoes its binding
+    // and whatever was bound above it, innermost first, so the variable
+    // ends at its value before the outer binding however the caller orders
+    // its restores, and the later restore of the inner binding is a no-op.
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    interp.define_special_variable("unbind-to-depth-test", Value::Integer(0));
+    let base = interp.specpdl_index();
+    let outer = interp
+        .bind_special_dynamic("unbind-to-depth-test", Value::Integer(1), &mut env)
+        .expect("outer binding");
+    let inner = interp
+        .bind_special_dynamic("unbind-to-depth-test", Value::Integer(2), &mut env)
+        .expect("inner binding");
+    assert_eq!(
+        interp.lookup_var("unbind-to-depth-test", &env),
+        Some(Value::Integer(2))
+    );
+    interp
+        .restore_special_dynamic(outer, &mut env)
+        .expect("outer restored first");
+    assert_eq!(
+        interp.lookup_var("unbind-to-depth-test", &env),
+        Some(Value::Integer(0))
+    );
+    assert_eq!(interp.specpdl_index(), base);
+    interp
+        .restore_special_dynamic(inner, &mut env)
+        .expect("inner restore after it was undone");
+    assert_eq!(
+        interp.lookup_var("unbind-to-depth-test", &env),
+        Some(Value::Integer(0))
+    );
+    assert_eq!(interp.specpdl_index(), base);
+}

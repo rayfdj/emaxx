@@ -5292,9 +5292,7 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
         // notified or run (`Interpreter::specbind_plain').
         // SAFETY: generated code passes live Lisp_Object words.
         if let Some(name) = unsafe { Value::from_word(symbol) }.symbol_cell()
-            && interpreter
-                .specbind_plain(&name, unsafe { Value::from_word(value) })
-                .is_some()
+            && interpreter.specbind_plain(&name, unsafe { Value::from_word(value) })
         {
             return;
         }

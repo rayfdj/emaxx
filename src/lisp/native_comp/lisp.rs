@@ -10,7 +10,7 @@ use super::backend::{
     CoreRelocations, FunctionCallingConvention, FunctionDeclaration, HELPER_NAMES, Relocation,
     RelocationArrayKind, SerializedRelocation, UnitInput,
 };
-use crate::lisp::eval::{Interpreter, SpecialBindingRestore};
+use crate::lisp::eval::{Interpreter, SpecpdlRef};
 use crate::lisp::json;
 use crate::lisp::primitives::{render_prin1_output, string_like};
 use crate::lisp::types::{Env, LispError, Value};
@@ -353,7 +353,7 @@ fn print_static(
     env: &mut Env,
     value: &Value,
 ) -> Result<Vec<u8>, LispError> {
-    let mut restores: Vec<SpecialBindingRestore> = Vec::with_capacity(6);
+    let mut restores: Vec<SpecpdlRef> = Vec::with_capacity(6);
     for (name, binding) in [
         ("print-escape-newlines", Value::T),
         ("print-length", Value::Nil),
@@ -380,7 +380,7 @@ fn print_static(
 fn restore_bindings(
     interp: &mut Interpreter,
     env: &mut Env,
-    restores: Vec<SpecialBindingRestore>,
+    restores: Vec<SpecpdlRef>,
 ) -> Result<(), LispError> {
     for restore in restores.into_iter().rev() {
         interp.restore_special_dynamic(restore, env)?;

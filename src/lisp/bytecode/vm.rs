@@ -3033,7 +3033,7 @@ fn assq_in_place(interp: &Interpreter, env: &Env, key: Value, alist: Value) -> O
 /// (`Interpreter::specbind_plain'), its record on the specpdl.
 #[inline(never)]
 fn varbind_plain(interp: &mut Interpreter, symbol: &SymbolName, value: Value) -> bool {
-    interp.specbind_plain(symbol, value).is_some()
+    interp.specbind_plain(symbol, value)
 }
 
 /// Bunbind 1 of the innermost specpdl entry when undoing it runs nothing:
@@ -4442,7 +4442,7 @@ fn bind_dynamic_arguments(
             } else {
                 return Err(legacy_arity_error(&function, args.len()));
             };
-            if interp.specbind_plain(&symbol, value).is_none() {
+            if !interp.specbind_plain(&symbol, value) {
                 interp.specbind_symbol(&symbol, value, env)?;
             }
             previous_rest = false;
