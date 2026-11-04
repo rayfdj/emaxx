@@ -13829,7 +13829,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
             if matches!(value.to_vec().ok().as_deref().map(crate::lisp::types::kinds).as_deref(), Some([
                 Kind::Symbol(name),
                 Kind::Buffer(_),
-            ]) if name == "buffer-read-only")
+            ]) if name.is_named("buffer-read-only"))
     ));
 
     interp.set_variable("inhibit-read-only", Value::T, &mut env);
@@ -16954,7 +16954,7 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
     assert!(
         matches!(
             items.get(4).and_then(|error| error.car().ok()).map(|v| v.kind()),
-            Some(Kind::Symbol(symbol)) if symbol == "error"
+            Some(Kind::Symbol(symbol)) if symbol.is_named("error")
         ),
         "hostname mismatch should be a catchable error: {actual:?}"
     );
@@ -32719,7 +32719,7 @@ fn text_conversion_c_store_does_not_localize_or_duplicate_the_field() {
         interp
             .buffer_local_cells(current)
             .iter()
-            .all(|(name, _)| name != "text-conversion-style")
+            .all(|(name, _)| !name.is_named("text-conversion-style"))
     );
     assert_eq!(interp.default_value("text-conversion-style"), Some(default));
     assert_eq!(

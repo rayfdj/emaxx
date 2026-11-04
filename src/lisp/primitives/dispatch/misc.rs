@@ -1103,7 +1103,7 @@ define_dispatch!(
                 // returns the original symbol argument.
                 let checked = checked_symbol_identity(interp, &args[0], env)?;
                 if interp.is_constant_symbol(&checked)
-                    || (checked.cell().has_c_slot() && checked == "initial-window-system")
+                    || (checked.cell().has_c_slot() && checked.is_named("initial-window-system"))
                 {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("setting-constant".into()),
@@ -2241,7 +2241,7 @@ fn documentation(
     let function = resolve_callable(interp, &args[0], env)?;
     // doc.c Fdocumentation: a macro's documentation lives on the function
     // inside its (macro . FUNCTION) cons, unwrapped before the dispatch.
-    let function = if matches!(function.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "macro")
+    let function = if matches!(function.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name.is_named("macro"))
     {
         function.cdr()?
     } else {

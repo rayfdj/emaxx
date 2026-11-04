@@ -120,7 +120,9 @@ impl OverlayValue {
     }
 
     pub(crate) fn get_symbol_prop(&self, key: &str) -> Option<Value> {
-        self.find_prop(|property| matches!(property.kind(), Kind::Symbol(name) if name == key))
+        self.find_prop(
+            |property| matches!(property.kind(), Kind::Symbol(name) if name.is_named(key)),
+        )
     }
 
     fn find_prop(&self, matches: impl Fn(Value) -> bool) -> Option<Value> {

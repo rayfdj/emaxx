@@ -1453,11 +1453,11 @@ pub(crate) fn resolve_callable(
 pub(crate) fn is_lambda_expression(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         items.first().is_some_and(|head| {
-            matches!(head.kind(), Kind::Symbol(name) if name == "lambda")
+            matches!(head.kind(), Kind::Symbol(name) if name.is_named("lambda"))
                 || (symbols_with_pos_enabled(interp, env)
                     && matches!(
                         symbol_with_pos_parts(interp, head).map(|(a0, a1)| (a0.kind(), a1)),
-                        Some((Kind::Symbol(name), _)) if name == "lambda"
+                        Some((Kind::Symbol(name), _)) if name.is_named("lambda")
                     ))
         }) && items.get(1).is_some()
     })
@@ -1585,7 +1585,7 @@ pub(crate) fn is_keymap_value(_interp: &Interpreter, value: &Value) -> bool {
 #[cfg(test)]
 pub(crate) fn keymap_char_table_value(_interp: &Interpreter, keymap: &Value) -> Option<Value> {
     let view = *keymap;
-    if !matches!(view.car_if_list()?.kind(), Kind::Symbol(name) if name == "keymap") {
+    if !matches!(view.car_if_list()?.kind(), Kind::Symbol(name) if name.is_named("keymap")) {
         return None;
     }
     let mut tail = view.cdr_if_list()?;
@@ -1595,7 +1595,7 @@ pub(crate) fn keymap_char_table_value(_interp: &Interpreter, keymap: &Value) -> 
             break;
         }
         let item = cell.car.get();
-        if matches!(item.kind(), Kind::Symbol(name) if name == "keymap") {
+        if matches!(item.kind(), Kind::Symbol(name) if name.is_named("keymap")) {
             break; // The inherited parent's cells are not this map's table.
         }
         if matches!(item.kind(), Kind::CharTable(_)) {
@@ -1642,7 +1642,7 @@ fn keymap_public_view_own_items(view: &Value) -> Result<(Vec<Value>, Value), Lis
             return Ok((items, Value::Nil));
         }
         let item = cell.car.get();
-        if matches!(item.kind(), Kind::Symbol(name) if name == "keymap") {
+        if matches!(item.kind(), Kind::Symbol(name) if name.is_named("keymap")) {
             return Ok((items, tail));
         }
         items.push(item);
@@ -1857,7 +1857,7 @@ pub(crate) fn load_autoloaded_prefix_map(
     };
     if let Some((_, _, Kind::Symbol(kind))) =
         autoload_parts(&function).map(|(a0, a1, a2)| (a0, a1, a2.kind()))
-        && kind == "keymap"
+        && kind.is_named("keymap")
     {
         interp.autoload_do_load(function, *binding, Value::Nil, &mut env.clone())?;
     }
@@ -2729,9 +2729,9 @@ pub(crate) fn effective_text_quoting_style(interp: &Interpreter) -> &'static str
         .forwarded_c_value_key(cached_symbol!("text-quoting-style"))
         .map(|v| v.kind())
     {
-        Some(Kind::Symbol(style)) if style == "grave" => "grave",
-        Some(Kind::Symbol(style)) if style == "straight" => "straight",
-        Some(Kind::Symbol(style)) if style == "curve" => "curve",
+        Some(Kind::Symbol(style)) if style.is_named("grave") => "grave",
+        Some(Kind::Symbol(style)) if style.is_named("straight") => "straight",
+        Some(Kind::Symbol(style)) if style.is_named("curve") => "curve",
         // doc.c:679 consults the locale flag for NIL alone; every other
         // non-nil value falls through to `curve' ("Any other value is
         // treated as `curve'").  Routing unmatched values through the flag

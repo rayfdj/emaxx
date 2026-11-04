@@ -14411,6 +14411,33 @@ setup_process_coding_systems's check now refuses). A 13-form
   sentinel ran, where GNU's reads nil; the test passed alone 12 times
   out of 12, and its whole group again (476 tests, the gate's local
   skips included) on a quiet machine.
+- **Round 304: a symbol compared with a name says what it means, and
+  overlays read their category symbol by object.** SymbolName no longer
+  compares equal to a string. Its 286 comparisons with a name (`symbol
+  == "lambda"', `head != "defalias"', a plist key against a Rust
+  caller's property name) compared the host text, and so relied on the
+  marker an uninterned or private obarray symbol's text carries to keep
+  `#:lambda' from passing for `lambda'; they now call `is_named', EQ to
+  the initial obarray's symbol of that name as C compares a symbol with
+  its DEFSYM, the one place to change when the marked text goes.
+  buffer.c's Foverlay_get and lookup_char_property read an overlay's
+  `category' symbol with Fget of the object, as round 303 made textget
+  do, so `get-char-property' through an overlay with an uninterned
+  category (button.el's `make-button') costs 1,443 instructions against
+  1,811 (GNU's 1,115). `featurep''s subfeatures,
+  `find-operation-coding-system''s target index, a key event's
+  `event-symbol-element-mask' and `ascii-character', and `defvar''s
+  default-boundp read the symbol's own property or value rather than its
+  name's, and the name-keyed `get_symbol_property_by' is gone. A
+  command-line comparison runs the cases. The fuzzes of variables,
+  function cells, fields, load, errors, codings, times, buffers, case,
+  numbers, strings, printing and syntax print GNU's results as before.
+  Local validation: the grouped gate's 3,502 library tests and the
+  integration targets pass; clippy with `--all-targets --all-features -D
+  warnings' first found 41 needless borrows the rewrite had made
+  (`is_named(&name)' of a `&str'), its own fix removed them, and clippy
+  and the command-line tests pass on the result, whose compiled code the
+  borrows do not change.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16776,6 +16803,18 @@ spread of the runners. On the second the widest body gaps are ert-tests
 tramp-tests (20,029 against 16,488), semantic-utest-ia (4,149 against
 2,719) and mule-tests (3,376 against 1,917), and
 `ert-test-run-tests-batch-expensive' is 1.23 of GNU's time.
+
+**On `db23b76`** (round 303): the full Rust gate (run 41866827154)
+passed; the frozen run (run 41866833189) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on the fastest runner in some rounds
+(the oracle's bodies 220.2 s against 259.0 at round 302's second
+attempt). Setup 53.1 s against 44.5 s (1.194), test bodies 231.2 s
+against 220.2 s (1.050), in all 1.058, with a per-file setup median of
+81 ms against 71. The widest body gaps are tramp-tests (14,751 ms
+against 12,952), comp-tests (11,941 against 10,461), ert-tests (28,966
+against 28,090), semantic-utest-ia (2,548 against 1,825) and mule-tests
+(1,918 against 1,267), and `ert-test-run-tests-batch-expensive' is 1.02
+of GNU's time on this runner, against 1.19 to 1.23 on the slow ones.
 
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal

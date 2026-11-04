@@ -753,12 +753,14 @@ define_dispatch!(
                 } else {
                     for &[keyword, value] in args[1..].as_chunks::<2>().0 {
                         match keyword.kind() {
-                            Kind::Symbol(keyword) if keyword == ":key" => key = Some(value),
-                            Kind::Symbol(keyword) if keyword == ":lessp" => lessp = Some(value),
-                            Kind::Symbol(keyword) if keyword == ":in-place" => {
+                            Kind::Symbol(keyword) if keyword.is_named(":key") => key = Some(value),
+                            Kind::Symbol(keyword) if keyword.is_named(":lessp") => {
+                                lessp = Some(value)
+                            }
+                            Kind::Symbol(keyword) if keyword.is_named(":in-place") => {
                                 in_place = value.is_truthy();
                             }
-                            Kind::Symbol(keyword) if keyword == ":reverse" => {
+                            Kind::Symbol(keyword) if keyword.is_named(":reverse") => {
                                 reverse = value.is_truthy();
                             }
                             // eval.c:signal_error splices a proper list.

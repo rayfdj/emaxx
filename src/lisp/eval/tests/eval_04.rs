@@ -2912,7 +2912,7 @@ fn batch_error_snapshot_keeps_deep_frames_and_signal_site_policy() {
         .expect("unhandled evaluation keeps its deepest frame snapshot");
     assert!(!snapshot.enabled);
     assert!(snapshot.frames.iter().any(|(_, function, _, _)| {
-        matches!(function.kind(), Kind::Symbol(name) if name == "batch-error-snapshot-inner")
+        matches!(function.kind(), Kind::Symbol(name) if name.is_named("batch-error-snapshot-inner"))
     }));
 
     let form = Reader::new(
@@ -2931,10 +2931,10 @@ fn batch_error_snapshot_keeps_deep_frames_and_signal_site_policy() {
         .take_batch_error_backtrace()
         .expect("a handled error cannot mask the later unhandled snapshot");
     assert!(snapshot.frames.iter().any(|(_, function, _, _)| {
-        matches!(function.kind(), Kind::Symbol(name) if name == "batch-error-snapshot-second")
+        matches!(function.kind(), Kind::Symbol(name) if name.is_named("batch-error-snapshot-second"))
     }));
     assert!(!snapshot.frames.iter().any(|(_, function, _, _)| {
-        matches!(function.kind(), Kind::Symbol(name) if name == "batch-error-snapshot-first")
+        matches!(function.kind(), Kind::Symbol(name) if name.is_named("batch-error-snapshot-first"))
     }));
 }
 

@@ -1606,3 +1606,44 @@ fn let_binds_what_specbind_accepts_and_properties_follow_symbols() {
         ],
     );
 }
+
+#[test]
+fn overlay_categories_and_symbol_properties_are_read_by_object() {
+    // buffer.c:Foverlay_get and lookup_char_property read an overlay's
+    // `category' symbol with Fget of the object, whether it is uninterned,
+    // interned or a private obarray's; `featurep''s subfeatures and
+    // `find-operation-coding-system''s target index are the symbol's own
+    // properties.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+;; An overlay's `category' symbol gives its properties as Fget of the
+;; object: uninterned, interned, a private obarray's, nil.
+(dolist (cat (list (make-symbol "t4-cat") 't4-cat (intern "t4-cat" (obarray-make)) nil))
+  (when cat (put cat 'face 'italic) (put cat 'priority 5))
+  (with-temp-buffer
+    (insert "abcdef")
+    (let ((o (make-overlay 2 5)))
+      (overlay-put o 'category cat)
+      (overlay-put o 'mouse-face 'highlight)
+      (prin1 (list (overlay-get o 'face) (overlay-get o 'priority) (overlay-get o 'category)
+                   (get-char-property 3 'face) (get-pos-property 3 'face)
+                   (next-single-char-property-change 1 'face) (previous-single-char-property-change 6 'face)
+                   (get-char-property-and-overlay 3 'face)))
+      (terpri))))
+;; A symbol's properties read by the object where the C code holds one.
+(let ((sub (make-symbol "t4-sub")))
+  (put 't4-feature 'subfeatures (list sub 'b))
+  (provide 't4-feature)
+  (prin1 (list (featurep 't4-feature 'b) (featurep 't4-feature sub) (featurep 't4-feature 'c)
+               (find-operation-coding-system 'insert-file-contents "x.el")))
+  (terpri))
+)"#,
+        ],
+    );
+}

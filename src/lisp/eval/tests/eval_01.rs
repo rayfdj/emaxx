@@ -5890,11 +5890,11 @@ fn copy_alist_copies_entry_cells() {
 fn copy_alist_rejects_vectors_and_strings() {
     assert!(matches!(
         eval_str("(condition-case err (copy-alist [(a . 1)]) (wrong-type-argument 'caught))").kind(),
-        Kind::Symbol(name) if name == "caught"
+        Kind::Symbol(name) if name.is_named("caught")
     ));
     assert!(matches!(
         eval_str("(condition-case err (copy-alist \"abc\") (wrong-type-argument 'caught))").kind(),
-        Kind::Symbol(name) if name == "caught"
+        Kind::Symbol(name) if name.is_named("caught")
     ));
 }
 
@@ -8865,7 +8865,7 @@ fn window_face_spans_layer_text_properties_region_and_overlays() {
     assert!(
         without_region
             .iter()
-            .all(|(_, _, face)| !matches!(face.kind(), Kind::Symbol(s) if s == "region")),
+            .all(|(_, _, face)| !matches!(face.kind(), Kind::Symbol(s) if s.is_named("region"))),
         "non-selected windows do not paint the region"
     );
 }

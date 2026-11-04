@@ -12,7 +12,8 @@ mod tests;
 
 pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
     let items = value.to_vec().ok()?;
-    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "autoload") {
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.is_named("autoload"))
+    {
         return None;
     }
     let file = string_like(items.get(1)?)
@@ -26,7 +27,7 @@ pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
 pub(crate) fn autoload_is_macro(interp: &Interpreter, symbol: Option<&str>, value: &Value) -> bool {
     autoload_parts(value).is_some_and(|(_, _, kind)| {
         matches!(kind.kind(), Kind::T)
-            || matches!(kind.kind(), Kind::Symbol(name) if name == "t" || name == "macro")
+            || matches!(kind.kind(), Kind::Symbol(name) if name.is_named("t") || name.is_named("macro"))
     }) || symbol.is_some_and(|name| {
         interp
             .get_symbol_property(name, "autoload-macro")
@@ -533,9 +534,9 @@ pub(crate) fn eval_region_impl(
     // reading path.
     let explicit_reader = args.get(3).filter(|value| !value.is_nil()).copied();
     let read_function = explicit_reader.or_else(|| {
-        interp
-            .lookup_var("load-read-function", env)
-            .filter(|value| !matches!(value.kind(), Kind::Symbol(symbol) if symbol == "read"))
+        interp.lookup_var("load-read-function", env).filter(
+            |value| !matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("read")),
+        )
     });
     let buffer_id = interp.current_buffer_id();
     let source_file = interp.buffer.borrow().file.clone();
@@ -861,7 +862,7 @@ fn eval_buffer_forms(
         Ok(value)
     };
     with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
-        if matches!(load_read.kind(), Kind::Symbol(symbol) if symbol == "read") {
+        if matches!(load_read.kind(), Kind::Symbol(symbol) if symbol.is_named("read")) {
             read_eval_buffer_forms(interp, buffer_id, None, eval_env, evaluate)
         } else {
             // A customized reader (like `edebug--read') reads from the
@@ -1123,7 +1124,7 @@ fn eager_expand_eval_inner(
 ) -> Result<Value, LispError> {
     let expanded = call_internal_macroexpand_for_load(interp, form, Value::Nil, env)?;
     if let Ok(items) = expanded.to_vec()
-        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "progn")
+        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head.is_named("progn"))
     {
         // A top-level progn is expanded form by form so a macro defined by
         // one subform is live while expanding the rest.

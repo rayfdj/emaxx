@@ -693,6 +693,15 @@ impl SymbolName {
         self.0.internal.as_str()
     }
 
+    /// EQ to the symbol named TEXT in the initial obarray, as C compares a
+    /// symbol with its DEFSYM: the name alone does not make an uninterned
+    /// symbol or a private obarray's one that symbol.  (Their host text
+    /// carries a marker, so it never equals a plain name.)
+    #[inline]
+    pub fn is_named(&self, text: &str) -> bool {
+        self.as_str() == text
+    }
+
     pub(crate) fn identity_ptr(&self) -> usize {
         self.0.identity()
     }
@@ -827,42 +836,6 @@ impl From<SharedText> for SymbolName {
 impl From<SymbolName> for SharedText {
     fn from(name: SymbolName) -> Self {
         name.as_str().into()
-    }
-}
-
-impl PartialEq<str> for SymbolName {
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl PartialEq<&str> for SymbolName {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl PartialEq<String> for SymbolName {
-    fn eq(&self, other: &String) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl PartialEq<SymbolName> for String {
-    fn eq(&self, other: &SymbolName) -> bool {
-        self == other.as_str()
-    }
-}
-
-impl PartialEq<SymbolName> for str {
-    fn eq(&self, other: &SymbolName) -> bool {
-        self == other.as_str()
-    }
-}
-
-impl PartialEq<SymbolName> for &str {
-    fn eq(&self, other: &SymbolName) -> bool {
-        *self == other.as_str()
     }
 }
 
@@ -3275,11 +3248,11 @@ fn format_value(
             // GNU prints reader shorthands: (quote X) as 'X and
             // (function X) as #'X.
             if let Kind::Symbol(head) = cell.car.get().kind()
-                && (head == "quote" || head == "function")
+                && (head.is_named("quote") || head.is_named("function"))
                 && let Kind::Cons(inner) = cell.cdr.get().kind()
                 && matches!(inner.cdr.get().kind(), Kind::Nil)
             {
-                write!(f, "{}", if head == "quote" { "'" } else { "#'" })?;
+                write!(f, "{}", if head.is_named("quote") { "'" } else { "#'" })?;
                 return format_value(&inner.car.get(), f, seen);
             }
             write!(f, "(")?;
@@ -3455,7 +3428,7 @@ impl fmt::Display for LispErrorKind {
             LispErrorKind::SignalValue(value) => match value.to_vec() {
                 Ok(items)
                     if items.len() == 2
-                        && matches!(items[0].kind(), Kind::Symbol(kind) if kind == "void-variable") =>
+                        && matches!(items[0].kind(), Kind::Symbol(kind) if kind.is_named("void-variable")) =>
                 {
                     // Preserve the host diagnostic when Fsymbol_value
                     // carries its original Lisp object instead of a name.
@@ -3463,7 +3436,7 @@ impl fmt::Display for LispErrorKind {
                 }
                 Ok(items)
                     if items.len() >= 2
-                        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind == "search-failed") =>
+                        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind.is_named("search-failed")) =>
                 {
                     match items[1].kind() {
                         Kind::StringObject(object) => {
@@ -3474,7 +3447,7 @@ impl fmt::Display for LispErrorKind {
                 }
                 Ok(items)
                     if items.len() >= 4
-                        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind == "file-error" || kind == "file-missing") =>
+                        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(kind)) if kind.is_named("file-error") || kind.is_named("file-missing")) =>
                 {
                     let message = match items[1].kind() {
                         Kind::StringObject(text) => text.borrow().text(),

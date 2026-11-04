@@ -3296,7 +3296,7 @@ pub(super) fn parse_partial_sexp(
     let mut state = internalize_parse_state(arg(4))?;
     let commentstop = match arg(5) {
         value if value.is_nil() => 0,
-        value if matches!(value.kind(), Kind::Symbol(name) if name == "syntax-table") => -1,
+        value if matches!(value.kind(), Kind::Symbol(name) if name.is_named("syntax-table")) => -1,
         _ => 1,
     };
     let text = interp.buffer.borrow().scan_text();

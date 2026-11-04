@@ -323,11 +323,11 @@ pub(crate) fn lucid_event_type_list_p(event: &Value) -> bool {
     }
     if matches!(
         event.car().map(|v| v.kind()),
-        Ok(Kind::Symbol(head)) if head == "help-echo"
-            || head == "vertical-line"
-            || head == "mode-line"
-            || head == "tab-line"
-            || head == "header-line"
+        Ok(Kind::Symbol(head)) if head.is_named("help-echo")
+            || head.is_named("vertical-line")
+            || head.is_named("mode-line")
+            || head.is_named("tab-line")
+            || head.is_named("header-line")
     ) {
         return false;
     }
@@ -739,7 +739,7 @@ fn copy_keymap_1(
     let mut items = Vec::new();
     let mut tail = keymap.cdr()?;
     while let Some((elt, rest)) = tail.cons_values() {
-        if matches!(elt.kind(), Kind::Symbol(head) if head == "keymap") {
+        if matches!(elt.kind(), Kind::Symbol(head) if head.is_named("keymap")) {
             break;
         }
         let copied = if matches!(elt.kind(), Kind::CharTable(_)) {
@@ -751,7 +751,7 @@ fn copy_keymap_1(
             }
             Value::vector(copied)
         } else if let Some((car, cdr)) = elt.cons_values() {
-            if matches!(car.kind(), Kind::Symbol(head) if head == "keymap") {
+            if matches!(car.kind(), Kind::Symbol(head) if head.is_named("keymap")) {
                 copy_keymap_1(interp, &elt, depth + 1, env)?
             } else {
                 Value::cons(car, copy_keymap_item(interp, &cdr, depth + 1, env)?)
@@ -805,7 +805,7 @@ fn copy_keymap_item(
     let Some((car, cdr)) = elt.cons_values() else {
         return Ok(*elt);
     };
-    let is_keymap_list = |value: &Value| matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(head)) if head == "keymap");
+    let is_keymap_list = |value: &Value| matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(head)) if head.is_named("keymap"));
     let rebuild = |cells: Vec<Value>, rest: Value| {
         let mut result = rest;
         for cell in cells.into_iter().rev() {
@@ -813,7 +813,7 @@ fn copy_keymap_item(
         }
         result
     };
-    if matches!(car.kind(), Kind::Symbol(head) if head == "menu-item") {
+    if matches!(car.kind(), Kind::Symbol(head) if head.is_named("menu-item")) {
         let mut cells = vec![car];
         let mut rest = cdr;
         if let Some((name, after_name)) = rest.cons_values() {
@@ -847,7 +847,7 @@ fn copy_keymap_item(
         };
         return Ok(rebuild(cells, rest));
     }
-    if matches!(car.kind(), Kind::Symbol(head) if head == "keymap") {
+    if matches!(car.kind(), Kind::Symbol(head) if head.is_named("keymap")) {
         return copy_keymap_1(interp, elt, depth, env);
     }
     Ok(*elt)

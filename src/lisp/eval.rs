@@ -8519,11 +8519,11 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
 fn is_lambda_form(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         items.first().is_some_and(|head| {
-            matches!(head.kind(), Kind::Symbol(name) if name == "lambda")
+            matches!(head.kind(), Kind::Symbol(name) if name.is_named("lambda"))
                 || (crate::lisp::primitives::symbols_with_pos_enabled(interp, env)
                     && matches!(
                         crate::lisp::primitives::symbol_with_pos_parts(interp, head).map(|(a0, a1)| (a0.kind(), a1)),
-                        Some((Kind::Symbol(name), _)) if name == "lambda"
+                        Some((Kind::Symbol(name), _)) if name.is_named("lambda")
                     ))
         })
     })

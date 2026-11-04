@@ -39,7 +39,7 @@ fn restore_buffer_modified_p(
         interp.buffer.borrow_mut().set_unmodified();
     } else {
         interp.buffer.borrow_mut().set_modified();
-        if matches!(flag.kind(), Kind::Symbol(symbol) if symbol == "autosaved") {
+        if matches!(flag.kind(), Kind::Symbol(symbol) if symbol.is_named("autosaved")) {
             let modiff = interp.buffer.borrow().modified_tick();
             if let Some(mut buffer) = interp.get_buffer_by_id_mut(base) {
                 buffer.set_autosave_modiff(modiff);
@@ -1595,14 +1595,14 @@ fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> 
         Kind::Cons(_) => {
             let Ok(items) = spec.to_vec() else { return 0 };
             match items.first().map(|v| v.kind()) {
-                Some(Kind::Symbol(op)) if op == "-" || op == "+" => {
+                Some(Kind::Symbol(op)) if op.is_named("-") || op.is_named("+") => {
                     let mut acc = items
                         .get(1)
                         .map(|item| display_spec_width(interp, env, item))
                         .unwrap_or(0);
                     for item in items.iter().skip(2) {
                         let value = display_spec_width(interp, env, item);
-                        if op == "-" {
+                        if op.is_named("-") {
                             acc -= value;
                         } else {
                             acc += value;
@@ -1625,11 +1625,11 @@ fn prefix_property_width(interp: &mut Interpreter, env: &mut Env, prop: Option<V
         return text.text.chars().count();
     }
     if let Ok(items) = prop.to_vec()
-        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "space")
+        && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head.is_named("space"))
     {
         let mut cursor = 1;
         while cursor + 1 < items.len() {
-            if matches!(items[cursor].kind(), Kind::Symbol(key) if key == ":width") {
+            if matches!(items[cursor].kind(), Kind::Symbol(key) if key.is_named(":width")) {
                 return display_spec_width(interp, env, &items[cursor + 1]).max(0) as usize;
             }
             cursor += 2;
@@ -2559,7 +2559,7 @@ fn line_number_display_width_value(
             .unwrap_or(Value::Nil);
         if mode.is_nil() {
             return Ok(
-                if matches!(pixelwise.map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "columns")
+                if matches!(pixelwise.map(|v| v.kind()), Some(Kind::Symbol(name)) if name.is_named("columns"))
                 {
                     Value::float(0.0)
                 } else {
@@ -2605,7 +2605,7 @@ fn line_number_display_width_value(
         // left/right padding in GNU's headless terminal display.
         let pixels = columns + 2;
         Ok(match pixelwise.map(|v| v.kind()) {
-            Some(Kind::Symbol(name)) if name == "columns" => Value::float(pixels as f64),
+            Some(Kind::Symbol(name)) if name.is_named("columns") => Value::float(pixels as f64),
             Some(value) if value.value().is_truthy() => Value::Integer(pixels),
             _ => Value::Integer(columns),
         })

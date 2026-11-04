@@ -938,7 +938,7 @@ impl Interpreter {
     pub(crate) fn let_shadows_buffer_binding(&self, name: &str) -> bool {
         let current = self.current_buffer_id();
         self.let_records().any(|restore| {
-            restore.name == name
+            restore.name.is_named(name)
                 && restore.let_default()
                 && matches!(restore.scope(), SpecialBindingScope::Global)
                 && restore.where_buffer_id() == current
@@ -1051,8 +1051,8 @@ impl Interpreter {
         loop {
             let matches = match cell.car.get().kind() {
                 Kind::Symbol(key) => key == *property,
-                Kind::Nil => property == "nil",
-                Kind::T => property == "t",
+                Kind::Nil => property.is_named("nil"),
+                Kind::T => property.is_named("t"),
                 _ => false,
             };
             let next = {
@@ -1086,18 +1086,8 @@ impl Interpreter {
     pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
         self.symbol_plist_find(
             name,
-            |key| matches!(key.kind(), Kind::Symbol(key) if key == property),
+            |key| matches!(key.kind(), Kind::Symbol(key) if key.is_named(property)),
         )
-    }
-
-    /// fns.c:Fget with PROPERTY compared as plist_get compares it: EQ for
-    /// a property object, by interned name for a Rust caller's name.
-    pub fn get_symbol_property_by(
-        &self,
-        name: &str,
-        property: impl crate::lisp::types::PropertyKey,
-    ) -> Option<Value> {
-        self.symbol_plist_find(name, |key| property.is(key))
     }
 
     /// fns.c:Fget of SYMBOL, a symbol object (nil and t among them), with
@@ -1159,7 +1149,7 @@ impl Interpreter {
             let Some((value_cell, next_cell)) = rest.cons_cells() else {
                 return;
             };
-            if matches!(cell.car.get().kind(), Kind::Symbol(key) if key == property) {
+            if matches!(cell.car.get().kind(), Kind::Symbol(key) if key.is_named(property)) {
                 value_cell.set(value);
                 return;
             }
@@ -1210,7 +1200,7 @@ impl Interpreter {
         while let Some(current) = pending.pop() {
             match current.kind() {
                 Kind::Symbol(name)
-                    if crate::lisp::types::visible_symbol_name(name.as_str()) == name =>
+                    if crate::lisp::types::visible_symbol_name(name.as_str()) == name.as_str() =>
                 {
                     self.intern_symbol_name(name.as_str());
                 }
@@ -1960,7 +1950,7 @@ impl Interpreter {
             .any(|restore| {
                 restore.let_default()
                     && restore.where_buffer_id() == current
-                    && restore.name == name
+                    && restore.name.is_named(name)
             })
             .then_some(SpecialBindingScope::Global)
     }
@@ -1996,7 +1986,7 @@ impl Interpreter {
         let mut found = false;
         for restore in self.let_records().rev().filter(|restore| {
             !restore.local_binding_killed()
-                && restore.name == name
+                && restore.name.is_named(name)
                 && matches!(restore.scope(), SpecialBindingScope::Global)
         }) {
             found = true;
@@ -2046,7 +2036,7 @@ impl Interpreter {
         self.let_records()
             .find(|restore| {
                 !restore.local_binding_killed()
-                    && restore.name == name
+                    && restore.name.is_named(name)
                     && matches!(restore.scope(), SpecialBindingScope::Global)
             })
             .map(|restore| restore.previous())
@@ -2060,7 +2050,7 @@ impl Interpreter {
         self.let_records()
             .find(|restore| {
                 !restore.local_binding_killed()
-                    && restore.name == name
+                    && restore.name.is_named(name)
                     && matches!(restore.scope(), SpecialBindingScope::BufferLocal(id) if id == buffer_id)
             })
             .map(|restore| restore.previous())
@@ -2073,7 +2063,7 @@ impl Interpreter {
     ) -> bool {
         let Some(restore) = self.let_records_mut().find(|restore| {
             !restore.local_binding_killed()
-                && restore.name == name
+                && restore.name.is_named(name)
                 && matches!(restore.scope(), SpecialBindingScope::Global)
         }) else {
             return false;
@@ -2881,7 +2871,7 @@ impl Interpreter {
             self.store_plain_restore(restore);
             return Ok(());
         }
-        if restore.name == "text-conversion-style"
+        if restore.name.is_named("text-conversion-style")
             && matches!(restore.scope(), SpecialBindingScope::BufferLocal(buffer_id)
                 if !self.has_buffer_local_binding(buffer_id, restore.name.as_str()))
         {
@@ -3045,7 +3035,7 @@ impl Interpreter {
     pub(super) fn record_profiler_samples(frames: &[BacktraceFrame]) {
         let top_is_gc = frames.last().is_some_and(|frame| {
             matches!(frame.function_snapshot().kind(),
-                Kind::Symbol(name) if name == crate::lisp::primitives::profiler::AUTOMATIC_GC)
+                Kind::Symbol(name) if name.is_named(crate::lisp::primitives::profiler::AUTOMATIC_GC))
         });
         crate::lisp::primitives::profiler::record_pending_samples(top_is_gc, |trace| {
             let mut functions = frames.iter().rev().map(BacktraceFrame::function_snapshot);
@@ -3919,7 +3909,7 @@ impl Interpreter {
             let mut frames = self.backtrace_frames.iter().rev().skip(1);
             let mut frame = frames.next();
             if frame.is_some_and(|frame| {
-                matches!(frame.function_snapshot().kind(), Kind::Symbol(name) if name == "error")
+                matches!(frame.function_snapshot().kind(), Kind::Symbol(name) if name.is_named("error"))
             }) {
                 frame = frames.next();
             }

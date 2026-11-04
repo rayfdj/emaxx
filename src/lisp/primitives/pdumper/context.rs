@@ -60,7 +60,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Cons(cell) => ObjectKey::Cons(ConsCell::identity(&cell)),
         Kind::StringObject(state) => ObjectKey::String(state.identity()),
         Kind::Symbol(name) => {
-            if name == "nil" || name == "t" {
+            if name.is_named("nil") || name.is_named("t") {
                 return None;
             }
             ObjectKey::Symbol(name.identity_ptr())
@@ -105,8 +105,8 @@ pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
         Kind::Nil => Some(WORD_NIL),
         Kind::T => Some(WORD_T),
         Kind::Unbound => Some(WORD_UNBOUND),
-        Kind::Symbol(name) if name == "nil" => Some(WORD_NIL),
-        Kind::Symbol(name) if name == "t" => Some(WORD_T),
+        Kind::Symbol(name) if name.is_named("nil") => Some(WORD_NIL),
+        Kind::Symbol(name) if name.is_named("t") => Some(WORD_T),
         Kind::Integer(integer) => fixnum_word(integer),
         _ => None,
     }

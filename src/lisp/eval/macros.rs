@@ -407,7 +407,7 @@ impl Interpreter {
         // (loaddefs.el's would fill the image's `load-history').
         let autoload = matches!(
             function.cons_values().map(|(head, _)| head.kind()),
-            Some(Kind::Symbol(head)) if head == "autoload"
+            Some(Kind::Symbol(head)) if head.is_named("autoload")
         );
         if !autoload || !self.will_dump(env) {
             self.record_definition_in_load_history("defun", &name);
@@ -562,7 +562,7 @@ impl Interpreter {
             // GNU reads (macro . EXPANDER) from the current function cell.
             // Direct/native stores must be visible without notifying a
             // per-name cache. Resolve once, including symbol aliases.
-            if matches!(head.kind(), Kind::Symbol(name) if name == "macro") {
+            if matches!(head.kind(), Kind::Symbol(name) if name.is_named("macro")) {
                 let expanded = self.with_macro_lexical_binding(caller, env, |interp, env| {
                     interp.call_expander(expander, name, args, env)
                 })?;
@@ -570,7 +570,7 @@ impl Interpreter {
             }
 
             if attempted_autoload
-                || !matches!(head.kind(), Kind::Symbol(name) if name == "autoload")
+                || !matches!(head.kind(), Kind::Symbol(name) if name.is_named("autoload"))
             {
                 return Ok(None);
             }

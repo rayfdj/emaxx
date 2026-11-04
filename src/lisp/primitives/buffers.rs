@@ -1440,7 +1440,7 @@ pub(crate) fn invisibility_level(interp: &Interpreter, value: &Value, env: &Env)
 pub(crate) fn prefix_numeric_value(value: &Value) -> Result<Value, LispError> {
     Ok(match value.kind() {
         Kind::Nil => Value::Integer(1),
-        Kind::Symbol(symbol) if symbol == "-" => Value::Integer(-1),
+        Kind::Symbol(symbol) if symbol.is_named("-") => Value::Integer(-1),
         Kind::Integer(_) => *value,
         Kind::Cons(_) => value
             .cons_values()

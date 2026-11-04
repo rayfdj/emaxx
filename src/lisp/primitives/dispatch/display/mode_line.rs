@@ -128,8 +128,10 @@ fn string_property(interp: &Interpreter, string: &Value, pos: usize, prop: &str)
 /// DISP, a single spec, a list or a vector of them.
 fn find_display_property(disp: Value, prop: &str) -> Value {
     let is_prop = |spec: &Value| match spec.kind() {
-        Kind::Cons(cell) => matches!(cell.car.get().kind(), Kind::Symbol(name) if name == prop)
-            .then(|| cell.cdr.get().car().unwrap_or(Value::Nil)),
+        Kind::Cons(cell) => {
+            matches!(cell.car.get().kind(), Kind::Symbol(name) if name.is_named(prop))
+                .then(|| cell.cdr.get().car().unwrap_or(Value::Nil))
+        }
         _ => None,
     };
     match disp.kind() {
@@ -251,7 +253,7 @@ impl<'a> ModeLine<'a> {
                 Kind::Cons(cell) => {
                     let car = cell.car.get();
                     let cdr = cell.cdr.get();
-                    if matches!(car.kind(), Kind::Symbol(name) if name == ":eval") {
+                    if matches!(car.kind(), Kind::Symbol(name) if name.is_named(":eval")) {
                         // (:eval FORM): FORM's value as a mode line element.
                         if risky {
                             break 'tail_recurse;
@@ -271,7 +273,7 @@ impl<'a> ModeLine<'a> {
                         }
                         break 'tail_recurse;
                     }
-                    if matches!(car.kind(), Kind::Symbol(name) if name == ":propertize") {
+                    if matches!(car.kind(), Kind::Symbol(name) if name.is_named(":propertize")) {
                         // (:propertize ELT PROPS...): ELT with PROPS.
                         if risky {
                             break 'tail_recurse;
@@ -946,7 +948,7 @@ fn handle_display_spec(
     for spec in specs {
         let mut spec = spec;
         if let Kind::Cons(cell) = spec.kind()
-            && matches!(cell.car.get().kind(), Kind::Symbol(name) if name == "when")
+            && matches!(cell.car.get().kind(), Kind::Symbol(name) if name.is_named("when"))
         {
             let Kind::Cons(rest) = cell.cdr.get().kind() else {
                 continue;
@@ -974,10 +976,10 @@ fn handle_display_spec(
         match spec.kind() {
             Kind::Cons(cell) => {
                 let head = cell.car.get();
-                if matches!(head.kind(), Kind::Symbol(name) if name == "min-width") {
+                if matches!(head.kind(), Kind::Symbol(name) if name.is_named("min-width")) {
                     let width = cell.cdr.get().car().unwrap_or(Value::Nil);
                     display_min_width(interp, row, string, width, face);
-                } else if matches!(head.kind(), Kind::Symbol(name) if name == "space") {
+                } else if matches!(head.kind(), Kind::Symbol(name) if name.is_named("space")) {
                     let plist = cell.cdr.get().to_vec().unwrap_or_default();
                     let width = row.cells.stretch(interp, &plist, row.x);
                     row.stretch(width, face, true);
@@ -1890,7 +1892,7 @@ pub(super) fn display_mode_line(
                 ],
             )
         };
-        if matches!(compact_value.kind(), Kind::Symbol(name) if name == "long")
+        if matches!(compact_value.kind(), Kind::Symbol(name) if name.is_named("long"))
             && window_total_columns(interp, window_id).max(0) as usize >= chars.len()
         {
             ml.display_string(interp, env, None, Some(mode_string), None, 0, 0, 0)?;

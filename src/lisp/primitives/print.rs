@@ -678,7 +678,7 @@ pub(crate) fn is_end_of_file_error(error: &LispError) -> bool {
     match error.kind() {
         LispErrorKind::EndOfInput => true,
         LispErrorKind::SignalValue(data) => {
-            matches!(data.car().map(|head| head.kind()), Ok(Kind::Symbol(name)) if name == "end-of-file")
+            matches!(data.car().map(|head| head.kind()), Ok(Kind::Symbol(name)) if name.is_named("end-of-file"))
         }
         _ => false,
     }
@@ -1074,7 +1074,7 @@ pub(crate) fn record_literal_slot_data(value: &Value) -> Value {
             .map(|v| v.kind())
             .collect::<Vec<_>>()
             .as_slice()
-        && symbol == "quote"
+        && symbol.is_named("quote")
     {
         return inner.value();
     }
@@ -1396,7 +1396,7 @@ fn quoted_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
     let [Kind::Symbol(head), literal] = kinds.as_slice() else {
         return None;
     };
-    if head != "quote" {
+    if !head.is_named("quote") {
         return None;
     }
     match *literal {
@@ -1756,7 +1756,7 @@ pub(crate) fn md5_source_bytes(
         }
         coding = validate(interp, coding)?;
         *source
-    } else if matches!(source.kind(), Kind::Symbol(name) if name == "iv-auto") {
+    } else if matches!(source.kind(), Kind::Symbol(name) if name.is_named("iv-auto")) {
         let Kind::Integer(length @ 0..) = start.kind() else {
             return Err(crate::lisp::primitives::values::doprnt_error(
                 interp,

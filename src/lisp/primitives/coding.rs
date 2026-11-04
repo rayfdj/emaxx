@@ -363,7 +363,7 @@ pub(crate) fn coding_system_is_ascii_compatible(interp: &Interpreter, coding: &s
 fn coding_system_utf16_options(interp: &Interpreter, coding: &str) -> (bool, bool, bool) {
     let big_endian = !matches!(
         coding_attr(interp, coding, ":endian").map(|v| v.kind()),
-        Some(Kind::Symbol(endian)) if endian == "little"
+        Some(Kind::Symbol(endian)) if endian.is_named("little")
     );
     let bom = coding_attr(interp, coding, ":bom").unwrap_or(Value::Nil);
     (big_endian, !bom.is_nil(), bom.cons_values().is_some())
@@ -389,8 +389,8 @@ pub(crate) fn coding_system_charset_names(interp: &Interpreter, coding: &str) ->
         return Vec::new();
     };
     match attrs.charset_list.kind() {
-        Kind::Symbol(name) if name == "iso-2022" => interp.iso_2022_charset_list(),
-        Kind::Symbol(name) if name == "emacs-mule" => emacs_mule_charset_list(interp),
+        Kind::Symbol(name) if name.is_named("iso-2022") => interp.iso_2022_charset_list(),
+        Kind::Symbol(name) if name.is_named("emacs-mule") => emacs_mule_charset_list(interp),
         _ => attrs
             .charset_list
             .to_vec()
@@ -2801,8 +2801,8 @@ pub(crate) fn coding_attr_charset_list(interp: &Interpreter, coding: &str) -> Ve
         return Vec::new();
     };
     match state.charset_list.kind() {
-        Kind::Symbol(name) if name == "iso-2022" => interp.iso_2022_charset_list(),
-        Kind::Symbol(name) if name == "emacs-mule" => emacs_mule_charset_list(interp),
+        Kind::Symbol(name) if name.is_named("iso-2022") => interp.iso_2022_charset_list(),
+        Kind::Symbol(name) if name.is_named("emacs-mule") => emacs_mule_charset_list(interp),
         _ => coding_system_charset_names(interp, coding),
     }
 }
@@ -3243,8 +3243,8 @@ pub(crate) fn find_coding_systems_region_internal_value(
             continue;
         }
         let charsets = match state.charset_list.kind() {
-            Kind::Symbol(name) if name == "iso-2022" => interp.iso_2022_charset_list(),
-            Kind::Symbol(name) if name == "emacs-mule" => emacs_mule_charset_list(interp),
+            Kind::Symbol(name) if name.is_named("iso-2022") => interp.iso_2022_charset_list(),
+            Kind::Symbol(name) if name.is_named("emacs-mule") => emacs_mule_charset_list(interp),
             _ => coding_system_charset_names(interp, coding),
         };
         let translations = encode_translation_tables(interp, coding, env)?;
@@ -3357,7 +3357,7 @@ pub(crate) fn find_operation_coding_system_value(
         return Err(LispError::Signal("Invalid first argument".into()));
     };
     let Some(index) = interp
-        .get_symbol_property(operation_name.as_str(), "target-idx")
+        .get_property_of_symbol_value(Value::Symbol(operation_name), "target-idx")
         .and_then(|index| index.fixnum())
         .and_then(|index| usize::try_from(index).ok())
     else {
@@ -3370,8 +3370,8 @@ pub(crate) fn find_operation_coding_system_value(
             &[&operation_name],
         ));
     }
-    let insert = operation_name == "insert-file-contents";
-    let network = operation_name == "open-network-stream";
+    let insert = operation_name.is_named("insert-file-contents");
+    let network = operation_name.is_named("open-network-stream");
     let mut target = args[index + 1];
     let is_string = |value: &Value| matches!(value.kind(), Kind::StringObject(_));
     let valid = is_string(&target)
@@ -3390,7 +3390,7 @@ pub(crate) fn find_operation_coding_system_value(
     if let Some((file, _)) = target.cons_values() {
         target = file;
     }
-    let alist_name = if insert || operation_name == "write-region" {
+    let alist_name = if insert || operation_name.is_named("write-region") {
         "file-coding-system-alist"
     } else if network {
         "network-coding-system-alist"

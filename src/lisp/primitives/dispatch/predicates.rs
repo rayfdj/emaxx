@@ -461,7 +461,7 @@ define_dispatch!(
                 // (:family local).
                 if let Some(subfeature) = args.get(1).filter(|value| value.is_truthy()) {
                     let subfeatures = interp
-                        .get_symbol_property(symbol.as_str(), "subfeatures")
+                        .get_property_of_symbol_value(Value::Symbol(symbol), "subfeatures")
                         .unwrap_or(Value::Nil);
                     let mut found = false;
                     for item in subfeatures.to_vec().unwrap_or_default() {
@@ -919,11 +919,11 @@ pub(crate) fn command_p(
         Kind::Cons(cell) => {
             let funcar = cell.car.get();
             let is_head = |head: &str| {
-                matches!(funcar.kind(), Kind::Symbol(symbol) if symbol == head)
+                matches!(funcar.kind(), Kind::Symbol(symbol) if symbol.is_named(head))
                     || (matches!(funcar.kind(), Kind::SymbolWithPos(_))
                         && matches!(
                             symbol_with_pos_parts(interp, &funcar).map(|(symbol, _)| symbol.kind()),
-                            Some(Kind::Symbol(symbol)) if symbol == head
+                            Some(Kind::Symbol(symbol)) if symbol.is_named(head)
                         )
                         && symbols_with_pos_enabled(interp, env))
             };

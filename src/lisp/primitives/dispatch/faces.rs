@@ -137,7 +137,7 @@ const LFACE_EXTEND_INDEX: usize = 19;
 
 /// UNSPECIFIEDP.
 fn unspecifiedp(value: &Value) -> bool {
-    matches!(value.kind(), Kind::Symbol(symbol) if symbol == "unspecified")
+    matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("unspecified"))
 }
 
 /// xfaces.c:push_named_merge_point: whether FACE_NAME may be merged as
@@ -295,7 +295,7 @@ fn merge_named_face(
                 }
             };
             for (index, attr) in from.iter_mut().enumerate().skip(1) {
-                if matches!(attr.kind(), Kind::Symbol(symbol) if symbol == "reset") {
+                if matches!(attr.kind(), Kind::Symbol(symbol) if symbol.is_named("reset")) {
                     *attr = vector_slot_value(&deflt, index)?;
                 }
             }
@@ -330,7 +330,7 @@ fn evaluate_face_filter(
         return Ok(true);
     }
     let well_formed = filter.cons_values().and_then(|(head, rest)| {
-        matches!(head.kind(), Kind::Symbol(symbol) if symbol == ":window").then_some(())?;
+        matches!(head.kind(), Kind::Symbol(symbol) if symbol.is_named(":window")).then_some(())?;
         let (_parameter, rest) = rest.cons_values()?;
         let (_value, rest) = rest.cons_values()?;
         rest.is_nil().then_some(())
@@ -357,7 +357,7 @@ fn filter_face_ref(
     let Some((head, rest)) = face_ref.cons_values() else {
         return Ok(face_ref);
     };
-    if !matches!(head.kind(), Kind::Symbol(symbol) if symbol == ":filtered") {
+    if !matches!(head.kind(), Kind::Symbol(symbol) if symbol.is_named(":filtered")) {
         return Ok(face_ref);
     }
     let parts = rest.cons_values().and_then(|(filter, rest)| {
@@ -419,8 +419,7 @@ fn merge_face_ref(
         }
         return Ok(ok);
     };
-    let symbol_is =
-        |value: &Value, name: &str| matches!(value.kind(), Kind::Symbol(symbol) if symbol == name);
+    let symbol_is = |value: &Value, name: &str| matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named(name));
     if symbol_is(&first, "foreground-color") || symbol_is(&first, "background-color") {
         if rest.is_string() {
             let index = if symbol_is(&first, "foreground-color") {
@@ -579,7 +578,9 @@ fn merge_face_heights(
         Kind::Float(scale) => match to.kind() {
             Kind::Integer(height) => Value::Integer((scale.get() * height as f64) as i64),
             Kind::Float(height) => Value::float(scale.get() * height.get()),
-            _ if matches!(to.kind(), Kind::Symbol(symbol) if symbol == "unspecified") => from,
+            _ if matches!(to.kind(), Kind::Symbol(symbol) if symbol.is_named("unspecified")) => {
+                from
+            }
             _ => invalid,
         },
         _ if function_value_p(interp, &from, env) => {
@@ -614,7 +615,7 @@ fn checked_face_attribute(
 ) -> Result<Option<(usize, Value)>, LispError> {
     let index = |name: &str| face_attribute_index(name).expect("an attribute of the lface vector");
     let special = special_face_value(&value);
-    let is = |name: &str| matches!(value.kind(), Kind::Symbol(symbol) if symbol == name);
+    let is = |name: &str| matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named(name));
     let check_string = |value: Value| -> Result<String, LispError> {
         if value.is_string() {
             string_text(&value)
@@ -840,7 +841,8 @@ fn underline_plist_valid(mut list: Value) -> Result<bool, LispError> {
         list = cdr(list);
         let val = car(list);
         list = cdr(list);
-        let key_is = |name: &str| matches!(key.kind(), Kind::Symbol(symbol) if symbol == name);
+        let key_is =
+            |name: &str| matches!(key.kind(), Kind::Symbol(symbol) if symbol.is_named(name));
         let val_is = |names: &[&str]| matches!(val.kind(), Kind::Symbol(symbol) if names.contains(&symbol.as_str()));
         if key.is_nil() || (val.is_nil() && !key_is(":position")) {
             return Ok(false);
@@ -870,7 +872,8 @@ fn box_plist_valid(value: Value) -> Result<bool, LispError> {
         let Some((val, rest)) = tail.cons_values() else {
             break;
         };
-        let key_is = |name: &str| matches!(key.kind(), Kind::Symbol(symbol) if symbol == name);
+        let key_is =
+            |name: &str| matches!(key.kind(), Kind::Symbol(symbol) if symbol.is_named(name));
         if key_is(":line-width") {
             let pair = val
                 .cons_values()
@@ -927,7 +930,9 @@ fn set_face_attribute_on(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let mut value = *value;
-    if frame.is_none() && matches!(value.kind(), Kind::Symbol(symbol) if symbol == "unspecified") {
+    if frame.is_none()
+        && matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("unspecified"))
+    {
         value = Value::symbol(":ignore-defface");
     }
     if let Some((index, value)) =
@@ -959,7 +964,7 @@ fn frame_parameter_of_face_change(
     frame: Option<crate::lisp::types::FrameRef>,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if matches!(value.kind(), Kind::Symbol(symbol) if symbol == "unspecified" || symbol == ":ignore-defface")
+    if matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("unspecified") || symbol.is_named(":ignore-defface"))
         || values_equal(interp, &old_value, &value)?
     {
         return Ok(());
@@ -1373,7 +1378,8 @@ define_dispatch!(
                 .ok_or_else(|| face_attribute_error(&attribute))?;
                 let value = vector_slot_value(&vector, index)?;
                 Ok(
-                    if matches!(value.kind(), Kind::Symbol(symbol) if symbol == ":ignore-defface") {
+                    if matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named(":ignore-defface"))
+                    {
                         Value::symbol("unspecified")
                     } else {
                         value
@@ -1409,9 +1415,10 @@ define_dispatch!(
                 let local = interp.make_lisp_face_on(face, Some(frame), false)?;
                 for index in 1..LFACE_VECTOR_SIZE {
                     let value = vector_slot_value(&global, index)?;
-                    if matches!(value.kind(), Kind::Symbol(symbol) if symbol == ":ignore-defface") {
+                    if matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named(":ignore-defface"))
+                    {
                         aset_vector_value(&local, index, Value::symbol("unspecified"))?;
-                    } else if !matches!(value.kind(), Kind::Symbol(symbol) if symbol == "unspecified")
+                    } else if !matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("unspecified"))
                     {
                         aset_vector_value(&local, index, value)?;
                     }
@@ -1501,7 +1508,7 @@ define_dispatch!(
                 for index in 1..LFACE_VECTOR_SIZE {
                     if !matches!(
                         (vector_slot_value(&vector, index)?).kind(),
-                        Kind::Symbol(symbol) if symbol == "unspecified"
+                        Kind::Symbol(symbol) if symbol.is_named("unspecified")
                     ) {
                         return Ok(Value::Nil);
                     }

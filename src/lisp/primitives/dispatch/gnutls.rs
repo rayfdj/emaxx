@@ -540,7 +540,7 @@ fn plist_integer(plist: &Value, property: &str) -> Option<i64> {
     while let Kind::Cons(cell) = current.kind() {
         let rest = cell.cdr.get();
         let (value, tail) = rest.cons_cells()?;
-        if matches!(cell.car.get().kind(), Kind::Symbol(name) if name == property) {
+        if matches!(cell.car.get().kind(), Kind::Symbol(name) if name.is_named(property)) {
             return value.get().integer_value();
         }
         current = tail.get();
@@ -555,7 +555,7 @@ fn digest_spec(method: &Value) -> Option<&'static DigestSpec> {
             let name = string_text(method).ok()?;
             return DIGESTS.iter().find(|spec| spec.name == name);
         }
-        Kind::Symbol(name) => return DIGESTS.iter().find(|spec| spec.name == name),
+        Kind::Symbol(name) => return DIGESTS.iter().find(|spec| name.is_named(spec.name)),
         Kind::Cons(..) => plist_integer(method, ":digest-algorithm-id"),
         _ => None,
     };
@@ -1167,7 +1167,7 @@ fn contains_symbol(value: &Value, wanted: &str) -> bool {
     value.to_vec().is_ok_and(|items| {
         items
             .iter()
-            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol == wanted))
+            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol.is_named(wanted)))
     })
 }
 
@@ -1176,7 +1176,7 @@ fn plist_has_key(value: &Value, wanted: &str) -> bool {
         items
             .iter()
             .step_by(2)
-            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol == wanted))
+            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol.is_named(wanted)))
     })
 }
 
@@ -1993,7 +1993,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(
                     if matches!(args[0].kind(), Kind::T)
-                        || matches!(args[0].kind(), Kind::Symbol(symbol) if symbol == "gnutls-e-again")
+                        || matches!(args[0].kind(), Kind::Symbol(symbol) if symbol.is_named("gnutls-e-again"))
                     {
                         Value::Nil
                     } else {

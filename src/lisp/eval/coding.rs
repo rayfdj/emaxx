@@ -736,7 +736,7 @@ impl Interpreter {
             },
             "utf-16" => {
                 let bom = type_args.first().cloned().unwrap_or(Value::Nil);
-                let big_endian = !matches!(type_args.get(1).map(|v| v.kind()), Some(Kind::Symbol(endian)) if endian == "little");
+                let big_endian = !matches!(type_args.get(1).map(|v| v.kind()), Some(Kind::Symbol(endian)) if endian.is_named("little"));
                 match bom.kind() {
                     Kind::Cons(_) => CODING_CATEGORY_UTF_16_AUTO,
                     Kind::Nil if big_endian => CODING_CATEGORY_UTF_16_BE_NOSIG,
@@ -747,7 +747,7 @@ impl Interpreter {
             }
             "iso-2022" => {
                 let full_support =
-                    matches!(charset_list.kind(), Kind::Symbol(name) if name == "iso-2022");
+                    matches!(charset_list.kind(), Kind::Symbol(name) if name.is_named("iso-2022"));
                 let flags = type_args
                     .get(3)
                     .and_then(|flags| flags.integer_value())

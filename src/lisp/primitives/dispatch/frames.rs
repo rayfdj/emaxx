@@ -517,7 +517,7 @@ pub(crate) fn realize_basic_faces(interp: &mut Interpreter, id: FrameRef) -> Res
     };
     let unspecified = |index: usize| -> Result<bool, LispError> {
         Ok(matches!(vector_slot_value(&lface, index)?.kind(),
-            Kind::Symbol(symbol) if symbol == "unspecified"))
+            Kind::Symbol(symbol) if symbol.is_named("unspecified")))
     };
     let normal = Value::symbol("normal");
     // !FRAME_WINDOW_P: one family string for the family and foundry,
@@ -1001,7 +1001,7 @@ define_dispatch!(
                 .to_vec()
                 .ok()
                 .filter(|items| {
-                    matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(event)) if event == "switch-frame")
+                    matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(event)) if event.is_named("switch-frame"))
                 })
                 .and_then(|items| items.get(1).cloned())
                 .unwrap_or_else(|| args[0]);

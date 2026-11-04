@@ -255,14 +255,16 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         if !matches!(
             fundef.cons_values().map(|(head, _)| head.kind()),
-            Some(Kind::Symbol(head)) if head == "autoload"
+            Some(Kind::Symbol(head)) if head.is_named("autoload")
         ) {
             return Ok(fundef);
         }
         let kind = crate::lisp::primitives::call(self, "nth", &[Value::Integer(4), fundef], env)?;
         let loads_macro = matches!(kind.kind(), Kind::T)
-            || matches!(kind.kind(), Kind::Symbol(symbol) if symbol == "t" || symbol == "macro");
-        if matches!(macro_only.kind(), Kind::Symbol(symbol) if symbol == "macro") && !loads_macro {
+            || matches!(kind.kind(), Kind::Symbol(symbol) if symbol.is_named("t") || symbol.is_named("macro"));
+        if matches!(macro_only.kind(), Kind::Symbol(symbol) if symbol.is_named("macro"))
+            && !loads_macro
+        {
             return Ok(fundef);
         }
         if self.will_dump_without_bootstrap(env) {
@@ -1490,7 +1492,7 @@ impl Interpreter {
         let saved_in_tree = |slots: &[Value]| {
             !matches!(
                 slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-                Some(Kind::Symbol(ref kind)) if kind == primitives::DELETED_WINDOW_KIND
+                Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::DELETED_WINDOW_KIND)
             )
         };
         // A window that gets another buffer records its old one.
@@ -1609,7 +1611,7 @@ impl Interpreter {
         {
             let mini = matches!(
                 slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-                Some(Kind::Symbol(ref kind)) if kind == primitives::MINIBUFFER_WINDOW_KIND
+                Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::MINIBUFFER_WINDOW_KIND)
             );
             let saved = saved_buffer(slots);
             let saved_start = slots.get(primitives::WINDOW_START_SLOT).copied();
@@ -1929,7 +1931,7 @@ impl Interpreter {
                     .is_some_and(|value| value.integer_value().is_some())
                 && !matches!(
                     record.slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-                    Some(Kind::Symbol(ref kind)) if kind == primitives::DELETED_WINDOW_KIND
+                    Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::DELETED_WINDOW_KIND)
                 )
         })
     }
@@ -2945,7 +2947,8 @@ impl Interpreter {
         let features = self
             .global_value("features")
             .unwrap_or_else(|| self.features_value());
-        let named = |value: &Value| matches!(value.kind(), Kind::Symbol(name) if name == feature);
+        let named =
+            |value: &Value| matches!(value.kind(), Kind::Symbol(name) if name.is_named(feature));
         if matches!(features.kind(), Kind::Vector(_)) {
             // A vector reads as `to_vec' gives it, marker first.
             return features
@@ -3083,7 +3086,7 @@ fn saved_windows(
     let minibuffer = snapshot.window_records.iter().find(|(_, slots)| {
         matches!(
             slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-            Some(Kind::Symbol(ref kind)) if kind == primitives::MINIBUFFER_WINDOW_KIND
+            Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::MINIBUFFER_WINDOW_KIND)
         )
     });
     if let Some((id, _)) = minibuffer {

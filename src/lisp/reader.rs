@@ -2145,7 +2145,8 @@ impl<'a> Reader<'a> {
                 })();
                 self.locate_symbols = saved_locate;
                 let (kind, fields) = result?;
-                if matches!(kind.kind(), Kind::Symbol(kind_name) if kind_name == "hash-table") {
+                if matches!(kind.kind(), Kind::Symbol(kind_name) if kind_name.is_named("hash-table"))
+                {
                     self.literal_object(ReaderForm::HashTable { fields })
                         .map(Some)
                 } else {
@@ -2717,8 +2718,8 @@ mod tests {
             crate::lisp::types::visible_symbol_name(symbol.as_str()),
             "a"
         );
-        assert_ne!(symbol, "a");
-        assert_ne!(symbol, ":a");
+        assert!(!symbol.is_named("a"));
+        assert!(!symbol.is_named(":a"));
     }
 
     #[test]
@@ -2828,7 +2829,7 @@ mod tests {
         assert_eq!(*kind, ReaderClosureKind::Interpreted);
         assert!(slots.first().is_some_and(|params| {
             params.to_vec().ok().is_some_and(
-                |params| matches!(params.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "_tag"),
+                |params| matches!(params.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.is_named("_tag")),
             )
         }));
     }
@@ -3113,7 +3114,7 @@ mod tests {
         let items = value.to_vec().expect("quote form");
         assert!(matches!(
             items.first().map(|v| v.kind()),
-            Some(Kind::Symbol(symbol)) if symbol == "quote"
+            Some(Kind::Symbol(symbol)) if symbol.is_named("quote")
         ));
         let (_, tail) = items[1].cons_values().expect("the labelled list");
         assert!(tail.eq_value(items[1]));
@@ -3154,7 +3155,7 @@ mod tests {
 
         for (object, expected_head) in objects.iter().zip(["a", "b"]) {
             let (head, tail) = object.cons_values().expect("circular list head");
-            assert!(matches!(head.kind(), Kind::Symbol(symbol) if symbol == expected_head));
+            assert!(matches!(head.kind(), Kind::Symbol(symbol) if symbol.is_named(expected_head)));
             let (recursive, end) = tail.cons_values().expect("circular list tail");
             assert_eq!(end, Value::Nil);
             assert_eq!(
@@ -3209,12 +3210,12 @@ mod tests {
         assert!(matches!(
             slots.as_slice().iter().map(|v| v.kind()).collect::<Vec<_>>().as_slice(),
             [Kind::Symbol(kind), Kind::Symbol(field), Kind::ReaderForm(nested), vector]
-                if kind == "a"
-                    && field == "b"
+                if kind.is_named("a")
+                    && field.is_named("b")
                     && matches!(nested.as_ref(), ReaderForm::Record { .. })
                     && crate::lisp::primitives::vector_items(&vector.value()).is_ok_and(|items| matches!(
                         crate::lisp::types::kinds(&items).as_slice(),
-                        [Kind::Symbol(item)] if item == "e"
+                        [Kind::Symbol(item)] if item.is_named("e")
                     ))
         ));
     }

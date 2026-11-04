@@ -107,7 +107,7 @@ fn native_arity(
                 .map_err(|_| super::lisp::native_ice("negative native maximum arity"))?;
             native_function_signature(dynamic, maximum)
         }
-        Kind::Symbol(name) if name == "many" => (
+        Kind::Symbol(name) if name.is_named("many") => (
             if dynamic {
                 NativeCallingConvention::Fixed
             } else {

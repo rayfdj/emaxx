@@ -1841,7 +1841,7 @@ fn print_override_bindings(overrides: &Value) -> Result<Vec<(&'static str, Value
             let variable = match key.kind() {
                 Kind::Symbol(key) => PRINT_VARIABLE_MAPPING
                     .iter()
-                    .find(|(name, _, _)| key == *name)
+                    .find(|(name, _, _)| key.is_named(name))
                     .map(|&(_, variable, _)| variable),
                 _ => None,
             };

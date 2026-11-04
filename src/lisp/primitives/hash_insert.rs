@@ -455,7 +455,7 @@ pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Va
     }
     if let Ok(items) = value.to_vec() {
         if let Some(Kind::Symbol(name)) = items.first().map(|v| v.kind())
-            && name == property
+            && name.is_named(property)
         {
             return items.get(1).cloned();
         }

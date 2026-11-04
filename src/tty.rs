@@ -1246,7 +1246,7 @@ fn settle_command_error(
     let top_level = matches!(
         &error,
         LispErrorKind::Throw(tag, _)
-            if matches!(tag.kind(), Kind::Symbol(name) if name == "top-level")
+            if matches!(tag.kind(), Kind::Symbol(name) if name.is_named("top-level"))
     );
     let error = LispError::from(error);
     let reported = if top_level {
@@ -1667,7 +1667,7 @@ fn window_render_geometry(
     // hscrolling_current_line_p: `current-line' hscrolls only the row
     // showing point, and only while auto-hscroll is not suspended.
     let current_line_only = !suspended
-        && matches!(auto_mode_value.kind(), Kind::Symbol(name) if name == "current-line");
+        && matches!(auto_mode_value.kind(), Kind::Symbol(name) if name.is_named("current-line"));
     let truncate_now = truncate_lines || hscroll > 0 || partial_truncates;
     if auto_mode && !suspended && truncate_now {
         let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
@@ -1778,12 +1778,13 @@ fn window_render_geometry(
 /// completion--insert-strings builds its columns from them).
 fn space_align_to_target(value: &Value) -> Option<usize> {
     let items = value.to_vec().ok()?;
-    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "space") {
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head.is_named("space"))
+    {
         return None;
     }
     let position = items
         .iter()
-        .position(|item| matches!(item.kind(), Kind::Symbol(name) if name == ":align-to"))?;
+        .position(|item| matches!(item.kind(), Kind::Symbol(name) if name.is_named(":align-to")))?;
     match items.get(position + 1).map(|v| v.kind()) {
         Some(Kind::Integer(column)) if column >= 0 => Some(column as usize),
         _ => None,
@@ -1802,12 +1803,13 @@ enum SpecifiedSpace {
 /// width is one cell, so `:width 0.5' is deliberately a zero-cell stretch.
 fn specified_space(value: &Value) -> Option<SpecifiedSpace> {
     let items = value.to_vec().ok()?;
-    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "space") {
+    if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head.is_named("space"))
+    {
         return None;
     }
     if let Some(position) = items
         .iter()
-        .position(|item| matches!(item.kind(), Kind::Symbol(name) if name == ":width"))
+        .position(|item| matches!(item.kind(), Kind::Symbol(name) if name.is_named(":width")))
         && let Some(width) = items
             .get(position + 1)
             .and_then(|value| value.as_float().ok())
@@ -1835,7 +1837,7 @@ fn specified_space(value: &Value) -> Option<SpecifiedSpace> {
 fn margin_display_spec(display: &Value) -> Option<(Option<String>, Value)> {
     let (head, rest) = display.cons_values()?;
     let (tag, location) = head.cons_values()?;
-    if !matches!(tag.kind(), Kind::Symbol(name) if name == "margin") {
+    if !matches!(tag.kind(), Kind::Symbol(name) if name.is_named("margin")) {
         return None;
     }
     let location = match location.cons_values() {
@@ -1844,16 +1846,16 @@ fn margin_display_spec(display: &Value) -> Option<(Option<String>, Value)> {
     };
     let location = match location.kind() {
         Kind::Nil => None,
-        Kind::Symbol(name) if name == "left-margin" || name == "right-margin" => {
+        Kind::Symbol(name) if name.is_named("left-margin") || name.is_named("right-margin") => {
             Some(name.to_string())
         }
         _ => return None,
     };
     let value = rest.cons_values().map_or(rest, |(value, _)| value);
     let valid = crate::lisp::primitives::string_text(&value).is_ok()
-        || value
-            .cons_values()
-            .is_some_and(|(car, _)| matches!(car.kind(), Kind::Symbol(name) if name == "space"));
+        || value.cons_values().is_some_and(
+            |(car, _)| matches!(car.kind(), Kind::Symbol(name) if name.is_named("space")),
+        );
     valid.then_some((location, value))
 }
 
@@ -1887,7 +1889,7 @@ fn tty_fringe_display(value: &Value, position: usize) -> bool {
     display.to_vec().ok().is_some_and(|parts| {
         matches!(
             parts.first().map(|v| v.kind()),
-            Some(Kind::Symbol(name)) if name == "left-fringe" || name == "right-fringe"
+            Some(Kind::Symbol(name)) if name.is_named("left-fringe") || name.is_named("right-fringe")
         )
     })
 }
@@ -2102,7 +2104,7 @@ impl<'a> CharacterDisplayContext<'a> {
         let get = |key: &str| {
             plist
                 .chunks(2)
-                .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name == key))
+                .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name.is_named(key)))
                 .and_then(|pair| pair.get(1).copied())
                 .filter(|value| !value.is_nil())
         };
@@ -2218,7 +2220,8 @@ impl<'a> CharacterDisplayContext<'a> {
             return (!text.is_empty()).then(|| self.prefix_string_cells(&text).0);
         }
         let items = value.to_vec().ok()?;
-        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "space") {
+        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head.is_named("space"))
+        {
             return None;
         }
         Some(" ".repeat(self.stretch_width(&items[1..])))
@@ -2266,7 +2269,7 @@ impl<'a> CharacterDisplayContext<'a> {
         let get = |key: &str| {
             plist
                 .chunks(2)
-                .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name == key))
+                .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name.is_named(key)))
                 .and_then(|pair| pair.get(1).copied())
                 .filter(|value| !value.is_nil())
         };
@@ -2349,21 +2352,21 @@ impl<'a> CharacterDisplayContext<'a> {
                 let cdr = cell.cdr.get();
                 let mut car = car;
                 if let Kind::Symbol(name) = car.kind() {
-                    if name == "+" || name == "-" {
+                    if name.is_named("+") || name.is_named("-") {
                         let mut pixels = 0.0;
                         let mut first = true;
                         let mut tail = cdr;
                         while let Kind::Cons(item) = tail.kind() {
                             let px = self.pixel_width(&item.car.get(), align_to.as_deref_mut())?;
                             if first {
-                                pixels = if name == "+" { px } else { -px };
+                                pixels = if name.is_named("+") { px } else { -px };
                                 first = false;
                             } else {
                                 pixels += px;
                             }
                             tail = item.cdr.get();
                         }
-                        return Some(if name == "-" { -pixels } else { pixels });
+                        return Some(if name.is_named("-") { -pixels } else { pixels });
                     }
                     car = self
                         .interpreter
@@ -2398,13 +2401,13 @@ impl<'a> CharacterDisplayContext<'a> {
         let method = match value.kind() {
             // lookup_glyphless_char_display: no method (the usual entry).
             Kind::Nil if !no_font_fallback => return None,
-            Kind::Symbol(name) if name == "zero-width" && no_font_fallback => {
+            Kind::Symbol(name) if name.is_named("zero-width") && no_font_fallback => {
                 GlyphlessDisplayMethod::EmptyBox
             }
-            Kind::Symbol(name) if name == "zero-width" => GlyphlessDisplayMethod::ZeroWidth,
-            Kind::Symbol(name) if name == "thin-space" => GlyphlessDisplayMethod::ThinSpace,
-            Kind::Symbol(name) if name == "empty-box" => GlyphlessDisplayMethod::EmptyBox,
-            Kind::Symbol(name) if name == "hex-code" => GlyphlessDisplayMethod::HexCode,
+            Kind::Symbol(name) if name.is_named("zero-width") => GlyphlessDisplayMethod::ZeroWidth,
+            Kind::Symbol(name) if name.is_named("thin-space") => GlyphlessDisplayMethod::ThinSpace,
+            Kind::Symbol(name) if name.is_named("empty-box") => GlyphlessDisplayMethod::EmptyBox,
+            Kind::Symbol(name) if name.is_named("hex-code") => GlyphlessDisplayMethod::HexCode,
             value => match crate::lisp::primitives::string_text(&value.value()) {
                 Ok(acronym) => GlyphlessDisplayMethod::Acronym(acronym),
                 Err(_) if no_font_fallback => GlyphlessDisplayMethod::EmptyBox,
@@ -4239,7 +4242,7 @@ fn run_fontification_functions(
     let pos_value = Value::Integer(pos as i64);
     let is_bare_lambda = matches!(
         value.car().map(|v| v.kind()),
-        Ok(Kind::Symbol(ref name)) if name == "lambda"
+        Ok(Kind::Symbol(ref name)) if name.is_named("lambda")
     );
     if !matches!(value.kind(), Kind::Cons(_)) || is_bare_lambda {
         let _ =
@@ -5474,7 +5477,7 @@ fn redraw_with_echo_policy(
                     crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
                 });
             let row = &mut frame[row_index];
-            if matches!(face.kind(), Kind::Symbol(name) if name == "default") {
+            if matches!(face.kind(), Kind::Symbol(name) if name.is_named("default")) {
                 row.replace_attrs(from, to, attrs);
             } else {
                 row.overlay(from, to, attrs);

@@ -668,7 +668,7 @@ pub(crate) fn function_documentation(
     };
     // doc.c Fdocumentation: a macro's documentation lives on the function
     // inside its (macro . FUNCTION) cons.
-    let value = if matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "macro")
+    let value = if matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name.is_named("macro"))
     {
         value.cdr_if_list()?
     } else {
@@ -677,7 +677,8 @@ pub(crate) fn function_documentation(
     // doc.c Fdocumentation: an autoload's documentation is the third
     // element of its (autoload FILE DOC INTERACTIVE TYPE) form, read
     // without resolving the autoload (GNU does not load the file here).
-    if matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "autoload") {
+    if matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name.is_named("autoload"))
+    {
         let items = value.to_vec().ok()?;
         return items.get(2).filter(|doc| !doc.is_nil()).cloned();
     }
@@ -1530,7 +1531,7 @@ fn mouse_event_on_menu_bar(event: &Value) -> bool {
         .to_vec()
         .ok()
         .and_then(|items| items.get(1)?.to_vec().ok())
-        .is_some_and(|posn| matches!(posn.get(1).map(|v| v.kind()), Some(Kind::Symbol(area)) if area == "menu-bar"))
+        .is_some_and(|posn| matches!(posn.get(1).map(|v| v.kind()), Some(Kind::Symbol(area)) if area.is_named("menu-bar")))
 }
 
 /// Complete command resolution using the binding already reached by the
@@ -2352,7 +2353,7 @@ pub(crate) fn is_mouse_down_event(value: &Value) -> bool {
 
 pub(crate) fn is_declare_form(form: &Value) -> bool {
     form.to_vec().ok().is_some_and(
-        |items| matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "declare"),
+        |items| matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.is_named("declare")),
     )
 }
 
@@ -2448,7 +2449,7 @@ pub(crate) fn menu_bar_row_items(
                 interp,
                 menu,
                 &mut |interp, key, item, env| {
-                    if matches!(item.kind(), Kind::Symbol(def) if def == "undefined") {
+                    if matches!(item.kind(), Kind::Symbol(def) if def.is_named("undefined")) {
                         items.retain(|(existing, _)| !existing.eq_value(key));
                     } else if let Some(caption) = menu_item_caption(interp, env, &item)
                         && !items.iter().any(|(existing, _)| existing.eq_value(key))
@@ -2519,7 +2520,7 @@ pub(crate) fn menu_item_details_with_button(
         return None;
     }
     let eval_property = |interp: &mut Interpreter, env: &mut Env, form: &Value| match form.kind() {
-        Kind::Symbol(name) if name != "t" && name != "nil" => {
+        Kind::Symbol(name) if !name.is_named("t") && !name.is_named("nil") => {
             interp.lookup_var_symbol(&name, env).unwrap_or(Value::Nil)
         }
         Kind::Cons(_) => interp.eval(form, env).unwrap_or(Value::Nil),
@@ -2545,7 +2546,7 @@ pub(crate) fn menu_item_details_with_button(
         // face; only the menu bar drops definition-less items.
         return Some((name, def, true, None));
     }
-    if !matches!(car.kind(), Kind::Symbol(tag) if tag == "menu-item") {
+    if !matches!(car.kind(), Kind::Symbol(tag) if tag.is_named("menu-item")) {
         return None;
     }
     // New format (menu-item NAME DEF [CACHE] . PROPS).
@@ -3011,9 +3012,9 @@ fn error_data_has_condition(interp: &Interpreter, data: &Value, condition: &str)
         )
         .and_then(|conditions| conditions.to_vec().ok())
         .is_some_and(|conditions| {
-            conditions
-                .iter()
-                .any(|entry| matches!(entry.kind(), Kind::Symbol(entry) if entry == condition))
+            conditions.iter().any(
+                |entry| matches!(entry.kind(), Kind::Symbol(entry) if entry.is_named(condition)),
+            )
         })
 }
 
@@ -3083,7 +3084,7 @@ fn cmd_error_internal(
     // asynchronous (signal_quit_p).
     let quit = data.cons_ref().is_some_and(|cell| {
         let symbol = cell.car.get();
-        matches!(symbol.kind(), Kind::Symbol(name) if name == "quit")
+        matches!(symbol.kind(), Kind::Symbol(name) if name.is_named("quit"))
     }) || error_data_has_condition(interp, &data, "quit");
     if quit {
         interp.signaling_function = Value::Nil;

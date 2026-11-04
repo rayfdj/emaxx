@@ -122,7 +122,7 @@ impl Interpreter {
         // does not count, or the init forms of genuinely loaded GNU
         // defvars (mode-line-modes, user-emacs-directory) were discarded.
         let resolved = self.resolve_variable_symbol(symbol)?;
-        let bound = self.global_value(resolved.as_str()).is_some();
+        let bound = self.global_binding_value_symbol(&resolved).is_some();
         self.define_uninitialized_variable(symbol, doc, env)?;
         if !bound {
             let value = init(self, env)?;
@@ -290,6 +290,7 @@ impl Interpreter {
 /// would build a wrong-type-argument error for any other object, only to
 /// drop it.
 fn form_head_is(form: Value, name: &str) -> bool {
-    form.cons_ref()
-        .is_some_and(|cell| matches!(cell.car.get().kind(), Kind::Symbol(head) if head == name))
+    form.cons_ref().is_some_and(
+        |cell| matches!(cell.car.get().kind(), Kind::Symbol(head) if head.is_named(name)),
+    )
 }

@@ -686,7 +686,7 @@ define_dispatch!(
                         .buffer_alist_local_variables(buffer_id)
                         .into_iter()
                         .filter(|(symbol, _)| {
-                            *symbol == "text-conversion-style"
+                            symbol.is_named("text-conversion-style")
                                 || crate::lisp::eval::native_per_buffer_slot(symbol.as_str())
                                     .is_none()
                         })
