@@ -14344,6 +14344,33 @@ setup_process_coding_systems's check now refuses). A 13-form
   scanning in five modes (2,500) print GNU's results. Local validation:
   the grouped gate's 3,502 library tests, the integration targets
   and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 302: `defalias' leaves the cycle check to Ffset, and a
+  gensym's name costs less.** data.c:defalias hands an advised symbol's
+  new definition to the symbol's `defalias-fset-function' (nadvice's
+  `advice--defalias-fset', which wraps the definition in the advice
+  already there), and only Ffset, called when there is no such function,
+  checks the definition for a cycle; Emaxx checked first, so redefining
+  an advised function as a symbol naming itself signalled
+  `cyclic-function-indirection' where GNU installs the advice around it,
+  and the program then saw a different function cell. The check is
+  Ffset's alone, and the `&str' wrapper of it that only a test called is
+  gone. 600 generated programs that defalias, fset, advise, unadvise,
+  fmakunbound and document four symbols, printing each one's fboundp,
+  arity, commandp, interactive form, documentation, alias chain, advice
+  and the results of calling it, print GNU's output, where 36 had
+  differed; a command-line comparison runs 150 of them, generated in
+  Lisp. An uninterned symbol's internal name (the visible name, a marker
+  and a counter), and a private obarray's, is built by pushing its parts
+  where `format!' took about 966 instructions of a `make-symbol' call: a
+  byte-compiled loop of 100,000 `(make-symbol "abc")' takes 2,796
+  instructions a call against 3,354, collections included, and 1,328
+  against 1,886 without them (GNU's 1,525 and 408). Fuzzes of `load',
+  `require', `provide', autoloads, after-load forms and the load
+  history, of 52 errors and `handler-bind', of 2,500 encodings and
+  decodings across 31 coding systems and of 3,000 time conversions and
+  formats across sixteen zones print GNU's results. Local validation:
+  the grouped gate's 3,502 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16682,6 +16709,18 @@ semantic-utest-ia (3,928 against 2,570) and mule-tests (3,153 against
 1,984). `ert-test-run-tests-batch-expensive' is 1.20 again on this
 runner, as on round 298's, and 1.075 to 1.10 on the faster ones of
 rounds 297 and 299.
+
+**On `85127e8`** (round 301): the full Rust gate (run 41847045584)
+passed; the frozen run (run 41847051990) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a runner slower again (the oracle's
+bodies 274.5 s against 267.4 at round 300). Setup 84.4 s against 69.0 s
+(1.223), test bodies 307.0 s against 274.5 s (1.119), in all 1.124, with
+a per-file setup median of 127 ms against 106. The widest body gaps are
+ert-tests (46,241 ms against 38,397), tramp-tests (23,537 against
+19,706), comp-tests (18,013 against 15,554), semantic-utest-ia (4,205
+against 2,704) and mule-tests (3,201 against 2,051);
+`ert-test-run-tests-batch-expensive' is 1.19 of GNU's time, as on the
+slower runners of rounds 298 and 300.
 
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal

@@ -1434,10 +1434,6 @@ impl Interpreter {
         }
     }
 
-    pub fn validate_function_binding(&self, name: &str, function: &Value) -> Result<(), LispError> {
-        self.validate_function_binding_symbol(&SymbolName::intern_str(name), function)
-    }
-
     pub(crate) fn validate_function_binding_symbol(
         &self,
         symbol: &SymbolName,

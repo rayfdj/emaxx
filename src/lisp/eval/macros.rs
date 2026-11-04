@@ -393,7 +393,8 @@ impl Interpreter {
         let name = crate::lisp::primitives::checked_symbol_name(self, &args[0], env)?;
         let mut function = args[1];
         let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
-        self.validate_function_binding(&name, &function)?;
+        // No cycle check here: data.c:defalias leaves it to Ffset, which
+        // a `defalias-fset-function' (advice's) takes the store from.
         if self
             .lookup_var("purify-flag", env)
             .is_some_and(|value| value.is_truthy())

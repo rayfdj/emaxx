@@ -36,7 +36,7 @@ fn function_cycle_validation_follows_the_current_symbol_cells() {
         .globals
         .set_function(&second, Some(Value::Symbol(third)));
     let error = interp
-        .validate_function_binding(third.as_str(), &Value::Symbol(first))
+        .validate_function_binding_symbol(&third, &Value::Symbol(first))
         .expect_err("the new definition closes a three-symbol cycle");
     match error.kind() {
         LispErrorKind::SignalValue(data) => assert_eq!(

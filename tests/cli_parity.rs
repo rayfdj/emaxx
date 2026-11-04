@@ -1388,6 +1388,69 @@ fn defvar_and_buffer_local_value_are_eval_c_and_data_c_s() {
     );
 }
 
+#[test]
+fn defalias_leaves_the_cycle_check_to_fset() {
+    // data.c:defalias hands an advised symbol's new definition to its
+    // `defalias-fset-function' (nadvice's), which wraps it before Ffset
+    // checks for a cycle: a definition naming the symbol itself is no
+    // cycle there.  A hundred and fifty programs generated in Lisp from
+    // one `random' seed defalias, fset, advise, unadvise and fmakunbound
+    // four symbols and print each one's fboundp, arity, commandp,
+    // interactive form, documentation, alias chain, advice and the
+    // results of calling it.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+
+(random "fn-fuzz")
+(defun fz-try (f &rest args) (condition-case e (apply f args) (error (list 'err (car e)))))
+(defvar fz-log nil)
+(defun fz-describe (s)
+  (list s (fboundp s)
+        (fz-try (lambda () (func-arity s)))
+        (fz-try (lambda () (commandp s)))
+        (fz-try (lambda () (car-safe (interactive-form s))))
+        (fz-try (lambda () (let ((d (documentation s t))) (and d (car (split-string d "\n"))))))
+        (fz-try (lambda () (function-alias-p s)))
+        (fz-try (lambda () (subrp (indirect-function s))))
+        (fz-try (lambda () (advice-member-p 'fz-adv s)))
+        (fz-try (lambda () (funcall s 1 2)))
+        (fz-try (lambda () (apply s '(3))))
+        (fz-try (lambda () (car-safe (symbol-function s))))))
+(let ((names '(fz-f1 fz-f2 fz-f3 fz-f4))
+      (targets (list (lambda (a &optional b) "Doc A." (list 'l a b))
+                     (lambda (&rest r) (interactive "p") (cons 'rest r))
+                     #'+ #'car 'fz-f1 'fz-f2 'list
+                     (byte-compile (lambda (x y) "Compiled doc." (list 'bc x y)))
+                     (lambda (x) (interactive (list 1)) (list 'int x)))))
+  (dotimes (i 150)
+    (setq fz-log nil)
+    (dolist (n names) (fmakunbound n) (put n 'function-documentation nil))
+    (dotimes (_ (+ 2 (random 8)))
+      (let ((n (nth (random 4) names)) (k (random 9)))
+        (condition-case e
+            (cond ((< k 3) (defalias n (nth (random (length targets)) targets) (and (zerop (random 3)) "Alias doc.")))
+                  ((= k 3) (fset n (nth (random (length targets)) targets)))
+                  ((= k 4) (advice-add n (nth (random 4) '(:around :before :after :filter-return))
+                                       (lambda (&rest r) (push (list 'adv n (length r)) fz-log) (if (functionp (car r)) (apply (car r) (cdr r)) (car r)))
+                                       '((name . fz-adv))))
+                  ((= k 5) (advice-remove n 'fz-adv))
+                  ((= k 6) (fmakunbound n))
+                  ((= k 7) (put n 'function-documentation "Prop doc."))
+                  (t (defalias n (symbol-function (nth (random 4) names)))))
+          (error (push (list 'op-err (car e)) fz-log)))))
+    (prin1 (list i (mapcar #'fz-describe names) (nreverse fz-log)))
+    (terpri)))
+)"#,
+        ],
+    );
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

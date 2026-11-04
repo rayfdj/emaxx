@@ -2411,11 +2411,34 @@ pub(crate) fn environment_declares_special(environment: &Value, symbol: &SymbolN
 }
 
 pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
-    format!("{base}{UNINTERNED_SYMBOL_MARKER}{id}")
+    marked_symbol_name(base, UNINTERNED_SYMBOL_MARKER, id)
 }
 
 pub(crate) fn make_obarray_symbol_name(base: &str, obarray_id: u64) -> String {
-    format!("{base}{OBARRAY_SYMBOL_MARKER}{obarray_id}")
+    marked_symbol_name(base, OBARRAY_SYMBOL_MARKER, obarray_id)
+}
+
+/// BASE, MARKER and ID in decimal, each pushed in turn: through `format!'
+/// the text cost most of a `make-symbol'.
+fn marked_symbol_name(base: &str, marker: &str, id: u64) -> String {
+    let mut digits = [0_u8; 20];
+    let mut start = digits.len();
+    let mut rest = id;
+    loop {
+        start -= 1;
+        digits[start] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let digits = &digits[start..];
+    let mut name = String::with_capacity(base.len() + marker.len() + digits.len());
+    name.push_str(base);
+    name.push_str(marker);
+    // The digits are ASCII.
+    name.extend(digits.iter().map(|&digit| char::from(digit)));
+    name
 }
 
 static FRESH_OBARRAY_SYMBOL_SERIAL: std::sync::atomic::AtomicU64 =
