@@ -14274,6 +14274,40 @@ setup_process_coding_systems's check now refuses). A 13-form
   notification, value and error and GNU's messages. Local validation:
   the grouped gate's 3,502 library tests, the integration targets
   and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 300: variable stores read their C-side state by symbol, and a
+  binding's record is GNU's four words.** alloc.c's watchers of
+  `gc-cons-threshold' and `gc-cons-percentage' read gc_cons_threshold,
+  Vgc_cons_percentage and Vmemory_full, C variables; Emaxx's
+  `gc_tuning', which those watchers and every GC retune share, looked
+  each up by name, about 256 instructions a lookup, and now reads it
+  from its symbol (`symbol_value_key', find_symbol_value's) by a cached
+  key. notify_variable_watchers passes Qset, Qlet, Qunlet, Qmakunbound
+  or Qdefvaralias, where Emaxx interned the operation's name for each
+  watcher it called. store_symval_forwarding's check of a buffer slot's
+  predicate is Fget of its `choice' and `range' properties, then
+  FUNCTIONP and call1; Emaxx called `get' and `functionp' through the
+  dispatcher by name and interned the predicate and the two property
+  names at each store, and now reads the plist directly with the
+  predicates' symbols cached. A loop of 20,000 `(setq gc-cons-percentage
+  0.1)' takes 794 instructions a store more than one of an unwatched
+  variable, against 1,604 (GNU's 491), and a `setq' of `left-margin'
+  where it is not local 1,317 against 2,373 (GNU's 701). A binding's
+  specpdl record is eval.c's let member in its four words: the symbol,
+  the value saved (with a flag for a void binding that saved none),
+  `where' (the buffer current, or for a keyboard's slot its terminal),
+  and the kind (SPECPDL_LET, SPECPDL_LET_LOCAL or SPECPDL_LET_DEFAULT)
+  beside the backtrace depth and the flags for a symbol local when set,
+  a keyboard's slot and a local killed meanwhile; it was 96 bytes,
+  carrying the buffer three times, the terminal and the saved value each
+  in an Option, and a 64-bit depth. With an unwind record's two depths
+  in 32 bits, a specpdl entry takes 40 bytes against 96. A byte-code
+  loop binding two special variables takes 436 instructions and 178 data
+  references an iteration against 442 and 198 (GNU's 489 instructions);
+  2,000 generated binding programs and 1,000 of excursions and
+  restrictions, interpreted and byte-compiled, print GNU's states. Local
+  validation: the grouped gate's 3,502 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16583,6 +16617,22 @@ the harness, where it takes some thirty times less, it takes 1.42 to
 to 1.30 s in round 299's over two runs each (GNU 1.12 to 1.17), so the
 local runs show no regression. icalendar-tests is back to 636 ms against
 418.
+
+**On `44d155d`** (round 299): the full Rust gate (run 41829405438)
+passed; the frozen run (run 41829410104) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 66.9 s against 56.5 s (1.184),
+test bodies 264.4 s against 250.1 s (1.057), in all 1.088, with a
+per-file setup median of 103 ms against 89. The widest body gaps are
+ert-tests (35,934 ms against 33,091), tramp-tests (18,595 against
+16,069), comp-tests (14,913 against 12,945), semantic-utest-ia (3,007
+against 2,105) and mule-tests (2,343 against 1,536).
+`ert-test-run-tests-batch-expensive' took 35,070 ms against 32,626
+(1.075), so round 298's 1.20 was its runner's. mule-tests' ratio is the
+checked build's: locally the release build runs the file in 20.58G
+instructions and GNU in 21.25G, the gate build in 31.43G, most of the
+excess in the interpreter's cons walks (`eval_sub' 6.15G against the
+release build's 2.54G, `direct_assq_family' 3.37G against 1.06G), each
+dereference asserting its cell is allocated.
 
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal

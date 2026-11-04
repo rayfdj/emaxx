@@ -961,19 +961,21 @@ pub(crate) const MEMORY_FULL_CONS_THRESHOLD: i64 = 32_744;
 
 /// The `gc-cons-threshold' and `gc-cons-percentage' values alloc.c reads
 /// when it retunes the consing counter.
-pub(crate) fn gc_tuning(interpreter: &Interpreter, environment: &Env) -> (i64, Option<f64>) {
+pub(crate) fn gc_tuning(interpreter: &Interpreter) -> (i64, Option<f64>) {
+    // Vmemory_full, gc_cons_threshold and Vgc_cons_percentage: the C
+    // variables' current values, read from their symbols.
     MEMORY_FULL.store(
         interpreter
-            .lookup_var("memory-full", environment)
+            .symbol_value_key(cached_symbol!("memory-full"))
             .is_some_and(|value| !value.is_nil()),
         std::sync::atomic::Ordering::Relaxed,
     );
     let threshold = interpreter
-        .lookup_var("gc-cons-threshold", environment)
+        .symbol_value_key(cached_symbol!("gc-cons-threshold"))
         .and_then(|value| value.integer_value())
         .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
     let percentage = match interpreter
-        .lookup_var("gc-cons-percentage", environment)
+        .symbol_value_key(cached_symbol!("gc-cons-percentage"))
         .map(|v| v.kind())
     {
         Some(Kind::Float(value)) => Some(value.get()),
@@ -1047,7 +1049,7 @@ fn maybe_garbage_collect(interpreter: &mut Interpreter, environment: &mut Env) {
     if interpreter.garbage_collection_is_inhibited() {
         return;
     }
-    let (threshold, percentage) = gc_tuning(interpreter, environment);
+    let (threshold, percentage) = gc_tuning(interpreter);
     let due = with_current_runtime(|runtime| runtime.garbage_collection_due(threshold, percentage))
         .unwrap_or_else(|| {
             interpreter

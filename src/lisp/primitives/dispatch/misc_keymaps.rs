@@ -1421,14 +1421,14 @@ define_dispatch!(
             "watch_gc_cons_threshold" => {
                 need_args(name, args, 4)?;
                 if let Some(threshold) = args[1].integer_value() {
-                    let (_, percentage) = crate::lisp::native_comp::gc_tuning(interp, env);
+                    let (_, percentage) = crate::lisp::native_comp::gc_tuning(interp);
                     crate::lisp::native_comp::bump_consing_until_gc(interp, threshold, percentage);
                 }
                 Ok(Value::Nil)
             }
             "watch_gc_cons_percentage" => {
                 need_args(name, args, 4)?;
-                let (threshold, _) = crate::lisp::native_comp::gc_tuning(interp, env);
+                let (threshold, _) = crate::lisp::native_comp::gc_tuning(interp);
                 let percentage = match args[1].kind() {
                     Kind::Float(value) => Some(value.get()),
                     _ => None,

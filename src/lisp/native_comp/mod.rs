@@ -387,7 +387,7 @@ pub(super) fn finish_garbage_collection(
     let census = interpreter.live_object_census();
     let tot_after = census.total_bytes_of_live_objects();
     crate::lisp::primitives::profiler::note_live_bytes(tot_after);
-    let (threshold, percentage) = gc_tuning(interpreter, environment);
+    let (threshold, percentage) = gc_tuning(interpreter);
     garbage_collection_finished(interpreter, tot_after, threshold, percentage);
     interpreter.run_doomed_finalizers(environment)?;
     interpreter.note_collection_done(started.elapsed());

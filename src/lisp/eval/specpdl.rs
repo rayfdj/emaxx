@@ -50,8 +50,8 @@ impl SpecpdlEntry {
     #[inline]
     pub(crate) fn backtrace_depth(&self) -> usize {
         match self {
-            Self::Let(restore) => restore.frame_depth,
-            Self::Unwind(record) => record.backtrace_depth,
+            Self::Let(restore) => restore.frame_depth(),
+            Self::Unwind(record) => record.backtrace_depth as usize,
         }
     }
 }
@@ -63,8 +63,8 @@ impl SpecpdlEntry {
 #[derive(Clone, Debug)]
 pub(crate) struct UnwindRecord {
     action: UnwindAction,
-    backtrace_depth: usize,
-    lisp_eval_depth: usize,
+    backtrace_depth: u32,
+    lisp_eval_depth: u32,
 }
 
 /// What an unwind record undoes, as bytecode.c and comp.c's helpers record
@@ -122,7 +122,7 @@ impl SpecpdlEntry {
     pub(crate) fn mark_values(&self, mark: &mut impl FnMut(&Value)) {
         match self {
             Self::Let(restore) => {
-                if let Some(value) = &restore.previous {
+                if let Some(value) = &restore.previous() {
                     mark(value);
                 }
             }
@@ -164,8 +164,8 @@ impl Interpreter {
     pub(crate) fn record_unwind(&mut self, action: UnwindAction) {
         let record = UnwindRecord {
             action,
-            backtrace_depth: self.backtrace_frames.len(),
-            lisp_eval_depth: self.lisp_eval_depth,
+            backtrace_depth: depth_word(self.backtrace_frames.len()),
+            lisp_eval_depth: depth_word(self.lisp_eval_depth),
         };
         self.specpdl.push(SpecpdlEntry::Unwind(record));
     }
@@ -182,7 +182,7 @@ impl Interpreter {
         if !self.is_plain_restore(restore) {
             return false;
         }
-        let (name, previous) = (restore.name, restore.previous);
+        let (name, previous) = (restore.name, restore.previous());
         let depth = self.specpdl.len() - 1;
         // SAFETY: the entry is a binding's record, which owns nothing to
         // drop (asserted above); the length moves back over it as
@@ -264,8 +264,8 @@ impl Interpreter {
         match entry {
             SpecpdlEntry::Let(restore) => self.apply_special_restore(restore, env),
             SpecpdlEntry::Unwind(record) => {
-                self.truncate_backtrace_frames(record.backtrace_depth);
-                self.lisp_eval_depth = record.lisp_eval_depth;
+                self.truncate_backtrace_frames(record.backtrace_depth as usize);
+                self.lisp_eval_depth = record.lisp_eval_depth as usize;
                 self.run_unwind_action(record.action, env)
             }
         }
@@ -306,4 +306,13 @@ impl Interpreter {
             }
         }
     }
+}
+
+/// A depth kept in a record in 32 bits (GNU's unwind record keeps an
+/// EMACS_INT): the stack bounds the evaluation's and the backtrace's
+/// depths far below that.
+#[inline(always)]
+fn depth_word(depth: usize) -> u32 {
+    debug_assert!(u32::try_from(depth).is_ok());
+    depth as u32
 }
