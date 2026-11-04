@@ -3007,10 +3007,18 @@ impl Interpreter {
         self.combined_after_change.as_ref()
     }
 
+    /// insdel.c's `combine_after_change_list = Fcons (elt, ...)' and
+    /// `combine_after_change_buffer = Fcurrent_buffer ()': the change
+    /// joins those pending, whichever buffer they were recorded in (one
+    /// Fcombine_after_change_execute re-deferred), and BUFFER_ID is the
+    /// buffer they are signalled in.
     pub(crate) fn record_combined_after_change(&mut self, buffer_id: u64, change: (i64, i64, i64)) {
         match self.combined_after_change.as_mut() {
-            Some(pending) if pending.buffer_id == buffer_id => pending.changes.push(change),
-            _ => {
+            Some(pending) => {
+                pending.changes.push(change);
+                pending.buffer_id = buffer_id;
+            }
+            None => {
                 self.combined_after_change = Some(CombinedAfterChangeState {
                     buffer_id,
                     changes: vec![change],

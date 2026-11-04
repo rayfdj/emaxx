@@ -2393,6 +2393,65 @@ impl Buffer {
         }
     }
 
+    /// add_text_properties_1's interval analysis of [START, END) before
+    /// its modify_text_properties: the intervals made where there are none
+    /// (validate_interval_range with HARD) and, when PROPERTIES
+    /// (validated) would change the range, the interval at START split
+    /// there unless it has them all.  Whether they would change it.
+    pub(crate) fn prepare_add_text_properties(
+        &mut self,
+        start: usize,
+        end: usize,
+        properties: Value,
+    ) -> Result<bool, crate::lisp::types::LispError> {
+        if properties.is_nil() {
+            return Ok(false);
+        }
+        let Some((start, end)) = self.intervals_for_change(start, end, true) else {
+            return Ok(false);
+        };
+        let mut stored = self.text.borrow_mut();
+        let intervals = stored.intervals.as_mut().expect("intervals for the change");
+        intervals::split_for_add(intervals, start, end - start, properties)
+    }
+
+    /// set_text_properties' validation of [START, END) before its
+    /// modify_text_properties: the intervals made where there are none
+    /// when PROPERTIES (validated) are to be set.
+    pub(crate) fn prepare_set_text_properties(
+        &mut self,
+        start: usize,
+        end: usize,
+        properties: Value,
+    ) {
+        self.intervals_for_change(start, end, !properties.is_nil());
+    }
+
+    /// Fremove_text_properties' (PLIST the properties) and
+    /// Fremove_list_of_text_properties' (PLIST nil, LIST the names)
+    /// interval analysis of [START, END) before their
+    /// modify_text_properties, splitting as they split there: whether a
+    /// property would go.
+    pub(crate) fn prepare_remove_text_properties(
+        &mut self,
+        start: usize,
+        end: usize,
+        plist: Value,
+        list: Value,
+    ) -> Result<bool, crate::lisp::types::LispError> {
+        let (start, end) = (start.max(self.point_min()), end.min(self.point_max()));
+        if start >= end {
+            return Ok(false);
+        }
+        let mut stored = self.text.borrow_mut();
+        match stored.intervals.as_mut() {
+            Some(intervals) => {
+                intervals::split_for_remove(intervals, start, end - start, plist, list)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// textprop.c:add_text_properties_1's change of the buffer, after its
     /// hooks: PROPERTIES (validated, non-nil) over [START, END), counted
     /// and recorded for undo as modify_text_properties and add_properties

@@ -72,7 +72,7 @@ fn compose_region(
             buffer_id,
             start,
             end,
-            &|buffer| buffer.would_add_text_properties(start, end, properties),
+            &|buffer| buffer.prepare_add_text_properties(start, end, properties),
             &|buffer| {
                 let _ = buffer.add_text_properties_range(
                     start,

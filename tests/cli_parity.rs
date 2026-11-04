@@ -794,6 +794,101 @@ fn set_buffer_multibyte_is_fset_buffer_multibyte() {
     );
 }
 
+#[test]
+fn text_property_analysis_precedes_the_buffer_hooks() {
+    // textprop.c: add_text_properties_1, Fremove_text_properties and
+    // Fremove_list_of_text_properties split the interval at START (the
+    // list form also the first interval with a property at END), and
+    // validate_interval_range makes the root interval, before
+    // modify_text_properties runs the hooks, so a hook's error leaves
+    // them; a malformed plist signals before the hooks run.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+  (with-temp-buffer
+    (insert "abcdefghij")
+    (put-text-property 2 6 'p 1)
+    (let ((ticks (buffer-modified-tick)) (calls 0))
+      (add-hook 'before-change-functions (lambda (&rest _) (setq calls (1+ calls))) nil t)
+      (print (condition-case e (remove-text-properties 1 8 '(q . b)) (error e)))
+      (print (condition-case e (remove-text-properties 1 8 '(p . b)) (error e)))
+      (print (condition-case e (add-text-properties 1 8 '(p 1 . b)) (error e)))
+      (print (list calls (- (buffer-modified-tick) ticks) (object-intervals (current-buffer))))))
+  (dolist (op (list (lambda () (put-text-property 3 5 'p 1))
+                    (lambda () (add-face-text-property 3 5 'bold))
+                    (lambda () (set-text-properties 3 4 '(q 1)))
+                    (lambda () (set-text-properties 3 4 nil))))
+    (with-temp-buffer
+      (insert "abcdefghij")
+      (add-hook 'before-change-functions (lambda (&rest _) (error "no")) nil t)
+      (print (list (condition-case e (funcall op) (error e)) (object-intervals (current-buffer))))))
+  (with-temp-buffer
+    (insert "abcdefghij")
+    (put-text-property 1 11 'p 1)
+    (dolist (op (list (lambda () (remove-list-of-text-properties 3 5 '(p)))
+                      (lambda () (remove-text-properties 6 8 '(p nil)))
+                      (lambda () (add-text-properties 9 10 '(p 1 q 2)))
+                      (lambda () (put-text-property 7 9 'p 1))))
+      (add-hook 'before-change-functions (lambda (&rest _) (error "no")) nil t)
+      (print (list (condition-case e (funcall op) (error e)) (object-intervals (current-buffer))))))
+  (with-temp-buffer
+    (insert "abcdefghij")
+    (add-text-properties 5 7 '(display 1 read-only "s"))
+    (print (list (condition-case e (add-text-properties 6 8 '(face bold)) (error e))
+                 (buffer-string)))))"#,
+        ],
+    );
+}
+
+#[test]
+fn combined_after_change_calls_as_insdel() {
+    // insdel.c: a deferred change's unchanged end counts a deletion's
+    // text as unchanged, so the combined change can end before it starts
+    // and its counts go negative, as signal_after_change passes them;
+    // Fcombine_after_change_execute leaves `combine-after-change-calls'
+    // as it is, deferring the change again under a non-nil flag; another
+    // buffer's change joins the pending list after it is executed.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defvar cacc-log nil)
+(let ((a (generate-new-buffer "a")) (b (generate-new-buffer "b")))
+  (dolist (buf (list a b))
+    (with-current-buffer buf
+      (insert "hello world")
+      (add-hook 'after-change-functions
+                (lambda (beg end len) (push (list (buffer-name) beg end len) cacc-log)) nil t)))
+  (with-current-buffer a
+    (goto-char 4)
+    (combine-after-change-calls (insert "c") (delete-region 3 6))
+    (goto-char 2)
+    (combine-after-change-calls (insert "xyz") (delete-region 1 9))
+    (combine-after-change-calls (delete-region 1 2) (delete-region 1 2))
+    (combine-after-change-calls (insert "abc") (goto-char 1) (insert "q")))
+  (let ((combine-after-change-calls t))
+    (with-current-buffer a (goto-char 1) (insert "1"))
+    (push 'switch cacc-log)
+    (with-current-buffer b (goto-char 3) (insert "2") (delete-region 1 2))
+    (push 'execute cacc-log)
+    (combine-after-change-execute)
+    (push 'executed cacc-log))
+  (combine-after-change-execute)
+  (print (nreverse cacc-log))
+  (print (list (with-current-buffer a (buffer-string)) (with-current-buffer b (buffer-string))))))"#,
+        ],
+    );
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

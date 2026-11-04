@@ -1114,7 +1114,7 @@ fn add_text_properties_1(
                 id,
                 start,
                 end,
-                &|buffer| buffer.would_add_text_properties(start, end, properties),
+                &|buffer| buffer.prepare_add_text_properties(start, end, properties),
                 &|buffer| {
                     let _ = buffer.add_text_properties_range(
                         start,
@@ -1234,7 +1234,10 @@ pub(crate) fn set_text_properties(
                 id,
                 start,
                 end,
-                &|_| true,
+                &|buffer| {
+                    buffer.prepare_set_text_properties(start, end, properties);
+                    Ok(true)
+                },
                 &|buffer| {
                     let _ = buffer.set_text_properties_range(start, end, properties, true);
                 },
@@ -1340,7 +1343,7 @@ pub(crate) fn remove_text_properties(
                 id,
                 start,
                 end,
-                &|buffer| buffer.would_remove_text_properties(start, end, plist, names),
+                &|buffer| buffer.prepare_remove_text_properties(start, end, plist, names),
                 &|buffer| {
                     let _ = buffer.remove_text_properties_range(start, end, plist, names);
                 },

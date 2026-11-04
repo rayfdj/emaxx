@@ -8,13 +8,15 @@ use super::*;
 use crate::lisp::types::{Kind, MarkerRef, PropertyName};
 
 /// What a change reports to signal_after_change: where the changed text
-/// starts, how many characters it replaced and how many are there now;
-/// and the update_compositions its caller makes after the signal.
+/// starts, how many characters it replaced and how many are there now
+/// (ptrdiff_t, as Fcombine_after_change_execute's combined change can
+/// make the counts negative); and the update_compositions its caller
+/// makes after the signal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AfterChange {
-    pub(crate) charpos: usize,
-    pub(crate) lendel: usize,
-    pub(crate) lenins: usize,
+    pub(crate) charpos: i64,
+    pub(crate) lendel: i64,
+    pub(crate) lenins: i64,
     pub(crate) compositions: Option<CompositionUpdate>,
 }
 
@@ -29,6 +31,11 @@ pub(crate) struct CompositionUpdate {
 
 impl AfterChange {
     pub(crate) fn new(charpos: usize, lendel: usize, lenins: usize) -> Self {
+        Self::signed(charpos as i64, lendel as i64, lenins as i64)
+    }
+
+    /// A change whose counts may be negative (the combined change).
+    pub(crate) fn signed(charpos: i64, lendel: i64, lenins: i64) -> Self {
         Self {
             charpos,
             lendel,
@@ -64,9 +71,9 @@ impl AfterChange {
 
     fn args(self) -> [Value; 3] {
         [
-            Value::Integer(self.charpos as i64),
-            Value::Integer((self.charpos + self.lenins) as i64),
-            Value::Integer(self.lendel as i64),
+            Value::Integer(self.charpos),
+            Value::Integer(self.charpos + self.lenins),
+            Value::Integer(self.lendel),
         ]
     }
 }
@@ -272,8 +279,8 @@ fn call_mod_hooks(
 /// in-front ones unless they are the behind ones.
 fn report_interval_modification(
     interp: &mut Interpreter,
-    start: usize,
-    end: usize,
+    start: i64,
+    end: i64,
     env: &mut Env,
 ) -> Result<(), LispError> {
     let [behind, in_front] = interp.interval_insert_hooks;
@@ -282,7 +289,7 @@ fn report_interval_modification(
     }
     let held = vec![behind, in_front];
     interp.with_lisp_stack_roots(&held, |interp| {
-        let args = [Value::Integer(start as i64), Value::Integer(end as i64)];
+        let args = [Value::Integer(start), Value::Integer(end)];
         if !behind.is_nil() {
             call_mod_hooks(interp, behind, &args, env)?;
         }
@@ -445,7 +452,7 @@ pub(crate) fn signal_after_change(
     if modification_hooks_inhibited(interp) {
         return Ok(());
     }
-    if defer_after_change(interp, change, env) {
+    if defer_after_change(interp, change, env)? {
         return Ok(());
     }
     // The insert hooks this change recorded, kept from those a hook's own
@@ -487,37 +494,42 @@ pub(crate) fn signal_after_change(
 /// insdel.c's deferral of an after-change call under
 /// `combine-after-change-calls': when no `before-change-functions' (but
 /// `syntax-ppss-flush-cache' alone, buffer-locally) and no overlays need
-/// running, the change's unchanged ends and size change are recorded for
+/// running, another buffer's deferred changes are signalled first
+/// (Fcombine_after_change_execute) and the change's unchanged ends and
+/// size change are recorded as GNU computes them, for
 /// `combine-after-change-execute'.  Whether the call was deferred.
-fn defer_after_change(interp: &mut Interpreter, change: AfterChange, env: &mut Env) -> bool {
+fn defer_after_change(
+    interp: &mut Interpreter,
+    change: AfterChange,
+    env: &mut Env,
+) -> Result<bool, LispError> {
     if !interp
         .symbol_value_key(cached_symbol!("combine-after-change-calls"))
         .is_some_and(|value| !value.is_nil())
         || !interp.buffer.borrow().overlays.is_empty()
     {
-        return false;
+        return Ok(false);
     }
     let before = interp
         .symbol_value_key(cached_symbol!("before-change-functions"))
         .unwrap_or(Value::Nil);
     if !before.is_nil() && !syntax_ppss_flush_cache_alone(interp, before) {
-        return false;
+        return Ok(false);
     }
-    let _ = env;
     let buffer_id = interp.current_buffer_id();
     if interp
         .combined_after_change()
         .is_some_and(|pending| pending.buffer_id != buffer_id)
     {
-        // Fcombine_after_change_execute of another buffer's changes first.
-        return false;
+        flush_combined_after_change(interp, env)?;
     }
     let z = interp.buffer.borrow().size_total() as i64 + 1;
-    let (charpos, lendel, lenins) = (
-        change.charpos as i64,
-        change.lendel as i64,
-        change.lenins as i64,
-    );
+    let AfterChange {
+        charpos,
+        lendel,
+        lenins,
+        ..
+    } = change;
     interp.record_combined_after_change(
         buffer_id,
         (
@@ -526,7 +538,7 @@ fn defer_after_change(interp: &mut Interpreter, change: AfterChange, env: &mut E
             lenins - lendel,
         ),
     );
-    true
+    Ok(true)
 }
 
 /// `before-change-functions' as `(t syntax-ppss-flush-cache)' over a nil

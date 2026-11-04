@@ -13989,6 +13989,44 @@ setup_process_coding_systems's check now refuses). A 13-form
   list it leaves. Local validation: the grouped gate's 3,501
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 291: textprop.c's interval analysis before
+  modify_text_properties, and combine-after-change-calls as insdel.c
+  keeps it.** add_text_properties_1 (add-text-properties,
+  put-text-property, add-face-text-property and compose-region's
+  Fput_text_property) splits the interval at START when it lacks one of
+  the properties and START is inside it, Fremove_text_properties when it
+  has one, and Fremove_list_of_text_properties also splits the first
+  interval with one at END when it goes past it; validate_interval_range
+  makes the buffer's root interval (with HARD, as the adding primitives
+  and a set-text-properties with properties ask) and
+  interval_has_some_properties signals for a malformed plist, all before
+  modify_text_properties runs the read-only checks and the change hooks,
+  so a hook's error or a text-read-only signal leaves the splits and the
+  root in place and a malformed plist signals before any hook runs.
+  Emaxx ran the hooks first and split in the change after them;
+  `modify_buffer_text_properties' now takes the primitive's analysis up
+  to that point (`prepare_add_text_properties',
+  `prepare_set_text_properties', `prepare_remove_text_properties' over
+  `intervals::split_for_add' and `split_for_remove') in place of a pure
+  test, and propagates its error. Under `combine-after-change-calls', a
+  deferred change records its unchanged ends as insdel.c computes them,
+  Z less charpos - lendel + lenins, so a deletion counts its text as
+  unchanged at the end, and Fcombine_after_change_execute signals the
+  combined change without clipping: its end can fall before its start
+  and its counts go negative, as `after-change-functions' then receive
+  them (AfterChange's counts are ptrdiff_t now). The execution leaves
+  the flag as it is (insdel.c's comment says it turns it off, but only
+  Fcombine_after_change_execute_1 sets back the value it had), so under
+  a non-nil flag the combined change is deferred again; a change in
+  another buffer runs the pending ones and then joins the list, which
+  takes the new buffer, where Emaxx dropped the deferral and started a
+  fresh list. Text-property (eight seeds), undo (six runs),
+  modification-hook (four seeds), regex, casing and printer fuzzes match
+  GNU but for the GNU faults recorded below; two command-line
+  comparisons cover the splits and errors and the combined calls. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16168,7 +16206,28 @@ ms against 37,110), comp-tests (19,040 against 15,040), tramp-tests
 mule-tests (3,560 against 1,980) and package-tests (7,260 against
 6,040).
 
+**On `555e0e9`** (round 290): the full Rust gate (run 41771890931)
+passed; the frozen run (run 41771894131) passed at its first attempt,
+7,928 of 7,928 outcomes matching. Setup 69.5 s against 58.8 s (1.181),
+test bodies 273.9 s against 266.7 s (1.027), in all 1.054, with a
+per-file setup median of 107 ms against 93, on a faster runner than
+round 289's (GNU's own setup 58.8 s against 68.4). The widest body gaps
+are ert-tests (36,670 ms against 34,040), tramp-tests (19,300 against
+16,860), comp-tests (16,390 against 14,330), semantic-utest-ia (3,340
+against 2,400), mule-tests (2,370 against 1,530) and files-tests (1,970
+against 1,430).
+
 **Findings recorded, not fixed:**
+- **Found, not fixed (GNU faults):** transpose-regions with unequal
+  regions and a middle region of multibyte text moves the middle by its
+  character count where its byte count belongs (editfns.c's `memmove
+  (start1_addr + len2_byte, start1_addr + len1_byte, len_mid)'),
+  corrupting the buffer's text, and in long undo and hook fuzzes GNU
+  30.2 segfaults after such calls; the point an undo boundary recorded
+  for a killed buffer reaches a later temporary buffer that GNU
+  allocates at the same address (`buffer_before_last_command_or_undo' is
+  never cleared), recording that stale point in its first change.
+  Neither is reproducible faithfully; the fuzzes exclude them.
 - **A dynamic-binding byte-code call from byte code costs about 100
   instructions more than GNU's (round 289).** A one-argument recursion
   takes 763 instructions a call against GNU's 665 (exec_byte_code 375,
