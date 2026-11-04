@@ -14235,6 +14235,45 @@ setup_process_coding_systems's check now refuses). A 13-form
   results. Local validation: the grouped gate's 3,502 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 299: variable watchers hear a store as data.c tells them.**
+  data.c:notify_variable_watchers takes the WHERE its caller passes and,
+  given none for an operation other than `set_default' or `makunbound',
+  names the current buffer when the variable is local there if set;
+  Emaxx's callers chose the buffer each for itself, so a `setq' of a
+  variable local when set, under a let of its default made in the same
+  buffer, named none, and a `makunbound' of a variable local in a buffer
+  named it. The buffer is now found in the notification alone, from the
+  redirect GNU's symbol has (`Redirect': plain, localized, a buffer's
+  slot, a keyboard's slot or a C variable), and each caller passes the
+  WHERE GNU's does. do_one_unbind restores a SPECPDL_LET of a symbol
+  still plain through set_internal, its watchers hearing `unlet', and
+  any other record through set_default_internal, which tells them `set'
+  and for a C variable stores through set_internal again: unbinding a
+  let of `gc-cons-threshold' tells `set' then `unlet', of a variable
+  made local within the let `set' alone, of a keyboard's slot `set'
+  alone, where Emaxx told `unlet'. `set-default' tells the watchers
+  through set_default_internal for a symbol not plain, an alias among
+  them, and again through set_internal for a plain or C variable. `set'
+  of a buffer's slot not local in the current buffer, under a let made
+  for it there, tells `set' and set_default_internal's `set', which
+  Emaxx did for `text-conversion-style' alone. specbind makes its record
+  before do_specbind stores, so a store that signals, a non-integer
+  bound to a DEFVAR_INT, leaves the record for the unwind, whose
+  watchers hear the old value back, where Emaxx signalled before
+  recording and told nothing; and every store tells the value as given
+  before store_symval_forwarding checks or converts it, where a
+  DEFVAR_BOOL's watchers heard t and a DEFVAR_INT's `set' of a
+  non-integer signalled unheard. make-local-variable and
+  make-variable-buffer-local refuse a keyboard's slot ("Symbol
+  last-command may not be buffer-local"), which Emaxx made local. `setq'
+  loses a branch for `setq-local' that nothing took. A command-line
+  comparison runs fifteen operations on each of eleven variables (plain,
+  local when set, made local in one buffer, an alias, a Lisp, an integer
+  and a boolean C variable, two buffer slots, `case-fold-search' and a
+  keyboard's slot), interpreted and byte-compiled, printing every
+  notification, value and error and GNU's messages. Local validation:
+  the grouped gate's 3,502 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16527,6 +16566,23 @@ tests, `icalendar-export-weekly-by-day' (213 ms against 7) and
 file is no slower locally, where the gate builds of rounds 296 and 297
 run its tests in 1.00 to 1.18 s and 0.96 to 1.13 s over two runs each
 (GNU in 0.56 to 0.66).
+
+**On `d18a2bb`** (round 298): the full Rust gate (run 41823287432)
+passed; the frozen run (run 41823292057) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a runner slower than round 297's
+(the oracle's bodies 263.5 s against 246.0). Setup 77.6 s against 63.0 s
+(1.233), test bodies 295.7 s against 263.5 s (1.123), in all 1.124, with
+a per-file setup median of 116 ms against 96. The widest body gaps are
+ert-tests (45,454 ms against 37,489), tramp-tests (22,183 against
+18,457), comp-tests (16,949 against 13,954), semantic-utest-ia (3,944
+against 2,485) and mule-tests (3,075 against 1,960). ert-tests' time is
+`ert-test-run-tests-batch-expensive' (44,394 ms against 36,922), whose
+ratio was 1.065 at round 296 and 1.100 at round 297; run alone outside
+the harness, where it takes some thirty times less, it takes 1.42 to
+1.65 s in round 296's gate build, 1.45 to 1.54 s in round 297's and 1.16
+to 1.30 s in round 299's over two runs each (GNU 1.12 to 1.17), so the
+local runs show no regression. icalendar-tests is back to 636 ms against
+418.
 
 **Findings recorded, not fixed:**
 - **Found, not fixed (GNU faults):** transpose-regions with unequal

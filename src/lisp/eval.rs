@@ -1485,6 +1485,22 @@ enum SpecialBindingScope {
     BufferLocal(u64),
 }
 
+/// data.c's `enum symbol_redirect' of a variable that is no alias, with
+/// SYMBOL_FORWARDED told apart by the slot it forwards to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Redirect {
+    /// SYMBOL_PLAINVAL.
+    Plain,
+    /// SYMBOL_LOCALIZED: made buffer-local in some buffer, or when set.
+    Localized,
+    /// SYMBOL_FORWARDED to a buffer's slot (BUFFER_OBJFWDP).
+    BufferSlot,
+    /// SYMBOL_FORWARDED to a keyboard's slot (KBOARD_OBJFWDP).
+    KeyboardSlot,
+    /// SYMBOL_FORWARDED to a C variable.
+    Forwarded,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct SpecialBindingRestore {
     /// The bound symbol, its alias chain resolved; the cells are read

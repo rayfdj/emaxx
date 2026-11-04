@@ -344,6 +344,7 @@ define_dispatch!(
                 // returned as given (no XSETSYMBOL here).
                 let checked = checked_symbol_identity(interp, &args[0], env)?;
                 let symbol = interp.resolve_variable_symbol(&checked)?;
+                super::buffer_meta::check_may_be_buffer_local(interp, &checked, &symbol)?;
                 if interp.is_constant_symbol(&checked) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("setting-constant"),
@@ -380,25 +381,21 @@ define_dispatch!(
                 let symbol = interp
                     .resolve_variable_symbol(&checked_symbol_identity(interp, &args[0], env)?)?;
                 // data.c:Flocal_variable_if_set_p: a variable local when
-                // set, or a per-buffer slot, is t and a plain one nil,
+                // set, or a buffer's slot, is t and a plain one nil,
                 // whatever BUFFER is; only a localized one asks
-                // Flocal_variable_p.
-                if interp.is_auto_buffer_local_symbol(&symbol)
-                    || interp.is_per_buffer_symbol(&symbol)
+                // Flocal_variable_p, of BUFFER decoded.
+                let buffer_id = if interp.is_auto_buffer_local_symbol(&symbol)
+                    || interp.symbol_redirect(&symbol) != crate::lisp::eval::Redirect::Localized
                 {
-                    return Ok(Value::T);
-                }
-                if !interp.is_localized_symbol(&symbol) {
-                    return Ok(Value::Nil);
-                }
-                let buffer_id = interp.decode_buffer(args.get(1))?.id;
-                Ok(
-                    if interp.has_buffer_local_binding_symbol(buffer_id, &symbol) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                    interp.current_buffer_id()
+                } else {
+                    interp.decode_buffer(args.get(1))?.id
+                };
+                Ok(if interp.local_variable_if_set_p(&symbol, buffer_id) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "variable-binding-locus" => {
                 need_args(name, args, 1)?;

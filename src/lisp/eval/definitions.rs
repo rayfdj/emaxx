@@ -4,15 +4,6 @@ use crate::lisp::types::Kind;
 
 impl Interpreter {
     pub(super) fn sf_setq(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
-        self.sf_setq_internal(args, env, false)
-    }
-
-    pub(super) fn sf_setq_internal(
-        &mut self,
-        args: &Value,
-        env: &mut Env,
-        local_only: bool,
-    ) -> Result<Value, LispError> {
         // Fsetq: the pairs read off the list in place; a symbol without
         // its value form signals wrong-number-of-arguments with the count
         // read so far.
@@ -42,7 +33,7 @@ impl Interpreter {
             // a plain untrapped symbol (no alias, no constant: a constant
             // never learns the plain store) set_internal's store is the
             // whole of Fset.
-            if !local_only && self.globals.plain_store(&symbol) {
+            if self.globals.plain_store(&symbol) {
                 let val = self.eval(&value_form, env)?;
                 result = val;
                 if self.set_lexical_variable_checked_symbol(&symbol, val, env)? {
@@ -55,7 +46,7 @@ impl Interpreter {
                 continue;
             }
             let evaluated = self.eval(&value_form, env)?;
-            if !local_only && self.set_lexical_variable_checked_symbol(&symbol, evaluated, env)? {
+            if self.set_lexical_variable_checked_symbol(&symbol, evaluated, env)? {
                 result = evaluated;
                 continue;
             }
@@ -64,29 +55,7 @@ impl Interpreter {
                 continue;
             }
             let resolved = self.resolve_variable_symbol(&symbol)?;
-            let val = self.prepare_forwarded_assignment_symbol(&resolved, evaluated)?;
-            if local_only {
-                self.notify_variable_watchers(
-                    resolved.as_str(),
-                    val,
-                    "set",
-                    Some(self.current_buffer_id()),
-                    env,
-                )?;
-                // `setq-local' made the variable local before its set.
-                if let Err(error) = self.check_per_buffer_predicate(&resolved, val, env) {
-                    crate::lisp::primitives::call(
-                        self,
-                        "make-local-variable",
-                        &[Value::Symbol(resolved)],
-                        env,
-                    )?;
-                    return Err(error);
-                }
-                self.set_buffer_local_value(self.current_buffer_id(), resolved.as_str(), val);
-            } else {
-                self.setq_variable_symbol(&resolved, val, env)?;
-            }
+            self.setq_variable_symbol(&resolved, evaluated, env)?;
         }
         Ok(result)
     }

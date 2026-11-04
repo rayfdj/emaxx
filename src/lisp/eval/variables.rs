@@ -880,6 +880,50 @@ impl Interpreter {
         self.globals.has_flag(symbol, LOCALIZED)
     }
 
+    /// The redirect of SYMBOL, a variable that is no alias: how its value
+    /// is held, which decides the record specbind makes and which of
+    /// set_internal and set_default_internal tell its watchers of a store.
+    pub(crate) fn symbol_redirect(&self, symbol: &SymbolName) -> super::Redirect {
+        use super::Redirect;
+        let cell = symbol.cell();
+        if !cell.has_c_slot() {
+            return if self.globals.has_flag(symbol, LOCALIZED) {
+                Redirect::Localized
+            } else {
+                Redirect::Plain
+            };
+        }
+        // A buffer's slot stays SYMBOL_FORWARDED when made local
+        // (Fmake_local_variable sets its flag alone); Emaxx flags it
+        // LOCALIZED once a buffer holds a value of its own.
+        if self.globals.has_flag(symbol, PER_BUFFER | ALWAYS_LOCAL)
+            || self.has_native_text_conversion_style(symbol.as_str())
+        {
+            Redirect::BufferSlot
+        } else if self.globals.has_flag(symbol, LOCALIZED) {
+            Redirect::Localized
+        } else if cell.is_kboard_forwarded() && Self::is_keyboard_variable(symbol) {
+            Redirect::KeyboardSlot
+        } else {
+            Redirect::Forwarded
+        }
+    }
+
+    /// data.c:Flocal_variable_if_set_p of SYMBOL, no alias, in BUFFER_ID:
+    /// a buffer's slot always is, a localized variable when it is local
+    /// if set or has a binding there, any other never.
+    pub(crate) fn local_variable_if_set_p(&self, symbol: &SymbolName, buffer_id: u64) -> bool {
+        use super::Redirect;
+        match self.symbol_redirect(symbol) {
+            Redirect::Plain | Redirect::KeyboardSlot | Redirect::Forwarded => false,
+            Redirect::BufferSlot => true,
+            Redirect::Localized => {
+                self.globals.has_flag(symbol, LOCAL_IF_SET)
+                    || self.has_buffer_local_binding_symbol(buffer_id, symbol)
+            }
+        }
+    }
+
     /// eval.c:let_shadows_buffer_binding_p: a SPECPDL_LET_DEFAULT
     /// record for NAME made in the current buffer (not LET_LOCAL).
     pub(crate) fn let_shadows_buffer_binding(&self, name: &str) -> bool {
@@ -1256,8 +1300,11 @@ impl Interpreter {
         Ok(())
     }
 
-    /// `notify_variable_watchers' of the variable that is SYMBOL itself (no
-    /// alias): nothing to do unless its stores are trapped.
+    /// data.c:notify_variable_watchers of the variable that is SYMBOL
+    /// itself (no alias), nothing to do unless its stores are trapped:
+    /// BUFFER_ID is the WHERE its caller passes, and none, but for a
+    /// `set_default' or a `makunbound', is the current buffer when SYMBOL
+    /// is local there if set; a `set_default' is told as `set'.
     pub(crate) fn notify_variable_watchers_symbol(
         &mut self,
         symbol: &SymbolName,
@@ -1269,6 +1316,20 @@ impl Interpreter {
         if !symbol.cell().is_trapped_write() {
             return Ok(());
         }
+        let buffer_id = match buffer_id {
+            None if action != "set_default"
+                && action != "makunbound"
+                && self.local_variable_if_set_p(symbol, self.current_buffer_id()) =>
+            {
+                Some(self.current_buffer_id())
+            }
+            buffer_id => buffer_id,
+        };
+        let action = if action == "set_default" {
+            "set"
+        } else {
+            action
+        };
         // Avoid recursion: a watcher's own stores to the variable notify
         // no one.  restore_symbol_trapped_write traps it again however the
         // watchers return, and a store made meanwhile learned no plain path
@@ -1307,31 +1368,26 @@ impl Interpreter {
         Ok(())
     }
 
-    /// data.c:set_internal notifies before changing locality. Its native
-    /// per-buffer path can then call set_default_internal under LET_DEFAULT,
-    /// which emits a second notification with no buffer.
+    /// data.c:set_internal's notifications of Fset's store of VALUE into
+    /// SYMBOL (no alias), before any is made: `set', then, for a buffer's
+    /// slot that is not always local and not local in the current buffer
+    /// under a let made for it there, set_default_internal's.
     pub(crate) fn notify_assignment_symbol(
         &mut self,
         symbol: &SymbolName,
         value: Value,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        // data.c:set_internal notifies only a SYMBOL_TRAPPED_WRITE symbol;
-        // the store's buffer is found for its watchers alone.
         if !symbol.cell().is_trapped_write() {
             return Ok(());
         }
-        let buffer_id = if self.has_native_text_conversion_style(symbol.as_str()) {
-            Some(self.current_buffer_id())
-        } else {
-            self.assignment_buffer_id_symbol(symbol)
-        };
-        self.notify_variable_watchers_symbol(symbol, value, "set", buffer_id, env)?;
-        if self.has_native_text_conversion_style(symbol.as_str())
-            && !self.buffer.borrow().text_conversion_style_is_local
+        self.notify_variable_watchers_symbol(symbol, value, "set", None, env)?;
+        if self.symbol_redirect(symbol) == super::Redirect::BufferSlot
+            && !self.globals.has_flag(symbol, ALWAYS_LOCAL)
+            && !self.has_buffer_local_binding_symbol(self.current_buffer_id(), symbol)
             && self.let_shadows_buffer_binding(symbol.as_str())
         {
-            self.notify_variable_watchers_symbol(symbol, value, "set", None, env)?;
+            self.notify_variable_watchers_symbol(symbol, value, "set_default", None, env)?;
         }
         Ok(())
     }
@@ -2113,29 +2169,11 @@ impl Interpreter {
         None
     }
 
-    /// `assignment_buffer_id' for a resolved symbol.
-    pub(crate) fn assignment_buffer_id_symbol(&self, resolved: &SymbolName) -> Option<u64> {
-        match self.assignment_scope_symbol(resolved) {
-            Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
-            _ => None,
-        }
-    }
-
     pub fn assignment_buffer_id(&self, name: &str) -> Option<u64> {
         match self.assignment_scope(name) {
             Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
             _ => None,
         }
-    }
-
-    /// specbind resolves aliases before do_specbind checks trapped_write.
-    pub(crate) fn prepare_variable_assignment_symbol(
-        &self,
-        symbol: &SymbolName,
-        value: Value,
-    ) -> Result<Value, LispError> {
-        self.check_constant_assignment_symbol(symbol, value)?;
-        self.prepare_forwarded_assignment_symbol(symbol, value)
     }
 
     /// set_internal/set_default_internal check the original symbol before
@@ -2594,85 +2632,42 @@ impl Interpreter {
         }
         let resolved = self.resolve_variable_symbol(symbol)?;
         let unaliased = resolved == *symbol;
-        let value = self.prepare_variable_assignment_symbol(&resolved, value)?;
+        self.check_constant_assignment_symbol(&resolved, value)?;
         let name = resolved.as_str();
         let buffer_id = self.current_buffer_id();
-        if resolved.cell().has_c_slot() && name == "buffer-undo-list" {
-            let previous = crate::lisp::primitives::buffer_undo_list_value(&self.buffer.borrow());
-            self.notify_variable_watchers(name, value, "let", Some(buffer_id), env)?;
-            self.set_symbol_value_cell_resolved(&resolved, value);
-            let restore = SpecialBindingRestore {
-                name: resolved,
-                scope: SpecialBindingScope::BufferLocal(buffer_id),
-                binding_buffer_id: None,
-                keyboard_terminal_id: None,
-                previous: Some(previous),
-                let_default: false,
-                where_buffer_id: buffer_id,
-                local_binding_killed: false,
-                frame_depth: self.backtrace_frames.len(),
-            };
-            self.specpdl.push(SpecpdlEntry::Let(restore));
-            return Ok(());
-        }
-        // eval.c:specbind SYMBOL_LOCALIZED: a binding cell in this buffer,
-        // bound or void, makes the let SPECPDL_LET_LOCAL.
-        let restore = if let Some(local) = self.buffer_local_binding_symbol(buffer_id, &resolved) {
-            let previous = Some(local.unwrap_or(Value::Unbound));
-            self.notify_variable_watchers_symbol(&resolved, value, "let", Some(buffer_id), env)?;
-            // SPECPDL_LET_LOCAL's set_internal checks a per-buffer
-            // variable's predicate (a let of its default does not).
-            self.check_per_buffer_predicate(&resolved, value, env)?;
-            self.set_buffer_local_value_symbol(buffer_id, &resolved, value);
+        let frame_depth = self.backtrace_frames.len();
+        let undo_list = resolved.cell().has_c_slot() && name == "buffer-undo-list";
+        // eval.c:specbind: a binding cell in this buffer, bound or void,
+        // makes the let SPECPDL_LET_LOCAL; else a localized symbol or a
+        // buffer's slot makes it SPECPDL_LET_DEFAULT, and any other
+        // SPECPDL_LET.  The value saved is find_symbol_value's, which for
+        // a buffer's slot without a value here may differ from its
+        // default after a bset.
+        let local = if undo_list {
+            Some(Some(crate::lisp::primitives::buffer_undo_list_value(
+                &self.buffer.borrow(),
+            )))
+        } else {
+            self.buffer_local_binding_symbol(buffer_id, &resolved)
+        };
+        let restore = if let Some(local) = local {
             SpecialBindingRestore {
                 name: resolved,
                 scope: SpecialBindingScope::BufferLocal(buffer_id),
                 binding_buffer_id: None,
                 keyboard_terminal_id: None,
-                previous,
+                previous: Some(local.unwrap_or(Value::Unbound)),
                 let_default: false,
                 where_buffer_id: buffer_id,
                 local_binding_killed: false,
-                frame_depth: self.backtrace_frames.len(),
+                frame_depth,
             }
         } else {
-            // specbind saves find_symbol_value even for LET_DEFAULT.
-            // A prior bset may differ from the per-buffer default.
-            let native_style =
-                resolved.cell().has_c_slot() && self.has_native_text_conversion_style(name);
-            let previous = if native_style {
+            let previous = if self.has_native_text_conversion_style(name) {
                 Some(self.buffer.borrow().text_conversion_style)
             } else {
                 self.global_binding_value_symbol(&resolved)
             };
-            let binding_buffer_id = if self.globals.has_flag(&resolved, LOCAL_IF_SET) {
-                Some(buffer_id)
-            } else {
-                None
-            };
-            // eval.c:specbind: a localized symbol (or a per-buffer one)
-            // without a cell here makes the let SPECPDL_LET_DEFAULT.  The
-            // store is set_internal's, whose watchers hear `let' in the
-            // current buffer when the symbol is local if set there
-            // (data.c:notify_variable_watchers).
-            let let_default = self.globals.has_flag(
-                &resolved,
-                LOCALIZED | LOCAL_IF_SET | ALWAYS_LOCAL | PER_BUFFER,
-            );
-            let where_heard = self
-                .globals
-                .has_flag(&resolved, LOCAL_IF_SET | PER_BUFFER)
-                .then_some(buffer_id);
-            let buffer_objfwd = self.is_buffer_objfwd_symbol(&resolved);
-            let (action, where_heard) = if native_style || buffer_objfwd {
-                // do_specbind's BUFFER_OBJFWD/LET_DEFAULT path calls
-                // set_default_internal, whose watcher operation is set.
-                ("set", None)
-            } else {
-                ("let", where_heard)
-            };
-            self.notify_variable_watchers_symbol(&resolved, value, action, where_heard, env)?;
-            self.set_global_binding_resolved(&resolved, value);
             SpecialBindingRestore {
                 keyboard_terminal_id: if resolved.cell().is_kboard_forwarded()
                     && Self::is_keyboard_variable(&resolved)
@@ -2683,15 +2678,47 @@ impl Interpreter {
                 },
                 name: resolved,
                 scope: SpecialBindingScope::Global,
-                binding_buffer_id,
+                binding_buffer_id: self
+                    .globals
+                    .has_flag(&resolved, LOCAL_IF_SET)
+                    .then_some(buffer_id),
                 previous,
-                let_default,
+                let_default: self.globals.has_flag(
+                    &resolved,
+                    LOCALIZED | LOCAL_IF_SET | ALWAYS_LOCAL | PER_BUFFER,
+                ),
                 where_buffer_id: buffer_id,
                 local_binding_killed: false,
-                frame_depth: self.backtrace_frames.len(),
+                frame_depth,
             }
         };
+        let scope = restore.scope.clone();
+        // do_specbind runs once the record is made: a store that signals
+        // (a watcher, or store_symval_forwarding's check of a C variable's
+        // value) leaves it for the unwind to undo, its watchers told.
+        // set_internal tells them `let' (WHERE nil), but a buffer's slot
+        // bound for its default stores through set_default_internal.
+        let action = if restore.let_default
+            && resolved.cell().is_trapped_write()
+            && self.symbol_redirect(&resolved) == super::Redirect::BufferSlot
+        {
+            "set_default"
+        } else {
+            "let"
+        };
         self.specpdl.push(SpecpdlEntry::Let(restore));
+        self.notify_variable_watchers_symbol(&resolved, value, action, None, env)?;
+        let stored = self.prepare_forwarded_assignment_symbol(&resolved, value)?;
+        match scope {
+            _ if undo_list => self.set_symbol_value_cell_resolved(&resolved, stored),
+            SpecialBindingScope::BufferLocal(buffer_id) => {
+                // SPECPDL_LET_LOCAL's set_internal checks a per-buffer
+                // variable's predicate (a let of its default does not).
+                self.check_per_buffer_predicate(&resolved, stored, env)?;
+                self.set_buffer_local_value_symbol(buffer_id, &resolved, stored);
+            }
+            SpecialBindingScope::Global => self.set_global_binding_resolved(&resolved, stored),
+        }
         if unaliased {
             self.learn_plain_store(symbol);
         }
@@ -2852,32 +2879,37 @@ impl Interpreter {
         }
         match restore.scope {
             SpecialBindingScope::Global => {
-                // eval.c:unbind_to: SPECPDL_LET_DEFAULT writes the default
-                // back through set_default_internal (watchers hear `set',
-                // no buffer); SPECPDL_LET through set_internal (`unlet',
-                // the current buffer when the symbol is local if set there).
-                let detached_style = restore.name == "text-conversion-style"
-                    && self
-                        .detached_forwarded_variables
-                        .contains_key(restore.name.as_str())
-                    && !self.globals.has_flag(&restore.name, LOCALIZED);
-                let (action, where_heard) = if restore.let_default && !detached_style {
-                    ("set", None)
-                } else {
-                    (
-                        "unlet",
-                        self.globals
-                            .has_flag(&restore.name, LOCAL_IF_SET | PER_BUFFER)
-                            .then(|| self.current_buffer_id()),
-                    )
-                };
-                self.notify_variable_watchers_symbol(
-                    &restore.name,
-                    restore.previous.unwrap_or(Value::Nil),
-                    action,
-                    where_heard,
-                    env,
-                )?;
+                // eval.c:do_one_unbind: a SPECPDL_LET of a symbol that is
+                // still SYMBOL_PLAINVAL restores through set_internal, whose
+                // watchers hear `unlet'; any other record, and a let of one
+                // made local since, through set_default_internal, whose
+                // watchers hear `set' and which for a plain one or a C
+                // variable stores through set_internal again.
+                if restore.name.cell().is_trapped_write() {
+                    let previous = restore.previous.unwrap_or(Value::Nil);
+                    let redirect = self.symbol_redirect(&restore.name);
+                    if redirect != super::Redirect::Plain {
+                        self.notify_variable_watchers_symbol(
+                            &restore.name,
+                            previous,
+                            "set_default",
+                            None,
+                            env,
+                        )?;
+                    }
+                    if matches!(
+                        redirect,
+                        super::Redirect::Plain | super::Redirect::Forwarded
+                    ) {
+                        self.notify_variable_watchers_symbol(
+                            &restore.name,
+                            previous,
+                            "unlet",
+                            None,
+                            env,
+                        )?;
+                    }
+                }
                 if let Some(terminal) = restore.keyboard_terminal_id {
                     self.set_keyboard_binding_on(
                         terminal,

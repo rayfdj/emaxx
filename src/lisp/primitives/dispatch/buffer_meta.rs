@@ -749,6 +749,7 @@ define_dispatch!(
                 // already; a let made for this buffer draws a message.
                 let checked = checked_symbol_identity(interp, &args[0], env)?;
                 let symbol = interp.resolve_variable_symbol(&checked)?;
+                check_may_be_buffer_local(interp, &checked, &symbol)?;
                 if interp.is_constant_symbol(&symbol) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("setting-constant"),
@@ -1816,4 +1817,22 @@ pub(crate) fn other_buffer(
     )?;
     super::call(interp, "set-buffer-major-mode", &[scratch], env)?;
     Ok(scratch)
+}
+
+/// Fmake_local_variable's and Fmake_variable_buffer_local's refusal of a
+/// keyboard's slot (KBOARD_OBJFWDP), named by VARIABLE as given, before
+/// any other check.
+pub(super) fn check_may_be_buffer_local(
+    interp: &Interpreter,
+    variable: &crate::lisp::types::SymbolName,
+    symbol: &crate::lisp::types::SymbolName,
+) -> Result<(), LispError> {
+    if interp.symbol_redirect(symbol) != crate::lisp::eval::Redirect::KeyboardSlot {
+        return Ok(());
+    }
+    Err(crate::lisp::primitives::values::doprnt_error(
+        interp,
+        "Symbol {} may not be buffer-local",
+        &[&crate::lisp::types::visible_symbol_name(variable)],
+    ))
 }

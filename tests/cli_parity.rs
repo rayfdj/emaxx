@@ -1212,6 +1212,81 @@ fn unescaped_character_literals_are_recorded_as_read_char_literal() {
     );
 }
 
+#[test]
+fn variable_watchers_hear_stores_as_data_c_tells_them() {
+    // set_internal, set_default_internal, specbind and do_one_unbind as
+    // they notify the watchers of a plain variable, one local when set,
+    // one made local in a buffer, an alias, C variables (a Lisp object,
+    // an integer, a boolean), buffer slots, a C variable made local when
+    // set (`case-fold-search'), and a keyboard's slot:
+    // the operation, the value as given before it is checked or
+    // converted, the buffer notify_variable_watchers finds when the
+    // caller names none, the second notifications set_default_internal
+    // and a buffer slot's set make, a let whose store signals, and
+    // make-local-variable and make-variable-buffer-local refusing a
+    // keyboard's slot; once interpreted and once byte-compiled.
+    let corpus = Corpus::new();
+    let program = r#"(progn
+  (defvar w-plain 'p0)
+  (defvar-local w-local 'l0)
+  (defvar w-ml 'm0)
+  (defvar w-base 'b0)
+  (defvaralias 'w-alias 'w-base)
+  (defun w-subst (tree)
+    (cond ((eq tree 'V) w-var) ((consp tree) (cons (w-subst (car tree)) (w-subst (cdr tree)))) (t tree)))
+  (defvar w-var nil)
+  (with-current-buffer (get-buffer-create "wk") (make-local-variable 'w-ml))
+  (let ((log nil)
+        (ops '((setq V 1)
+               (set-default 'V 2)
+               (let ((V 3)) (setq V 4))
+               (let ((V 5)) (set-default 'V 6))
+               (with-temp-buffer (rename-buffer "wt1") (let ((V 7)) (setq V 8)))
+               (let ((V 9)) (with-temp-buffer (rename-buffer "wt2") (setq-local V 10)))
+               (with-temp-buffer (rename-buffer "wt3") (setq-local V 11)
+                                 (let ((V 12)) (setq V 13))
+                                 (let ((V 14)) (kill-local-variable 'V))
+                                 (setq V 15))
+               (with-temp-buffer (rename-buffer "wt4")
+                                 (let ((V 16)) (make-local-variable 'V) (setq V 17)))
+               (with-current-buffer "wk" (setq V 18) (let ((V 19)) (setq V 20)))
+               (let ((V 21)) (with-current-buffer "wk" (setq V 22)))
+               (list (local-variable-if-set-p 'V) (local-variable-if-set-p 'V (get-buffer "wk")))
+               (make-variable-buffer-local 'V)
+               (let ((V 'sym)) 23)
+               (set 'V 'sym)
+               (setq V nil))))
+    (dolist (v '(w-plain w-local w-ml w-alias lread--unescaped-character-literals
+                 gc-cons-threshold cursor-in-echo-area fill-column case-fold-search
+                 left-margin last-command))
+      (let* ((target (indirect-variable v))
+             (watcher (lambda (sym nv op where)
+                        (push (list sym op nv (and (bufferp where)
+                                                   (or (buffer-name where) 'dead)))
+                              log))))
+        (add-variable-watcher target watcher)
+        (setq log nil)
+        (let ((saved (default-value v)))
+          (dolist (op ops)
+            (setq w-var v)
+            (condition-case e (push (list 'value (eval (w-subst op) t)) log)
+              (error (push (list 'error e) log)))
+            (push '| log))
+          (remove-variable-watcher target watcher)
+          (with-current-buffer "wk" (kill-local-variable v))
+          (set-default v saved))
+        (print (cons v (nreverse log)))))))"#;
+    for program in [
+        program.to_owned(),
+        program.replace(
+            "(eval (w-subst op) t)",
+            "(funcall (byte-compile (list 'lambda nil (w-subst op))))",
+        ),
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
+    }
+}
+
 /// One batch run of BINARY on PROGRAM in a fresh directory holding
 /// `f.txt', with no core files and with each of IGNORED inherited ignored:
 /// its standard output, the first line of its standard error, its exit

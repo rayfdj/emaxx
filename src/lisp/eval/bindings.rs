@@ -1225,9 +1225,12 @@ impl Interpreter {
         if self.globals.plain_store(resolved) && self.globals.replace_bound_value(resolved, value) {
             return Ok(());
         }
+        // set_internal's watchers hear NEWVAL before store_symval_forwarding
+        // checks or normalizes it.
         self.notify_assignment_symbol(resolved, value, env)?;
+        let stored = self.prepare_forwarded_assignment_symbol(resolved, value)?;
         self.check_per_buffer_set(resolved, value, env)?;
-        self.set_symbol_value_cell_resolved(resolved, value);
+        self.set_symbol_value_cell_resolved(resolved, stored);
         Ok(())
     }
 

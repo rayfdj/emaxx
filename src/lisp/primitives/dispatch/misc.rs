@@ -392,11 +392,12 @@ pub(crate) fn set_internal_symbol(
         return Ok(());
     }
     let resolved = interp.resolve_variable_symbol(symbol)?;
-    // data.c:set_internal notifies with NEWVAL before the forwarded C slot
-    // normalizes it.  The stored value may be t/nil for a DEFVAR_BOOL, but
-    // the watcher must receive the caller's original object.
-    let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
+    // data.c:set_internal notifies with NEWVAL before
+    // store_symval_forwarding checks or normalizes it: the watchers hear
+    // the caller's object, a DEFVAR_BOOL's t/nil being what is stored, and
+    // a DEFVAR_INT's non-integer only after them.
     interp.notify_assignment_symbol(&resolved, value, env)?;
+    let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
     interp.check_per_buffer_set(&resolved, value, env)?;
     interp.set_symbol_value_cell_resolved(&resolved, stored);
     if resolved == *symbol {
@@ -420,8 +421,21 @@ fn set_default_internal_symbol(
         return Ok(());
     }
     let resolved = interp.resolve_variable_symbol(symbol)?;
+    // set_default_internal tells the watchers of a symbol that is not
+    // SYMBOL_PLAINVAL (an alias is SYMBOL_VARALIAS), then, for one whose
+    // variable is plain or a C variable, stores through set_internal,
+    // which tells them again; store_symval_forwarding's checks follow.
+    if resolved.cell().is_trapped_write() {
+        use crate::lisp::eval::Redirect;
+        let redirect = interp.symbol_redirect(&resolved);
+        if resolved != *symbol || redirect != Redirect::Plain {
+            interp.notify_variable_watchers_symbol(&resolved, value, "set_default", None, env)?;
+        }
+        if matches!(redirect, Redirect::Plain | Redirect::Forwarded) {
+            interp.notify_variable_watchers_symbol(&resolved, value, "set", None, env)?;
+        }
+    }
     let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
-    interp.notify_variable_watchers_symbol(&resolved, value, "set", None, env)?;
     interp.set_global_binding_resolved(&resolved, stored);
     // A plain variable's default store is set_internal's (data.c's
     // set_default_internal for SYMBOL_PLAINVAL), learned as that is.
@@ -1124,15 +1138,13 @@ define_dispatch!(
                             && !interp.is_per_buffer_special(&symbol)
                             && !interp.let_shadows_buffer_binding(&symbol)));
                 if localized_store {
+                    // set_internal's WHERE is nil, and a `makunbound' is
+                    // told without the buffer.
                     interp.notify_variable_watchers(
                         &symbol,
                         Value::Nil,
                         "makunbound",
-                        if interp.is_auto_buffer_local(&symbol) {
-                            None
-                        } else {
-                            Some(buffer_id)
-                        },
+                        None,
                         env,
                     )?;
                     interp.set_buffer_local_value(buffer_id, &symbol, Value::Unbound);
