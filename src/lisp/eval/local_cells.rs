@@ -183,11 +183,6 @@ impl LocalCells {
         }
     }
 
-    pub(crate) fn binding_by_name(&self, name: &str) -> Option<Option<Value>> {
-        let symbol = SymbolName::find(name)?;
-        self.binding(&symbol)
-    }
-
     /// Bind SYMBOL; a new binding enumerates after every existing one, and
     /// SYMBOL's binding loaded in LOADED (this buffer's default, perhaps)
     /// is unloaded.

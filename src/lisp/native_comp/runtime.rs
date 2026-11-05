@@ -8175,12 +8175,6 @@ mod tests {
                 assert!(SharedCons::ptr_eq(&result, &expected_entry));
                 assert_eq!(result.cdr.get(), Value::Integer(expected));
             }
-            // A name that reaches the Rust boundary resolves to the live
-            // symbol object with that private name (V02: a symbol and its
-            // name address one cell), so the old faulty name-to-symbol
-            // boundary can no longer mint a second object for it.
-            let reconstructed = SymbolName::from(symbol.as_str());
-            assert_eq!(symbol.identity_ptr(), reconstructed.identity_ptr());
             // Adversarial control: a different `make-symbol' of the same
             // visible name is a different object, and native assq must not
             // find it by comparing visible names.

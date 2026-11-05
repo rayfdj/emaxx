@@ -17,7 +17,12 @@ pub(crate) struct TerminalState {
     /// every character with a charset is drawn.
     pub charset_list_coding: Option<String>,
     pub keyboard_coding: Option<String>,
-    pub keyboard: std::collections::HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
+    /// The KBOARD's variables (DEFVAR_KBOARD), by their symbols.
+    pub keyboard: std::collections::HashMap<
+        crate::lisp::types::SymbolName,
+        Value,
+        crate::lisp::types::IdentityBuildHasher,
+    >,
     pub pending_input: Vec<u8>,
     pub top_frame: Option<crate::lisp::types::FrameRef>,
     pub device: Option<Arc<TtyDevice>>,
@@ -491,26 +496,16 @@ impl Interpreter {
         {
             let id = self.alloc_terminal_id();
             let mut keyboard = std::collections::HashMap::<
-                String,
+                crate::lisp::types::SymbolName,
                 Value,
-                crate::lisp::primitives::FnvBuildHasher,
+                crate::lisp::types::IdentityBuildHasher,
             >::default();
-            // keyboard.c:init_kboard initializes these DEFVAR_KBOARD slots.
-            for name in [
-                "overriding-terminal-local-map",
-                "last-command",
-                "real-last-command",
-                "keyboard-translate-table",
-                "last-repeatable-command",
-                "prefix-arg",
-                "last-prefix-arg",
-                "defining-kbd-macro",
-                "last-kbd-macro",
-                "system-key-alist",
-                "window-system",
-                "default-minibuffer-frame",
-            ] {
-                keyboard.insert(name.into(), Value::Nil);
+            // keyboard.c:init_kboard initializes these DEFVAR_KBOARD slots
+            // (all but the two keymaps made below) to nil.
+            for name in crate::lisp::types::symbols::KEYBOARD_VARIABLES {
+                if !matches!(name, "input-decode-map" | "local-function-key-map") {
+                    keyboard.insert(crate::lisp::types::SymbolName::intern_str(name), Value::Nil);
+                }
             }
             use crate::lisp::primitives as p;
             let mut env = crate::lisp::types::Env::new();
@@ -525,8 +520,8 @@ impl Interpreter {
                 .lookup_var("function-key-map", &env)
                 .unwrap_or(Value::Nil);
             p::call(self, "set-keymap-parent", &[local, parent], &mut env)?;
-            keyboard.insert("input-decode-map".into(), decode);
-            keyboard.insert("local-function-key-map".into(), local);
+            keyboard.insert(cached_symbol!("input-decode-map").symbol(), decode);
+            keyboard.insert(cached_symbol!("local-function-key-map").symbol(), local);
             let terminal = TerminalRef::new(
                 id,
                 TerminalState {
@@ -746,56 +741,52 @@ impl Interpreter {
         crate::lisp::types::symbols::is_keyboard_variable(symbol)
     }
 
-    pub(crate) fn keyboard_binding_terminal(&self, name: &str) -> Option<u64> {
-        matches!(
-            name,
-            "overriding-terminal-local-map"
-                | "last-command"
-                | "real-last-command"
-                | "keyboard-translate-table"
-                | "last-repeatable-command"
-                | "prefix-arg"
-                | "last-prefix-arg"
-                | "defining-kbd-macro"
-                | "last-kbd-macro"
-                | "system-key-alist"
-                | "window-system"
-                | "default-minibuffer-frame"
-                | "input-decode-map"
-                | "local-function-key-map"
-        )
-        .then(|| self.selected_terminal_id())
-    }
-    pub(crate) fn keyboard_binding_value_on(&self, id: u64, name: &str) -> Option<Value> {
+    pub(crate) fn keyboard_binding_value_on(
+        &self,
+        id: u64,
+        symbol: &crate::lisp::types::SymbolName,
+    ) -> Option<Value> {
         if id == 0 {
-            self.globals.value_by_name(name)
+            self.globals.value(symbol)
         } else {
-            self.terminal_state(id)?.keyboard.get(name).cloned()
+            self.terminal_state(id)?.keyboard.get(symbol).cloned()
         }
     }
-    pub(crate) fn set_keyboard_binding_on(&mut self, id: u64, name: &str, value: Value) {
+    pub(crate) fn set_keyboard_binding_on(
+        &mut self,
+        id: u64,
+        symbol: &crate::lisp::types::SymbolName,
+        value: Value,
+    ) {
         if id == 0 {
-            self.globals.insert_by_name(name, value);
+            self.globals.insert(symbol, value);
         } else if let Some(mut terminal) = self.terminal_state_mut(id).filter(|state| state.live) {
-            terminal.keyboard.insert(name.into(), value);
+            terminal.keyboard.insert(*symbol, value);
         }
     }
 
-    pub(crate) fn terminal_keyboard_value(&self, name: &str) -> Option<Value> {
+    pub(crate) fn terminal_keyboard_value(
+        &self,
+        symbol: &crate::lisp::types::SymbolName,
+    ) -> Option<Value> {
         if self.selected_terminal_id() == 0 {
             return None;
         }
         self.terminal_state(self.selected_terminal_id())?
             .keyboard
-            .get(name)
+            .get(symbol)
             .cloned()
     }
-    pub(crate) fn set_terminal_keyboard_value(&mut self, name: &str, value: &Value) -> bool {
+    pub(crate) fn set_terminal_keyboard_value(
+        &mut self,
+        symbol: &crate::lisp::types::SymbolName,
+        value: &Value,
+    ) -> bool {
         let id = self.selected_terminal_id();
         let Some(mut terminal) = self.terminal_state_mut(id) else {
             return false;
         };
-        if let Some(slot) = terminal.keyboard.get_mut(name) {
+        if let Some(slot) = terminal.keyboard.get_mut(symbol) {
             *slot = *value;
             true
         } else {

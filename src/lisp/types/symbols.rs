@@ -437,6 +437,10 @@ const KEY_NAMES: &[&str] = &[
     "after-pdump-load-hook",
     "window-state-change-hook",
     "auto-save-hook",
+    "buffer-file-coding-system",
+    "truncate-lines",
+    "enable-multibyte-characters",
+    "user-init-file",
 ];
 
 struct Symbols {

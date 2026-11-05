@@ -2186,9 +2186,10 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
     interp.eval(&form, &mut env).expect("setup evaluates");
     interp.keyboard_input.recent_keys = vec![Value::Integer(97), Value::symbol("f1")];
     interp.keyboard_input.command_keys = vec![Value::Integer(97)];
-    interp
-        .detached_forwarded_variables
-        .insert("zz-detached".into(), Value::list([Value::Integer(1)]));
+    interp.detached_forwarded_variables.insert(
+        SymbolName::intern_str("zz-detached"),
+        Value::list([Value::Integer(1)]),
+    );
     interp.schedule_timer_after(Value::symbol("car"), vec![Value::Nil], 1000.0, Some(5.0));
     interp.ert_tests.push(crate::lisp::eval::ErtTestDefinition {
         name: "zz-test".into(),

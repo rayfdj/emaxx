@@ -1359,7 +1359,7 @@ define_dispatch!(
                 for (name, value) in &locals {
                     if let Some(slot) = interp
                         .is_per_buffer_symbol(name)
-                        .then(|| crate::lisp::eval::native_per_buffer_slot(name.as_str()))
+                        .then(|| crate::lisp::eval::native_per_buffer_slot(name))
                         .flatten()
                     {
                         if slot.always_local || (slot.permanent && !kill_permanent) {

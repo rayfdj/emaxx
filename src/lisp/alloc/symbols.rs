@@ -106,6 +106,10 @@ const PLAIN_STORE: u16 = 4;
 // symbol with the same name must not inherit that slot. The remaining slot
 // implementation is a migration adapter, not a negative name-lookup cache.
 const C_SLOT: u16 = 8;
+// buffer.c: a DEFVAR_PER_BUFFER slot (BUFFER_OBJFWD), set with C_SLOT on
+// the variables buffer.c defines, as opposed to the ones Lisp or other C
+// files make local per buffer.
+const NATIVE_BUFFER_SLOT: u16 = 16;
 // lisp.h: Lisp_Symbol.interned is object state, not an identity-number bit.
 // Standard-obarray removal still has its separate membership adapter.
 const UNINTERNED: u16 = 32;
@@ -502,6 +506,17 @@ impl SymbolCell {
             self.state.get()
                 & !(C_SLOT | KBOARD_FORWARD | STORE_EFFECT | BUFFER_SLOT | STORE_CONVERTS)
         });
+    }
+
+    /// Note that this C variable is one of buffer.c's DEFVAR_PER_BUFFER
+    /// slots.
+    pub(crate) fn mark_native_buffer_slot(&self) {
+        self.state.set(self.state.get() | NATIVE_BUFFER_SLOT);
+    }
+
+    /// Whether this symbol is one of buffer.c's DEFVAR_PER_BUFFER slots.
+    pub(crate) fn is_native_buffer_slot(&self) -> bool {
+        self.state.get() & NATIVE_BUFFER_SLOT != 0
     }
 
     /// Whether this C variable is one of a terminal's KBOARD variables.
@@ -910,6 +925,32 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
     LIVE_SYMBOLS.store(num_used, Ordering::Relaxed);
     FREE_SYMBOLS.store(num_free, Ordering::Relaxed);
     num_used
+}
+
+/// The allocated symbol cells that are uninterned, live or not yet swept.
+#[cfg(test)]
+pub(crate) fn allocated_uninterned_symbols() -> usize {
+    let bump_next = SYMBOL_BUMP_NEXT.load(Ordering::Relaxed);
+    let bump_end = SYMBOL_BUMP_END.load(Ordering::Relaxed);
+    let mut count = 0;
+    for (start, _) in sweep_blocks_of(BlockKind::Symbol) {
+        let lim = if bump_end == start + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE {
+            (bump_next - start) / SYMBOL_CELL_SIZE
+        } else {
+            SYMBOLS_PER_BLOCK
+        };
+        for index in 0..lim {
+            let cell = (start + index * SYMBOL_CELL_SIZE) as *const SymbolCell;
+            // SAFETY: inside a registered symbol block, below its bump
+            // limit: a cell that is free or allocated.
+            unsafe {
+                if (*cell).mark.raw() != FREE_MARK && (*cell).is_uninterned() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
 }
 
 pub(crate) fn live_symbols() -> usize {

@@ -841,7 +841,7 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
             "src/lisp/eval/symbol_cells.rs",
             &[
                 "a_symbol_and_its_name_address_one_cell",
-                "a_live_uninterned_symbol_is_reached_through_its_private_name",
+                "two_uninterned_symbols_of_one_name_are_two_variables",
                 "bound_values_enumerate_in_first_binding_order_and_a_rebinding_moves_last",
                 "a_cloned_table_does_not_share_cells_and_flags_follow_the_symbol",
                 "a_cells_native_word_is_cleared_by_every_data_c_write_transition",

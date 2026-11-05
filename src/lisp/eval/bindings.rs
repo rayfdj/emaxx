@@ -270,12 +270,12 @@ impl Interpreter {
                 None => self.localized_default_symbol(symbol),
             };
         }
-        let c_slot = resolved_symbol
+        let found = resolved_symbol
             .copied()
-            .or_else(|| SymbolName::find(resolved))
-            .is_some_and(|symbol| symbol.cell().has_c_slot());
+            .or_else(|| SymbolName::find(resolved));
+        let c_slot = found.is_some_and(|symbol| symbol.cell().has_c_slot());
         let builtin = || c_slot.then(|| self.builtin_var_value(resolved)).flatten();
-        if c_slot && self.has_native_text_conversion_style(resolved) {
+        if c_slot && found.is_some_and(|symbol| self.has_native_text_conversion_style(&symbol)) {
             let value = self.buffer.borrow().text_conversion_style;
             return (!matches!(value.kind(), Kind::Unbound)).then_some(value);
         }
@@ -428,7 +428,8 @@ impl Interpreter {
             return Some(value);
         }
         if !self.detached_forwarded_variables.is_empty()
-            && let Some(detached) = self.detached_forwarded_variables.get(name)
+            && let Some(detached) = SymbolName::find(name)
+                .and_then(|symbol| self.detached_forwarded_variables.get(&symbol))
         {
             return Some(*detached);
         }
@@ -443,7 +444,7 @@ impl Interpreter {
         key: crate::lisp::types::symbols::SymbolKey,
     ) -> Option<Value> {
         if !self.detached_forwarded_variables.is_empty()
-            && let Some(detached) = self.detached_forwarded_variables.get(key.name())
+            && let Some(detached) = key.with(|symbol| self.detached_forwarded_variables.get(symbol))
         {
             return Some(*detached);
         }
@@ -453,19 +454,23 @@ impl Interpreter {
     /// The remaining native slot adapter is reached only through the object
     /// that the C initializer registered, never through a reused spelling.
     pub(crate) fn builtin_symbol_value(&self, symbol: &SymbolName) -> Option<Value> {
-        symbol
-            .cell()
-            .has_c_slot()
-            .then(|| self.builtin_var_value(symbol.as_str()))
-            .flatten()
+        // A symbol `makunbound' detached from its C slot stays void until
+        // something stores into it again (data.c set_internal).
+        if !symbol.cell().has_c_slot() || self.forwarded_variable_detached(symbol) {
+            return None;
+        }
+        self.builtin_default_value(symbol.as_str())
     }
 
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
-        // A symbol `makunbound' detached from its C slot stays void until
-        // something stores into it again (data.c set_internal).
-        if self.forwarded_variable_detached(name) {
+        if SymbolName::find(name).is_some_and(|symbol| self.forwarded_variable_detached(&symbol)) {
             return None;
         }
+        self.builtin_default_value(name)
+    }
+
+    /// The value the C variable NAME has from its initializer.
+    fn builtin_default_value(&self, name: &str) -> Option<Value> {
         match name {
             // casefiddle.c creates this value cell as nil; simple.el installs
             // the real extraction policy during loadup.

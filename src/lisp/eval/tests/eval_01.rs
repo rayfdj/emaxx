@@ -6823,13 +6823,6 @@ fn startup_global_values_and_special_declarations_share_one_registry() {
             );
         }
     }
-    let names = interp.special_variable_names();
-    let unique = names.iter().collect::<std::collections::HashSet<_>>();
-    assert_eq!(
-        unique.len(),
-        names.len(),
-        "special-variable registry contains duplicate declarations"
-    );
 }
 
 #[test]

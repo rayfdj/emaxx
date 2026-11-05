@@ -469,7 +469,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("handler_generation", "the running signal dispatch"),
     ("handler_search_memo", "the running signal dispatch"),
     ("face_change_count", "carried in the remembered scalars"),
-    ("special_variables", "carried in the remembered scalars"),
     ("pdumper_loaded", "set by the load itself"),
     ("buffer", "written through the buffer alist"),
 ];
@@ -543,13 +542,13 @@ impl Interpreter {
         // lread.c:defvar_lisp static-protects each C slot: the value a
         // forwarded variable's C slot holds after the symbol let go of it.
         let mut detached = self.detached_forwarded_variables.iter().collect::<Vec<_>>();
-        detached.sort_by(|a, b| a.0.cmp(b.0));
+        detached.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
         groups.push((
             RootSlot::DetachedForwardedVariables,
             Value::list(
                 detached
                     .into_iter()
-                    .map(|(name, value)| pair(Value::symbol(name), *value)),
+                    .map(|(symbol, value)| pair(Value::Symbol(*symbol), *value)),
             ),
         ));
         // charset.c: charset_table (dump_charset_table) and
@@ -857,10 +856,6 @@ impl Interpreter {
             RootSlot::RememberedScalars,
             Value::list([
                 pair(
-                    Value::String("special-variables".into()),
-                    symbol_list(&self.special_variables),
-                ),
-                pair(
                     Value::String("next-buffer-id".into()),
                     Value::Integer(self.next_buffer_id as i64),
                 ),
@@ -1035,8 +1030,10 @@ mod install {
                     self.detached_forwarded_variables.clear();
                     for entry in expect_list(value, "detached forwarded variables")? {
                         let (name, value) = expect_pair(&entry, "detached forwarded variable")?;
-                        self.detached_forwarded_variables
-                            .insert(expect_symbol(&name, "variable name")?, value);
+                        let Some(symbol) = name.symbol_cell() else {
+                            return Err(format!("variable name: {name:?} is not a symbol"));
+                        };
+                        self.detached_forwarded_variables.insert(symbol, value);
                     }
                 }
                 RootSlot::Charsets => {
@@ -1367,10 +1364,6 @@ mod install {
                         let int = |what: &str| expect_int(&scalar, what);
                         let id = |what: &str| expect_id(&scalar, what);
                         match name.as_str() {
-                            "special-variables" => {
-                                self.special_variables =
-                                    symbol_names(&scalar, "special variables")?;
-                            }
                             "next-buffer-id" => {
                                 self.next_buffer_id = self.next_buffer_id.max(id(&name)?)
                             }

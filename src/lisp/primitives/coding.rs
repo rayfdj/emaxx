@@ -765,17 +765,20 @@ pub(crate) fn load_coding_system(
     value: &Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let Some(name) = value.symbol_str().map(str::to_string) else {
-        return Ok(());
+    let symbol = match value.kind() {
+        Kind::Symbol(symbol) => symbol,
+        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+        _ => return Ok(()),
     };
-    if value.is_nil() || interp.has_coding_system(&name) {
+    if interp.has_coding_system(symbol.as_str()) {
         return Ok(());
     }
+    // The property of the symbol itself, not of its name.
     let form = interp
-        .get_symbol_property(&name, "coding-system-define-form")
+        .get_property_of_symbol_value(*value, "coding-system-define-form")
         .unwrap_or(Value::Nil);
     if !form.is_nil() {
-        interp.put_symbol_property(&name, "coding-system-define-form", Value::Nil);
+        interp.put_symbol_property_on(&symbol, "coding-system-define-form", Value::Nil);
         interp.safe_funcall(Value::symbol("eval"), &[form], env)?;
     }
     Ok(())
@@ -3457,7 +3460,7 @@ pub(crate) fn coding_system_p(interp: &Interpreter, value: &Value) -> bool {
     };
     interp.has_coding_system(&name)
         || interp
-            .get_symbol_property(&name, "coding-system-define-form")
+            .get_property_of_symbol_value(*value, "coding-system-define-form")
             .is_some_and(|form| !form.is_nil())
 }
 

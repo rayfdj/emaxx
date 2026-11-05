@@ -277,7 +277,7 @@ impl Interpreter {
         if let Some(value) = &symbol.value
             && name.cell().has_c_slot()
         {
-            self.note_installed_value(name.as_str(), value);
+            self.note_installed_value(&name, value);
         }
         self.install_function_cell(&name, &symbol.function);
         self.install_plist(&name, &symbol.plist);
@@ -288,8 +288,8 @@ impl Interpreter {
 
     /// The derived state a value carries beside its cell: the forwarded C
     /// slots (`set_global_binding' keeps them too).
-    fn note_installed_value(&mut self, name: &str, value: &Value) {
-        self.update_forwarded_eval_cell(name, value);
+    fn note_installed_value(&mut self, symbol: &SymbolName, value: &Value) {
+        self.update_forwarded_eval_cell(symbol, value);
     }
 
     /// Restore the actual function cell, including a voided builtin.

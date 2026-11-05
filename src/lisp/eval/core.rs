@@ -440,10 +440,7 @@ impl Interpreter {
     #[cold]
     fn lisp_eval_depth_exceeded_slow(&mut self, depth: i64) -> bool {
         if self.max_lisp_eval_depth_value() < 100 {
-            if self
-                .detached_forwarded_variables
-                .contains_key("max-lisp-eval-depth")
-            {
+            if self.forwarded_variable_detached(&cached_symbol!("max-lisp-eval-depth").symbol()) {
                 self.max_lisp_eval_depth = 100;
                 self.refresh_call_depth_gate();
             } else {
@@ -1650,10 +1647,7 @@ impl Interpreter {
     /// max-lisp-eval-depth and lisp-eval-depth-reserve stored as the C
     /// core's assignments do.
     fn store_stack_limits(&mut self, depth: i64, reserve: i64) {
-        if self
-            .detached_forwarded_variables
-            .contains_key("max-lisp-eval-depth")
-        {
+        if self.forwarded_variable_detached(&cached_symbol!("max-lisp-eval-depth").symbol()) {
             self.max_lisp_eval_depth = depth;
             self.refresh_call_depth_gate();
         } else {
@@ -1789,7 +1783,7 @@ impl Interpreter {
 
         // process_quit_flag writes Vquit_flag, not a possibly detached plain
         // Lisp binding with the same name.
-        if self.detached_forwarded_variables.contains_key("quit-flag") {
+        if self.forwarded_variable_detached(&cached_symbol!("quit-flag").symbol()) {
             self.quit_flag = Value::Nil;
             self.refresh_call_depth_gate();
         } else {
@@ -3172,7 +3166,9 @@ mod eval_value_buffer_tests {
                 );
                 assert_eq!(interpreter.forwarded_c_value(name, &env), Some(c_value));
                 assert_eq!(
-                    interpreter.detached_forwarded_variables.get(name),
+                    interpreter
+                        .detached_forwarded_variables
+                        .get(&SymbolName::intern_str(name)),
                     Some(&Value::Nil)
                 );
             }
@@ -3283,7 +3279,7 @@ mod eval_value_buffer_tests {
             }
             interpreter
                 .detached_forwarded_variables
-                .insert("text-quoting-style".into(), keys[4]);
+                .insert(SymbolName::intern_str("text-quoting-style"), keys[4]);
             interpreter.pending_thread_events.push(keys[5]);
             interpreter.coding_attrs[0].charset_list = keys[6];
             interpreter.coding_attrs[0].type_args = vec![keys[7]];
@@ -3353,7 +3349,7 @@ mod eval_value_buffer_tests {
         interpreter.set_symbol_value_cell("inhibit-quit", c_value);
         interpreter
             .detached_forwarded_variables
-            .insert("text-quoting-style".into(), c_value);
+            .insert(SymbolName::intern_str("text-quoting-style"), c_value);
         interpreter.pending_thread_events.push(c_value);
         interpreter.coding_attrs[0].charset_list = c_value;
         interpreter.coding_attrs[0].type_args = vec![c_value];
@@ -3368,7 +3364,11 @@ mod eval_value_buffer_tests {
             copied
                 .symbol_value_cell("inhibit-quit")
                 .expect("still forwarded"),
-            copied.detached_forwarded_variables["text-quoting-style"],
+            *copied
+                .detached_forwarded_variables
+                .iter()
+                .find_map(|(symbol, value)| symbol.is_named("text-quoting-style").then_some(value))
+                .expect("the clone's detached slot"),
             copied.pending_thread_events[0],
             copied.coding_attrs[0].charset_list,
             copied.coding_attrs[0].type_args[0],

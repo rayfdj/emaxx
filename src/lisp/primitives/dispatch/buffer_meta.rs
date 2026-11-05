@@ -629,7 +629,7 @@ define_dispatch!(
                 // buffer's local value must not leak through (erc-open's
                 // prior-session detection reads `erc--target').  Fbuffer_local_value
                 // signals void-variable with VARIABLE as given.
-                let value = if interp.has_native_text_conversion_style(symbol.as_str()) {
+                let value = if interp.has_native_text_conversion_style(&symbol) {
                     interp.buffer_local_value(buffer_id, symbol.as_str())
                 } else if undo_list && symbol.cell().has_c_slot() {
                     // BVAR (b, undo_list): BUFFER's own history, t while
@@ -699,8 +699,7 @@ define_dispatch!(
                         .into_iter()
                         .filter(|(symbol, _)| {
                             symbol.is_named("text-conversion-style")
-                                || crate::lisp::eval::native_per_buffer_slot(symbol.as_str())
-                                    .is_none()
+                                || crate::lisp::eval::native_per_buffer_slot(symbol).is_none()
                         })
                         .map(|(symbol, value)| {
                             if matches!(value.kind(), Kind::Unbound) {
@@ -731,7 +730,7 @@ define_dispatch!(
                 // cleared, an always-local one (index -1) stays as it is;
                 // no watcher is told, and VARIABLE comes back as supplied,
                 // an alias included, before the alist branch rewrites it.
-                if let Some(slot) = crate::lisp::eval::native_per_buffer_slot(symbol.as_str())
+                if let Some(slot) = crate::lisp::eval::native_per_buffer_slot(&symbol)
                     && interp.is_per_buffer_symbol(&symbol)
                 {
                     if !slot.always_local {
@@ -774,7 +773,7 @@ define_dispatch!(
                     ])));
                 }
                 let buffer_id = interp.current_buffer_id();
-                if interp.has_native_text_conversion_style(symbol.as_str()) {
+                if interp.has_native_text_conversion_style(&symbol) {
                     // BUFFER_OBJFWD has a field already: only set its flag.
                     interp.buffer.borrow_mut().text_conversion_style_is_local = true;
                     return Ok(args[0]);

@@ -1096,7 +1096,7 @@ define_dispatch!(
                 // local_if_set symbol without a cell, outside a let made for
                 // this buffer, gets a new void cell.  The default is
                 // untouched either way.
-                let localized_store = !interp.has_native_text_conversion_style(symbol.as_str())
+                let localized_store = !interp.has_native_text_conversion_style(&symbol)
                     && (interp.has_buffer_local_binding_symbol(buffer_id, &symbol)
                         || (interp.is_auto_buffer_local_symbol(&symbol)
                             && !interp.is_per_buffer_symbol(&symbol)
@@ -1129,7 +1129,7 @@ define_dispatch!(
                     // Keep only a detachment marker for them: retaining a
                     // snapshot here would falsely root an old object after
                     // C independently overwrites its slot.
-                    let slot_value = if interp.has_native_text_conversion_style(symbol.as_str()) {
+                    let slot_value = if interp.has_native_text_conversion_style(&symbol) {
                         if !interp.buffer.borrow().text_conversion_style_is_local {
                             if interp.let_shadows_buffer_binding(symbol.as_str()) {
                                 // set_internal first changes the C default

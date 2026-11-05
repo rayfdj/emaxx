@@ -14579,6 +14579,43 @@ setup_process_coding_systems's check now refuses). A 13-form
   print GNU's results as before. Local validation: the grouped gate's
   3,502 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 309: no table maps an uninterned symbol's marked text back to
+  it, and the C variables are dispatched by their symbols.** A checked
+  build that asserted on every lookup that found an uninterned symbol by
+  its marked text, run through the grouped library gate (the upstream
+  tests reach none, round 308's census found), stopped in the tests of
+  that book itself and nowhere else once four more readings by name were
+  made readings of the symbol: the `char-table-extra-slots' property of
+  a char table's purpose, a coding system's pending
+  `coding-system-define-form', the LOCALIZED flag of the buffer-local
+  bindings an image restores, and a function stream's calls (`read' from
+  a symbol is Ffuncall of that symbol). The book, its weak entries and
+  their sweep are removed, and interning or looking up an uninterned
+  symbol's marked text fails a debug assertion, as a private obarray's
+  does since round 308. `make-symbol' no longer files its symbol: a
+  byte-compiled loop of 100,000 `(make-symbol "abc")' takes 2,323
+  instructions a call against 2,795, collections included (GNU's 1,523),
+  and 1,163 against 1,401 without them (GNU's 386); what is left is the
+  symbol's host text, which the migration still carries. The list of
+  declared special variables by name, beside the SPECIAL bit GNU calls
+  `declared_special' and which the image already keeps per symbol, is
+  gone. The C variables' dispatch reads the symbol: each terminal's
+  KBOARD variables are a table by symbol (the image clone maps its keys
+  to the clone's symbols), buffer.c's DEFVAR_PER_BUFFER slots carry a
+  bit of their own from which the always-local and permanent facts are
+  read, the evaluator's forwarded cells (`quit-flag', `inhibit-quit',
+  `load-path', `max-lisp-eval-depth' and the rest) are normalized and
+  stored by symbol, the C slots `makunbound' detaches are kept by
+  symbol, and `text-conversion-style' and the slots the buffer record
+  holds are recognized by symbol, the by-name buffer-local accessors
+  delegating to those of the symbol. The fuzzes of variables, function
+  cells, fields, loading, errors, coding, time, buffers, case, numbers,
+  strings, printing, syntax and hooks and the command-line cases of
+  rounds 303 to 308 print GNU's results as before. Local validation: the
+  grouped gate's 3,501 library tests (its lightweight group run
+  again after the tests of the book became tests of reclamation), the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17001,6 +17038,17 @@ ert-tests (27,641 ms against 25,234), tramp-tests (16,038 against
 1,108) and semantic-utest-ia (2,134 against 1,454), and
 `ert-test-run-tests-batch-expensive' is 1.09 of GNU's time.
 
+**On `4703b25`** (round 308): the full Rust gate (run 41948210422)
+passed; the frozen run (run 41948214362) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a fast runner (the oracle's bodies
+224.5 s against round 307's 214.9). Setup 55.4 s against 48.3 s (1.147),
+test bodies 234.7 s against 224.5 s (1.046), in all 1.063, with a
+per-file setup median of 89 ms against 79. The widest body gaps are
+tramp-tests (16,791 ms against 14,327), comp-tests (13,122 against
+11,913), ert-tests (26,970 against 26,141), mule-tests (1,879 against
+1,151) and semantic-utest-ia (2,859 against 2,301), and
+`ert-test-run-tests-batch-expensive' is 1.02 of GNU's time.
+
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's
   `--symbol-ordering-file' with the 3,046 functions four test files'
@@ -17823,13 +17871,12 @@ and failures are still recorded.
    both editors; timing pilots at merges. Remaining adapters that show up in
    profiles are fixed as performance work.
 3. **Remaining architecture and ownership:** the symbols' host-side name
-   text (an uninterned or private symbol's carries a marker), the book that
-   still maps an uninterned symbol's marked text back to it for about a
-   hundred call sites that reach it by name (round 308), and the C-variable
-   dispatch still keyed by that text (buffer slots and defaults, the
-   forwarded evaluator cells, the keyboard-local variables), which GNU reads
-   from the symbol's forwarding descriptor; text-property intervals (also
-   needed for
+   text (an uninterned or private symbol's carries a marker; since round
+   309 no table maps it back) and the reads still matched against it (the
+   C variables' initial values and per-buffer predicates, the `as_symbol'
+   and `symbol_str' readings of a symbol argument), which GNU makes from the
+   symbol's own name and forwarding descriptor; text-property intervals
+   (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor
    lifetimes and reclamation; the September 21 audit findings.
