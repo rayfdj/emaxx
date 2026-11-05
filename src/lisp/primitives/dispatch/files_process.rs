@@ -3200,11 +3200,7 @@ define_dispatch!(
                 Ok(Value::T)
             }
             "bury-buffer-internal" => {
-                if name == "bury-buffer-internal" {
-                    need_args(name, args, 1)?;
-                } else {
-                    need_arg_range(name, args, 0, 1)?;
-                }
+                need_args(name, args, 1)?;
                 // buffer.c: CHECK_BUFFER; a killed buffer is in no list.
                 let id = match args.first().map(|value| value.kind()) {
                     None | Some(Kind::Nil) => interp.current_buffer_id(),
@@ -3217,18 +3213,6 @@ define_dispatch!(
                     }
                 };
                 bury_buffer_in_lists(interp, id, env)?;
-                if name == "bury-buffer-internal" {
-                    return Ok(Value::Nil);
-                }
-                if id == interp.current_buffer_id()
-                    && let Some((next_id, _)) = interp
-                        .buffer_list
-                        .iter()
-                        .find(|(buffer_id, _)| *buffer_id != id)
-                        .cloned()
-                {
-                    interp.switch_to_buffer_id(next_id)?;
-                }
                 Ok(Value::Nil)
             }
 

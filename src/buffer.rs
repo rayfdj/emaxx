@@ -206,6 +206,16 @@ pub struct Buffer {
     /// which turns record_point off.
     undo_inhibit_record_point: bool,
 
+    /// buffer.h's last_window_start: the start of the last window to stop
+    /// showing the buffer (window.c:unshow_buffer), where set_window_buffer
+    /// starts the next; reset_buffer makes it 1.
+    last_window_start: usize,
+
+    /// BVAR (b, last_selected_window): the window select_window last
+    /// selected showing the buffer, or nil; unshow_buffer keeps that
+    /// window's point in the buffer while it still shows it.
+    last_selected_window: Value,
+
     /// Overlays attached to this buffer.
     pub overlays: crate::overlay::OverlayTree,
 
@@ -251,6 +261,8 @@ impl Clone for Buffer {
             keymap: self.keymap,
             point_before_last_command_or_undo: self.point_before_last_command_or_undo,
             undo_inhibit_record_point: self.undo_inhibit_record_point,
+            last_window_start: self.last_window_start,
+            last_selected_window: self.last_selected_window,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: self.inhibit_hooks,
             text_conversion_style: self.text_conversion_style,
@@ -1172,6 +1184,8 @@ impl Buffer {
             keymap: Value::Nil,
             point_before_last_command_or_undo: None,
             undo_inhibit_record_point: false,
+            last_window_start: 1,
+            last_selected_window: Value::Nil,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -1252,6 +1266,8 @@ impl Buffer {
             keymap: Value::Nil,
             point_before_last_command_or_undo: None,
             undo_inhibit_record_point: false,
+            last_window_start: 1,
+            last_selected_window: Value::Nil,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -2278,6 +2294,7 @@ impl Buffer {
         }
         self.undo_list = copy(&self.undo_list);
         self.keymap = copy(&self.keymap);
+        self.last_selected_window = copy(&self.last_selected_window);
     }
 
     /// Visit every Lisp value retained by this buffer.  Garbage collection
@@ -2307,6 +2324,7 @@ impl Buffer {
         }
         visit(&self.undo_list);
         visit(&self.keymap);
+        visit(&self.last_selected_window);
         for value in self
             .killed_locals
             .iter()
@@ -3844,6 +3862,25 @@ impl Buffer {
 
     // ── Undo (undo.c) ──
 
+    /// buffer.h's last_window_start (window.c reads and sets it).
+    pub(crate) fn last_window_start(&self) -> usize {
+        self.last_window_start
+    }
+
+    pub(crate) fn set_last_window_start(&mut self, start: usize) {
+        self.last_window_start = start;
+    }
+
+    /// BVAR (b, last_selected_window).
+    pub(crate) fn last_selected_window(&self) -> Value {
+        self.last_selected_window
+    }
+
+    /// bset_last_selected_window.
+    pub(crate) fn set_last_selected_window(&mut self, window: Value) {
+        self.last_selected_window = window;
+    }
+
     /// BVAR (b, keymap): Fcurrent_local_map's value.
     pub(crate) fn keymap(&self) -> Value {
         self.keymap
@@ -4140,6 +4177,8 @@ impl Buffer {
             keymap: parts.keymap,
             point_before_last_command_or_undo: None,
             undo_inhibit_record_point: false,
+            last_window_start: 1,
+            last_selected_window: Value::Nil,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: parts.inhibit_hooks,
             text_conversion_style: parts.text_conversion_style,

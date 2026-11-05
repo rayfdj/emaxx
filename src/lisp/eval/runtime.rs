@@ -651,11 +651,6 @@ impl Interpreter {
         id
     }
 
-    /// Switch the current buffer and display it in the selected window.
-    pub fn switch_to_buffer_id(&mut self, id: u64) -> Result<(), LispError> {
-        self.show_buffer_in_selected_window(id)
-    }
-
     /// indent.c:invalidate_current_column: no recorded column answers.
     pub(crate) fn invalidate_current_column(&mut self) {
         self.last_known_column.1 = 0;
@@ -778,7 +773,7 @@ impl Interpreter {
             return Ok(());
         }
         let window_id = self.selected_window_id;
-        self.unshow_window_buffer(window_id);
+        self.unshow_window_buffer(window_id)?;
         self.show_buffer_in_window(window_id, id, false);
         Ok(())
     }
@@ -949,13 +944,14 @@ impl Interpreter {
     /// Show BUFFER_ID in the selected window (set-window-buffer without
     /// its Lisp bookkeeping); showing the buffer it already shows changes
     /// nothing.
-    pub fn set_selected_window_buffer_id(&mut self, buffer_id: u64) {
+    pub fn set_selected_window_buffer_id(&mut self, buffer_id: u64) -> Result<(), LispError> {
         let window_id = self.selected_window_id;
         if self.window_record_buffer_id(window_id) == Some(buffer_id) {
-            return;
+            return Ok(());
         }
-        self.unshow_window_buffer(window_id);
+        self.unshow_window_buffer(window_id)?;
         self.show_buffer_in_window(window_id, buffer_id, false);
+        Ok(())
     }
 
     fn window_record_buffer_id(&self, window_id: u64) -> Option<u64> {
@@ -965,34 +961,56 @@ impl Interpreter {
         )
     }
 
-    /// window.c unshow_buffer: WINDOW_ID stops showing its buffer, which
-    /// remembers the window's start, and takes the window's point unless
-    /// the selected window shows it (that point is the buffer's own).
-    pub(crate) fn unshow_window_buffer(&mut self, window_id: u64) {
+    /// window.c:unshow_buffer: WINDOW_ID stops showing its buffer.  The
+    /// buffer's last_window_start becomes the window's start; the buffer
+    /// takes the window's point unless the selected window shows it (that
+    /// point is the buffer's own) or the window it was last selected in
+    /// is another still showing it; and it forgets WINDOW_ID as that
+    /// window.  A start or point marker that points nowhere is
+    /// marker_position's error, before any of this changes.
+    pub(crate) fn unshow_window_buffer(&mut self, window_id: u64) -> Result<(), LispError> {
         let Some(buffer_id) = self.window_record_buffer_id(window_id) else {
-            return;
+            return Ok(());
         };
         if !self.has_buffer_id(buffer_id) {
-            return;
+            return Ok(());
         }
-        let slot = |interp: &Self, index: usize| {
-            primitives::window_marker_position(interp, window_id, index)
+        let marker_position = |interp: &Self, slot: usize| -> Result<Option<usize>, LispError> {
+            match primitives::window_marker(interp, window_id, slot) {
+                Some(marker) => marker
+                    .position()
+                    .map(Some)
+                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
+                None => Ok(None),
+            }
         };
-        if let Some(start) = slot(self, primitives::WINDOW_START_SLOT) {
-            self.buffer_last_window_start.insert(buffer_id, start);
-        }
-        if buffer_id != self.selected_window_buffer_id()
-            && let Some(point) = slot(self, primitives::WINDOW_POINT_SLOT)
-        {
-            if buffer_id == self.current_buffer_id {
-                let mut buffer = self.buffer.borrow_mut();
-                let point = point.clamp(buffer.point_min(), buffer.point_max());
-                buffer.goto_char(point);
-            } else if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+        let start = marker_position(self, primitives::WINDOW_START_SLOT)?;
+        let last_selected = self
+            .get_buffer_by_id(buffer_id)
+            .map(|buffer| buffer.last_selected_window())
+            .unwrap_or(Value::Nil);
+        let last_selected_id = primitives::window_record_id_from_value(self, &last_selected);
+        let point = if buffer_id != self.selected_window_buffer_id()
+            && !last_selected_id.is_some_and(|id| {
+                id != window_id && self.window_record_buffer_id(id) == Some(buffer_id)
+            }) {
+            marker_position(self, primitives::WINDOW_POINT_SLOT)?
+        } else {
+            None
+        };
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            if let Some(start) = start {
+                buffer.set_last_window_start(start);
+            }
+            if let Some(point) = point {
                 let point = point.clamp(buffer.point_min(), buffer.point_max());
                 buffer.goto_char(point);
             }
+            if last_selected_id == Some(window_id) {
+                buffer.set_last_selected_window(Value::Nil);
+            }
         }
+        Ok(())
     }
 
     /// window.c set_window_buffer's window state: WINDOW_ID shows
@@ -1009,9 +1027,8 @@ impl Interpreter {
                 .unwrap_or((1, 1, 1))
         };
         let start = self
-            .buffer_last_window_start
-            .get(&buffer_id)
-            .copied()
+            .get_buffer_by_id(buffer_id)
+            .map(|buffer| buffer.last_window_start())
             .unwrap_or(1)
             .clamp(point_min, point_max);
         let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
@@ -1044,6 +1061,13 @@ impl Interpreter {
         }
         // The point markers take the buffer's `window-point-insertion-type'.
         primitives::set_window_point_insertion_type(self, window_id, buffer_id);
+        // set_window_buffer: the selected window is its buffer's last.
+        if window_id == self.selected_window_id {
+            let window = self.record_value(window_id);
+            if let Some(mut shown) = self.get_buffer_by_id_mut(buffer_id) {
+                shown.set_last_selected_window(window);
+            }
+        }
         self.stamp_buffer_display(buffer_id);
         self.wset_redisplay(window_id);
     }
@@ -1064,7 +1088,10 @@ impl Interpreter {
             buffer.auto_save_failure_time = 0;
             buffer.set_mark_active_value(Value::Nil);
         }
-        self.buffer_last_window_start.insert(buffer_id, 1);
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.set_last_window_start(1);
+            buffer.set_last_selected_window(Value::Nil);
+        }
         for (name, value) in [
             ("default-directory", directory),
             ("buffer-saved-size", Value::Integer(0)),
@@ -1695,7 +1722,7 @@ impl Interpreter {
         // case the saved one is dead.
         let mut squirreled = Vec::new();
         let root = snapshot.frame_id.borrow().root_window_id();
-        self.unshow_window_tree(Some(root).filter(|id| *id != 0), &mut squirreled);
+        self.unshow_window_tree(Some(root).filter(|id| *id != 0), &mut squirreled)?;
         // Each saved window revived: its links rebuilt from the saved
         // indices, the fields save_window_save saved written back (the
         // others, its previous and next buffers, cursor type, use time and
@@ -2014,6 +2041,12 @@ impl Interpreter {
                 let point = point.clamp(state.point_min(), state.point_max());
                 state.goto_char(point);
             }
+            // select_window's bset_last_selected_window, and
+            // Fset_window_configuration's own after it.
+            let window = self.record_value(current_window);
+            if let Some(mut state) = self.get_buffer_by_id_mut(buffer) {
+                state.set_last_selected_window(window);
+            }
         }
         // GNU records frame dimensions for configuration equality, but
         // `set-window-configuration' does not rewind a frame resize:
@@ -2115,9 +2148,13 @@ impl Interpreter {
     /// siblings after it first and children before their parents: each
     /// leaf's buffer unshown and its markers unchained, its buffer kept in
     /// SQUIRRELED (GNU's combination_limit) for Fset_window_configuration.
-    fn unshow_window_tree(&mut self, window: Option<u64>, squirreled: &mut Vec<(u64, u64)>) {
+    fn unshow_window_tree(
+        &mut self,
+        window: Option<u64>,
+        squirreled: &mut Vec<(u64, u64)>,
+    ) -> Result<(), LispError> {
         let Some(window) = window else {
-            return;
+            return Ok(());
         };
         let link = |interp: &Self, slot: usize| match interp
             .find_record(window)
@@ -2128,18 +2165,18 @@ impl Interpreter {
             _ => None,
         };
         let next = link(self, primitives::WINDOW_NEXT_SIBLING_SLOT);
-        self.unshow_window_tree(next, squirreled);
+        self.unshow_window_tree(next, squirreled)?;
         let internal = primitives::WindowKind::of_slot(
             self.find_record(window)
                 .and_then(|record| record.slots.get(primitives::WINDOW_KIND_SLOT)),
         )
         .is_internal();
         if let Some(child) = link(self, primitives::WINDOW_FIRST_CHILD_SLOT).filter(|_| internal) {
-            self.unshow_window_tree(Some(child), squirreled);
+            self.unshow_window_tree(Some(child), squirreled)?;
             // wset_combination (w, false, Qnil): no contents.
             self.set_window_slot(window, primitives::WINDOW_FIRST_CHILD_SLOT, Value::Nil);
         } else if let Some(buffer) = self.window_record_buffer_id(window) {
-            self.unshow_window_buffer(window);
+            self.unshow_window_buffer(window)?;
             primitives::unchain_window_markers(self, window);
             squirreled.push((window, buffer));
             // wset_buffer (w, Qnil).
@@ -2151,6 +2188,7 @@ impl Interpreter {
             primitives::WINDOW_KIND_SLOT,
             primitives::WindowKind::Deleted.value(),
         );
+        Ok(())
     }
 
     /// BUF_PT of buffer ID.
@@ -2348,8 +2386,12 @@ impl Interpreter {
                     Value::Integer(replacement_start as i64);
             }
         }
-        if selected_window_showed_buffer {
-            self.set_selected_window_buffer_id(replacement_id);
+        if selected_window_showed_buffer
+            && self.set_selected_window_buffer_id(replacement_id).is_err()
+        {
+            // unshow_buffer's error for a start or point that points
+            // nowhere: the window still stops showing the dying buffer.
+            self.show_buffer_in_window(self.selected_window_id, replacement_id, false);
         }
     }
 

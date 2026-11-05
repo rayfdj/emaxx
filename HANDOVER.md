@@ -15196,6 +15196,64 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 323: window points and starts are window.c's markers,
+  unshow_buffer is window.c's, and the buffer keeps the window it was
+  last selected in.** `set-window-start' and `set-window-point' of a
+  non-selected window run set_marker_restricted, so nil or a marker
+  pointing nowhere leaves the window's marker pointing nowhere:
+  `window-start' then answers nil (Fmarker_position) and `window-point'
+  the charpos the marker kept (window_point), where Emaxx kept the
+  selected window's start as a position beside its marker and signalled
+  `integer-or-marker-p'. The selected window's `set-window-point' moves
+  its buffer's point, in that buffer made current for the move when
+  another is current, POS then coerced by fix_position and returned.
+  unshow_buffer records the window's start as the buffer's
+  last_window_start and gives the buffer the window's point unless the
+  selected window shows it or the window the buffer was last selected in
+  is another still showing it, then forgets the window as that one; a
+  start or point marker pointing nowhere is marker_position's error
+  before anything changes, so `delete-window', `delete-other-windows',
+  `set-window-buffer' and `set-window-configuration' signal it and leave
+  the tree as GNU leaves it, and `select-window' signals
+  set_point_from_marker's error once the window is selected and its
+  buffer current. last_window_start and last_selected_window are the
+  buffer's fields (the interpreter's table of last window starts is
+  gone), which select_window, set_window_buffer of the selected window
+  and Fset_window_configuration set and reset_buffer clears.
+  `run-window-configuration-change-hook' is
+  run_window_configuration_change_hook: each buffer-local value runs
+  with its window selected as `(select-window WINDOW t)' selects it, the
+  window's point its buffer's, over the frame's windows from its
+  selected one without the minibuffer window, as run_funs runs a list (a
+  lone function is not called), then the default value, with the
+  selected window's buffer current and the frame selected, all undone
+  after an error; Emaxx set the selected window without the point swap
+  and ran a lone function. Code conversion into a destination buffer,
+  the combined after-change call and a file notification's callback make
+  their buffer current as set_buffer_internal does, where Emaxx showed
+  it in the selected window for the while (unshowing the window's
+  buffer, and resetting its start and point when it switched back), and
+  `bury-buffer-internal' only moves the buffer in the lists, as
+  buffer.c's does. wset_combination empties the one contents field a
+  leaf's buffer lives in too, and the selected window with no buffer
+  shows none (it answered the current buffer). The mode, header and tab
+  lines a window has are window_wants_mode_line's and the others' (a
+  minibuffer or internal window has none, so `window-body-height' of the
+  minibuffer window is its total height), `window-text-width' leaves out
+  only the margins, `select-window' and `resize-mini-window-internal'
+  refuse nil as CHECK_LIVE_WINDOW does, and `next-window' and
+  `previous-window' from a window that is no candidate (an inactive
+  minibuffer window) answer the first and the last window. A sweep of
+  148 window and frame primitives with each kind of window argument, a
+  process for each primitive, answers as GNU's does but where GNU's own
+  setup failed. Undo runs 1,280,171 instructions an iteration (1.047). A
+  command-line comparison covers detached starts and points, the
+  selected window's point from another buffer, the last selected
+  window's point, the hook's selection, the minibuffer window's sizes
+  and cycle, and the errors of unshowing a detached window. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17791,7 +17849,34 @@ ert-tests as a whole 26,307 ms against 27,211.
   checks account for the mule-tests and semantic-utest-ia gaps (round
   320's record).
 
+**On `decb77e`** (round 322): the full Rust gate (run 42095132802)
+  passed; the frozen run (run 42095139413) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a faster runner than round 321's
+  (the oracle's bodies 232.0 s against 255.7). Setup 57.6 s against 49.4
+  s (1.167), test bodies 243.6 s against 232.0 s (1.050), in all 1.073,
+  with a per-file setup median of 90 ms against 79. ert-tests' body
+  falls to 30,513 ms against 29,931 (1.019, from 1.223), and
+  `ert-test-run-tests-batch-expensive' runs in 1.01 of GNU's time (from
+  1.21): ERT saves and restores the window configuration around each
+  test. The widest body gaps are now tramp-tests (15,781 ms against
+  13,836), comp-tests (14,047 against 12,426), semantic-utest-ia (2,806
+  against 1,890), mule-tests (1,987 against 1,281) and epg-tests (2,320
+  against 1,794).
+
 **Findings recorded, not fixed:**
+- **A deleted selected window (round 323).** A start or point marker
+  that points nowhere makes unshow_buffer signal in the middle of
+  delete_all_child_windows, and `delete-other-windows' can then leave
+  the selected window deleted. GNU's decode_live_window,
+  decode_valid_window and decode_any_window answer the selected window
+  for nil without a check, so `set-window-buffer' of nil then signals
+  "Window is deleted" and `window-minibuffer-p' answers; Emaxx's
+  decoders check the selected window too and signal `window-live-p' or
+  `window-valid-p'. Past that GNU's primitives read a deleted window's
+  nil contents as a buffer, which an implementation cannot follow; the
+  decoders' nil wants to be the unchecked selected window, with each
+  primitive answering a deleted one as GNU's does where GNU's answer is
+  defined.
 - **Windows as generic records (round 321).** A window is a record whose
   slots are a vector apart from it, so each window primitive decodes the
   record's kind and reads a slot through that vector; called from native
@@ -17810,14 +17895,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   subr's body, against GNU's call through the freloc table with the
   arguments in registers and a signal by longjmp. Undo's iteration makes
   722 such calls.
-- **A window start that points nowhere (round 320).** Fset_window_start
-  runs set_marker_restricted, so a nil POS leaves the start marker
-  pointing nowhere: `(set-window-start nil nil)' returns nil and
-  `window-start' then answers nil. Emaxx keeps the selected window's
-  start as a position beside the marker and signals
-  `integer-or-marker-p' for a nil POS; the selected window's start needs
-  to be the marker GNU's is, redisplay choosing a start when it points
-  nowhere.
 - **The newline region cache (round 320).** GNU's find_newline keeps a
   region cache of the stretches with no newline (`cache-long-scans', on
   by default), which `newline-cache-check' reports as a pair of vectors;

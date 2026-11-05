@@ -76,8 +76,9 @@ pub(crate) fn flush_combined_after_change(
     if !interp.has_buffer_id(pending.buffer_id) {
         return Ok(Value::Nil);
     }
+    // set_buffer_internal, the current buffer restored after.
     let saved_buffer_id = interp.current_buffer_id();
-    interp.switch_to_buffer_id(pending.buffer_id)?;
+    interp.set_current_buffer_id(pending.buffer_id)?;
     // Characters unchanged at the beginning and end of the buffer, and
     // the net insertion.
     let size = interp.buffer.borrow().size_total() as i64;
@@ -110,7 +111,7 @@ pub(crate) fn flush_combined_after_change(
         result
     });
     if interp.has_buffer_id(saved_buffer_id) {
-        interp.switch_to_buffer_id(saved_buffer_id)?;
+        interp.set_current_buffer_id(saved_buffer_id)?;
     }
     result?;
     Ok(Value::Nil)
@@ -376,7 +377,7 @@ pub(crate) fn deliver_file_notification(
     let event = Value::list(event);
     let result = call_function_value(interp, &callback, &[event], env).map(|_| ());
     if interp.has_buffer_id(saved_buffer_id) {
-        interp.switch_to_buffer_id(saved_buffer_id)?;
+        interp.set_current_buffer_id(saved_buffer_id)?;
     }
     result
 }
@@ -391,7 +392,7 @@ pub(crate) fn deliver_raw_file_notification(
     let result =
         call_function_value(interp, &callback, std::slice::from_ref(&event), env).map(|_| ());
     if interp.has_buffer_id(saved_buffer_id) {
-        interp.switch_to_buffer_id(saved_buffer_id)?;
+        interp.set_current_buffer_id(saved_buffer_id)?;
     }
     result
 }

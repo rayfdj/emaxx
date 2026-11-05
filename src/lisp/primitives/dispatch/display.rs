@@ -2399,7 +2399,9 @@ fn select_window_value(
             previous_buffer_id,
             previous_point,
         );
-        window_marker_position(interp, window_id, WINDOW_POINT_SLOT)
+        // set_point_from_marker's marker_position, None for a marker that
+        // points nowhere: the error comes once the window is selected.
+        window_marker(interp, window_id, WINDOW_POINT_SLOT).map(|marker| marker.position())
     } else {
         None
     };
@@ -2407,6 +2409,26 @@ fn select_window_value(
         interp.note_selected_frame(frame);
     }
     interp.set_selected_window_id(window_id);
+    if matches!(target_point, Some(None)) {
+        // Fset_buffer (w->contents) came first.
+        if let Some(buffer_id) = target_buffer_id
+            && interp.has_buffer_id(buffer_id)
+        {
+            interp.set_current_buffer_id(buffer_id)?;
+        }
+        return Err(LispError::Signal("Marker does not point anywhere".into()));
+    }
+    let target_point = target_point.flatten();
+    // bset_last_selected_window: the window's buffer was last selected in
+    // it (unshow_buffer leaves that window's point in the buffer).
+    if window_id != previous_window_id
+        && let Some(buffer_id) = target_buffer_id
+    {
+        let window_value = interp.record_value(window_id);
+        if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+            buffer.set_last_selected_window(window_value);
+        }
+    }
     if !norecord {
         interp.record_window_selection(window_id);
     }
@@ -2506,6 +2528,9 @@ fn set_window_combination(
         None => WindowKind::Deleted,
     };
     set_window_slot_value(interp, id, WINDOW_KIND_SLOT, kind.value())?;
+    // wset_combination stores w->contents, the one field a leaf's buffer
+    // lives in too: whatever the window showed, it shows no buffer now.
+    set_window_slot_value(interp, id, WINDOW_BUFFER_SLOT, Value::Nil)?;
     set_window_link(interp, id, WINDOW_FIRST_CHILD_SLOT, child)
 }
 
@@ -2817,13 +2842,110 @@ fn recombine_windows(interp: &mut Interpreter, window: u64) -> Result<(), LispEr
     clear_deleted_window(interp, window)
 }
 
+/// window.c:run_funs: call each element of FUNS but t, a list's alone.
+fn run_window_funs(interp: &mut Interpreter, funs: Value, env: &mut Env) -> Result<(), LispError> {
+    let mut tail = funs;
+    while let Kind::Cons(_) = tail.kind() {
+        let function = tail.car()?;
+        if !matches!(function.kind(), Kind::T) {
+            call_function_value(interp, &function, &[], env)?;
+        }
+        tail = tail.cdr()?;
+    }
+    Ok(())
+}
+
+/// window.c:select_window_norecord, the unwinding of a selection: a
+/// window still live is selected as `(select-window WINDOW t)' does.
+fn select_window_norecord(interp: &mut Interpreter, window: u64) -> Result<(), LispError> {
+    if window_buffer_id(interp, &interp.record_value(window)).is_some() {
+        select_window_value(interp, &interp.record_value(window), true)?;
+    }
+    Ok(())
+}
+
+/// window.c:run_window_configuration_change_hook for FRAME: the
+/// buffer-local values of `window-configuration-change-hook' run with
+/// the window showing their buffer selected (Fselect_window with
+/// NORECORD, each window of FRAME's list but its minibuffer window),
+/// then the default value with FRAME selected; all with the selected
+/// window's buffer current, and the selections and that buffer undone
+/// after, an error included.
+fn run_window_configuration_change_hook(
+    interp: &mut Interpreter,
+    frame: crate::lisp::types::FrameRef,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let global = interp
+        .default_value_key(cached_symbol!("window-configuration-change-hook"))
+        .unwrap_or(Value::Nil);
+    if interp.hooks_cleared {
+        return Ok(());
+    }
+    let saved_buffer = interp.current_buffer_id();
+    let selected_buffer = interp.selected_window_buffer_id();
+    let switch_buffer = selected_buffer != saved_buffer;
+    if switch_buffer {
+        interp.set_current_buffer_id(selected_buffer)?;
+    }
+    let saved_frame = interp.selected_frame_id;
+    let switch_frame = saved_frame != frame;
+    let mut result = if switch_frame {
+        super::frames::select_frame(interp, frame, true, env)
+    } else {
+        Ok(())
+    };
+    if result.is_ok() {
+        result = (|| {
+            let start = frame.borrow().selected_window.map(Value::Record);
+            let frames = [frame];
+            let windows = window_list_ids(
+                interp,
+                Some(&Value::symbol("lambda")),
+                start.as_ref(),
+                &frames,
+            );
+            for window in windows {
+                let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(window)) else {
+                    continue;
+                };
+                let Some(local) = interp.buffer_local_value_key(
+                    buffer_id,
+                    cached_symbol!("window-configuration-change-hook"),
+                ) else {
+                    continue;
+                };
+                let saved_window = interp.selected_window_id();
+                let mut inner = select_window_norecord(interp, window);
+                if inner.is_ok() {
+                    inner = run_window_funs(interp, local, env);
+                }
+                let unwound = select_window_norecord(interp, saved_window);
+                inner?;
+                unwound?;
+            }
+            run_window_funs(interp, global, env)
+        })();
+    }
+    if switch_frame && interp.frame_is_live(saved_frame) {
+        let unwound = super::frames::select_frame(interp, saved_frame, true, env);
+        result = result.and(unwound);
+    }
+    if switch_buffer && interp.has_buffer_id(saved_buffer) {
+        let unwound = interp.set_current_buffer_id(saved_buffer);
+        result = result.and(unwound);
+    }
+    result
+}
+
 /// window.c:unshow_buffer, then the unchain_marker calls of the window's
 /// start, point and old point that delete_window and
 /// delete_all_child_windows make: the buffer remembers the window's
 /// start, and takes its point unless the selected window shows it.
-fn unshow_buffer(interp: &mut Interpreter, window: u64) {
-    interp.unshow_window_buffer(window);
+fn unshow_buffer(interp: &mut Interpreter, window: u64) -> Result<(), LispError> {
+    interp.unshow_window_buffer(window)?;
     unchain_window_markers(interp, window);
+    Ok(())
 }
 
 /// window.c:delete_all_child_windows: delete WINDOW, the siblings after
@@ -2835,7 +2957,7 @@ fn delete_all_child_windows(interp: &mut Interpreter, window: u64) -> Result<(),
     if let Some(child) = window_link(interp, window, WINDOW_FIRST_CHILD_SLOT) {
         delete_all_child_windows(interp, child)?;
     } else {
-        unshow_buffer(interp, window);
+        unshow_buffer(interp, window)?;
     }
     clear_deleted_window(interp, window)
 }
@@ -3198,7 +3320,7 @@ fn delete_window_from_tree(interp: &mut Interpreter, window: &Value) -> Result<V
     if let Some(child) = window_link(interp, window_id, WINDOW_FIRST_CHILD_SLOT) {
         delete_all_child_windows(interp, child)?;
     } else {
-        unshow_buffer(interp, window_id);
+        unshow_buffer(interp, window_id)?;
     }
     clear_deleted_window(interp, window_id)?;
 
@@ -3453,7 +3575,7 @@ fn window_body_pixel_size(interp: &Interpreter, window: u64, env: &Env) -> (i64,
     let (_, height, _, _) = window_geometry(interp, window);
     let body_height = window_buffer_id(interp, &interp.record_value(window))
         .map_or(height, |buffer| {
-            height - window_non_body_height(interp, buffer, env)
+            height - window_non_body_height(interp, window, buffer, env)
         });
     (window_text_width_columns(interp, window), body_height)
 }
@@ -3826,11 +3948,36 @@ fn window_line_height(
     i64::from(format.is_some_and(|format| !format.is_nil()))
 }
 
-fn window_non_body_height(interp: &Interpreter, buffer_id: u64, env: &Env) -> i64 {
-    ["mode-line-format", "header-line-format", "tab-line-format"]
-        .into_iter()
-        .map(|variable| window_line_height(interp, buffer_id, variable, env))
-        .sum()
+/// The lines of WINDOW_ID showing BUFFER_ID that are not its body:
+/// window.c's window_wants_mode_line, window_wants_header_line and
+/// window_wants_tab_line, each a line of a leaf that is no minibuffer
+/// window, whose window parameter of the format's name is not `none' and
+/// either it or the buffer's format is non-nil, and whose height holds it
+/// beside the lines wanted before it (the mode line prevails).
+fn window_non_body_height(interp: &Interpreter, window_id: u64, buffer_id: u64, env: &Env) -> i64 {
+    let kind = window_kind_of_id(interp, window_id);
+    if kind.is_internal() || kind == WindowKind::Minibuffer {
+        return 0;
+    }
+    let height = window_geometry(interp, window_id).1;
+    let wants = |parameter: Value, variable: &str| {
+        let format = window_parameter_value(interp, window_id, &parameter);
+        !format.is_key(cached_symbol!("none"))
+            && (!format.is_nil() || window_line_height(interp, buffer_id, variable, env) != 0)
+    };
+    let mode = wants(
+        Value::Symbol(cached_symbol!("mode-line-format").symbol()),
+        "mode-line-format",
+    ) && height > 1;
+    let header = wants(
+        Value::Symbol(cached_symbol!("header-line-format").symbol()),
+        "header-line-format",
+    ) && height > if mode { 2 } else { 1 };
+    let tab = wants(
+        Value::Symbol(cached_symbol!("tab-line-format").symbol()),
+        "tab-line-format",
+    ) && height > i64::from(mode) + i64::from(header) + 1;
+    i64::from(mode) + i64::from(header) + i64::from(tab)
 }
 
 /// Screen rows owned by the window selected *now*, its body height in the
@@ -3841,8 +3988,9 @@ fn window_non_body_height(interp: &Interpreter, buffer_id: u64, env: &Env) -> i6
 fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
     let window_id = interp.selected_window_id();
     let buffer_id = interp.selected_window_buffer_id();
-    (window_geometry(interp, window_id).1 - window_non_body_height(interp, buffer_id, env)).max(1)
-        as usize
+    (window_geometry(interp, window_id).1
+        - window_non_body_height(interp, window_id, buffer_id, env))
+    .max(1) as usize
 }
 
 /// WINDOW_TOTAL_COLS of WINDOW.
@@ -5352,8 +5500,18 @@ define_dispatch!(
             }
             "window-start" => {
                 need_arg_range(name, args, 0, 1)?;
-                live_window_id_or_selected(interp, args.first())?;
-                Ok(Value::Integer(window_start(interp, args.first())? as i64))
+                // window.c:Fwindow_start: Fmarker_position of w->start,
+                // nil while it points nowhere.
+                let window_id = live_window_id_or_selected(interp, args.first())?;
+                Ok(
+                    match window_marker_position(interp, window_id, WINDOW_START_SLOT) {
+                        Some(start) => Value::Integer(start as i64),
+                        None if window_marker(interp, window_id, WINDOW_START_SLOT).is_some() => {
+                            Value::Nil
+                        }
+                        None => Value::Integer(window_start(interp, args.first())? as i64),
+                    },
+                )
             }
             "window-end" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -5374,7 +5532,7 @@ define_dispatch!(
                     let start = window_start_marker(interp, window_id, buffer_id)
                         .clamp(point_min, point_max);
                     let height = (window_geometry(interp, window_id).1
-                        - window_non_body_height(interp, buffer_id, env))
+                        - window_non_body_height(interp, window_id, buffer_id, env))
                     .max(1) as isize;
                     let saved = interp.current_buffer_id();
                     interp.set_current_buffer_id(buffer_id)?;
@@ -5407,9 +5565,10 @@ define_dispatch!(
                             .unwrap_or(1)
                     }
                 } else {
-                    // Fmarker_position of w->pointm.
-                    match window_marker_position(interp, window_id, WINDOW_POINT_SLOT) {
-                        Some(point) => point,
+                    // window.c:window_point: w->pointm's charpos, kept by a
+                    // marker set to point nowhere.
+                    match window_marker(interp, window_id, WINDOW_POINT_SLOT) {
+                        Some(marker) => marker.last_position(),
                         None => return Ok(Value::Nil),
                     }
                 };
@@ -5638,7 +5797,7 @@ define_dispatch!(
                 // window tree already owns the queried window's exact body
                 // height.
                 let limit = (window_geometry(interp, window_id).1
-                    - window_non_body_height(interp, buffer_id, env))
+                    - window_non_body_height(interp, window_id, buffer_id, env))
                 .max(1) as usize;
                 let rows = {
                     let saved_buffer = interp.current_buffer_id();
@@ -5727,13 +5886,20 @@ define_dispatch!(
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
                 Ok(Value::Integer(
                     window_geometry(interp, window_id).1
-                        - window_non_body_height(interp, buffer_id, env),
+                        - window_non_body_height(interp, window_id, buffer_id, env),
                 ))
             }
             "window-text-width" => {
                 need_arg_range(name, args, 0, 2)?;
                 let window_id = live_window_id_or_selected(interp, args.first())?;
-                Ok(Value::Integer(window_text_width_columns(interp, window_id)))
+                // window_box_width (w, TEXT_AREA): the margins and fringes
+                // come off, a text frame's vertical border does not (the
+                // display iterator takes that column off its own width).
+                let (total, _, _, _) = window_geometry(interp, window_id);
+                let (left, right) = interp.window_margins(window_id);
+                Ok(Value::Integer(
+                    (total - left.unwrap_or(0) - right.unwrap_or(0)).max(0),
+                ))
             }
             "window-text-height" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -5741,7 +5907,7 @@ define_dispatch!(
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
                 Ok(Value::Integer(
                     window_geometry(interp, window_id).1
-                        - window_non_body_height(interp, buffer_id, env),
+                        - window_non_body_height(interp, window_id, buffer_id, env),
                 ))
             }
             "window-line-height" => {
@@ -6614,6 +6780,10 @@ define_dispatch!(
             }
             "select-window" => {
                 need_arg_range(name, args, 1, 2)?;
+                // select_window's CHECK_LIVE_WINDOW: nil is no window here.
+                if args[0].is_nil() {
+                    return Err(wrong_type_argument("window-live-p", args[0]));
+                }
                 let norecord = args.get(1).is_some_and(Value::is_truthy);
                 let selected = select_window_value(interp, &args[0], norecord)?;
                 if !norecord {
@@ -6710,83 +6880,19 @@ define_dispatch!(
             }
             "run-window-configuration-change-hook" => {
                 need_arg_range(name, args, 0, 1)?;
-                if let Some(frame) = args.first()
-                    && !frame.is_nil()
-                    && !matches!(frame.kind(), Kind::Frame(id) if interp.frame_is_live(id))
-                {
-                    return Err(wrong_type_argument("frame-live-p", *frame));
-                }
-                let original_window = interp.selected_window_id();
-                let original_buffer = interp.current_buffer_id();
-                let mut result = Ok(());
-                for window_id in live_ordinary_window_ids(interp) {
-                    let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(window_id))
-                    else {
-                        continue;
-                    };
-                    // GNU Elisp's `add-hook' LOCAL registration lives in
-                    // the buffer-local value cell.
-                    let local_hooks = interp
-                        .buffer_local_value_key(
-                            buffer_id,
-                            cached_symbol!("window-configuration-change-hook"),
-                        )
-                        .map(|value| value.to_vec().unwrap_or_else(|_| vec![value]));
-                    let Some(local_hooks) = local_hooks else {
-                        continue;
-                    };
-                    interp.set_selected_window_id(window_id);
-                    if let Err(error) = interp.set_current_buffer_id(buffer_id) {
-                        result = Err(error);
-                        break;
-                    }
-                    for hook in local_hooks
-                        .into_iter()
-                        .filter(|hook| !matches!(hook.kind(), Kind::T))
-                    {
-                        if let Err(error) = call_function_value(interp, &hook, &[], env) {
-                            result = Err(error);
-                            break;
-                        }
-                    }
-                    if result.is_err() {
-                        break;
-                    }
-                }
-
-                interp.set_selected_window_id(original_window);
-                if result.is_ok()
-                    && let Some(selected_buffer) =
-                        window_buffer_id(interp, &interp.record_value(original_window))
-                {
-                    result = interp.set_current_buffer_id(selected_buffer);
-                }
-                if result.is_ok() {
-                    let default_hooks = interp
-                        .default_value_key(cached_symbol!("window-configuration-change-hook"))
-                        .map(|value| value.to_vec().unwrap_or_else(|_| vec![value]))
-                        .unwrap_or_default();
-                    for hook in default_hooks
-                        .into_iter()
-                        .filter(|hook| !matches!(hook.kind(), Kind::T))
-                    {
-                        if let Err(error) = call_function_value(interp, &hook, &[], env) {
-                            result = Err(error);
-                            break;
-                        }
-                    }
-                }
-                interp.set_selected_window_id(original_window);
-                if interp.has_buffer_id(original_buffer) {
-                    let restore = interp.set_current_buffer_id(original_buffer);
-                    if result.is_ok() {
-                        result = restore;
-                    }
-                }
-                result.map(|()| Value::Nil)
+                let Kind::Frame(frame) = decode_live_frame(interp, args.first(), true)?.kind()
+                else {
+                    unreachable!("decode_live_frame answers a frame")
+                };
+                run_window_configuration_change_hook(interp, frame, env)?;
+                Ok(Value::Nil)
             }
             "resize-mini-window-internal" => {
                 need_args(name, args, 1)?;
+                // CHECK_LIVE_WINDOW: nil is no window here.
+                if args[0].is_nil() {
+                    return Err(wrong_type_argument("window-live-p", args[0]));
+                }
                 let window_id = live_window_id_or_selected(interp, Some(&args[0]))?;
                 let frame = interp
                     .window_frame_id(window_id)
@@ -6897,7 +7003,7 @@ define_dispatch!(
                 }
                 // window.c Fset_window_buffer: unshow_buffer, then
                 // set_window_buffer.
-                interp.unshow_window_buffer(window_id);
+                interp.unshow_window_buffer(window_id)?;
                 interp.show_buffer_in_window(window_id, buffer_id, keep_margins && !changes_buffer);
                 if !keep_margins {
                     // GNU resets margins from the displayed buffer by
@@ -6973,8 +7079,19 @@ define_dispatch!(
                     return Ok(windows);
                 }
                 let windows = windows.to_vec()?;
+                // window.c:next_window walks Vwindow_list from WINDOW, the
+                // minibuffer window last of its frame's: a WINDOW that is
+                // no candidate itself (an inactive minibuffer window) is
+                // followed by the first candidate and preceded by the last.
+                let listed = windows
+                    .first()
+                    .is_some_and(|first| first.word() == current.word());
                 Ok(if name == "next-window" {
-                    windows.get(1).or(windows.first())
+                    if listed {
+                        windows.get(1).or(windows.first())
+                    } else {
+                        windows.first()
+                    }
                 } else {
                     windows.last()
                 }
@@ -7460,9 +7577,29 @@ define_dispatch!(
             }
             "set-window-start" => {
                 need_arg_range(name, args, 2, 3)?;
-                live_window_id_or_selected(interp, args.first().filter(|w| !w.is_nil()))?;
-                let start = position_from_value(interp, &args[1])?;
+                let window_id =
+                    live_window_id_or_selected(interp, args.first().filter(|w| !w.is_nil()))?;
                 let noforce = args.get(2).is_some_and(Value::is_truthy);
+                // set_marker_restricted (w->start, pos, w->contents): nil, or
+                // a marker that points nowhere, leaves the start pointing
+                // nowhere; the flags are set as for any start.
+                let nowhere = match args[1].kind() {
+                    Kind::Nil => true,
+                    Kind::Marker(marker) => marker.buffer().is_none(),
+                    _ => false,
+                };
+                if nowhere {
+                    if let Some(marker) = window_marker(interp, window_id, WINDOW_START_SLOT) {
+                        marker.detach();
+                    }
+                    set_window_flag(interp, window_id, WINDOW_START_AT_LINE_BEG_SLOT, false);
+                    if !noforce {
+                        set_window_flag(interp, window_id, WINDOW_FORCE_START_SLOT, true);
+                    }
+                    interp.wset_redisplay(window_id);
+                    return Ok(args[1]);
+                }
+                let start = position_from_value(interp, &args[1])?;
                 set_window_start_value(interp, &args[0], start, noforce)?;
                 Ok(args[1])
             }
@@ -7470,26 +7607,50 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let window_id =
                     live_window_id_or_selected(interp, args.first().filter(|w| !w.is_nil()))?;
-                let pos = position_from_value(interp, &args[1])?;
                 let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
                     .unwrap_or_else(|| interp.current_buffer_id());
-                // window.c Fset_window_point: the selected window's point is
-                // its buffer's point (Fgoto_char there); another window's is
-                // its own marker, clamped to the accessible region.
+                // window.c Fset_window_point: the selected window moves its
+                // buffer's point (Fgoto_char), in that buffer made current
+                // for it after CHECK_FIXNUM_COERCE_MARKER when it is not;
+                // any other window's point marker is set_marker_restricted,
+                // nil or a marker that points nowhere leaving it pointing
+                // nowhere.
                 if window_id == interp.selected_window_id() {
                     if buffer_id == interp.current_buffer_id() {
-                        interp.buffer.borrow_mut().goto_char(pos);
-                    } else if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-                        buffer.goto_char(pos);
+                        super::buffer_edit::direct_goto_char(interp, &args[1..2], env)?;
+                    } else {
+                        // CHECK_FIXNUM_COERCE_MARKER: POS becomes the
+                        // fixnum fix_position makes it, the value returned.
+                        let pos = Value::Integer(crate::lisp::primitives::buffers::fix_position(
+                            interp, &args[1],
+                        )?);
+                        let saved = interp.current_buffer_id();
+                        interp.set_current_buffer_id(buffer_id)?;
+                        let moved = super::buffer_edit::direct_goto_char(interp, &[pos], env);
+                        interp.set_current_buffer_id(saved)?;
+                        moved?;
+                        return Ok(pos);
                     }
                 } else {
-                    set_window_marker_restricted(
-                        interp,
-                        window_id,
-                        WINDOW_POINT_SLOT,
-                        buffer_id,
-                        pos,
-                    );
+                    let nowhere = match args[1].kind() {
+                        Kind::Nil => true,
+                        Kind::Marker(marker) => marker.buffer().is_none(),
+                        _ => false,
+                    };
+                    if nowhere {
+                        if let Some(marker) = window_marker(interp, window_id, WINDOW_POINT_SLOT) {
+                            marker.detach();
+                        }
+                    } else {
+                        let pos = position_from_value(interp, &args[1])?;
+                        set_window_marker_restricted(
+                            interp,
+                            window_id,
+                            WINDOW_POINT_SLOT,
+                            buffer_id,
+                            pos,
+                        );
+                    }
                     interp.wset_redisplay(window_id);
                 }
                 Ok(args[1])

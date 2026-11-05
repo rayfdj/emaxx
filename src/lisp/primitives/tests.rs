@@ -23760,7 +23760,7 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
     let mut env = crate::lisp::types::Env::new();
     let (buffer_id, _) = interp.create_buffer(" *native-process-audit*");
     interp
-        .switch_to_buffer_id(buffer_id)
+        .switch_to_buffer_id_preserving_window_history(buffer_id)
         .expect("switch to process audit buffer");
     interp.insert_current_buffer("head");
     let buffer = interp

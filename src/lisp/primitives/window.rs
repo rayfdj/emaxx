@@ -470,8 +470,7 @@ pub(crate) fn window_slot_buffer_id(slot: Option<&Value>) -> Option<u64> {
 }
 
 /// The live buffer the window VALUE shows (BUFFERP (w->contents)), read
-/// from the record itself; the selected window with no buffer of its own
-/// shows the current one.
+/// from the record itself.
 pub(crate) fn window_buffer_id(interp: &Interpreter, value: &Value) -> Option<u64> {
     let window = window_record(value)?;
     match window.slots.get(WINDOW_BUFFER_SLOT).map(|slot| slot.kind()) {
@@ -481,7 +480,7 @@ pub(crate) fn window_buffer_id(interp: &Interpreter, value: &Value) -> Option<u6
             let id = id.max(0) as u64;
             interp.has_buffer_id(id).then_some(id)
         }
-        _ if window.id == interp.selected_window_id() => Some(interp.current_buffer_id()),
+        // w->contents nil: a deleted window, even the selected one.
         _ => None,
     }
 }

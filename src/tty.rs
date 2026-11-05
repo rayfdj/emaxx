@@ -7867,7 +7867,9 @@ mod tests {
         let mut interp = Interpreter::new();
         let original = interp.current_buffer_id();
         let (displayed, _) = interp.create_buffer("*command-cycle-displayed*");
-        interp.set_selected_window_buffer_id(displayed);
+        interp
+            .set_selected_window_buffer_id(displayed)
+            .expect("show the displayed buffer");
         assert_eq!(
             interp.current_buffer_id(),
             original,

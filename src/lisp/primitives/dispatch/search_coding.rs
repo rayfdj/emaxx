@@ -1690,8 +1690,10 @@ fn insert_converted_text(
     // unibyte destination.
     let props = converted.props.clone();
     let layout = decode.and_then(|decode| decode.layout.as_ref());
+    // decode_coding_object's set_buffer_internal of the destination: no
+    // window shows it for the conversion.
     let saved_buffer_id = interp.current_buffer_id();
-    interp.switch_to_buffer_id(buffer_id)?;
+    interp.set_current_buffer_id(buffer_id)?;
     let dst_pos = interp.buffer.borrow().point();
     // A decode inserted a call at a time writes each call's characters
     // into a unibyte buffer itself.
@@ -1700,7 +1702,7 @@ fn insert_converted_text(
             match unibyte_destination_form(&converted) {
                 Ok(converted) => converted,
                 Err(error) => {
-                    let _ = interp.switch_to_buffer_id(saved_buffer_id);
+                    let _ = interp.set_current_buffer_id(saved_buffer_id);
                     return Err(error);
                 }
             }
@@ -1724,6 +1726,6 @@ fn insert_converted_text(
         ),
         None => Ok(produced),
     });
-    let _ = interp.switch_to_buffer_id(saved_buffer_id);
+    let _ = interp.set_current_buffer_id(saved_buffer_id);
     Ok(Value::Integer(produced? as i64))
 }

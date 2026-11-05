@@ -2482,6 +2482,106 @@ fn window_configurations_save_and_restore_gnu_s_fields() {
 }
 
 #[test]
+fn window_points_starts_and_selections_answer_as_window_c_does() {
+    // window.c: set-window-start and set-window-point of nil (or of a
+    // marker pointing nowhere) leave a non-selected window's marker
+    // pointing nowhere, which window-start answers as nil and
+    // window_point as the charpos it kept, and which unshow_buffer
+    // refuses ("Marker does not point anywhere") when the window is
+    // deleted or shows another buffer, as set_point_from_marker does
+    // when it is selected.  The selected window's point is its buffer's,
+    // moved in that buffer when another is current (POS coerced by
+    // fix_position).  unshow_buffer leaves the buffer's point alone while
+    // the window the buffer was last selected in still shows it, and the
+    // buffer-local window-configuration-change-hook runs with its window
+    // selected as Fselect_window does.  select-window and
+    // resize-mini-window-internal take no nil, an inactive minibuffer
+    // window is followed by the first window and preceded by the last,
+    // and it has no mode line.
+    let corpus = Corpus::new();
+    for script in [
+        r##"(defvar ws-r nil)
+(defun ws-push (&rest xs) (setq ws-r (append ws-r (list xs))))
+(defmacro ws-try (form) `(condition-case e ,form (error (list 'ERR (car e) (if (windowp (cadr e)) 'W (cadr e))))))
+(let* ((sel (selected-window)) (mini (minibuffer-window)) (b (get-buffer-create "ws-b")))
+  (switch-to-buffer (get-buffer-create "ws-a"))
+  (insert "line one\nline two\nline three\n") (goto-char 5)
+  (with-current-buffer b (insert "other\ntext\n"))
+  (let* ((right (split-window sel nil 'right)) (below (split-window right nil 'below)))
+    (set-window-buffer below b)
+    (ws-push 'start (ws-try (set-window-start right nil)) (window-start right)
+             (ws-try (set-window-start right 4)) (window-start right))
+    (ws-push 'point (ws-try (set-window-point below nil)) (window-point below)
+             (ws-try (set-window-point below 3)) (window-point below)
+             (ws-try (set-window-point right 7)) (window-point right) (point)
+             (ws-try (set-window-point sel 2)) (point) (window-point sel))
+    (ws-push 'select (ws-try (select-window nil)) (ws-try (resize-mini-window-internal nil))
+             (eq (selected-window) sel))
+    (ws-push 'cycle (eq (next-window mini) (car (window-list nil 'nomini)))
+             (eq (previous-window mini) (car (last (window-list nil 'nomini))))
+             (eq (next-window mini nil) (next-window mini 'nomini)))
+    (ws-push 'sizes (window-body-height mini) (window-text-height mini) (window-total-height mini)
+             (window-margins sel)
+             (window-text-width right) (window-total-width right))
+    (set-window-margins right 2 1)
+    (ws-push 'margins (- (window-total-width right) (window-text-width right)) (window-body-width right))
+    (ws-push 'detached (ws-try (set-window-point below nil)) (ws-try (delete-other-windows sel))
+             (length (window-list)))))
+(dolist (x ws-r) (prin1 x) (terpri))
+"##,
+        r##"(defvar ws-r nil)
+(defun ws-push (&rest xs) (setq ws-r (append ws-r (list xs))))
+(defmacro ws-try (form) `(condition-case e ,form (error (list 'ERR (car e) (if (windowp (cadr e)) 'W (cadr e))))))
+(let* ((x (get-buffer-create "ws-x")) (y (get-buffer-create "ws-y")) (a (selected-window)) b c)
+  (with-current-buffer x (insert "0123456789abcdefghij\n"))
+  (with-current-buffer y (insert "yyyyyyyyyy\n"))
+  (switch-to-buffer x) (goto-char 5)
+  (setq b (split-window a nil 'below))
+  (setq c (split-window b nil 'below))
+  (set-window-buffer c y)
+  (select-window b) (goto-char 9)
+  (select-window a) (goto-char 3)
+  (select-window c)
+  (ws-push 'points (window-point a) (window-point b) (with-current-buffer x (point)))
+  (set-window-point b 15)
+  (delete-window b)
+  (ws-push 'after-delete-b (with-current-buffer x (point)) (length (window-list)))
+  (setq b (split-window a nil 'below))
+  (set-window-buffer b x)
+  (set-window-point b 12)
+  (select-window b) (select-window c)
+  (set-window-point b 17)
+  (delete-window b)
+  (ws-push 'after-delete-b2 (with-current-buffer x (point)))
+  ;; hooks see the window's point
+  (with-current-buffer x
+    (setq-local window-configuration-change-hook
+                (list (lambda () (ws-push 'hook (eq (selected-window) a) (point) (window-point a) (buffer-name))) t)))
+  (set-window-point a 7)
+  (run-window-configuration-change-hook)
+  (ws-push 'after-hook (eq (selected-window) c) (buffer-name) (with-current-buffer x (point)) (window-point a))
+  (with-current-buffer x (kill-local-variable 'window-configuration-change-hook))
+  ;; set-window-point of the selected window from another buffer
+  (select-window a)
+  (with-current-buffer y (ws-push 'swp (set-window-point nil 4) (buffer-name) (point)))
+  (ws-push 'swp-after (point) (window-point a))
+  (with-current-buffer y (ws-push 'swp-err (ws-try (set-window-point nil (make-marker))) (ws-try (set-window-point nil 1.5)) (ws-try (set-window-point nil (1+ most-positive-fixnum)))))
+  ;; a start pointing nowhere
+  (setq b (split-window a nil 'below))
+  (set-window-start b nil)
+  (ws-push 'start-nowhere (window-start b) (ws-try (delete-window b)) (window-live-p b) (length (window-list)))
+  (ws-push 'start-nowhere-2 (ws-try (set-window-buffer b y)) (window-buffer b)))
+(dolist (x ws-r) (prin1 x) (terpri))
+"##,
+    ] {
+        assert_same(
+            &corpus,
+            &["--batch", "-Q", "--eval", &format!("(progn {script})")],
+        );
+    }
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

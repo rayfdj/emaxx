@@ -5826,10 +5826,6 @@ pub struct InterpreterState {
     /// consider every window's start afresh.  The initial frame starts
     /// garbaged.
     pub(crate) windows_or_buffers_changed: bool,
-    /// buffer.h's last_window_start of each buffer: the start its last
-    /// window had when the window stopped showing it (unshow_buffer), where
-    /// set_window_buffer starts the next window to show it.  Absent is 1.
-    pub(crate) buffer_last_window_start: HashMap<u64, usize>,
     /// frame.c's live frame list. A frame owns its state and graph; deleting
     /// it removes this root, while escaped Lisp references retain the object.
     pub(crate) frame_states: Vec<crate::lisp::types::FrameRef>,
@@ -6599,7 +6595,6 @@ impl Interpreter {
             old_selected_window_id: 0,
             window_select_count: 1,
             windows_or_buffers_changed: true,
-            buffer_last_window_start: HashMap::new(),
             frame_states: vec![initial_frame],
             next_frame_id: 2,
             tty_frame_count: 1,

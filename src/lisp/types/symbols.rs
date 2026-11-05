@@ -796,6 +796,8 @@ const KEY_NAMES: &[&str] = &[
     "bottom",
     "center",
     "latin",
+    // window.c's window_wants_mode_line and its relatives.
+    "none",
     // window.c's configurations.
     "window-persistent-parameters",
     "window-restore-killed-buffer-windows",
