@@ -8131,7 +8131,7 @@ impl Interpreter {
                 &interp,
                 Some(minibuffer_buffer_id),
                 1,
-                Value::Symbol(primitives::MINIBUFFER_WINDOW_KIND.into()),
+                primitives::WindowKind::Minibuffer.value(),
                 (
                     interp.frame_width(),
                     1,

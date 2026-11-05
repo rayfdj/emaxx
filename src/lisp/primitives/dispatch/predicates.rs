@@ -504,8 +504,8 @@ define_dispatch!(
             "buffer-live-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0].kind(), Kind::Buffer(buffer) if interp.buffer_object(buffer.id).is_some_and(|live| live.ptr_eq(&buffer)))
-                    {
+                    // BUFFER_LIVE_P of the object itself.
+                    if matches!(args[0].kind(), Kind::Buffer(buffer) if buffer.is_live()) {
                         Value::T
                     } else {
                         Value::Nil

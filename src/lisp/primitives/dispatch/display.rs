@@ -1057,10 +1057,7 @@ fn frame_or_window_id(
 ) -> Result<crate::lisp::types::FrameRef, LispError> {
     if let Some(value) = value
         && let Some(window) = window_record_id_from_value(interp, value)
-        && !matches!(
-            window_slot_value(interp, window, WINDOW_KIND_SLOT).kind(),
-            Kind::Symbol(kind) if kind.is_named(DELETED_WINDOW_KIND)
-        )
+        && window_kind_of_id(interp, window) != WindowKind::Deleted
     {
         return Ok(interp
             .window_frame_id(window)
@@ -1183,15 +1180,69 @@ fn valid_window_or_selected(
         window_record(value)
     };
     window
-        .filter(|window| !window_kind_is(*window, DELETED_WINDOW_KIND))
+        .filter(|window| WindowKind::of(*window) != WindowKind::Deleted)
         .ok_or_else(|| wrong_type_argument("window-valid-p", *value))
 }
 
-/// Whether WINDOW's kind is KIND.
-fn window_kind_is(window: crate::lisp::types::RecordRef, kind: &str) -> bool {
-    matches!(
-        window.slots.get(WINDOW_KIND_SLOT).map(|slot| slot.kind()),
-        Some(Kind::Symbol(own)) if own.is_named(kind)
+/// window.c's Fwindow_parent, Fwindow_prev_sibling and
+/// Fwindow_next_sibling: the window SLOT of decode_valid_window (WINDOW)
+/// links, read from the record.
+fn window_link_value(
+    interp: &Interpreter,
+    name: &str,
+    args: &[Value],
+    slot: usize,
+) -> Result<Value, LispError> {
+    need_arg_range(name, args, 0, 1)?;
+    let record = valid_window_or_selected(interp, args.first().unwrap_or(&Value::Nil))?;
+    if let Some(linked) = record.slots.get(slot)
+        && matches!(linked.kind(), Kind::Record(_))
+    {
+        return Ok(*linked);
+    }
+    // frame.c make_frame links a frame's root and its own minibuffer
+    // window as siblings (wset_next (rw, mini_window); wset_prev (mw,
+    // root_window)); window.el's frame-windows-min-size reaches the
+    // minibuffer through that link.
+    let this = Value::Record(record);
+    Ok(match slot {
+        WINDOW_NEXT_SIBLING_SLOT if this == frame_root_window_value(interp) => {
+            interp.minibuffer_window_value()
+        }
+        WINDOW_PREV_SIBLING_SLOT if this == interp.minibuffer_window_value() => {
+            frame_root_window_value(interp)
+        }
+        _ => Value::Nil,
+    })
+}
+
+/// window.c's Fwindow_top_child and Fwindow_left_child: the first child
+/// of WINDOW (nil the selected one) when it is an internal window of
+/// ORIENTATION.
+fn window_child_value(
+    interp: &Interpreter,
+    name: &str,
+    args: &[Value],
+    orientation: WindowKind,
+) -> Result<Value, LispError> {
+    need_arg_range(name, args, 0, 1)?;
+    let window = valid_window_or_selected(interp, args.first().unwrap_or(&Value::Nil))?;
+    Ok(match window.slots.get(WINDOW_FIRST_CHILD_SLOT) {
+        Some(child)
+            if matches!(child.kind(), Kind::Record(_)) && WindowKind::of(window) == orientation =>
+        {
+            *child
+        }
+        _ => Value::Nil,
+    })
+}
+
+/// The kind of the window record WINDOW_ID names (a leaf's for none).
+fn window_kind_of_id(interp: &Interpreter, window_id: u64) -> WindowKind {
+    WindowKind::of_slot(
+        interp
+            .find_record(window_id)
+            .and_then(|record| record.slots.get(WINDOW_KIND_SLOT)),
     )
 }
 
@@ -1450,18 +1501,8 @@ fn frame_root_window_value(interp: &Interpreter) -> Value {
 }
 
 fn is_live_ordinary_window(interp: &Interpreter, id: u64) -> bool {
-    let kind = window_slot_value(interp, id, WINDOW_KIND_SLOT);
-    !matches!(
-        kind.kind(),
-        Kind::Symbol(ref kind)
-            if matches!(
-                kind.as_str(),
-                MINIBUFFER_WINDOW_KIND
-                    | INTERNAL_HORIZONTAL_WINDOW_KIND
-                    | INTERNAL_VERTICAL_WINDOW_KIND
-                    | DELETED_WINDOW_KIND
-            )
-    ) && window_buffer_id(interp, &interp.record_value(id)).is_some()
+    window_kind_of_id(interp, id) == WindowKind::Leaf
+        && window_buffer_id(interp, &interp.record_value(id)).is_some()
 }
 
 /// Leaf windows of the frame's window tree in GNU's canonical order — a
@@ -2312,15 +2353,9 @@ fn live_window_id_or_selected(
     // WINDOW_LIVE_P of the record: a leaf showing a live buffer.
     window_record(&window)
         .filter(|record| {
-            !matches!(
-                record.slots.get(WINDOW_KIND_SLOT).map(|slot| slot.kind()),
-                Some(Kind::Symbol(kind))
-                    if matches!(
-                        kind.as_str(),
-                        INTERNAL_HORIZONTAL_WINDOW_KIND
-                            | INTERNAL_VERTICAL_WINDOW_KIND
-                            | DELETED_WINDOW_KIND
-                    )
+            matches!(
+                WindowKind::of(*record),
+                WindowKind::Leaf | WindowKind::Minibuffer
             ) && window_buffer_id(interp, &window).is_some()
         })
         .map(|record| record.id)
@@ -2405,25 +2440,19 @@ fn valid_window_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError
 }
 
 fn window_is_deleted(interp: &Interpreter, id: u64) -> bool {
-    matches!(
-        window_slot_value(interp, id, WINDOW_KIND_SLOT).kind(),
-        Kind::Symbol(ref kind) if kind.is_named(DELETED_WINDOW_KIND)
-    )
+    window_kind_of_id(interp, id) == WindowKind::Deleted
 }
 
 pub(super) fn window_is_minibuffer(interp: &Interpreter, id: u64) -> bool {
-    matches!(
-        window_slot_value(interp, id, WINDOW_KIND_SLOT).kind(),
-        Kind::Symbol(ref kind) if kind.is_named(MINIBUFFER_WINDOW_KIND)
-    )
+    window_kind_of_id(interp, id) == WindowKind::Minibuffer
 }
 
 /// WINDOW_HORIZONTAL_COMBINATION_P / WINDOW_VERTICAL_COMBINATION_P: the
 /// combination's direction for an internal window, None for a leaf.
 fn window_combination(interp: &Interpreter, id: u64) -> Option<bool> {
-    match window_slot_value(interp, id, WINDOW_KIND_SLOT).kind() {
-        Kind::Symbol(ref kind) if kind.is_named(INTERNAL_HORIZONTAL_WINDOW_KIND) => Some(true),
-        Kind::Symbol(ref kind) if kind.is_named(INTERNAL_VERTICAL_WINDOW_KIND) => Some(false),
+    match window_kind_of_id(interp, id) {
+        WindowKind::InternalHorizontal => Some(true),
+        WindowKind::InternalVertical => Some(false),
         _ => None,
     }
 }
@@ -2460,11 +2489,11 @@ fn set_window_combination(
     child: Option<u64>,
 ) -> Result<(), LispError> {
     let kind = match child {
-        Some(_) if horflag => INTERNAL_HORIZONTAL_WINDOW_KIND,
-        Some(_) => INTERNAL_VERTICAL_WINDOW_KIND,
-        None => DELETED_WINDOW_KIND,
+        Some(_) if horflag => WindowKind::InternalHorizontal,
+        Some(_) => WindowKind::InternalVertical,
+        None => WindowKind::Deleted,
     };
-    set_window_slot_value(interp, id, WINDOW_KIND_SLOT, Value::Symbol(kind.into()))?;
+    set_window_slot_value(interp, id, WINDOW_KIND_SLOT, kind.value())?;
     set_window_link(interp, id, WINDOW_FIRST_CHILD_SLOT, child)
 }
 
@@ -5326,6 +5355,7 @@ define_dispatch!(
             }
             "window-start" => {
                 need_arg_range(name, args, 0, 1)?;
+                live_window_id_or_selected(interp, args.first())?;
                 Ok(Value::Integer(window_start(interp, args.first())? as i64))
             }
             "window-end" => {
@@ -5405,10 +5435,11 @@ define_dispatch!(
             }
             "set-window-hscroll" => {
                 need_args(name, args, 2)?;
-                let window_id = live_window_id_or_selected(interp, args.first())?;
+                // CHECK_FIXNUM (ncol) before decode_live_window.
                 let Kind::Integer(requested) = args[1].kind() else {
                     return Err(wrong_type_argument("fixnump", args[1]));
                 };
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 set_window_hscroll_value(interp, window_id, requested)
             }
             "scroll-left" | "scroll-right" => {
@@ -5435,11 +5466,7 @@ define_dispatch!(
             "other-window-for-scrolling" => {
                 need_args(name, args, 0)?;
                 let selected_id = live_window_id_or_selected(interp, None)?;
-                let selected_kind = window_slot_value(interp, selected_id, WINDOW_KIND_SLOT);
-                let mut candidate = if matches!(
-                    selected_kind.kind(),
-                    Kind::Symbol(ref kind) if kind.is_named(MINIBUFFER_WINDOW_KIND)
-                ) {
+                let mut candidate = if window_is_minibuffer(interp, selected_id) {
                     interp
                         .lookup_var_key(cached_symbol!("minibuffer-scroll-window"), env)
                         .filter(Value::is_truthy)
@@ -5522,8 +5549,18 @@ define_dispatch!(
             "coordinates-in-window-p" => {
                 need_args(name, args, 2)?;
                 let window_id = live_window_id_or_selected(interp, Some(&args[1]))?;
-                let x = args[0].car()?.as_float()?.trunc() as i64;
-                let y = args[0].cdr()?.as_float()?.trunc() as i64;
+                // CHECK_CONS (coordinates), CHECK_NUMBER of each.
+                let (lx, ly) = args[0]
+                    .cons_values()
+                    .ok_or_else(|| wrong_type_argument("consp", args[0]))?;
+                let coordinate = |value: Value| match value.kind() {
+                    Kind::Integer(_) | Kind::Float(_) | Kind::BigInteger(_) => {
+                        value.as_float().map(|value| value.trunc() as i64)
+                    }
+                    _ => Err(wrong_type_argument("numberp", value)),
+                };
+                let x = coordinate(lx)?;
+                let y = coordinate(ly)?;
                 let (width, height, left, top) = window_geometry(interp, window_id);
                 if x < left || x >= left + width || y < top || y >= top + height {
                     return Ok(Value::Nil);
@@ -5657,7 +5694,7 @@ define_dispatch!(
                 // size in units (a text frame's unit is one pixel).
                 need_arg_range(name, args, 0, 2)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = valid_window_id(interp, &window)?;
                 let horizontal = name == "window-total-width";
                 let pixel_rounded = args.get(1).is_some_and(|round| {
                     matches!(round.kind(), Kind::Symbol(ref round) if round.is_named("floor") || round.is_named("ceiling"))
@@ -5684,15 +5721,12 @@ define_dispatch!(
             }
             "window-body-width" => {
                 need_arg_range(name, args, 0, 2)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
-                window_buffer_id_or_selected(interp, args.first())?;
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 Ok(Value::Integer(window_text_width_columns(interp, window_id)))
             }
             "window-body-height" => {
                 need_arg_range(name, args, 0, 2)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
                 Ok(Value::Integer(
                     window_geometry(interp, window_id).1
@@ -5728,7 +5762,7 @@ define_dispatch!(
             "window-pixel-width" | "window-pixel-height" => {
                 need_arg_range(name, args, 0, 1)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = valid_window_id(interp, &window)?;
                 let geometry = window_geometry(interp, window_id);
                 Ok(Value::Integer(if name == "window-pixel-width" {
                     geometry.0
@@ -5739,7 +5773,7 @@ define_dispatch!(
             "window-pixel-left" | "window-pixel-top" | "window-left-column" | "window-top-line" => {
                 need_arg_range(name, args, 0, 1)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = valid_window_id(interp, &window)?;
                 let (_, _, left, top) = if matches!(name, "window-pixel-left" | "window-pixel-top")
                 {
                     window_geometry(interp, window_id)
@@ -5778,7 +5812,7 @@ define_dispatch!(
             "window-new-pixel" | "window-new-total" | "window-new-normal" => {
                 need_arg_range(name, args, 0, 1)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = valid_window_id(interp, &window)?;
                 let slot = match name {
                     "window-new-pixel" => WINDOW_NEW_PIXEL_SLOT,
                     "window-new-total" => WINDOW_NEW_TOTAL_SLOT,
@@ -5793,7 +5827,7 @@ define_dispatch!(
             "window-normal-size" => {
                 need_arg_range(name, args, 0, 2)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = valid_window_id(interp, &window)?;
                 let slot = if args.get(1).is_some_and(Value::is_truthy) {
                     WINDOW_NORMAL_WIDTH_SLOT
                 } else {
@@ -5807,8 +5841,14 @@ define_dispatch!(
             }
             "set-window-new-pixel" | "set-window-new-total" => {
                 need_arg_range(name, args, 2, 3)?;
-                let window_id = window_id_or_selected(interp, &args[0])?;
-                let requested = args[1].as_integer()?;
+                let window_id = valid_window_id(interp, &args[0])?;
+                // check_integer_range's CHECK_INTEGER for a pixel size,
+                // CHECK_FIXNUM for a total one.
+                let requested = match args[1].kind() {
+                    Kind::Integer(size) => size,
+                    _ if name == "set-window-new-pixel" => args[1].as_integer()?,
+                    _ => return Err(wrong_type_argument("fixnump", args[1])),
+                };
                 let slot = if name == "set-window-new-pixel" {
                     WINDOW_NEW_PIXEL_SLOT
                 } else {
@@ -5829,7 +5869,7 @@ define_dispatch!(
             }
             "set-window-new-normal" => {
                 need_arg_range(name, args, 1, 2)?;
-                let window_id = window_id_or_selected(interp, &args[0])?;
+                let window_id = valid_window_id(interp, &args[0])?;
                 set_window_slot_value(
                     interp,
                     window_id,
@@ -5841,11 +5881,6 @@ define_dispatch!(
                 // fset_redisplay: the frame's window tree changes.
                 interp.redisplay_other_windows();
                 need_arg_range(name, args, 0, 2)?;
-                if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
-                    && !matches!(frame.kind(), Kind::Frame(id) if interp.frame_is_live(id))
-                {
-                    return Err(LispError::WrongTypeArgument("framep".into(), *frame));
-                }
                 // window.c:Fwindow_resize_apply: commit the sizes staged
                 // in FRAME's window tree when they add up to its root's.
                 let horflag = args.get(1).is_some_and(Value::is_truthy);
@@ -5862,11 +5897,6 @@ define_dispatch!(
             }
             "window-resize-apply-total" => {
                 need_arg_range(name, args, 0, 2)?;
-                if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
-                    && !matches!(frame.kind(), Kind::Frame(id) if interp.frame_is_live(id))
-                {
-                    return Err(LispError::WrongTypeArgument("framep".into(), *frame));
-                }
                 let frame = super::frames::decode_live_frame(interp, args.first(), true)?;
                 frame_size::window_resize_apply_total_for_frame(
                     interp,
@@ -5882,10 +5912,7 @@ define_dispatch!(
                 // these lines whatever its buffer's format variables say.
                 // decode_live_window.
                 let window_id = live_window_id_or_selected(interp, args.first())?;
-                if interp
-                    .record_ref(window_id)
-                    .is_some_and(|window| window_kind_is(window, MINIBUFFER_WINDOW_KIND))
-                {
+                if window_is_minibuffer(interp, window_id) {
                     return Ok(Value::Integer(0));
                 }
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
@@ -5903,12 +5930,15 @@ define_dispatch!(
             }
             "window-right-divider-width"
             | "window-bottom-divider-width"
-            | "window-scroll-bar-width"
-            | "window-scroll-bar-height" => {
+            | "window-scroll-bar-width" => {
                 need_arg_range(name, args, 0, 1)?;
-                if let Some(window) = args.first() {
-                    window_id_or_selected(interp, window)?;
-                }
+                live_window_id_or_selected(interp, args.first())?;
+                Ok(Value::Integer(0))
+            }
+            // WINDOW_SCROLL_BAR_AREA_HEIGHT with WINDOW_HAS_HORIZONTAL_SCROLL_BAR
+            // false in this configuration: zero, the argument unread.
+            "window-scroll-bar-height" => {
+                need_arg_range(name, args, 0, 1)?;
                 Ok(Value::Integer(0))
             }
             "move-to-window-line" => {
@@ -6897,6 +6927,8 @@ define_dispatch!(
                 if Some(frame) != interp.window_frame_id(window).map(Value::Frame) {
                     return Err(LispError::Signal("Window is on a different frame".into()));
                 }
+                // window_list_1's decode_next_window_args: decode_live_window.
+                live_window_id_or_selected(interp, Some(&start))?;
                 let Kind::Frame(frame) = frame.kind() else {
                     unreachable!()
                 };
@@ -6960,8 +6992,7 @@ define_dispatch!(
             }
             "window-prev-buffers" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 Ok(window_slot_value(
                     interp,
                     window_id,
@@ -6970,13 +7001,12 @@ define_dispatch!(
             }
             "set-window-prev-buffers" => {
                 need_args(name, args, 2)?;
-                let window_id = window_id_or_selected(interp, &args[0])?;
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 set_window_slot_value(interp, window_id, WINDOW_PREV_BUFFERS_SLOT, args[1])
             }
             "window-next-buffers" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 Ok(window_slot_value(
                     interp,
                     window_id,
@@ -6985,7 +7015,7 @@ define_dispatch!(
             }
             "set-window-next-buffers" => {
                 need_args(name, args, 2)?;
-                let window_id = window_id_or_selected(interp, &args[0])?;
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 set_window_slot_value(interp, window_id, WINDOW_NEXT_BUFFERS_SLOT, args[1])
             }
             "window-parameter" => {
@@ -7005,7 +7035,7 @@ define_dispatch!(
                     .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = valid_window_id(interp, &window)?;
                 // window.c:Fwindow_parameters: Fcopy_alist of the window's.
                 let parameters = interp
                     .find_record(window_id)
@@ -7024,65 +7054,38 @@ define_dispatch!(
                     },
                 )
             }
-            "windowp" | "window-live-p" | "window-valid-p" => {
+            // WINDOWP, WINDOW_VALID_P and WINDOW_LIVE_P of the record, each
+            // a subr of its own.
+            "windowp" => {
                 need_args(name, args, 1)?;
-                // WINDOWP, WINDOW_VALID_P and WINDOW_LIVE_P of the record.
-                let Some(window) = window_record(&args[0]) else {
-                    return Ok(Value::Nil);
-                };
-                let valid = || !window_kind_is(window, DELETED_WINDOW_KIND);
-                let answer = match name {
-                    "windowp" => true,
-                    "window-valid-p" => valid(),
-                    _ => valid() && window_buffer_id(interp, &args[0]).is_some(),
-                };
-                Ok(if answer { Value::T } else { Value::Nil })
+                Ok(Value::from_bool(window_record(&args[0]).is_some()))
             }
-            "window-parent" | "window-prev-sibling" | "window-next-sibling" => {
-                need_arg_range(name, args, 0, 1)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
-                let slot = match name {
-                    "window-parent" => WINDOW_PARENT_SLOT,
-                    "window-prev-sibling" => WINDOW_PREV_SIBLING_SLOT,
-                    _ => WINDOW_NEXT_SIBLING_SLOT,
-                };
-                if let Some(linked) = window_link(interp, window_id, slot) {
-                    return Ok(interp.record_value(linked));
-                }
-                // frame.c make_frame links a frame's root and its own
-                // minibuffer window as siblings (wset_next (rw, mini_window);
-                // wset_prev (mw, root_window)); window.el's
-                // frame-windows-min-size reaches the minibuffer through that
-                // link.
-                let root = frame_root_window_value(interp);
-                let minibuffer = interp.minibuffer_window_value();
-                Ok(match name {
-                    "window-next-sibling" if root == interp.record_value(window_id) => minibuffer,
-                    "window-prev-sibling" if minibuffer == interp.record_value(window_id) => root,
-                    _ => Value::Nil,
-                })
+            "window-valid-p" => {
+                need_args(name, args, 1)?;
+                Ok(Value::from_bool(window_record(&args[0]).is_some_and(
+                    |window| WindowKind::of(window) != WindowKind::Deleted,
+                )))
             }
-            "window-top-child" | "window-left-child" => {
-                need_arg_range(name, args, 0, 1)?;
-                let window = valid_window_or_selected(interp, args.first().unwrap_or(&Value::Nil))?;
-                let orientation = if name == "window-top-child" {
-                    INTERNAL_VERTICAL_WINDOW_KIND
-                } else {
-                    INTERNAL_HORIZONTAL_WINDOW_KIND
-                };
-                Ok(
-                    match window
-                        .slots
-                        .get(WINDOW_FIRST_CHILD_SLOT)
-                        .map(|slot| slot.kind())
-                    {
-                        Some(Kind::Record(child)) if window_kind_is(window, orientation) => {
-                            interp.record_value(child.id)
-                        }
-                        _ => Value::Nil,
-                    },
-                )
+            "window-live-p" => {
+                need_args(name, args, 1)?;
+                Ok(Value::from_bool(
+                    window_record(&args[0])
+                        .is_some_and(|window| WindowKind::of(window) != WindowKind::Deleted)
+                        && window_buffer_id(interp, &args[0]).is_some(),
+                ))
+            }
+            "window-parent" => window_link_value(interp, name, args, WINDOW_PARENT_SLOT),
+            "window-prev-sibling" => {
+                window_link_value(interp, name, args, WINDOW_PREV_SIBLING_SLOT)
+            }
+            "window-next-sibling" => {
+                window_link_value(interp, name, args, WINDOW_NEXT_SIBLING_SLOT)
+            }
+            "window-top-child" => {
+                window_child_value(interp, name, args, WindowKind::InternalVertical)
+            }
+            "window-left-child" => {
+                window_child_value(interp, name, args, WindowKind::InternalHorizontal)
             }
             "window-combination-limit" | "set-window-combination-limit" => {
                 need_args(
@@ -7094,16 +7097,12 @@ define_dispatch!(
                         2
                     },
                 )?;
-                let window_id = window_id_or_selected(interp, &args[0])?;
-                let kind = window_slot_value(interp, window_id, WINDOW_KIND_SLOT);
-                if !matches!(
-                    kind.kind(),
-                    Kind::Symbol(ref kind)
-                        if matches!(
-                            kind.as_str(),
-                            INTERNAL_HORIZONTAL_WINDOW_KIND | INTERNAL_VERTICAL_WINDOW_KIND
-                        )
-                ) {
+                // CHECK_VALID_WINDOW: nil is no window here.
+                let window = window_record(&args[0])
+                    .filter(|window| WindowKind::of(*window) != WindowKind::Deleted)
+                    .ok_or_else(|| wrong_type_argument("window-valid-p", args[0]))?;
+                let window_id = window.id;
+                if !WindowKind::of(window).is_internal() {
                     return Err(LispError::Signal(
                         "Combination limit is meaningful for internal windows only".into(),
                     ));
@@ -7125,22 +7124,21 @@ define_dispatch!(
                     .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
-                let Some(window_id) = window_record_id_from_value(interp, &window) else {
-                    return Err(LispError::WrongTypeArgument("windowp".into(), window));
-                };
-                let is_minibuffer = interp
-                .find_record(window_id)
-                .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
-                .is_some_and(
-                    |slot| matches!(slot.kind(), Kind::Symbol(kind) if kind.is_named(MINIBUFFER_WINDOW_KIND)),
-                );
-                Ok(if is_minibuffer { Value::T } else { Value::Nil })
+                let window_id = valid_window_id(interp, &window)?;
+                Ok(Value::from_bool(window_is_minibuffer(interp, window_id)))
             }
             "window-at" => {
                 need_arg_range(name, args, 2, 3)?;
-                let x = args[0].as_float()?.floor() as i64;
-                let y = args[1].as_float()?.floor() as i64;
+                // decode_live_frame, then CHECK_NUMBER of each coordinate.
                 let frame = super::frames::decode_live_frame(interp, args.get(2), true)?;
+                let coordinate = |value: Value| match value.kind() {
+                    Kind::Integer(_) | Kind::Float(_) | Kind::BigInteger(_) => {
+                        value.as_float().map(|value| value.floor() as i64)
+                    }
+                    _ => Err(wrong_type_argument("numberp", value)),
+                };
+                let x = coordinate(args[0])?;
+                let y = coordinate(args[1])?;
                 Ok(window_at_frame_coordinates(interp, frame, x, y)
                     .map_or(Value::Nil, |id| interp.record_value(id)))
             }
@@ -7174,9 +7172,8 @@ define_dispatch!(
                 } else {
                     given
                 };
-                let buffer_id = window_buffer_id(interp, &window).ok_or_else(|| {
-                    LispError::TypeError("window-live-p".into(), window.type_name())
-                })?;
+                let buffer_id = window_buffer_id(interp, &window)
+                    .ok_or_else(|| wrong_type_argument("window-live-p", window))?;
                 let start = Value::Integer(window_start(interp, Some(&window))? as i64);
                 let original_buffer = interp.current_buffer_id();
                 interp.set_current_buffer_id(buffer_id)?;
@@ -7188,13 +7185,12 @@ define_dispatch!(
             }
             "window-dedicated-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 Ok(window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT))
             }
             "set-window-dedicated-p" => {
                 need_args(name, args, 2)?;
-                let window_id = window_id_or_selected(interp, &args[0])?;
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 set_window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT, args[1])
             }
             "posn-at-x-y" => {
@@ -7203,6 +7199,9 @@ define_dispatch!(
             }
             "posn-at-point" => {
                 need_arg_range(name, args, 0, 2)?;
+                // keyboard.c:Fposn_at_point: Fpos_visible_in_window_p's
+                // decode_live_window (window) first.
+                live_window_id_or_selected(interp, args.get(1))?;
                 // Like GNU --batch, Emaxx has no realized glyph matrix from
                 // which to derive a screen position.  An interactive
                 // session publishes live window geometry, from which the
@@ -7283,8 +7282,7 @@ define_dispatch!(
             }
             "window-display-table" | "window-cursor-type" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window = args.first().cloned().unwrap_or(Value::Nil);
-                let window_id = window_id_or_selected(interp, &window)?;
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 let slot = if name == "window-display-table" {
                     WINDOW_DISPLAY_TABLE_SLOT
                 } else {
@@ -7302,7 +7300,7 @@ define_dispatch!(
             }
             "set-window-display-table" | "set-window-cursor-type" => {
                 need_args(name, args, 2)?;
-                let window_id = window_id_or_selected(interp, &args[0])?;
+                let window_id = live_window_id_or_selected(interp, args.first())?;
                 if name == "set-window-cursor-type" && !valid_window_cursor_type(&args[1]) {
                     return Err(LispError::Signal("Invalid cursor type".into()));
                 }
@@ -7315,7 +7313,7 @@ define_dispatch!(
             }
             "window-fringes" => {
                 need_arg_range(name, args, 0, 1)?;
-                window_buffer_id_or_selected(interp, args.first())?;
+                live_window_id_or_selected(interp, args.first())?;
                 Ok(Value::list([
                     Value::Integer(0),
                     Value::Integer(0),
@@ -7325,13 +7323,13 @@ define_dispatch!(
             }
             "set-window-fringes" => {
                 need_arg_range(name, args, 2, 5)?;
-                window_id_or_selected(interp, &args[0])?;
+                live_window_id_or_selected(interp, args.first())?;
                 // GNU's TTY implementation leaves fringe settings unchanged.
                 Ok(Value::Nil)
             }
             "window-scroll-bars" => {
                 need_arg_range(name, args, 0, 1)?;
-                window_buffer_id_or_selected(interp, args.first())?;
+                live_window_id_or_selected(interp, args.first())?;
                 Ok(Value::list([
                     Value::Nil,
                     Value::Integer(0),
@@ -7344,7 +7342,7 @@ define_dispatch!(
             }
             "set-window-scroll-bars" => {
                 need_arg_range(name, args, 1, 6)?;
-                window_id_or_selected(interp, &args[0])?;
+                live_window_id_or_selected(interp, args.first())?;
                 // GNU's TTY implementation leaves scroll-bar settings unchanged.
                 Ok(Value::Nil)
             }
@@ -7391,13 +7389,7 @@ define_dispatch!(
                 let Some(window_id) = window_record_id_from_value(interp, &args[0]) else {
                     return Err(wrong_type_argument("windowp", args[0]));
                 };
-                let is_minibuffer = interp
-                .find_record(window_id)
-                .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
-                .is_some_and(
-                    |slot| matches!(slot.kind(), Kind::Symbol(kind) if kind.is_named(MINIBUFFER_WINDOW_KIND)),
-                );
-                if !is_minibuffer {
+                if !window_is_minibuffer(interp, window_id) {
                     return Err(LispError::Signal(
                         "Window is not a minibuffer window".into(),
                     ));
@@ -7414,12 +7406,8 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let selected = interp.selected_window_value();
-                let selected_is_mini = window_record_id_from_value(interp, &selected)
-                    .and_then(|id| interp.find_record(id))
-                    .and_then(|record| record.slots.get(WINDOW_KIND_SLOT).copied())
-                    .is_some_and(|slot| {
-                        matches!(slot.kind(), Kind::Symbol(kind) if kind.is_named(MINIBUFFER_WINDOW_KIND))
-                    });
+                let selected_is_mini = window_record(&selected)
+                    .is_some_and(|window| WindowKind::of(window) == WindowKind::Minibuffer);
                 let remembered = interp
                     .minibuffer_selected_window_id()
                     .map(|id| interp.record_value(id));
@@ -7482,7 +7470,15 @@ define_dispatch!(
             }
             "set-window-vscroll" => {
                 need_arg_range(name, args, 2, 4)?;
-                let _ = args[1].as_integer()?;
+                // decode_live_window, CHECK_NUMBER (vscroll), then
+                // Fwindow_vscroll: no vertical scrolling on a text frame.
+                live_window_id_or_selected(interp, args.first())?;
+                if !matches!(
+                    args[1].kind(),
+                    Kind::Integer(_) | Kind::Float(_) | Kind::BigInteger(_)
+                ) {
+                    return Err(wrong_type_argument("numberp", args[1]));
+                }
                 Ok(Value::Integer(0))
             }
         }

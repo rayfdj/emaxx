@@ -604,7 +604,7 @@ impl Interpreter {
         let mini = make_window(
             mini_buffer_id,
             1,
-            Value::symbol(p::MINIBUFFER_WINDOW_KIND),
+            p::WindowKind::Minibuffer.value(),
             (width, 1, 0, height - 1),
         );
         // Each through set_window_buffer, which stamps the buffer's display.
@@ -692,7 +692,7 @@ impl Interpreter {
                 continue;
             };
             record.slots[p::WINDOW_BUFFER_SLOT] = Value::Nil;
-            record.slots[p::WINDOW_KIND_SLOT] = Value::symbol(p::DELETED_WINDOW_KIND);
+            record.slots[p::WINDOW_KIND_SLOT] = p::WindowKind::Deleted.value();
             for slot in [
                 p::WINDOW_PARENT_SLOT,
                 p::WINDOW_PREV_SIBLING_SLOT,

@@ -2175,20 +2175,14 @@ fn live_motion_window(interp: &Interpreter, value: &Value) -> Result<Value, Lisp
     let Some(window_id) = window_record_id_from_value(interp, &window) else {
         return Err(wrong_type_argument("window-live-p", window));
     };
-    let kind = interp
-        .find_record(window_id)
-        .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
-        .cloned()
-        .unwrap_or(Value::Nil);
-    if matches!(
-        kind.kind(),
-        Kind::Symbol(ref kind)
-            if matches!(
-                kind.as_str(),
-                INTERNAL_HORIZONTAL_WINDOW_KIND
-                    | INTERNAL_VERTICAL_WINDOW_KIND
-                    | DELETED_WINDOW_KIND
-            )
+    let kind = crate::lisp::primitives::WindowKind::of_slot(
+        interp
+            .find_record(window_id)
+            .and_then(|record| record.slots.get(WINDOW_KIND_SLOT)),
+    );
+    if !matches!(
+        kind,
+        crate::lisp::primitives::WindowKind::Leaf | crate::lisp::primitives::WindowKind::Minibuffer
     ) || window_buffer_id(interp, &window).is_none()
     {
         return Err(wrong_type_argument("window-live-p", window));

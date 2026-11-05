@@ -1020,10 +1020,14 @@ mod install {
                     }
                     let current = self.current_buffer_id;
                     let hidden = self.prin1_to_string_buffer;
-                    self.inactive_buffers.retain(|(id, _)| {
-                        *id == current
+                    self.inactive_buffers.retain(|(id, object)| {
+                        let kept = *id == current
                             || Some(*id) == hidden
-                            || list.iter().any(|(listed, _)| listed == id)
+                            || list.iter().any(|(listed, _)| listed == id);
+                        if !kept {
+                            object.live.set(false);
+                        }
+                        kept
                     });
                     self.buffer_list = list;
                 }
@@ -1366,9 +1370,11 @@ mod install {
                 }
                 RootSlot::Prin1ToStringBuffer => {
                     // The buffer alist's reinstall keeps only listed
-                    // buffers; this one is live off the list.
+                    // buffers, and marks the rest killed; this one is live
+                    // off the list.
                     self.prin1_to_string_buffer = match value.kind() {
                         Kind::Buffer(buffer) => {
+                            buffer.live.set(true);
                             if buffer.id != self.current_buffer_id
                                 && !self.inactive_buffers.iter().any(|(id, _)| *id == buffer.id)
                             {

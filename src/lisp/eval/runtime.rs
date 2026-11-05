@@ -715,11 +715,10 @@ impl Interpreter {
     /// Make ID current and show it in the selected window.
     fn show_buffer_in_selected_window(&mut self, id: u64) -> Result<(), LispError> {
         let current_id = self.current_buffer_id;
-        let selected_window_already_displays_target = self
-            .find_record(self.selected_window_id)
-            .and_then(|window| window.slots.first())
-            .and_then(|value| value.integer_value())
-            == Some(id as i64);
+        let selected_window_already_displays_target = primitives::window_slot_buffer_id(
+            self.find_record(self.selected_window_id)
+                .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT)),
+        ) == Some(id);
         if id == current_id && selected_window_already_displays_target {
             return Ok(());
         }
@@ -836,11 +835,11 @@ impl Interpreter {
     }
 
     pub fn selected_window_buffer_id(&self) -> u64 {
-        self.find_record(self.selected_window_id)
-            .and_then(|record| record.slots.first())
-            .and_then(|value| value.integer_value())
-            .map(|value| value.max(0) as u64)
-            .unwrap_or(self.current_buffer_id)
+        primitives::window_slot_buffer_id(
+            self.find_record(self.selected_window_id)
+                .and_then(|record| record.slots.get(primitives::WINDOW_BUFFER_SLOT)),
+        )
+        .unwrap_or(self.current_buffer_id)
     }
 
     pub fn buffer_bounds_by_id(&self, id: u64) -> Option<(usize, usize)> {
@@ -911,10 +910,10 @@ impl Interpreter {
     }
 
     fn window_record_buffer_id(&self, window_id: u64) -> Option<u64> {
-        self.find_record(window_id)
-            .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT))
-            .and_then(|value| value.integer_value())
-            .map(|id| id.max(0) as u64)
+        primitives::window_slot_buffer_id(
+            self.find_record(window_id)
+                .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT)),
+        )
     }
 
     /// window.c unshow_buffer: WINDOW_ID stops showing its buffer, which
@@ -966,13 +965,15 @@ impl Interpreter {
             .copied()
             .unwrap_or(1)
             .clamp(point_min, point_max);
+        let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
         if let Some(window) = self.find_record_mut(window_id) {
             if window.slots.len() <= primitives::WINDOW_START_AT_LINE_BEG_SLOT {
                 window
                     .slots
                     .resize(primitives::WINDOW_START_AT_LINE_BEG_SLOT + 1, Value::Nil);
             }
-            window.slots[primitives::WINDOW_BUFFER_SLOT] = Value::Integer(buffer_id as i64);
+            // wset_buffer: w->contents is the buffer object.
+            window.slots[primitives::WINDOW_BUFFER_SLOT] = buffer;
             window.slots[primitives::WINDOW_END_POS_SLOT] = Value::Integer(0);
             if !keep {
                 window.slots[primitives::WINDOW_HSCROLL_SLOT] = Value::Integer(0);
@@ -1254,12 +1255,17 @@ impl Interpreter {
     /// from its buffer (its own is stale), the points of insertion type
     /// `window-point-insertion-type' in that buffer.
     fn save_window_markers(&self, slots: &mut [Value], selected: bool) {
-        let buffer = slots
+        let buffer = match slots
             .get(primitives::WINDOW_BUFFER_SLOT)
-            .and_then(|value| value.integer_value())
-            .map(|id| id.max(0) as u64)
-            .filter(|id| self.has_buffer_id(*id))
-            .and_then(|id| self.buffer_object(id));
+            .map(|value| value.kind())
+        {
+            Some(Kind::Buffer(buffer)) => buffer.is_live().then_some(buffer),
+            Some(Kind::Integer(id)) => {
+                let id = id.max(0) as u64;
+                self.buffer_object(id)
+            }
+            _ => None,
+        };
         let insertion_type =
             buffer.is_some_and(|buffer| primitives::window_point_insertion_type(self, buffer.id));
         for slot in primitives::WINDOW_MARKER_SLOTS {
@@ -1321,8 +1327,12 @@ impl Interpreter {
         value: &Value,
         dont_set_miniwindow: bool,
     ) -> Result<bool, LispError> {
+        // CHECK_WINDOW_CONFIGURATION (configuration).
         let Some(snapshot) = self.window_configuration_snapshot_from_value(value) else {
-            return Ok(false);
+            return Err(LispError::WrongTypeArgument(
+                "window-configuration-p".into(),
+                *value,
+            ));
         };
         if !self.frame_is_live(snapshot.frame_id) {
             return Ok(false);
@@ -1437,7 +1447,7 @@ impl Interpreter {
         let snapshot = |value: &Value| {
             self.window_configuration_snapshot_from_value(value)
                 .ok_or_else(|| {
-                    LispError::TypeError("window-configuration-p".into(), value.type_name())
+                    LispError::WrongTypeArgument("window-configuration-p".into(), *value)
                 })
         };
         let left = snapshot(left)?;
@@ -1502,10 +1512,8 @@ impl Interpreter {
         // when the configuration was made (the snapshot holds every window
         // record of the frame, the deleted ones too).
         let saved_in_tree = |slots: &[Value]| {
-            !matches!(
-                slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-                Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::DELETED_WINDOW_KIND)
-            )
+            primitives::WindowKind::of_slot(slots.get(primitives::WINDOW_KIND_SLOT))
+                != primitives::WindowKind::Deleted
         };
         // A window that gets another buffer records its old one.
         for (window, slots) in saved_windows
@@ -1597,7 +1605,7 @@ impl Interpreter {
                     .resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
                 record.slots[primitives::WINDOW_BUFFER_SLOT] = Value::Nil;
                 record.slots[primitives::WINDOW_KIND_SLOT] =
-                    Value::Symbol(primitives::DELETED_WINDOW_KIND.into());
+                    primitives::WindowKind::Deleted.value();
                 for slot in [
                     primitives::WINDOW_PARENT_SLOT,
                     primitives::WINDOW_PREV_SIBLING_SLOT,
@@ -1621,10 +1629,8 @@ impl Interpreter {
             .iter()
             .filter(|(_, slots)| saved_in_tree(slots))
         {
-            let mini = matches!(
-                slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-                Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::MINIBUFFER_WINDOW_KIND)
-            );
+            let mini = primitives::WindowKind::of_slot(slots.get(primitives::WINDOW_KIND_SLOT))
+                == primitives::WindowKind::Minibuffer;
             let saved = saved_buffer(slots);
             let saved_start = slots.get(primitives::WINDOW_START_SLOT).copied();
             let saved_point = slots.get(primitives::WINDOW_POINT_SLOT).copied();
@@ -1652,11 +1658,8 @@ impl Interpreter {
                 // The saved buffer is installed, the window's markers
                 // set_marker_restricted to the saved ones (a saved marker
                 // that points nowhere unchains the window's).
-                self.set_window_slot(
-                    *window,
-                    primitives::WINDOW_BUFFER_SLOT,
-                    Value::Integer(buffer as i64),
-                );
+                let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
+                self.set_window_slot(*window, primitives::WINDOW_BUFFER_SLOT, object);
                 for slot in primitives::WINDOW_MARKER_SLOTS {
                     match primitives::slot_marker_position(slots.get(slot)) {
                         Some(position) => primitives::set_window_marker_restricted(
@@ -1693,11 +1696,8 @@ impl Interpreter {
                 // point nowhere, go to the start of the accessible portion
                 // and to the buffer's point.
                 let point = self.buffer_point_by_id(buffer_id);
-                self.set_window_slot(
-                    *window,
-                    primitives::WINDOW_BUFFER_SLOT,
-                    Value::Integer(buffer_id as i64),
-                );
+                let object = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
+                self.set_window_slot(*window, primitives::WINDOW_BUFFER_SLOT, object);
                 for (slot, position) in [
                     (primitives::WINDOW_START_SLOT, 0),
                     (primitives::WINDOW_POINT_SLOT, point),
@@ -1722,11 +1722,8 @@ impl Interpreter {
                 // A leaf window with no live buffer gets one, its markers
                 // at the start of the accessible portion.
                 let buffer = self.other_buffer_safely(self.current_buffer_id())?;
-                self.set_window_slot(
-                    *window,
-                    primitives::WINDOW_BUFFER_SLOT,
-                    Value::Integer(buffer as i64),
-                );
+                let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
+                self.set_window_slot(*window, primitives::WINDOW_BUFFER_SLOT, object);
                 for slot in primitives::WINDOW_MARKER_SLOTS {
                     primitives::set_window_marker_restricted(self, *window, slot, buffer, 0);
                 }
@@ -1936,14 +1933,12 @@ impl Interpreter {
     fn window_is_live_record(&self, id: u64) -> bool {
         self.find_record(id).is_some_and(|record| {
             record.kind == RecordKind::Window
-                && record
-                    .slots
-                    .get(primitives::WINDOW_BUFFER_SLOT)
-                    .is_some_and(|value| value.integer_value().is_some())
-                && !matches!(
-                    record.slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-                    Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::DELETED_WINDOW_KIND)
+                && primitives::window_slot_buffer_id(
+                    record.slots.get(primitives::WINDOW_BUFFER_SLOT),
                 )
+                .is_some()
+                && primitives::WindowKind::of_slot(record.slots.get(primitives::WINDOW_KIND_SLOT))
+                    != primitives::WindowKind::Deleted
         })
     }
 
@@ -1998,6 +1993,10 @@ impl Interpreter {
 
     /// Kill a buffer by ID, switching away if it is current.
     pub fn kill_buffer_id(&mut self, id: u64) {
+        // bset_name (b, Qnil): the object answers BUFFER_LIVE_P no more.
+        if let Some(object) = self.buffer_object(id) {
+            object.live.set(false);
+        }
         self.frames_discard_buffer(id);
         self.delete_buffer_overlays(id);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
@@ -2078,23 +2077,22 @@ impl Interpreter {
         // window leaves non-selected windows looking live while their buffer
         // slot names a dead ID.
         let replacement_id = self.current_buffer_id;
+        let replacement = self.buffer_value(replacement_id).unwrap_or(Value::Nil);
         let replacement_start = self
             .buffer_bounds_by_id(replacement_id)
             .map(|(point_min, _)| point_min)
             .unwrap_or(1);
         let window_ids = self.record_ids_by_type("window");
         for window_id in window_ids {
-            let showed_killed_buffer = self
-                .find_record(window_id)
-                .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT))
-                .and_then(|value| value.integer_value())
-                .is_some_and(|buffer_id| buffer_id.max(0) as u64 == id);
+            let showed_killed_buffer = primitives::window_slot_buffer_id(
+                self.find_record(window_id)
+                    .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT)),
+            ) == Some(id);
             if !showed_killed_buffer {
                 continue;
             }
             if let Some(window) = self.find_record_mut(window_id) {
-                window.slots[primitives::WINDOW_BUFFER_SLOT] =
-                    Value::Integer(replacement_id as i64);
+                window.slots[primitives::WINDOW_BUFFER_SLOT] = replacement;
                 window.slots[primitives::WINDOW_START_SLOT] =
                     Value::Integer(replacement_start as i64);
             }
@@ -3096,10 +3094,8 @@ fn saved_windows(
         }
     }
     let minibuffer = snapshot.window_records.iter().find(|(_, slots)| {
-        matches!(
-            slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-            Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::MINIBUFFER_WINDOW_KIND)
-        )
+        primitives::WindowKind::of_slot(slots.get(primitives::WINDOW_KIND_SLOT))
+            == primitives::WindowKind::Minibuffer
     });
     if let Some((id, _)) = minibuffer {
         order.push(*id);

@@ -1016,6 +1016,9 @@ pub struct BufferValue {
     /// The editable object, not a name/id proxy for an interpreter-owned copy.
     /// Rust callers must end these borrows before entering Lisp or collecting.
     pub(crate) state: RefCell<crate::buffer::Buffer>,
+    /// BUFFER_LIVE_P: GNU's non-nil BVAR (b, name), false once the buffer
+    /// is killed.
+    pub(crate) live: Cell<bool>,
 }
 
 /// One allocated frame object. The native boundary reads its GNU
@@ -1147,7 +1150,14 @@ impl BufferRef {
             markers: Cell::new(None),
             base: Cell::new(None),
             state: RefCell::new(buffer),
+            live: Cell::new(true),
         })
+    }
+
+    /// BUFFER_LIVE_P.
+    #[inline]
+    pub(crate) fn is_live(&self) -> bool {
+        self.live.get()
     }
 
     pub fn borrow(&self) -> std::cell::Ref<'_, crate::buffer::Buffer> {
@@ -2628,6 +2638,12 @@ impl Value {
     }
 
     // Predicates
+
+    /// `FLAG ? Qt : Qnil'.
+    #[inline(always)]
+    pub fn from_bool(flag: bool) -> Value {
+        if flag { Value::T } else { Value::Nil }
+    }
 
     /// `NILP': nil is the word zero.
     #[inline(always)]

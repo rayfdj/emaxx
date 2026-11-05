@@ -14893,6 +14893,65 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 317: a killed buffer stays the buffer object wherever it is
+  held, windows hold their buffers' objects, a window's kind is no
+  symbol, and 54 window primitives decode their arguments as window.c
+  does.** BUFFER_LIVE_P reads the buffer itself: Fkill_buffer clears a
+  liveness flag on the object (and the buffer list loses it), so
+  `buffer-live-p' of a killed buffer is nil whatever buffers are made
+  after it, and a window's buffer slot holds the buffer object, as
+  w->contents does, where it held an id; the window code reads liveness
+  from that object. An image's restore marks killed the buffers its
+  buffer list no longer holds, and keeps print.c's hidden ` prin1'
+  buffer, which no list holds, live (a first gate found it restored
+  killed, so that `kill-buffer' of it failed in
+  `replace-buffer-in-windows'). A window's kind was an interned symbol
+  (`internal-vertical', `internal-horizontal', `deleted', `minibuffer'),
+  so after the first split `(intern-soft "internal-vertical")' found a
+  symbol GNU never interns; window.c tells the kinds apart by
+  w->contents and its flags, and the kind slot now holds nil for a leaf
+  and a fixnum code otherwise, tested with a word compare. `windowp',
+  `window-valid-p' and `window-live-p', the parent and sibling readers
+  and the two child readers were shared bodies that tested their own
+  names on every call; each is a subr of its own, and the links are
+  returned from the record's slot. A sweep calling every window subr
+  with a deleted window, a fixnum and a symbol found 54 that decoded
+  their window as decode_any_window where window.c uses
+  decode_valid_window or decode_live_window (so a deleted window was
+  accepted, or the error named `windowp'), checked their other arguments
+  in another order (`set-window-hscroll' and `set-window-new-total'
+  check the size first or with CHECK_FIXNUM, `set-window-vscroll' with
+  CHECK_NUMBER, `coordinates-in-window-p' with CHECK_CONS, `window-at'
+  with CHECK_NUMBER after its frame), took nil for the selected window
+  where CHECK_VALID_WINDOW does not (`window-combination-limit'),
+  signalled with a type name instead of the object
+  (`window-configuration-equal-p', `run-window-scroll-functions'), or
+  accepted anything (`set-window-configuration' had no
+  CHECK_WINDOW_CONFIGURATION); `window-scroll-bar-height' reads no
+  argument at all, as WINDOW_HAS_HORIZONTAL_SCROLL_BAR is false in this
+  configuration. All now answer as GNU does; `window-system-for-display'
+  alone still differs, through `display-format-alist', which GNU's dump
+  fills from term/x-win, and this build has no X. Four command-line
+  comparisons run these cases. In undo-tests a call of
+  `frame-windows-min-size' (eight an iteration, from
+  set-window-configuration's adjust_frame_size) costs 16,578
+  instructions against GNU's 12,575: the primitives' own bodies cost
+  what GNU's do (6,733 against 6,875) and the funcall path 546 more, and
+  the rest, about 3,600, is the call from native code into a C subr (the
+  generated entry, invoke_subr's kind test, the active call, the arity
+  and handler tests: some 45 instructions a call), which GNU's direct
+  call through the freloc table does not spend. The undo case runs
+  1,338,867 instructions an iteration with collections held off, against
+  GNU's 1,222,673 (1.095), and 1.099 with them; sorting is at 0.989 with
+  collections held off and the dynamic interpreter loop at 1.023. Rust
+  heap allocation is the other large share of the undo excess: 469
+  allocations an iteration (buffer creation and killing, text copied out
+  of buffers and strings, vector growth) cost about 39,000 instructions
+  against GNU's 6,500 in malloc and free. The fuzzes and command-line
+  cases of rounds 303 to 316 print GNU's results as before. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17403,6 +17462,25 @@ ms against 37,919), tramp-tests (22,211 against 18,866), comp-tests
 mule-tests (3,017 against 1,926), and
 `ert-test-run-tests-batch-expensive' is 1.17 of GNU's time.
 
+**On `ec8b6c1`** (round 316): the full Rust gate (run 42004103686)
+passed; the frozen run (run 42004107700) differed at its first attempt
+only in eglot-tests, where the oracle's
+`eglot-test-rust-completion-exit-function' failed with a jsonrpc-error
+and Emaxx's passed (as at round 295), and passed at its second, 7,928 of
+7,928 outcomes matching. The two attempts ran on runners of very
+different speed: the first, the fastest yet, timed setup 50.4 s against
+44.3 s (1.138), test bodies 227.9 s against 223.5 s (1.020), in all
+1.028; the second setup 90.7 s against 67.4 s (1.347), test bodies 310.8
+s against 271.8 s (1.143), in all 1.172, with a per-file setup median of
+141 ms against 104. The second's widest body gaps are ert-tests (46,318
+ms against 38,114), comp-tests (19,248 against 15,244), tramp-tests
+(23,909 against 19,982), semantic-utest-ia (4,048 against 2,609) and
+mule-tests (3,249 against 2,025), and
+`ert-test-run-tests-batch-expensive' is 1.20 of GNU's time. Run in
+release builds on this host, mule-tests takes 1.48 s against GNU's 1.96
+and semantic-utest-ia 2.90 s against 3.38 (17.24G instructions against
+19.15G): their gaps are the checked build's.
+
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's
   `--symbol-ordering-file' with the 3,046 functions four test files'
@@ -18237,8 +18315,13 @@ and failures are still recorded.
    alias and a coding system defined under one converts; since rounds 315
    and 316 the charsets and fringe bitmaps are the symbol's); the buffer
    registry, which keeps buffers by id in lists the C side scans where GNU
-   holds the buffer object (a window's buffer, `buffer-live-p', the
-   current buffer's switch); text-property intervals
+   holds the buffer object (since round 317 a window's buffer and
+   `buffer-live-p' read the object; the buffer list, the current buffer's
+   switch and the frame's buffer lists remain); window records found by
+   id through the record registry, where GNU's window.c reads w->parent,
+   w->next and w->contents from the window itself (the links and child
+   readers read the record's slots since round 317); text-property
+   intervals
    (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor

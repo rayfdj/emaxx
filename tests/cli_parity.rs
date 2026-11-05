@@ -2178,6 +2178,140 @@ fn charsets_are_found_by_their_symbols() {
 }
 
 #[test]
+fn window_kinds_and_links_are_read_from_the_window_record() {
+    // window.c tells a window's kind from w->contents and its flags, so
+    // no symbol names a kind; Fwindow_parent and its siblings read the
+    // link of decode_valid_window, and Fwindow_top_child and
+    // Fwindow_left_child the first child of a combination of their
+    // direction.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(dolist (f (list
+  (lambda () (let ((w (split-window))) (list (mapcar (lambda (n) (and (intern-soft n) t)) '("internal-vertical" "internal-horizontal" "deleted" "leaf")) (windowp w) (window-valid-p w) (window-live-p w) (eq (window-parent w) (window-parent)) (window-live-p (window-parent w)) (window-valid-p (window-parent w)) (eq (window-top-child (window-parent w)) (selected-window)) (window-left-child (window-parent w)) (eq (window-next-sibling) w) (eq (window-prev-sibling w) (selected-window)))))
+  (lambda () (let ((w (split-window nil nil t))) (list (mapcar (lambda (n) (and (intern-soft n) t)) '("internal-vertical" "internal-horizontal")) (window-top-child (window-parent w)) (eq (window-left-child (window-parent w)) (selected-window)) (window-combination-limit (window-parent w)) (condition-case e (window-combination-limit w) (error e)) (progn (delete-window w) (list (windowp w) (window-valid-p w) (window-live-p w))))))
+  (lambda () (let ((w (split-window))) (delete-window w) (list (condition-case e (window-parent w) (error (car e))) (condition-case e (window-next-sibling w) (error (car e))) (condition-case e (window-prev-sibling w) (error (car e))) (condition-case e (window-top-child w) (error e)) (condition-case e (window-left-child w) (error e)) (condition-case e (window-frame w) (error (car e))) (condition-case e (window-buffer w) (error (car e))))))
+  (lambda () (list (window-minibuffer-p (minibuffer-window)) (window-minibuffer-p) (eq (window-next-sibling (frame-root-window)) (minibuffer-window)) (eq (window-prev-sibling (minibuffer-window)) (frame-root-window)) (window-parent (minibuffer-window)) (window-live-p (minibuffer-window)) (window-valid-p (minibuffer-window)) (window-top-child) (window-left-child) (window-parent)))
+  (lambda () (list (condition-case e (window-parent 1) (error e)) (condition-case e (window-top-child 'x) (error e)) (windowp 1) (window-valid-p nil) (window-live-p nil) (condition-case e (windowp) (error (car e))) (condition-case e (window-live-p 1 2) (error (car e)))))
+  (lambda () (let* ((w (split-window)) (c (current-window-configuration))) (delete-window w) (set-window-configuration c) (list (window-live-p w) (length (window-list)) (mapcar (lambda (n) (and (intern-soft n) t)) '("internal-vertical" "deleted")))))
+  (lambda () (let ((w (split-window))) (prog1 (list (frame-windows-min-size nil nil nil t) (frame-windows-min-size nil t nil t) (window-min-size w) (window-min-size (window-parent w))) (delete-window w))))
+  (lambda () (let ((w1 (split-window)) (w2 (split-window nil nil t))) (prog1 (list (length (window-list)) (eq (window-parent w1) (window-parent (window-parent w2))) (window-live-p (window-parent w2)) (window-combination-p (window-parent w2) t) (window-combination-p (window-parent w1))) (delete-other-windows))))
+  ))
+  (prin1 (condition-case e (unwind-protect (funcall f) (delete-other-windows)) (error (list (quote ERR) e)))) (terpri)))"#,
+        ],
+    );
+}
+
+#[test]
+fn window_primitives_decode_their_window_as_window_c_does() {
+    // Each window primitive decodes its WINDOW argument as window.c's
+    // does (decode_any_window, decode_valid_window or decode_live_window,
+    // CHECK_VALID_WINDOW where nil is no window), and checks its other
+    // arguments in GNU's order.  `window-system-for-display' is left out:
+    // GNU's dump preloads term/x-win, which this build has no use for.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(let (names (dead (let ((w (split-window))) (delete-window w) w)))
+  (mapatoms (lambda (s) (when (and (subrp (symbol-function s)) (not (special-form-p s))
+                                    (string-match-p "\\`\\(set-\\)?window-\\|\\`\\(coordinates-in\\|pos-visible-in\\|delete\\|select\\|next\\|previous\\|scroll\\|recenter\\|move-to\\|other\\)-window" (symbol-name s))
+                                    (not (memq s '(delete-window delete-other-windows window-configuration-to-register window-system-for-display))))
+                           (push s names))))
+  (setq names (sort names (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
+  (dolist (s names)
+    (let* ((arity (func-arity s)) (min (car arity)))
+      (dolist (arg (list dead 1 'x))
+        (princ (format "%s %S: %S\n" s (if (eq arg dead) 'dead arg)
+                       (condition-case e (progn (apply s arg (make-list (max 0 (1- min)) nil)) 'ok)
+                         (error (list (car e) (if (eq (nth 1 e) dead) 'DEAD (nth 1 e)) (if (eq (nth 2 e) dead) 'DEAD (nth 2 e))))))))
+      (ignore-errors (delete-other-windows)))))"#,
+        ],
+    );
+}
+
+#[test]
+fn frame_and_window_list_primitives_decode_windows_as_gnu_does() {
+    // The frame, list, configuration, position and internal window
+    // primitives with a deleted window, a fixnum and a symbol in each
+    // window argument.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(let ((dead (let ((w (split-window))) (delete-window w) w))
+      (cases '((frame-root-window 0) (frame-first-window 0) (frame-selected-window 0) (frame-old-selected-window 0)
+               (set-frame-selected-window 1) (set-frame-selected-window 0) (minibuffer-window 0) (set-minibuffer-window 0)
+               (window-list 0) (window-list 2) (window-list-1 0) (get-buffer-window 1) (split-window-internal 0)
+               (delete-window-internal 0) (delete-other-windows-internal 0) (resize-mini-window-internal 0)
+               (run-window-scroll-functions 0) (window-text-pixel-size 0) (set-window-buffer 0) (force-window-update 0)
+               (current-window-configuration 0) (window-configuration-frame 0) (posn-at-point 1) (posn-at-x-y 2)
+               (window-lines-pixel-dimensions 0) (window-point 0) (set-window-point 0) (set-window-start 0)
+               (pos-visible-in-window-p 1) (window-line-height 1) (window-end 0) (window-hscroll 0) (window-margins 0)
+               (set-window-margins 0) (window-text-width 0) (window-text-height 0) (window-old-point 0) (window-use-time 0)
+               (window-bump-use-time 0) (select-window 0) (next-window 0) (previous-window 0) (window-buffer 0)
+               (window-old-buffer 0) (window-parameter 0) (set-window-parameter 0) (window-frame 0)
+               (window-old-pixel-width 0) (window-mode-line-height 0) (window-header-line-height 0) (window-tab-line-height 0)
+               (window-vscroll 0) (scroll-other-window 0) (recenter 0) (window-swap-states 0) (frame-windows-min-size 0)
+               (window-system 0) (window-inside-edges 0) (window-edges 0) (window-body-pixel-edges 0) (window-absolute-pixel-edges 0)
+               (window-font-width 0) (window-font-height 0) (window-max-chars-per-line 0) (window-screen-lines 0))))
+  (dolist (c cases)
+    (let* ((s (car c)) (pos (cadr c)) (arity (func-arity s)) (n (max (1+ pos) (car arity))))
+      (dolist (arg (list dead 1 'x))
+        (let ((args (make-list n nil)))
+          (setcar (nthcdr pos args) arg)
+          (princ (format "%s@%d %S: %S\n" s pos (if (eq arg dead) 'dead arg)
+                         (condition-case e (progn (apply s args) 'ok)
+                           (error (list (car e) (if (eq (nth 1 e) dead) 'DEAD (nth 1 e)) (if (eq (nth 2 e) dead) 'DEAD (nth 2 e)))))))))
+      (ignore-errors (delete-other-windows)))))"#,
+        ],
+    );
+}
+
+#[test]
+fn killed_buffers_stay_buffer_objects_in_windows_and_variables() {
+    // buffer.c's Fkill_buffer clears the buffer's name and leaves the object,
+    // which every reference keeps: BUFFER_LIVE_P reads the name, a window
+    // shows a buffer object (window.c's w->contents), and a killed buffer is
+    // never live again whatever later buffers are made.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(dolist (f (list
+  (lambda () (let ((b (get-buffer-create "x1"))) (list (buffer-live-p b) (progn (kill-buffer b) (buffer-live-p b)) (buffer-name b) (condition-case e (set-buffer b) (error e)))))
+  (lambda () (let ((b (get-buffer-create "x2"))) (set-window-buffer nil b) (list (eq (window-buffer) b) (progn (kill-buffer b) (eq (window-buffer) b)) (buffer-live-p (window-buffer)))))
+  (lambda () (let ((b (get-buffer-create "x3")) (c (current-window-configuration))) (set-window-buffer nil b) (kill-buffer b) (set-window-configuration c) (buffer-name (window-buffer))))
+  (lambda () (let ((b (get-buffer-create "x4"))) (save-window-excursion (switch-to-buffer b) (list (eq (window-buffer) b) (eq (current-buffer) b))) ))
+  (lambda () (with-temp-buffer (list (buffer-live-p (current-buffer)) (eq (window-buffer) (current-buffer)))))
+  (lambda () (let ((b (generate-new-buffer "x5"))) (prog1 (list (get-buffer-window b) (progn (display-buffer b) (window-live-p (get-buffer-window b)))) (kill-buffer b))))
+  (lambda () (let ((b (get-buffer-create "x6"))) (set-window-buffer nil b) (list (window-point) (window-start) (with-current-buffer b (insert "hello")) (progn (set-window-point nil 3) (window-point)))))
+  (lambda () (buffer-live-p (window-buffer (minibuffer-window))))
+  (lambda () (let ((b (get-buffer-create "x7"))) (kill-buffer b) (list (buffer-live-p b) (condition-case e (with-current-buffer b 1) (error e)) (condition-case e (set-window-buffer nil b) (error e)))))
+  (lambda () (mapcar (lambda (w) (buffer-name (window-buffer w))) (window-list)))
+  (lambda () (let ((b (get-buffer-create "x8"))) (switch-to-buffer b) (kill-buffer b) (list (buffer-name (current-buffer)) (buffer-name (window-buffer)))))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"#,
+        ],
+    );
+}
+
+#[test]
 fn fringe_bitmaps_are_found_by_their_fringe_property() {
     // fringe.c's lookup_fringe_bitmap reads the number BITMAP's `fringe'
     // property holds, so a symbol given another's number is that bitmap;
