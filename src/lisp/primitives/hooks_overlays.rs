@@ -550,16 +550,16 @@ pub(crate) fn run_overlay_hook_calls(
     Ok(())
 }
 
-/// insdel.c:del_range_1 with its hooks: [FROM, TO) of the accessible
-/// text deleted, its start following the before-change hooks' changes
-/// and its length kept.  The deleted text.
+/// insdel.c:del_range_1 with its hooks and no RET_STRING: [FROM, TO) of
+/// the accessible text deleted, its start following the before-change
+/// hooks' changes and its length kept.
 pub(crate) fn delete_region_with_hooks(
     interp: &mut Interpreter,
     from: usize,
     to: usize,
     env: &mut crate::lisp::types::Env,
-) -> Result<String, LispError> {
-    delete_region_with_hooks_then(interp, from, to, false, env, |_, _, _| ()).map(|(text, ())| text)
+) -> Result<(), LispError> {
+    delete_region_with_hooks_then(interp, from, to, false, env, |_, _, _| ()).map(drop)
 }
 
 /// `delete-and-extract-region': the deleted text as a string, with its
@@ -618,9 +618,16 @@ fn delete_region_with_hooks_then<R>(
         )?;
         let to = to.min(interp.buffer.borrow().point_max()).max(from);
         let extra = before_delete(interp, from, to);
-        let deleted = interp
-            .delete_region_current_buffer(from, to)
-            .map_err(|e| LispError::Signal(e.to_string()))?;
+        // del_range_1's RET_STRING: the text is read out only for a
+        // caller that wants it (the undo list takes its own string).
+        let deleted = if ret_string {
+            interp.delete_region_current_buffer(from, to)
+        } else {
+            interp
+                .delete_region_current_buffer_unreturned(from, to)
+                .map(|()| String::new())
+        }
+        .map_err(|e| LispError::Signal(e.to_string()))?;
         Ok((
             Some(AfterChange::new(from, to - from, 0).composing(from, from, CHECK_HEAD)),
             (deleted, extra),

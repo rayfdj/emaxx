@@ -90,9 +90,29 @@ impl Interpreter {
     /// NAME: assoc_ignore_text_properties, the first buffer whose name is
     /// `string-equal' to it.
     pub(crate) fn find_buffer_named(&self, name: &Value) -> Option<u64> {
+        // buffer.c:Fget_buffer: the first buffer of the list whose name is
+        // Fstring_equal to NAME (assoc_ignore_text_properties), NAME's
+        // characters and bytes read once.
+        let Kind::StringObject(key) = name.kind() else {
+            return None;
+        };
+        // SAFETY: the walk runs no Lisp, collects nothing and stores into
+        // no string.
+        let (bytes, chars) = unsafe { key.bytes_and_chars_unguarded() };
         self.buffer_list
             .iter()
-            .find(|(_, n)| primitives::strings_equal(n, name))
+            .find(|(_, other)| {
+                other.word() == name.word()
+                    || match other.kind() {
+                        Kind::StringObject(other) => {
+                            // SAFETY: as above.
+                            let (other_bytes, other_chars) =
+                                unsafe { other.bytes_and_chars_unguarded() };
+                            other_chars == chars && other_bytes == bytes
+                        }
+                        _ => false,
+                    }
+            })
             .map(|(id, _)| *id)
     }
 
@@ -1245,8 +1265,10 @@ impl Interpreter {
             .filter_map(|id| self.record_ref(*id))
             .filter(move |record| {
                 record.kind == RecordKind::Window
-                    && record.slots.get(primitives::WINDOW_FRAME_SLOT)
-                        == Some(&Value::Frame(frame_id))
+                    && record
+                        .slots
+                        .get(primitives::WINDOW_FRAME_SLOT)
+                        .is_some_and(|frame| frame.word() == Value::Frame(frame_id).word())
             })
     }
 
@@ -1592,7 +1614,7 @@ impl Interpreter {
         if self
             .find_record(mini)
             .and_then(|record| record.slots.get(primitives::WINDOW_FRAME_SLOT))
-            == Some(&Value::Frame(snapshot.frame_id))
+            .is_some_and(|frame| frame.word() == Value::Frame(snapshot.frame_id).word())
         {
             self.unshow_window_tree(Some(mini), &mut squirreled);
         }

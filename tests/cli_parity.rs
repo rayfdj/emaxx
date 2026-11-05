@@ -2335,6 +2335,54 @@ fn numeric_edge_arguments_answer_as_gnu_does() {
 }
 
 #[test]
+fn identity_and_symbol_value_answer_as_gnu_does() {
+    // lisp.h:EQ is BASE_EQ of the words, a symbol with position reckoned
+    // its bare symbol only while `symbols-with-pos-enabled' is set;
+    // fns.c:Feql adds same_float for floats and the value for bignums.
+    // Bsymbol_value is Fsymbol_value of TOP whatever its variable's kind;
+    // `type-of' and `cl-type-of' answer the interned symbols; Fget_buffer
+    // compares a name's characters and bytes.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r##"(progn
+(defvar idt-plain 1) (defvar-local idt-local 2)
+(dolist (f (list
+  (lambda () (let ((sv (byte-compile (lambda (s) (symbol-value s)))))
+     (with-temp-buffer (setq idt-local 5)
+       (mapcar (lambda (s) (condition-case e (funcall sv s) (error e)))
+               (list 'idt-plain 'idt-local 'fill-column 'case-fold-search nil t (make-symbol "void") 'idt-unbound 3 "x")))))
+  (lambda () (let ((sv (byte-compile (lambda (s) (symbol-value s)))) (p (position-symbol 'idt-plain 5)))
+     (list (condition-case e (funcall sv p) (error (car e)))
+           (let ((symbols-with-pos-enabled t)) (condition-case e (funcall sv p) (error (car e)))))))
+  (lambda () (let ((p (position-symbol 'foo 3)) (q (position-symbol 'foo 9)) (b1 (expt 2 70)) (b2 (expt 2 70))
+                   (n1 (/ 0.0 0.0)) (w (selected-window)) (eqf (byte-compile (lambda (a b) (eq a b)))))
+     (list (eq p 'foo) (eql p 'foo) (eq p q) (funcall eqf p 'foo)
+           (let ((symbols-with-pos-enabled t))
+             (list (eq p 'foo) (eq 'foo q) (eq p q) (eql p q) (funcall eqf p 'foo) (funcall eqf q p)
+                   (consp (memq p '(foo))) (consp (assq q '((foo . 1)))) (consp (rassq p '((1 . foo))))))
+           (eq b1 b2) (eql b1 b2) (eql 1.0 1.0) (eql 0.0 -0.0) (eql n1 n1) (eql n1 (/ 0.0 0.0)) (eql n1 (- n1)) (eql 1 1.0)
+           (eq (current-buffer) (current-buffer)) (memql 2.5 (list 1 2.5)) (consp (assq w (list (cons w 1))))
+           (funcall eqf w (selected-window)) (funcall eqf b1 b2) (consp (memq w (window-list))))))
+  (lambda () (mapcar (lambda (o) (list (eq (type-of o) (intern (symbol-name (type-of o)))) (type-of o) (cl-type-of o)))
+     (list nil t 1 (expt 2 70) 1.5 "s" 'a (position-symbol 'a 1) [1] '(1) (symbol-function 'car) (lambda ()) (byte-compile (lambda ()))
+           (current-buffer) (point-marker) (make-overlay 1 1) (make-char-table 'x) (make-hash-table) (selected-frame) (selected-window)
+           (current-window-configuration) (make-bool-vector 2 t) (obarray-make) (record 'foo 1))))
+  (lambda () (let ((b (get-buffer-create "idt-é")))
+     (prog1 (list (eq (get-buffer (copy-sequence "idt-é")) b) (get-buffer (string-to-unibyte "idt-\303\251")) (get-buffer "idt-e")
+                  (eq (get-buffer b) b) (string-equal "idt-é" (buffer-name b)) (string-equal (string-to-unibyte "idt-\303\251") (buffer-name b)))
+       (kill-buffer b))))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"##,
+        ],
+    );
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

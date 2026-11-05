@@ -685,7 +685,10 @@ impl Interpreter {
     pub(crate) fn retire_frame(&mut self, id: crate::lisp::types::FrameRef) {
         use crate::lisp::primitives as p;
         let windows = self.records_of_kind(super::RecordKind::Window, |record| {
-            record.slots.get(p::WINDOW_FRAME_SLOT) == Some(&Value::Frame(id))
+            record
+                .slots
+                .get(p::WINDOW_FRAME_SLOT)
+                .is_some_and(|frame| frame.word() == Value::Frame(id).word())
         });
         for window in windows {
             let Some(record) = self.find_record_mut(window) else {

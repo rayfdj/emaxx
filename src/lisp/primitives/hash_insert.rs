@@ -567,6 +567,10 @@ pub(crate) fn insert_impl(
                 before_markers,
                 env,
             )?;
+        } else if let Some(inserted) =
+            insert_short_plain_string(interp, arg, inherit, before_markers, env)
+        {
+            inserted?;
         } else if let Some(string) = string_like(arg) {
             if string.text.is_empty() {
                 continue;
@@ -590,6 +594,52 @@ pub(crate) fn insert_impl(
         }
     }
     Ok(Value::Nil)
+}
+
+/// insert_from_string of a short string with no text properties whose
+/// stored bytes are its text (ASCII, or a multibyte string of Unicode
+/// characters): the bytes copied onto the stack, as no host string need
+/// hold them.  None for any other argument, which the general path takes.
+fn insert_short_plain_string(
+    interp: &mut Interpreter,
+    arg: &Value,
+    inherit: bool,
+    before_markers: bool,
+    env: &mut crate::lisp::types::Env,
+) -> Option<Result<(), LispError>> {
+    const SHORT: usize = 128;
+    let Kind::StringObject(state) = arg.kind() else {
+        return None;
+    };
+    let mut buffer = [0u8; SHORT];
+    let length = {
+        let state = state.borrow();
+        if state.props.has_intervals() {
+            return None;
+        }
+        let bytes = state.bytes();
+        if bytes.len() > SHORT
+            || !(bytes.is_ascii() || (state.is_multibyte() && std::str::from_utf8(bytes).is_ok()))
+        {
+            return None;
+        }
+        buffer[..bytes.len()].copy_from_slice(bytes);
+        bytes.len()
+    };
+    if length == 0 {
+        return Some(Ok(()));
+    }
+    // SAFETY: the bytes were checked to be UTF-8 above.
+    let text = unsafe { std::str::from_utf8_unchecked(&buffer[..length]) };
+    Some(insert_text_with_hooks(
+        interp,
+        text,
+        None,
+        &[],
+        inherit,
+        before_markers,
+        env,
+    ))
 }
 
 pub(crate) fn insert_char_impl(

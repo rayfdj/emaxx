@@ -399,59 +399,39 @@ fn string_intervals_equal(
     }
 }
 
+/// fns.c:Feql with no symbol reckoned its position's: a float is eql to
+/// a float of the same bits (same_float), a bignum to a bignum of the
+/// same value, any other object to itself (BASE_EQ).
 pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
-    match (left.kind(), right.kind()) {
-        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
-        (Kind::Integer(a), Kind::Integer(b)) => a == b,
-        (Kind::BigInteger(a), Kind::BigInteger(b)) => a == b,
-        // fns.c Feql via same_float: representation equality.  IEEE ==
-        // said NaN != NaN, and every fixpoint loop keyed on eql/memql
-        // diverged on forms containing a NaN literal -- eager
-        // macroexpansion of cl-lib/data/fns/floatfns-tests never
-        // terminated.  Bit equality also gives GNU's (eql 0.0 -0.0) nil.
-        (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
-        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
-        (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
-        (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
-        (Kind::NativeCompUnit(a), Kind::NativeCompUnit(b)) => a.ptr_eq(&b),
-        (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
-        (Kind::Cons(left), Kind::Cons(right)) => {
-            crate::lisp::types::SharedCons::ptr_eq(&left, &right)
-        }
-        (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
-        (Kind::Closure(left), Kind::Closure(right)) => left.ptr_eq(&right),
-        (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
-        (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
-        (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
-        (Kind::Overlay(left_id), Kind::Overlay(right_id)) => left_id.ptr_eq(&right_id),
-        (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
-        (Kind::SubCharTable(left), Kind::SubCharTable(right)) => left == right,
-        (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
-        (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
-        (Kind::SymbolWithPos(left), Kind::SymbolWithPos(right)) => left.ptr_eq(&right),
-        (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
-        (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
-        (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
-        // eql on non-numbers is eq; identity must be reflexive here too.
-        (Kind::ReaderForm(left), Kind::ReaderForm(right)) => left.ptr_eq(&right),
-        _ => false,
-    }
+    left.word() == right.word() || eql_numbers(left, right)
 }
 
-/// fns.c:Feql handles floats and bignums specially, then delegates every
-/// other representation to `EQ`.  That final path matters while
-/// `symbols-with-pos-enabled` is dynamically non-nil: distinct positioned
-/// wrappers for the same bare symbol must then be `eql` too.
+/// Feql's FLOATP and BIGNUMP arms for two objects of different words.
+#[inline]
+fn eql_numbers(left: &Value, right: &Value) -> bool {
+    if left.is_float() {
+        return match (left.kind(), right.kind()) {
+            // same_float: the bits, so a NaN is eql to its own pattern
+            // and 0.0 is not eql to -0.0.
+            (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
+            _ => false,
+        };
+    }
+    left.is_vectorlike()
+        && right.is_vectorlike()
+        && matches!((left.kind(), right.kind()), (Kind::BigInteger(a), Kind::BigInteger(b)) if a == b)
+}
+
+/// fns.c:Feql: the float and bignum arms, then EQ, which reckons a
+/// symbol with position its bare symbol while `symbols-with-pos-enabled'
+/// is set (a float or a bignum is never EQ to another word).
 pub(crate) fn values_eql_in_env(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
     env: &Env,
 ) -> bool {
-    match left.kind() {
-        Kind::Float(_) | Kind::BigInteger(_) => values_eql(left, right),
-        _ => values_eq_in_env(interp, left, right, env),
-    }
+    values_eq_in_env(interp, left, right, env) || eql_numbers(left, right)
 }
 
 #[inline]
@@ -461,90 +441,29 @@ pub(crate) fn values_eq_in_env(
     right: &Value,
     env: &Env,
 ) -> bool {
-    // lisp.h:EQ: one word is one object.  A symbol with position, the one
-    // object eq to a word other than its own, is vectorlike.
-    if left.word() == right.word() {
-        return true;
-    }
-    if !left.is_vectorlike() && !right.is_vectorlike() {
-        return false;
-    }
-    values_eq_vectorlike_in_env(interp, left, right, env)
+    left.word() == right.word()
+        || ((left.is_vectorlike() || right.is_vectorlike())
+            && crate::lisp::primitives::symbols_with_pos_enabled(interp, env)
+            && bare_symbols_eq(left, right))
 }
 
+/// EQ with the flag set: BASE_EQ of the bare symbols of LEFT and RIGHT
+/// (XSYMBOL_WITH_POS_SYM of a symbol with position, any other object
+/// itself).
 #[inline(never)]
-fn values_eq_vectorlike_in_env(
-    interp: &Interpreter,
-    left: &Value,
-    right: &Value,
-    env: &Env,
-) -> bool {
-    // Only the positioned-symbol subtype needs the compatibility flag.
-    // Ordinary values compare their words without probing symbol fields.
-    if (matches!(left.kind(), Kind::SymbolWithPos(_))
-        || matches!(right.kind(), Kind::SymbolWithPos(_)))
-        && let Some(equal) = symbol_with_pos_eq_in_env(interp, left, right, env)
-    {
-        return equal;
-    }
-    values_eq_plain(left, right)
+fn bare_symbols_eq(left: &Value, right: &Value) -> bool {
+    let bare = |value: &Value| match value.kind() {
+        Kind::SymbolWithPos(symbol) => symbol.symbol(),
+        _ => *value,
+    };
+    bare(left).word() == bare(right).word()
 }
 
-/// data.c:Feq on two objects neither of which is a symbol with position:
-/// word identity, with the object kinds Emaxx addresses by id compared by
-/// id.  Those are vectorlike, so a word that is not is the only word for
-/// its object.
-#[inline]
+/// lisp.h:BASE_EQ: the same word.  Each object has one word: its tagged
+/// address, or the immediate value of a fixnum.
+#[inline(always)]
 pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
-    if left.word() == right.word() {
-        return true;
-    }
-    if !left.is_vectorlike() || !right.is_vectorlike() {
-        return false;
-    }
-    values_eq_by_kind(left, right)
-}
-
-#[inline(never)]
-fn values_eq_by_kind(left: &Value, right: &Value) -> bool {
-    match (left.kind(), right.kind()) {
-        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
-        (Kind::Integer(a), Kind::Integer(b)) => a == b,
-        // lisp.h:EQ compares bignum object identities. Only Feql compares
-        // their numeric payloads, just as it does for allocated floats.
-        (Kind::BigInteger(a), Kind::BigInteger(b)) => a.ptr_eq(&b),
-        // data.c:Feq compares the Lisp_Object words.  Float words point to
-        // allocated Lisp_Float objects, so only the same allocation is eq.
-        (Kind::Float(a), Kind::Float(b)) => a.ptr_eq(&b),
-        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
-        (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
-        (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
-        (Kind::NativeCompUnit(a), Kind::NativeCompUnit(b)) => a.ptr_eq(&b),
-        (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
-        (Kind::Cons(left), Kind::Cons(right)) => {
-            crate::lisp::types::SharedCons::ptr_eq(&left, &right)
-        }
-        (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
-        (Kind::Closure(left), Kind::Closure(right)) => left.ptr_eq(&right),
-        (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
-        (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
-        (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
-        (Kind::Overlay(left_id), Kind::Overlay(right_id)) => left_id.ptr_eq(&right_id),
-        (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
-        (Kind::SubCharTable(left), Kind::SubCharTable(right)) => left == right,
-        (Kind::Frame(left_id), Kind::Frame(right_id)) => left_id == right_id,
-        (Kind::Terminal(left_id), Kind::Terminal(right_id)) => left_id.ptr_eq(&right_id),
-        (Kind::SymbolWithPos(left), Kind::SymbolWithPos(right)) => left.ptr_eq(&right),
-        (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
-        (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
-        (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
-        (Kind::BoolVector(left), Kind::BoolVector(right)) => left.identity() == right.identity(),
-        // eq must be reflexive on every object: edebug-unwrap*'s fixed point
-        // `(while (not (eq sexp (setq sexp (edebug-unwrap sexp)))))' spins
-        // forever when an opaque form is never eq to itself.
-        (Kind::ReaderForm(left), Kind::ReaderForm(right)) => left.ptr_eq(&right),
-        _ => false,
-    }
+    left.word() == right.word()
 }
 
 pub(crate) fn plist_type_error(plist: &Value) -> LispError {

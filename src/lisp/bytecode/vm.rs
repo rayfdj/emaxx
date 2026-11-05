@@ -2480,8 +2480,10 @@ fn run_verified(
                 // Beq.
                 0o075 => {
                     let (left, right) = (*slot!(1), *slot!(0));
-                    // A symbol with position is vectorlike.
-                    if (left.is_vectorlike() || right.is_vectorlike())
+                    // lisp.h:EQ reads the flag first; a symbol with
+                    // position is vectorlike.
+                    if vm.interp.symbols_with_positions_enabled()
+                        && (left.is_vectorlike() || right.is_vectorlike())
                         && (matches!(left.kind(), Kind::SymbolWithPos(_))
                             || matches!(right.kind(), Kind::SymbolWithPos(_)))
                     {
@@ -2549,6 +2551,24 @@ fn run_verified(
                 0o101 => car_cdr!(false, false),
                 0o242 => car_cdr!(true, true),
                 0o243 => car_cdr!(false, true),
+                // Bsymbol_value: Fsymbol_value of TOP, a symbol whose value
+                // the varref cases read (find_symbol_value); nil, t,
+                // another object, a symbol with position and a void
+                // variable take the full arm.
+                0o112 => {
+                    let Kind::Symbol(name) = slot!(0).kind() else {
+                        slow!()
+                    };
+                    let value = match name.cell().unlocalized_value() {
+                        Some(value) => value,
+                        None => match varref_redirected(vm.interp, &name) {
+                            Some(value) => value,
+                            None => slow!(),
+                        },
+                    };
+                    *slot!(0) = value;
+                    at += 1;
+                }
                 // Bsymbolp; a symbol with position answers by
                 // `symbols-with-pos-enabled' in the full arm.
                 0o071 => {
@@ -2902,14 +2922,14 @@ fn run_verified(
                 // pattern with comparisons ahead of the switch, which
                 // brought back the range check and sent constants and
                 // calls through branches before the table.
-                0o000 | 0o050 | 0o056 | 0o057 | 0o063 | 0o064 | 0o065 | 0o066 | 0o067 | 0o112
-                | 0o113 | 0o114 | 0o115 | 0o117 | 0o120 | 0o121 | 0o122 | 0o135 | 0o136 | 0o143
-                | 0o146 | 0o151 | 0o152 | 0o153 | 0o163 | 0o164 | 0o165 | 0o166 | 0o167 | 0o170
-                | 0o171 | 0o172 | 0o173 | 0o174 | 0o175 | 0o176 | 0o177 | 0o200 | 0o212 | 0o213
-                | 0o214 | 0o215 | 0o216 | 0o217 | 0o220 | 0o221 | 0o222 | 0o223 | 0o224 | 0o225
-                | 0o226 | 0o227 | 0o230 | 0o231 | 0o232 | 0o233 | 0o235 | 0o237 | 0o244 | 0o251
-                | 0o252 | 0o253 | 0o254 | 0o255 | 0o256 | 0o257 | 0o260 | 0o261 | 0o264 | 0o265
-                | 0o270 | 0o271 | 0o272 | 0o273 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
+                0o000 | 0o050 | 0o056 | 0o057 | 0o063 | 0o064 | 0o065 | 0o066 | 0o067 | 0o113
+                | 0o114 | 0o115 | 0o117 | 0o120 | 0o121 | 0o122 | 0o135 | 0o136 | 0o143 | 0o146
+                | 0o151 | 0o152 | 0o153 | 0o163 | 0o164 | 0o165 | 0o166 | 0o167 | 0o170 | 0o171
+                | 0o172 | 0o173 | 0o174 | 0o175 | 0o176 | 0o177 | 0o200 | 0o212 | 0o213 | 0o214
+                | 0o215 | 0o216 | 0o217 | 0o220 | 0o221 | 0o222 | 0o223 | 0o224 | 0o225 | 0o226
+                | 0o227 | 0o230 | 0o231 | 0o232 | 0o233 | 0o235 | 0o237 | 0o244 | 0o251 | 0o252
+                | 0o253 | 0o254 | 0o255 | 0o256 | 0o257 | 0o260 | 0o261 | 0o264 | 0o265 | 0o270
+                | 0o271 | 0o272 | 0o273 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
             }
         };
         if let FastExit::Continued(new_top) = exit {

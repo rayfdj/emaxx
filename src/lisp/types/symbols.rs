@@ -796,6 +796,45 @@ const KEY_NAMES: &[&str] = &[
     "bottom",
     "center",
     "latin",
+    // data.c:Ftype_of's and Fcl_type_of's answers.
+    "symbol-with-pos",
+    "vector",
+    "subr",
+    "byte-code-function",
+    "interpreted-function",
+    "buffer",
+    "marker",
+    "overlay",
+    "char-table",
+    "hash-table",
+    "sub-char-table",
+    "frame",
+    "bool-vector",
+    "native-comp-unit",
+    "finalizer",
+    "process",
+    "window",
+    "window-configuration",
+    "thread",
+    "mutex",
+    "condition-variable",
+    "module-function",
+    "user-ptr",
+    "treesit-parser",
+    "treesit-node",
+    "treesit-compiled-query",
+    "sqlite",
+    "font-entity",
+    "font-object",
+    "font-spec",
+    "record",
+    "null",
+    "boolean",
+    "fixnum",
+    "bignum",
+    "special-form",
+    "primitive-function",
+    "native-comp-function",
 ];
 
 struct Symbols {
@@ -1116,19 +1155,40 @@ const fn same_name(left: &str, right: &str) -> bool {
     byte == left.len()
 }
 
+/// FNV-1a of a name's bytes, at compile time.
+const fn name_hash(name: &str) -> usize {
+    let bytes = name.as_bytes();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut byte = 0;
+    while byte < bytes.len() {
+        hash ^= bytes[byte] as u64;
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+        byte += 1;
+    }
+    hash as usize
+}
+
 // Each name has one slot: a second would be interned for nothing and
-// never be the slot a key finds.
+// never be the slot a key finds.  The names go into an open-addressed
+// table, each compared with the ones already in its probe sequence.
 const _: () = {
+    const BUCKETS: usize = 4096;
+    assert!(
+        KEY_NAMES.len() * 2 <= BUCKETS,
+        "the key table needs more buckets"
+    );
+    let mut slots = [usize::MAX; BUCKETS];
     let mut index = 0;
     while index < KEY_NAMES.len() {
-        let mut other = index + 1;
-        while other < KEY_NAMES.len() {
+        let mut slot = name_hash(KEY_NAMES[index]) & (BUCKETS - 1);
+        while slots[slot] != usize::MAX {
             assert!(
-                !same_name(KEY_NAMES[index], KEY_NAMES[other]),
+                !same_name(KEY_NAMES[slots[slot]], KEY_NAMES[index]),
                 "a cached symbol key's name is listed twice"
             );
-            other += 1;
+            slot = (slot + 1) & (BUCKETS - 1);
         }
+        slots[slot] = index;
         index += 1;
     }
 };

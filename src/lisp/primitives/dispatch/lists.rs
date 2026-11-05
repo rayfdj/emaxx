@@ -1138,7 +1138,7 @@ define_dispatch!(
                 copy_alist_value(&args[0])
             }
             "memq" | "memql" | "member" => direct_member_family(interp, args, env, name),
-            "assq" | "rassq" => direct_assq_family(interp, args, env, name),
+            "assq" | "rassq" => direct_assq_family(interp, args, env, name == "assq"),
             "rassoc" => {
                 need_args(name, args, 2)?;
                 direct_assoc_family(interp, &[args[0], args[1], Value::Nil], env, false)
@@ -2376,13 +2376,11 @@ pub(super) fn direct_assq_family(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut crate::lisp::types::Env,
-    name: &str,
+    want_car: bool,
 ) -> Result<Value, LispError> {
-    need_args(name, args, 2)?;
-    let want_car = name == "assq";
+    need_args(if want_car { "assq" } else { "rassq" }, args, 2)?;
     let key = args[0];
     let mut tail = args[1];
-    let key_vectorlike = key.is_vectorlike();
     let mut walk = crate::lisp::types::TailWalk::new(tail);
     while let Some(cons) = tail.cons_ref() {
         // The cell once for its car and its cdr, as XCAR and XCDR read
@@ -2395,12 +2393,7 @@ pub(super) fn direct_assq_family(
             } else {
                 entry.cdr.get()
             };
-            // lisp.h:EQ: the words, or a symbol with position (always
-            // vectorlike) against its symbol.
-            if entry_key.word() == key.word()
-                || ((key_vectorlike || entry_key.is_vectorlike())
-                    && values_eq_in_env(interp, &entry_key, &key, env))
-            {
+            if values_eq_in_env(interp, &entry_key, &key, env) {
                 return Ok(item);
             }
         }
@@ -2420,7 +2413,7 @@ pub(super) fn direct_assq(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    direct_assq_family(interp, args, env, "assq")
+    direct_assq_family(interp, args, env, true)
 }
 
 pub(super) fn direct_rassq(
@@ -2428,7 +2421,7 @@ pub(super) fn direct_rassq(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    direct_assq_family(interp, args, env, "rassq")
+    direct_assq_family(interp, args, env, false)
 }
 
 /// fns.c:eq_comparable_value: SYMBOLP or FIXNUMP, whose `equal' is `eq'.
@@ -2451,12 +2444,7 @@ fn direct_assoc_family(
 ) -> Result<Value, LispError> {
     let [key, alist, testfn] = *args;
     if testfn.is_nil() && eq_comparable_value(interp, &key, env) {
-        return direct_assq_family(
-            interp,
-            &[key, alist],
-            env,
-            if car { "assq" } else { "rassq" },
-        );
+        return direct_assq_family(interp, &[key, alist], env, car);
     }
     let mut tail = alist;
     let mut walk = crate::lisp::types::TailWalk::new(tail);

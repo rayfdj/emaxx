@@ -520,7 +520,14 @@ pub(crate) fn with_string_text<R>(value: &Value, f: impl FnOnce(&str) -> R) -> O
 pub(crate) fn strings_equal(left: &Value, right: &Value) -> bool {
     match (left.kind(), right.kind()) {
         (Kind::StringObject(left), Kind::StringObject(right)) => {
-            left.ptr_eq(&right) || left.borrow().contents_equal(&right.borrow())
+            left.ptr_eq(&right) || {
+                // fns.c:Fstring_equal: SCHARS, SBYTES and the bytes, read
+                // as its SDATA reads them.  SAFETY: the comparison runs no
+                // Lisp, collects nothing and stores into neither string.
+                let (left_bytes, left_chars) = unsafe { left.bytes_and_chars_unguarded() };
+                let (right_bytes, right_chars) = unsafe { right.bytes_and_chars_unguarded() };
+                left_chars == right_chars && left_bytes == right_bytes
+            }
         }
         _ => false,
     }

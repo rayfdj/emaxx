@@ -15117,6 +15117,45 @@ setup_process_coding_systems's check now refuses). A 13-form
   to 319 print GNU's results as before. Local validation: the grouped
   gate's 3,501 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 321: `eq' and `eql' are lisp.h's EQ and fns.c's Feql, the
+  verified byte-code loop runs Bsymbol_value, and buffer names, type
+  names and undo's text are no longer copied or interned on the way.**
+  Every object has the one word, its tagged address or a fixnum's
+  immediate value (each kind is decoded from its header, the static
+  subrs included), so BASE_EQ is the word compare and EQ adds only the
+  bare-symbol compare of a symbol with position while
+  `symbols-with-pos-enabled' is set, read as lisp.h reads the flag
+  first: the kind-by-kind identity test behind every vectorlike pair is
+  gone, and an `assq' or `memq' whose key is a buffer or a window no
+  longer calls out at each element. `eql' is Feql: the words, then a
+  float's bits (same_float) or a bignum's value. The verified loop's Beq
+  reads the flag before it looks into an operand, and `assq' takes its
+  car-or-cdr choice as a flag where it compared its name. Bsymbol_value
+  is Fsymbol_value of TOP in the loop for a variable whose value its
+  cell holds or Bvarref's redirected read finds, where it left the loop
+  for the full arm each time (137 instructions a call in a byte-code
+  loop, GNU 214, from 417). Fget_buffer reads the name's characters and
+  bytes once and compares each buffer's name as Fstring_equal, with no
+  guard counted on either string (550 a call, GNU 654, from 804);
+  `type-of' and `cl-type-of' answer their symbols from the cached keys
+  where each call interned the type's name (38 names added; the keys'
+  duplicate check, which a quadratic scan had grown past constant
+  evaluation's limit, probes a hash table). Undo's path allocates 325
+  times an iteration where it did 367: a composition iterator looks for
+  its window only when it needs it, a short plain string is inserted
+  from a stack copy, a deletion that returns no string reads the deleted
+  text in place for its undo record, and the window walks keep up to
+  eight windows on the stack. Undo runs 1,310,985 instructions an
+  iteration against GNU's 1,222,673 (1.072, from 1.084). A first gate
+  pass found `unbound' interned at startup, the key `type-of' had
+  answered for Emaxx's unbound marker where GNU never interns Qunbound;
+  Qunbound being a symbol, both primitives answer `symbol' for it. A
+  command-line comparison runs Bsymbol_value on every kind of variable,
+  `eq' and `eql' on symbols with positions, floats, NaNs and bignums,
+  `type-of' and `cl-type-of' on 24 kinds of object and `get-buffer' on
+  equal, unibyte and multibyte names. Local validation: the grouped
+  gate's 3,501 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17680,7 +17719,55 @@ against 1,638) and package-tests (5,861 against 5,343), and
 `ert-test-run-tests-batch-expensive' runs in 0.96 of GNU's time,
 ert-tests as a whole 26,307 ms against 27,211.
 
+**On `164ab0f`** (round 320): the full Rust gate (run 42066137161)
+  passed; the frozen run (run 42066143882) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a slower runner than round 319's
+  (the oracle's bodies 269.6 s against 216.9). Setup 80.0 s against 65.5
+  s (1.221), test bodies 303.0 s against 269.6 s (1.124), in all 1.122,
+  with a per-file setup median of 120 ms against 101. The widest body
+  gaps are ert-tests (45,923 ms against 38,060), tramp-tests (22,914
+  against 19,196), comp-tests (17,595 against 15,171), semantic-utest-ia
+  (4,083 against 2,710) and mule-tests (3,204 against 2,006), and
+  `ert-test-run-tests-batch-expensive' runs in 1.20 of GNU's time. The
+  frozen run times the gate profile (debug assertions and overflow
+  checks on, thin LTO, sixteen code units): on this host mule-tests'
+  loop over every code point takes 1.23 s in that build, 0.83 s in the
+  release build and 0.96 s in GNU, and semantic-utest-ia's file 3.7 s,
+  2.6 s and 5.1 s, so those two files' gaps are the checked build's.
+
 **Findings recorded, not fixed:**
+- **Window configurations (round 321).** Fcurrent_window_configuration's
+  save_window_save walks the frame's window tree, the root's subwindows
+  and then its `next', the minibuffer window; Emaxx saves every window
+  record of the frame, the deleted ones too, and its restore marks each
+  frame window the configuration did not save deleted with its slots
+  past the frame's cut off, where delete_all_child_windows unshows the
+  current tree's windows and keeps each one's other fields (its buffer
+  in `combination_limit'). In undo's loop, where ERT saves and restores
+  the configuration around each test, capturing costs 38,750
+  instructions an iteration against GNU's 16,764 and restoring 180,174
+  against 140,489.
+- **Windows as generic records (round 321).** A window is a record whose
+  slots are a vector apart from it, so each window primitive decodes the
+  record's kind and reads a slot through that vector; called from native
+  code, `window-top-child' takes 112 instructions where GNU's takes 25,
+  and `window-buffer', `window-valid-p' and `window-frame' each about
+  100 more than GNU's. window.el's size functions, which
+  adjust_frame_size runs from a configuration's restore, cost 128,060
+  instructions an iteration against GNU's 100,601 for it
+  (`frame-windows-min-size'). A window wants to be the pseudovector
+  GNU's struct window is, its fields in the object.
+- **Native code's calls into subrs (round 321).** A call to `bufferp'
+  from native code takes 65 instructions where GNU's takes 14, and
+  `window-top-child' 113 where GNU's takes 27: the generated wrapper,
+  `invoke_subr''s table and arity reads, the active call's thread-local
+  and handler check, the argument slice and the Result through the
+  subr's body, against GNU's call through the freloc table with the
+  arguments in registers and a signal by longjmp. Undo's iteration makes
+  722 such calls. A `setq' of a special variable from native code takes
+  92 instructions (runtime_set_internal, then the symbol check and
+  set_internal_symbol) where GNU's set_internal stores a plain symbol's
+  value at once.
 - **A window start that points nowhere (round 320).** Fset_window_start
   runs set_marker_restricted, so a nil POS leaves the start marker
   pointing nowhere: `(set-window-start nil nil)' returns nil and
