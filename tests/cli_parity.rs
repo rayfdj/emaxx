@@ -2675,6 +2675,73 @@ fn a_deleted_selected_window_decodes_as_window_c_does() {
 }
 
 #[test]
+fn labeled_restrictions_and_stream_modes_answer_as_editfns_c_does() {
+    // editfns.c keeps a buffer's labeled restrictions innermost first,
+    // the outermost recording the bounds current when the first was
+    // entered: narrow-to-region checks its bounds against the whole
+    // buffer and keeps them within the innermost labeled restriction's,
+    // widen goes back to that restriction's bounds (dropping the
+    // outermost one when it is reached), a nil label counts as none, and
+    // internal--labeled-narrow-to-region narrows as narrow-to-region does
+    // before recording its bounds.  fileio.c's set-binary-mode checks a
+    // symbol and the three streams by EQ and answers t on a Posix
+    // system; set-default-file-modes takes a fixnum.
+    let corpus = Corpus::new();
+    for script in [
+        r##"(defun lr-b () (list (point-min) (point-max) (point)))
+(defmacro lr-try (form) `(condition-case e ,form (error (list 'ERR e))))
+(with-temp-buffer
+  (insert "0123456789abcdefghijklmnopqrstuvwxyz\n")
+  (let (r)
+    (narrow-to-region 6 30)
+    (push (list 'a (lr-b)) r)
+    (with-restriction 10 20 :label 'foo
+      (push (list 'b (lr-b)) r)
+      (widen) (push (list 'c (lr-b)) r)
+      (narrow-to-region 1 38) (push (list 'd (lr-b)) r)
+      (narrow-to-region 12 15) (push (list 'e (lr-b)) r)
+      (save-restriction (widen) (push (list 'f (lr-b)) r))
+      (push (list 'g (lr-b)) r)
+      (without-restriction :label 'foo (push (list 'h (lr-b)) r))
+      (push (list 'i (lr-b)) r)
+      (without-restriction :label 'bar (push (list 'j (lr-b)) r))
+      (with-restriction 14 18 :label 'baz
+        (push (list 'k (lr-b)) r)
+        (widen) (push (list 'l (lr-b)) r)
+        (without-restriction :label 'baz (push (list 'm (lr-b)) r))
+        (push (list 'n (lr-b)) r))
+      (push (list 'o (lr-b)) r)
+      (goto-char 11) (insert "XX") (push (list 'p (lr-b)) r)
+      (widen) (push (list 'q (lr-b)) r))
+    (push (list 'r (lr-b)) r)
+    (widen) (push (list 's (lr-b)) r)
+    (internal--labeled-narrow-to-region 3 9 nil)
+    (push (list 't (lr-b)) r)
+    (widen) (push (list 'u (lr-b)) r)
+    (internal--labeled-widen nil) (push (list 'v (lr-b)) r)
+    (widen) (push (list 'w (lr-b)) r)
+    (push (list 'x (lr-try (narrow-to-region 0 5)) (lr-try (narrow-to-region 5 (1+ most-positive-fixnum))) (lr-try (narrow-to-region (make-marker) 3)) (lr-b)) r)
+    (dolist (x (nreverse r)) (prin1 x) (terpri))))
+"##,
+        r##"(prin1 (list (set-binary-mode 'stdout nil) (set-binary-mode 'stderr t) (set-binary-mode 'stdin nil)
+             (condition-case e (set-binary-mode 1 nil) (error e))
+             (condition-case e (set-binary-mode 'stdfoo nil) (error e))
+             (condition-case e (set-binary-mode (make-symbol "stdout") nil) (error e))
+             (condition-case e (set-default-file-modes nil) (error e))
+             (condition-case e (set-default-file-modes 1.5) (error e))
+             (condition-case e (set-default-file-modes (1+ most-positive-fixnum)) (error e))
+             (let ((m (default-file-modes))) (prog1 (list (set-default-file-modes #o750) (default-file-modes)) (set-default-file-modes m)))))
+(terpri)
+"##,
+    ] {
+        assert_same(
+            &corpus,
+            &["--batch", "-Q", "--eval", &format!("(progn {script})")],
+        );
+    }
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

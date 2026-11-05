@@ -767,14 +767,27 @@ define_dispatch!(
             }
             "set-binary-mode" => {
                 need_args(name, args, 2)?;
-                match args[0].kind() {
-                    Kind::Symbol(stream)
-                        if matches!(stream.as_str(), "stdin" | "stdout" | "stderr") =>
-                    {
-                        Ok(Value::Nil)
-                    }
-                    _ => Err(LispError::Signal("Invalid stream".into())),
+                // fileio.c:Fset_binary_mode: CHECK_SYMBOL, one of the three
+                // streams by EQ, the output streams flushed; on a Posix
+                // system set_binary_mode answers O_BINARY, so the value is
+                // t whatever MODE asks.
+                if !args[0].is_symbol() {
+                    return Err(wrong_type_argument("symbolp", args[0]));
                 }
+                if args[0].is_key(cached_symbol!("stdout")) {
+                    use std::io::Write as _;
+                    let _ = std::io::stdout().flush();
+                } else if args[0].is_key(cached_symbol!("stderr")) {
+                    use std::io::Write as _;
+                    let _ = std::io::stderr().flush();
+                } else if !args[0].is_key(cached_symbol!("stdin")) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("error"),
+                        Value::string("unsupported stream"),
+                        args[0],
+                    ])));
+                }
+                Ok(Value::T)
             }
             "obarray-make" => {
                 if args.len() > 1 {

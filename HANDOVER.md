@@ -15280,6 +15280,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   detached starts. Local validation: the grouped gate's 3,501
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 325: labeled restrictions are editfns.c's, and a sweep in a
+  narrowed buffer.** editfns.c keeps a buffer's labeled restrictions
+  innermost first, the last one labeled with the uninterned
+  outermost-restriction symbol and holding the bounds current when the
+  first was entered, and every caller reads the innermost one alone:
+  narrow-to-region keeps its bounds within the innermost restriction's,
+  widen goes back to the innermost restriction's bounds and drops the
+  outermost one once it reaches it, and a nil label is no labeled
+  restriction to them. Emaxx intersected the bounds of all of a buffer's
+  restrictions, so `(internal--labeled-narrow-to-region 1 6 'l)' inside
+  a narrowing of 6 to 20 widened to 6-6 where GNU's goes back to 1-6,
+  kept the outermost restriction after widening to it, and clamped
+  internal--labeled-narrow-to-region's bounds itself where GNU's runs
+  Fnarrow_to_region. narrow-to-region takes its bounds by fix_position
+  (a bignum is out of range, a marker pointing nowhere signals) and
+  checks them against the whole buffer, args-out-of-range naming them as
+  given. set-binary-mode checks a symbol and the three streams by EQ,
+  signals "unsupported stream" for another, flushes the output stream
+  and answers t, as Fset_binary_mode does on a Posix system (Emaxx
+  answered nil and signalled "Invalid stream" for a number);
+  set-default-file-modes takes a fixnum. The sweep calls each of 579
+  subrs taking one to three arguments with positions inside and outside
+  a narrowing of a buffer with a text property, a process for each subr,
+  and prints the result, point, bounds and text: it answers as GNU's
+  does but for the current time, three subrs GNU crashes on
+  (`get-variable-watchers', `internal--define-uninitialized-variable'
+  and `re--describe-compiled' of a number), `symbol-plist' of nil, whose
+  modifier caches GNU's X build makes at startup, and
+  `move-point-visually' with the selected window showing another buffer
+  than the current one, which GNU's display iterator answers with
+  args-out-of-range. A command-line comparison runs nested, unlabeled
+  and nil-labeled restrictions through widen, narrow-to-region,
+  save-restriction, without-restriction and an insertion, and the stream
+  and file-mode checks. Local validation: the grouped gate's 3,501
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17899,6 +17935,18 @@ ert-tests as a whole 26,307 ms against 27,211.
   33,143), comp-tests (14,377 against 12,150), semantic-utest-ia (2,962
   against 2,044) and mule-tests (2,387 against 1,516), and
   `ert-test-run-tests-batch-expensive' runs in 1.07 of GNU's time.
+
+**On `12d80a7`** (round 324): the full Rust gate (run 42115919476)
+  passed; the frozen run (run 42115924081) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a slower runner than round 323's
+  (the oracle's bodies 253.2 s against 244.3). Setup 69.3 s against 58.6
+  s (1.184), test bodies 272.9 s against 253.2 s (1.078), in all 1.106,
+  with a per-file setup median of 104 ms against 90. The widest body
+  gaps are tramp-tests (19,247 ms against 16,521), comp-tests (15,513
+  against 13,233), ert-tests (37,834 against 35,614), semantic-utest-ia
+  (3,539 against 2,484), mule-tests (2,795 against 1,754) and
+  icalendar-tests (1,075 against 396), and
+  `ert-test-run-tests-batch-expensive' runs in 1.05 of GNU's time.
 
 **Findings recorded, not fixed:**
 - **Windows as generic records (round 321).** A window is a record whose

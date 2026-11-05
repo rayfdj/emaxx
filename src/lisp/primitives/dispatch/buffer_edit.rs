@@ -300,18 +300,53 @@ fn internal_self_insert(
     Ok(hairy)
 }
 
-/// editfns.c:Fwiden: the whole buffer accessible, or as much of it as the
-/// innermost labeled restriction allows.
-fn widen_current_buffer(interp: &mut Interpreter) {
-    if let Some((start, end)) =
-        interp.effective_labeled_restriction(interp.current_buffer_id(), None)
-    {
-        interp.buffer.borrow_mut().narrow_to_region(start, end);
-    } else {
-        interp.buffer.borrow_mut().widen();
+/// editfns.c:Fwiden: the whole buffer accessible, or the bounds of the
+/// innermost labeled restriction, which goes once it is the outermost one
+/// (no labeled restriction is in effect then).
+pub(super) fn widen_current_buffer(interp: &mut Interpreter) {
+    let buffer_id = interp.current_buffer_id();
+    match interp.innermost_labeled_restriction(buffer_id) {
+        None => interp.buffer.borrow_mut().widen(),
+        Some((label, start, end)) => {
+            interp.buffer.borrow_mut().narrow_to_region(start, end);
+            if label.is_none() {
+                interp.pop_labeled_restriction(buffer_id);
+            }
+        }
     }
     // Changing the buffer bounds invalidates any recorded current column.
     interp.invalidate_current_column();
+}
+
+/// editfns.c:Fnarrow_to_region: START and END by fix_position, in either
+/// order, within the whole buffer (args-out-of-range of them as given),
+/// then within the innermost labeled restriction's bounds.
+pub(super) fn narrow_current_buffer(
+    interp: &mut Interpreter,
+    start: &Value,
+    end: &Value,
+) -> Result<(), LispError> {
+    let mut s = crate::lisp::primitives::buffers::fix_position(interp, start)?;
+    let mut e = crate::lisp::primitives::buffers::fix_position(interp, end)?;
+    if e < s {
+        std::mem::swap(&mut s, &mut e);
+    }
+    let z = interp.buffer.borrow().size_total() as i64 + 1;
+    if !(1 <= s && s <= e && e <= z) {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            *start,
+            *end,
+        ])));
+    }
+    let (mut s, mut e) = (s as usize, e as usize);
+    if let Some((_, begv, zv)) = interp.innermost_labeled_restriction(interp.current_buffer_id()) {
+        s = s.clamp(begv, zv);
+        e = e.clamp(begv, zv);
+    }
+    interp.buffer.borrow_mut().narrow_to_region(s, e);
+    interp.invalidate_current_column();
+    Ok(())
 }
 
 fn character_byte_value(character: Option<char>, multibyte: bool) -> Result<Value, LispError> {
@@ -1299,28 +1334,7 @@ define_dispatch!(
             }
             "narrow-to-region" => {
                 need_args(name, args, 2)?;
-                let mut start = position_from_value(interp, &args[0])?;
-                let mut end = position_from_value(interp, &args[1])?;
-                // editfns.c: the bounds, in either order, within the whole
-                // buffer before any labeled restriction clamps them.
-                if end < start {
-                    std::mem::swap(&mut start, &mut end);
-                }
-                if start < 1 || end > interp.buffer.borrow().size_total() + 1 {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("args-out-of-range"),
-                        args[0],
-                        args[1],
-                    ])));
-                }
-                if let Some((clamp_start, clamp_end)) =
-                    interp.effective_labeled_restriction(interp.current_buffer_id(), None)
-                {
-                    start = start.max(clamp_start);
-                    end = end.min(clamp_end);
-                }
-                interp.buffer.borrow_mut().narrow_to_region(start, end);
-                interp.invalidate_current_column();
+                narrow_current_buffer(interp, &args[0], &args[1])?;
                 Ok(Value::Nil)
             }
             "widen" => {

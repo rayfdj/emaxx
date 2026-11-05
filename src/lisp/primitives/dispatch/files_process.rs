@@ -1942,7 +1942,8 @@ define_dispatch!(
                 // subprocesses, honoured by every mkdir/open the runtime
                 // makes), and `realmask' remembers it for
                 // `default-file-modes'.
-                let mode = args[0].as_integer()?;
+                // CHECK_FIXNUM (mode).
+                let mode = args[0].as_fixnum()?;
                 interp.default_file_modes = mode & 0o777;
                 #[cfg(unix)]
                 {

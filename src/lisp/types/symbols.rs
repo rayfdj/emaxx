@@ -798,6 +798,9 @@ const KEY_NAMES: &[&str] = &[
     "latin",
     // window.c's window_wants_mode_line and its relatives.
     "none",
+    "stdin",
+    "stdout",
+    "stderr",
     // window.c's configurations.
     "window-persistent-parameters",
     "window-restore-killed-buffer-windows",

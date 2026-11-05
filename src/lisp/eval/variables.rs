@@ -4099,35 +4099,71 @@ impl Interpreter {
         }
     }
 
-    pub fn effective_labeled_restriction(
+    /// editfns.c:labeled_restrictions_peek_label: BUFFER_ID's innermost
+    /// labeled restriction's label, Some(None) for the outermost
+    /// restriction (Qoutermost_restriction); None for a buffer with none,
+    /// or a killed one.
+    fn labeled_restrictions_peek(&self, buffer_id: u64) -> Option<Option<Value>> {
+        if !self.has_buffer_id(buffer_id) {
+            return None;
+        }
+        self.labeled_restrictions
+            .iter()
+            .rev()
+            .find(|restriction| restriction.buffer_id == buffer_id)
+            .map(|restriction| restriction.label)
+    }
+
+    /// EQ (labeled_restrictions_peek_label (BUFFER_ID), LABEL).
+    pub(crate) fn labeled_restriction_label_is(&self, buffer_id: u64, label: Value) -> bool {
+        match self.labeled_restrictions_peek(buffer_id) {
+            None => label.is_nil(),
+            Some(None) => false,
+            Some(Some(innermost)) => innermost.word() == label.word(),
+        }
+    }
+
+    /// BUFFER_ID's innermost labeled restriction where its label is not
+    /// nil (a nil label is no labeled restriction to the callers of
+    /// labeled_restrictions_peek_label): the label (None for the outermost
+    /// restriction, the bounds current when the first was entered) and
+    /// labeled_restrictions_get_bound's bounds.
+    pub(crate) fn innermost_labeled_restriction(
         &self,
         buffer_id: u64,
-        skip_label: Option<&Value>,
-    ) -> Option<(usize, usize)> {
-        let mut result: Option<(usize, usize)> = None;
-        for restriction in &self.labeled_restrictions {
-            if restriction.buffer_id != buffer_id
-                || skip_label.is_some_and(|skip| {
-                    restriction
-                        .label
-                        .as_ref()
-                        .is_some_and(|label| crate::lisp::primitives::values_eql(skip, label))
-                })
-            {
-                continue;
-            }
-            let Some(start) = self.marker_position(restriction.beg_marker_id) else {
-                continue;
-            };
-            let Some(end) = self.marker_position(restriction.end_marker_id) else {
-                continue;
-            };
-            result = Some(match result {
-                Some((cur_start, cur_end)) => (cur_start.max(start), cur_end.min(end)),
-                None => (start, end),
-            });
+    ) -> Option<(Option<Value>, usize, usize)> {
+        let label = self.labeled_restrictions_peek(buffer_id)?;
+        if label.is_some_and(|label| label.is_nil()) {
+            return None;
         }
-        result
+        let restriction = self
+            .labeled_restrictions
+            .iter()
+            .rev()
+            .find(|restriction| restriction.buffer_id == buffer_id)?;
+        Some((
+            label,
+            self.marker_position(restriction.beg_marker_id)?,
+            self.marker_position(restriction.end_marker_id)?,
+        ))
+    }
+
+    /// editfns.c:labeled_restrictions_pop: BUFFER_ID's innermost labeled
+    /// restriction removed, all of them once it is the outermost one.
+    pub(crate) fn pop_labeled_restriction(&mut self, buffer_id: u64) {
+        let Some(top) = self
+            .labeled_restrictions
+            .iter()
+            .rposition(|restriction| restriction.buffer_id == buffer_id)
+        else {
+            return;
+        };
+        if self.labeled_restrictions[top].label.is_none() {
+            self.labeled_restrictions
+                .retain(|restriction| restriction.buffer_id != buffer_id);
+        } else {
+            self.labeled_restrictions.remove(top);
+        }
     }
 
     pub(crate) fn labeled_restrictions_snapshot(&self, buffer_id: u64) -> Vec<LabeledRestriction> {
@@ -4156,11 +4192,9 @@ impl Interpreter {
         end: usize,
         outermost: (usize, usize),
     ) -> Result<(), LispError> {
-        if !self
-            .labeled_restrictions
-            .iter()
-            .any(|restriction| restriction.buffer_id == buffer_id)
-        {
+        // NILP (labeled_restrictions_peek_label (buf)): the outermost
+        // restriction first.
+        if self.innermost_labeled_restriction(buffer_id).is_none() {
             let (beg_marker_id, end_marker_id) =
                 self.labeled_restriction_markers(buffer_id, outermost.0, outermost.1)?;
             self.labeled_restrictions.push(LabeledRestriction {
@@ -4179,35 +4213,6 @@ impl Interpreter {
             end_marker_id,
         });
         Ok(())
-    }
-
-    pub(crate) fn pop_labeled_restriction(
-        &mut self,
-        buffer_id: u64,
-        label: &Value,
-    ) -> Option<(usize, usize)> {
-        let top = self
-            .labeled_restrictions
-            .iter()
-            .rposition(|restriction| restriction.buffer_id == buffer_id)?;
-        if self.labeled_restrictions[top]
-            .label
-            .as_ref()
-            .is_some_and(|active| crate::lisp::primitives::values_eql(active, label))
-        {
-            self.labeled_restrictions.remove(top);
-        }
-        let next = self
-            .labeled_restrictions
-            .iter()
-            .rposition(|restriction| restriction.buffer_id == buffer_id)?;
-        let restriction = self.labeled_restrictions[next].clone();
-        let start = self.marker_position(restriction.beg_marker_id)?;
-        let end = self.marker_position(restriction.end_marker_id)?;
-        if restriction.label.is_none() {
-            self.labeled_restrictions.remove(next);
-        }
-        Some((start, end))
     }
 
     fn labeled_restriction_markers(

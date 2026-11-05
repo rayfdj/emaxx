@@ -1025,45 +1025,33 @@ define_dispatch!(
 
             "internal--labeled-narrow-to-region" => {
                 need_args(name, args, 3)?;
-                let mut start = position_from_value(interp, &args[0])?;
-                let mut end = position_from_value(interp, &args[1])?;
-                let label = args[2];
-                if start > end {
-                    std::mem::swap(&mut start, &mut end);
-                }
+                // editfns.c:Finternal__labeled_narrow_to_region: the bounds
+                // before as the outermost restriction (when none is labeled
+                // yet), Fnarrow_to_region, then the bounds after under
+                // LABEL.
+                let buffer_id = interp.current_buffer_id();
                 let outermost = (
                     interp.buffer.borrow().point_min(),
                     interp.buffer.borrow().point_max(),
                 );
-                if let Some((clamp_start, clamp_end)) =
-                    interp.effective_labeled_restriction(interp.current_buffer_id(), None)
-                {
-                    start = start.clamp(clamp_start, clamp_end);
-                    end = end.clamp(clamp_start, clamp_end);
-                }
-                interp.push_labeled_restriction(
-                    interp.current_buffer_id(),
-                    label,
-                    start,
-                    end,
-                    outermost,
-                )?;
-                interp.buffer.borrow_mut().narrow_to_region(start, end);
-                interp.invalidate_current_column();
+                super::buffer_edit::narrow_current_buffer(interp, &args[0], &args[1])?;
+                let (start, end) = (
+                    interp.buffer.borrow().point_min(),
+                    interp.buffer.borrow().point_max(),
+                );
+                interp.push_labeled_restriction(buffer_id, args[2], start, end, outermost)?;
                 Ok(Value::Nil)
             }
 
             "internal--labeled-widen" => {
                 need_args(name, args, 1)?;
-                let label = &args[0];
-                if let Some((start, end)) =
-                    interp.pop_labeled_restriction(interp.current_buffer_id(), label)
-                {
-                    interp.buffer.borrow_mut().narrow_to_region(start, end);
-                } else {
-                    interp.buffer.borrow_mut().widen();
+                // editfns.c:Finternal__labeled_widen: the innermost
+                // restriction goes when it is LABEL's (EQ), then Fwiden.
+                let buffer_id = interp.current_buffer_id();
+                if interp.labeled_restriction_label_is(buffer_id, args[0]) {
+                    interp.pop_labeled_restriction(buffer_id);
                 }
-                interp.invalidate_current_column();
+                super::buffer_edit::widen_current_buffer(interp);
                 Ok(Value::Nil)
             }
 
