@@ -1178,12 +1178,13 @@ fn valid_window_or_selected(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<crate::lisp::types::RecordRef, LispError> {
-    let window = if value.is_nil() {
-        interp.record_ref(interp.selected_window_id())
-    } else {
-        window_record(value)
-    };
-    window
+    // nil is the selected window, unchecked.
+    if value.is_nil() {
+        return interp
+            .record_ref(interp.selected_window_id())
+            .ok_or_else(|| wrong_type_argument("window-valid-p", *value));
+    }
+    window_record(value)
         .filter(|window| WindowKind::of(*window) != WindowKind::Deleted)
         .ok_or_else(|| wrong_type_argument("window-valid-p", *value))
 }
@@ -2358,10 +2359,10 @@ pub(super) fn live_window_id_or_selected(
     interp: &Interpreter,
     value: Option<&Value>,
 ) -> Result<u64, LispError> {
-    let window = value
-        .filter(|window| !window.is_nil())
-        .cloned()
-        .unwrap_or_else(|| interp.selected_window_value());
+    // decode_live_window: nil is the selected window, unchecked.
+    let Some(window) = value.filter(|window| !window.is_nil()).cloned() else {
+        return Ok(interp.selected_window_id());
+    };
     // WINDOW_LIVE_P of the record: a leaf showing a live buffer.
     window_record(&window)
         .filter(|record| {
@@ -2465,6 +2466,10 @@ fn run_record_buffer_hook(interp: &mut Interpreter, env: &mut Env) -> Result<(),
 /// window.c's decode_valid_window: a live or internal window, nil being
 /// the selected one.
 fn valid_window_id(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
+    // decode_valid_window: nil is the selected window, unchecked.
+    if value.is_nil() {
+        return Ok(interp.selected_window_id());
+    }
     let id = window_id_or_selected(interp, value)
         .map_err(|_| wrong_type_argument("window-valid-p", *value))?;
     if window_is_deleted(interp, id) {
@@ -3396,15 +3401,25 @@ fn delete_other_windows_from_tree(
     // A live WINDOW's start and top line, for keeping the text at its
     // start where it was on the frame.
     let frame_top = window_geometry(interp, frame.borrow().root_window_id()).3;
-    let start_and_top = live.then(|| {
+    // marker_position (w->start): a start that points nowhere signals
+    // before anything changes.
+    let start_and_top = if live {
         let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
             .unwrap_or(interp.current_buffer_id());
-        (
+        let startpos = match window_marker(interp, window_id, WINDOW_START_SLOT) {
+            Some(marker) => marker
+                .position()
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?,
+            None => window_start_marker(interp, window_id, buffer_id),
+        };
+        Some((
             buffer_id,
-            window_start_marker(interp, window_id, buffer_id),
+            startpos,
             window_geometry(interp, window_id).3 - frame_top,
-        )
-    });
+        ))
+    } else {
+        None
+    };
     let mut swindow = window_id;
     if live {
         if window_id != frame.borrow().selected_window_id() {
@@ -4280,17 +4295,23 @@ fn window_list_frames(
 /// the frame ALL-FRAMES names (else of the selected frame), the selected
 /// window if it shows BUFFER_ID, else the first that does on the selected
 /// frame, else the first that does at all.  A minibuffer window counts
-/// only while a minibuffer is active and only as minibuf_window.
+/// only while a minibuffer is active and only as minibuf_window.  The
+/// walk's first window is window_list_1's decode_live_window: a deleted
+/// one signals.
 pub(crate) fn buffer_window(
     interp: &Interpreter,
     buffer_id: u64,
     all_frames: &Value,
-) -> Option<Value> {
+) -> Result<Option<Value>, LispError> {
     let selected_frame = interp.selected_frame_id;
     let frame = match all_frames.kind() {
         Kind::Frame(frame) if frame.is_live() => frame,
         _ => selected_frame,
     };
+    live_window_id_or_selected(
+        interp,
+        Some(&interp.record_value(frame.borrow().selected_window_id())),
+    )?;
     let selected = interp.selected_window_id();
     let minibuffer_active = interp.active_minibuffer_buffer_id().is_some();
     let minibuffer = interp.minibuffer_window_id();
@@ -4301,7 +4322,7 @@ pub(crate) fn buffer_window(
     // The selected window is returned wherever the walk meets it, and it
     // is among the windows unless ALL-FRAMES names another frame.
     if frame == selected_frame && shows(selected) {
-        return Some(interp.record_value(selected));
+        return Ok(Some(interp.record_value(selected)));
     }
     let start = interp.record_value(frame.borrow().selected_window_id());
     let frames = window_list_frames(interp, frame, all_frames);
@@ -4312,7 +4333,7 @@ pub(crate) fn buffer_window(
             continue;
         }
         if id == selected {
-            return Some(interp.record_value(id));
+            return Ok(Some(interp.record_value(id)));
         }
         if !on_selected_frame && interp.window_frame_id(id) == Some(selected_frame) {
             best = Some(id);
@@ -4321,7 +4342,7 @@ pub(crate) fn buffer_window(
             best = Some(id);
         }
     }
-    best.map(|id| interp.record_value(id))
+    Ok(best.map(|id| interp.record_value(id)))
 }
 
 /// The windows `window_list_value' lists, by record id.
@@ -6971,6 +6992,11 @@ define_dispatch!(
                 let buffer_id = interp
                     .live_buffer_id(buffer)
                     .ok_or_else(|| LispError::Signal("Attempt to display deleted buffer".into()))?;
+                // tem = w->contents: nil only for the selected window nil
+                // decoded, deleted.
+                if window_slot_value(interp, window_id, WINDOW_BUFFER_SLOT).is_nil() {
+                    return Err(LispError::Signal("Window is deleted".into()));
+                }
                 let previous = window_buffer_id(interp, &window);
                 let changes_buffer = previous.is_some_and(|previous| previous != buffer_id);
                 if changes_buffer {
@@ -7063,12 +7089,9 @@ define_dispatch!(
             }
             "window-list-1" | "next-window" | "previous-window" => {
                 need_arg_range(name, args, 0, 3)?;
-                let current = args
-                    .first()
-                    .filter(|window| !window.is_nil())
-                    .cloned()
-                    .unwrap_or_else(|| interp.selected_window_value());
-                let window = live_window_id_or_selected(interp, Some(&current))?;
+                // decode_next_window_args: decode_live_window.
+                let window = live_window_id_or_selected(interp, args.first())?;
+                let current = interp.record_value(window);
                 let own_frame = interp
                     .window_frame_id(window)
                     .expect("window stores its owning frame");
@@ -7163,12 +7186,7 @@ define_dispatch!(
             }
             "window-parameters" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window = args
-                    .first()
-                    .filter(|window| !window.is_nil())
-                    .cloned()
-                    .unwrap_or_else(|| interp.selected_window_value());
-                let window_id = valid_window_id(interp, &window)?;
+                let window_id = valid_window_id(interp, args.first().unwrap_or(&Value::Nil))?;
                 // window.c:Fwindow_parameters: Fcopy_alist of the window's.
                 let parameters = interp
                     .find_record(window_id)
@@ -7252,12 +7270,7 @@ define_dispatch!(
             }
             "window-minibuffer-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window = args
-                    .first()
-                    .filter(|window| !window.is_nil())
-                    .cloned()
-                    .unwrap_or_else(|| interp.selected_window_value());
-                let window_id = valid_window_id(interp, &window)?;
+                let window_id = valid_window_id(interp, args.first().unwrap_or(&Value::Nil))?;
                 Ok(Value::from_bool(window_is_minibuffer(interp, window_id)))
             }
             "window-at" => {
@@ -7514,7 +7527,7 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 };
                 Ok(
-                    buffer_window(interp, buffer_id, args.get(1).unwrap_or(&Value::Nil))
+                    buffer_window(interp, buffer_id, args.get(1).unwrap_or(&Value::Nil))?
                         .unwrap_or(Value::Nil),
                 )
             }

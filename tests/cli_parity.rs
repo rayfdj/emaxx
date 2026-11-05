@@ -2582,6 +2582,99 @@ fn window_points_starts_and_selections_answer_as_window_c_does() {
 }
 
 #[test]
+fn a_deleted_selected_window_decodes_as_window_c_does() {
+    // A point marker set to point nowhere makes delete-other-windows fail
+    // in unshow_buffer, which can leave the selected window deleted.
+    // decode_live_window, decode_valid_window and decode_any_window then
+    // answer it for nil unchecked: its fields read as they are, and
+    // Fset_window_buffer signals "Window is deleted"; window_loop's walk
+    // from it (get-buffer-window, other-buffer) is window_list_1's
+    // decode_live_window, which signals window-live-p.  The second
+    // script detaches the kept window's start, which
+    // Fdelete_other_windows_internal's marker_position refuses before it
+    // changes anything.
+    let corpus = Corpus::new();
+    for script in [
+        r##"(defvar ws-r nil)
+(defun ws-push (&rest xs) (prin1 xs) (terpri))
+(defun ws-st (tag)
+  (ws-push tag (window-live-p (selected-window)) (window-valid-p (selected-window))
+           (and (window-buffer (selected-window)) (buffer-name (window-buffer (selected-window))))
+           (condition-case e (length (window-list)) (error (list (quote ERR) (car e)))) (condition-case e (mapcar (lambda (w) (buffer-name (window-buffer w))) (window-list)) (error (list (quote ERR) (car e))))
+           (condition-case e (eq (frame-first-window) (car (window-list))) (error (list (quote ERR) (car e)))) (buffer-name)))
+(defmacro ws-try (tag form) `(ws-push ,tag (condition-case e (progn ,form 'ok) (error (list 'ERR (car e) (if (windowp (cadr e)) 'W (cadr e)))))))
+(defvar ws-objs nil)
+(defun ws-setup (n)
+  (ws-try (list n 'sel) (select-window (frame-first-window)))
+  (ws-try (list n 'dow) (delete-other-windows))
+  (ws-st (list n 'after-dow))
+  (ws-try (list n 'stb) (switch-to-buffer (get-buffer-create "wsA")))
+  (erase-buffer) (insert "line one\nline two\nline three\n") (goto-char 5)
+  (ws-try (list n 'split)
+          (let* ((sel (selected-window))
+                 (right (split-window sel nil 'right))
+                 (below (split-window right nil 'below))
+                 (dead (split-window below nil 'below)))
+            (set-window-buffer below (get-buffer-create "wsB"))
+            (delete-window dead)
+            (setq ws-objs (list (cons 'selected sel) (cons 'right right) (cons 'below below) (cons 'dead dead)))))
+  (ws-st (list n 'after-setup)))
+(defun ws-w (w) (list (window-live-p w) (window-valid-p w) (and (window-buffer w) (buffer-name (window-buffer w))) (and (window-parent w) t)))
+(ws-setup 0)
+(ws-push 'swp (condition-case e (set-window-point (cdr (assq 'below ws-objs)) nil) (error e)))
+(ws-setup 1)
+(ws-setup 2)
+(ignore-errors (select-window (frame-first-window)))
+(ignore-errors (delete-other-windows))
+(defmacro ws-t (form) `(condition-case e ,form (error (list 'ERR (car e) (if (windowp (cadr e)) 'W (cadr e))))))
+(ws-push 'dead-selected (window-live-p (selected-window)) (window-valid-p (selected-window))
+         (ws-t (window-minibuffer-p)) (ws-t (window-dedicated-p)) (ws-t (window-buffer))
+         (ws-t (window-prev-buffers)) (ws-t (window-next-buffers)) (ws-t (window-parameters))
+         (ws-t (set-window-buffer nil (get-buffer-create "wsA"))) (ws-t (window-parameter nil 'x))
+         (ws-t (window-hscroll)) (ws-t (window-margins)) (ws-t (window-fringes))
+         (ws-t (window-parent)) (ws-t (window-normal-size)) (ws-t (window-combination-limit nil))
+         (ws-t (window-new-total)) (ws-t (window-old-point)) (framep (window-frame)))
+(let ((w (frame-root-window)))
+  (ws-push 'root (window-live-p w) (window-valid-p w) (ws-t (frame-first-window))))
+(ws-push 'gbw (ws-t (get-buffer-window "wsA")) (ws-t (other-buffer)) (ws-t (get-buffer-window-list "wsA")))
+(kill-emacs 0)
+"##,
+        r##"(defvar ws-objs nil)
+(defun ws-push (&rest xs) (prin1 xs) (terpri))
+(defmacro ws-try (tag form) `(ws-push ,tag (condition-case e (progn ,form 'ok) (error (list 'ERR (car e) (if (windowp (cadr e)) (format "%s" (cadr e)) (cadr e)))))))
+(defun ws-id (w) (and w (string-to-number (replace-regexp-in-string "#<window \\([0-9]+\\).*" "\\1" (format "%s" w)))))
+(defun ws-tree (w) (when w (list (ws-id w) (window-valid-p w) (window-live-p w)
+   'parent (condition-case nil (ws-id (window-parent w)) (error 'E)) 'prev (condition-case nil (ws-id (window-prev-sibling w)) (error 'E)) 'next (condition-case nil (ws-id (window-next-sibling w)) (error 'E))
+   'kids (condition-case nil (let ((c (window-child w)) r) (while c (push (ws-id c) r) (setq c (window-next-sibling c))) (nreverse r)) (error 'E)))))
+(defun ws-setup (n)
+  (ws-try (list n 'sel) (select-window (frame-first-window)))
+  (ws-try (list n 'dow) (delete-other-windows))
+  (ws-push (list n 'state) (ws-id (selected-window)) (ws-id (frame-root-window)) (ws-tree (frame-root-window)) (ws-tree (selected-window)))
+  (switch-to-buffer (get-buffer-create "wsA"))
+  (erase-buffer) (insert "line one\nline two\nline three\n") (goto-char 5)
+  (ws-try (list n 'split)
+   (let* ((sel (selected-window))
+         (right (split-window sel nil 'right))
+         (below (split-window right nil 'below))
+         (dead (split-window below nil 'below)))
+    (set-window-buffer below (get-buffer-create "wsB"))
+    (delete-window dead)
+    (setq ws-objs (list (cons 'selected sel) (cons 'right right) (cons 'below below) (cons 'dead dead))))))
+(dolist (k '(selected right below))
+  (ws-setup k)
+  (ws-push 'sws k (condition-case e (set-window-start (cdr (assq k ws-objs)) nil) (error e))))
+(ws-setup 'last)
+(kill-emacs 0)
+"##,
+    ] {
+        assert_same(
+            &corpus,
+            &["--batch", "-Q", "--eval", &format!("(progn {script})")],
+        );
+    }
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

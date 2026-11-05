@@ -1856,7 +1856,7 @@ pub(crate) fn other_buffer(
             continue;
         }
         if visible_ok
-            || super::display::buffer_window(interp, id, &Value::symbol("visible")).is_none()
+            || super::display::buffer_window(interp, id, &Value::symbol("visible"))?.is_none()
         {
             return Ok(candidate);
         }

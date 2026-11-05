@@ -15254,6 +15254,32 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 324: nil decodes to the selected window unchecked, a window
+  walk checks the window it starts from, and delete-other-windows reads
+  the kept window's start first.** window.c's decode_live_window,
+  decode_valid_window and decode_any_window answer the selected window
+  for nil without a check; Emaxx checked it, so once a failed
+  unshow_buffer had left the selected window deleted (round 323),
+  `window-minibuffer-p', `window-parameters', `window-dedicated-p',
+  `window-prev-buffers' and the other accessors of nil signalled where
+  GNU's answer the deleted window's fields, and `set-window-buffer' of
+  nil now signals Fset_window_buffer's "Window is deleted". window_loop
+  starts its walk from the frame's selected window through
+  window_list_1's decode_live_window, so `get-buffer-window', and
+  `other-buffer' through it, signal `window-live-p' with a deleted
+  selected window, as GNU's do. Fdelete_other_windows_internal reads the
+  kept window's start with marker_position before it changes anything,
+  so a start set to point nowhere makes it signal at once, where Emaxx
+  went on with the buffer's beginning. With these, a sweep of 148 window
+  and frame primitives with each kind of window argument, a process for
+  each primitive, answers line for line as GNU's does, through the
+  states GNU's own setup failures leave. A command-line comparison
+  reaches the deleted selected window through a detached point and calls
+  nineteen accessors of nil, `set-window-buffer', `get-buffer-window',
+  `other-buffer' and `get-buffer-window-list', and replays the sweep's
+  detached starts. Local validation: the grouped gate's 3,501
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17863,20 +17889,18 @@ ert-tests as a whole 26,307 ms against 27,211.
   against 1,890), mule-tests (1,987 against 1,281) and epg-tests (2,320
   against 1,794).
 
+**On `4e49c32`** (round 323): the full Rust gate (run 42107474528)
+  passed; the frozen run (run 42107479113) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a slower runner than round 322's
+  (the oracle's bodies 244.3 s against 232.0). Setup 63.3 s against 53.4
+  s (1.187), test bodies 261.3 s against 244.3 s (1.070), in all 1.107,
+  with a per-file setup median of 94 ms against 82. The widest body gaps
+  are tramp-tests (18,704 ms against 15,763), ert-tests (35,938 against
+  33,143), comp-tests (14,377 against 12,150), semantic-utest-ia (2,962
+  against 2,044) and mule-tests (2,387 against 1,516), and
+  `ert-test-run-tests-batch-expensive' runs in 1.07 of GNU's time.
+
 **Findings recorded, not fixed:**
-- **A deleted selected window (round 323).** A start or point marker
-  that points nowhere makes unshow_buffer signal in the middle of
-  delete_all_child_windows, and `delete-other-windows' can then leave
-  the selected window deleted. GNU's decode_live_window,
-  decode_valid_window and decode_any_window answer the selected window
-  for nil without a check, so `set-window-buffer' of nil then signals
-  "Window is deleted" and `window-minibuffer-p' answers; Emaxx's
-  decoders check the selected window too and signal `window-live-p' or
-  `window-valid-p'. Past that GNU's primitives read a deleted window's
-  nil contents as a buffer, which an implementation cannot follow; the
-  decoders' nil wants to be the unchecked selected window, with each
-  primitive answering a deleted one as GNU's does where GNU's answer is
-  defined.
 - **Windows as generic records (round 321).** A window is a record whose
   slots are a vector apart from it, so each window primitive decodes the
   record's kind and reads a slot through that vector; called from native
