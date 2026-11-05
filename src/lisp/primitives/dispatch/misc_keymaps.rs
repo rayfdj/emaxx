@@ -816,9 +816,10 @@ define_dispatch!(
             }
             "define-hash-table-test" => {
                 need_args(name, args, 3)?;
-                let symbol = args[0].as_symbol()?;
+                // Fput (name, Qhash_table_test, ...) on the symbol itself.
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
                 let spec = Value::list([args[1], args[2]]);
-                interp.put_symbol_property(symbol, "hash-table-test", spec);
+                interp.put_symbol_property_on(&symbol, "hash-table-test", spec);
                 Ok(spec)
             }
             "make-hash-table" => {

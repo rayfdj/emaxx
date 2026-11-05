@@ -83,14 +83,18 @@ pub(crate) fn check_coding_system(
     coding_system: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    // Fget's CHECK_SYMBOL.
-    let name =
-        symbol_name(coding_system).ok_or_else(|| wrong_type_argument("symbolp", *coding_system))?;
+    // Fget's CHECK_SYMBOL, then the symbol's own property.
+    let symbol = match coding_system.kind() {
+        Kind::Symbol(symbol) => symbol,
+        Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
+        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+        _ => return Err(wrong_type_argument("symbolp", *coding_system)),
+    };
     let define_form = interp
-        .get_symbol_property(&name, "coding-system-define-form")
+        .get_property_of_symbol_value(*coding_system, "coding-system-define-form")
         .unwrap_or(Value::Nil);
     if !define_form.is_nil() {
-        interp.put_symbol_property(&name, "coding-system-define-form", Value::Nil);
+        interp.put_symbol_property_on(&symbol, "coding-system-define-form", Value::Nil);
         interp.safe_funcall(Value::symbol("eval"), &[define_form], env)?;
     }
     if crate::lisp::primitives::coding::coding_system_p(interp, coding_system) {

@@ -935,17 +935,19 @@ fn execute_kbd_macro_resolved_command(
     Ok(())
 }
 
+/// Whether ERROR's condition is the interned symbol EXPECTED or lists it
+/// among its `error-conditions' (read from the condition symbol itself).
 fn error_matches_condition(interp: &Interpreter, error: &LispError, expected: &str) -> bool {
-    let condition = error.condition_type();
-    condition == expected
+    let condition = error.condition_symbol();
+    condition.is_named(expected)
         || interp
-            .get_symbol_property(&condition, "error-conditions")
+            .get_property_of_symbol_value(Value::Symbol(condition), "error-conditions")
             .and_then(|conditions| conditions.to_vec().ok())
             .is_some_and(|conditions| {
                 conditions.iter().any(|condition| {
                     condition
-                        .as_symbol()
-                        .is_ok_and(|condition| condition == expected)
+                        .symbol_cell()
+                        .is_some_and(|condition| condition.is_named(expected))
                 })
             })
 }

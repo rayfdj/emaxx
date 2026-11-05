@@ -24,13 +24,17 @@ pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
     Some((file, interactive, kind))
 }
 
-pub(crate) fn autoload_is_macro(interp: &Interpreter, symbol: Option<&str>, value: &Value) -> bool {
+pub(crate) fn autoload_is_macro(
+    interp: &Interpreter,
+    symbol: Option<&crate::lisp::types::SymbolName>,
+    value: &Value,
+) -> bool {
     autoload_parts(value).is_some_and(|(_, _, kind)| {
         matches!(kind.kind(), Kind::T)
             || matches!(kind.kind(), Kind::Symbol(name) if name.is_named("t") || name.is_named("macro"))
-    }) || symbol.is_some_and(|name| {
+    }) || symbol.is_some_and(|symbol| {
         interp
-            .get_symbol_property(name, "autoload-macro")
+            .get_property_of_symbol_value(Value::Symbol(*symbol), "autoload-macro")
             .is_some_and(|value| !value.is_nil())
     })
 }
@@ -61,14 +65,11 @@ fn fix_command(
     values: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let Some(name) = function.symbol_str() else {
-        return Ok(());
-    };
-    if !values.is_cons() {
+    if !function.is_symbol() || !values.is_cons() {
         return Ok(());
     }
     let reps = interp
-        .get_symbol_property(name, "interactive-args")
+        .get_property_of_symbol_value(*function, "interactive-args")
         .unwrap_or(Value::Nil);
     if reps.is_cons() {
         let mut vals = values;
@@ -255,11 +256,11 @@ fn call_interactively_bound(
     };
     // A command whose `enable-recursive-minibuffers' property is set reads
     // its string spec's arguments with recursive minibuffers enabled.
-    let recursive_binding = match args[0].symbol_str() {
-        Some(symbol)
+    let recursive_binding = match args[0].symbol_cell() {
+        Some(_)
             if string_spec
                 && interp
-                    .get_symbol_property(symbol, "enable-recursive-minibuffers")
+                    .get_property_of_symbol_value(args[0], "enable-recursive-minibuffers")
                     .is_some_and(|value| value.is_truthy()) =>
         {
             Some(interp.bind_special_variable("enable-recursive-minibuffers", Value::T, env)?)

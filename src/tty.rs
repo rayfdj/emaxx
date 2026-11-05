@@ -4885,11 +4885,11 @@ fn redraw_with_echo_policy(
                     break;
                 };
                 variables = variables.cdr().unwrap_or(Value::Nil);
-                let Ok(symbol) = symbol_value.as_symbol() else {
+                let Some(symbol) = symbol_value.symbol_cell() else {
                     continue;
                 };
                 let Some(Kind::Marker(marker)) = interpreter
-                    .lookup_var(symbol, &crate::lisp::types::Env::new())
+                    .lookup_var_symbol(&symbol, &crate::lisp::types::Env::new())
                     .map(|v| v.kind())
                 else {
                     continue;
@@ -4915,7 +4915,7 @@ fn redraw_with_echo_policy(
                     continue;
                 };
                 let arrow = interpreter
-                    .get_symbol_property(symbol, "overlay-arrow-string")
+                    .get_property_of_symbol_value(symbol_value, "overlay-arrow-string")
                     .filter(|value| value.is_string())
                     .or_else(|| {
                         interpreter

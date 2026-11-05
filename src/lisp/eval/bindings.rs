@@ -1025,14 +1025,20 @@ impl Interpreter {
     /// eval.c:Fmacroexpand resolves the current function cell, then reads
     /// its actual car/cdr. No cached verdict may outlive a direct cons store.
     /// The usual non-alias path needs no allocation or indirection tracking.
-    pub(crate) fn macro_position_function(&self, name: &str, env: &Env) -> Option<Value> {
-        let binding = self.raw_function_binding(name, env)?;
+    /// SYMBOL's function through its aliases, as Fmacroexpand's
+    /// indirect_function reads it; None for a cycle or a void cell.
+    pub(crate) fn macro_position_function_symbol(
+        &self,
+        symbol: &SymbolName,
+        env: &Env,
+    ) -> Option<Value> {
+        let binding = self.raw_function_binding_symbol(symbol, env)?;
         let Kind::Symbol(mut current) = binding.kind() else {
             return Some(binding);
         };
         let mut seen = Vec::new();
         loop {
-            if current.as_str() == name || seen.contains(&current) {
+            if current == *symbol || seen.contains(&current) {
                 return None;
             }
             seen.push(current);

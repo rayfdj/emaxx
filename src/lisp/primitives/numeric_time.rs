@@ -411,7 +411,11 @@ pub(crate) fn function_arity_value(
         if let Some(arity) = special_form_arity_value(name) {
             return Ok(arity);
         }
-        let resolved = interp.lookup_function(name, env)?;
+        // indirect_function of the symbol itself.
+        let resolved = match symbol.symbol_cell() {
+            Some(cell) => interp.lookup_function_symbol(&cell, env)?,
+            None => interp.lookup_function(name, env)?,
+        };
         return function_arity_value(interp, &resolved, original, env);
     }
 

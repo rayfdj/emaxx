@@ -1221,10 +1221,15 @@ fn invoke_dynamic_function(
             let parameter = crate::lisp::primitives::symbol_with_pos_parts(interpreter, &parameter)
                 .map(|(symbol, _)| symbol)
                 .unwrap_or(parameter);
-            let name = parameter
-                .as_symbol()
-                .map_err(|_| invalid_function(Value::NativeFunction(native)))?;
-            match name {
+            // The parameter symbol itself (an uninterned one among them):
+            // funcall_lambda's specbind of the lambda list's symbol.
+            let symbol = match parameter.kind() {
+                Kind::Symbol(symbol) => symbol,
+                Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
+                Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+                _ => return Err(invalid_function(Value::NativeFunction(native))),
+            };
+            match symbol.as_str() {
                 "&rest" => {
                     if rest || previous_rest {
                         return Err(invalid_function(Value::NativeFunction(native)));
@@ -1257,7 +1262,7 @@ fn invoke_dynamic_function(
                     } else {
                         return Err(wrong_number_of_arguments(native, arguments.len()));
                     };
-                    restores.push(interpreter.bind_special_dynamic(name, value, environment)?);
+                    restores.push(interpreter.bind_special_symbol(&symbol, value, environment)?);
                     previous_rest = false;
                 }
             }

@@ -1513,8 +1513,7 @@ pub(crate) fn pending_keystroke_echo(
 /// event need not have "mouse" in its name, including after translation.
 fn mouse_event_head(interp: &Interpreter, event: &Value) -> Option<Value> {
     let (head, tail) = event.cons_values()?;
-    let symbol = head.symbol_str()?;
-    let kind = interp.get_symbol_property(symbol, "event-kind")?;
+    let kind = interp.get_property_of_symbol_value(head, "event-kind")?;
     if tail.car_if_list()?.is_cons()
         && (kind.eq_value(Value::symbol("mouse-click"))
             || kind.eq_value(Value::symbol("touchscreen")))

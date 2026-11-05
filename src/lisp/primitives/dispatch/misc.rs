@@ -95,7 +95,10 @@ fn define_fringe_bitmap(
                 .unwrap_or_default(),
         );
         interp.set_global_binding("fringe-bitmaps", Value::list(bitmaps));
-        interp.put_symbol_property(&name, "fringe", Value::Integer(bitmap_id));
+        // Fput (bitmap, Qfringe, ...) on the symbol itself.
+        if let Some(symbol) = args[0].symbol_cell() {
+            interp.put_symbol_property_on(&symbol, "fringe", Value::Integer(bitmap_id));
+        }
     }
     let definition = Value::list([
         args[1],
@@ -148,7 +151,9 @@ fn destroy_fringe_bitmap(
         interp.fringe_bitmap_states[index].face = Value::Nil;
     } else {
         interp.fringe_bitmap_states.remove(index);
-        interp.put_symbol_property(&name, "fringe", Value::Nil);
+        if let Some(symbol) = bitmap.symbol_cell() {
+            interp.put_symbol_property_on(&symbol, "fringe", Value::Nil);
+        }
         let bitmaps = interp
             .lookup_var("fringe-bitmaps", env)
             .and_then(|value| value.to_vec().ok())

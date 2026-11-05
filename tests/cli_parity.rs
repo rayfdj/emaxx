@@ -1966,3 +1966,95 @@ fn a_name_interned_again_after_obarray_clear_is_a_new_symbol() {
         ],
     );
 }
+
+#[test]
+fn uninterned_symbols_keep_their_roles_by_object() {
+    // A symbol `make-symbol' made, as a function (its arity), a macro
+    // (`macroexpand' with and without an environment entry for it), a
+    // property owner, a hash-table test, a char-table purpose, a coding
+    // system and a command with `interactive-args': each role is read
+    // from the symbol itself, not from a name, which names none.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(let ((s (make-symbol "zf")) (m (make-symbol "zm")) (p (make-symbol "zp")))
+  (fset s 'car)
+  (defalias m (cons 'macro (lambda (x) (list 'quote x))))
+  (put p 'event-kind 'mouse-click)
+  (prin1 (list (condition-case e (func-arity s) (error e))
+               (condition-case e (macroexpand (list m 1)) (error e))
+               (condition-case e (macroexpand-1 (list m 2) (list (cons m (lambda (x) (list 'quote (list x x)))))) (error e))
+               (get p 'event-kind)
+               (progn (define-hash-table-test (make-symbol "zt") 'eq 'sxhash-eq) 'ok)
+               (let ((h (make-symbol "zh"))) (define-hash-table-test h 'equal 'sxhash-equal) (hash-table-count (make-hash-table :test h)))
+               (let ((ct (make-symbol "zct"))) (put ct 'char-table-extra-slots 2) (char-table-extra-slot (make-char-table ct) 1))))
+  (terpri))
+(let ((cs (make-symbol "zcs")))
+  (prin1 (list (coding-system-p cs) (condition-case e (check-coding-system cs) (error (car e))))) (terpri))
+(let ((f (make-symbol "zcmd")))
+  (fset f (lambda (x) (interactive "p") (* x 2)))
+  (put f 'interactive-args '((x 21)))
+  (prin1 (list (commandp f) (call-interactively f))) (terpri)))"#,
+        ],
+    );
+}
+
+#[test]
+fn generated_uninterned_symbol_programs_run_as_gnu_runs_them() {
+    // 150 generated programs that give a fresh uninterned symbol one of 26
+    // roles (function, variable, local variable, property owner, hash
+    // test, char-table purpose, error, hook, macro, key, text and overlay
+    // property, catch tag, command, watched variable, compiled callee)
+    // and print what each role answers.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(random "uninterned-fuzz")
+(defun un-try (f) (condition-case e (funcall f) (error (list 'err (car e) (and (cdr e) (if (symbolp (cadr e)) (symbol-name (cadr e)) (cadr e)))))))
+(defvar un-log nil)
+(defun un-case (s n)
+  (pcase n
+    (0 (fset s (lambda (&rest a) (cons 'called a))) (list (funcall s 1) (apply s '(2 3)) (func-arity s) (functionp s) (fboundp s) (commandp s)))
+    (1 (set s 41) (list (symbol-value s) (boundp s) (default-value s) (progn (makunbound s) (boundp s))))
+    (2 (put s 'zk 7) (list (get s 'zk) (symbol-plist s) (function-get s 'zk) (progn (function-put s 'zj 8) (get s 'zj))))
+    (3 (define-hash-table-test s 'equal 'sxhash-equal) (let ((h (make-hash-table :test s))) (puthash "a" 1 h) (list (gethash "a" h) (hash-table-count h) (eq (hash-table-test h) s))))
+    (4 (put s 'char-table-extra-slots 1) (let ((ct (make-char-table s 0))) (set-char-table-extra-slot ct 0 'x) (list (char-table-extra-slot ct 0) (eq (char-table-subtype ct) s) (aref ct ?a))))
+    (5 (define-error s "Zz failure") (list (condition-case e (signal s '(1)) (error (list (eq (car e) s) (cdr e) (error-message-string e)))) (get s 'error-message)))
+    (6 (set s nil) (add-hook s (lambda () (push 'h1 un-log))) (setq un-log nil) (run-hooks s) (list un-log (symbol-value s)))
+    (7 (defalias s (cons 'macro (lambda (x) (list 'quote (list x x))))) (list (macroexpand (list s 1)) (eval (list s 2) t) (macrop s)))
+    (8 (let ((m (make-sparse-keymap))) (define-key m (vector s) 'ignore) (list (lookup-key m (vector s)) (where-is-internal 'ignore (list m)))))
+    (9 (with-temp-buffer (insert "abc") (put-text-property 1 3 s 'v) (list (get-text-property 1 s) (text-properties-at 1) (next-single-property-change 1 s))))
+    (10 (with-temp-buffer (insert "abc") (let ((o (make-overlay 1 3))) (overlay-put o s 9) (list (overlay-get o s) (get-char-property 1 s)))))
+    (11 (list (plist-get (list s 1) s) (assq s (list (cons s 2))) (memq s (list 'a s)) (intern-soft (symbol-name s)) (eq s (intern (symbol-name s)))))
+    (12 (fset s (lambda (x) (interactive "p") (* x 2))) (list (commandp s) (interactive-form s) (call-interactively s)))
+    (13 (with-temp-buffer (set (make-local-variable s) 5) (list (local-variable-p s) (buffer-local-value s (current-buffer)) (symbol-value s) (default-boundp s))))
+    (14 (eval (list 'defvar s 3)) (list (special-variable-p s) (eval (list 'let (list (list s 4)) (list 'symbol-value (list 'quote s))) t)))
+    (15 (fset s 'car) (list (funcall (byte-compile (list 'lambda () (list s ''(1 2))))) (func-arity s) (indirect-function s)))
+    (16 (put s 'variable-documentation "Doc of zz.") (list (documentation-property s 'variable-documentation)))
+    (17 (let ((log nil)) (set s 1) (add-variable-watcher s (lambda (&rest a) (push (nth 2 a) log))) (set s 2) (list log (get-variable-watchers s))))
+    (18 (list (prin1-to-string s) (let ((print-gensym t)) (prin1-to-string s)) (format "%S" (list s)) (symbol-name s)))
+    (19 (defalias s 'list) (list (funcall s 1 2) (symbol-function s) (indirect-function s) (eq (symbol-function s) 'list)))
+    (20 (set s 10) (list (eval s t) (eval (list 'setq s 11) t) (symbol-value s) (eval (list '1+ s) t)))
+    (21 (fset s (lambda () 'z)) (list (funcall (byte-compile (list 'lambda () (list s)))) (eval (list s) t) (mapcar s nil)))
+    (22 (with-temp-buffer (make-local-variable s) (list (local-variable-p s) (boundp s) (local-variable-if-set-p s))))
+    (23 (list (catch s (throw s 'thrown)) (condition-case e (throw s 1) (no-catch (list (eq (cadr e) s))))))
+    (24 (let ((tbl (obarray-make))) (list (intern-soft (symbol-name s) tbl) (eq (intern (symbol-name s) tbl) s))))
+    (25 (set s 1) (list (eval (list 'let* (list (list s 2)) s) t) (eval (list 'let (list (list s 3)) (list 'boundp (list 'quote s))) nil)))))
+(dotimes (i 150)
+  (let* ((s (make-symbol (format "un-%d" (random 5))))
+         (n (random 26)))
+    (prin1 (list i n (un-try (lambda () (un-case s n))))) (terpri)))
+)"#,
+        ],
+    );
+}

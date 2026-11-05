@@ -14616,6 +14616,43 @@ setup_process_coding_systems's check now refuses). A 13-form
   again after the tests of the book became tests of reclamation), the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 310: an uninterned symbol keeps its roles when they are read
+  from the symbol.** Round 309 removed the book that found an uninterned
+  symbol by its marked text, and the readings of a symbol by name that
+  no test reached then found nothing: on the round 309 release build
+  `make-hash-table' with an uninterned `define-hash-table-test' name
+  signalled "Invalid hash table test", and its frozen run failed in
+  comp-tests, where a function native-compiled under dynamic binding
+  bound its lambda list's parameters by name, so cl-lib's uninterned
+  `--cl-rest--' was interned anew (the checked build stops on that). The
+  parameters are bound as the symbols they are, as funcall_lambda's
+  specbind does; the checked build runs comp-tests' 178 tests as
+  expected and every file of test/src as GNU does. The remaining
+  readings by name that a symbol fed are now readings of the symbol: the
+  `hash-table-test' property `define-hash-table-test' writes and
+  `make-hash-table' reads, `func-arity''s indirect function,
+  `macroexpand' (an environment entry found by Fassq, by EQ; the
+  indirect function; the `autoload-macro' property; the expander called
+  under the symbol), keyboard.c's Fget and Fput of event symbols (nil
+  and t among them), `:advertised-binding' and `non-key-event', a
+  condition's `error-conditions' in the keyboard-macro command loop,
+  `event-kind', `interactive-args' and `enable-recursive-minibuffers', a
+  coding system's pending define form in `check-coding-system', the
+  `fringe' property, the CCL program and code-conversion-map properties,
+  and the overlay-arrow variables the terminal display reads. 300
+  generated programs that give a fresh uninterned symbol one of 26 roles
+  (function, variable, buffer-local variable, property owner, hash-table
+  test, char-table purpose, error, hook, macro, key, text and overlay
+  property, catch tag, command, watched variable, a compiled call's
+  callee) print GNU's output, as round 302's build did; a command-line
+  comparison runs 150 of them and another the cases above. The fuzzes of
+  variables, function cells, fields, loading, errors, coding, buffers,
+  case, numbers, strings, printing, syntax and hooks and the
+  command-line cases of rounds 303 to 309 print GNU's results as before.
+  Local validation: the grouped gate's 3,501 library tests (the
+  native-compilation ones run again after the parameter binding), the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17048,6 +17085,17 @@ tramp-tests (16,791 ms against 14,327), comp-tests (13,122 against
 11,913), ert-tests (26,970 against 26,141), mule-tests (1,879 against
 1,151) and semantic-utest-ia (2,859 against 2,301), and
 `ert-test-run-tests-batch-expensive' is 1.02 of GNU's time.
+
+**On `2c8bf0a`** (round 309): the full Rust gate (run 41955354760)
+passed; the frozen run (run 41955358041) failed, not rerun: in
+comp-tests, which neither round 308's census nor the library gate runs,
+the checked build stopped on its assertion that an uninterned symbol's
+marked text was interned (cl-lib's `--cl-rest--', a lambda-list
+parameter of a function native-compiled under dynamic binding), the
+file's outcomes went missing and the run ended there, before the source
+tests after it. Round 310 binds those parameters as symbols; with that
+the checked build runs comp-tests' 178 tests as expected, and every file
+of test/src as GNU does.
 
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's

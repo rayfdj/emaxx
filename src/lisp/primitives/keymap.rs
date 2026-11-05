@@ -208,37 +208,32 @@ pub(crate) fn parse_modifiers(
 }
 
 /// Fget (SYMBOL, PROPERTY) as keyboard.c calls it: the symbol's own plist
-/// read by identity, with no name looked up (nil and t by their names).
+/// read by identity, with no name looked up (nil and t among the symbols).
 pub(crate) fn symbol_get(
     interp: &Interpreter,
     symbol: Value,
     property: crate::lisp::types::symbols::SymbolKey,
 ) -> Value {
-    match symbol.symbol_cell() {
-        Some(cell) => property.with(|property| interp.get_symbol_property_of(&cell, property)),
-        None => symbol
-            .as_symbol()
-            .ok()
-            .and_then(|name| interp.get_symbol_property(name, property.name())),
-    }
-    .unwrap_or(Value::Nil)
+    interp
+        .get_property_of_symbol_value(symbol, property)
+        .unwrap_or(Value::Nil)
 }
 
-/// Fput (SYMBOL, PROPERTY, VALUE) on the symbol itself.
+/// Fput (SYMBOL, PROPERTY, VALUE) on the symbol itself, nil and t among
+/// them; nothing for an object that is no symbol.
 pub(crate) fn symbol_put(
     interp: &mut Interpreter,
     symbol: Value,
     property: crate::lisp::types::symbols::SymbolKey,
     value: Value,
 ) {
-    match symbol.symbol_cell() {
-        Some(cell) => interp.put_symbol_property_on(&cell, property.name(), value),
-        None => {
-            if let Ok(name) = symbol.as_symbol() {
-                interp.put_symbol_property(name, property.name(), value);
-            }
-        }
-    }
+    let cell = match symbol.kind() {
+        Kind::Symbol(cell) => cell,
+        Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
+        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+        _ => return,
+    };
+    interp.put_symbol_property_on(&cell, property.name(), value);
 }
 
 /// keyboard.c:apply_modifiers: BASE with MODIFIERS, through BASE's
@@ -1633,9 +1628,9 @@ pub(crate) fn where_is_internal_command(
     roots[0] = definition;
 
     if definition.is_symbol() && !firstonly.is_nil() {
-        let name = definition.as_symbol()?.to_string();
+        // Fget (definition, QCadvertised_binding) of the symbol itself.
         let mut tem = interp
-            .get_symbol_property(&name, ":advertised-binding")
+            .get_property_of_symbol_value(definition, ":advertised-binding")
             .unwrap_or(Value::Nil);
         if !tem.is_nil() {
             // A list of advertised bindings.
@@ -1725,7 +1720,7 @@ pub(crate) fn where_is_internal_command(
             && let Some(event) = vector.get(0).filter(Value::is_symbol)
         {
             interp
-                .get_symbol_property(event.as_symbol()?, "non-key-event")
+                .get_property_of_symbol_value(event, "non-key-event")
                 .is_some_and(|value| !value.is_nil())
         } else {
             false
