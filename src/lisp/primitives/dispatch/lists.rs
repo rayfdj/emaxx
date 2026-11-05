@@ -58,13 +58,13 @@ fn execute_kbd_macro(
         .as_integer()?;
     let loop_function = args.get(2).cloned().unwrap_or(Value::Nil);
     let previous_macro = interp
-        .lookup_var("executing-kbd-macro", env)
+        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
         .unwrap_or(Value::Nil);
     let previous_index = interp
-        .lookup_var("executing-kbd-macro-index", env)
+        .lookup_var_key(cached_symbol!("executing-kbd-macro-index"), env)
         .unwrap_or(Value::Nil);
     let previous_real_this_command = interp
-        .lookup_var("real-this-command", env)
+        .lookup_var_key(cached_symbol!("real-this-command"), env)
         .unwrap_or(Value::Nil);
     // macros.c:Fexecute_kbd_macro saves the public state in two ordinary
     // conses. Use the same allocations, including their normal GC charge,
@@ -139,7 +139,7 @@ fn execute_kbd_macro(
                 }
             }
             let still_executing = interp
-                .lookup_var("executing-kbd-macro", env)
+                .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
                 .is_some_and(|value| value.is_string() || is_vector_value(&value));
             if !still_executing {
                 break;
@@ -170,7 +170,7 @@ fn execute_kbd_macro(
 
 fn increment_num_input_keys(interp: &mut Interpreter, env: &mut Env) {
     let count = interp
-        .lookup_var("num-input-keys", env)
+        .lookup_var_key(cached_symbol!("num-input-keys"), env)
         .and_then(|value| value.integer_value())
         .unwrap_or(0);
     interp.set_variable(
@@ -185,7 +185,7 @@ pub(crate) fn next_kbd_macro_event(
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
     let array = interp
-        .lookup_var("executing-kbd-macro", env)
+        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
         .unwrap_or(Value::Nil);
     // macros.c:at_end_of_macro_p treats t as an explicit stop. There is
     // no private event queue or cursor to keep consuming after this store.
@@ -193,7 +193,7 @@ pub(crate) fn next_kbd_macro_event(
         return Ok(None);
     }
     let index = interp
-        .lookup_var("executing-kbd-macro-index", env)
+        .lookup_var_key(cached_symbol!("executing-kbd-macro-index"), env)
         .unwrap_or(Value::Integer(0))
         .as_integer()?;
     if index >= sequence_length_value(&array)? {
@@ -226,7 +226,9 @@ fn prepare_native_kbd_command_body(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let pending_prefix = interp.lookup_var("prefix-arg", env).unwrap_or(Value::Nil);
+    let pending_prefix = interp
+        .lookup_var_key(cached_symbol!("prefix-arg"), env)
+        .unwrap_or(Value::Nil);
     interp.set_variable("current-prefix-arg", pending_prefix, env);
     interp.set_variable("prefix-arg", Value::Nil, env);
     if pending_prefix.is_truthy()
@@ -258,12 +260,12 @@ fn finish_kbd_macro_command_cycle(
     env: &mut Env,
 ) -> Result<(), LispError> {
     let current_prefix = interp
-        .lookup_var("current-prefix-arg", env)
+        .lookup_var_key(cached_symbol!("current-prefix-arg"), env)
         .unwrap_or(Value::Nil);
     interp.set_variable("last-prefix-arg", current_prefix, env);
     crate::lisp::primitives::run_post_command_hooks(interp, env)?;
     let final_this_command = interp
-        .lookup_var("this-command", env)
+        .lookup_var_key(cached_symbol!("this-command"), env)
         .filter(|value| !value.is_nil())
         .unwrap_or(dispatched_command);
     finish_kbd_macro_command(interp, real_command, final_this_command, env);
@@ -468,7 +470,7 @@ fn read_minibuffer_value_from_batch_stdin(
     prompt: &Value,
 ) -> Result<Value, LispError> {
     let hide_char = interp
-        .lookup_var("read-hide-char", env)
+        .lookup_var_key(cached_symbol!("read-hide-char"), env)
         .and_then(|value| match value.kind() {
             Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code) => Some(code as u8),
             _ => None,
@@ -612,7 +614,7 @@ fn read_minibuffer_text_from_unread_events(
     local_map: &Value,
 ) -> Result<Option<String>, LispError> {
     if !interp
-        .lookup_var("unread-command-events", env)
+        .lookup_var_key(cached_symbol!("unread-command-events"), env)
         .is_some_and(|events| events.is_cons())
     {
         return Ok(None);
@@ -721,7 +723,7 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
     let mut reader: Option<KeySequenceReader> = None;
     loop {
         if !interp
-            .lookup_var("executing-kbd-macro", env)
+            .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
             .is_some_and(|value| value.is_truthy())
         {
             return Ok(());
@@ -852,7 +854,7 @@ fn run_recursive_kbd_command_loop(
                 crate::lisp::primitives::cmd_error(interp, env, &LispError::from(error.clone()))?;
                 crate::lisp::primitives::command_loop_entry(interp, env)?;
                 let resumed = interp
-                    .lookup_var("executing-kbd-macro", env)
+                    .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
                     .is_some_and(|value| value.is_truthy());
                 if !resumed {
                     return Ok(());
@@ -883,7 +885,9 @@ fn execute_kbd_macro_resolved_command(
     crate::lisp::primitives::record_command_lossage(interp, command);
     increment_num_input_keys(interp, env);
     safe_run_hooks(interp, &cached_symbol!("pre-command-hook").symbol(), env)?;
-    let dispatched_command = interp.lookup_var("this-command", env).unwrap_or(Value::Nil);
+    let dispatched_command = interp
+        .lookup_var_key(cached_symbol!("this-command"), env)
+        .unwrap_or(Value::Nil);
     // keyboard.c:command_loop_1 calls the unchanged Lisp `undefined' when
     // the map (or pre-command-hook) leaves this-command nil. In particular,
     // an unbound printable event is not an implicit self-insert command.
@@ -959,16 +963,19 @@ fn finish_kbd_macro_command(
     env: &mut Env,
 ) {
     if interp
-        .lookup_var("defining-kbd-macro", env)
+        .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
         .is_some_and(|value| value.is_truthy())
     {
         interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
     }
     interp.set_variable("real-last-command", original_command, env);
     interp.set_variable("last-command", this_command, env);
-    if interp.lookup_var("last-repeatable-command", env).is_some() {
+    if interp
+        .lookup_var_key(cached_symbol!("last-repeatable-command"), env)
+        .is_some()
+    {
         let real_last_command = interp
-            .lookup_var("real-last-command", env)
+            .lookup_var_key(cached_symbol!("real-last-command"), env)
             .unwrap_or(Value::Nil);
         interp.set_variable("last-repeatable-command", real_last_command, env);
     }
@@ -1366,14 +1373,14 @@ define_dispatch!(
             "start-kbd-macro" => {
                 need_arg_range(name, args, 1, 2)?;
                 if interp
-                    .lookup_var("defining-kbd-macro", env)
+                    .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
                     .is_some_and(|value| value.is_truthy())
                 {
                     return Err(LispError::Signal("Already defining kbd macro".into()));
                 }
                 if args[0].is_truthy() {
                     let previous = interp
-                        .lookup_var("last-kbd-macro", env)
+                        .lookup_var_key(cached_symbol!("last-kbd-macro"), env)
                         .unwrap_or(Value::Nil);
                     interp.kbd_macro_definition = if let Some(string) = string_like(&previous) {
                         string
@@ -1407,7 +1414,7 @@ define_dispatch!(
             "end-kbd-macro" => {
                 need_arg_range(name, args, 0, 2)?;
                 if interp
-                    .lookup_var("defining-kbd-macro", env)
+                    .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
                     .is_none_or(|value| value.is_nil())
                 {
                     return Err(LispError::Signal("Not defining kbd macro".into()));
@@ -1452,16 +1459,18 @@ define_dispatch!(
             "call-last-kbd-macro" => {
                 need_arg_range(name, args, 0, 2)?;
                 let macro_value = interp
-                    .lookup_var("last-kbd-macro", env)
+                    .lookup_var_key(cached_symbol!("last-kbd-macro"), env)
                     .unwrap_or(Value::Nil);
                 interp.set_variable(
                     "this-command",
-                    interp.lookup_var("last-command", env).unwrap_or(Value::Nil),
+                    interp
+                        .lookup_var_key(cached_symbol!("last-command"), env)
+                        .unwrap_or(Value::Nil),
                     env,
                 );
                 interp.set_variable("real-this-command", macro_value, env);
                 if interp
-                    .lookup_var("defining-kbd-macro", env)
+                    .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
                     .is_some_and(|value| value.is_truthy())
                 {
                     return Err(crate::lisp::primitives::values::doprnt_error(
@@ -1478,7 +1487,9 @@ define_dispatch!(
                 execute_kbd_macro(interp, &execute_args, env)?;
                 interp.set_variable(
                     "this-command",
-                    interp.lookup_var("last-command", env).unwrap_or(Value::Nil),
+                    interp
+                        .lookup_var_key(cached_symbol!("last-command"), env)
+                        .unwrap_or(Value::Nil),
                     env,
                 );
                 Ok(Value::Nil)
@@ -1497,7 +1508,7 @@ define_dispatch!(
             "store-kbd-macro-event" => {
                 need_args(name, args, 1)?;
                 if interp
-                    .lookup_var("defining-kbd-macro", env)
+                    .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
                     .is_some_and(|value| value.is_truthy())
                 {
                     interp.kbd_macro_definition.push(args[0]);
@@ -1634,10 +1645,10 @@ define_dispatch!(
                     }
                 };
                 let read_only = interp
-                    .lookup_var("buffer-read-only", env)
+                    .lookup_var_key(cached_symbol!("buffer-read-only"), env)
                     .is_some_and(|value| value.is_truthy());
                 let inhibited = interp
-                    .lookup_var("inhibit-read-only", env)
+                    .lookup_var_key(cached_symbol!("inhibit-read-only"), env)
                     .is_some_and(|value| value.is_truthy());
                 if read_only
                     && !inhibited
@@ -1822,7 +1833,7 @@ define_dispatch!(
                 let local_map = (name == "read-from-minibuffer")
                     .then(|| args.get(2).filter(|map| !map.is_nil()).cloned())
                     .flatten()
-                    .or_else(|| interp.lookup_var("minibuffer-local-map", env))
+                    .or_else(|| interp.lookup_var_key(cached_symbol!("minibuffer-local-map"), env))
                     .unwrap_or(Value::Nil);
                 // HIST and DEFAULT sit at different positions per reader:
                 // read-from-minibuffer's KEYMAP and READ shift them to
@@ -1844,10 +1855,10 @@ define_dispatch!(
                 // the recursive command loop, whose read_char consumes
                 // unread events first and then the macro.
                 let batch_stdin = interp
-                    .lookup_var("noninteractive", env)
+                    .lookup_var_key(cached_symbol!("noninteractive"), env)
                     .is_some_and(|value| value.is_truthy())
                     && interp
-                        .lookup_var("executing-kbd-macro", env)
+                        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
                         .is_none_or(|value| value.is_nil());
                 if batch_stdin {
                     // read_minibuf_noninteractive returns before any
@@ -1957,7 +1968,7 @@ define_dispatch!(
                     other => other.value(),
                 };
                 if let Some(function) = interp
-                    .lookup_var("read-buffer-function", env)
+                    .lookup_var_key(cached_symbol!("read-buffer-function"), env)
                     .filter(|function| !function.is_nil())
                 {
                     let mut call_args =
@@ -2039,7 +2050,9 @@ define_dispatch!(
                     ),
                     other => other.value(),
                 };
-                let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
+                let obarray = interp
+                    .lookup_var_key(cached_symbol!("obarray"), env)
+                    .unwrap_or(Value::Nil);
                 let predicate = if name == "read-command" {
                     Value::Symbol("commandp".into())
                 } else {

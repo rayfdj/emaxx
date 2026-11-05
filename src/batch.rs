@@ -1,3 +1,4 @@
+use crate::lisp::cached_symbol;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -807,7 +808,10 @@ fn initialize_interpreter_attempt(
     // buffer — a dumped GNU binary starts with an empty one (loaddefs.el's
     // own `(load "theme-loaddefs.el" t)' was leaking a Loading line there).
     let saved_message_log_max = interpreter
-        .lookup_var("message-log-max", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("message-log-max"),
+            &crate::lisp::types::Env::new(),
+        )
         .unwrap_or(Value::Nil);
     interpreter.set_variable(
         "message-log-max",
@@ -984,7 +988,10 @@ fn configure_native_load_path_for_dump_reconstruction(
     // invocation-directory when a non-dumped Emacs is about to load Lisp.
     // For Emaxx this is the writable build-tree cache under target/.
     let load_path = interpreter
-        .lookup_var("native-comp-eln-load-path", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("native-comp-eln-load-path"),
+            &crate::lisp::types::Env::new(),
+        )
         .ok_or_else(|| "native-comp-eln-load-path is unbound during startup".to_string())?;
     let (initial_directory, _) = load_path
         .cons_values()
@@ -993,7 +1000,10 @@ fn configure_native_load_path_for_dump_reconstruction(
         .ok_or_else(|| "native-comp-eln-load-path initial entry is not a string".to_string())?
         .text;
     let invocation_directory = interpreter
-        .lookup_var("invocation-directory", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("invocation-directory"),
+            &crate::lisp::types::Env::new(),
+        )
         .and_then(|value| lisp::primitives::string_like(&value).map(|string| string.text))
         .ok_or_else(|| "invocation-directory is not a string during startup".to_string())?;
     let native_directory =
@@ -1006,7 +1016,10 @@ fn configure_native_load_path_for_dump_reconstruction(
     // the same native standard-library functions as the dumped GNU binary,
     // while newly compiled files continue to land in Emaxx's build tree.
     let source_directory = interpreter
-        .lookup_var("source-directory", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("source-directory"),
+            &crate::lisp::types::Env::new(),
+        )
         .and_then(|value| lisp::primitives::string_like(&value).map(|string| string.text))
         .ok_or_else(|| "source-directory is not a string during startup".to_string())?;
     let system_native_directory =
@@ -1190,10 +1203,16 @@ impl FixtureImage {
         // tree, whose `native-lisp/' holds the preloaded units, for the
         // directory the installed `native-lisp/' would be under.
         let invocation_directory = interpreter
-            .lookup_var("invocation-directory", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("invocation-directory"),
+                &crate::lisp::types::Env::new(),
+            )
             .unwrap_or(Value::Nil);
         let source_directory = interpreter
-            .lookup_var("source-directory", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("source-directory"),
+                &crate::lisp::types::Env::new(),
+            )
             .unwrap_or(Value::Nil);
         interpreter.set_global_binding("load--bin-dest-dir", invocation_directory);
         interpreter.set_global_binding("load--eln-dest-dir", source_directory);
@@ -1246,7 +1265,7 @@ fn installation_lisp_load_path() -> Result<Vec<PathBuf>, String> {
 
 fn has_configured_lisp_tree(interpreter: &Interpreter) -> bool {
     interpreter
-        .lookup_var("load-path", &crate::lisp::types::Env::new())
+        .lookup_var_key(cached_symbol!("load-path"), &crate::lisp::types::Env::new())
         .and_then(|value| value.to_vec().ok())
         .is_some_and(|paths| !paths.is_empty())
 }
@@ -1558,7 +1577,7 @@ mod tests {
         assert!(matches!(result.as_ref().map_err(LispError::kind),
             Err(LispErrorKind::Throw(tag, value)) if *value == Value::Integer(7) && tag.as_symbol().is_ok_and(|name| name == "stop")));
         assert_eq!(
-            interpreter.lookup_var("inhibit-quit", &env),
+            interpreter.lookup_var_key(cached_symbol!("inhibit-quit"), &env),
             Some(Value::Nil)
         );
         crate::test_support::eval_lisp(
@@ -1572,7 +1591,7 @@ mod tests {
             Err(LispErrorKind::Terminate(termination)) if termination.exit_code == 7)
         );
         assert_eq!(
-            interpreter.lookup_var("inhibit-quit", &env),
+            interpreter.lookup_var_key(cached_symbol!("inhibit-quit"), &env),
             Some(Value::Nil)
         );
     }
@@ -1899,7 +1918,10 @@ mod tests {
         let options = BatchRunOptions::default();
         let interpreter = initialize_batch_interpreter(&options).expect("init batch interpreter");
         assert_eq!(
-            interpreter.lookup_var("command-line-args-left", &crate::lisp::types::Env::new()),
+            interpreter.lookup_var_key(
+                cached_symbol!("command-line-args-left"),
+                &crate::lisp::types::Env::new()
+            ),
             Some(Value::Nil)
         );
     }
@@ -1908,14 +1930,20 @@ mod tests {
     fn dump_reconstruction_has_cache_then_gnu_system_native_paths() {
         let mut interpreter = Interpreter::new();
         let invocation_directory = interpreter
-            .lookup_var("invocation-directory", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("invocation-directory"),
+                &crate::lisp::types::Env::new(),
+            )
             .and_then(|value| lisp::primitives::string_like(&value))
             .expect("invocation-directory string")
             .text;
         let expected_cache =
             lisp::primitives::expand_file_name("../native-lisp/", Some(&invocation_directory));
         let source_directory = interpreter
-            .lookup_var("source-directory", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("source-directory"),
+                &crate::lisp::types::Env::new(),
+            )
             .and_then(|value| lisp::primitives::string_like(&value))
             .expect("source-directory string")
             .text;
@@ -1924,7 +1952,10 @@ mod tests {
         configure_native_load_path_for_dump_reconstruction(&mut interpreter)
             .expect("configure native paths for GNU dump reconstruction");
         let load_path = interpreter
-            .lookup_var("native-comp-eln-load-path", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("native-comp-eln-load-path"),
+                &crate::lisp::types::Env::new(),
+            )
             .expect("native-comp-eln-load-path is C-initialized")
             .to_vec()
             .expect("native-comp-eln-load-path is a proper list");
@@ -2025,7 +2056,10 @@ mod tests {
         );
 
         let history = interpreter
-            .lookup_var("load-history", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("load-history"),
+                &crate::lisp::types::Env::new(),
+            )
             .expect("load history")
             .to_vec()
             .expect("load history list");
@@ -4226,7 +4260,10 @@ FORM"##
             let interpreter =
                 initialize_batch_interpreter_as_started(&options).expect("init batch interpreter");
             assert_eq!(
-                interpreter.lookup_var("native-comp-enable-subr-trampolines", &Env::new()),
+                interpreter.lookup_var_key(
+                    cached_symbol!("native-comp-enable-subr-trampolines"),
+                    &Env::new()
+                ),
                 Some(Value::T),
                 "unchanged loadup.el enables trampolines before calling the C dumper"
             );

@@ -3494,7 +3494,7 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             let value = pop!();
             let buffer = pop!();
             let show = interp
-                .lookup_var("temp-buffer-show-function", env)
+                .lookup_var_key(cached_symbol!("temp-buffer-show-function"), env)
                 .unwrap_or(Value::Nil);
             interp.with_lisp_stack_roots(&value, |interp| {
                 if show.is_truthy() {

@@ -1069,7 +1069,7 @@ fn char_composable_p(interp: &Interpreter, env: &Env, c: char) -> bool {
 /// turns automatic composition off entirely; a string value turns it off
 /// only on the terminal type it names.
 fn inhibit_auto_composition(interp: &Interpreter, env: &Env) -> bool {
-    let Some(mode) = interp.lookup_var("auto-composition-mode", env) else {
+    let Some(mode) = interp.lookup_var_key(cached_symbol!("auto-composition-mode"), env) else {
         return true;
     };
     if mode.is_nil() {
@@ -1193,7 +1193,7 @@ fn autocmp_chars_inner(
         return Ok(lgstring);
     }
     let function = interp
-        .lookup_var("auto-composition-function", env)
+        .lookup_var_key(cached_symbol!("auto-composition-function"), env)
         .unwrap_or(Value::Nil);
     let call = interp.call_function_value(
         function,

@@ -16,7 +16,7 @@ fn restore_buffer_modified_p(
     let current = interp.current_buffer_id();
     let base = interp.root_buffer_id(current);
     if !interp
-        .lookup_var("inhibit-modification-hooks", env)
+        .lookup_var_key(cached_symbol!("inhibit-modification-hooks"), env)
         .is_some_and(|value| value.is_truthy())
     {
         let truename = interp.get_buffer_by_id(base).and_then(|buffer| {
@@ -84,7 +84,7 @@ fn self_insert_command(
             *c
         }
         None => interp
-            .lookup_var("last-command-event", env)
+            .lookup_var_key(cached_symbol!("last-command-event"), env)
             .unwrap_or(Value::Nil),
     };
     if n < 0 {
@@ -98,7 +98,7 @@ fn self_insert_command(
     match c.kind() {
         Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code) => {
             let table = interp
-                .lookup_var("translation-table-for-input", env)
+                .lookup_var_key(cached_symbol!("translation-table-for-input"), env)
                 .unwrap_or(Value::Nil);
             let character = translate_char(interp, &table, code as u32);
             if internal_self_insert(interp, character, n, env)? == 2 {
@@ -128,7 +128,7 @@ fn internal_self_insert(
     };
     let mut hairy = 0;
     let overwrite = interp
-        .lookup_var("overwrite-mode", env)
+        .lookup_var_key(cached_symbol!("overwrite-mode"), env)
         .unwrap_or(Value::Nil);
     if truthy(interp, env, "before-change-functions")
         || truthy(interp, env, "after-change-functions")
@@ -256,7 +256,7 @@ fn internal_self_insert(
     }
 
     let auto_fill_character = match interp
-        .lookup_var("auto-fill-chars", env)
+        .lookup_var_key(cached_symbol!("auto-fill-chars"), env)
         .map(|value| value.kind())
     {
         Some(Kind::CharTable(table)) => interp
@@ -1078,7 +1078,7 @@ define_dispatch!(
                 };
                 if args.get(2).is_some_and(Value::is_truthy) {
                     let extractor = interp
-                        .lookup_var("region-extract-function", env)
+                        .lookup_var_key(cached_symbol!("region-extract-function"), env)
                         .ok_or_else(|| LispError::Void(Value::symbol("region-extract-function")))?;
                     let bounds = call_function_value(
                         interp,
@@ -1699,7 +1699,12 @@ fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize 
     let buffer_id = interp.current_buffer_id();
     let enabled = interp
         .buffer_local_value(buffer_id, "display-line-numbers")
-        .or_else(|| interp.lookup_var("display-line-numbers", &crate::lisp::types::Env::new()))
+        .or_else(|| {
+            interp.lookup_var_key(
+                cached_symbol!("display-line-numbers"),
+                &crate::lisp::types::Env::new(),
+            )
+        })
         .unwrap_or(Value::Nil);
     if enabled.is_nil() {
         return 0;
@@ -2050,7 +2055,7 @@ pub(crate) fn visual_segment_starts(
 ) -> Vec<usize> {
     let mut starts = vec![bol];
     if interp
-        .lookup_var("truncate-lines", env)
+        .lookup_var_key(cached_symbol!("truncate-lines"), env)
         .is_some_and(|value| value.is_truthy())
     {
         return starts;
@@ -2252,7 +2257,7 @@ fn display_motion_width(
     }
     if character == '\t' {
         let tab_width = interp
-            .lookup_var("tab-width", env)
+            .lookup_var_key(cached_symbol!("tab-width"), env)
             .and_then(|value| value.integer_value())
             .unwrap_or(8)
             .max(1);
@@ -2261,7 +2266,7 @@ fn display_motion_width(
     }
     if character.is_control() {
         return if interp
-            .lookup_var("ctl-arrow", env)
+            .lookup_var_key(cached_symbol!("ctl-arrow"), env)
             .is_some_and(|value| value.is_truthy())
         {
             2
@@ -2433,7 +2438,7 @@ pub(super) fn display_motion(
     // canonical display cell.
     width = width.max(1);
     let truncates_partial_window = match interp
-        .lookup_var("truncate-partial-width-windows", env)
+        .lookup_var_key(cached_symbol!("truncate-partial-width-windows"), env)
         .map(|v| v.kind())
     {
         Some(Kind::Integer(threshold)) => width + 1 < interp.frame_width() && width + 1 < threshold,
@@ -2443,7 +2448,7 @@ pub(super) fn display_motion(
     let truncates = hscroll > 0
         || truncates_partial_window
         || interp
-            .lookup_var("truncate-lines", env)
+            .lookup_var_key(cached_symbol!("truncate-lines"), env)
             .is_some_and(|value| value.is_truthy());
     let left_margin = if hscroll > 0 { 1 - hscroll } else { 0 };
 
@@ -2554,7 +2559,7 @@ fn line_number_display_width_value(
     interp.set_current_buffer_id(selected_buffer)?;
     let result = (|| -> Result<Value, LispError> {
         let mode = interp
-            .lookup_var("display-line-numbers", env)
+            .lookup_var_key(cached_symbol!("display-line-numbers"), env)
             .unwrap_or(Value::Nil);
         if mode.is_nil() {
             return Ok(
@@ -2595,7 +2600,7 @@ fn line_number_display_width_value(
         };
         let computed_width = displayed_maximum.max(1).to_string().len().max(2) as i64;
         let requested_width = interp
-            .lookup_var("display-line-numbers-width", env)
+            .lookup_var_key(cached_symbol!("display-line-numbers-width"), env)
             .and_then(|value| value.integer_value())
             .unwrap_or(0)
             .max(0);
@@ -3142,12 +3147,12 @@ fn indent_to(
     }
     // SANE_TAB_WIDTH.
     let tab_width = interp
-        .lookup_var("tab-width", env)
+        .lookup_var_key(cached_symbol!("tab-width"), env)
         .and_then(|value| value.integer_value())
         .filter(|width| (1..=1000).contains(width))
         .unwrap_or(8);
     if interp
-        .lookup_var("indent-tabs-mode", env)
+        .lookup_var_key(cached_symbol!("indent-tabs-mode"), env)
         .is_some_and(|value| value.is_truthy())
     {
         let tabs = min_col / tab_width - from_col / tab_width;

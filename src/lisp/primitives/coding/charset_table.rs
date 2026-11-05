@@ -530,7 +530,10 @@ pub(crate) fn load_deunifier(interp: &Interpreter, name: &str) {
         return;
     }
     let inhibited = interp
-        .lookup_var("inhibit-load-charset-map", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("inhibit-load-charset-map"),
+            &crate::lisp::types::Env::new(),
+        )
         .is_some_and(|value| !value.is_nil());
     if !inhibited {
         slots.set(DEF_DEUNIFIER, Value::T);
@@ -557,7 +560,7 @@ pub(crate) fn charset_info(interp: &Interpreter, charset: &str) -> Option<Rc<Cha
 pub(crate) fn charset_map_file(interp: &Interpreter, name: &str) -> Option<PathBuf> {
     let env = crate::lisp::types::Env::new();
     let directories: Vec<PathBuf> = interp
-        .lookup_var("charset-map-path", &env)
+        .lookup_var_key(cached_symbol!("charset-map-path"), &env)
         .and_then(|path| path.to_vec().ok())
         .unwrap_or_default()
         .iter()
@@ -590,7 +593,10 @@ fn load_charset_map_file(
 ) -> Option<Vec<(u32, u32)>> {
     let path = charset_map_file(interp, name).or_else(|| {
         let data_directory = interp
-            .lookup_var("data-directory", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("data-directory"),
+                &crate::lisp::types::Env::new(),
+            )
             .and_then(|value| string_like(&value).map(|string| PathBuf::from(string.text)))
             .or_else(|| compat_data_directory().map(PathBuf::from))?;
         Some(data_directory.join("charsets").join(format!("{name}.map")))

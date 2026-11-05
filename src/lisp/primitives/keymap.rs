@@ -1585,7 +1585,7 @@ pub(crate) fn where_is_internal_command(
     // Ignore all menu bindings entirely.
     let nomenus = !firstonly.is_nil() && !non_ascii;
     let preferred = interp
-        .lookup_var("where-is-preferred-modifier", env)
+        .lookup_var_key(cached_symbol!("where-is-preferred-modifier"), env)
         .filter(Value::is_symbol)
         .and_then(|symbol| symbol.as_symbol().ok().map(solitary_event_modifier))
         .unwrap_or(0);

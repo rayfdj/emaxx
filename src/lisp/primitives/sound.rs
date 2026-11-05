@@ -830,7 +830,7 @@ pub(crate) fn play_sound_internal(
     };
     let (mut source, header) = if attrs.file.is_string() {
         let data_directory = interp
-            .lookup_var("data-directory", env)
+            .lookup_var_key(cached_symbol!("data-directory"), env)
             .unwrap_or(Value::Nil);
         let path = Value::list([data_directory]);
         let mut file = super::loading::openp_file(interp, &attrs.file, &path, env)?

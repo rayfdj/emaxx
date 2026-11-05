@@ -506,10 +506,10 @@ define_dispatch!(
                 interp.buffer.borrow_mut().name = final_name.clone();
                 // A buffer visiting no file renames its auto-save file.
                 let visits_file = interp
-                    .lookup_var("buffer-file-name", env)
+                    .lookup_var_key(cached_symbol!("buffer-file-name"), env)
                     .is_some_and(|value| value.is_truthy());
                 let auto_saves = interp
-                    .lookup_var("buffer-auto-save-file-name", env)
+                    .lookup_var_key(cached_symbol!("buffer-auto-save-file-name"), env)
                     .is_some_and(|value| value.is_truthy());
                 if !visits_file && auto_saves {
                     crate::lisp::primitives::hooks_overlays::call_named_function(
@@ -1447,7 +1447,7 @@ define_dispatch!(
                 let non_nil = name == "read-non-nil-coding-system";
                 need_arg_range(name, args, 1, if non_nil { 1 } else { 2 })?;
                 let collection = interp
-                    .lookup_var("coding-system-alist", env)
+                    .lookup_var_key(cached_symbol!("coding-system-alist"), env)
                     .unwrap_or(Value::Nil);
                 // coding.c: a symbol default is its name; read-coding-system
                 // binds `completion-ignore-case' to t around the reading.
@@ -1798,7 +1798,8 @@ pub(crate) fn other_buffer(
     frame: crate::lisp::types::FrameRef,
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let predicate = super::frames::frame_parameter_value(interp, frame, "buffer-predicate");
+    let predicate =
+        super::frames::frame_parameter_value(interp, frame, cached_symbol!("buffer-predicate"));
     let excluded = match buffer.kind() {
         Kind::Buffer(buffer) => Some(buffer.id),
         _ => None,

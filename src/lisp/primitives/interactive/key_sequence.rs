@@ -260,7 +260,7 @@ impl KeySequenceReader {
         if !self.roots[6].is_nil()
             || self.remaps[2].start < self.read
             || !interp
-                .lookup_var("translate-upper-case-key-bindings", env)
+                .lookup_var_key(cached_symbol!("translate-upper-case-key-bindings"), env)
                 .is_some_and(|value| value.is_truthy())
         {
             return Ok(false);
@@ -521,10 +521,10 @@ impl KeySequenceReader {
 // need the same idle wait and may unwind this reader through a Lisp throw.
 fn wait_for_sequence_event(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
     let queued = interp
-        .lookup_var("unread-command-events", env)
+        .lookup_var_key(cached_symbol!("unread-command-events"), env)
         .is_some_and(|v| v.cons_values().is_some());
     let idle_timers = interp
-        .lookup_var("timer-idle-list", env)
+        .lookup_var_key(cached_symbol!("timer-idle-list"), env)
         .is_some_and(|value| value.is_truthy());
     if queued || has_tty_event_poller() || executing_kbd_macro_p(interp, env) || !idle_timers {
         return read_key_sequence_event(interp, env);
@@ -536,7 +536,7 @@ fn wait_for_sequence_event(interp: &mut Interpreter, env: &mut Env) -> Result<Va
         loop {
             interp.service_async_runtime_events(env, true, Some(start.elapsed().as_secs_f64()))?;
             if interp
-                .lookup_var("unread-command-events", env)
+                .lookup_var_key(cached_symbol!("unread-command-events"), env)
                 .is_some_and(|v| v.cons_values().is_some())
             {
                 return read_key_sequence_event(interp, env);

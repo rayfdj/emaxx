@@ -555,11 +555,11 @@ pub(crate) fn selected_scroll_margin(
     window_lines: usize,
 ) -> usize {
     let scroll_margin = interp
-        .lookup_var("scroll-margin", env)
+        .lookup_var_key(cached_symbol!("scroll-margin"), env)
         .and_then(|value| value.integer_value())
         .unwrap_or(0);
     let maximum = interp
-        .lookup_var("maximum-scroll-margin", env)
+        .lookup_var_key(cached_symbol!("maximum-scroll-margin"), env)
         .unwrap_or(Value::Nil);
     scroll_margin_lines(scroll_margin, maximum, window_lines)
 }
@@ -599,7 +599,7 @@ pub(crate) fn recenter_selected_window(
         // which redisplay then considers whole.
         if redisplay
             && interp
-                .lookup_var("recenter-redisplay", env)
+                .lookup_var_key(cached_symbol!("recenter-redisplay"), env)
                 .is_some_and(|value| value.is_truthy())
         {
             interp.redisplay_other_windows();
@@ -797,19 +797,21 @@ pub(crate) fn window_scroll(
     let mut n = n;
     if whole {
         let nscls = interp
-            .lookup_var("next-screen-context-lines", env)
+            .lookup_var_key(cached_symbol!("next-screen-context-lines"), env)
             .and_then(|value| value.integer_value())
             .unwrap_or(2)
             .clamp(0, 1_000_000);
         n = n.saturating_mul((ht - nscls).max(1));
     }
     let preserve = interp
-        .lookup_var("scroll-preserve-screen-position", env)
+        .lookup_var_key(cached_symbol!("scroll-preserve-screen-position"), env)
         .unwrap_or(Value::Nil);
     let mut original = (0i64, 0i64);
     if preserve.is_truthy() {
         let (hpos, vpos) = SCROLL_PRESERVE.with(|cell| cell.get());
-        let last_command = interp.lookup_var("last-command", env).unwrap_or(Value::Nil);
+        let last_command = interp
+            .lookup_var_key(cached_symbol!("last-command"), env)
+            .unwrap_or(Value::Nil);
         let scroll_command = matches!(last_command.kind(), Kind::Symbol(_) | Kind::Nil | Kind::T)
             && super::dispatch::call(
                 interp,

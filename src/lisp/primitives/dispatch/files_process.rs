@@ -580,7 +580,7 @@ define_dispatch!(
                 // only the host Buffer field lost bindings used by ordinary
                 // save code (including backup creation).
                 Ok(interp
-                    .lookup_var("buffer-file-name", env)
+                    .lookup_var_key(cached_symbol!("buffer-file-name"), env)
                     .unwrap_or(Value::Nil))
             }
             "visited-file-modtime" => {
@@ -686,7 +686,7 @@ define_dispatch!(
                 let buffer_name = buffer.borrow().name.clone();
                 let mode = if buffer_name == "*scratch*" {
                     interp
-                        .lookup_var("initial-major-mode", env)
+                        .lookup_var_key(cached_symbol!("initial-major-mode"), env)
                         .unwrap_or(Value::Nil)
                 } else {
                     let mode = super::call(
@@ -697,7 +697,9 @@ define_dispatch!(
                     )?;
                     // buffer.c: a nil default takes the current buffer's
                     // mode unless that is a special mode.
-                    let current = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
+                    let current = interp
+                        .lookup_var_key(cached_symbol!("major-mode"), env)
+                        .unwrap_or(Value::Nil);
                     if mode.is_nil()
                         && super::call(interp, "get", &[current, Value::symbol("mode-class")], env)?
                             .is_nil()
@@ -1084,7 +1086,7 @@ define_dispatch!(
                 if users.is_empty() {
                     users.push(
                         interp
-                            .lookup_var("user-real-login-name", env)
+                            .lookup_var_key(cached_symbol!("user-real-login-name"), env)
                             .unwrap_or(Value::Nil),
                     );
                 }
@@ -2907,7 +2909,7 @@ define_dispatch!(
                 } else {
                     let (mut filefd, tempfile_name, tempfile) = create_temp_file(interp, env)?;
                     let coding = interp
-                        .lookup_var("coding-system-for-write", env)
+                        .lookup_var_key(cached_symbol!("coding-system-for-write"), env)
                         .unwrap_or(Value::Nil);
                     let coding = if !coding.is_nil() {
                         coding
@@ -3040,10 +3042,13 @@ define_dispatch!(
                             && fs::metadata(&host).is_ok()
                             && visited_path.as_ref() != Some(path)
                             && interp
-                                .lookup_var("kill-buffer-delete-auto-save-files", env)
+                                .lookup_var_key(
+                                    cached_symbol!("kill-buffer-delete-auto-save-files"),
+                                    env,
+                                )
                                 .is_some_and(|value| value.is_truthy())
                             && interp
-                                .lookup_var("delete-auto-save-files", env)
+                                .lookup_var_key(cached_symbol!("delete-auto-save-files"), env)
                                 .is_some_and(|value| value.is_truthy())
                             && interp
                                 .get_buffer_by_id(id)
@@ -3367,7 +3372,7 @@ fn make_process_value(
         .is_some_and(|pair| pair[1].is_truthy());
     if file_handler {
         let default_directory = interp
-            .lookup_var("default-directory", env)
+            .lookup_var_key(cached_symbol!("default-directory"), env)
             .and_then(|value| string_like(&value).map(|string| string.text))
             .unwrap_or_default();
         if let Some(handler) = find_file_name_handler(
@@ -3392,7 +3397,7 @@ fn make_process_value(
         .transpose()?;
     let inherit_coding_system = parsed.buffer_id.is_some()
         && interp
-            .lookup_var("inherit-process-coding-system", env)
+            .lookup_var_key(cached_symbol!("inherit-process-coding-system"), env)
             .is_some_and(|value| value.is_truthy());
     // Fmake_pipe_process always has a buffer: `:buffer', else the one
     // its name names, created when missing.
@@ -4171,9 +4176,9 @@ fn file_name_completion_1(
     // A file-name coding that decomposes characters (HFS+) needs the
     // decoded names compared too, FILE recomposed first.
     let coding = interp
-        .lookup_var("file-name-coding-system", env)
+        .lookup_var_key(cached_symbol!("file-name-coding-system"), env)
         .filter(Value::is_truthy)
-        .or_else(|| interp.lookup_var("default-file-name-coding-system", env))
+        .or_else(|| interp.lookup_var_key(cached_symbol!("default-file-name-coding-system"), env))
         .unwrap_or(Value::Nil);
     let check_decoded = !coding.is_nil() && {
         let plist = super::call(interp, "coding-system-plist", &[coding], env)?;
@@ -4251,7 +4256,7 @@ fn file_name_completion_1(
         };
         if !all {
             let extensions = interp
-                .lookup_var("completion-ignored-extensions", env)
+                .lookup_var_key(cached_symbol!("completion-ignored-extensions"), env)
                 .unwrap_or(Value::Nil);
             let mut canexclude = false;
             if directoryp && (bytes == b"." || bytes == b"..") {
@@ -4327,7 +4332,7 @@ fn file_name_completion_1(
             }
         }
         let mut regexps = interp
-            .lookup_var("completion-regexp-list", env)
+            .lookup_var_key(cached_symbol!("completion-regexp-list"), env)
             .unwrap_or(Value::Nil);
         while let Some((regexp, rest)) = regexps.cons_values() {
             regexps = rest;
@@ -4488,7 +4493,7 @@ fn decode_system(
 ) -> Result<Value, LispError> {
     let raw = super::super::coding::bytes_to_unibyte_value(bytes);
     let coding = interp
-        .lookup_var("locale-coding-system", env)
+        .lookup_var_key(cached_symbol!("locale-coding-system"), env)
         .unwrap_or(Value::Nil);
     if coding.is_nil() {
         return Ok(raw);

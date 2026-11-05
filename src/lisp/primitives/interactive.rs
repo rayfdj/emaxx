@@ -524,7 +524,7 @@ pub(crate) fn run_pending_user_signal_events(
         };
         handled = true;
         let keymap = interp
-            .lookup_var("special-event-map", env)
+            .lookup_var_key(cached_symbol!("special-event-map"), env)
             .unwrap_or(Value::Nil);
         // keyboard.c:read_char uses access_keymap on the actual event.
         // Filters may collect after a thread event leaves the pending queue,
@@ -603,7 +603,7 @@ pub(crate) fn clear_command_keys(interp: &mut Interpreter) {
 
 pub(crate) fn executing_kbd_macro_p(interp: &Interpreter, env: &Env) -> bool {
     interp
-        .lookup_var("executing-kbd-macro", env)
+        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -642,7 +642,7 @@ fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &En
     // sequence, so a register name, query answer, or other nested input
     // must be appended here to make the macro self-contained on replay.
     if interp
-        .lookup_var("defining-kbd-macro", env)
+        .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
         .is_some_and(|value| value.is_truthy())
     {
         interp.kbd_macro_definition.push(*event);
@@ -913,11 +913,11 @@ pub(crate) fn parse_interactive_string(
     // starting at the first with parameters unless
     // `inhibit-mouse-event-check' admits any event.
     let keys = interp
-        .lookup_var("this-command-keys-vector", env)
+        .lookup_var_key(cached_symbol!("this-command-keys-vector"), env)
         .and_then(|keys| vector_or_list_items(&keys).ok())
         .unwrap_or_default();
     let inhibit_mouse_event_check = interp
-        .lookup_var("inhibit-mouse-event-check", env)
+        .lookup_var_key(cached_symbol!("inhibit-mouse-event-check"), env)
         .is_some_and(|value| value.is_truthy());
     let mut next_event = 0;
     if !inhibit_mouse_event_check {
@@ -929,7 +929,7 @@ pub(crate) fn parse_interactive_string(
     // The prefix argument as the call began: reading earlier arguments
     // through the minibuffer runs commands that reset it.
     let prefix_arg = interp
-        .lookup_var("current-prefix-arg", env)
+        .lookup_var_key(cached_symbol!("current-prefix-arg"), env)
         .unwrap_or(Value::Nil);
     // callint.c's leading flag characters, handled once at the start of
     // the whole spec: `*' barfs on a read-only buffer, `^' runs the
@@ -948,7 +948,7 @@ pub(crate) fn parse_interactive_string(
             }
             Some('*') => {
                 if interp
-                    .lookup_var("buffer-read-only", env)
+                    .lookup_var_key(cached_symbol!("buffer-read-only"), env)
                     .is_some_and(|value| value.is_truthy())
                 {
                     if record_flag {
@@ -1001,10 +1001,10 @@ pub(crate) fn parse_interactive_string(
                 )
             })?;
             let transient = interp
-                .lookup_var("transient-mark-mode", env)
+                .lookup_var_key(cached_symbol!("transient-mark-mode"), env)
                 .is_some_and(|value| value.is_truthy());
             let even_if_inactive = interp
-                .lookup_var("mark-even-if-inactive", env)
+                .lookup_var_key(cached_symbol!("mark-even-if-inactive"), env)
                 .is_some_and(|value| value.is_truthy());
             if transient && !even_if_inactive && !interp.buffer.borrow().mark_active() {
                 return Err(LispError::SignalValue(Value::list([Value::Symbol(
@@ -1053,7 +1053,9 @@ pub(crate) fn parse_interactive_string(
         match code {
             'a' | 'C' => {
                 let message = formatted_prompt(interp, env, &visible)?;
-                let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
+                let obarray = interp
+                    .lookup_var_key(cached_symbol!("obarray"), env)
+                    .unwrap_or(Value::Nil);
                 let predicate =
                     Value::Symbol(if code == 'a' { "fboundp" } else { "commandp" }.into());
                 let name = call1(
@@ -1116,7 +1118,7 @@ pub(crate) fn parse_interactive_string(
                 let (default, mustmatch, initial, predicate) = match code {
                     'D' => (
                         interp
-                            .lookup_var("default-directory", env)
+                            .lookup_var_key(cached_symbol!("default-directory"), env)
                             .unwrap_or(Value::Nil),
                         Value::Symbol("lambda".into()),
                         Value::Nil,
@@ -1291,7 +1293,7 @@ pub(crate) fn parse_interactive_string(
                 let message = formatted_prompt(interp, env, &visible)?;
                 let variable = call1(interp, env, "read-variable", &[message])?;
                 seen = interp
-                    .lookup_var("minibuffer-history", env)
+                    .lookup_var_key(cached_symbol!("minibuffer-history"), env)
                     .and_then(|history| history.car_if_list())
                     .unwrap_or(Value::Nil);
                 values.push(variable);
@@ -1482,7 +1484,7 @@ pub(crate) fn pending_keystroke_echo(
     // echo_dash: the temporary trailing dash of an unfinished sequence.
     text.push('-');
     let help_wanted = interp
-        .lookup_var("echo-keystrokes-help", env)
+        .lookup_var_key(cached_symbol!("echo-keystrokes-help"), env)
         .is_none_or(|value| value.is_truthy());
     if help_wanted
         && interp
@@ -1695,7 +1697,7 @@ fn execute_command_binding_inner(
     // boundary, while an ordinary completed command commits them below.
     if record_keys
         && interp
-            .lookup_var("defining-kbd-macro", env)
+            .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
             .is_some_and(|value| value.is_truthy())
     {
         interp.kbd_macro_definition.extend_from_slice(keys);
@@ -1716,7 +1718,9 @@ fn execute_command_binding_inner(
         &cached_symbol!("pre-command-hook").symbol(),
         env,
     )?;
-    let dispatched = interp.lookup_var("this-command", env).unwrap_or(Value::Nil);
+    let dispatched = interp
+        .lookup_var_key(cached_symbol!("this-command"), env)
+        .unwrap_or(Value::Nil);
     // keyboard.c command_loop_1 executes the command through simple.el's
     // `command-execute' (call1 (Qcommand_execute, Vthis_command)): the
     // prefix-arg handoff (current-prefix-arg takes prefix-arg, which
@@ -1738,7 +1742,9 @@ fn execute_command_binding_inner(
         )
         .map(|_| ())
     } else {
-        let prefix = interp.lookup_var("prefix-arg", env).unwrap_or(Value::Nil);
+        let prefix = interp
+            .lookup_var_key(cached_symbol!("prefix-arg"), env)
+            .unwrap_or(Value::Nil);
         interp.set_variable("current-prefix-arg", prefix, env);
         interp.set_variable("prefix-arg", Value::Nil, env);
         command_loop_call(
@@ -1768,12 +1774,12 @@ fn execute_command_binding_inner(
         // for the same flag; until every native arm publishes it, a changed
         // modification tick stands in for that side of the protocol.
         let deactivate = interp
-            .lookup_var("deactivate-mark", env)
+            .lookup_var_key(cached_symbol!("deactivate-mark"), env)
             .is_some_and(|value| value.is_truthy())
             || (interp.current_buffer_id() == modified_before.0
                 && interp.buffer.borrow().chars_modified_tick() != modified_before.1);
         let mark_active = interp
-            .lookup_var("mark-active", env)
+            .lookup_var_key(cached_symbol!("mark-active"), env)
             .is_some_and(|value| value.is_truthy());
         if deactivate && mark_active {
             // `deactivate-mark' is GNU simple.el's; keyboard.c reaches it as
@@ -1837,7 +1843,7 @@ fn execute_command_binding_inner(
     // abort-minibuffers leave themselves in `this-command').
     result?;
     let last_command = interp
-        .lookup_var("this-command", env)
+        .lookup_var_key(cached_symbol!("this-command"), env)
         .filter(|command| !command.is_nil())
         .unwrap_or(dispatched);
     interp.set_variable("last-command", last_command, env);
@@ -1846,17 +1852,17 @@ fn execute_command_binding_inner(
     // to the invoked function, and its suggestion timer compares
     // against real-last-command).
     let real_last = interp
-        .lookup_var("real-this-command", env)
+        .lookup_var_key(cached_symbol!("real-this-command"), env)
         .unwrap_or(Value::Nil);
     interp.set_variable("real-last-command", real_last, env);
     // keyboard.c takes last-prefix-arg from current-prefix-arg after the
     // command ran (command-execute moved prefix-arg there).
     let last_prefix = interp
-        .lookup_var("current-prefix-arg", env)
+        .lookup_var_key(cached_symbol!("current-prefix-arg"), env)
         .unwrap_or(Value::Nil);
     interp.set_variable("last-prefix-arg", last_prefix, env);
     if interp
-        .lookup_var("defining-kbd-macro", env)
+        .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
         .is_some_and(|value| value.is_truthy())
     {
         interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
@@ -2036,7 +2042,7 @@ fn timer_check(
         *ran = true;
         super::call(interp, "aset", &[timer, Value::Integer(0), Value::T], env)?;
         let old_deactivate_mark = interp
-            .lookup_var("deactivate-mark", env)
+            .lookup_var_key(cached_symbol!("deactivate-mark"), env)
             .unwrap_or(Value::Nil);
         let inhibit_quit = interp.bind_special_variable("inhibit-quit", Value::T, env)?;
         interp.begin_timer_callback();
@@ -2122,7 +2128,7 @@ pub(crate) fn run_tty_frame_redraw(interp: &mut Interpreter, env: &mut Env) {
 // sharing and lets a filter mutate the very next input event in place.
 fn pop_unread_event_cell(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
     let (event, tail) = interp
-        .lookup_var("unread-command-events", env)?
+        .lookup_var_key(cached_symbol!("unread-command-events"), env)?
         .cons_values()?;
     interp.with_lisp_stack_roots(&event, |interp| {
         interp.set_variable("unread-command-events", tail, env);
@@ -2186,7 +2192,7 @@ fn read_command_event(
     // frontend installed no poller.
     let mut idle_start: Option<std::time::Instant> = None;
     let cursor_in_echo_area = interp
-        .lookup_var("cursor-in-echo-area", env)
+        .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
         .is_some_and(|value| value.is_truthy());
     while let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) {
         match step {
@@ -2256,7 +2262,7 @@ pub(crate) fn unread_command_events(
     env: &Env,
 ) -> Result<Vec<Value>, LispError> {
     interp
-        .lookup_var("unread-command-events", env)
+        .lookup_var_key(cached_symbol!("unread-command-events"), env)
         .unwrap_or(Value::Nil)
         .to_vec()
 }
@@ -2460,7 +2466,7 @@ pub(crate) fn menu_bar_row_items(
         }
     });
     if let Some(final_items) = interp
-        .lookup_var("menu-bar-final-items", env)
+        .lookup_var_key(cached_symbol!("menu-bar-final-items"), env)
         .and_then(|value| value.to_vec().ok())
     {
         for name in final_items {
@@ -2599,7 +2605,7 @@ pub(crate) fn menu_item_details_with_button(
 /// full active-keymap set on every keystroke.
 pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> usize {
     let minors = interp
-        .lookup_var("minor-mode-map-alist", env)
+        .lookup_var_key(cached_symbol!("minor-mode-map-alist"), env)
         .and_then(|alist| alist.to_vec().ok())
         .map(|entries| {
             entries
@@ -2614,7 +2620,7 @@ pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> us
         })
         .unwrap_or(0);
     let overriding = interp
-        .lookup_var("overriding-terminal-local-map", env)
+        .lookup_var_key(cached_symbol!("overriding-terminal-local-map"), env)
         .is_some_and(|map| map.is_truthy());
     minors + usize::from(overriding)
 }
@@ -2717,7 +2723,7 @@ pub(crate) fn read_tty_event_with_timeout(
             run_tty_frame_redraw(interp, env);
         }
         let cursor_in_echo_area = interp
-            .lookup_var("cursor-in-echo-area", env)
+            .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
             .is_some_and(|value| value.is_truthy());
         let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) else {
             return Ok(None);
@@ -2955,7 +2961,7 @@ pub(crate) fn run_post_command_hooks(
         env,
     )?;
     if interp
-        .lookup_var("delayed-warnings-list", env)
+        .lookup_var_key(cached_symbol!("delayed-warnings-list"), env)
         .is_some_and(|value| value.is_truthy())
     {
         crate::lisp::primitives::safe_run_hooks(
@@ -2974,14 +2980,16 @@ pub(crate) fn run_post_command_hooks(
 /// its companions from the command that ran last.
 pub(crate) fn command_loop_entry(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     run_post_command_hooks(interp, env)?;
-    let this_command = interp.lookup_var("this-command", env).unwrap_or(Value::Nil);
+    let this_command = interp
+        .lookup_var_key(cached_symbol!("this-command"), env)
+        .unwrap_or(Value::Nil);
     let real_this_command = interp
-        .lookup_var("real-this-command", env)
+        .lookup_var_key(cached_symbol!("real-this-command"), env)
         .unwrap_or(Value::Nil);
     interp.set_variable("last-command", this_command, env);
     interp.set_variable("real-last-command", real_this_command, env);
     let last_event_is_cons = interp
-        .lookup_var("last-command-event", env)
+        .lookup_var_key(cached_symbol!("last-command-event"), env)
         .is_some_and(|event| event.cons_values().is_some());
     if !last_event_is_cons {
         interp.set_variable("last-repeatable-command", real_this_command, env);
@@ -3035,7 +3043,7 @@ pub(crate) fn cmd_error(
         interp.set_variable("executing-kbd-macro", Value::Nil, env);
         interp.executing_kbd_macro = false;
     } else if interp
-        .lookup_var("defining-kbd-macro", env)
+        .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
         .is_some_and(|value| value.is_truthy())
     {
         // An `M-x' command that signals a `minibuffer-quit' condition
@@ -3086,7 +3094,7 @@ fn cmd_error_internal(
     interp.set_c_variable("inhibit-quit", Value::T);
     // Use user's specified output function if any.
     let function = interp
-        .lookup_var("command-error-function", env)
+        .lookup_var_key(cached_symbol!("command-error-function"), env)
         .unwrap_or(Value::Nil);
     let result = if function.is_nil() {
         Ok(())

@@ -6790,15 +6790,15 @@ fn native_overlay_arrow_cluster_matches_xdisp_startup_contract() {
         );
     }
     assert_eq!(
-        interp.lookup_var("overlay-arrow-position", &env),
+        interp.lookup_var_key(cached_symbol!("overlay-arrow-position"), &env),
         Some(Value::Nil)
     );
     assert_eq!(
-        interp.lookup_var("overlay-arrow-string", &env),
+        interp.lookup_var_key(cached_symbol!("overlay-arrow-string"), &env),
         Some(Value::String("=>".into()))
     );
     assert_eq!(
-        interp.lookup_var("overlay-arrow-variable-list", &env),
+        interp.lookup_var_key(cached_symbol!("overlay-arrow-variable-list"), &env),
         Some(Value::list([Value::symbol("overlay-arrow-position")]))
     );
 }
@@ -6830,16 +6830,25 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
     let interp = Interpreter::new();
     let env = Env::new();
     assert_eq!(
-        interp.lookup_var("gc-cons-percentage", &env),
+        interp.lookup_var_key(cached_symbol!("gc-cons-percentage"), &env),
         Some(Value::float(0.1))
     );
     assert_eq!(
-        interp.lookup_var("undo-outer-limit", &env),
+        interp.lookup_var_key(cached_symbol!("undo-outer-limit"), &env),
         Some(Value::Integer(24_000_000))
     );
-    assert_eq!(interp.lookup_var("font-log", &env), Some(Value::Nil));
-    assert_eq!(interp.lookup_var("purify-flag", &env), Some(Value::T));
-    assert_eq!(interp.lookup_var("display-hourglass", &env), Some(Value::T));
+    assert_eq!(
+        interp.lookup_var_key(cached_symbol!("font-log"), &env),
+        Some(Value::Nil)
+    );
+    assert_eq!(
+        interp.lookup_var_key(cached_symbol!("purify-flag"), &env),
+        Some(Value::T)
+    );
+    assert_eq!(
+        interp.lookup_var_key(cached_symbol!("display-hourglass"), &env),
+        Some(Value::T)
+    );
     for name in [
         "inhibit-x-resources",
         "internal-doc-file-name",
@@ -6855,16 +6864,19 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         );
     }
     assert_eq!(
-        interp.lookup_var("debugger", &env),
+        interp.lookup_var_key(cached_symbol!("debugger"), &env),
         Some(Value::symbol("debug-early"))
     );
     assert_eq!(
-        interp.lookup_var("native-comp-enable-subr-trampolines", &env),
+        interp.lookup_var_key(cached_symbol!("native-comp-enable-subr-trampolines"), &env),
         Some(Value::Nil)
     );
-    assert_eq!(interp.lookup_var("use-dialog-box", &env), Some(Value::T));
     assert_eq!(
-        interp.lookup_var("frame-internal-parameters", &env),
+        interp.lookup_var_key(cached_symbol!("use-dialog-box"), &env),
+        Some(Value::T)
+    );
+    assert_eq!(
+        interp.lookup_var_key(cached_symbol!("frame-internal-parameters"), &env),
         Some(Value::list([
             Value::symbol("name"),
             Value::symbol("parent-id"),
@@ -6872,7 +6884,7 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         ]))
     );
     assert_eq!(
-        interp.lookup_var("auto-save-list-file-prefix", &env),
+        interp.lookup_var_key(cached_symbol!("auto-save-list-file-prefix"), &env),
         None,
         "startup.el, not Rust, owns auto-save-list-file-prefix"
     );
@@ -6882,7 +6894,7 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         "cus-start.el, not Rust, owns the Custom standard value"
     );
     assert_eq!(
-        interp.lookup_var("terminal-frame", &env),
+        interp.lookup_var_key(cached_symbol!("terminal-frame"), &env),
         Some(Value::Frame(interp.selected_frame_id))
     );
     for name in [
@@ -6898,18 +6910,18 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         );
     }
     assert_eq!(
-        interp.lookup_var("eol-mnemonic-dos", &env),
+        interp.lookup_var_key(cached_symbol!("eol-mnemonic-dos"), &env),
         Some(Value::string("\\"))
     );
     assert_eq!(
-        interp.lookup_var("eol-mnemonic-mac", &env),
+        interp.lookup_var_key(cached_symbol!("eol-mnemonic-mac"), &env),
         Some(Value::string("/"))
     );
     let frame_title = interp
-        .lookup_var("frame-title-format", &env)
+        .lookup_var_key(cached_symbol!("frame-title-format"), &env)
         .expect("xdisp.c initializes frame-title-format");
     let icon_title = interp
-        .lookup_var("icon-title-format", &env)
+        .lookup_var_key(cached_symbol!("icon-title-format"), &env)
         .expect("xdisp.c initializes icon-title-format");
     assert!(crate::lisp::primitives::values::values_eq_in_env(
         &interp,
@@ -6930,7 +6942,7 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         ])
     );
     let Kind::HashTable(comp_units) = interp
-        .lookup_var("comp-loaded-comp-units-h", &env)
+        .lookup_var_key(cached_symbol!("comp-loaded-comp-units-h"), &env)
         .expect("comp.c initializes the loaded-unit table")
         .kind()
     else {
@@ -6982,7 +6994,7 @@ fn native_syntax_propertize_progress_is_buffer_local() {
         ))
     );
     assert_eq!(
-        interp.lookup_var("font-lock-defaults", &Env::new()),
+        interp.lookup_var_key(cached_symbol!("font-lock-defaults"), &Env::new()),
         None,
         "font-core.el, not Rust, owns font-lock-defaults"
     );

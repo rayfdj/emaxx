@@ -1359,7 +1359,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         self.validate_function_binding_symbol(symbol, &definition)?;
         let installs_trampolines = self
-            .lookup_var("native-comp-enable-subr-trampolines", env)
+            .lookup_var_key(cached_symbol!("native-comp-enable-subr-trampolines"), env)
             .is_some_and(|value| value.is_truthy());
         let replaces_primitive = matches!(
             self.raw_function_binding_symbol(symbol, &Env::new())

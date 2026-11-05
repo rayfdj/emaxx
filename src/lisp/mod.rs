@@ -9,11 +9,6 @@
 //! let retained = Value::cons(Value::Nil, Value::Nil);
 //! ```
 
-/// Define a primitive dispatcher and derive its name probe from the same arms.
-///
-/// Dispatch routing and implementation must share one inventory: otherwise a
-/// newly implemented primitive can remain unreachable merely because a second
-/// `handles` list was not updated.
 /// A fixed Qsymbol-style reference owned by the current editor entry.
 macro_rules! cached_symbol {
     ($name:literal) => {{
@@ -22,7 +17,13 @@ macro_rules! cached_symbol {
         SYMBOL
     }};
 }
+pub(crate) use cached_symbol;
 
+/// Define a primitive dispatcher and derive its name probe from the same arms.
+///
+/// Dispatch routing and implementation must share one inventory: otherwise a
+/// newly implemented primitive can remain unreachable merely because a second
+/// `handles` list was not updated.
 macro_rules! dispatch_handles {
     ($name:ident;) => {
         false
@@ -965,7 +966,7 @@ fn read_lisp_file_bytes(
         // as `(let ((load-file-name nil)) (load ...))' must be shadowed by the
         // file being loaded, then restored on every exit path.
         let macroexp_dynvars = interp
-            .lookup_var("macroexp--dynvars", &env)
+            .lookup_var_key(cached_symbol!("macroexp--dynvars"), &env)
             .unwrap_or(types::Value::Nil);
         let mut dynamic_restores = Vec::with_capacity(9);
         for (name, value) in [
@@ -1098,7 +1099,7 @@ fn read_lisp_file_bytes(
             // restores the filename in current-load-list. That unfinished
             // load must not be published as a completed history entry.
             let current_load_list = interp
-                .lookup_var("current-load-list", &types::Env::new())
+                .lookup_var_key(cached_symbol!("current-load-list"), &types::Env::new())
                 .unwrap_or_else(|| {
                     types::Value::list([types::Value::String(load_file.clone().into())])
                 });

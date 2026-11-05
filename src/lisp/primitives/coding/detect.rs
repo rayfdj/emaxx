@@ -263,7 +263,7 @@ impl Categories {
 
 fn latin_extra_code_table(interp: &Interpreter, env: &Env) -> Option<Vec<Value>> {
     interp
-        .lookup_var("latin-extra-code-table", env)
+        .lookup_var_key(cached_symbol!("latin-extra-code-table"), env)
         .and_then(|table| vector_items(&table).ok())
 }
 

@@ -647,7 +647,7 @@ impl Interpreter {
             buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|buffer| buffer.point_max()));
         self.set_marker(mark_marker_id, initial_position, buffer_id)?;
         let (decoding, encoding) = self
-            .lookup_var("default-process-coding-system", &Env::new())
+            .lookup_var_key(cached_symbol!("default-process-coding-system"), &Env::new())
             .and_then(|value| value.cons_values())
             .unwrap_or((Value::Nil, Value::Nil));
         let os_pid = runtime.as_ref().map(|runtime| runtime.child.id());
@@ -1400,7 +1400,7 @@ impl Interpreter {
     /// sentinel hears of it.
     pub fn close_connection_stream(&mut self, record_id: u64) {
         let remove = self
-            .lookup_var("delete-exited-processes", &Env::new())
+            .lookup_var_key(cached_symbol!("delete-exited-processes"), &Env::new())
             .is_none_or(|value| value.is_truthy());
         if let Some(process) = self.find_process_state_mut(record_id) {
             process.gnutls.session = None;
@@ -3797,7 +3797,7 @@ impl Interpreter {
                     // `timer-event-handler' demotes timer errors to a message
                     // unless `debug-on-error' asks for the debugger.
                     if self
-                        .lookup_var("debug-on-error", env)
+                        .lookup_var_key(cached_symbol!("debug-on-error"), env)
                         .is_some_and(|value| value.is_truthy())
                     {
                         self.restore_unfired_timer_batch(pending);

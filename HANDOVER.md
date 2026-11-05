@@ -14757,6 +14757,47 @@ setup_process_coding_systems's check now refuses). A 13-form
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
 
+- **Round 313: `frame-parameter' reads one parameter as Fframe_parameter
+  does, `frame-or-buffer-changed-p' is dispnew.c's, and the C side's
+  variable lookups by a literal name go through the symbol.** GNU's
+  Fframe_parameter answers a name it does not special-case with Fcdr
+  (Fassq (PARAMETER, Fframe_parameters (FRAME))): for a text frame that
+  is the value Fframe_parameters stores for its ten parameters (font,
+  name, height, width, modeline, unsplittable, the two buffer lists, the
+  bar lines) or its two colors, else the parameter's entry in
+  param_alist. Emaxx built that alist for every such lookup, a copy of
+  param_alist and twelve store_in_alist calls, about 40 times an
+  iteration of upstream-undo (`buffer-predicate' in each `other-buffer',
+  `min-height', `min-width' and `modeline' in each
+  frame-windows-min-size); it now reads the one value, from the table
+  Fframe_parameters itself builds from, and matches the parameter and
+  store_frame_param's special names by EQ through cached symbols rather
+  than by their text. upstream-undo takes 1,335k instructions an
+  iteration against GNU's 1,214k (1.100), down from 1.195.
+  Fframe_or_buffer_changed_p recorded only the selected frame, with its
+  `name' parameter rather than f->name, sized its vector by the buffers
+  it records rather than by every live one (35 slots in GNU at startup,
+  29 in Emaxx), compared with `eq' semantics only in part, and looked
+  VARIABLE up by its name, so an uninterned variable was void; it now
+  follows dispnew.c: every live frame and its f->name, each listed
+  buffer's `buffer-read-only' and Fbuffer_modified_p (`autosaved'
+  included), GNU's count and reallocation, EQ throughout, and
+  CHECK_SYMBOL, Fsymbol_value and Fset of the symbol. 478 lookups of a
+  variable by a literal name (245 names, the C side's Q-symbols) go
+  through cached keys, leaving 53 by name, all of variables a test
+  defines; since every key is interned when an editor is made, a
+  command-line test checks that each of the 493 names a symbol GNU's own
+  startup has interned. A finding on the workload measurements:
+  upstream-sort's two-point difference (3 runs less 1) read 1.094, but
+  Emaxx's 3-run had one more collection than its 1-run where GNU's had
+  none more (setup's last collection lands later in GNU), and a
+  collection costs Emaxx 35M instructions where GNU's costs 57M; with
+  that collection set aside it is at GNU's count (0.996). A difference
+  is comparable only when both sides collect equally often across it.
+  The fuzzes and command-line cases of rounds 303 to 312 print GNU's
+  results as before. Local validation: the grouped gate's 3,501
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17222,6 +17263,17 @@ ert-tests (46,146 ms against 38,109), tramp-tests (22,732 against
 19,120), comp-tests (17,148 against 14,545), semantic-utest-ia (3,965
 against 2,611) and mule-tests (3,246 against 2,004), and
 `ert-test-run-tests-batch-expensive' is 1.20 of GNU's time.
+
+**On `06f491b`** (round 312): the full Rust gate (run 41981853253)
+passed; the frozen run (run 41981857008) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a slow runner again (the oracle's
+bodies 265.7 s against round 311's 268.0). Setup 78.8 s against 64.1 s
+(1.230), test bodies 299.7 s against 265.7 s (1.128), in all 1.124, with
+a per-file setup median of 117 ms against 98. The widest body gaps are
+ert-tests (47,483 ms against 37,981), tramp-tests (22,717 against
+19,135), comp-tests (16,891 against 14,241), semantic-utest-ia (3,958
+against 2,564) and mule-tests (3,203 against 1,989), and
+`ert-test-run-tests-batch-expensive' is 1.24 of GNU's time.
 
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's

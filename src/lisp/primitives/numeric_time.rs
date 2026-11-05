@@ -1506,7 +1506,10 @@ fn zone_abbreviation_text(interp: &Interpreter, abbr: Value) -> Result<String, L
         return string_text(&abbr);
     }
     let coding = interp
-        .lookup_var("locale-coding-system", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("locale-coding-system"),
+            &crate::lisp::types::Env::new(),
+        )
         .unwrap_or(Value::Nil);
     if !coding.is_nil() {
         return Err(LispError::WrongTypeArgument("stringp".into(), abbr));
@@ -1552,7 +1555,7 @@ fn locale_encoded_bytes(
     env: &mut Env,
 ) -> Result<Vec<u8>, LispError> {
     let coding = interp
-        .lookup_var("locale-coding-system", env)
+        .lookup_var_key(cached_symbol!("locale-coding-system"), env)
         .unwrap_or(Value::Nil);
     let source = if coding.is_nil() {
         *string
@@ -1579,7 +1582,7 @@ fn locale_decoded_string(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let coding = interp
-        .lookup_var("locale-coding-system", env)
+        .lookup_var_key(cached_symbol!("locale-coding-system"), env)
         .unwrap_or(Value::Nil);
     if bytes.is_ascii() {
         return Ok(string_like_value_with_multibyte(
@@ -1727,7 +1730,10 @@ fn encode_time(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError>
 /// old-style list for `current-time' and a nil `time-convert' FORM.
 fn current_time_list_is_set(interp: &Interpreter) -> bool {
     interp
-        .lookup_var("current-time-list", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("current-time-list"),
+            &crate::lisp::types::Env::new(),
+        )
         .is_none_or(|value| value.is_truthy())
 }
 

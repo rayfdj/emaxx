@@ -995,7 +995,10 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
             Value::string("restored-process-test")
         );
         assert_eq!(
-            interpreter.lookup_var("default-directory", &crate::lisp::types::Env::new()),
+            interpreter.lookup_var_key(
+                cached_symbol!("default-directory"),
+                &crate::lisp::types::Env::new()
+            ),
             Some(Value::string(&crate::lisp::primitives::default_directory()))
         );
         let environment = interpreter

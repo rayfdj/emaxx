@@ -44,7 +44,7 @@ fn eval_buffer_uses_the_supplied_history_filename_without_visiting_it() {
     .expect("an empty buffer still records its explicit history filename");
     assert_eq!(result, Value::Nil);
     let history = interp
-        .lookup_var("load-history", &env)
+        .lookup_var_key(cached_symbol!("load-history"), &env)
         .expect("load history");
     assert_eq!(
         history.car().expect("new history entry"),
@@ -53,7 +53,7 @@ fn eval_buffer_uses_the_supplied_history_filename_without_visiting_it() {
     assert!(values_eq_in_env(
         &interp,
         &interp
-            .lookup_var("current-load-list", &env)
+            .lookup_var_key(cached_symbol!("current-load-list"), &env)
             .expect("restored outer load list"),
         &outer,
         &env,
@@ -92,13 +92,13 @@ fn eval_buffer_nil_filename_records_an_independent_nil_history_entry() {
         super::super::call(&mut interp, "eval-buffer", &[], &mut env)
             .expect("nil filename is a valid read/eval-loop source name");
         assert_eq!(
-            interp.lookup_var("load-history", &env),
+            interp.lookup_var_key(cached_symbol!("load-history"), &env),
             Some(Value::list([Value::list([Value::Nil]),]))
         );
         assert!(values_eq_in_env(
             &interp,
             &interp
-                .lookup_var("current-load-list", &env)
+                .lookup_var_key(cached_symbol!("current-load-list"), &env)
                 .expect("restored outer load list"),
             &outer,
             &env,
@@ -242,9 +242,12 @@ fn load_source_callback_observes_and_restores_the_outer_c_bindings() {
     )
     .expect("GNU source callback executes inside C-owned bindings");
     assert_eq!(result, Value::list([Value::Nil, Value::Nil]));
-    assert_eq!(interp.lookup_var("lexical-binding", &env), Some(Value::T));
     assert_eq!(
-        interp.lookup_var("lread--unescaped-character-literals", &env),
+        interp.lookup_var_key(cached_symbol!("lexical-binding"), &env),
+        Some(Value::T)
+    );
+    assert_eq!(
+        interp.lookup_var_key(cached_symbol!("lread--unescaped-character-literals"), &env),
         Some(old_warning)
     );
 }
@@ -277,7 +280,10 @@ fn load_source_callback_nonlocal_exit_unwinds_even_with_noerror() {
     assert!(
         matches!(result.as_ref().map_err(LispError::kind), Err(LispErrorKind::Throw(actual, value)) if values_eql(actual, &tag) && *value == Value::Integer(23))
     );
-    assert_eq!(interp.lookup_var("lexical-binding", &env), Some(Value::T));
+    assert_eq!(
+        interp.lookup_var_key(cached_symbol!("lexical-binding"), &env),
+        Some(Value::T)
+    );
     assert!(interp.loads_in_progress.is_nil());
 }
 

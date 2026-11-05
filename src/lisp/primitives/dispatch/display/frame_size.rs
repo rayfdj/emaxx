@@ -151,9 +151,9 @@ fn frame_windows_min_size(
         interp,
         frame,
         if horizontal {
-            "min-width"
+            cached_symbol!("min-width")
         } else {
-            "min-height"
+            cached_symbol!("min-height")
         },
     );
     let size = match parameter.integer_value() {
@@ -175,7 +175,8 @@ fn frame_windows_min_size(
     let termcap = frame.borrow().tty_sized;
     if termcap && !horizontal {
         let wants_modeline =
-            super::super::frames::frame_parameter_value(interp, frame, "modeline").is_truthy();
+            super::super::frames::frame_parameter_value(interp, frame, cached_symbol!("modeline"))
+                .is_truthy();
         let min_height = frame_top_margin(frame) + i64::from(wants_modeline) + 2;
         return Ok(size.max(min_height));
     }

@@ -104,7 +104,7 @@ impl Interpreter {
         // Past `undo-outer-limit' by the first boundary, the function is
         // offered the list.
         let outer = self
-            .lookup_var("undo-outer-limit", env)
+            .lookup_var_key(cached_symbol!("undo-outer-limit"), env)
             .unwrap_or(Value::Nil);
         let past_outer = match outer.kind() {
             Kind::Integer(limit) => limit < size,
@@ -115,7 +115,7 @@ impl Interpreter {
             _ => false,
         };
         let function = self
-            .lookup_var("undo-outer-limit-function", env)
+            .lookup_var_key(cached_symbol!("undo-outer-limit-function"), env)
             .unwrap_or(Value::Nil);
         if past_outer && !function.is_nil() {
             let handled = self.call_function_value(function, None, &[Value::Integer(size)], env)?;

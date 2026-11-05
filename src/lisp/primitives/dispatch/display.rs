@@ -690,7 +690,7 @@ fn strtoimax(input: &[u8]) -> (i64, &[u8]) {
 /// the terminal's bell.
 pub(crate) fn ring_bell(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     let function = interp
-        .lookup_var("ring-bell-function", env)
+        .lookup_var_key(cached_symbol!("ring-bell-function"), env)
         .unwrap_or(Value::Nil);
     if function.is_nil() {
         // FRAME_TERMINAL (f)->ring_bell_hook: the initial terminal (the
@@ -726,7 +726,7 @@ pub(crate) fn bitch_at_user(interp: &mut Interpreter, env: &mut Env) -> Result<(
             .map_err(|error| LispError::Signal(error.to_string()));
     }
     if interp
-        .lookup_var("executing-kbd-macro", env)
+        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
         .is_some_and(|value| value.is_truthy())
     {
         return Err(LispError::SignalValue(Value::list([
@@ -819,13 +819,13 @@ pub(crate) fn string_face_spans(value: &Value) -> EchoSpans {
 fn current_bidi_paragraph_direction_value(interp: &Interpreter, env: &Env) -> Value {
     if !interp.buffer.borrow().is_multibyte()
         || interp
-            .lookup_var("bidi-display-reordering", env)
+            .lookup_var_key(cached_symbol!("bidi-display-reordering"), env)
             .is_some_and(|value| value.is_nil())
     {
         return Value::symbol("left-to-right");
     }
     if let Some(direction) = interp
-        .lookup_var("bidi-paragraph-direction", env)
+        .lookup_var_key(cached_symbol!("bidi-paragraph-direction"), env)
         .filter(|value| !value.is_nil())
     {
         return direction;
@@ -1011,7 +1011,7 @@ fn lookup_image_map(map: &Value, x: i64, y: i64) -> Value {
 /// string, so the next redisplay draws its arrow afresh.
 fn mark_overlay_arrows_inaccurate(interp: &mut Interpreter, env: &crate::lisp::types::Env) {
     let mut list = interp
-        .lookup_var("overlay-arrow-variable-list", env)
+        .lookup_var_key(cached_symbol!("overlay-arrow-variable-list"), env)
         .unwrap_or(Value::Nil);
     while let Some((variable, rest)) = list.cons_values() {
         if variable.as_symbol().is_ok() {
@@ -1069,95 +1069,97 @@ fn frame_or_window_id(
     super::frames::decode_live_frame(interp, value, true)
 }
 
-fn current_frame_and_buffer_state(interp: &Interpreter) -> Vec<Value> {
+/// The state dispnew.c:Fframe_or_buffer_changed_p records: each frame of
+/// Vframe_list with its name, then each live buffer whose name does not
+/// begin with a space with its `buffer-read-only' and Fbuffer_modified_p.
+/// The second value is the size GNU counts for it, which takes every
+/// live buffer in.
+fn current_frame_and_buffer_state(interp: &Interpreter) -> (Vec<Value>, usize) {
     let mut state = Vec::new();
-    if interp.terminal_live() {
-        state.push(interp.selected_frame_value());
-        state.push(
-            interp
-                .frame_parameter_override("name")
-                .unwrap_or_else(|| interp.frame_name_value()),
-        );
+    let mut size = 1;
+    for frame in interp.frame_states.iter().filter(|frame| frame.is_live()) {
+        state.push(Value::Frame(*frame));
+        state.push(frame.name.get());
+        size += 2;
     }
     for (buffer_id, name) in &interp.buffer_list {
-        if name.starts_with(' ') {
-            continue;
-        }
         let Some(buffer) = interp.get_buffer_by_id(*buffer_id) else {
             continue;
         };
+        size += 3;
+        if name.starts_with(' ') {
+            continue;
+        }
         state.push(interp.buffer_value(*buffer_id).expect("live buffer object"));
-        state.push(
+        state.push(cached_symbol!("buffer-read-only").with(|symbol| {
             interp
-                .buffer_local_value(*buffer_id, "buffer-read-only")
-                .or_else(|| interp.default_value("buffer-read-only"))
-                .unwrap_or(Value::Nil),
-        );
-        state.push(if buffer.is_modified() {
+                .buffer_local_value_symbol(*buffer_id, symbol)
+                .unwrap_or(Value::Nil)
+        }));
+        state.push(if buffer.is_autosaved() {
+            Value::Symbol(cached_symbol!("autosaved").symbol())
+        } else if buffer.is_modified() {
             Value::T
         } else {
             Value::Nil
         });
     }
-    state
+    (state, size)
 }
 
+/// dispnew.c:Fframe_or_buffer_changed_p.
 fn frame_or_buffer_changed(
     interp: &mut Interpreter,
     variable: Option<&Value>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let variable_name = match variable.map(|v| v.kind()) {
-        None | Some(Kind::Nil) => None,
-        Some(value) => Some(value.value().as_symbol()?.to_string()),
+    // CHECK_SYMBOL, then Fsymbol_value.
+    let variable = match variable {
+        Some(value) if !value.is_nil() => {
+            Some((*value, checked_symbol_identity(interp, value, env)?))
+        }
+        _ => None,
     };
-    let old_state = if let Some(name) = variable_name.as_deref() {
-        interp.lookup(name, env)?
-    } else {
-        interp.frame_and_buffer_state()
+    let state = match &variable {
+        Some((value, _)) => super::misc::direct_symbol_value(interp, &[*value], env)?,
+        None => interp.frame_and_buffer_state(),
     };
-    let current = current_frame_and_buffer_state(interp);
-    let old_items = is_vector_value(&old_state)
-        .then(|| vector_items(&old_state))
+    let (current, size) = current_frame_and_buffer_state(interp);
+    let lambda = Value::Symbol(cached_symbol!("lambda").symbol());
+    let old_items = is_vector_value(&state)
+        .then(|| vector_items(&state))
         .transpose()?;
-    let unchanged = old_items.as_ref().is_some_and(|items| {
-        items.len() > current.len()
-            && current
-                .iter()
-                .zip(items)
-                .all(|(new, old)| values_eq_in_env(interp, new, old, env))
-            && matches!(
-                items.get(current.len()).map(|v| v.kind()),
-                Some(Kind::Symbol(symbol)) if symbol.is_named("lambda")
-            )
-    });
-    if unchanged {
+    if let Some(items) = &old_items
+        && items.len() > current.len()
+        && current
+            .iter()
+            .zip(items)
+            .all(|(new, old)| new.eq_value(*old))
+        && items[current.len()].eq_value(lambda)
+    {
         return Ok(Value::Nil);
     }
-
-    let required = current.len() + 1;
-    let reusable = old_items.as_ref().is_some_and(|items| {
-        required <= items.len() && required.saturating_add(20) >= items.len() / 2
-    });
-    let state = if reusable {
-        old_state
-    } else {
-        Value::vector(std::iter::repeat_n(Value::symbol("lambda"), required + 20))
-    };
-    for (index, value) in current.into_iter().enumerate() {
-        aset_vector_value(&state, index, value)?;
-    }
-    let slots = vector_items(&state)?.len();
-    for index in required - 1..slots {
-        aset_vector_value(&state, index, Value::symbol("lambda"))?;
-    }
-
-    if !reusable {
-        if let Some(name) = variable_name {
-            interp.set_variable(&name, state, env);
-        } else {
-            interp.set_frame_and_buffer_state(state);
+    // Reallocated when the data has grown past it or it has shrunk a
+    // lot, with 20 extra so it grows less often.
+    let state = match &old_items {
+        Some(items) if size <= items.len() && size + 20 >= items.len() / 2 => state,
+        _ => {
+            let state = Value::vector(std::iter::repeat_n(lambda, size + 20));
+            match &variable {
+                Some((_, symbol)) => {
+                    super::misc::set_internal_symbol(interp, symbol, state, env)?;
+                }
+                None => interp.set_frame_and_buffer_state(state),
+            }
+            state
         }
+    };
+    let slots = vector_items(&state)?.len();
+    for (index, value) in current.iter().enumerate() {
+        aset_vector_value(&state, index, *value)?;
+    }
+    for index in current.len()..slots {
+        aset_vector_value(&state, index, lambda)?;
     }
     Ok(Value::T)
 }
@@ -1741,7 +1743,7 @@ pub(crate) fn resolve_tty_face_attrs(
     // base face is deliberately resolved without recursively remapping it.
     if let Kind::Symbol(requested) = face.kind()
         && let Some(remapped) = interp
-            .lookup_var("face-remapping-alist", env)
+            .lookup_var_key(cached_symbol!("face-remapping-alist"), env)
             .and_then(|alist| alist.to_vec().ok())
             .and_then(|entries| {
                 entries.into_iter().find_map(|entry| {
@@ -2015,7 +2017,7 @@ pub(crate) fn window_face_spans(
             && !(region_for_selected
                 && is_current
                 && interp
-                    .lookup_var("mark-active", env)
+                    .lookup_var_key(cached_symbol!("mark-active"), env)
                     .is_some_and(|active| active.is_truthy()))
         {
             return spans;
@@ -2093,10 +2095,10 @@ pub(crate) fn window_face_spans(
     if region_for_selected
         && is_current
         && interp
-            .lookup_var("transient-mark-mode", env)
+            .lookup_var_key(cached_symbol!("transient-mark-mode"), env)
             .is_some_and(|mode| mode.is_truthy())
         && interp
-            .lookup_var("mark-active", env)
+            .lookup_var_key(cached_symbol!("mark-active"), env)
             .is_some_and(|active| active.is_truthy())
         // The buffer's mark marker is native buffer.c state; `mark' itself
         // is GNU simple.el's and must not enter the native dispatcher.
@@ -2292,7 +2294,7 @@ pub(crate) fn render_mode_line_glass(
     }
     let window_id = interp.selected_window_id();
     let format = interp
-        .lookup_var("mode-line-format", &Env::new())
+        .lookup_var_key(cached_symbol!("mode-line-format"), &Env::new())
         .unwrap_or(Value::Nil);
     let (text, _) =
         mode_line::display_mode_line(interp, env, window_id, format, 200, true, &UnitCells)?;
@@ -2845,7 +2847,7 @@ fn split_window_tree(
     let old_parent = window_link(interp, old_id, WINDOW_PARENT_SLOT);
     let limit_is_t = matches!(
         interp
-            .lookup_var("window-combination-limit", env)
+            .lookup_var_key(cached_symbol!("window-combination-limit"), env)
             .map(|value| value.kind()),
         Some(Kind::T)
     );
@@ -2861,7 +2863,7 @@ fn split_window_tree(
         frame.borrow().selected_window_id()
     };
     let resize = interp
-        .lookup_var("window-combination-resize", env)
+        .lookup_var_key(cached_symbol!("window-combination-resize"), env)
         .is_some_and(|value| value.is_truthy());
     if window_is_minibuffer(interp, old_id) {
         return Err(LispError::Signal(
@@ -4441,10 +4443,10 @@ define_dispatch!(
                 // editfns.c:Fmessage_or_box: a dialog after a mouse event
                 // (or before any) while `use-dialog-box' is non-nil.
                 let last_nonmenu_event = interp
-                    .lookup_var("last-nonmenu-event", env)
+                    .lookup_var_key(cached_symbol!("last-nonmenu-event"), env)
                     .unwrap_or(Value::Nil);
                 let use_dialog_box = interp
-                    .lookup_var("use-dialog-box", env)
+                    .lookup_var_key(cached_symbol!("use-dialog-box"), env)
                     .is_some_and(|value| value.is_truthy());
                 let after_mouse = last_nonmenu_event.is_nil()
                     || matches!(last_nonmenu_event.kind(), Kind::Cons(_));
@@ -4768,7 +4770,7 @@ define_dispatch!(
             "discard-input" => {
                 need_args(name, args, 0)?;
                 if interp
-                    .lookup_var("defining-kbd-macro", env)
+                    .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
                     .is_some_and(|value| value.is_truthy())
                 {
                     {
@@ -4910,7 +4912,7 @@ define_dispatch!(
                 // and loops on `read-from-minibuffer' until the user types
                 // yes or no; in batch, EOF on stdin signals end-of-file.
                 if interp
-                    .lookup_var("use-short-answers", env)
+                    .lookup_var_key(cached_symbol!("use-short-answers"), env)
                     .is_some_and(|value| value.is_truthy())
                 {
                     return crate::lisp::primitives::call_named_function(
@@ -4922,7 +4924,7 @@ define_dispatch!(
                     prompt.push(' ');
                 }
                 let suffix = interp
-                    .lookup_var("yes-or-no-prompt", env)
+                    .lookup_var_key(cached_symbol!("yes-or-no-prompt"), env)
                     .and_then(|value| string_like(&value).map(|text| text.text))
                     .unwrap_or_else(|| "(yes or no) ".into());
                 prompt.push_str(&suffix);
@@ -4975,7 +4977,7 @@ define_dispatch!(
                     return Ok(Value::T);
                 }
                 if !interp
-                    .lookup_var("case-fold-search", env)
+                    .lookup_var_key(cached_symbol!("case-fold-search"), env)
                     .is_some_and(|value| value.is_truthy())
                 {
                     return Ok(Value::Nil);
@@ -5433,7 +5435,7 @@ define_dispatch!(
                     Kind::Symbol(ref kind) if kind.is_named(MINIBUFFER_WINDOW_KIND)
                 ) {
                     interp
-                        .lookup_var("minibuffer-scroll-window", env)
+                        .lookup_var_key(cached_symbol!("minibuffer-scroll-window"), env)
                         .filter(Value::is_truthy)
                 } else {
                     None
@@ -5441,7 +5443,7 @@ define_dispatch!(
 
                 if candidate.is_none()
                     && let Some(buffer @ Kind::Buffer(_)) = interp
-                        .lookup_var("other-window-scroll-buffer", env)
+                        .lookup_var_key(cached_symbol!("other-window-scroll-buffer"), env)
                         .map(|v| v.kind())
                     && let Kind::Buffer(buffer_value) = buffer
                     && interp.has_buffer_id(buffer_value.id)
@@ -5465,7 +5467,7 @@ define_dispatch!(
 
                 if candidate.is_none()
                     && let Some(default) = interp
-                        .lookup_var("other-window-scroll-default", env)
+                        .lookup_var_key(cached_symbol!("other-window-scroll-default"), env)
                         .filter(Value::is_truthy)
                     && crate::lisp::primitives::call(
                         interp,
@@ -6187,7 +6189,7 @@ define_dispatch!(
                 interp.set_current_buffer_id(buffer_id)?;
                 let result = (|| {
                     if !interp
-                        .lookup_var("bidi-display-reordering", env)
+                        .lookup_var_key(cached_symbol!("bidi-display-reordering"), env)
                         .is_some_and(|value| value.is_truthy())
                         || !interp.buffer.borrow().is_multibyte()
                     {
@@ -6322,7 +6324,7 @@ define_dispatch!(
             "tool-bar-get-system-style" => {
                 need_args(name, args, 0)?;
                 let style = interp
-                    .lookup_var("tool-bar-style", env)
+                    .lookup_var_key(cached_symbol!("tool-bar-style"), env)
                     .unwrap_or(Value::Nil);
                 let known = ["image", "text", "both", "both-horiz", "text-image-horiz"]
                     .iter()
@@ -7523,7 +7525,7 @@ fn key_description(
     let nkeys = sequence_length_value(&keys)?;
     let nprefix = sequence_length_value(&prefix)?;
     let meta_prefix_char = interp
-        .lookup_var("meta-prefix-char", env)
+        .lookup_var_key(cached_symbol!("meta-prefix-char"), env)
         .unwrap_or(Value::Integer(KEY_DESCRIPTION_META_PREFIX));
     let sep = Value::String(" ".into());
     let mut args = Vec::new();
@@ -7773,9 +7775,12 @@ mod tests {
         )
         .expect("inspect callback's recorded guards");
         assert_eq!(guards, Value::list([Value::T, Value::T]));
-        assert_eq!(interp.lookup_var("inhibit-quit", &env), Some(Value::Nil));
         assert_eq!(
-            interp.lookup_var("inhibit-redisplay", &env),
+            interp.lookup_var_key(cached_symbol!("inhibit-quit"), &env),
+            Some(Value::Nil)
+        );
+        assert_eq!(
+            interp.lookup_var_key(cached_symbol!("inhibit-redisplay"), &env),
             Some(Value::Nil)
         );
         assert_eq!(echo_area_message().as_deref(), Some("preserved"));
@@ -7843,9 +7848,12 @@ mod tests {
         clear_message(&mut interp, &mut env, true, true).expect("callback signal is caught");
         assert!(echo_area_message().is_none());
         assert_eq!(echo_area_message_tick(), tick);
-        assert_eq!(interp.lookup_var("inhibit-quit", &env), Some(Value::Nil));
         assert_eq!(
-            interp.lookup_var("inhibit-redisplay", &env),
+            interp.lookup_var_key(cached_symbol!("inhibit-quit"), &env),
+            Some(Value::Nil)
+        );
+        assert_eq!(
+            interp.lookup_var_key(cached_symbol!("inhibit-redisplay"), &env),
             Some(Value::Nil)
         );
         let (id, _) = interp.find_buffer("*Messages*").expect("error was logged");
@@ -7881,9 +7889,12 @@ mod tests {
             result.as_ref().map_err(LispError::kind),
             Err(LispErrorKind::Throw(actual, value)) if values_eql(actual, &tag) && *value == Value::Integer(7)
         ));
-        assert_eq!(interp.lookup_var("inhibit-quit", &env), Some(Value::Nil));
         assert_eq!(
-            interp.lookup_var("inhibit-redisplay", &env),
+            interp.lookup_var_key(cached_symbol!("inhibit-quit"), &env),
+            Some(Value::Nil)
+        );
+        assert_eq!(
+            interp.lookup_var_key(cached_symbol!("inhibit-redisplay"), &env),
             Some(Value::Nil)
         );
         assert_eq!(echo_area_message().as_deref(), Some("not reached"));

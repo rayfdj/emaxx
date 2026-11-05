@@ -8481,7 +8481,7 @@ fn native_delete_terminal_tracks_liveness_and_runs_its_hook_before_removal() {
         .expect("an object that does not designate a terminal is a no-op"),
         Value::Nil
     );
-    assert!(no_op_interp.terminal_live());
+    assert!(no_op_interp.decode_terminal(&Value::Nil).is_some());
 }
 
 #[test]
@@ -25397,15 +25397,15 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
     call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
 
     assert_eq!(
-        interp.lookup_var("last-kbd-macro", &env),
+        interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
         Some(Value::vector([Value::Integer(6),]))
     );
     assert_eq!(
-        interp.lookup_var("last-input-event", &env),
+        interp.lookup_var_key(cached_symbol!("last-input-event"), &env),
         Some(Value::Integer(6))
     );
     assert_eq!(
-        interp.lookup_var("last-nonmenu-event", &env),
+        interp.lookup_var_key(cached_symbol!("last-nonmenu-event"), &env),
         Some(Value::Integer(6))
     );
 }
@@ -25441,7 +25441,7 @@ fn keyboard_macro_records_input_read_inside_a_command() {
     call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
 
     assert_eq!(
-        interp.lookup_var("last-kbd-macro", &env),
+        interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
         Some(Value::vector([
             Value::Integer(3),
             Value::Integer(114),
@@ -25493,7 +25493,7 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
         Some(Value::String("banana".into()))
     );
     assert_eq!(
-        interp.lookup_var("last-kbd-macro", &env),
+        interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
         Some(Value::vector([
             Value::Integer(3),
             Value::Integer(99),
@@ -28375,7 +28375,7 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
     );
     // The submission lands at the head of the history variable.
     let history = interp
-        .lookup_var("minibuffer-history", &env)
+        .lookup_var_key(cached_symbol!("minibuffer-history"), &env)
         .expect("history variable");
     assert_eq!(
         history,
@@ -28574,12 +28574,12 @@ fn tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands() {
         Value::String("alpha".into())
     );
     assert_eq!(
-        interp.lookup_var("this-command", &env),
+        interp.lookup_var_key(cached_symbol!("this-command"), &env),
         Some(Value::Symbol("exit-minibuffer".into())),
         "RET must dispatch minibuffer.el's exit-minibuffer"
     );
     assert_eq!(
-        interp.lookup_var("last-command", &env),
+        interp.lookup_var_key(cached_symbol!("last-command"), &env),
         Some(Value::Symbol("completion-at-point".into()))
     );
 }
@@ -29023,7 +29023,7 @@ fn marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list() {
     )
     .expect("delete succeeds");
     let undo_list = interp
-        .lookup_var("buffer-undo-list", &env)
+        .lookup_var_key(cached_symbol!("buffer-undo-list"), &env)
         .expect("undo list")
         .to_vec()
         .expect("list entries");

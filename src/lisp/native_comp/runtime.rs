@@ -5254,7 +5254,7 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
             let interpreter = unsafe { &mut *active.interpreter };
             let environment = unsafe { &mut *active.environment.get() };
             if !interpreter
-                .lookup_var("comp-sanitizer-active", environment)
+                .lookup_var_key(cached_symbol!("comp-sanitizer-active"), environment)
                 .is_some_and(|active| active.is_truthy())
             {
                 return Ok(0);
@@ -10831,7 +10831,7 @@ mod tests {
             .expect("automatic collection finishes through native entry");
         assert_eq!(runtime.heap.gc.collections, 2);
         assert_eq!(
-            interpreter.lookup_var("gcs-done", &environment),
+            interpreter.lookup_var_key(cached_symbol!("gcs-done"), &environment),
             Some(Value::Integer(1))
         );
         assert_eq!(
@@ -10847,7 +10847,7 @@ mod tests {
             Some(Value::Nil)
         );
         assert_eq!(
-            interpreter.lookup_var("gc-elapsed", &environment),
+            interpreter.lookup_var_key(cached_symbol!("gc-elapsed"), &environment),
             Some(Value::Nil)
         );
         assert!(!interpreter.garbage_collection_is_inhibited());
@@ -14930,7 +14930,7 @@ mod tests {
                 .expect_err("native nonlocal exit carries the same Lisp condition");
             assert!(crate::lisp::eval::error_condition_value(&error).eq_value(payload));
             assert_eq!(
-                interpreter.lookup_var("memory-full", &environment),
+                interpreter.lookup_var_key(cached_symbol!("memory-full"), &environment),
                 Some(Value::Nil)
             );
         }

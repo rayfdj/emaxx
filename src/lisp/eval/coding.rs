@@ -997,7 +997,7 @@ impl Interpreter {
     pub(crate) fn record_coding_system_name(&mut self, name: SymbolName) {
         let mut env = Env::new();
         let list = self
-            .lookup_var("coding-system-list", &env)
+            .lookup_var_key(cached_symbol!("coding-system-list"), &env)
             .unwrap_or(Value::Nil);
         self.set_variable(
             "coding-system-list",
@@ -1005,7 +1005,7 @@ impl Interpreter {
             &mut env,
         );
         let alist = self
-            .lookup_var("coding-system-alist", &env)
+            .lookup_var_key(cached_symbol!("coding-system-alist"), &env)
             .unwrap_or(Value::Nil);
         let text = name.name_text();
         let mut tail = alist;

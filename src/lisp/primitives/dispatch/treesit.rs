@@ -363,7 +363,7 @@ fn setting_predicate(
     env: &Env,
 ) -> Result<Option<Value>, LispError> {
     let settings = interp
-        .lookup_var("treesit-thing-settings", env)
+        .lookup_var_key(cached_symbol!("treesit-thing-settings"), env)
         .unwrap_or(Value::Nil);
     for language_entry in settings.to_vec()? {
         let values = language_entry.to_vec()?;

@@ -23,7 +23,7 @@ pub(crate) fn ensure_interaction_allowed(interp: &Interpreter, env: &Env) -> Res
 
 pub(crate) fn interaction_allowed(interp: &Interpreter, env: &Env) -> bool {
     !interp
-        .lookup_var("inhibit-interaction", env)
+        .lookup_var_key(cached_symbol!("inhibit-interaction"), env)
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -710,7 +710,7 @@ pub(crate) fn completion_candidates(
 
 pub(crate) fn completion_ignores_case(interp: &Interpreter, env: &Env) -> bool {
     interp
-        .lookup_var("completion-ignore-case", env)
+        .lookup_var_key(cached_symbol!("completion-ignore-case"), env)
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -768,7 +768,7 @@ pub(crate) fn filtered_completion_matches(
     // minibuf.c match_regexps folds with the buffer's canonical table.
     let case_table = ignore_case.then(|| interp.current_case_tables().canon);
     let regexp_list = interp
-        .lookup_var("completion-regexp-list", env)
+        .lookup_var_key(cached_symbol!("completion-regexp-list"), env)
         .and_then(|value| value.to_vec().ok())
         .unwrap_or_default();
     let predicate = predicate.filter(|value| !value.is_nil()).cloned();
@@ -1100,7 +1100,7 @@ pub(crate) fn try_completion(
     };
     let ignore_case = completion_ignores_case(interp, env);
     let regexps = interp
-        .lookup_var("completion-regexp-list", env)
+        .lookup_var_key(cached_symbol!("completion-regexp-list"), env)
         .unwrap_or(Value::Nil);
     let predicate = args.get(2).copied().filter(|value| !value.is_nil());
     let size = string_chars(&string);
@@ -1233,7 +1233,7 @@ pub(crate) fn all_completions(
     };
     let ignore_case = completion_ignores_case(interp, env);
     let regexps = interp
-        .lookup_var("completion-regexp-list", env)
+        .lookup_var_key(cached_symbol!("completion-regexp-list"), env)
         .unwrap_or(Value::Nil);
     let predicate = args.get(2).copied().filter(|value| !value.is_nil());
     let hide_spaces = args.get(3).is_some_and(Value::is_truthy);
@@ -1389,7 +1389,7 @@ pub(crate) fn test_completion(
     }
     // Reject this element if it fails to match all the regexps.
     let regexps = interp
-        .lookup_var("completion-regexp-list", env)
+        .lookup_var_key(cached_symbol!("completion-regexp-list"), env)
         .unwrap_or(Value::Nil);
     if !match_regexps(interp, env, &string, regexps, ignore_case)? {
         return Ok(Value::Nil);
@@ -1489,7 +1489,7 @@ pub(crate) fn completing_read(
     // loaded Elisp owner (including dynamic replacement and its mockable call
     // to `read-from-minibuffer') before using the file-less native fallback.
     if let Some(function) = interp
-        .lookup_var("completing-read-function", env)
+        .lookup_var_key(cached_symbol!("completing-read-function"), env)
         .filter(|function| !function.is_nil())
     {
         return call_function_value(interp, &function, args, env);
@@ -1682,7 +1682,7 @@ pub(crate) fn activate_minibuffer(
         )?;
     }
     let saved_windows = interp
-        .lookup_var("read-minibuffer-restore-windows", env)
+        .lookup_var_key(cached_symbol!("read-minibuffer-restore-windows"), env)
         .is_none_or(|restore| restore.is_truthy())
         .then(|| interp.snapshot_window_configuration());
     let depth = interp.minibuffer_depth().saturating_add(1);
@@ -1691,7 +1691,7 @@ pub(crate) fn activate_minibuffer(
     let saved_selected_window_id = interp.selected_window_id();
     let previous_minibuffer_selected_window_id =
         interp.replace_minibuffer_selected_window_id(Some(saved_selected_window_id));
-    let default_directory = interp.lookup_var("default-directory", env);
+    let default_directory = interp.lookup_var_key(cached_symbol!("default-directory"), env);
     // read_minibuf's set_minibuffer_mode: `minibuffer-mode', whose
     // kill-all-local-variables drops what the previous read left local.
     set_minibuffer_mode(interp, buffer_id, depth, env)?;
@@ -1743,7 +1743,7 @@ pub(crate) fn activate_minibuffer(
             stamp(interp, env, Value::symbol(name), Value::T)?;
         }
         let properties = interp
-            .lookup_var("minibuffer-prompt-properties", env)
+            .lookup_var_key(cached_symbol!("minibuffer-prompt-properties"), env)
             .unwrap_or(Value::Nil);
         let mut list = properties;
         while let Some((name, rest)) = list.cons_values() {
@@ -1843,7 +1843,7 @@ pub(crate) fn activate_minibuffer(
 pub(crate) fn check_recursive_minibuffer(interp: &Interpreter, env: &Env) -> Result<(), LispError> {
     if interp.minibuffer_depth() == 0
         || interp
-            .lookup_var("enable-recursive-minibuffers", env)
+            .lookup_var_key(cached_symbol!("enable-recursive-minibuffers"), env)
             .is_some_and(|value| value.is_truthy())
     {
         return Ok(());
@@ -2074,7 +2074,7 @@ fn run_exit_minibuf_hook(
 fn erase_expired_minibuffer(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     with_minibuffer_edits_inhibited(interp, env, |interp, env| {
         let old_deactivate_mark = interp
-            .lookup_var("deactivate-mark", env)
+            .lookup_var_key(cached_symbol!("deactivate-mark"), env)
             .unwrap_or(Value::Nil);
         let erased = super::call(interp, "erase-buffer", &[], env).map(drop);
         interp.set_c_variable("deactivate-mark", old_deactivate_mark);
@@ -2186,7 +2186,7 @@ fn completing_read_contents(
     // native minibuffer subset reads instead.
     if crate::lisp::primitives::has_tty_event_reader()
         && interp
-            .lookup_var("noninteractive", env)
+            .lookup_var_key(cached_symbol!("noninteractive"), env)
             .is_some_and(|value| value.is_nil())
     {
         if real_minibuffer_machinery_available(interp, env)
@@ -2574,7 +2574,7 @@ pub(crate) fn push_minibuffer_history(
     // `history-length' properties, and trimming.  Only a runtime without
     // subr.el keeps the native head-dedup subset.
     if interp
-        .lookup_var("history-add-new-input", env)
+        .lookup_var_key(cached_symbol!("history-add-new-input"), env)
         .is_some_and(|value| value.is_nil())
     {
         return;
@@ -2599,7 +2599,7 @@ pub(crate) fn push_minibuffer_history(
     }
     items.insert(0, Value::String(text.into()));
     let limit = interp
-        .lookup_var("history-length", env)
+        .lookup_var_key(cached_symbol!("history-length"), env)
         .and_then(|value| value.integer_value())
         .unwrap_or(100);
     if limit >= 0 {
@@ -2632,7 +2632,7 @@ fn history_entries(interp: &Interpreter, env: &Env, variable: &str) -> Vec<Strin
 fn real_minibuffer_machinery_available(interp: &mut Interpreter, env: &mut Env) -> bool {
     interp.lookup_function("exit-minibuffer", env).is_ok()
         && interp
-            .lookup_var("minibuffer-local-map", env)
+            .lookup_var_key(cached_symbol!("minibuffer-local-map"), env)
             .is_some_and(|map| crate::lisp::primitives::is_keymap_value(interp, &map))
 }
 
@@ -2977,10 +2977,10 @@ pub(crate) fn interactive_minibuffer_read(
         return interactive_minibuffer_command_loop(interp, env, history_spec);
     }
     let collection = interp
-        .lookup_var("minibuffer-completion-table", env)
+        .lookup_var_key(cached_symbol!("minibuffer-completion-table"), env)
         .filter(|table| !table.is_nil());
     let predicate = interp
-        .lookup_var("minibuffer-completion-predicate", env)
+        .lookup_var_key(cached_symbol!("minibuffer-completion-predicate"), env)
         .filter(|predicate| !predicate.is_nil());
     drive_interactive_minibuffer(
         interp,

@@ -1668,7 +1668,7 @@ impl Interpreter {
     fn call_debugger_with_room(&mut self, arg: Value, env: &mut Env) -> Result<Value, LispError> {
         self.clear_debug_on_next_call();
         let events = self
-            .lookup_var("num-nonmacro-input-events", env)
+            .lookup_var_key(cached_symbol!("num-nonmacro-input-events"), env)
             .unwrap_or(Value::Integer(0));
         self.set_variable("internal-when-entered-debugger", events, env);
         let mut restores = Vec::with_capacity(4);
@@ -1689,7 +1689,9 @@ impl Interpreter {
             }
         }
 
-        let debugger = self.lookup_var("debugger", env).unwrap_or(Value::Nil);
+        let debugger = self
+            .lookup_var_key(cached_symbol!("debugger"), env)
+            .unwrap_or(Value::Nil);
         // apply1 (Vdebugger, arg): ARG's elements are the debugger's
         // arguments, as debug.el's (debug &rest ARGS) reads them.
         let args: smallvec::SmallVec<[Value; 4]> = list_forms(&arg).collect();

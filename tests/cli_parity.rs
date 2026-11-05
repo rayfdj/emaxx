@@ -2092,6 +2092,78 @@ fn coding_systems_are_found_by_their_symbols() {
 }
 
 #[test]
+fn cached_symbol_keys_name_symbols_gnu_has_interned() {
+    // Every cached key's symbol is interned when an editor is constructed,
+    // as lisp.h's lispsym are: each must name a symbol GNU's own startup
+    // has interned, or `intern-soft' would find one GNU does not have.
+    let source = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lisp/types/symbols.rs"),
+    )
+    .unwrap();
+    let start = source.find("const KEY_NAMES: &[&str] = &[").unwrap();
+    let end = start + source[start..].find("];").unwrap();
+    let names: Vec<&str> = source[start..end].split('"').skip(1).step_by(2).collect();
+    assert!(names.len() > 300, "{} key names", names.len());
+    let program = format!(
+        "(dolist (n '({})) (unless (intern-soft n) (princ (format \"%s \" n))))",
+        names
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let corpus = Corpus::new();
+    assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
+}
+
+#[test]
+fn frame_parameters_and_frame_state_follow_frame_c_and_dispnew_c() {
+    // frame.c:Fframe_parameter reads a stored parameter without building
+    // Fframe_parameters' alist, and matches by EQ; dispnew.c's
+    // Fframe_or_buffer_changed_p records every frame's name and sizes its
+    // vector by all live buffers; its variable is any symbol.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defvar fbv nil)
+(prin1 (list (frame-or-buffer-changed-p 'fbv) (length fbv) (aref fbv 1) (eq (aref fbv 0) (selected-frame)) (frame-or-buffer-changed-p 'fbv)
+             (progn (get-buffer-create "x") (frame-or-buffer-changed-p 'fbv)) (length fbv)
+             (progn (get-buffer-create " hidden") (frame-or-buffer-changed-p 'fbv)) (length fbv)
+             (progn (with-current-buffer "x" (set-buffer-modified-p t)) (frame-or-buffer-changed-p 'fbv))
+             (frame-or-buffer-changed-p 'fbv)
+             (progn (with-current-buffer "x" (setq buffer-read-only t)) (frame-or-buffer-changed-p 'fbv))
+             (frame-or-buffer-changed-p 'fbv)
+             (let ((s (make-symbol "fbw"))) (set s 7) (list (frame-or-buffer-changed-p s) (length (symbol-value s)) (frame-or-buffer-changed-p s)))
+             (condition-case e (frame-or-buffer-changed-p 'unbound-fbv) (error e))
+             (condition-case e (frame-or-buffer-changed-p 3) (error e))
+             (let ((old fbv)) (setq fbv (make-vector 200 'lambda)) (list (frame-or-buffer-changed-p 'fbv) (eq old fbv) (length fbv)))))
+(terpri)
+(prin1 (list (frame-parameter nil (make-symbol "name"))
+             (progn (modify-frame-parameters nil (list (cons (make-symbol "name") "zz"))) (frame-parameter nil 'name))
+             (frame-parameter nil 'height) (frame-parameter nil 'width) (frame-parameter nil 'buffer-list)
+             (frame-parameter nil 'foreground-color) (frame-parameter nil 'background-color)
+             (frame-parameter nil 'font) (frame-parameter nil 'modeline) (frame-parameter nil 'unsplittable)
+             (frame-parameter nil 'menu-bar-lines) (frame-parameter nil 'tab-bar-lines) (frame-parameter nil 'nosuch)
+             (progn (modify-frame-parameters nil '((nosuch . 3))) (frame-parameter nil 'nosuch))
+             (frame-parameter nil 'line-spacing) (frame-parameter nil 'vertical-scroll-bars)
+             (let ((u (make-symbol "height"))) (modify-frame-parameters nil (list (cons u 9))) (list (frame-parameter nil u) (frame-parameter nil 'height)))
+             (let ((u (make-symbol "foreground-color"))) (modify-frame-parameters nil (list (cons u "red"))) (list (frame-parameter nil u) (frame-parameter nil 'foreground-color)))
+             (progn (modify-frame-parameters nil '((buffer-predicate . ignore))) (frame-parameter nil 'buffer-predicate))
+             (progn (modify-frame-parameters nil (list (cons (make-symbol "buffer-list") (list (current-buffer))))) (frame-parameter nil 'buffer-list))
+             (progn (modify-frame-parameters nil '((buffer-predicate . nil))) (frame-parameter nil 'buffer-predicate))
+             (frame-parameter nil 'display-type) (frame-parameter nil 'background-mode)
+             (condition-case e (frame-parameter nil "name") (error e))))
+(terpri))"#,
+        ],
+    );
+}
+
+#[test]
 fn generated_uninterned_symbol_programs_run_as_gnu_runs_them() {
     // 150 generated programs that give a fresh uninterned symbol one of 26
     // roles (function, variable, local variable, property owner, hash

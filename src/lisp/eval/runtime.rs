@@ -224,7 +224,7 @@ impl Interpreter {
         if self.will_dump_reported {
             return None;
         }
-        self.lookup_var("dump-mode", env)
+        self.lookup_var_key(cached_symbol!("dump-mode"), env)
             .and_then(|mode| crate::lisp::primitives::string_like(&mode).map(|mode| mode.text))
             .filter(|mode| mode == "pdump" || mode == "pbootstrap")
     }
@@ -298,7 +298,9 @@ impl Interpreter {
         })?;
         if crate::lisp::primitives::values_equal(self, &function, &fundef)? {
             // The file `load-history' names last, as Frequire's message.
-            let loaded = self.lookup_var("load-history", env).unwrap_or(Value::Nil);
+            let loaded = self
+                .lookup_var_key(cached_symbol!("load-history"), env)
+                .unwrap_or(Value::Nil);
             let loaded = crate::lisp::primitives::call(self, "car", &[loaded], env)?;
             let loaded = crate::lisp::primitives::call(self, "car", &[loaded], env)?;
             let file = crate::lisp::primitives::string_like(&loaded)
@@ -384,7 +386,7 @@ impl Interpreter {
         };
         if result.is_ok() {
             let current = self
-                .lookup_var("current-load-list", &load_environment)
+                .lookup_var_key(cached_symbol!("current-load-list"), &load_environment)
                 .unwrap_or_else(|| Value::list([Value::string(history_filename)]));
             self.commit_entire_load_history(&Value::string(history_filename), current);
         }
@@ -485,7 +487,7 @@ impl Interpreter {
             // records last (the resolved path, not the feature), or
             // "Required feature ... was not provided" when there is none.
             let loaded_file = self
-                .lookup_var("load-history", env)
+                .lookup_var_key(cached_symbol!("load-history"), env)
                 .and_then(|history| history.car_if_list())
                 .and_then(|entry| entry.car_if_list())
                 .and_then(|file| crate::lisp::primitives::string_like(&file).map(|s| s.text));
@@ -1163,21 +1165,22 @@ impl Interpreter {
 
     /// The selected frame's param_alist entry for the parameter named
     /// NAME, when it has one.
-    pub(crate) fn frame_parameter_override(&self, name: &str) -> Option<Value> {
+    /// Fassq (KEY, the selected frame's param_alist)'s value.
+    pub(crate) fn frame_parameter_override(
+        &self,
+        wanted: crate::lisp::types::symbols::SymbolKey,
+    ) -> Option<Value> {
         let mut tail = self.selected_frame_id.borrow().param_alist;
         while let Some((entry, rest)) = tail.cons_values() {
             if let Some((key, value)) = entry.cons_values()
-                && key.symbol_str() == Some(name)
+                && matches!(key.kind(), crate::lisp::types::Kind::Symbol(symbol)
+                    if wanted.with(|wanted| *wanted == symbol))
             {
                 return Some(value);
             }
             tail = rest;
         }
         None
-    }
-
-    pub(crate) fn frame_name_value(&self) -> Value {
-        self.selected_frame_id.name.get()
     }
 
     pub(crate) fn frame_and_buffer_state(&self) -> Value {
@@ -2826,7 +2829,7 @@ impl Interpreter {
         // redefinition the length of the file's list so far).
         let mut file = Value::Nil;
         let mut tail = self
-            .lookup_var("current-load-list", &Env::new())
+            .lookup_var_key(cached_symbol!("current-load-list"), &Env::new())
             .unwrap_or(Value::Nil);
         let mut seen = 0usize;
         while let Kind::Cons(cell) = tail.kind() {
@@ -2884,7 +2887,7 @@ impl Interpreter {
         }
 
         let mut history = self
-            .lookup_var("load-history", &Env::new())
+            .lookup_var_key(cached_symbol!("load-history"), &Env::new())
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default();
         history.retain(|existing| match existing.car() {
@@ -2914,7 +2917,7 @@ impl Interpreter {
         // owned by subr.el's real `eval-after-load'; the Rust host only
         // performs the C-owned lookup/invocation boundary.
         let after_load_alist = self
-            .lookup_var("after-load-alist", env)
+            .lookup_var_key(cached_symbol!("after-load-alist"), env)
             .unwrap_or(Value::Nil);
         let entry = crate::lisp::primitives::call(
             self,

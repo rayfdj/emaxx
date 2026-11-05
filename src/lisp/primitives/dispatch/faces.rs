@@ -199,7 +199,7 @@ fn get_lface_attributes(
     let face_name = resolve_face_name_1(interp, &face_name, signal)?;
     // assq_no_quit (FACE_NAME, Vface_remapping_alist).
     let mut tail = interp
-        .lookup_var("face-remapping-alist", env)
+        .lookup_var_key(cached_symbol!("face-remapping-alist"), env)
         .unwrap_or(Value::Nil);
     let mut remapping = None;
     while let Some((element, rest)) = tail.cons_values() {
@@ -324,7 +324,7 @@ fn evaluate_face_filter(
         return Ok(true);
     }
     if interp
-        .lookup_var("face-filters-always-match", env)
+        .lookup_var_key(cached_symbol!("face-filters-always-match"), env)
         .is_some_and(|value| value.is_truthy())
     {
         return Ok(true);
@@ -984,7 +984,7 @@ fn frame_parameter_of_face_change(
         None => {
             // store_in_alist (&Vdefault_frame_alist, param, value).
             let mut alist = interp
-                .lookup_var("default-frame-alist", env)
+                .lookup_var_key(cached_symbol!("default-frame-alist"), env)
                 .unwrap_or(Value::Nil);
             let before = alist;
             super::frames::store_in_alist(&mut alist, param, value)?;
@@ -1438,7 +1438,7 @@ define_dispatch!(
                     // the frame's own definition.
                     let face = resolve_face_name(interp, &args[0])?;
                     let mut tail = interp
-                        .lookup_var("face-remapping-alist", env)
+                        .lookup_var_key(cached_symbol!("face-remapping-alist"), env)
                         .unwrap_or(Value::Nil);
                     while let Some((element, rest)) = tail.cons_values() {
                         if element
@@ -1636,7 +1636,7 @@ pub(crate) fn tty_defined_color(
                 _ => Some(None),
             }
         } else if interp
-            .lookup_var("tty-defined-color-alist", env)
+            .lookup_var_key(cached_symbol!("tty-defined-color-alist"), env)
             .is_none_or(|alist| alist.is_nil())
         {
             Some(Some([0, 0, 0]))

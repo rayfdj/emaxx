@@ -1274,7 +1274,7 @@ pub(crate) fn multibyte_char_width(
             .min(1000);
     }
     let width = interp
-        .lookup_var("char-width-table", env)
+        .lookup_var_key(cached_symbol!("char-width-table"), env)
         .and_then(|value| match value.kind() {
             Kind::CharTable(table) => interp.char_table_get(table, code),
             _ => None,
@@ -1432,7 +1432,7 @@ pub(crate) fn invisibility_value_is_hidden(interp: &Interpreter, value: &Value, 
 /// `buffer-invisibility-spec': 0, 1, or 2 for text shown as an ellipsis.
 pub(crate) fn invisibility_level(interp: &Interpreter, value: &Value, env: &Env) -> u8 {
     let spec = interp
-        .lookup_var("buffer-invisibility-spec", env)
+        .lookup_var_key(cached_symbol!("buffer-invisibility-spec"), env)
         .unwrap_or(Value::T);
     super::invisibility::text_prop_means_invisible(*value, spec)
 }

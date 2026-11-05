@@ -106,18 +106,19 @@ impl Interpreter {
 
     /// Vload_file_name as the reader reads `#$'.
     pub(crate) fn read_load_file_name(&self, env: &Env) -> Value {
-        self.lookup_var("load-file-name", env).unwrap_or(Value::Nil)
+        self.lookup_var_key(cached_symbol!("load-file-name"), env)
+            .unwrap_or(Value::Nil)
     }
 
     /// Vread_circle as the reader tests it.
     pub(crate) fn read_circle(&self, env: &Env) -> bool {
-        self.lookup_var("read-circle", env)
+        self.lookup_var_key(cached_symbol!("read-circle"), env)
             .is_some_and(|value| value.is_truthy())
     }
 
     /// load_force_doc_strings as the reader tests it.
     pub(crate) fn read_force_doc_strings(&self, env: &Env) -> bool {
-        self.lookup_var("load-force-doc-strings", env)
+        self.lookup_var_key(cached_symbol!("load-force-doc-strings"), env)
             .is_some_and(|value| value.is_truthy())
     }
 
@@ -396,7 +397,7 @@ impl Interpreter {
         // No cycle check here: data.c:defalias leaves it to Ffset, which
         // a `defalias-fset-function' (advice's) takes the store from.
         if self
-            .lookup_var("purify-flag", env)
+            .lookup_var_key(cached_symbol!("purify-flag"), env)
             .is_some_and(|value| value.is_truthy())
             && !crate::lisp::primitives::is_keymap_value(self, &function)
         {

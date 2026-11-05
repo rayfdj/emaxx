@@ -48,7 +48,7 @@ impl UnitData {
     /// in `comp.c`; it is not an alternative frontend.
     pub(crate) fn read(interp: &mut Interpreter, env: &mut Env) -> Result<Self, LispError> {
         let context = interp
-            .lookup_var("comp-ctxt", env)
+            .lookup_var_key(cached_symbol!("comp-ctxt"), env)
             .filter(Value::is_truthy)
             .ok_or_else(|| native_ice("comp-ctxt is nil"))?;
 
@@ -56,7 +56,7 @@ impl UnitData {
         let debug = call_one(interp, env, "comp-ctxt-debug", context)?.as_integer()?;
         let mut compiler_options = string_list(
             interp
-                .lookup_var("native-comp-compiler-options", env)
+                .lookup_var_key(cached_symbol!("native-comp-compiler-options"), env)
                 .unwrap_or(Value::Nil),
         )?;
         compiler_options.extend(string_list(call_one(
@@ -67,7 +67,7 @@ impl UnitData {
         )?)?);
         let mut driver_options = string_list(
             interp
-                .lookup_var("native-comp-driver-options", env)
+                .lookup_var_key(cached_symbol!("native-comp-driver-options"), env)
                 .unwrap_or(Value::Nil),
         )?;
         driver_options.extend(string_list(call_one(
@@ -77,7 +77,7 @@ impl UnitData {
             context,
         )?)?);
         let reproducer = interp
-            .lookup_var("comp-libgccjit-reproducer", env)
+            .lookup_var_key(cached_symbol!("comp-libgccjit-reproducer"), env)
             .is_some_and(|value| value.is_truthy());
         let optimization_qualities = print_static(
             interp,
@@ -103,7 +103,7 @@ impl UnitData {
         let function_docs = call_one(interp, env, "comp-ctxt-function-docs", context)?;
         let function_docs = print_static(interp, env, &function_docs)?;
         let abi_hash = interp
-            .lookup_var("comp-abi-hash", env)
+            .lookup_var_key(cached_symbol!("comp-abi-hash"), env)
             .filter(Value::is_truthy)
             .ok_or_else(|| native_ice("comp-abi-hash is nil"))?;
         let abi_hash = print_static(interp, env, &abi_hash)?;

@@ -3269,7 +3269,7 @@ impl Interpreter {
         let frames = self.backtrace_frames_snapshot();
         self.batch_error_backtrace = Some(BatchErrorBacktrace {
             enabled: self
-                .lookup_var("backtrace-on-error-noninteractive", env)
+                .lookup_var_key(cached_symbol!("backtrace-on-error-noninteractive"), env)
                 .is_some_and(|value| value.is_truthy()),
             frames,
         });
@@ -3824,7 +3824,7 @@ impl Interpreter {
     /// entered since the last input event.  Whether it was entered.
     fn maybe_call_debugger(&mut self, error: &LispError, env: &mut Env) -> Result<bool, LispError> {
         if self
-            .lookup_var("inhibit-debugger", env)
+            .lookup_var_key(cached_symbol!("inhibit-debugger"), env)
             .is_some_and(|value| value.is_truthy())
         {
             return Ok(false);
@@ -3835,10 +3835,12 @@ impl Interpreter {
         let quit = error_symbol.as_str() == "quit"
             || conditions.iter().any(|name| name.as_str() == "quit");
         let wanted = if quit {
-            self.lookup_var("debug-on-quit", env)
+            self.lookup_var_key(cached_symbol!("debug-on-quit"), env)
                 .is_some_and(|value| value.is_truthy())
         } else {
-            let list = self.lookup_var("debug-on-error", env).unwrap_or(Value::Nil);
+            let list = self
+                .lookup_var_key(cached_symbol!("debug-on-error"), env)
+                .unwrap_or(Value::Nil);
             wants_debugger(list, &conditions)
         };
         if !wanted || self.skip_debugger(&conditions, object, env)? {
@@ -3868,7 +3870,7 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<bool, LispError> {
         let ignored = self
-            .lookup_var("debug-ignored-errors", env)
+            .lookup_var_key(cached_symbol!("debug-ignored-errors"), env)
             .unwrap_or(Value::Nil);
         let mut message = None;
         let mut tail = ignored;

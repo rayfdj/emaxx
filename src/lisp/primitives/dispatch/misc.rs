@@ -90,7 +90,7 @@ fn define_fringe_bitmap(
         let mut bitmaps = vec![args[0]];
         bitmaps.extend(
             interp
-                .lookup_var("fringe-bitmaps", env)
+                .lookup_var_key(cached_symbol!("fringe-bitmaps"), env)
                 .and_then(|value| value.to_vec().ok())
                 .unwrap_or_default(),
         );
@@ -155,7 +155,7 @@ fn destroy_fringe_bitmap(
             interp.put_symbol_property_on(&symbol, "fringe", Value::Nil);
         }
         let bitmaps = interp
-            .lookup_var("fringe-bitmaps", env)
+            .lookup_var_key(cached_symbol!("fringe-bitmaps"), env)
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default()
             .into_iter()
@@ -428,7 +428,7 @@ define_dispatch!(
                     .first()
                     .filter(|source| !source.is_nil())
                     .cloned()
-                    .or_else(|| interp.lookup_var("standard-input", env))
+                    .or_else(|| interp.lookup_var_key(cached_symbol!("standard-input"), env))
                     .unwrap_or(Value::Nil);
                 // lread.c:Fread and Fread_positioning_symbols share these
                 // defaults and resolve read-minibuffer through its cell.
@@ -554,7 +554,7 @@ define_dispatch!(
                 unlock_all_files(interp, env)?;
                 // The auto-save list goes, Emacs exiting deliberately.
                 if let Some(list_file) = interp
-                    .lookup_var("auto-save-list-file-name", env)
+                    .lookup_var_key(cached_symbol!("auto-save-list-file-name"), env)
                     .filter(Value::is_string)
                 {
                     let list_file = crate::lisp::primitives::call(
@@ -718,7 +718,7 @@ define_dispatch!(
                     .cloned()
                     .or_else(|| {
                         interp
-                            .lookup_var("obarray", env)
+                            .lookup_var_key(cached_symbol!("obarray"), env)
                             .filter(|value| !value.is_nil())
                     })
                     .map(|obarray| coerce_legacy_vector_obarray(interp, &obarray))
@@ -773,7 +773,7 @@ define_dispatch!(
                     .cloned()
                     .or_else(|| {
                         interp
-                            .lookup_var("obarray", env)
+                            .lookup_var_key(cached_symbol!("obarray"), env)
                             .filter(|value| !value.is_nil())
                     });
                 // lread.c:Fintern_soft: check_obarray before NAME is looked
@@ -843,7 +843,7 @@ define_dispatch!(
                     .cloned()
                     .or_else(|| {
                         interp
-                            .lookup_var("obarray", env)
+                            .lookup_var_key(cached_symbol!("obarray"), env)
                             .filter(|value| !value.is_nil())
                     });
                 match obarray {
@@ -1048,7 +1048,7 @@ define_dispatch!(
                     ));
                 }
                 if interp
-                    .lookup_var("after-init-time", env)
+                    .lookup_var_key(cached_symbol!("after-init-time"), env)
                     .is_none_or(|value| value.is_nil())
                 {
                     return Err(LispError::Signal(
@@ -1593,7 +1593,7 @@ define_dispatch!(
                     .get(1)
                     .filter(|value| !value.is_nil())
                     .cloned()
-                    .or_else(|| interp.lookup_var("obarray", env))
+                    .or_else(|| interp.lookup_var_key(cached_symbol!("obarray"), env))
                     .unwrap_or(Value::Nil);
                 let obarray = coerce_legacy_vector_obarray(interp, &obarray)?;
                 // The standard obarray: walk the shared enumeration in place
@@ -1769,10 +1769,10 @@ fn doc_path(directory: &Value, filename: &Value) -> Result<PathBuf, LispError> {
 
 fn standard_doc_path(interp: &Interpreter, env: &Env) -> Result<PathBuf, LispError> {
     let directory = interp
-        .lookup_var("doc-directory", env)
+        .lookup_var_key(cached_symbol!("doc-directory"), env)
         .unwrap_or(Value::Nil);
     let filename = interp
-        .lookup_var("internal-doc-file-name", env)
+        .lookup_var_key(cached_symbol!("internal-doc-file-name"), env)
         .unwrap_or(Value::Nil);
     doc_path(&directory, &filename)
 }
@@ -1897,10 +1897,10 @@ fn doc_reference_parts(
     let (filename, directory, position) = if let Kind::Integer(position) = value.kind() {
         (
             interp
-                .lookup_var("internal-doc-file-name", env)
+                .lookup_var_key(cached_symbol!("internal-doc-file-name"), env)
                 .unwrap_or(Value::Nil),
             interp
-                .lookup_var("doc-directory", env)
+                .lookup_var_key(cached_symbol!("doc-directory"), env)
                 .unwrap_or(Value::Nil),
             position,
         )
@@ -1914,7 +1914,7 @@ fn doc_reference_parts(
         (
             filename,
             interp
-                .lookup_var("lisp-directory", env)
+                .lookup_var_key(cached_symbol!("lisp-directory"), env)
                 .unwrap_or(Value::Nil),
             position,
         )
@@ -2049,7 +2049,7 @@ fn snarf_documentation(
         return Err(wrong_type_argument("stringp", *filename));
     }
     let directory = interp
-        .lookup_var("doc-directory", env)
+        .lookup_var_key(cached_symbol!("doc-directory"), env)
         .unwrap_or(Value::Nil);
     // doc.c names the file by appending FILENAME to `doc-directory'.
     let directory = string_like(&directory)
@@ -2059,7 +2059,7 @@ fn snarf_documentation(
     // doc.c: `build-files' is nil until the first snarf, which conses it
     // from buildobj.h before opening the file.
     let build_files_unset = interp
-        .lookup_var("build-files", env)
+        .lookup_var_key(cached_symbol!("build-files"), env)
         .is_none_or(|value| value.is_nil());
     if build_files_unset && let Some(names) = crate::lisp::primitives::gnu_build_files() {
         interp.set_variable(
@@ -2092,7 +2092,7 @@ fn snarf_documentation(
         );
     }
     let delayed = interp
-        .lookup_var("custom-delayed-init-variables", env)
+        .lookup_var_key(cached_symbol!("custom-delayed-init-variables"), env)
         .and_then(|value| value.to_vec().ok())
         .unwrap_or_default();
     for entry in entries {

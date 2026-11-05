@@ -7407,7 +7407,7 @@ impl Interpreter {
         let local_function_key_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
         let empty_env = crate::lisp::types::Env::new();
         let function_key_map = interp
-            .lookup_var("function-key-map", &empty_env)
+            .lookup_var_key(cached_symbol!("function-key-map"), &empty_env)
             .expect("initial function-key-map");
         primitives::set_keymap_parent(
             &mut interp,
@@ -7421,9 +7421,10 @@ impl Interpreter {
         // its order: no D-Bus (HAVE_DBUS) or w32 events, threads and inotify
         // file notification as in this build, and no `select-window' (GNU
         // keeps that one commented out).
-        if let Some(special_event_map) =
-            interp.lookup_var("special-event-map", &crate::lisp::types::Env::new())
-        {
+        if let Some(special_event_map) = interp.lookup_var_key(
+            cached_symbol!("special-event-map"),
+            &crate::lisp::types::Env::new(),
+        ) {
             for (event, command) in [
                 ("delete-frame", "handle-delete-frame"),
                 ("ns-put-working-text", "ns-put-working-text"),
@@ -8258,7 +8259,12 @@ impl Interpreter {
 
     pub fn current_global_map_value(&self) -> Value {
         self.current_global_map
-            .or_else(|| self.lookup_var("global-map", &crate::lisp::types::Env::new()))
+            .or_else(|| {
+                self.lookup_var_key(
+                    cached_symbol!("global-map"),
+                    &crate::lisp::types::Env::new(),
+                )
+            })
             .unwrap_or(Value::Nil)
     }
 

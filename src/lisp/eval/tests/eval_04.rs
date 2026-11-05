@@ -5725,7 +5725,7 @@ fn standard_obarray_intern_soft_stays_indexed_at_scale() {
         interp.intern_symbol_name(&format!("emaxx-indexed-obarray-{index}"));
     }
     let obarray = interp
-        .lookup_var("obarray", &crate::lisp::types::Env::new())
+        .lookup_var_key(cached_symbol!("obarray"), &crate::lisp::types::Env::new())
         .expect("standard obarray");
     let started = std::time::Instant::now();
     for _ in 0..25 {

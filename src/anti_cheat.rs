@@ -1,3 +1,4 @@
+use crate::lisp::cached_symbol;
 use crate::lisp::types::LispErrorKind;
 use std::fs;
 use std::path::Path;
@@ -1041,7 +1042,7 @@ pub(crate) fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() 
     let interpreter = Interpreter::new();
     let environment = Env::new();
     assert_eq!(
-        interpreter.lookup_var("region-extract-function", &environment),
+        interpreter.lookup_var_key(cached_symbol!("region-extract-function"), &environment),
         Some(Value::Nil),
         "casefiddle.c creates region-extract-function as nil before simple.el loads"
     );

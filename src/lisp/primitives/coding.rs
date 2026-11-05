@@ -559,7 +559,7 @@ pub(crate) fn pre_write_convert(
     env: &mut Env,
 ) -> Result<StringLike, LispError> {
     let old_deactivate_mark = interp
-        .lookup_var("deactivate-mark", env)
+        .lookup_var_key(cached_symbol!("deactivate-mark"), env)
         .unwrap_or(Value::Nil);
     let src_multibyte =
         source.multibyte && (!source.text.is_ascii() || !source.extended_chars.is_empty());
@@ -626,7 +626,7 @@ pub(crate) fn decode_into_work_buffer(
     env: &mut Env,
 ) -> Result<StringLike, LispError> {
     let old_deactivate_mark = interp
-        .lookup_var("deactivate-mark", env)
+        .lookup_var_key(cached_symbol!("deactivate-mark"), env)
         .unwrap_or(Value::Nil);
     let work = code_conversion_save(interp, decoded.multibyte, env)?;
     let result = (|| -> Result<StringLike, LispError> {
@@ -3073,9 +3073,10 @@ fn emacs_mule_layout(interp: &Interpreter) -> EmacsMuleLayout {
     lengths[0x9C] = 4;
     lengths[0x9D] = 4;
     let mut charsets = vec![None; 256];
-    if let Some(table) =
-        interp.lookup_var("emacs-mule-charset-table", &crate::lisp::types::Env::new())
-        && let Ok(entries) = vector_items(&table)
+    if let Some(table) = interp.lookup_var_key(
+        cached_symbol!("emacs-mule-charset-table"),
+        &crate::lisp::types::Env::new(),
+    ) && let Ok(entries) = vector_items(&table)
     {
         for (id, entry) in entries.into_iter().take(256).enumerate() {
             let Ok(charset) = entry.as_symbol() else {
@@ -3351,7 +3352,7 @@ pub(crate) fn find_coding_systems_region_internal_value(
     // coding.c walks the actual Lisp registration list, retaining its
     // order and duplicates, including a dynamically bound list.
     let mut registered = interp
-        .lookup_var("coding-system-list", env)
+        .lookup_var_key(cached_symbol!("coding-system-list"), env)
         .unwrap_or(Value::Nil);
     while let Some((head, tail)) = registered.cons_values() {
         let coding_value = head;
