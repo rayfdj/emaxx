@@ -437,7 +437,13 @@ impl SymbolName {
             );
         }
         if marked && text.contains(OBARRAY_SYMBOL_MARKER) {
-            return Self::intern_private(text, lisp_name);
+            // A private obarray's symbol is reached through its obarray's
+            // buckets (`make_private'), as GNU's is; no table maps its
+            // marked text back to it.
+            debug_assert!(false, "a private obarray's marked text {text:?} interned");
+            let lisp_name = lisp_name
+                .unwrap_or_else(|| Value::String(SharedText::from(visible_symbol_name(&text))));
+            return Self::make_private(text, lisp_name);
         }
         let lisp_name = lisp_name.filter(|name| matches!(name.kind(), Kind::StringObject(_)));
         INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
@@ -515,18 +521,12 @@ impl SymbolName {
         })
     }
 
-    /// A symbol of a private obarray, by its marked key.
-    fn intern_private(text: String, lisp_name: Option<Value>) -> Self {
-        symbols::with_private_names_mut(|names| {
-            if let Some(name) = names.get(text.as_str()) {
-                return name.0;
-            }
-            let lisp_name = lisp_name
-                .unwrap_or_else(|| Value::String(SharedText::from(visible_symbol_name(&text))));
-            let name = Self::allocate(text, lisp_name);
-            names.insert(symbols::NameEntry(name));
-            name
-        })
+    /// lread.c:intern_driver's new symbol for a private obarray, named
+    /// LISP_NAME under the marked TEXT: an ordinary heap object, which the
+    /// obarray's buckets hold (and the collector frees with them), never
+    /// found again by its text.
+    pub(crate) fn make_private(text: String, lisp_name: Value) -> Self {
+        Self::allocate(text, lisp_name)
     }
 
     /// alloc.c's Fmake_symbol's allocation: a cell with no value, function
@@ -585,11 +585,12 @@ impl SymbolName {
         let chars = if obarray::plain_ascii(bytes) {
             bytes.len()
         } else if !is_visible_symbol_name(text) {
-            return if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
-                None
-            } else {
-                symbols::with_private_names(|names| names.get(text).map(|entry| entry.0))
-            };
+            // A private obarray's marked text names none of its symbols.
+            debug_assert!(
+                !text.contains(OBARRAY_SYMBOL_MARKER),
+                "a private obarray's marked text {text:?} looked up"
+            );
+            return None;
         } else {
             text.chars().count()
         };

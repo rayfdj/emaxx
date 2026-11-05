@@ -327,9 +327,9 @@ pub(crate) fn intern_in_obarray_with_name(
         return Ok(Value::Symbol(existing));
     }
     let name = make_name(interp)?;
-    let symbol = crate::lisp::types::SymbolName::intern_with_lisp_name(
+    let symbol = crate::lisp::types::SymbolName::make_private(
         crate::lisp::types::make_fresh_obarray_symbol_name(symbol_name, id.id),
-        Some(name),
+        name,
     );
     let record = interp.find_record_mut(id).expect("validated obarray");
     let mut buckets = obarray::RecordBuckets(&mut record.slots);

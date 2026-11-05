@@ -229,10 +229,10 @@ pub(super) fn bare_symbol_name(interp: &Interpreter, env: &Env, value: &Value) -
 fn symbol_property_by_eq(
     interp: &Interpreter,
     env: &Env,
-    symbol: &str,
+    symbol: &crate::lisp::types::SymbolName,
     property: &Value,
 ) -> Option<Value> {
-    let mut tail = interp.symbol_plist(symbol);
+    let mut tail = interp.symbol_plist_symbol(symbol);
     let mut guard = crate::lisp::types::CycleGuard::new();
     while let Kind::Cons(ref cell) = tail.kind() {
         if guard.step(crate::lisp::types::ConsCell::identity(cell)) {
@@ -254,8 +254,8 @@ fn symbol_property_by_eq(
 fn overriding_plist_property(
     interp: &Interpreter,
     env: &Env,
-    symbol: &str,
-    property: &str,
+    symbol: &crate::lisp::types::SymbolName,
+    property: &crate::lisp::types::SymbolName,
 ) -> Option<Value> {
     // fns.c:Fget reads Voverriding_plist_environment directly.  Its
     // DEFVAR_LISP cell already reflects any active dynamic binding.
@@ -269,11 +269,12 @@ fn overriding_plist_property(
             break;
         }
         let entry = entries.car_if_list()?;
+        // Fassq: the entry's key EQ to SYMBOL.
         let entry_key = entry
             .car()
             .ok()
-            .and_then(|key| bare_symbol_name(interp, env, &key));
-        if entry_key.as_deref() == Some(symbol) {
+            .and_then(|key| bare_symbol_identity(interp, env, &key));
+        if entry_key.as_ref() == Some(symbol) {
             let mut plist = entry.cdr_if_list()?;
             let mut plist_guard = crate::lisp::types::CycleGuard::new();
             while let Kind::Cons(ref plist_cell) = plist.kind() {
@@ -285,7 +286,7 @@ fn overriding_plist_property(
                 if !matches!(rest.kind(), Kind::Cons(_)) {
                     break;
                 }
-                if bare_symbol_name(interp, env, &key).as_deref() == Some(property) {
+                if bare_symbol_identity(interp, env, &key).as_ref() == Some(property) {
                     let value = rest.car_if_list()?;
                     // plist_get stops at the first key, even when its
                     // value is nil. Fget then falls back to the real
@@ -2366,11 +2367,11 @@ fn parse_doc_file(bytes: &[u8]) -> std::collections::HashMap<String, String> {
 /// `overriding-plist-environment' first, then the symbol's plist.
 pub(in crate::lisp::primitives) fn bare_symbol_get(
     interp: &Interpreter,
-    symbol: &str,
-    property: &str,
+    symbol: &crate::lisp::types::SymbolName,
+    property: &crate::lisp::types::SymbolName,
 ) -> Value {
     overriding_plist_property(interp, &crate::lisp::types::Env::new(), symbol, property)
-        .or_else(|| interp.get_symbol_property(symbol, property))
+        .or_else(|| interp.get_symbol_property_of(symbol, property))
         .unwrap_or(Value::Nil)
 }
 
@@ -2402,16 +2403,14 @@ pub(in crate::lisp::primitives) fn direct_get(
     // `function-put'/`define-symbol-prop') before the symbol's
     // own plist, returning the first non-nil hit.
     if let Some(property) = &property {
-        if let Some(overriding) =
-            overriding_plist_property(interp, env, symbol.as_str(), property.as_str())
-        {
+        if let Some(overriding) = overriding_plist_property(interp, env, &symbol, property) {
             return Ok(overriding);
         }
         return Ok(interp
             .get_symbol_property_of(&symbol, property)
             .unwrap_or(Value::Nil));
     }
-    Ok(symbol_property_by_eq(interp, env, symbol.as_str(), &args[1]).unwrap_or(Value::Nil))
+    Ok(symbol_property_by_eq(interp, env, &symbol, &args[1]).unwrap_or(Value::Nil))
 }
 
 /// The `symbol-value' primitive, callable directly (a subr's function pointer).

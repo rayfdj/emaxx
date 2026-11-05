@@ -2677,11 +2677,14 @@ pub(crate) fn decode_translation_table(interp: &Interpreter, coding: &str) -> Va
     if table.is_nil() {
         return standard;
     }
+    let property = cached_symbol!("translation-table").symbol();
     let resolve = |value: Value| match value.kind() {
-        Kind::Symbol(name) => {
-            dispatch::misc::bare_symbol_get(interp, name.as_str(), "translation-table")
-        }
-        Kind::T => dispatch::misc::bare_symbol_get(interp, "t", "translation-table"),
+        Kind::Symbol(symbol) => dispatch::misc::bare_symbol_get(interp, &symbol, &property),
+        Kind::T => dispatch::misc::bare_symbol_get(
+            interp,
+            &crate::lisp::types::symbols::builtin_boolean(true),
+            &property,
+        ),
         _ => value,
     };
     let table = if table.cons_values().is_some() {

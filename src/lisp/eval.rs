@@ -3123,6 +3123,10 @@ impl ImageGraphCopier {
                 crate::lisp::types::visible_symbol_name(symbol.as_str()),
                 crate::lisp::primitives::next_make_symbol_id(),
             )
+        } else if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
+            // A private obarray's symbol: the copied obarray's buckets
+            // hold the copy.
+            SymbolName::make_private(symbol.as_str().to_owned(), Value::Nil)
         } else {
             SymbolName::intern_with_lisp_name(symbol.as_str().to_owned(), Some(Value::Nil))
         };

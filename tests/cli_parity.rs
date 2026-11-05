@@ -1935,3 +1935,34 @@ fn generated_hook_programs_run_as_gnu_runs_them() {
         ],
     );
 }
+
+#[test]
+fn a_name_interned_again_after_obarray_clear_is_a_new_symbol() {
+    // lread.c:intern_driver makes a new symbol on every obarray miss: after
+    // `obarray-clear' (here through `clear-abbrev-table', on every table
+    // the image holds) the name is interned as a new object, not the one
+    // the obarray held before.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+;; A symbol interned after `clear-abbrev-table' (obarray-clear) is a new
+;; object, in the tables the image holds as in new ones.
+(let ((same nil))
+  (dolist (name abbrev-table-name-list)
+    (let* ((tab (symbol-value name)) (old (obarray-get tab "")))
+      (clear-abbrev-table tab)
+      (when (eq old (obarray-get tab "")) (push name same))))
+  (prin1 (list 'same-after-clear same)) (terpri))
+(let* ((tab (obarray-make)) (a (intern "x" tab)))
+  (put a 'p 1)
+  (obarray-clear tab)
+  (let ((b (intern "x" tab)))
+    (prin1 (list (eq a b) (get b 'p) (eq (intern-soft "x" tab) b) (intern-soft "x"))) (terpri))))"#,
+        ],
+    );
+}

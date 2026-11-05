@@ -14544,6 +14544,41 @@ setup_process_coding_systems's check now refuses). A 13-form
   syntax print GNU's results as before. Local validation: the grouped
   gate's 3,502 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 308: a private obarray's symbols are held by that obarray
+  alone, and a name interned again after `obarray-clear' is a new
+  symbol.** A traced build, run over the 439 upstream test files and
+  over the fuzzes and command-line cases of rounds 301 to 307, counted
+  the lookups that still found an uninterned or private-obarray symbol
+  by its marked text: one was left, in abbrev-tests, and it was a
+  private obarray's own intern. GNU keeps a private obarray's symbols in
+  that obarray's buckets alone. Emaxx also filed them, by their marked
+  text, in a process-wide table that was a collection root, so they were
+  never freed, and through which lread.c:intern_driver's fresh symbol
+  could come back as an older one: the marked text carries a serial that
+  a new process counts from 1 again, so after `clear-abbrev-table' on
+  the image's `tab-switcher-mode-abbrev-table' the empty name interned
+  again was the old symbol, where GNU makes a new one. A private
+  obarray's symbol is now an ordinary heap object that its obarray's
+  buckets hold and the collector frees with them, made so by the intern,
+  by the image loader (which keeps the one it makes for a record read
+  early) and by the image clone; interning or looking up a private
+  obarray's marked text fails a debug assertion. The book of live
+  uninterned symbols by their marked text stays for now: a checked build
+  that asserted on every lookup of an uninterned symbol's marked text,
+  run through the library gate, found that the upstream tests never
+  reach such a lookup but about a hundred call sites still can (the
+  purpose of a char table, a coding system's properties, the
+  buffer-local bindings an image restores, a function stream's calls),
+  and three it found are fixed: `get' with a key that is not a bare
+  symbol (a symbol with a position, an integer) read the plist of the
+  symbol's name, `overriding-plist-environment' matched entries by name,
+  and a coding system's `translation-table' property was read by the
+  table symbol's name. A command-line comparison runs the obarray cases.
+  The fuzzes of variables, function cells, fields, loading, errors,
+  coding, buffers, case, numbers, strings, printing, syntax and hooks
+  print GNU's results as before. Local validation: the grouped gate's
+  3,502 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16955,6 +16990,17 @@ ms against 38,614), tramp-tests (23,341 against 19,610), comp-tests
 mule-tests (3,182 against 2,021), and
 `ert-test-run-tests-batch-expensive' is 1.17 of GNU's time.
 
+**On `182bc3f`** (round 307): the full Rust gate (run 41932196458)
+passed; the frozen run (run 41932201784) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a fast runner (the oracle's bodies
+214.9 s against round 306's 272.1). Setup 49.6 s against 42.8 s (1.159),
+test bodies 226.3 s against 214.9 s (1.053), in all 1.056, with a
+per-file setup median of 76 ms against 67. The widest body gaps are
+ert-tests (27,641 ms against 25,234), tramp-tests (16,038 against
+14,128), comp-tests (11,655 against 10,777), mule-tests (1,807 against
+1,108) and semantic-utest-ia (2,134 against 1,454), and
+`ert-test-run-tests-batch-expensive' is 1.09 of GNU's time.
+
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's
   `--symbol-ordering-file' with the 3,046 functions four test files'
@@ -17776,11 +17822,14 @@ and failures are still recorded.
    Iterate with instruction counts (callgrind) on the locked workloads for
    both editors; timing pilots at merges. Remaining adapters that show up in
    profiles are fixed as performance work.
-3. **Remaining architecture and ownership:** the `vector-literal` head that
-   carries vectors through lists, which Lisp data can forge (the mapcar
-   bullet: `list`, `copy-sequence`, `reverse`, `butlast` and `take` turn a
-   list headed by that symbol into a vector); symbol host-name, buffer-local and
-   function adapters; text-property intervals (also needed for
+3. **Remaining architecture and ownership:** the symbols' host-side name
+   text (an uninterned or private symbol's carries a marker), the book that
+   still maps an uninterned symbol's marked text back to it for about a
+   hundred call sites that reach it by name (round 308), and the C-variable
+   dispatch still keyed by that text (buffer slots and defaults, the
+   forwarded evaluator cells, the keyboard-local variables), which GNU reads
+   from the symbol's forwarding descriptor; text-property intervals (also
+   needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor
    lifetimes and reclamation; the September 21 audit findings.
