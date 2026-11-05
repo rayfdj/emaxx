@@ -473,7 +473,7 @@ pub(crate) fn set_fontset_font(
     let is_character =
         |value: &Value| matches!(value.kind(), Kind::Integer(c) if (0..=0x3f_ffff).contains(&c));
     let mut ascii_changed = false;
-    let mut charset: Option<String> = None;
+    let mut charset: Option<crate::lisp::types::SymbolName> = None;
     let mut range_list: Vec<Option<(u32, u32)>> = Vec::new();
     let mut script_range_list: Vec<(u32, u32)> = Vec::new();
     if let Kind::Integer(c) = characters.kind()
@@ -509,8 +509,9 @@ pub(crate) fn set_fontset_font(
         }
         range_list.push(Some((from as u32, to as u32)));
     } else if let Some(name) = match characters.kind() {
-        Kind::Symbol(name) => Some(name.to_string()),
-        Kind::T => Some("t".to_string()),
+        // SYMBOLP (CHARACTERS), nil apart (the default font below).
+        Kind::Symbol(name) => Some(name),
+        Kind::T => Some(crate::lisp::types::SymbolName::intern_str("t")),
         _ => None,
     } {
         let table = interp
@@ -523,7 +524,7 @@ pub(crate) fn set_fontset_font(
             env,
         )?;
         if !super::call(interp, "memq", &[characters, script_list], env)?.is_nil() {
-            if name == "latin" {
+            if characters.is_key(cached_symbol!("latin")) {
                 ascii_changed = true;
             }
             script_range_list = script_ranges(interp, &characters, env)?;
@@ -535,7 +536,8 @@ pub(crate) fn set_fontset_font(
             charset = Some(name);
         } else if script_range_list.is_empty() {
             return Err(LispError::Signal(format!(
-                "Invalid script or charset name: {name}"
+                "Invalid script or charset name: {}",
+                name.name_text()
             )));
         }
     } else if characters.is_nil() {

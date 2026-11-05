@@ -14871,6 +14871,28 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 316: fringe bitmaps are found through their `fringe' property,
+  as fringe.c's lookup_fringe_bitmap finds them, and `set-fontset-font'
+  takes its script or charset by EQ.** Emaxx kept each fringe bitmap
+  under its name text and found it by that; GNU keeps fringe_bitmaps and
+  fringe_faces by number alone and finds a bitmap through Fget (BITMAP,
+  Qfringe): a number below MAX_STANDARD_FRINGE_BITMAPS, or one with a
+  bitmap defined now, below max_used_fringe_bitmap. So a symbol given
+  another bitmap's number is that bitmap: `define-fringe-bitmap'
+  redefines it in place, without a new number or an entry in
+  `fringe-bitmaps', and `set-fringe-bitmap-face' and
+  `destroy-fringe-bitmap' reach it, where Emaxx made a new bitmap or
+  signalled "Undefined fringe bitmap". The registry holds no names now
+  (the image too), the bitmap argument is CHECK_SYMBOL'd, and the align
+  argument compared by EQ with `top', `bottom' and `center'.
+  Fset_fontset_font's symbol target is tested with EQ (Qlatin) and
+  CHARSETP of the symbol itself, and its error names the symbol by
+  SYMBOL_NAME; an uninterned `latin' is no script there, as in GNU. A
+  command-line comparison runs these cases; the fuzzes and command-line
+  cases of rounds 303 to 315 print GNU's results as before. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17370,6 +17392,17 @@ ert-tests (40,186 against 37,837), mule-tests (2,811 against 1,856) and
 semantic-utest-ia (3,853 against 3,026), and
 `ert-test-run-tests-batch-expensive' is 1.05 of GNU's time.
 
+**On `dbe49cf`** (round 315): the full Rust gate (run 41999068185)
+passed; the frozen run (run 41999073223) passed at its first attempt,
+7,928 of 7,928 outcomes matching (the oracle's bodies 264.8 s against
+round 314's 268.5). Setup 75.5 s against 62.5 s (1.209), test bodies
+291.3 s against 264.8 s (1.100), in all 1.106, with a per-file setup
+median of 113 ms against 96. The widest body gaps are ert-tests (44,588
+ms against 37,919), tramp-tests (22,211 against 18,866), comp-tests
+(16,374 against 14,062), semantic-utest-ia (3,669 against 2,419) and
+mule-tests (3,017 against 1,926), and
+`ert-test-run-tests-batch-expensive' is 1.17 of GNU's time.
+
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's
   `--symbol-ordering-file' with the 3,046 functions four test files'
@@ -18201,9 +18234,11 @@ and failures are still recorded.
    coding system table is the symbol's, but the conversions still carry a
    coding system by its name: GNU's coding id, the spec, is what they
    should carry, so that `last-coding-system-used' names an uninterned
-   alias and a coding system defined under one converts; since round 315
-   the charsets are the symbol's, and the fontsets and fringe bitmaps are
-   next); text-property intervals
+   alias and a coding system defined under one converts; since rounds 315
+   and 316 the charsets and fringe bitmaps are the symbol's); the buffer
+   registry, which keeps buffers by id in lists the C side scans where GNU
+   holds the buffer object (a window's buffer, `buffer-live-p', the
+   current buffer's switch); text-property intervals
    (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor

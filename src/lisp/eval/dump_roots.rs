@@ -775,7 +775,6 @@ impl Interpreter {
             RootSlot::FringeBitmaps,
             Value::list(self.fringe_bitmap_states.iter().map(|bitmap| {
                 Value::vector([
-                    Value::symbol(&bitmap.name),
                     Value::Integer(bitmap.id),
                     bool_value(bitmap.standard),
                     bitmap.definition.unwrap_or(Value::Nil),
@@ -1275,15 +1274,14 @@ mod install {
                     let mut bitmaps = Vec::new();
                     for entry in expect_list(value, "fringe bitmaps")? {
                         let fields = expect_vector(&entry, "fringe bitmap")?;
-                        if fields.len() != 5 {
-                            return Err("fringe bitmap: five fields expected".into());
+                        if fields.len() != 4 {
+                            return Err("fringe bitmap: four fields expected".into());
                         }
                         bitmaps.push(FringeBitmapState {
-                            name: expect_symbol(&fields[0], "fringe bitmap name")?,
-                            id: expect_int(&fields[1], "fringe bitmap id")?,
-                            standard: fields[2].is_truthy(),
-                            definition: opt_of(&fields[3], |v| Ok(*v))?,
-                            face: fields[4],
+                            id: expect_int(&fields[0], "fringe bitmap id")?,
+                            standard: fields[1].is_truthy(),
+                            definition: opt_of(&fields[2], |v| Ok(*v))?,
+                            face: fields[3],
                         });
                     }
                     self.fringe_bitmap_states = bitmaps;

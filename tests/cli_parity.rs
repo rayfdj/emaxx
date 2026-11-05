@@ -2178,6 +2178,40 @@ fn charsets_are_found_by_their_symbols() {
 }
 
 #[test]
+fn fringe_bitmaps_are_found_by_their_fringe_property() {
+    // fringe.c's lookup_fringe_bitmap reads the number BITMAP's `fringe'
+    // property holds, so a symbol given another's number is that bitmap;
+    // Fset_fontset_font takes a script or charset symbol by EQ and names
+    // it by SYMBOL_NAME.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(dolist (f (list
+  (lambda () (list (define-fringe-bitmap 'zz [1 2 3]) (get 'zz 'fringe) (fringe-bitmap-p 'zz) (get 'left-arrow 'fringe) (fringe-bitmap-p 'left-arrow)))
+  (lambda () (let ((u (make-symbol "zz"))) (list (define-fringe-bitmap u [1]) (get u 'fringe) (fringe-bitmap-p u) (progn (destroy-fringe-bitmap u) (get u 'fringe)))))
+  (lambda () (progn (put 'yy 'fringe 3) (condition-case e (set-fringe-bitmap-face 'yy 'bold) (error e))))
+  (lambda () (condition-case e (destroy-fringe-bitmap 'nosuch) (error e)))
+  (lambda () (list (progn (define-fringe-bitmap 'a1 [1]) (get 'a1 'fringe)) (progn (destroy-fringe-bitmap 'a1) (define-fringe-bitmap 'a2 [1]) (get 'a2 'fringe)) (progn (put 'a3 'fringe (get 'a2 'fringe)) (define-fringe-bitmap 'a3 [2]) (list (get 'a3 'fringe) (and (memq 'a3 fringe-bitmaps) t)))))
+  (lambda () (condition-case e (define-fringe-bitmap 'a4 [1] nil nil 'center) (error e)))
+  (lambda () (condition-case e (define-fringe-bitmap 'a5 [1] nil nil (make-symbol "top")) (error e)))
+  (lambda () (progn (put 'a6 'fringe 2) (destroy-fringe-bitmap 'a6) (get 'a6 'fringe)))
+  (lambda () (condition-case e (define-fringe-bitmap "x" [1]) (error e)))
+  (lambda () (condition-case e (set-fringe-bitmap-face 'nosuch2) (error e)))
+  (lambda () (progn (put 'a7 'fringe 999) (list (condition-case e (set-fringe-bitmap-face 'a7) (error e)) (define-fringe-bitmap 'a7 [1]) (get 'a7 'fringe))))
+  (lambda () (condition-case e (set-fontset-font t (make-symbol "latin") "Mono") (error e)))
+  (lambda () (condition-case e (set-fontset-font t (make-symbol "nosuchscript") "Mono") (error e)))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"#,
+        ],
+    );
+}
+
+#[test]
 fn cached_symbol_keys_name_symbols_gnu_has_interned() {
     // Every cached key's symbol is interned when an editor is constructed,
     // as lisp.h's lispsym are: each must name a symbol GNU's own startup

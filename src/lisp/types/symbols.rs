@@ -791,6 +791,11 @@ const KEY_NAMES: &[&str] = &[
     "iso-8859-1",
     "iso-2022",
     "emacs-mule",
+    "fringe",
+    "top",
+    "bottom",
+    "center",
+    "latin",
 ];
 
 struct Symbols {

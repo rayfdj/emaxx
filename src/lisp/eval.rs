@@ -2979,8 +2979,9 @@ struct ScheduledTimer {
 }
 
 #[derive(Clone, Debug)]
+/// fringe.c's fringe_bitmaps[ID] and fringe_faces[ID]: a bitmap is found
+/// by the number its symbol's `fringe' property holds.
 pub(crate) struct FringeBitmapState {
-    pub(crate) name: String,
     pub(crate) id: i64,
     pub(crate) standard: bool,
     pub(crate) definition: Option<Value>,
@@ -6375,8 +6376,7 @@ impl Interpreter {
         let fringe_bitmap_states = primitives::STANDARD_FRINGE_BITMAPS
             .iter()
             .enumerate()
-            .map(|(index, name)| FringeBitmapState {
-                name: (*name).into(),
+            .map(|(index, _)| FringeBitmapState {
                 id: (index + 1) as i64,
                 standard: true,
                 definition: None,

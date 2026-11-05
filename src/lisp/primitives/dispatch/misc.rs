@@ -2,12 +2,43 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
-fn fringe_bitmap_id(interp: &Interpreter, name: &str) -> Option<i64> {
-    interp
+/// fringe.c's MAX_STANDARD_FRINGE_BITMAPS: the standard bitmaps' numbers
+/// and NO_FRINGE_BITMAP's 0 below it.
+fn max_standard_fringe_bitmaps() -> i64 {
+    STANDARD_FRINGE_BITMAPS.len() as i64 + 1
+}
+
+/// fringe.c:lookup_fringe_bitmap: the number BITMAP's `fringe' property
+/// holds, when it is a standard bitmap's or one defined now; else none.
+fn lookup_fringe_bitmap(interp: &Interpreter, bitmap: &Value) -> Option<i64> {
+    let number = interp
+        .get_property_of_symbol_value(*bitmap, cached_symbol!("fringe"))?
+        .integer_value()?;
+    // max_used_fringe_bitmap: one past the highest number in use.
+    let max_used = interp
         .fringe_bitmap_states
         .iter()
-        .find(|bitmap| bitmap.name == name)
-        .map(|bitmap| bitmap.id)
+        .map(|state| state.id + 1)
+        .max()
+        .unwrap_or(0)
+        .max(max_standard_fringe_bitmaps());
+    (number > 0
+        && number < max_used
+        && (number < max_standard_fringe_bitmaps()
+            || interp
+                .fringe_bitmap_states
+                .iter()
+                .any(|state| state.id == number)))
+    .then_some(number)
+}
+
+/// CHECK_SYMBOL of a fringe bitmap argument.
+fn check_fringe_symbol(value: &Value) -> Result<(), LispError> {
+    if value.is_symbol() {
+        Ok(())
+    } else {
+        Err(wrong_type_argument("symbolp", *value))
+    }
 }
 
 fn fringe_bits_length(value: &Value) -> Result<usize, LispError> {
@@ -27,19 +58,12 @@ fn fringe_fixnum(value: &Value) -> Result<i64, LispError> {
     }
 }
 
-fn fringe_symbol_name(value: &Value) -> Result<String, LispError> {
-    value
-        .as_symbol()
-        .map(str::to_string)
-        .map_err(|_| wrong_type_argument("symbolp", *value))
-}
-
 fn define_fringe_bitmap(
     interp: &mut Interpreter,
     args: &[Value],
     env: &Env,
 ) -> Result<Value, LispError> {
-    let name = fringe_symbol_name(&args[0])?;
+    check_fringe_symbol(&args[0])?;
     let bits_length = fringe_bits_length(&args[1])?;
     let height = match args.get(2).filter(|value| !value.is_nil()) {
         Some(value) => fringe_fixnum(value)?.clamp(0, 255),
@@ -68,15 +92,14 @@ fn define_fringe_bitmap(
         align = head;
     }
     if !align.is_nil()
-        && !matches!(
-            align.kind(),
-            Kind::Symbol(ref name) if matches!(name.as_str(), "top" | "center" | "bottom")
-        )
+        && !align.is_key(cached_symbol!("top"))
+        && !align.is_key(cached_symbol!("bottom"))
+        && !align.is_key(cached_symbol!("center"))
     {
         return Err(LispError::Signal("Bad align argument".into()));
     }
 
-    let existing_id = fringe_bitmap_id(interp, &name);
+    let existing_id = lookup_fringe_bitmap(interp, &args[0]);
     let bitmap_id = existing_id.unwrap_or_else(|| {
         interp
             .fringe_bitmap_states
@@ -120,7 +143,6 @@ fn define_fringe_bitmap(
         interp
             .fringe_bitmap_states
             .push(crate::lisp::eval::FringeBitmapState {
-                name,
                 id: bitmap_id,
                 standard: false,
                 definition: Some(definition),
@@ -135,8 +157,8 @@ fn destroy_fringe_bitmap(
     bitmap: &Value,
     env: &Env,
 ) -> Result<Value, LispError> {
-    let name = fringe_symbol_name(bitmap)?;
-    let Some(id) = fringe_bitmap_id(interp, &name) else {
+    check_fringe_symbol(bitmap)?;
+    let Some(id) = lookup_fringe_bitmap(interp, bitmap) else {
         return Ok(Value::Nil);
     };
     let Some(index) = interp
@@ -668,12 +690,13 @@ define_dispatch!(
             }
             "set-fringe-bitmap-face" => {
                 need_arg_range(name, args, 1, 2)?;
-                let bitmap = fringe_symbol_name(&args[0])?;
-                let Some(bitmap) = interp
-                    .fringe_bitmap_states
-                    .iter_mut()
-                    .find(|candidate| candidate.name == bitmap)
-                else {
+                check_fringe_symbol(&args[0])?;
+                let Some(bitmap) = lookup_fringe_bitmap(interp, &args[0]).and_then(|id| {
+                    interp
+                        .fringe_bitmap_states
+                        .iter_mut()
+                        .find(|candidate| candidate.id == id)
+                }) else {
                     return Err(LispError::Signal("Undefined fringe bitmap".into()));
                 };
                 bitmap.face = args.get(1).cloned().unwrap_or(Value::Nil);
