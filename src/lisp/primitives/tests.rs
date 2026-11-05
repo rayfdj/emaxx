@@ -10914,19 +10914,24 @@ fn charset_helpers_cover_ascii_unicode_and_priority_mutation() {
     assert_eq!(interp.charset_id("unicode"), Some(2));
     assert_eq!(interp.charset_id("emacs"), Some(3));
     assert_eq!(interp.charset_id("eight-bit"), Some(4));
-    assert_eq!(char_charset(&interp, 'A' as u32).0, "ascii");
-    assert_eq!(char_charset(&interp, 'あ' as u32).0, "unicode");
+    assert!(char_charset(&interp, 'A' as u32).0.is_named("ascii"));
+    assert!(char_charset(&interp, 'あ' as u32).0.is_named("unicode"));
 
-    interp
-        .define_charset_alias("latin", "ascii")
-        .expect("ascii alias should be accepted");
+    let latin = crate::lisp::types::SymbolName::intern_str("latin");
+    let ascii = crate::lisp::types::SymbolName::intern_str("ascii");
+    let unicode = crate::lisp::types::SymbolName::intern_str("unicode");
+    interp.define_charset_alias(latin, ascii);
     assert!(interp.has_charset("latin"));
 
-    interp.set_charset_priority(&["ascii".into(), "unicode".into()]);
+    interp.set_charset_priority(&[ascii, unicode]);
     // charset.c Fset_charset_priority moves the given charsets to the
     // front and keeps every other charset in its old relative order.
     assert_eq!(
-        interp.charset_priority_list(),
+        interp
+            .charset_priority_list()
+            .iter()
+            .map(|name| name.as_str())
+            .collect::<Vec<_>>(),
         vec!["ascii", "unicode", "iso-8859-1", "emacs", "eight-bit"]
     );
     assert_eq!(

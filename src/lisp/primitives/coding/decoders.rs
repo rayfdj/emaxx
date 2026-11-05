@@ -393,8 +393,9 @@ pub(super) struct SjisCharsets {
 impl SjisCharsets {
     pub(super) fn new(interp: &Interpreter, coding: &str) -> Option<Self> {
         let names = coding_system_charset_names(interp, coding);
-        let info = |index: usize, default: &str| {
-            charset_info(interp, names.get(index).map_or(default, String::as_str))
+        let info = |index: usize, default: &str| match names.get(index) {
+            Some(name) => charset_info(interp, name),
+            None => charset_info(interp, default),
         };
         Some(SjisCharsets {
             roman: info(0, "ascii")?,
@@ -870,13 +871,13 @@ fn emacs_mule_char<S: Units + ?Sized>(
     src_base: usize,
     layout: &EmacsMuleLayout,
     cmp: &EmacsMuleComposing,
-) -> Result<(i32, Option<String>, usize), bool> {
+) -> Result<(i32, Option<SymbolName>, usize), bool> {
     let mut p = src_base;
     let mut lead = one_more!(src, p, return Err(false));
     if lead < 0 {
-        return Ok((-lead, Some("ascii".to_string()), p));
+        return Ok((-lead, Some(cached_symbol!("ascii").symbol()), p));
     }
-    let charset_of = |c: i32| -> Option<&String> {
+    let charset_of = |c: i32| -> Option<&SymbolName> {
         usize::try_from(c)
             .ok()
             .and_then(|index| layout.charsets.get(index))
@@ -907,7 +908,7 @@ fn emacs_mule_char<S: Units + ?Sized>(
             if c < 0xA0 {
                 return Err(true);
             }
-            (charset.clone(), (c & 0x7F) as u32)
+            (*charset, (c & 0x7F) as u32)
         }
         3 if lead == 0x9A || lead == 0x9B => {
             let c = one_more!(src, p, return Err(false));
@@ -916,7 +917,7 @@ fn emacs_mule_char<S: Units + ?Sized>(
             if c < 0xA0 {
                 return Err(true);
             }
-            (charset.clone(), (c & 0x7F) as u32)
+            (*charset, (c & 0x7F) as u32)
         }
         3 => {
             let charset = charset_of(lead).ok_or(true)?;
@@ -929,7 +930,7 @@ fn emacs_mule_char<S: Units + ?Sized>(
             if c < 0xA0 {
                 return Err(true);
             }
-            (charset.clone(), high | (c & 0x7F) as u32)
+            (*charset, high | (c & 0x7F) as u32)
         }
         4 => {
             let c = one_more!(src, p, return Err(false));
@@ -943,11 +944,15 @@ fn emacs_mule_char<S: Units + ?Sized>(
             if c < 0xA0 {
                 return Err(true);
             }
-            (charset.clone(), high | (c & 0x7F) as u32)
+            (*charset, high | (c & 0x7F) as u32)
         }
         _ => {
-            let charset = if lead < 0x80 { "ascii" } else { "eight-bit" };
-            (charset.to_string(), lead as u32)
+            let charset = if lead < 0x80 {
+                cached_symbol!("ascii")
+            } else {
+                cached_symbol!("eight-bit")
+            };
+            (charset.symbol(), lead as u32)
         }
     };
     let ch = decode_charset_code(interp, &charset, code).ok_or(true)? as i32;
@@ -1102,8 +1107,8 @@ pub(super) fn emacs_mule_call<S: Units + ?Sized>(
             };
             match cmp.state {
                 COMPOSING_NO => {
-                    match charset.as_deref() {
-                        Some(charset) if charset != "ascii" => {
+                    match charset {
+                        Some(charset) if !charset.is_named("ascii") => {
                             if !runs.is(charset) {
                                 used += runs.open(charset, out);
                             }
@@ -1252,7 +1257,7 @@ pub(super) fn raw_text_call<S: Units + ?Sized>(
 /// decode_coding's calls (setup_ccl_program), and CODING_ATTR_CHARSET_LIST.
 pub(super) struct CclDecode {
     ccl: crate::lisp::primitives::ccl::CclProgram,
-    charset_list: Option<Vec<String>>,
+    charset_list: Option<Vec<SymbolName>>,
 }
 
 impl CclDecode {
@@ -1276,7 +1281,7 @@ impl CclDecode {
 pub(super) fn coding_charset_list(
     interp: &Interpreter,
     canonical: &(impl crate::lisp::eval::coding::CodingRef + ?Sized),
-) -> Option<Vec<String>> {
+) -> Option<Vec<SymbolName>> {
     let names = coding_system_charset_names(interp, canonical);
     (!names.is_empty()).then_some(names)
 }
@@ -1615,8 +1620,14 @@ impl Decoder {
             }
             "big5" => {
                 let names = coding_system_charset_names(interp, canonical);
-                let roman = charset_info(interp, names.first().map_or("ascii", String::as_str));
-                let big5 = charset_info(interp, names.get(1).map_or("big5", String::as_str));
+                let roman = match names.first() {
+                    Some(name) => charset_info(interp, name),
+                    None => charset_info(interp, "ascii"),
+                };
+                let big5 = match names.get(1) {
+                    Some(name) => charset_info(interp, name),
+                    None => charset_info(interp, "big5"),
+                };
                 match (roman, big5) {
                     (Some(roman), Some(big5)) => Decoder::Big5(roman, big5),
                     _ => Decoder::RawText,

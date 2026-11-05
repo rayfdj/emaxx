@@ -1144,7 +1144,7 @@ define_dispatch!(
                 let restriction = args.get(1).filter(|value| !value.is_nil());
                 let Some(restriction) = restriction else {
                     // CHAR_CHARSET: the charset priority walk.
-                    return Ok(Value::Symbol(char_charset(interp, internal).0.into()));
+                    return Ok(Value::Symbol(char_charset(interp, internal).0));
                 };
                 if restriction.cons_values().is_some() {
                     // A list RESTRICTION: the first charset that encodes
@@ -1152,11 +1152,8 @@ define_dispatch!(
                     // charset (CHECK_CHARSET_GET_CHARSET).
                     let mut tail = *restriction;
                     while let Some((head, rest)) = tail.cons_values() {
-                        let charset = head
-                            .as_symbol()
-                            .ok()
-                            .filter(|charset| interp.has_charset(charset))
-                            .map(str::to_string);
+                        let charset = crate::lisp::eval::coding::CharsetRef::charset_symbol(&head)
+                            .filter(|charset| interp.has_charset(charset));
                         let Some(charset) = charset else {
                             return Err(LispError::WrongTypeArgument("charsetp".into(), head));
                         };
@@ -1212,17 +1209,15 @@ define_dispatch!(
                 }
                 for charset in charsets {
                     if encode_charset_char(interp, &charset, internal).is_some() {
-                        return Ok(Value::Symbol(charset.into()));
+                        return Ok(Value::Symbol(charset));
                     }
                 }
                 Ok(Value::Nil)
             }
             "charsetp" => {
                 need_args(name, args, 1)?;
-                let Kind::Symbol(symbol) = args[0].kind() else {
-                    return Ok(Value::Nil);
-                };
-                Ok(if interp.has_charset(symbol.as_str()) {
+                // CHARSETP: Vcharset_hash_table holds the object (by EQ).
+                Ok(if interp.has_charset(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -1232,7 +1227,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let symbol = check_charset(interp, args.first().unwrap_or(&Value::Nil))?;
                 Ok(interp
-                    .charset_id(symbol)
+                    .charset_id(&symbol)
                     .map(Value::Integer)
                     .unwrap_or(Value::Nil))
             }
@@ -1240,9 +1235,9 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // CHECK_CHARSET_GET_ATTR.
                 let symbol = check_charset(interp, &args[0])?;
-                Ok(interp
-                    .charset_plist_value(symbol)
-                    .unwrap_or_else(|| default_charset_plist(symbol, interp).unwrap_or(Value::Nil)))
+                Ok(interp.charset_plist_value(&symbol).unwrap_or_else(|| {
+                    default_charset_plist(&symbol, interp).unwrap_or(Value::Nil)
+                }))
             }
             "charset-priority-list" => {
                 if args.len() > 1 {
@@ -1253,14 +1248,11 @@ define_dispatch!(
                     Ok(priority
                         .first()
                         .cloned()
-                        .map(|value| Value::Symbol(value.into()))
+                        .map(Value::Symbol)
                         .unwrap_or(Value::Nil))
                 } else {
                     Ok(Value::list(
-                        priority
-                            .into_iter()
-                            .map(|value| Value::Symbol(value.into()))
-                            .collect::<Vec<_>>(),
+                        priority.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
                     ))
                 }
             }
@@ -1270,9 +1262,7 @@ define_dispatch!(
                 // Fchar_after finds, nil where it finds none.
                 let ch = super::buffer_edit::direct_char_after(interp, args, env)?;
                 Ok(match ch.kind() {
-                    Kind::Integer(code) => {
-                        Value::Symbol(char_charset(interp, code as u32).0.into())
-                    }
+                    Kind::Integer(code) => Value::Symbol(char_charset(interp, code as u32).0),
                     _ => ch,
                 })
             }
@@ -1420,7 +1410,7 @@ define_dispatch!(
                 let (charset, code) = char_charset(interp, character);
                 let dimension =
                     crate::lisp::primitives::coding::charset_dimension(interp, &charset);
-                let mut items = vec![Value::Symbol(charset.into())];
+                let mut items = vec![Value::Symbol(charset)];
                 for shift in (0..dimension).rev() {
                     items.push(Value::Integer(i64::from((code >> (8 * shift)) & 0xFF)));
                 }

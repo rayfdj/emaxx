@@ -490,8 +490,8 @@ fn opt_symbol(value: Option<&str>) -> Value {
     value.map_or(Value::Nil, Value::symbol)
 }
 
-fn symbol_list<'a>(names: impl IntoIterator<Item = &'a String>) -> Value {
-    Value::list(names.into_iter().map(|name| Value::symbol(name)))
+fn symbol_list<'a>(names: impl IntoIterator<Item = &'a SymbolName>) -> Value {
+    Value::list(names.into_iter().map(|name| Value::Symbol(*name)))
 }
 
 fn bool_value(flag: bool) -> Value {
@@ -577,7 +577,7 @@ impl Interpreter {
                     .map(|(_, def)| *def)
                     .unwrap_or(Value::Nil);
                 Value::vector([
-                    Value::symbol(name),
+                    Value::Symbol(*name),
                     Value::Integer(*id),
                     plist,
                     bool_value(self.charset_supplementary.contains(name)),
@@ -606,7 +606,7 @@ impl Interpreter {
             Value::list(
                 self.charset_aliases
                     .iter()
-                    .map(|(alias, target)| pair(Value::symbol(alias), Value::symbol(target))),
+                    .map(|(alias, target)| pair(Value::Symbol(*alias), Value::Symbol(*target))),
             ),
         ));
         groups.push((
@@ -619,7 +619,7 @@ impl Interpreter {
                             Value::Integer(*dimension),
                             Value::Integer(*chars),
                             Value::Integer(i64::from(*final_char)),
-                            Value::symbol(name),
+                            Value::Symbol(*name),
                         ])
                     }),
             ),
@@ -803,7 +803,7 @@ impl Interpreter {
                     Value::symbol(&test.name),
                     test.body,
                     opt_string(test.source_file.as_deref()),
-                    symbol_list(&test.tags),
+                    Value::list(test.tags.iter().map(|tag| Value::symbol(tag))),
                     Value::symbol(&test.expected_result),
                 ])
             })),
@@ -937,6 +937,14 @@ mod install {
             .ok_or_else(|| format!("{what}: not a string: {value:?}"))
     }
 
+    /// The symbol itself a charset slot holds (nil and t among them).
+    fn expect_symbol_name(value: &Value, what: &str) -> Result<SymbolName, String> {
+        use crate::lisp::eval::coding::CharsetRef;
+        value
+            .charset_symbol()
+            .ok_or_else(|| format!("{what}: not a symbol: {value:?}"))
+    }
+
     fn expect_symbol(value: &Value, what: &str) -> Result<String, String> {
         value
             .as_symbol()
@@ -1051,40 +1059,49 @@ mod install {
                         if fields.len() != 6 {
                             return Err("charset: six fields expected".into());
                         }
-                        let name = expect_symbol(&fields[0], "charset name")?;
+                        let name = expect_symbol_name(&fields[0], "charset name")?;
                         self.charset_ids
-                            .push((name.clone(), expect_int(&fields[1], "charset id")?));
-                        self.charset_plists.push((name.clone(), fields[2]));
-                        self.charset_defs.push((name.clone(), fields[5]));
+                            .push((name, expect_int(&fields[1], "charset id")?));
+                        self.charset_plists.push((name, fields[2]));
+                        self.charset_defs.push((name, fields[5]));
                         if fields[3].is_truthy() {
-                            self.charset_supplementary.insert(name.clone());
+                            self.charset_supplementary.insert(name);
                         }
                         if fields[4].is_truthy() {
                             self.charset_unified.insert(name);
                         }
                     }
                     // Vcharset_hash_table, rebuilt for the registrations.
-                    self.charset_id_index = self.charset_ids.iter().cloned().collect();
+                    self.charset_id_index = self.charset_ids.iter().copied().collect();
                 }
                 RootSlot::CharsetOrderedList => {
-                    self.charset_priority = symbol_names(value, "charset ordered list")?;
+                    self.charset_priority = symbol_name_list(value, "charset ordered list")?;
                 }
                 RootSlot::CharsetList => {}
                 RootSlot::Iso2022CharsetList => {
-                    self.iso_2022_charset_list = symbol_names(value, "iso-2022 charset list")?;
+                    self.iso_2022_charset_list = symbol_name_list(value, "iso-2022 charset list")?;
                 }
                 RootSlot::EmacsMuleCharsetList => {
-                    self.emacs_mule_charset_list = symbol_names(value, "emacs-mule charset list")?;
+                    self.emacs_mule_charset_list =
+                        symbol_name_list(value, "emacs-mule charset list")?;
                 }
                 RootSlot::CharsetAliases => {
-                    self.charset_aliases = symbol_pairs(value, "charset aliases")?;
-                    self.charset_alias_index = self.charset_aliases.iter().cloned().collect();
+                    let mut aliases = Vec::new();
+                    for entry in expect_list(value, "charset aliases")? {
+                        let (alias, target) = expect_pair(&entry, "charset aliases")?;
+                        aliases.push((
+                            expect_symbol_name(&alias, "charset aliases")?,
+                            expect_symbol_name(&target, "charset aliases")?,
+                        ));
+                    }
+                    self.charset_aliases = aliases;
+                    self.charset_alias_index = self.charset_aliases.iter().copied().collect();
                     // A charset's name made an alias answers as its target.
-                    let renamed: Vec<String> = self
+                    let renamed: Vec<SymbolName> = self
                         .charset_aliases
                         .iter()
                         .filter(|(alias, target)| alias != target)
-                        .map(|(alias, _)| alias.clone())
+                        .map(|(alias, _)| *alias)
                         .collect();
                     for alias in renamed {
                         self.charset_id_index.remove(&alias);
@@ -1102,13 +1119,13 @@ mod install {
                             expect_int(&fields[1], "chars")?,
                             u32::try_from(expect_int(&fields[2], "final byte")?)
                                 .map_err(|_| "final byte out of range".to_owned())?,
-                            expect_symbol(&fields[3], "charset name")?,
+                            expect_symbol_name(&fields[3], "charset name")?,
                         ));
                     }
                 }
                 RootSlot::CharsetNonPreferredHead => {
                     self.charset_non_preferred_head =
-                        opt_of(value, |v| expect_symbol(v, "non-preferred head"))?;
+                        opt_of(value, |v| expect_symbol_name(v, "non-preferred head"))?;
                 }
                 RootSlot::SjisCodingSystem => {
                     self.sjis_coding_system = expect_symbol(value, "sjis coding system")?;
@@ -1403,20 +1420,18 @@ mod install {
         }
     }
 
+    fn symbol_name_list(value: &Value, what: &str) -> Result<Vec<SymbolName>, String> {
+        expect_list(value, what)?
+            .iter()
+            .map(|entry| expect_symbol_name(entry, what))
+            .collect()
+    }
+
     fn symbol_names(value: &Value, what: &str) -> Result<Vec<String>, String> {
         expect_list(value, what)?
             .iter()
             .map(|entry| expect_symbol(entry, what))
             .collect()
-    }
-
-    fn symbol_pairs(value: &Value, what: &str) -> Result<Vec<(String, String)>, String> {
-        let mut pairs = Vec::new();
-        for entry in expect_list(value, what)? {
-            let (car, cdr) = expect_pair(&entry, what)?;
-            pairs.push((expect_symbol(&car, what)?, expect_symbol(&cdr, what)?));
-        }
-        Ok(pairs)
     }
 }
 

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::lisp::eval::CodingSystemState;
+use crate::lisp::eval::coding::CharsetRef;
 use crate::lisp::eval::coding::{
     CODING_CATEGORY_BIG5, CODING_CATEGORY_CCL, CODING_CATEGORY_CHARSET, CODING_CATEGORY_EMACS_MULE,
     CODING_CATEGORY_ISO_8_1, CODING_CATEGORY_ISO_8_2, CODING_CATEGORY_NAMES,
@@ -179,15 +180,18 @@ fn check_integer_range(value: Value, from: i64, to: i64) -> Result<i64, LispErro
 }
 
 /// The charset X names, by canonical name (CHECK_CHARSET_GET_CHARSET).
-fn checked_charset(interp: &Interpreter, x: &Value) -> Result<String, LispError> {
+fn checked_charset(
+    interp: &Interpreter,
+    x: &Value,
+) -> Result<crate::lisp::types::SymbolName, LispError> {
     crate::lisp::primitives::charset::check_charset_get_id(interp, x)
 }
 
-fn charset_dimension(interp: &Interpreter, charset: &str) -> u32 {
+fn charset_dimension(interp: &Interpreter, charset: &(impl CharsetRef + ?Sized)) -> u32 {
     charset_info(interp, charset).map_or(1, |info| info.dimension)
 }
 
-fn charset_ascii_compatible(interp: &Interpreter, charset: &str) -> bool {
+fn charset_ascii_compatible(interp: &Interpreter, charset: &(impl CharsetRef + ?Sized)) -> bool {
     crate::lisp::primitives::coding::charset_ascii_compatible_p(interp, charset)
 }
 
@@ -256,10 +260,10 @@ pub(crate) fn define_coding_system_internal(
                     return Err(crate::lisp::primitives::values::doprnt_error(
                         interp,
                         "Can't handle charset `{}'",
-                        &[&canonical],
+                        &[&canonical.name_text()],
                     ));
                 }
-                names.push(Value::symbol(&canonical));
+                names.push(Value::Symbol(canonical));
                 tail = rest;
             }
             if matches!(copy.kind(), Kind::Cons(_) | Kind::Nil) {
@@ -290,12 +294,12 @@ pub(crate) fn define_coding_system_internal(
         return Err(wrong_type_argument("listp", plist));
     }
 
-    let charset_names = || -> Vec<String> {
+    let charset_names = || -> Vec<crate::lisp::types::SymbolName> {
         charset_list
             .to_vec()
             .unwrap_or_default()
             .iter()
-            .filter_map(|charset| charset.symbol_str().map(str::to_string))
+            .filter_map(CharsetRef::charset_symbol)
             .collect()
     };
     let mut type_args = Vec::new();
@@ -413,14 +417,17 @@ pub(crate) fn define_coding_system_internal(
             }
             let dimensions: &[u32] = if shift_jis { &[1, 1, 2, 2] } else { &[1, 2] };
             for (index, (charset, dimension)) in charsets.iter().zip(dimensions).enumerate() {
-                let charset = charset.symbol_str().unwrap_or_default().to_string();
-                if charset_dimension(interp, &charset) != *dimension {
+                let shown = match charset.charset_symbol() {
+                    Some(name) => name.name_text(),
+                    None => String::new(),
+                };
+                if charset_dimension(interp, charset) != *dimension {
                     return Err(LispError::Signal(format!(
-                        "Dimension of charset {charset} is not {}",
+                        "Dimension of charset {shown} is not {}",
                         if *dimension == 1 { "one" } else { "two" }
                     )));
                 }
-                if index == 0 && charset_ascii_compatible(interp, &charset) {
+                if index == 0 && charset_ascii_compatible(interp, charset) {
                     ascii_compatible = Value::T;
                 }
             }

@@ -4780,6 +4780,14 @@ impl Interpreter {
         {
             mark(&Value::CharTable(*table));
         }
+        // Vcharset_hash_table's keys: each charset's name and alias.
+        for (name, _) in &self.charset_ids {
+            mark(&Value::Symbol(*name));
+        }
+        for (alias, target) in &self.charset_aliases {
+            mark(&Value::Symbol(*alias));
+            mark(&Value::Symbol(*target));
+        }
         for (_, value) in &self.charset_plists {
             mark(value);
         }
@@ -5251,12 +5259,15 @@ impl Interpreter {
             for (_, tables) in clone.buffer_case_tables.iter_mut() {
                 *tables = tables.map(|table| copy_table(c, table));
             }
-            for (_, plist) in &mut clone.charset_plists {
+            for (name, plist) in &mut clone.charset_plists {
+                *name = c.copy_symbol(*name);
                 *plist = c.copy(plist);
             }
-            for (_, def) in &mut clone.charset_defs {
+            for (name, def) in &mut clone.charset_defs {
+                *name = c.copy_symbol(*name);
                 *def = c.copy(def);
             }
+            clone.copy_charset_symbols(|name| c.copy_symbol(name));
             clone.ccl_program_table = c.copy(&clone.ccl_program_table);
             for slot in clone.records.values_mut() {
                 let Kind::Record(copied) = c.copy(&Value::Record(*slot)).kind() else {
@@ -5822,30 +5833,30 @@ pub struct InterpreterState {
     /// Next buffer ID for identity tracking.
     next_buffer_id: u64,
     /// Charset aliases defined at runtime.
-    charset_aliases: Vec<(String, String)>,
+    charset_aliases: Vec<(SymbolName, SymbolName)>,
     /// Registered charsets and their stable GNU-compatible numeric IDs.
-    charset_ids: Vec<(String, i64)>,
+    charset_ids: Vec<(SymbolName, i64)>,
     /// charset.c's Vcharset_hash_table: each registered name's ID.
-    charset_id_index: HashMap<String, i64, crate::lisp::primitives::FnvBuildHasher>,
+    charset_id_index: HashMap<SymbolName, i64, crate::lisp::types::IdentityBuildHasher>,
     /// `charset_aliases' by alias name.
-    charset_alias_index: HashMap<String, String, crate::lisp::primitives::FnvBuildHasher>,
+    charset_alias_index: HashMap<SymbolName, SymbolName, crate::lisp::types::IdentityBuildHasher>,
     /// Vcharset_hash_table's books: a key for each charset and alias.
     pub(crate) charset_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
     /// Charset plist overrides keyed by canonical charset name.
-    charset_plists: Vec<(String, Value)>,
+    charset_plists: Vec<(SymbolName, Value)>,
     /// charset.c's charset attributes apart from the plist: each canonical
     /// charset's `define-charset-internal' arguments from its dimension to
     /// its unify-map (charset_table's definition), which `set-charset-plist'
     /// leaves alone.
-    pub(crate) charset_defs: Vec<(String, Value)>,
+    pub(crate) charset_defs: Vec<(SymbolName, Value)>,
     /// charset.c Vemacs_mule_charset_list: the charsets with an emacs-mule
     /// id, in definition order until `set-charset-priority' reorders them.
-    pub(crate) emacs_mule_charset_list: Vec<String>,
+    pub(crate) emacs_mule_charset_list: Vec<SymbolName>,
     /// Current charset priority order.
-    charset_priority: Vec<String>,
+    charset_priority: Vec<SymbolName>,
     /// Charsets defined with :supplementary-p; they sort after every
     /// non-supplementary charset in the ordered (priority) list.
-    charset_supplementary: HashSet<String>,
+    charset_supplementary: HashSet<SymbolName, crate::lisp::types::IdentityBuildHasher>,
     /// coding.c's Vsjis_coding_system: the most recently defined
     /// shift-jis-type coding system.  decode-sjis-char/encode-sjis-char
     /// convert through ITS charset list -- japanese.el defines
@@ -5859,7 +5870,7 @@ pub struct InterpreterState {
     /// flag, set by `unify-charset').  mule-conf.el unifies the CJK
     /// offset-method charsets at load; while unified, code<->character
     /// conversion goes through the charset's `:unify-map' file.
-    charset_unified: HashSet<String>,
+    charset_unified: HashSet<SymbolName, crate::lisp::types::IdentityBuildHasher>,
     /// charset.c's charset table: each charset's attributes read once from
     /// its plist, by the name asked for.  Emptied whenever a charset, an
     /// alias, a plist or a unification changes.
@@ -5869,21 +5880,21 @@ pub struct InterpreterState {
     pub(crate) charset_epoch: std::cell::Cell<u64>,
     pub(crate) charset_table: RefCell<
         HashMap<
-            String,
+            SymbolName,
             std::rc::Rc<crate::lisp::primitives::CharsetInfo>,
-            crate::lisp::primitives::FnvBuildHasher,
+            crate::lisp::types::IdentityBuildHasher,
         >,
     >,
     /// ISO charset associations keyed by (dimension, chars, final).
-    iso_charsets: Vec<(i64, i64, u32, String)>,
+    iso_charsets: Vec<(i64, i64, u32, SymbolName)>,
     /// charset.c Viso_2022_charset_list: the charsets with an ISO final
     /// byte, in definition order until `set-charset-priority' reorders
     /// them by priority.
-    iso_2022_charset_list: Vec<String>,
+    iso_2022_charset_list: Vec<SymbolName>,
     /// charset.c Vcharset_non_preferred_head: the first charset of the
     /// ordered list that `set-charset-priority' did not move to the front;
     /// char_charset answers `unicode' for a Unicode character on reaching it.
-    charset_non_preferred_head: Option<String>,
+    charset_non_preferred_head: Option<SymbolName>,
     /// coding.c's attribute vectors, one for each definition.
     pub(crate) coding_attrs: Vec<CodingSystemState>,
     /// coding.c's spec vectors, by index.
@@ -6591,11 +6602,11 @@ impl Interpreter {
             charset_aliases: Vec::new(),
             charset_ids: C_CHARSETS
                 .iter()
-                .map(|&(name, id)| (name.to_string(), id))
+                .map(|&(name, id)| (SymbolName::intern_str(name), id))
                 .collect(),
             charset_id_index: C_CHARSETS
                 .iter()
-                .map(|&(name, id)| (name.to_string(), id))
+                .map(|&(name, id)| (SymbolName::intern_str(name), id))
                 .collect(),
             charset_alias_index: HashMap::default(),
             charset_table_books:
@@ -6686,24 +6697,21 @@ impl Interpreter {
             // ordered list keeps non-supplementary charsets first (`emacs'
             // and `eight-bit' are supplementary), and `charset-list' holds
             // newest-first.
-            charset_priority: vec![
-                "ascii".into(),
-                "iso-8859-1".into(),
-                "unicode".into(),
-                "emacs".into(),
-                "eight-bit".into(),
-            ],
-            charset_supplementary: ["emacs".to_string(), "eight-bit".to_string()]
+            charset_priority: ["ascii", "iso-8859-1", "unicode", "emacs", "eight-bit"]
+                .map(SymbolName::intern_str)
+                .to_vec(),
+            charset_supplementary: ["emacs", "eight-bit"]
+                .map(SymbolName::intern_str)
                 .into_iter()
                 .collect(),
-            charset_unified: HashSet::new(),
+            charset_unified: HashSet::default(),
             charset_epoch: std::cell::Cell::new(0),
             charset_table: RefCell::new(HashMap::default()),
             sjis_coding_system: "sjis".into(),
             big5_coding_system: "big5".into(),
-            iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
-            iso_2022_charset_list: vec!["ascii".into()],
-            emacs_mule_charset_list: vec!["ascii".into()],
+            iso_charsets: vec![(1, 94, 'B' as u32, SymbolName::intern_str("ascii"))],
+            iso_2022_charset_list: vec![SymbolName::intern_str("ascii")],
+            emacs_mule_charset_list: vec![SymbolName::intern_str("ascii")],
             charset_non_preferred_head: None,
             coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks::with_keys(
                 coding_system_hash.len(),
@@ -8398,7 +8406,7 @@ fn c_charset_def(
     ascii_compatible: bool,
     supplementary: bool,
     code_offset: i64,
-) -> (String, Value) {
+) -> (SymbolName, Value) {
     let mut space = [0i64; 8];
     space[..code_space.len()].copy_from_slice(code_space);
     let flag = |on: bool| if on { Value::T } else { Value::Nil };
@@ -8422,7 +8430,7 @@ fn c_charset_def(
         Value::Nil,
         Value::Nil,
     ]);
-    (name.to_string(), def)
+    (SymbolName::intern_str(name), def)
 }
 
 fn c_charset_plist(
@@ -8433,7 +8441,7 @@ fn c_charset_plist(
     emacs_mule_id: Option<i64>,
     ascii_compatible: bool,
     code_offset: i64,
-) -> (String, Value) {
+) -> (SymbolName, Value) {
     let mut space = [0i64; 8];
     space[..code_space.len()].copy_from_slice(code_space);
     let plist = Value::list([
@@ -8456,7 +8464,7 @@ fn c_charset_plist(
         Value::symbol(":code-offset"),
         Value::Integer(code_offset),
     ]);
-    (name.to_string(), plist)
+    (SymbolName::intern_str(name), plist)
 }
 
 #[cfg(test)]

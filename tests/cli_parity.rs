@@ -2132,6 +2132,52 @@ fn symbols_are_read_by_name_or_identity_as_gnu_reads_them() {
 }
 
 #[test]
+fn charsets_are_found_by_their_symbols() {
+    // charset.c's Vcharset_hash_table is an `eq' table: an uninterned
+    // alias or charset is one, `charset-list' gains the symbol itself, the
+    // interned symbol of its name is none, and the conversions over the
+    // ordered and ISO-2022 lists find each charset by its symbol.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(dolist (f (list
+  (lambda () (let ((u (make-symbol "zz"))) (define-charset-alias u 'ascii) (list (charsetp u) (charsetp 'zz) (eq (car (memq u charset-list)) u) (charset-plist u) (encode-char ?a u) (decode-char u 98) (charset-id-internal u))))
+  (lambda () (let ((u (make-symbol "ascii"))) (list (charsetp u) (condition-case e (charset-plist u) (error e)) (condition-case e (encode-char ?a u) (error e)))))
+  (lambda () (let ((u (make-symbol "zcs"))) (define-charset-internal u [1] [0 127 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil nil nil nil nil) (list (charsetp u) (charsetp 'zcs) (eq (car charset-list) u) (decode-char u 65) (encode-char ?A u) (and (memq u (charset-priority-list)) t))))
+  (lambda () (let ((u (make-symbol "zcs2"))) (define-charset-internal u [1] [0 127 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil nil nil nil nil) (set-charset-priority u) (list (eq (car (charset-priority-list)) u) (eq (car (charset-priority-list t)) u) (eq (char-charset ?a) 'ascii) (sort-charsets (list 'ascii u)))))
+  (lambda () (let ((u (make-symbol "zcs3"))) (define-charset-internal u [1] [32 127 0 0 0 0 0 0] nil nil nil nil nil nil nil nil nil nil nil nil nil) (list (condition-case e (unify-charset u) (error e)) (condition-case e (declare-equiv-charset 1 94 ?~ u) (error e)) (eq (iso-charset 1 94 ?~) u))))
+  (lambda () (charset-priority-list t))
+  (lambda () (let ((u (make-symbol "latin-iso8859-1"))) (condition-case e (encode-char ?é u) (error e))))
+  (lambda () (sort-charsets (list 'ascii (make-symbol "x"))))
+  (lambda () (find-charset-string "aé"))
+  (lambda () (with-temp-buffer (insert "aé") (find-charset-region 1 3)))
+  (lambda () (char-charset ?é))
+  (lambda () (char-charset ?é (list 'latin-iso8859-1 'unicode)))
+  (lambda () (condition-case e (char-charset ?é (list (make-symbol "latin-iso8859-1"))) (error e)))
+  (lambda () (encode-coding-string "é" 'iso-latin-1))
+  (lambda () (decode-coding-string "\351" 'iso-latin-1))
+  (lambda () (encode-coding-string "日本" 'iso-2022-jp))
+  (lambda () (decode-coding-string "\e$BF|K\\\e(B" 'iso-2022-jp))
+  (lambda () (encode-coding-string "日本" 'euc-jp))
+  (lambda () (encode-coding-string "日本" 'shift_jis))
+  (lambda () (encode-coding-string "中文" 'big5))
+  (lambda () (encode-coding-string "é" 'emacs-mule))
+  (lambda () (get-text-property 0 'charset (decode-coding-string "\e$BF|\e(B" 'iso-2022-jp)))
+  (lambda () (split-char ?é))
+  (lambda () (make-char 'latin-iso8859-1 105))
+  (lambda () (charset-plist 'latin-iso8859-1))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"#,
+        ],
+    );
+}
+
+#[test]
 fn cached_symbol_keys_name_symbols_gnu_has_interned() {
     // Every cached key's symbol is interned when an editor is constructed,
     // as lisp.h's lispsym are: each must name a symbol GNU's own startup

@@ -947,7 +947,7 @@ fn insert_decoded_calls_at(
                 }
                 let plist = match annotation {
                     Annotation::Charset(_, _, charset) => {
-                        Value::list([Value::symbol("charset"), Value::symbol(charset)])
+                        Value::list([Value::symbol("charset"), Value::Symbol(*charset)])
                     }
                     Annotation::Composition(composition) => match composition.property() {
                         Some(value) => Value::list([Value::symbol("composition"), value]),

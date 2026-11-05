@@ -14837,6 +14837,40 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 315: charsets are found by their symbols, as
+  Vcharset_hash_table, an `eq' table, finds them.** Emaxx kept every
+  part of charset.c's registry by name text: the hash table (each name's
+  and alias's id), charset_table's cache, the ordered list and
+  Vcharset_non_preferred_head, Viso_2022_charset_list,
+  Vemacs_mule_charset_list, ISO_CHARSET_TABLE, the aliases, plists,
+  definitions and the supplementary and unified flags. An uninterned
+  symbol was found again through its marked text, so
+  `define-charset-alias' of one consed onto `charset-list' a different
+  symbol made from that text, and once round 309 stopped mapping marked
+  text back, an uninterned alias or charset was no charset at all to the
+  callers that still passed a name. Each part is keyed by the symbol
+  now: its names are collection roots, copied with an interpreter and
+  written to the image as symbols (charset.c's dump of charset_table and
+  the hash table), and the readers take a symbol, or for a caller that
+  still holds a name, the symbol whose text it is (`CharsetRef').
+  CHECK_CHARSET, CHECK_CHARSET_GET_ID and `charsetp' look the object up
+  by EQ; Fdefine_charset_internal registers args[charset_arg_name]
+  itself and Fdefine_charset_alias the alias itself; `char-charset',
+  `find-charset-string', `split-char', the ISO-2022 coder's designations
+  and safe registers, the emacs-mule layout, the CCL charset list, the
+  decoded `charset' runs and the preferred charsets of encoding carry
+  symbols; and the errors that name a charset (Funify_charset's, the
+  coding system definition's dimension check) take SYMBOL_NAME of the
+  symbol given. `char-charset' takes 3,424 instructions a call against
+  GNU's 4,413, `charsetp' 3,258 against 4,233, `encode-char' 3,636
+  against 4,364, and `encode-coding-string' to iso-2022-jp 14,440
+  against 13,320, in an interpreted loop. A command-line comparison runs
+  uninterned aliases and charsets through definition, priority, ISO
+  designation, unification and conversion; the fuzzes and command-line
+  cases of rounds 303 to 314 print GNU's results as before. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17325,6 +17359,17 @@ ert-tests (39,275 ms against 36,530), tramp-tests (19,980 against
 against 2,718) and mule-tests (2,842 against 1,846), and
 `ert-test-run-tests-batch-expensive' is 1.07 of GNU's time.
 
+**On `62d801d`** (round 314): the full Rust gate (run 41991212454)
+passed; the frozen run (run 41991216862) passed at its first attempt,
+7,928 of 7,928 outcomes matching (the oracle's bodies 268.5 s against
+round 313's 261.2). Setup 79.2 s against 66.8 s (1.185), test bodies
+290.2 s against 268.5 s (1.080), in all 1.085, with a per-file setup
+median of 120 ms against 102. The widest body gaps are tramp-tests
+(20,940 ms against 17,960), comp-tests (18,093 against 15,581),
+ert-tests (40,186 against 37,837), mule-tests (2,811 against 1,856) and
+semantic-utest-ia (3,853 against 3,026), and
+`ert-test-run-tests-batch-expensive' is 1.05 of GNU's time.
+
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's
   `--symbol-ordering-file' with the 3,046 functions four test files'
@@ -18156,8 +18201,9 @@ and failures are still recorded.
    coding system table is the symbol's, but the conversions still carry a
    coding system by its name: GNU's coding id, the spec, is what they
    should carry, so that `last-coding-system-used' names an uninterned
-   alias and a coding system defined under one converts; the charsets,
-   fontsets and fringe bitmaps next); text-property intervals
+   alias and a coding system defined under one converts; since round 315
+   the charsets are the symbol's, and the fontsets and fringe bitmaps are
+   next); text-property intervals
    (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor

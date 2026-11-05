@@ -291,8 +291,7 @@ fn find_font_encoding(
             if super::search::fast_string_match(interp, env, &regexp, fontname, Some(canon), false)?
                 .is_some()
             {
-                let charsetp =
-                    |value: &Value| value.as_symbol().is_ok_and(|name| interp.has_charset(name));
+                let charsetp = |value: &Value| value.is_symbol() && interp.has_charset(value);
                 let valid = match encoding.kind() {
                     Kind::Nil | Kind::T | Kind::Symbol(_) => charsetp(&encoding),
                     _ => encoding
@@ -313,7 +312,7 @@ fn find_font_encoding(
 fn charset_symbol_id(interp: &Interpreter, charset: &Value) -> Result<i64, LispError> {
     let name = super::coding::check_charset(interp, charset)?;
     interp
-        .charset_id(name)
+        .charset_id(&name)
         .ok_or_else(|| wrong_type_argument("charsetp", *charset))
 }
 
@@ -322,10 +321,10 @@ fn char_charset_p(interp: &Interpreter, c: u32, id: i64) -> bool {
     let Some(name) = interp.charset_name_of_id(id) else {
         return false;
     };
-    if c < 0x80 && super::coding::charset_ascii_compatible_p(interp, name) {
+    if c < 0x80 && super::coding::charset_ascii_compatible_p(interp, &name) {
         return true;
     }
-    super::coding::encode_charset_char(interp, name, c).is_some()
+    super::coding::encode_charset_char(interp, &name, c).is_some()
 }
 
 /// Fset_fontset_font's set_fontset_font, map_charset_chars' callback: a

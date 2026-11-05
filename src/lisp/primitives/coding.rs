@@ -1,6 +1,8 @@
 use super::*;
+use crate::lisp::eval::coding::CharsetRef;
 use crate::lisp::eval::coding::CodingRef;
 use crate::lisp::types::Kind;
+use crate::lisp::types::SymbolName;
 
 pub(crate) mod charset_table;
 #[macro_use]
@@ -9,7 +11,7 @@ mod decoders;
 mod detect;
 mod iso2022;
 
-pub(crate) use charset_table::{CharsetInfo, charset_info};
+pub(crate) use charset_table::{CharsetBuiltin, CharsetInfo, charset_info};
 
 pub(crate) use detect::DetectSource;
 pub(crate) use iso2022::charset_dimension;
@@ -162,12 +164,18 @@ fn raw_index_to_code_point(bounds: &[(u32, u32)], index: u32) -> Option<u32> {
 }
 
 /// A `:subset (PARENT MIN MAX OFFSET)' charset's parent and window.
-fn charset_subset(interp: &Interpreter, charset: &str) -> Option<(String, i64, i64, i64)> {
-    charset_info(interp, charset)?.subset.clone()
+fn charset_subset(
+    interp: &Interpreter,
+    charset: &(impl CharsetRef + ?Sized),
+) -> Option<(SymbolName, i64, i64, i64)> {
+    charset_info(interp, charset)?.subset
 }
 
 /// A `:superset' charset's children and their offsets.
-fn charset_superset(interp: &Interpreter, charset: &str) -> Option<Vec<(String, i64)>> {
+fn charset_superset(
+    interp: &Interpreter,
+    charset: &(impl CharsetRef + ?Sized),
+) -> Option<Vec<(SymbolName, i64)>> {
     charset_info(interp, charset)?.superset.clone()
 }
 
@@ -175,38 +183,37 @@ fn charset_superset(interp: &Interpreter, charset: &str) -> Option<Vec<(String, 
 /// order, filling omitted dimensions from the charset's code space.
 /// charset.h:CHECK_CHARSET: a symbol naming a charset, any other object
 /// `charsetp'.
-pub(crate) fn check_charset<'a>(
+pub(crate) fn check_charset(
     interp: &Interpreter,
-    charset: &'a Value,
-) -> Result<&'a str, LispError> {
-    match charset.kind() {
-        Kind::Nil | Kind::T | Kind::Symbol(_) => {
-            let name = charset.as_symbol()?;
-            if interp.has_charset(name) {
-                return Ok(name);
-            }
-        }
-        _ => {}
+    charset: &Value,
+) -> Result<SymbolName, LispError> {
+    match charset.charset_symbol() {
+        Some(name) if interp.has_charset(&name) => Ok(name),
+        _ => Err(LispError::WrongTypeArgument("charsetp".into(), *charset)),
     }
-    Err(LispError::WrongTypeArgument("charsetp".into(), *charset))
 }
 
 /// struct charset's ascii_compatible_p: its `:ascii-compatible-p', the
 /// C-defined ascii, iso-8859-1, unicode and emacs ones compatible.
-fn charset_info_ascii_compatible_p(info: &CharsetInfo, canonical: &str) -> bool {
+fn charset_info_ascii_compatible_p(info: &CharsetInfo) -> bool {
     info.ascii_compatible_p.unwrap_or(matches!(
-        canonical,
-        "ascii" | "iso-8859-1" | "unicode" | "emacs"
+        info.builtin,
+        CharsetBuiltin::Ascii
+            | CharsetBuiltin::Iso8859_1
+            | CharsetBuiltin::Unicode
+            | CharsetBuiltin::Emacs
     ))
 }
 
 /// CHARSET's ascii_compatible_p.
-pub(crate) fn charset_ascii_compatible_p(interp: &Interpreter, charset: &str) -> bool {
+pub(crate) fn charset_ascii_compatible_p(
+    interp: &Interpreter,
+    charset: &(impl CharsetRef + ?Sized),
+) -> bool {
     interp
         .charset_canonical_name(charset)
         .and_then(|canonical| {
-            charset_info(interp, &canonical)
-                .map(|info| charset_info_ascii_compatible_p(&info, &canonical))
+            charset_info(interp, &canonical).map(|info| charset_info_ascii_compatible_p(&info))
         })
         .unwrap_or(false)
 }
@@ -218,7 +225,7 @@ pub(crate) fn make_charset_character(
 ) -> Result<Value, LispError> {
     let name = check_charset(interp, charset)?;
     let canonical = interp
-        .charset_canonical_name(name)
+        .charset_canonical_name(&name)
         .ok_or_else(|| LispError::WrongTypeArgument("charsetp".into(), *charset))?;
     let info = charset_info(interp, &canonical)
         .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?;
@@ -229,7 +236,7 @@ pub(crate) fn make_charset_character(
     let dimension = info.dimension as usize;
     let first = positions.first().unwrap_or(&Value::Nil);
     let mut code = if first.is_nil() {
-        if charset_info_ascii_compatible_p(&info, &canonical) {
+        if charset_info_ascii_compatible_p(&info) {
             0
         } else {
             info.code_bounds
@@ -272,7 +279,11 @@ pub(crate) fn make_charset_character(
 }
 
 /// DECODE_CHAR: the character CODE is in CHARSET.
-pub(crate) fn decode_charset_code(interp: &Interpreter, charset: &str, code: u32) -> Option<u32> {
+pub(crate) fn decode_charset_code(
+    interp: &Interpreter,
+    charset: &(impl CharsetRef + ?Sized),
+    code: u32,
+) -> Option<u32> {
     charset_info(interp, charset)?.decode(interp, code)
 }
 
@@ -280,13 +291,16 @@ pub(crate) fn decode_charset_code(interp: &Interpreter, charset: &str, code: u32
 /// significant first (charset.c's CODE_POINT_TO_INDEX counts the first
 /// byte fastest: jisx0208's hole 0x222F is index 108, so its non-unified
 /// character is code-offset + 108, not code-offset + 0x222F).
-fn charset_code_space(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u32)>> {
+fn charset_code_space(
+    interp: &Interpreter,
+    charset: &(impl CharsetRef + ?Sized),
+) -> Option<Vec<(u32, u32)>> {
     charset_info(interp, charset)?.code_space.clone()
 }
 
 pub(crate) fn encode_charset_char(
     interp: &Interpreter,
-    charset: &str,
+    charset: &(impl CharsetRef + ?Sized),
     character: u32,
 ) -> Option<u32> {
     // CHARACTER is GNU's character number: a raw byte is #x3fff80..#x3fffff,
@@ -299,7 +313,7 @@ pub(crate) fn encode_charset_char(
 /// as the older Rust-text adapter's raw-byte sentinels.
 fn encode_charset_character_number(
     interp: &Interpreter,
-    charset: &str,
+    charset: &(impl CharsetRef + ?Sized),
     character: u32,
 ) -> Option<u32> {
     charset_info(interp, charset)?.encode(interp, character)
@@ -385,14 +399,12 @@ fn coding_system_utf16_options(
 
 /// The (roman kana kanji ...) charsets of coding.c's Vsjis_coding_system,
 /// for the sjis-char primitives.
-pub(crate) fn sjis_primitive_charsets(interp: &Interpreter) -> Option<(String, String, String)> {
+pub(crate) fn sjis_primitive_charsets(
+    interp: &Interpreter,
+) -> Option<(SymbolName, SymbolName, SymbolName)> {
     let coding = interp.sjis_coding_system.clone();
     let charsets = coding_system_charset_names(interp, &coding);
-    Some((
-        charsets.first()?.clone(),
-        charsets.get(1)?.clone(),
-        charsets.get(2)?.clone(),
-    ))
+    Some((*charsets.first()?, *charsets.get(1)?, *charsets.get(2)?))
 }
 
 /// CODING_ATTR_CHARSET_LIST: the charsets of CODING by canonical name,
@@ -401,7 +413,7 @@ pub(crate) fn sjis_primitive_charsets(interp: &Interpreter) -> Option<(String, S
 pub(crate) fn coding_system_charset_names(
     interp: &Interpreter,
     coding: &(impl CodingRef + ?Sized),
-) -> Vec<String> {
+) -> Vec<SymbolName> {
     let Some(attrs) = interp.coding_system(coding) else {
         return Vec::new();
     };
@@ -413,7 +425,7 @@ pub(crate) fn coding_system_charset_names(
             .to_vec()
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|value| value.symbol_str().map(str::to_string))
+            .filter_map(|value| value.charset_symbol())
             .collect(),
     }
 }
@@ -1408,9 +1420,9 @@ fn encode_coding_sjis(
         .iter()
         .filter_map(|charset| charset_info(interp, charset))
         .collect();
-    let kana = names.get(1).map(String::as_str);
-    let kanji = names.get(2).map(String::as_str);
-    let kanji2 = names.get(3).map(String::as_str);
+    let kana = names.get(1).copied();
+    let kanji = names.get(2).copied();
+    let kanji2 = names.get(3).copied();
     let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
     let default_char = coding_system_default_char(interp, coding);
     let mut out = Vec::with_capacity(codes.len());
@@ -1425,7 +1437,7 @@ fn encode_coding_sjis(
             else {
                 continue;
             };
-            let name = Some(charset.name.as_str());
+            let name = Some(charset.name);
             if name == kanji {
                 let sjis = jis_to_sjis(code);
                 out.extend([(sjis >> 8) as u8, (sjis & 0xFF) as u8]);
@@ -1496,7 +1508,7 @@ fn encode_coding_big5(
         .iter()
         .filter_map(|charset| charset_info(interp, charset))
         .collect();
-    let big5 = names.get(1).map(String::as_str);
+    let big5 = names.get(1).copied();
     let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
     let default_char = coding_system_default_char(interp, coding);
     let mut out = Vec::with_capacity(codes.len());
@@ -1511,7 +1523,7 @@ fn encode_coding_big5(
             else {
                 continue;
             };
-            if Some(charset.name.as_str()) == big5 {
+            if Some(charset.name) == big5 {
                 out.extend([(code >> 8) as u8, (code & 0xFF) as u8]);
             } else {
                 out.push((code & 0x7F) as u8);
@@ -1594,8 +1606,8 @@ fn consume_chars(
     raw_text_encoder: bool,
     selective_display: bool,
     translation: &[Value],
-    preferred: &[Option<String>],
-) -> (Vec<u32>, Vec<Option<String>>) {
+    preferred: &[Option<SymbolName>],
+) -> (Vec<u32>, Vec<Option<SymbolName>>) {
     if source.multibyte && translation.is_empty() && preferred.is_empty() {
         // No table and no annotation: each character goes in as it is, a
         // newline as the eol type makes it.
@@ -1674,7 +1686,7 @@ fn consume_chars(
                 Some(1) => {
                     codes.push(u32::from(b'\r'));
                     if let Some(preference) = &preference {
-                        aligned.push(preference.clone());
+                        aligned.push(*preference);
                     }
                 }
                 Some(2) => c = u32::from(b'\r'),
@@ -1905,7 +1917,7 @@ pub(crate) fn encode_text_bytes_with_charsets(
     inhibit_eol_conversion: bool,
     selective_display: bool,
     translation: &[Value],
-    preferred: &[Option<String>],
+    preferred: &[Option<SymbolName>],
     block: Option<&mut EncoderSpec>,
 ) -> Result<Vec<u8>, LispError> {
     let last = block.is_none();
@@ -2237,7 +2249,7 @@ const CODING_CARRYOVER_BYTES: usize = 64;
 #[derive(Default)]
 pub(crate) struct DecodedText {
     pub(crate) text: String,
-    pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) charsets: Vec<(usize, usize, SymbolName)>,
     pub(crate) compositions: Vec<DecodedComposition>,
     pub(crate) extended: Vec<(usize, u32)>,
     chars: usize,
@@ -2298,13 +2310,13 @@ impl DecodedComposition {
 /// A decoded text's annotation, as produce_annotation reaches it.
 #[derive(Clone, Copy)]
 pub(crate) enum Annotation<'a> {
-    Charset(usize, usize, &'a str),
+    Charset(usize, usize, &'a SymbolName),
     Composition(&'a DecodedComposition),
 }
 
 /// The `charset' runs and the compositions in produce_annotation's order.
 pub(crate) fn annotations<'a>(
-    charsets: &'a [(usize, usize, String)],
+    charsets: &'a [(usize, usize, SymbolName)],
     compositions: &'a [DecodedComposition],
 ) -> impl Iterator<Item = Annotation<'a>> {
     let mut charsets = charsets.iter().enumerate().peekable();
@@ -2332,7 +2344,7 @@ pub(crate) fn annotations<'a>(
 /// inserted, and decode_eol's change after them.
 pub(crate) struct DecodeLayout {
     pub(crate) chunks: Vec<usize>,
-    pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) charsets: Vec<(usize, usize, SymbolName)>,
     pub(crate) compositions: Vec<DecodedComposition>,
     pub(crate) eol: Option<Box<EolConversion>>,
 }
@@ -2346,7 +2358,7 @@ pub(crate) struct EolConversion {
     pub(crate) dos: bool,
     pub(crate) crs: Vec<usize>,
     pub(crate) text: String,
-    pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) charsets: Vec<(usize, usize, SymbolName)>,
     pub(crate) compositions: Vec<DecodedComposition>,
     pub(crate) extended: Vec<(usize, u32)>,
 }
@@ -2623,39 +2635,39 @@ pub(crate) fn decode_text_bytes(
 /// text fetches them once).  CH is GNU's character number.
 pub(crate) fn char_charset_ordered(
     interp: &Interpreter,
-    ordered: &[String],
-    non_preferred_head: Option<&str>,
+    ordered: &[SymbolName],
+    non_preferred_head: Option<SymbolName>,
     ch: u32,
-) -> (String, u32) {
+) -> (SymbolName, u32) {
     if ch <= 0x7F {
-        return ("ascii".into(), ch);
+        return (cached_symbol!("ascii").symbol(), ch);
     }
     let unicode_char = ch <= MAX_UNICODE_CHAR;
     for (index, charset) in ordered.iter().enumerate() {
         if let Some(code) = encode_charset_char(interp, charset, ch) {
-            return (charset.clone(), code);
+            return (*charset, code);
         }
         if unicode_char
             && let Some(next) = ordered.get(index + 1)
-            && Some(next.as_str()) == non_preferred_head
+            && Some(*next) == non_preferred_head
         {
-            return ("unicode".into(), ch);
+            return (cached_symbol!("unicode").symbol(), ch);
         }
     }
     // Past the whole list: `emacs' up to MAX_5_BYTE_CHAR, `eight-bit'
     // beyond (both normally answer from inside the list already).
     if ch <= MAX_5_BYTE_CHAR {
-        ("emacs".into(), ch)
+        (cached_symbol!("emacs").symbol(), ch)
     } else {
-        ("eight-bit".into(), ch - RAW_BYTE8_BASE)
+        (cached_symbol!("eight-bit").symbol(), ch - RAW_BYTE8_BASE)
     }
 }
 
-pub(crate) fn char_charset(interp: &Interpreter, ch: u32) -> (String, u32) {
+pub(crate) fn char_charset(interp: &Interpreter, ch: u32) -> (SymbolName, u32) {
     char_charset_ordered(
         interp,
         interp.charset_priority(),
-        interp.charset_non_preferred_head_ref(),
+        interp.charset_non_preferred_head(),
         ch,
     )
 }
@@ -2915,7 +2927,7 @@ fn decode_bytes_with_coding_block(
 pub(crate) fn coding_attr_charset_list(
     interp: &Interpreter,
     coding: &(impl CodingRef + ?Sized),
-) -> Vec<String> {
+) -> Vec<SymbolName> {
     let Some(state) = interp.coding_system(coding) else {
         return Vec::new();
     };
@@ -2926,7 +2938,7 @@ pub(crate) fn coding_attr_charset_list(
     }
 }
 
-fn charset_infos(interp: &Interpreter, names: &[String]) -> Vec<std::rc::Rc<CharsetInfo>> {
+fn charset_infos(interp: &Interpreter, names: &[SymbolName]) -> Vec<std::rc::Rc<CharsetInfo>> {
     names
         .iter()
         .filter_map(|charset| charset_info(interp, charset))
@@ -3060,7 +3072,7 @@ pub(crate) fn unencodable_char_position_value(
 
 struct EmacsMuleLayout {
     lengths: [usize; 256],
-    charsets: Vec<Option<String>>,
+    charsets: Vec<Option<SymbolName>>,
 }
 
 fn emacs_mule_layout(interp: &Interpreter) -> EmacsMuleLayout {
@@ -3079,14 +3091,15 @@ fn emacs_mule_layout(interp: &Interpreter) -> EmacsMuleLayout {
     ) && let Ok(entries) = vector_items(&table)
     {
         for (id, entry) in entries.into_iter().take(256).enumerate() {
-            let Ok(charset) = entry.as_symbol() else {
+            let Some(charset) = entry.charset_symbol() else {
                 continue;
             };
-            let Some(dimension) = charset_info(interp, charset).map(|info| info.dimension as usize)
+            let Some(dimension) =
+                charset_info(interp, &charset).map(|info| info.dimension as usize)
             else {
                 continue;
             };
-            charsets[id] = Some(charset.to_string());
+            charsets[id] = Some(charset);
             lengths[id] = dimension + usize::from(id >= 0xA0) + 1;
         }
     }
@@ -3096,7 +3109,7 @@ fn emacs_mule_layout(interp: &Interpreter) -> EmacsMuleLayout {
 /// charset.c Vemacs_mule_charset_list: the charsets that carry an
 /// `:emacs-mule-id', in the current priority order (Fset_charset_priority
 /// rebuilds the list in Vcharset_ordered_list order).
-pub(crate) fn emacs_mule_charset_list(interp: &Interpreter) -> Vec<String> {
+pub(crate) fn emacs_mule_charset_list(interp: &Interpreter) -> Vec<SymbolName> {
     interp
         .charset_priority_list()
         .into_iter()
@@ -3588,7 +3601,7 @@ pub(crate) fn coding_system_p(interp: &Interpreter, value: &Value) -> bool {
 /// The `charset' text property per character of STRING: the annotation
 /// CODING_ANNOTATE_CHARSET_MASK hands the encoder as the preferred
 /// charset.
-fn charset_preferences(string: &StringLike) -> Vec<Option<String>> {
+fn charset_preferences(string: &StringLike) -> Vec<Option<SymbolName>> {
     let Some(intervals) = &string.props else {
         return Vec::new();
     };
@@ -3596,9 +3609,9 @@ fn charset_preferences(string: &StringLike) -> Vec<Option<String>> {
     let mut preferred = vec![None; count];
     for (start, end, plist) in intervals.iter() {
         let value = crate::lisp::primitives::strings::lisp_plist_get(plist, "charset");
-        if let Ok(charset) = value.as_symbol() {
+        if let Some(charset) = value.charset_symbol() {
             for slot in preferred.iter_mut().take(end.min(count)).skip(start) {
-                *slot = Some(charset.to_string());
+                *slot = Some(charset);
             }
         }
     }
@@ -3851,7 +3864,7 @@ pub(crate) fn decoded_annotation_props(
             Annotation::Charset(start, end, charset) => (
                 start,
                 end,
-                Value::list([Value::symbol("charset"), Value::Symbol(charset.into())]),
+                Value::list([Value::symbol("charset"), Value::Symbol(*charset)]),
             ),
             Annotation::Composition(composition) => {
                 let Some(value) = composition.property() else {
@@ -4514,7 +4527,10 @@ pub(crate) fn finish_buffer_decode(
 }
 
 /// charset.c CHARSET_MIN_CODE / CHARSET_MAX_CODE.
-pub(crate) fn charset_code_bounds(interp: &Interpreter, charset: &str) -> Option<(u32, u32)> {
+pub(crate) fn charset_code_bounds(
+    interp: &Interpreter,
+    charset: &(impl CharsetRef + ?Sized),
+) -> Option<(u32, u32)> {
     charset_info(interp, charset)?.code_bounds
 }
 
@@ -4539,7 +4555,7 @@ fn push_sorted_char_ranges(chars: &mut Vec<u32>, ranges: &mut Vec<(i64, i64)>) {
 /// (unsigned as the C's; FROM may exceed TO).
 pub(crate) fn map_charset_char_ranges(
     interp: &Interpreter,
-    charset: &str,
+    charset: &(impl CharsetRef + ?Sized),
     from: u32,
     to: u32,
 ) -> Option<Vec<(i64, i64)>> {
@@ -4571,7 +4587,7 @@ pub(crate) enum CharsetRanges {
 /// one range, however FROM and TO lie.
 pub(crate) fn map_charset_char_segments(
     interp: &Interpreter,
-    charset: &str,
+    charset: &(impl CharsetRef + ?Sized),
     from: u32,
     to: u32,
 ) -> Option<Vec<CharsetRanges>> {
