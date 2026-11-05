@@ -1233,7 +1233,13 @@ define_dispatch!(
                     }
                 };
                 let absolute_max = interp.buffer.borrow().size_total() + 1;
-                if pos < 1 || pos > absolute_max {
+                // Only a fixnum POSITION is checked against BEG and Z; a
+                // marker's (another buffer's) position is taken as it is.
+                let is_marker = matches!(
+                    args.first().map(|value| value.kind()),
+                    Some(Kind::Marker(_))
+                );
+                if !is_marker && (pos < 1 || pos > absolute_max) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("args-out-of-range".into()),
                         Value::Integer(pos as i64),
@@ -1255,6 +1261,16 @@ define_dispatch!(
                         interp.buffer.borrow().point_max(),
                     )
                 };
+                // The second check, `args_out_of_range_3 (BYTE_TO_CHAR
+                // (pos_byte), BEG, Z)', past Z (an absolute marker position).
+                if pos > absolute_max {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("args-out-of-range".into()),
+                        Value::Integer(pos as i64),
+                        Value::Integer(1),
+                        Value::Integer(absolute_max as i64),
+                    ])));
+                }
                 // fns.c: count_lines (start_byte, pos_byte) + 1.
                 let line = interp.buffer.borrow().count_newlines(start, pos) + 1;
                 Ok(Value::Integer(line as i64))
@@ -2792,10 +2808,17 @@ pub(super) fn direct_end_of_line(
 }
 
 /// The line count N of `line-beginning-position' and its relatives: nil
-/// 1, else an integer.
+/// 1, else CHECK_INTEGER, a bignum counting as far as BUF_BYTES_MAX lines
+/// in its direction (editfns.c's bol and eol).
 fn line_count_arg(n: Option<&Value>) -> Result<i64, LispError> {
+    const BUF_BYTES_MAX: i64 = (1_i64 << 61) - 2;
     match n.map(|value| value.kind()) {
         None | Some(Kind::Nil) => Ok(1),
+        Some(Kind::BigInteger(n)) => Ok(if n.sign() == num_bigint::Sign::Minus {
+            -BUF_BYTES_MAX
+        } else {
+            BUF_BYTES_MAX
+        }),
         Some(value) => value.value().as_integer(),
     }
 }

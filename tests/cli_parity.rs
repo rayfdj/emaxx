@@ -2272,6 +2272,69 @@ fn string_arguments_reach_primitives_as_their_bytes() {
 }
 
 #[test]
+fn numeric_edge_arguments_answer_as_gnu_does() {
+    // A sweep of every subr with -0.0, NaNs, infinities, the fixnum
+    // bounds, bignums and the character bound: a position is fix_position's
+    // (CHECK_FIXNUM_COERCE_MARKER), so any bignum is the fixnum bound in its
+    // direction; a line count is bol's and eol's, a bignum as many lines as
+    // a buffer can hold; `obarray-make''s range error carries SIZE itself;
+    // an hscroll is clipped to the fixnum range; `move-point-visually'
+    // reads its direction as a C int.  A sweep with lists, vectors,
+    // records, closures and symbols: the alternative font alists are
+    // CHECK_LIST'd copies whose elements Fintern or Fdowncase takes, and a
+    // face attribute is the interned keyword itself.  A sweep with live
+    // objects: Fapply stores a one-element spread list's element into the
+    // vector its frame records and pads a subr's call with nils to its
+    // MAXARGS, and `line-number-at-pos' takes another buffer's marker
+    // without the fixnum check.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r##"(progn
+(dolist (f (list
+  (lambda () (with-temp-buffer (insert "abcdef\nghi")
+               (let ((big (expt 2 70)) (nbig (- (expt 2 70))))
+                 (mapcar (lambda (g) (condition-case e (funcall g) (error e)))
+                         (list (lambda () (make-overlay big big)) (lambda () (overlays-at big)) (lambda () (overlays-in big big)) (lambda () (next-overlay-change big)) (lambda () (previous-overlay-change nbig))
+                               (lambda () (overlay-recenter big)) (lambda () (narrow-to-region big nbig)) (lambda () (prog1 (list (point-min) (point-max)) (widen)))
+                               (lambda () (get-byte big)) (lambda () (position-bytes big)) (lambda () (compare-buffer-substrings nil big nil nil 1 2))
+                               (lambda () (pos-bol big)) (lambda () (pos-eol nbig)) (lambda () (line-beginning-position big)) (lambda () (line-end-position nbig))
+                               (lambda () (pos-visible-in-window-p big)) (lambda () (posn-at-point big)) (lambda () (check-coding-systems-region big nil nil))
+                               (lambda () (goto-char big)) (lambda () (char-after big)) (lambda () (put-text-property 1 big 'face 'bold)))))))
+  (lambda () (list (condition-case e (obarray-make most-positive-fixnum) (error e))
+                   (let ((w (selected-window))) (set-window-hscroll w 0)
+                     (list (scroll-left most-positive-fixnum) (scroll-left 5) (window-hscroll w) (scroll-right most-positive-fixnum) (scroll-right 3) (scroll-left most-negative-fixnum)))
+                   (mapcar (lambda (d) (with-temp-buffer (condition-case e (move-point-visually d) (error e))))
+                           (list 1 -1 0 most-positive-fixnum (ash most-positive-fixnum -1) (ash 1 32) (1+ (ash 1 31)) most-negative-fixnum))))
+  (lambda () (list (condition-case e (internal-set-alternative-font-registry-alist '((((1))))) (error e))
+                   (internal-set-alternative-font-registry-alist (list (list "ABC" ?Q (string #x130 ?X))))
+                   (let ((r (internal-set-alternative-font-family-alist (list (list (string-to-unibyte "a\377") "Mono"))))) (list r (eq (car (car r)) (intern (string-to-unibyte "a\377")))))
+                   (condition-case e (internal-set-alternative-font-family-alist '((1))) (error e))
+                   (condition-case e (internal-set-alternative-font-family-alist '(1)) (error e))
+                   (condition-case e (internal-set-alternative-font-registry-alist '(("a" . "b"))) (error e))
+                   (let ((s (make-symbol ":foreground"))) (condition-case e (internal-set-lisp-face-attribute 'default s "red" t) (error (list (cadr e) (eq (nth 2 e) s)))))
+                   (condition-case e (internal-set-lisp-face-attribute 'default :nonesuch 1 t) (error e))))
+  (lambda () (let ((frames (lambda (name) (seq-take (seq-drop (seq-drop-while (lambda (f) (not (eq (cadr f) name))) (backtrace-frames)) 1) 1)))
+                   (seen nil))
+               (fset 'ap-frames (lambda (&rest _) (funcall frames 'ap-frames)))
+               (fset 'ap-grab (lambda (x) (setq seen (seq-take (seq-drop-while (lambda (f) (not (eq (cadr f) 'mapconcat))) (backtrace-frames)) 1)) x))
+               (list (apply #'ap-frames '(x)) (apply #'ap-frames 1 '(x)) (apply #'ap-frames '(x y)) (apply #'ap-frames '()) (apply 'ap-frames 1 2 '(3))
+                     (progn (apply #'mapconcat (list #'ap-grab '("a"))) seen) (progn (apply #'mapconcat #'ap-grab '(("a") "-")) seen)
+                     (progn (apply 'mapconcat 'ap-grab (list '("a" "b"))) seen))))
+  (lambda () (with-temp-buffer (insert "a\nb\nc")
+               (let ((m (copy-marker 5)))
+                 (with-temp-buffer (list (line-number-at-pos m) (condition-case e (line-number-at-pos m t) (error e)) (condition-case e (line-number-at-pos 5) (error e)))))))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"##,
+        ],
+    );
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

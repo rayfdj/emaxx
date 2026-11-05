@@ -15069,6 +15069,54 @@ setup_process_coding_systems's check now refuses). A 13-form
   rounds 303 to 318 print GNU's results as before. Local validation: the
   grouped gate's 3,501 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 320: three more sweeps of every subr, with numeric edge
+  values, with lists, vectors and other objects, and with live objects,
+  bring the primitives they found to GNU's answers.** The first put
+  -0.0, both NaNs, both infinities, the fixnum bounds, bignums on either
+  side of them, 2^70, -1, 0, 1.0e300, the smallest float, 0.5 and the
+  character bound in each of a subr's first three arguments. A position
+  is fix_position's (CHECK_FIXNUM_COERCE_MARKER, buffer.h): any bignum
+  is the fixnum bound in its direction, where Emaxx refused one beyond
+  64 bits, so `make-overlay', `overlays-at', `overlays-in',
+  `next-overlay-change', `previous-overlay-change', `overlay-recenter',
+  `narrow-to-region', `get-byte', `position-bytes',
+  `compare-buffer-substrings', `fringe-bitmaps-at-pos',
+  `pos-visible-in-window-p', `posn-at-point' and the coding-region
+  checks answer or signal as GNU's do; `pos-bol', `pos-eol',
+  `line-beginning-position' and `line-end-position' take a bignum count
+  as bol and eol do, as many lines as a buffer can hold.
+  `obarray-make''s range error carries SIZE itself (xsignal, not
+  xsignal1); `scroll-left' and `scroll-right' clip the hscroll to the
+  fixnum range as set_window_hscroll does; `move-point-visually' reads
+  its direction as a C int, so most-positive-fixnum moves left. The
+  second put dotted and nested lists, an alist, plists, an empty vector,
+  a bool-vector, a char-table, a record, a closure, a subr, a keyword,
+  an uninterned symbol and a list of strings in each argument: the
+  alternative font family and registry alists are CHECK_LIST'd copies
+  whose elements Fintern and Fdowncase take (a character downcased, a
+  dotted entry refused), and a face attribute is the interned keyword
+  itself, an uninterned symbol of an attribute's name being no attribute
+  and the error's data the symbol given. A third put live objects
+  (another buffer, the minibuffer and its window, the selected window
+  and frame, the terminal, a marker, an overlay, a pipe process, a hash
+  table, an obarray, the thread and a mutex): Fapply stores a
+  one-element spread list's element into the very vector its frame
+  records (`args[nargs - 1] = XCAR (spread_arg)'), so a backtrace shows
+  `apply f x' where Emaxx showed `apply f (x)', and pads a subr's call
+  with nils to its MAXARGS, which the subr's frame shows; Emaxx's frame
+  now points at that respread vector, on the stack, for the call.
+  `line-number-at-pos' takes a marker (another buffer's) without the
+  fixnum range check, and a position past Z reports BEG and Z. A first
+  gate pass caught a position held internally as a bignum of fixnum
+  size, a value GNU's normalized integers never hold: it reads as its
+  value, and only a bignum beyond the fixnum range reads as the bound.
+  What the sweeps still find is `decode-time''s clock, object addresses,
+  `newline-cache-check''s region cache and `set-window-start' with a nil
+  position (the last two recorded below). One command-line comparison
+  runs the cases fixed. The fuzzes and command-line cases of rounds 303
+  to 319 print GNU's results as before. Local validation: the grouped
+  gate's 3,501 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17620,7 +17668,33 @@ ert-tests (36,346 ms against 32,930), tramp-tests (18,541 against
 against 2,139) and mule-tests (2,326 against 1,526), and
 `ert-test-run-tests-batch-expensive' is 1.09 of GNU's time.
 
+**On `7d697ba`** (round 319): the full Rust gate (run 42047034538)
+passed; the frozen run (run 42047039667) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a faster runner than round 318's
+(the oracle's bodies 216.9 s against 245.3). Setup 51.0 s against 43.7 s
+(1.168), test bodies 228.2 s against 216.9 s (1.052), in all 1.057, with
+a per-file setup median of 79 ms against 70. The widest body gaps are
+tramp-tests (16,258 ms against 14,346), comp-tests (12,068 against
+10,584), mule-tests (1,926 against 1,145), semantic-utest-ia (2,352
+against 1,638) and package-tests (5,861 against 5,343), and
+`ert-test-run-tests-batch-expensive' runs in 0.96 of GNU's time,
+ert-tests as a whole 26,307 ms against 27,211.
+
 **Findings recorded, not fixed:**
+- **A window start that points nowhere (round 320).** Fset_window_start
+  runs set_marker_restricted, so a nil POS leaves the start marker
+  pointing nowhere: `(set-window-start nil nil)' returns nil and
+  `window-start' then answers nil. Emaxx keeps the selected window's
+  start as a position beside the marker and signals
+  `integer-or-marker-p' for a nil POS; the selected window's start needs
+  to be the marker GNU's is, redisplay choosing a start when it points
+  nowhere.
+- **The newline region cache (round 320).** GNU's find_newline keeps a
+  region cache of the stretches with no newline (`cache-long-scans', on
+  by default), which `newline-cache-check' reports as a pair of vectors;
+  Emaxx scans without one and answers nil. The cache is GNU's
+  optimization and changes no other answer; matching the debugging
+  primitive means keeping the cache as region-cache.c does.
 - **Static compositions in the screen-line layout (round 319).** The
   layouter the redisplay paths share (`window-text-pixel-size',
   `buffer-text-pixel-size' and through them `string-pixel-width') lays a

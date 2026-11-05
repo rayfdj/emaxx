@@ -4041,7 +4041,8 @@ fn set_window_hscroll_value(
     window_id: u64,
     requested: i64,
 ) -> Result<Value, LispError> {
-    let hscroll = requested.max(0);
+    // clip_to_bounds (0, hscroll, min (MOST_POSITIVE_FIXNUM, PTRDIFF_MAX)).
+    let hscroll = requested.clamp(0, (1_i64 << 61) - 1);
     if window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT).integer_value() != Some(hscroll) {
         // set_window_hscroll: a changed hscroll redisplays the window.
         interp.wset_redisplay(window_id);
@@ -6333,7 +6334,9 @@ define_dispatch!(
                     return Err(wrong_type_argument("fixnump", args[0]));
                 };
                 with_selected_window_buffer(interp, |interp| {
-                    let right = direction > 0;
+                    // `int dir = XFIXNUM (direction)': the fixnum's low 32
+                    // bits, so most-positive-fixnum moves left.
+                    let right = (direction as i32) > 0;
                     let right_to_left = matches!(
                         current_bidi_paragraph_direction_value(interp, env).kind(),
                         Kind::Symbol(ref direction) if direction.is_named("right-to-left")

@@ -321,14 +321,20 @@ pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result
         // point-min).  Preserve that signed boundary here rather than
         // misclassifying a negative integer as a non-position type.
         Kind::Integer(pos) => Ok((pos).max(0) as usize),
-        // A small BigInteger can arise transiently inside Emaxx even though
-        // GNU would represent the same numeric value as a fixnum.  Accept it
-        // only when it fits the ordinary signed position domain; a genuine
-        // out-of-range bignum retains GNU's integer-or-marker-p error.
-        Kind::BigInteger(pos) => pos
-            .to_i64()
-            .map(|pos| pos.max(0) as usize)
-            .ok_or_else(|| LispError::WrongTypeArgument("integer-or-marker-p".into(), *value)),
+        // fix_position (CHECK_FIXNUM_COERCE_MARKER): a bignum is
+        // MOST_POSITIVE_FIXNUM when natural, MOST_NEGATIVE_FIXNUM (point-min
+        // after the clamp) otherwise.  A value of fixnum range held as a
+        // bignum (which Emaxx can make transiently, GNU never) is itself.
+        Kind::BigInteger(pos) => {
+            const MOST_POSITIVE_FIXNUM: i64 = (1_i64 << 61) - 1;
+            Ok(match pos.to_i64() {
+                Some(pos) if (-MOST_POSITIVE_FIXNUM - 1..=MOST_POSITIVE_FIXNUM).contains(&pos) => {
+                    pos.max(0) as usize
+                }
+                _ if pos.sign() == num_bigint::Sign::Minus => 0,
+                _ => MOST_POSITIVE_FIXNUM as usize,
+            })
+        }
         Kind::Marker(id) => interp.marker_position(id).ok_or_else(marker_points_nowhere),
         _ => Err(LispError::WrongTypeArgument(
             "integer-or-marker-p".into(),

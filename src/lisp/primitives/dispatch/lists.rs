@@ -1328,16 +1328,20 @@ define_dispatch!(
                 if is_vector_value(last) {
                     return Err(LispError::WrongTypeArgument("listp".into(), *last));
                 }
-                // SAFE_ALLOCA_LISP's array: eight stack slots (visible to
-                // the stack scan, as eval_sub's are), the heap past them.
+                // SAFE_ALLOCA_LISP's array: the function and eight argument
+                // slots on the stack (visible to the stack scan, as
+                // eval_sub's are), the heap past them.  Slot 0 holds the
+                // function, so a respread call's frame vector is a prefix.
                 let fixed = &args[1..args.len() - 1];
-                let mut stack = [Value::Nil; 8];
-                let mut count = 0;
+                let mut stack = [Value::Nil; 9];
+                stack[0] = *func;
+                let mut count = 1;
                 let mut spilled: Vec<Value> = Vec::new();
-                if fixed.len() <= stack.len() {
-                    stack[..fixed.len()].copy_from_slice(fixed);
-                    count = fixed.len();
+                if fixed.len() < stack.len() {
+                    stack[1..=fixed.len()].copy_from_slice(fixed);
+                    count += fixed.len();
                 } else {
+                    spilled.push(*func);
                     spilled.extend_from_slice(fixed);
                 }
                 last.visit_list_elements(|value| {
@@ -1352,10 +1356,63 @@ define_dispatch!(
                     }
                     Ok(())
                 })?;
-                let call_args = if spilled.is_empty() {
-                    &stack[..count]
+                let total = if spilled.is_empty() {
+                    count
                 } else {
-                    &spilled[..]
+                    spilled.len()
+                } - 1;
+                let numargs = total - fixed.len();
+                if numargs == 1 {
+                    // `args[nargs - 1] = XCAR (spread_arg); return Ffuncall
+                    // (nargs, args)': the element takes the list's slot in
+                    // the vector apply's own frame records.
+                    let respread: &[Value] = if spilled.is_empty() {
+                        &stack[..count]
+                    } else {
+                        &spilled[..]
+                    };
+                    let changed = interp.respread_backtrace_args(args, respread);
+                    let result = interp.call_function_value(*func, None, &respread[1..], env);
+                    if changed {
+                        interp.restore_backtrace_args(respread, args);
+                    }
+                    return result;
+                }
+                // A subr that takes more arguments than these, and no fewer
+                // than its MINARGS, gets nil for each missing optional one
+                // (funcall_args padded to MAXARGS).
+                if numargs > 1 {
+                    let fun =
+                        crate::lisp::primitives::keymap::indirect_function(interp, *func, env);
+                    // MAX_ARGS as recorded: a count, or UNEVALLED or MANY
+                    // (negative), which no count is below.
+                    let (minimum, maximum) = match fun.kind() {
+                        Kind::BuiltinFunc(subr) => (
+                            i64::from(subr.descriptor().min_args),
+                            i64::from(subr.descriptor().max_args_word()),
+                        ),
+                        Kind::NativeFunction(function) => (
+                            i64::from(function.min_args()),
+                            i64::from(function.max_args_word()),
+                        ),
+                        _ => (0, -1),
+                    };
+                    if maximum > total as i64 && total as i64 >= minimum {
+                        let padded = maximum as usize + 1;
+                        if spilled.is_empty() && padded <= stack.len() {
+                            count = padded;
+                        } else {
+                            if spilled.is_empty() {
+                                spilled.extend_from_slice(&stack[..count]);
+                            }
+                            spilled.resize(padded, Value::Nil);
+                        }
+                    }
+                }
+                let call_args = if spilled.is_empty() {
+                    &stack[1..count]
+                } else {
+                    &spilled[1..]
                 };
                 interp.call_function_value(*func, None, call_args, env)
             }

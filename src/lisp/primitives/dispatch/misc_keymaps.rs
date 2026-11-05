@@ -790,10 +790,12 @@ define_dispatch!(
                     };
                     bits = u64::BITS - size_value.leading_zeros();
                     if bits > crate::lisp::types::obarray::MAX_BITS {
-                        return Err(LispError::SignalValue(Value::list([
+                        // xsignal (Qargs_out_of_range, size): SIZE is the
+                        // data itself.
+                        return Err(LispError::SignalValue(Value::cons(
                             Value::symbol("args-out-of-range"),
                             *size,
-                        ])));
+                        )));
                     }
                 }
                 Ok(make_obarray_with_bits(interp, bits))
