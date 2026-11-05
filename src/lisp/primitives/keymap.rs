@@ -382,7 +382,7 @@ pub(crate) fn access_keymap_1(
         // recursion.
         if meta_prefix_char.as_integer()? & CHAR_META != 0 {
             meta_prefix_char = Value::Integer(KEY_DESCRIPTION_META_PREFIX);
-            interp.set_global_binding("meta-prefix-char", meta_prefix_char);
+            interp.set_global_binding_key(cached_symbol!("meta-prefix-char"), meta_prefix_char);
         }
         let roots = RootedVec::from_vec(vec![map]);
         let event_meta_binding = access_keymap_1(
@@ -592,7 +592,10 @@ pub(crate) fn possibly_translate_key_sequence(
     let Some(description) = vector.get(0).filter(Value::is_string) else {
         return Ok(key);
     };
-    if interp.lookup_function("key-valid-p", env).is_err() {
+    if interp
+        .lookup_function_key(cached_symbol!("key-valid-p"), env)
+        .is_err()
+    {
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("error"),
             Value::string("`key-valid-p' is not defined, so this syntax can't be used: %s"),
@@ -1585,10 +1588,8 @@ pub(crate) fn where_is_internal_command(
     // Ignore all menu bindings entirely.
     let nomenus = !firstonly.is_nil() && !non_ascii;
     let preferred = interp
-        .lookup_var("where-is-preferred-modifier", env)
-        .filter(Value::is_symbol)
-        .and_then(|symbol| symbol.as_symbol().ok().map(solitary_event_modifier))
-        .unwrap_or(0);
+        .lookup_var_key(cached_symbol!("where-is-preferred-modifier"), env)
+        .map_or(0, |symbol| super::keys::solitary_modifier_of(&symbol));
 
     // The keymaps in which to search.
     let keymaps = if let Some(cell) = keymap.cons_ref()

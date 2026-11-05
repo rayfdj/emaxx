@@ -1668,9 +1668,13 @@ impl Interpreter {
     fn call_debugger_with_room(&mut self, arg: Value, env: &mut Env) -> Result<Value, LispError> {
         self.clear_debug_on_next_call();
         let events = self
-            .lookup_var("num-nonmacro-input-events", env)
+            .lookup_var_key(cached_symbol!("num-nonmacro-input-events"), env)
             .unwrap_or(Value::Integer(0));
-        self.set_variable("internal-when-entered-debugger", events, env);
+        self.set_variable_key(
+            cached_symbol!("internal-when-entered-debugger"),
+            events,
+            env,
+        );
         let mut restores = Vec::with_capacity(4);
         for (name, value) in [
             ("debugger-may-continue", Value::T),
@@ -1689,7 +1693,9 @@ impl Interpreter {
             }
         }
 
-        let debugger = self.lookup_var("debugger", env).unwrap_or(Value::Nil);
+        let debugger = self
+            .lookup_var_key(cached_symbol!("debugger"), env)
+            .unwrap_or(Value::Nil);
         // apply1 (Vdebugger, arg): ARG's elements are the debugger's
         // arguments, as debug.el's (debug &rest ARGS) reads them.
         let args: smallvec::SmallVec<[Value; 4]> = list_forms(&arg).collect();
@@ -2263,12 +2269,13 @@ impl Interpreter {
         let func = match func.kind() {
             Kind::Cons(_) => {
                 if crate::lisp::primitives::autoload_parts(&func).is_some() {
-                    let Some(name) = original_name.map(CallName::as_str) else {
+                    let Some(call_name) = original_name else {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("invalid-function".into()),
                             func,
                         ])));
                     };
+                    let name = call_name.as_str();
                     // The arguments are held here, in no Lisp object, while
                     // the file loads and runs: a collection inside the
                     // load must reach them (GNU's conservative stack scan
@@ -2276,10 +2283,20 @@ impl Interpreter {
                     // bound through an autoload, and the marker was
                     // unchained by the load's collection).
                     let loaded = self.with_lisp_stack_roots(&args, |interp| {
-                        interp.autoload_do_load(func, Value::symbol(name), Value::Nil, env)
+                        interp.autoload_do_load(
+                            func,
+                            call_name.original_symbol_value(),
+                            Value::Nil,
+                            env,
+                        )
                     });
                     match loaded {
-                        Ok(_) => self.lookup_function(name, env)?,
+                        // The symbol called, not its name: an uninterned
+                        // one's new definition is its own.
+                        Ok(_) => match call_name {
+                            CallName::Symbol(symbol) => self.lookup_function_symbol(symbol, env)?,
+                            CallName::Text(name) => self.lookup_function(name, env)?,
+                        },
                         // Only a genuinely file-less environment (unit tests
                         // with no resolvable Lisp tree) may fall back to a
                         // native arm.  An error raised while EVALUATING a
@@ -2656,7 +2673,11 @@ mod eval_value_buffer_tests {
 
         let first_buffer = interpreter.current_buffer_id();
         let (second_buffer, _) = interpreter.create_buffer(" *load-path forwarding*");
-        interpreter.set_buffer_local_value(first_buffer, "load-path", temporary);
+        interpreter.set_buffer_local_value_key(
+            first_buffer,
+            cached_symbol!("load-path"),
+            temporary,
+        );
         assert!(primitives::values_eq_in_env(
             &interpreter,
             &interpreter.load_path,
@@ -2859,8 +2880,8 @@ mod eval_value_buffer_tests {
         let source = root.join("seq.el");
         assert!(source.is_file(), "unchanged GNU fixture must exist");
         interpreter.set_load_path(vec![root]);
-        interpreter.set_variable(
-            "load-suffixes",
+        interpreter.set_variable_key(
+            cached_symbol!("load-suffixes"),
             Value::list([Value::string(".el")]),
             &mut env,
         );
@@ -2996,9 +3017,9 @@ mod eval_value_buffer_tests {
         let original_buffer = interpreter.current_buffer_id();
         let (other_buffer, _) = interpreter.create_buffer(" *forwarded-cell-test*");
 
-        interpreter.set_buffer_local_value(
+        interpreter.set_buffer_local_value_key(
             original_buffer,
-            "debug-on-next-call",
+            cached_symbol!("debug-on-next-call"),
             Value::symbol("non-nil"),
         );
         assert!(interpreter.debug_on_next_call());
@@ -3079,7 +3100,11 @@ mod eval_value_buffer_tests {
             .set_current_buffer_id(other)
             .expect("select the buffer using the default cell");
         assert!(!relocated_value(), "the other buffer selects the default");
-        interpreter.set_buffer_local_value(original, "symbols-with-pos-enabled", Value::Nil);
+        interpreter.set_buffer_local_value_key(
+            original,
+            cached_symbol!("symbols-with-pos-enabled"),
+            Value::Nil,
+        );
         assert!(
             !relocated_value(),
             "an inactive local cell is not the C cell"

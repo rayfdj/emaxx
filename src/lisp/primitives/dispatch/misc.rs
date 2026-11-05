@@ -90,11 +90,11 @@ fn define_fringe_bitmap(
         let mut bitmaps = vec![args[0]];
         bitmaps.extend(
             interp
-                .lookup_var("fringe-bitmaps", env)
+                .lookup_var_key(cached_symbol!("fringe-bitmaps"), env)
                 .and_then(|value| value.to_vec().ok())
                 .unwrap_or_default(),
         );
-        interp.set_global_binding("fringe-bitmaps", Value::list(bitmaps));
+        interp.set_global_binding_key(cached_symbol!("fringe-bitmaps"), Value::list(bitmaps));
         // Fput (bitmap, Qfringe, ...) on the symbol itself.
         if let Some(symbol) = args[0].symbol_cell() {
             interp.put_symbol_property_on(&symbol, "fringe", Value::Integer(bitmap_id));
@@ -155,13 +155,13 @@ fn destroy_fringe_bitmap(
             interp.put_symbol_property_on(&symbol, "fringe", Value::Nil);
         }
         let bitmaps = interp
-            .lookup_var("fringe-bitmaps", env)
+            .lookup_var_key(cached_symbol!("fringe-bitmaps"), env)
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default()
             .into_iter()
             .filter(|candidate| !values_eq_in_env(interp, candidate, bitmap, env))
             .collect::<Vec<_>>();
-        interp.set_global_binding("fringe-bitmaps", Value::list(bitmaps));
+        interp.set_global_binding_key(cached_symbol!("fringe-bitmaps"), Value::list(bitmaps));
     }
     Ok(Value::Nil)
 }
@@ -428,11 +428,11 @@ define_dispatch!(
                     .first()
                     .filter(|source| !source.is_nil())
                     .cloned()
-                    .or_else(|| interp.lookup_var("standard-input", env))
+                    .or_else(|| interp.lookup_var_key(cached_symbol!("standard-input"), env))
                     .unwrap_or(Value::Nil);
                 // lread.c:Fread and Fread_positioning_symbols share these
                 // defaults and resolve read-minibuffer through its cell.
-                if matches!(source.kind(), Kind::T) || source.symbol_str() == Some("read-char") {
+                if matches!(source.kind(), Kind::T) || source.is_key(cached_symbol!("read-char")) {
                     call_named_function(
                         interp,
                         "read-minibuffer",
@@ -491,7 +491,9 @@ define_dispatch!(
             }
             "secure-hash" => {
                 need_arg_range(name, args, 2, 5)?;
-                let algorithm = args[0].as_symbol()?;
+                // CHECK_SYMBOL; the algorithm is chosen by EQ once the
+                // data is extracted.
+                let algorithm = checked_symbol_identity(interp, &args[0], env)?;
                 secure_hash_value(
                     interp,
                     algorithm,
@@ -552,7 +554,7 @@ define_dispatch!(
                 unlock_all_files(interp, env)?;
                 // The auto-save list goes, Emacs exiting deliberately.
                 if let Some(list_file) = interp
-                    .lookup_var("auto-save-list-file-name", env)
+                    .lookup_var_key(cached_symbol!("auto-save-list-file-name"), env)
                     .filter(Value::is_string)
                 {
                     let list_file = crate::lisp::primitives::call(
@@ -634,14 +636,14 @@ define_dispatch!(
                 // GNU 30.2 fns.c:Fprovide uses CHECK_SYMBOL/XSYMBOL, so
                 // positioned reader symbols denote their underlying symbol
                 // while `symbols-with-pos-enabled' is dynamically non-nil.
-                let feature = checked_symbol_name(interp, &args[0], env)?;
+                let feature = checked_symbol_identity(interp, &args[0], env)?;
                 let subfeatures = args.get(1).cloned().unwrap_or(Value::Nil);
                 // CHECK_LIST, even when the feature was already present.
                 if !matches!(subfeatures.kind(), Kind::Nil | Kind::Cons(_)) {
                     return Err(wrong_type_argument("listp", subfeatures));
                 }
                 interp
-                    .provide_feature_with_after_load(&feature, subfeatures, env)
+                    .provide_feature_with_after_load(feature, subfeatures, env)
                     .map(|_| args[0])
             }
             "require" => {
@@ -716,7 +718,7 @@ define_dispatch!(
                     .cloned()
                     .or_else(|| {
                         interp
-                            .lookup_var("obarray", env)
+                            .lookup_var_key(cached_symbol!("obarray"), env)
                             .filter(|value| !value.is_nil())
                     })
                     .map(|obarray| coerce_legacy_vector_obarray(interp, &obarray))
@@ -771,9 +773,29 @@ define_dispatch!(
                     .cloned()
                     .or_else(|| {
                         interp
-                            .lookup_var("obarray", env)
+                            .lookup_var_key(cached_symbol!("obarray"), env)
                             .filter(|value| !value.is_nil())
                     });
+                // lread.c:Fintern_soft: check_obarray before NAME is looked
+                // at.
+                let obarray = match obarray {
+                    Some(obarray) => {
+                        let coerced =
+                            crate::lisp::primitives::completion::coerce_legacy_vector_obarray(
+                                interp, &obarray,
+                            )?;
+                        let standard = matches!(coerced.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id));
+                        if !standard
+                            && !crate::lisp::primitives::completion::is_obarray_like_value(
+                                interp, &coerced,
+                            )
+                        {
+                            return Err(wrong_type_argument("obarrayp", obarray));
+                        }
+                        Some(coerced)
+                    }
+                    None => None,
+                };
                 if let Some(symbol) = standard_oblookup(interp, args) {
                     return Ok(Value::Symbol(symbol));
                 }
@@ -821,7 +843,7 @@ define_dispatch!(
                     .cloned()
                     .or_else(|| {
                         interp
-                            .lookup_var("obarray", env)
+                            .lookup_var_key(cached_symbol!("obarray"), env)
                             .filter(|value| !value.is_nil())
                     });
                 match obarray {
@@ -849,7 +871,7 @@ define_dispatch!(
                 }
                 // eval.c:Fautoload: CHECK_SYMBOL, CHECK_STRING, then
                 // Fdefalias of the stub, which holds FILE itself.
-                let function = checked_symbol_name(interp, &args[0], env)?;
+                let function = checked_symbol_identity(interp, &args[0], env)?;
                 if !matches!(args[1].kind(), Kind::StringObject(_)) {
                     return Err(wrong_type_argument("stringp", args[1]));
                 }
@@ -860,7 +882,8 @@ define_dispatch!(
                 // (non-autoload) definition; subrs count as definitions, so the
                 // cl-loaddefs autoloads must not shadow emaxx's native cl-*
                 // primitives either.
-                let old_definition = interp.logical_function_binding(&function, &Env::new());
+                // XSYMBOL (function)->u.s.function, the symbol's own cell.
+                let old_definition = interp.raw_function_binding_symbol(&function, &Env::new());
                 if old_definition
                     .as_ref()
                     .is_some_and(|existing| autoload_parts(existing).is_none())
@@ -1025,7 +1048,7 @@ define_dispatch!(
                     ));
                 }
                 if interp
-                    .lookup_var("after-init-time", env)
+                    .lookup_var_key(cached_symbol!("after-init-time"), env)
                     .is_none_or(|value| value.is_nil())
                 {
                     return Err(LispError::Signal(
@@ -1570,7 +1593,7 @@ define_dispatch!(
                     .get(1)
                     .filter(|value| !value.is_nil())
                     .cloned()
-                    .or_else(|| interp.lookup_var("obarray", env))
+                    .or_else(|| interp.lookup_var_key(cached_symbol!("obarray"), env))
                     .unwrap_or(Value::Nil);
                 let obarray = coerce_legacy_vector_obarray(interp, &obarray)?;
                 // The standard obarray: walk the shared enumeration in place
@@ -1746,10 +1769,10 @@ fn doc_path(directory: &Value, filename: &Value) -> Result<PathBuf, LispError> {
 
 fn standard_doc_path(interp: &Interpreter, env: &Env) -> Result<PathBuf, LispError> {
     let directory = interp
-        .lookup_var("doc-directory", env)
+        .lookup_var_key(cached_symbol!("doc-directory"), env)
         .unwrap_or(Value::Nil);
     let filename = interp
-        .lookup_var("internal-doc-file-name", env)
+        .lookup_var_key(cached_symbol!("internal-doc-file-name"), env)
         .unwrap_or(Value::Nil);
     doc_path(&directory, &filename)
 }
@@ -1874,10 +1897,10 @@ fn doc_reference_parts(
     let (filename, directory, position) = if let Kind::Integer(position) = value.kind() {
         (
             interp
-                .lookup_var("internal-doc-file-name", env)
+                .lookup_var_key(cached_symbol!("internal-doc-file-name"), env)
                 .unwrap_or(Value::Nil),
             interp
-                .lookup_var("doc-directory", env)
+                .lookup_var_key(cached_symbol!("doc-directory"), env)
                 .unwrap_or(Value::Nil),
             position,
         )
@@ -1891,7 +1914,7 @@ fn doc_reference_parts(
         (
             filename,
             interp
-                .lookup_var("lisp-directory", env)
+                .lookup_var_key(cached_symbol!("lisp-directory"), env)
                 .unwrap_or(Value::Nil),
             position,
         )
@@ -2026,7 +2049,7 @@ fn snarf_documentation(
         return Err(wrong_type_argument("stringp", *filename));
     }
     let directory = interp
-        .lookup_var("doc-directory", env)
+        .lookup_var_key(cached_symbol!("doc-directory"), env)
         .unwrap_or(Value::Nil);
     // doc.c names the file by appending FILENAME to `doc-directory'.
     let directory = string_like(&directory)
@@ -2036,11 +2059,11 @@ fn snarf_documentation(
     // doc.c: `build-files' is nil until the first snarf, which conses it
     // from buildobj.h before opening the file.
     let build_files_unset = interp
-        .lookup_var("build-files", env)
+        .lookup_var_key(cached_symbol!("build-files"), env)
         .is_none_or(|value| value.is_nil());
     if build_files_unset && let Some(names) = crate::lisp::primitives::gnu_build_files() {
-        interp.set_variable(
-            "build-files",
+        interp.set_variable_key(
+            cached_symbol!("build-files"),
             Value::list(names.iter().map(|name| Value::String((*name).into()))),
             env,
         );
@@ -2053,12 +2076,12 @@ fn snarf_documentation(
         )
     })?;
     let entries = parse_doc_file_entries(&bytes)?;
-    interp.set_variable("internal-doc-file-name", *filename, env);
+    interp.set_variable_key(cached_symbol!("internal-doc-file-name"), *filename, env);
     if build_files_unset && crate::lisp::primitives::gnu_build_files().is_none() {
         // No oracle's buildobj.h is recorded for this platform: DOC's S
         // records, which name every file make-docfile read, stand in.
-        interp.set_variable(
-            "build-files",
+        interp.set_variable_key(
+            cached_symbol!("build-files"),
             Value::list(
                 entries
                     .iter()
@@ -2069,7 +2092,7 @@ fn snarf_documentation(
         );
     }
     let delayed = interp
-        .lookup_var("custom-delayed-init-variables", env)
+        .lookup_var_key(cached_symbol!("custom-delayed-init-variables"), env)
         .and_then(|value| value.to_vec().ok())
         .unwrap_or_default();
     for entry in entries {
@@ -2217,7 +2240,7 @@ fn documentation(
     // The native reading below serves only the bootstrap window before
     // simple.el defines the generic.
     let generic_available = interp
-        .lookup_function("function-documentation", env)
+        .lookup_function_key(cached_symbol!("function-documentation"), env)
         .is_ok();
     let module_function = matches!(function.kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::ModuleFunction));
     let mut doc = if generic_available

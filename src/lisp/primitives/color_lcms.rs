@@ -84,10 +84,12 @@ define_dispatch!(
         match name {
             "lcms-cie-de2000" => {
                 need_arg_range(name, args, 2, 5)?;
-                let left = parse_lcms_lab_list(&args[0])
-                    .ok_or_else(|| LispError::Signal("Invalid color".into()))?;
-                let right = parse_lcms_lab_list(&args[1])
-                    .ok_or_else(|| LispError::Signal("Invalid color".into()))?;
+                let left = parse_lcms_lab_list(&args[0]).ok_or_else(|| {
+                    crate::lisp::primitives::values::signal_error("Invalid color", args[0])
+                })?;
+                let right = parse_lcms_lab_list(&args[1]).ok_or_else(|| {
+                    crate::lisp::primitives::values::signal_error("Invalid color", args[0])
+                })?;
                 let k_l = optional_lcms_number_arg(args.get(2))?;
                 let k_c = optional_lcms_number_arg(args.get(3))?;
                 let k_h = optional_lcms_number_arg(args.get(4))?;
@@ -95,38 +97,44 @@ define_dispatch!(
             }
             "lcms-xyz->jch" => {
                 need_arg_range(name, args, 1, 3)?;
-                let xyz = parse_lcms_xyz_list(&args[0])
-                    .ok_or_else(|| LispError::Signal("Invalid color".into()))?;
+                let xyz = parse_lcms_xyz_list(&args[0]).ok_or_else(|| {
+                    crate::lisp::primitives::values::signal_error("Invalid color", args[0])
+                })?;
                 let (mut model, _) = lcms_cam02_model(args.get(1), args.get(2))?;
                 Ok(lcms_jch_value(model.forward(&xyz)))
             }
             "lcms-jch->xyz" => {
                 need_arg_range(name, args, 1, 3)?;
-                let jch = parse_lcms_jch_list(&args[0])
-                    .ok_or_else(|| LispError::Signal("Invalid color".into()))?;
+                let jch = parse_lcms_jch_list(&args[0]).ok_or_else(|| {
+                    crate::lisp::primitives::values::signal_error("Invalid color", args[0])
+                })?;
                 let (mut model, _) = lcms_cam02_model(args.get(1), args.get(2))?;
                 Ok(lcms_scaled_xyz_value(model.reverse(&jch)))
             }
             "lcms-jch->jab" => {
                 need_arg_range(name, args, 1, 3)?;
-                let jch = parse_lcms_jch_list(&args[0])
-                    .ok_or_else(|| LispError::Signal("Invalid color".into()))?;
+                let jch = parse_lcms_jch_list(&args[0]).ok_or_else(|| {
+                    crate::lisp::primitives::values::signal_error("Invalid color", args[0])
+                })?;
                 let (_, view) = lcms_cam02_model(args.get(1), args.get(2))?;
                 Ok(lcms_jab_value(lcms_jch_to_jab(jch, lcms_fl(view.La))))
             }
             "lcms-jab->jch" => {
                 need_arg_range(name, args, 1, 3)?;
-                let jab = parse_lcms_jab_list(&args[0])
-                    .ok_or_else(|| LispError::Signal("Invalid color".into()))?;
+                let jab = parse_lcms_jab_list(&args[0]).ok_or_else(|| {
+                    crate::lisp::primitives::values::signal_error("Invalid color", args[0])
+                })?;
                 let (_, view) = lcms_cam02_model(args.get(1), args.get(2))?;
                 Ok(lcms_jch_value(lcms_jab_to_jch(jab, lcms_fl(view.La))))
             }
             "lcms-cam02-ucs" => {
                 need_arg_range(name, args, 2, 4)?;
-                let left = parse_lcms_xyz_list(&args[0])
-                    .ok_or_else(|| LispError::Signal("Invalid color".into()))?;
-                let right = parse_lcms_xyz_list(&args[1])
-                    .ok_or_else(|| LispError::Signal("Invalid color".into()))?;
+                let left = parse_lcms_xyz_list(&args[0]).ok_or_else(|| {
+                    crate::lisp::primitives::values::signal_error("Invalid color", args[0])
+                })?;
+                let right = parse_lcms_xyz_list(&args[1]).ok_or_else(|| {
+                    crate::lisp::primitives::values::signal_error("Invalid color", args[1])
+                })?;
                 let (mut model, view) = lcms_cam02_model(args.get(2), args.get(3))?;
                 let fl = lcms_fl(view.La);
                 let left = lcms_jch_to_jab(model.forward(&left), fl);
@@ -138,9 +146,17 @@ define_dispatch!(
             "lcms2-available-p" => Ok(Value::T),
             "lcms-temp->white-point" => {
                 need_args(name, args, 1)?;
+                // lcms.c: CHECK_NUMBER, then signal_error naming it.
+                if !matches!(
+                    args[0].kind(),
+                    Kind::Integer(_) | Kind::Float(_) | Kind::BigInteger(_)
+                ) {
+                    return Err(wrong_type_argument("numberp", args[0]));
+                }
                 let temperature = args[0].as_float()?;
-                let white_point = lcms2::white_point_from_temp(temperature)
-                    .ok_or_else(|| LispError::Signal("Invalid temperature".into()))?;
+                let white_point = lcms2::white_point_from_temp(temperature).ok_or_else(|| {
+                    crate::lisp::primitives::values::signal_error("Invalid temperature", args[0])
+                })?;
                 Ok(lcms_white_point_value(lcms2::xyY2XYZ(&white_point)))
             }
         }

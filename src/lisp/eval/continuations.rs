@@ -497,7 +497,7 @@ mod tests {
             )
             .expect("collect all suspended machine stacks");
             assert_eq!(tables.map(|table_id| table_id.count()), roots);
-            interpreter.set_global_binding("symbols-with-pos-enabled", enabled);
+            interpreter.set_global_binding_key(cached_symbol!("symbols-with-pos-enabled"), enabled);
             let CoroutineResult::Return(completion) =
                 continuation.resume(interpreter.state.take().expect("state"))
             else {

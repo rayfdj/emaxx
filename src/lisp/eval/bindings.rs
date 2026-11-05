@@ -1049,6 +1049,15 @@ impl Interpreter {
         }
     }
 
+    /// `lookup_function' of the cached key's symbol.
+    pub(crate) fn lookup_function_key(
+        &self,
+        key: crate::lisp::types::symbols::SymbolKey,
+        env: &Env,
+    ) -> Result<Value, LispError> {
+        key.with(|symbol| self.lookup_function_symbol(symbol, env))
+    }
+
     pub fn lookup_function(&self, name: &str, env: &Env) -> Result<Value, LispError> {
         // Fast path: nearly every function cell holds the callable directly,
         // so don't pay for indirection-cycle bookkeeping until a symbol
@@ -1163,6 +1172,28 @@ impl Interpreter {
     /// observable.  The infallible wrapper remains for host-side state
     /// restoration paths, whose environments are constructed internally and
     /// therefore cannot contain malformed Lisp tails.
+    /// `set_variable' of the cached key's symbol (Fset of Qname from C,
+    /// a lexical binding of it first).
+    pub(crate) fn set_variable_key(
+        &mut self,
+        key: crate::lisp::types::symbols::SymbolKey,
+        value: Value,
+        env: &mut Env,
+    ) {
+        let symbol = key.symbol();
+        let result = self
+            .set_lexical_variable_checked_symbol(&symbol, value, env)
+            .map(|lexical| {
+                if !lexical {
+                    // `set_symbol_value_cell's resolution: a cycle stores
+                    // into the symbol itself.
+                    let resolved = self.resolve_variable_symbol(&symbol).unwrap_or(symbol);
+                    self.set_symbol_value_cell_resolved(&resolved, value);
+                }
+            });
+        debug_assert!(result.is_ok(), "host environment must be well formed");
+    }
+
     pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
         let result = self.set_variable_checked(name, value, env);
         debug_assert!(result.is_ok(), "host environment must be well formed");
@@ -1359,7 +1390,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         self.validate_function_binding_symbol(symbol, &definition)?;
         let installs_trampolines = self
-            .lookup_var("native-comp-enable-subr-trampolines", env)
+            .lookup_var_key(cached_symbol!("native-comp-enable-subr-trampolines"), env)
             .is_some_and(|value| value.is_truthy());
         let replaces_primitive = matches!(
             self.raw_function_binding_symbol(symbol, &Env::new())
@@ -1373,7 +1404,7 @@ impl Interpreter {
             // during that phase; the live image has both the true flag and
             // the installer.  Requiring both reproduces those two phases
             // without moving comp-run.el policy into Rust.
-            && let Ok(installer) = self.lookup_function("comp-subr-trampoline-install", env)
+            && let Ok(installer) = self.lookup_function_key(cached_symbol!("comp-subr-trampoline-install"), env)
         {
             self.call_function_value(
                 installer,

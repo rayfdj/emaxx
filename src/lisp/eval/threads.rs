@@ -647,7 +647,7 @@ impl Interpreter {
             buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|buffer| buffer.point_max()));
         self.set_marker(mark_marker_id, initial_position, buffer_id)?;
         let (decoding, encoding) = self
-            .lookup_var("default-process-coding-system", &Env::new())
+            .lookup_var_key(cached_symbol!("default-process-coding-system"), &Env::new())
             .and_then(|value| value.cons_values())
             .unwrap_or((Value::Nil, Value::Nil));
         let os_pid = runtime.as_ref().map(|runtime| runtime.child.id());
@@ -1400,7 +1400,7 @@ impl Interpreter {
     /// sentinel hears of it.
     pub fn close_connection_stream(&mut self, record_id: u64) {
         let remove = self
-            .lookup_var("delete-exited-processes", &Env::new())
+            .lookup_var_key(cached_symbol!("delete-exited-processes"), &Env::new())
             .is_none_or(|value| value.is_truthy());
         if let Some(process) = self.find_process_state_mut(record_id) {
             process.gnutls.session = None;
@@ -3044,7 +3044,7 @@ impl Interpreter {
     /// FILE-NAME, so callers validate the aspects first and only then look
     /// at the other arguments.
     #[cfg(target_os = "linux")]
-    pub(crate) fn validate_inotify_aspects(&self, flags: &[String]) -> Result<(), LispError> {
+    pub(crate) fn validate_inotify_aspects(&self, flags: &[Value]) -> Result<(), LispError> {
         inotify_mask_from_flags(flags).map(|_| ())
     }
 
@@ -3064,7 +3064,7 @@ impl Interpreter {
         &mut self,
         path: String,
         encoded: Vec<u8>,
-        flags: Vec<String>,
+        flags: Vec<Value>,
         callback: Value,
     ) -> Result<Value, LispError> {
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -3156,7 +3156,11 @@ impl Interpreter {
             FileNotifyWatch {
                 descriptor,
                 path: Some(path),
-                flags,
+                // The aspects the mask accepted, each a known symbol.
+                flags: flags
+                    .iter()
+                    .filter_map(|flag| flag.symbol_str().map(str::to_owned))
+                    .collect(),
                 callback,
                 active: true,
                 backend: FileNotifyBackend::Inotify,
@@ -3793,7 +3797,7 @@ impl Interpreter {
                     // `timer-event-handler' demotes timer errors to a message
                     // unless `debug-on-error' asks for the debugger.
                     if self
-                        .lookup_var("debug-on-error", env)
+                        .lookup_var_key(cached_symbol!("debug-on-error"), env)
                         .is_some_and(|value| value.is_truthy())
                     {
                         self.restore_unfired_timer_batch(pending);
@@ -4686,44 +4690,51 @@ fn file_notify_backend_flag(action: &str) -> &str {
 }
 
 #[cfg(target_os = "linux")]
-fn inotify_mask_from_flags(flags: &[String]) -> Result<u32, LispError> {
+/// inotify.c:aspect_to_inotifymask of each aspect symbol in FLAGS, by
+/// EQ: an unknown one is the datum of the error, as symbol_to_inotifymask
+/// reports it.
+fn inotify_mask_from_flags(flags: &[Value]) -> Result<u32, LispError> {
+    const ASPECTS: &[(&str, u32)] = &[
+        ("access", libc::IN_ACCESS),
+        ("attrib", libc::IN_ATTRIB),
+        ("close-write", libc::IN_CLOSE_WRITE),
+        ("close-nowrite", libc::IN_CLOSE_NOWRITE),
+        ("create", libc::IN_CREATE),
+        ("delete", libc::IN_DELETE),
+        ("delete-self", libc::IN_DELETE_SELF),
+        ("modify", libc::IN_MODIFY),
+        ("move-self", libc::IN_MOVE_SELF),
+        ("moved-from", libc::IN_MOVED_FROM),
+        ("moved-to", libc::IN_MOVED_TO),
+        ("open", libc::IN_OPEN),
+        ("move", libc::IN_MOVED_FROM | libc::IN_MOVED_TO),
+        ("close", libc::IN_CLOSE_WRITE | libc::IN_CLOSE_NOWRITE),
+        ("dont-follow", libc::IN_DONT_FOLLOW),
+        ("onlydir", libc::IN_ONLYDIR),
+        ("ignored", libc::IN_IGNORED),
+        ("unmount", libc::IN_UNMOUNT),
+        ("all-events", libc::IN_ALL_EVENTS),
+    ];
     let mut mask = 0_u32;
     for flag in flags {
-        mask |= match flag.as_str() {
-            "access" => libc::IN_ACCESS,
-            "attrib" => libc::IN_ATTRIB,
-            "close-write" => libc::IN_CLOSE_WRITE,
-            "close-nowrite" => libc::IN_CLOSE_NOWRITE,
-            "create" => libc::IN_CREATE,
-            "delete" => libc::IN_DELETE,
-            "delete-self" => libc::IN_DELETE_SELF,
-            "modify" => libc::IN_MODIFY,
-            "move-self" => libc::IN_MOVE_SELF,
-            "moved-from" => libc::IN_MOVED_FROM,
-            "moved-to" => libc::IN_MOVED_TO,
-            "open" => libc::IN_OPEN,
-            "move" => libc::IN_MOVED_FROM | libc::IN_MOVED_TO,
-            "close" => libc::IN_CLOSE_WRITE | libc::IN_CLOSE_NOWRITE,
-            "dont-follow" => libc::IN_DONT_FOLLOW,
-            "onlydir" => libc::IN_ONLYDIR,
-            "ignored" => libc::IN_IGNORED,
-            "unmount" => libc::IN_UNMOUNT,
-            "t" | "all-events" => libc::IN_ALL_EVENTS,
-            _ => {
-                let aspect = if flag == "nil" {
-                    Value::Nil
-                } else {
-                    Value::Symbol(flag.clone().into())
-                };
-                // symbol_to_inotifymask sets errno to EINVAL before
-                // report_file_notify_error renders it into the data.
-                return Err(primitives::file_notify_error_with_errno(
-                    "Unknown aspect",
-                    &std::io::Error::from_raw_os_error(libc::EINVAL),
-                    aspect,
-                ));
-            }
+        let bits = match flag.kind() {
+            Kind::T => Some(libc::IN_ALL_EVENTS),
+            Kind::Symbol(symbol) => ASPECTS
+                .iter()
+                .find(|(name, _)| symbol.is_named(name))
+                .map(|(_, bits)| *bits),
+            _ => None,
         };
+        let Some(bits) = bits else {
+            // symbol_to_inotifymask sets errno to EINVAL before
+            // report_file_notify_error renders it into the data.
+            return Err(primitives::file_notify_error_with_errno(
+                "Unknown aspect",
+                &std::io::Error::from_raw_os_error(libc::EINVAL),
+                *flag,
+            ));
+        };
+        mask |= bits;
     }
     Ok(mask)
 }

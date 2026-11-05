@@ -22,6 +22,17 @@ const EVENT_CLICK_BIT: i64 = 1 << 3;
 const EVENT_DOUBLE_BIT: i64 = 1 << 4;
 const EVENT_TRIPLE_BIT: i64 = 1 << 5;
 
+/// keyboard.c:parse_solitary_modifier: the modifier SYMBOL's name
+/// (SYMBOL_NAME, whatever obarray it is in) spells, 0 for none or for
+/// what is no symbol.
+pub(crate) fn solitary_modifier_of(symbol: &Value) -> i64 {
+    match symbol.kind() {
+        Kind::Nil | Kind::T => 0,
+        Kind::Symbol(symbol) => solitary_event_modifier(&symbol.name_text()),
+        _ => 0,
+    }
+}
+
 pub(crate) fn solitary_event_modifier(name: &str) -> i64 {
     match name {
         "A" | "alt" => KEY_DESCRIPTION_ALT_BIT,
@@ -121,11 +132,7 @@ pub(crate) fn event_convert_list_value(
         let element = cell.car.get();
         let rest = cell.cdr.get();
         let modifier = if rest.is_cons() {
-            element
-                .as_symbol()
-                .ok()
-                .map(solitary_event_modifier)
-                .unwrap_or(0)
+            solitary_modifier_of(&element)
         } else {
             0
         };
@@ -250,7 +257,13 @@ pub(crate) fn parse_event_symbol_modifiers(
     value: &Value,
 ) -> Result<Value, LispError> {
     use crate::lisp::primitives::keymap::{symbol_get, symbol_put};
-    let symbol = value.as_symbol()?;
+    // parse_modifiers reads SYMBOL_NAME, whatever obarray SYMBOL is in.
+    value.as_symbol()?;
+    let name = match value.kind() {
+        Kind::Symbol(symbol) => symbol.name_text(),
+        _ => value.as_symbol()?.to_owned(),
+    };
+    let symbol = name.as_str();
     let element_mask_key = cached_symbol!("event-symbol-element-mask");
     let elements_key = cached_symbol!("event-symbol-elements");
     if symbol_get(interp, *value, element_mask_key)

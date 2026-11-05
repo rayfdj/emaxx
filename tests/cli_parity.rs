@@ -2005,6 +2005,205 @@ fn uninterned_symbols_keep_their_roles_by_object() {
 }
 
 #[test]
+fn primitives_check_and_name_their_arguments_as_gnu_does() {
+    // A feature, an algorithm and a backtrace base named by an uninterned
+    // symbol, and the argument checks of primitives given a symbol where
+    // GNU expects a number, an obarray, an array or a proper list: what
+    // GNU reads (SYMBOL_NAME, EQ, CHECK_FIXNUM, check_obarray first) and
+    // what it signals, in its order.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(let ((f (make-symbol "cl-lib"))) (prin1 (condition-case e (require f) (error (list (car e) (and (string-match-p "failed to provide feature .cl-lib.\\'" (cadr e)) t)))))) (terpri)
+(let ((f (make-symbol "zfeat"))) (provide f) (prin1 (list (featurep f) (featurep 'zfeat) (eq (car features) f)))) (terpri)
+(prin1 (list (condition-case e (secure-hash (make-symbol "md5") "a") (error e)) (condition-case e (secure-hash 'sha3-256 "a") (error e)) (secure-hash 'sha224 "a"))) (terpri)
+(prin1 (list (markerp (copy-marker)) (marker-position (copy-marker)) (marker-insertion-type (copy-marker nil t)))) (terpri)
+(prin1 (list (condition-case e (bidi-resolved-levels 'x) (error e)) (condition-case e (bidi-resolved-levels 1.0) (error e)))) (terpri)
+(prin1 (list (condition-case e (lookup-image-map '((x)) 'a 1) (error e)) (lookup-image-map nil 'a 'b))) (terpri)
+(prin1 (list (condition-case e (intern-soft 5 'not-an-obarray) (error e)) (condition-case e (intern-soft 5) (error e)))) (terpri)
+(prin1 (list (with-temp-buffer (insert "abc") (put-text-property 1 2 'display '((height 2) (raise 1))) (list (get-display-property 1 'raise) (get-display-property 1 'height) (get-display-property 1 'x)))
+             (get-display-property 0 'raise (propertize "a" 'display [(raise 3)]))
+             (get-display-property 0 'raise nil '(raise 4))
+             (get-display-property 0 'raise nil '((raise 5) . 7))
+             (condition-case e (get-display-property 'a 'raise) (error e))
+             (condition-case e (get-display-property 1 'raise 'not-a-buffer) (error e))
+             (condition-case e (get-display-property 1 'raise nil 5) (error e)))) (terpri)
+(prin1 (condition-case e (make-terminal-frame '(a . b)) (error e))) (terpri)
+(prin1 (list (mapbacktrace (make-symbol "zcb") (cons (make-symbol "x") "y")) (backtrace-frame--internal (make-symbol "zcb") 0 (make-symbol "none")))) (terpri)
+(prin1 (list (condition-case e (pos-visible-in-window-p 'x) (error e)) (pos-visible-in-window-p) (pos-visible-in-window-p t))) (terpri)
+(prin1 (with-temp-buffer (condition-case e (serial-process-configure) (error e)))) (terpri)
+(prin1 (let ((current-load-list nil)) (provide 'zfeat2) (provide 'zfeat2) current-load-list)) (terpri)
+(let ((last-kbd-macro '(1 2))) (prin1 (condition-case e (start-kbd-macro t) (error e)))) (terpri))"#,
+        ],
+    );
+}
+
+#[test]
+fn coding_systems_are_found_by_their_symbols() {
+    // Vcoding_system_hash_table is an `eq' table: an uninterned alias is
+    // a coding system, the interned symbol of its name is none, and the
+    // alias's subsidiaries are interned from its name.  Then the argument
+    // checks of primitives a fuzz of uninterned arguments found apart.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(let ((u (make-symbol "zutf")))
+  (define-coding-system-alias u 'utf-8)
+  (prin1 (list (coding-system-p u) (coding-system-p 'zutf) (encode-coding-string "é" u) (decode-coding-string "\303\251" u)
+               (check-coding-system u) (coding-system-base u) (coding-system-eol-type u) (coding-system-type u)
+               (coding-system-get u :mime-charset) (memq u (coding-system-aliases 'utf-8)) (car (coding-system-aliases u))
+               (coding-system-p 'zutf-unix) (coding-system-base 'zutf-unix) (and (memq u coding-system-list) t) (assoc "zutf" coding-system-alist)
+               (coding-system-change-eol-conversion u 'dos) (with-temp-buffer (set-buffer-file-coding-system u) buffer-file-coding-system)))
+  (terpri))
+(let ((u (make-symbol "zlat")))
+  (define-coding-system-alias u 'latin-1-unix)
+  (prin1 (list (encode-coding-string "é" u) (coding-system-eol-type u) (coding-system-get u :charset-list))) (terpri))
+(let ((u (make-symbol "utf-8")))
+  (prin1 (list (coding-system-p u) (condition-case e (check-coding-system u) (error e)) (condition-case e (encode-coding-string "a" u) (error e)))) (terpri))
+(prin1 (list (condition-case e (describe-vector 'x) (error e))
+             (condition-case e (local-variable-p [x] 'not-a-buffer) (error e))
+             (condition-case e (menu-bar-menu-at-x-y 0 0 'not-a-frame) (error e))
+             (condition-case e (set-input-meta-mode t 'not-a-terminal) (error e))
+             (condition-case e (set-output-flow-control t 'not-a-terminal) (error e))
+             (condition-case e (tab-bar-height 'x) (error e))
+             (condition-case e (tool-bar-height 5) (error e))
+             (condition-case e (lcms-cie-de2000 'a '(1 2 3)) (error e))
+             (condition-case e (lcms-cie-de2000 '(1 2 3) 'b) (error e))
+             (condition-case e (lcms-cam02-ucs '(1 2 3) 'b) (error e))
+             (condition-case e (lcms-xyz->jch '(1 . 2)) (error e))
+             (condition-case e (lcms-temp->white-point 'x) (error e))
+             (condition-case e (lcms-temp->white-point 100) (error e))
+             (let ((f (make-symbol "zauto")))
+               (autoload f "zz-nonexistent-file")
+               (list (autoloadp (symbol-function f)) (condition-case e (funcall f) (error (car e)))))))
+(terpri))"#,
+        ],
+    );
+}
+
+#[test]
+fn symbols_are_read_by_name_or_identity_as_gnu_reads_them() {
+    // keyboard.c's parse_solitary_modifier and parse_modifiers read a
+    // symbol's SYMBOL_NAME, so an uninterned `control' is a modifier;
+    // Fget_buffer_create's CHECK_STRING names what make-process and
+    // call-process were given; the variables read through cached
+    // symbols are the ones GNU reads.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(dolist (f (list
+  (lambda () (event-convert-list (list (make-symbol "control") 'a)))
+  (lambda () (event-convert-list (list (make-symbol "meta") (make-symbol "shift") ?x)))
+  (lambda () (event-convert-list (list 'control (make-symbol "a"))))
+  (lambda () (internal-event-symbol-parse-modifiers (make-symbol "s-H-x")))
+  (lambda () (event-modifiers (make-symbol "C-M-down-mouse-1")))
+  (lambda () (event-basic-type (make-symbol "C-f1")))
+  (lambda () (let ((where-is-preferred-modifier (make-symbol "meta"))) (where-is-internal 'forward-char nil t)))
+  (lambda () (make-process :name "x" :command '("true") :buffer 'foo))
+  (lambda () (make-process :name "x" :command '("true") :stderr 'foo))
+  (lambda () (make-process :name "x" :command '("true") :stderr 5))
+  (lambda () (make-pipe-process :name "p" :buffer 5))
+  (lambda () (call-process "true" nil 'foo))
+  (lambda () (with-temp-buffer (setq-local display-line-numbers t) (list display-line-numbers (buffer-local-value 'display-line-numbers (current-buffer)))))
+  (lambda () (let ((undo-limit 10) (undo-strong-limit 20)) (with-temp-buffer (buffer-enable-undo) (insert "abc") (undo-boundary) (length buffer-undo-list))))
+  (lambda () (format-mode-line "%Z" nil nil (current-buffer)))
+  (lambda () (let ((eol-mnemonic-unix "U")) (format-mode-line "%Z")))
+  (lambda () (coding-system-eol-type 'utf-8-dos))
+  (lambda () (coding-system-eol-type 'latin-1-mac))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"#,
+        ],
+    );
+}
+
+#[test]
+fn cached_symbol_keys_name_symbols_gnu_has_interned() {
+    // Every cached key's symbol is interned when an editor is constructed,
+    // as lisp.h's lispsym are: each must name a symbol GNU's own startup
+    // has interned, or `intern-soft' would find one GNU does not have.
+    let source = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lisp/types/symbols.rs"),
+    )
+    .unwrap();
+    let start = source.find("const KEY_NAMES: &[&str] = &[").unwrap();
+    let end = start + source[start..].find("];").unwrap();
+    let names: Vec<&str> = source[start..end].split('"').skip(1).step_by(2).collect();
+    assert!(names.len() > 300, "{} key names", names.len());
+    let program = format!(
+        "(dolist (n '({})) (unless (intern-soft n) (princ (format \"%s \" n))))",
+        names
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let corpus = Corpus::new();
+    assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
+}
+
+#[test]
+fn frame_parameters_and_frame_state_follow_frame_c_and_dispnew_c() {
+    // frame.c:Fframe_parameter reads a stored parameter without building
+    // Fframe_parameters' alist, and matches by EQ; dispnew.c's
+    // Fframe_or_buffer_changed_p records every frame's name and sizes its
+    // vector by all live buffers; its variable is any symbol.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defvar fbv nil)
+(prin1 (list (frame-or-buffer-changed-p 'fbv) (length fbv) (aref fbv 1) (eq (aref fbv 0) (selected-frame)) (frame-or-buffer-changed-p 'fbv)
+             (progn (get-buffer-create "x") (frame-or-buffer-changed-p 'fbv)) (length fbv)
+             (progn (get-buffer-create " hidden") (frame-or-buffer-changed-p 'fbv)) (length fbv)
+             (progn (with-current-buffer "x" (set-buffer-modified-p t)) (frame-or-buffer-changed-p 'fbv))
+             (frame-or-buffer-changed-p 'fbv)
+             (progn (with-current-buffer "x" (setq buffer-read-only t)) (frame-or-buffer-changed-p 'fbv))
+             (frame-or-buffer-changed-p 'fbv)
+             (let ((s (make-symbol "fbw"))) (set s 7) (list (frame-or-buffer-changed-p s) (length (symbol-value s)) (frame-or-buffer-changed-p s)))
+             (condition-case e (frame-or-buffer-changed-p 'unbound-fbv) (error e))
+             (condition-case e (frame-or-buffer-changed-p 3) (error e))
+             (let ((old fbv)) (setq fbv (make-vector 200 'lambda)) (list (frame-or-buffer-changed-p 'fbv) (eq old fbv) (length fbv)))))
+(terpri)
+(prin1 (list (frame-parameter nil (make-symbol "name"))
+             (progn (modify-frame-parameters nil (list (cons (make-symbol "name") "zz"))) (frame-parameter nil 'name))
+             (frame-parameter nil 'height) (frame-parameter nil 'width) (frame-parameter nil 'buffer-list)
+             (frame-parameter nil 'foreground-color) (frame-parameter nil 'background-color)
+             (frame-parameter nil 'font) (frame-parameter nil 'modeline) (frame-parameter nil 'unsplittable)
+             (frame-parameter nil 'menu-bar-lines) (frame-parameter nil 'tab-bar-lines) (frame-parameter nil 'nosuch)
+             (progn (modify-frame-parameters nil '((nosuch . 3))) (frame-parameter nil 'nosuch))
+             (frame-parameter nil 'line-spacing) (frame-parameter nil 'vertical-scroll-bars)
+             (let ((u (make-symbol "height"))) (modify-frame-parameters nil (list (cons u 9))) (list (frame-parameter nil u) (frame-parameter nil 'height)))
+             (let ((u (make-symbol "foreground-color"))) (modify-frame-parameters nil (list (cons u "red"))) (list (frame-parameter nil u) (frame-parameter nil 'foreground-color)))
+             (progn (modify-frame-parameters nil '((buffer-predicate . ignore))) (frame-parameter nil 'buffer-predicate))
+             (progn (modify-frame-parameters nil (list (cons (make-symbol "buffer-list") (list (current-buffer))))) (frame-parameter nil 'buffer-list))
+             (progn (modify-frame-parameters nil '((buffer-predicate . nil))) (frame-parameter nil 'buffer-predicate))
+             (frame-parameter nil 'display-type) (frame-parameter nil 'background-mode)
+             (condition-case e (frame-parameter nil "name") (error e))))
+(terpri))"#,
+        ],
+    );
+}
+
+#[test]
 fn generated_uninterned_symbol_programs_run_as_gnu_runs_them() {
     // 150 generated programs that give a fresh uninterned symbol one of 26
     // roles (function, variable, local variable, property owner, hash

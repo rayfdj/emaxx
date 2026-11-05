@@ -203,8 +203,10 @@ fn popup_place(interp: &mut Interpreter, position: &Value) -> PopupPlace {
         };
     }
     let bar = *position == Value::T
-        || matches!(head.symbol_str(), Some("menu-bar" | "tab-bar" | "tool-bar"))
-        || second.symbol_str() == Some("tab-bar");
+        || (head.is_key(cached_symbol!("menu-bar"))
+            || head.is_key(cached_symbol!("tab-bar"))
+            || head.is_key(cached_symbol!("tool-bar")))
+        || second.is_key(cached_symbol!("tab-bar"));
     let (mut x, mut y) = popup_position_xy(position).unwrap_or((0, 0));
     if bar {
         return PopupPlace {
@@ -232,13 +234,16 @@ fn popup_place(interp: &mut Interpreter, position: &Value) -> PopupPlace {
     };
     let area = posn_posn(&second);
     let last = interp
-        .lookup_var("last-nonmenu-event", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("last-nonmenu-event"),
+            &crate::lisp::types::Env::new(),
+        )
         .unwrap_or(Value::Nil);
     let kbd_navigation = !posn_posn(&last).eq_value(posn_posn(position))
         && matches!(area.kind(), Kind::Cons(_))
         && area
             .car()
-            .is_ok_and(|head| head.symbol_str() == Some("menu-bar"));
+            .is_ok_and(|head| head.is_key(cached_symbol!("menu-bar")));
     PopupPlace {
         x,
         y,
@@ -262,7 +267,7 @@ fn run_tty_pane(
     // for the whole activation, so ordinary key resolution answers the
     // tty-menu-* commands.
     let navigation = interp
-        .lookup_var("tty-menu-navigation-map", env)
+        .lookup_var_key(cached_symbol!("tty-menu-navigation-map"), env)
         .unwrap_or(Value::Nil);
     let restore = interp.bind_special_dynamic("overriding-terminal-local-map", navigation, env)?;
     let outcome = crate::lisp::primitives::run_tty_menu_executor(interp, env, pane, x0, y0);
@@ -433,6 +438,8 @@ define_dispatch!(
             "menu-bar-menu-at-x-y" => {
                 need_arg_range(name, args, 2, 3)?;
                 require_any_frame(args.get(2))?;
+                // menu.c reads X and Y with XFIXNUM unchecked, which crashes
+                // GNU on what is no fixnum; they are checked here instead.
                 require_fixnum(&args[0])?;
                 require_fixnum(&args[1])?;
                 let x = args[0].as_integer()?;
@@ -569,11 +576,11 @@ define_dispatch!(
                     // `display' parameter (gui_display_get_arg: PARMS, then
                     // `default-frame-alist'), checked as an X display.
                     let invocation_name = interp
-                        .lookup_var("invocation-name", env)
+                        .lookup_var_key(cached_symbol!("invocation-name"), env)
                         .unwrap_or(Value::Nil);
                     interp.set_c_variable("x-resource-name", invocation_name);
                     let defaults = interp
-                        .lookup_var("default-frame-alist", env)
+                        .lookup_var_key(cached_symbol!("default-frame-alist"), env)
                         .unwrap_or(Value::Nil);
                     let mut display = None;
                     for parameter in ["terminal", "display"] {
@@ -648,7 +655,9 @@ define_dispatch!(
                 // names, the selected window for t or a bar position.
                 let head = position.car().unwrap_or(Value::Nil);
                 let window = if position == Value::T
-                    || matches!(head.symbol_str(), Some("menu-bar" | "tab-bar" | "tool-bar"))
+                    || (head.is_key(cached_symbol!("menu-bar"))
+                        || head.is_key(cached_symbol!("tab-bar"))
+                        || head.is_key(cached_symbol!("tool-bar")))
                 {
                     interp.selected_window_value()
                 } else if let Kind::Cons(_) = position.kind() {

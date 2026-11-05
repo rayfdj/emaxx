@@ -95,7 +95,7 @@ fn loadsearch_regexps(interp: &mut Interpreter, env: &mut Env) -> Result<[Value;
         &[Value::string("\\`[[:ascii:]]+"), quoted_relative],
     )?;
     let source_directory = interp
-        .lookup_var("source-directory", env)
+        .lookup_var_key(cached_symbol!("source-directory"), env)
         .unwrap_or(Value::Nil);
     let dump_load_search = c_primitive(
         interp,
@@ -194,7 +194,7 @@ fn comp_el_to_eln_filename(
     let mut base_dir = args.get(1).cloned().filter(Value::is_truthy);
     if base_dir.is_none() {
         let load_path = interp
-            .lookup_var("native-comp-eln-load-path", env)
+            .lookup_var_key(cached_symbol!("native-comp-eln-load-path"), env)
             .unwrap_or(Value::Nil)
             .to_vec()?;
         for directory in load_path {
@@ -232,7 +232,7 @@ fn comp_el_to_eln_filename(
     };
     if !c_primitive(interp, env, "file-name-absolute-p", &[base_dir])?.is_truthy() {
         let invocation_directory = interp
-            .lookup_var("invocation-directory", env)
+            .lookup_var_key(cached_symbol!("invocation-directory"), env)
             .unwrap_or(Value::Nil);
         base_dir = c_primitive(
             interp,
@@ -250,11 +250,11 @@ fn comp_el_to_eln_filename(
         &[Value::string("LISP_PRELOADED"), Value::Nil],
     )?;
     let version_dir = interp
-        .lookup_var("comp-native-version-dir", env)
+        .lookup_var_key(cached_symbol!("comp-native-version-dir"), env)
         .unwrap_or(Value::Nil);
     base_dir = c_primitive(interp, env, "expand-file-name", &[version_dir, base_dir])?;
     let preloaded_p = interp
-        .lookup_var("comp-file-preloaded-p", env)
+        .lookup_var_key(cached_symbol!("comp-file-preloaded-p"), env)
         .is_some_and(|value| value.is_truthy());
     let preloaded = preloaded_p
         || (lisp_preloaded.is_truthy() && {
@@ -292,7 +292,7 @@ fn file_in_eln_sys_dir(
     filename: &Value,
 ) -> Result<bool, LispError> {
     let system_directory = interp
-        .lookup_var("native-comp-eln-load-path", env)
+        .lookup_var_key(cached_symbol!("native-comp-eln-load-path"), env)
         .unwrap_or(Value::Nil)
         .to_vec()?
         .pop()
@@ -337,7 +337,7 @@ pub(crate) fn native_elisp_load(
     let candidate_unit = Value::NativeCompUnit(candidate);
     interp.with_lisp_stack_roots(&candidate_unit, |interp| {
         let loaded_units = interp
-            .lookup_var("comp-loaded-comp-units-h", env)
+            .lookup_var_key(cached_symbol!("comp-loaded-comp-units-h"), env)
             .unwrap_or(Value::Nil);
         let loaded_before = c_primitive(
             interp,
@@ -489,7 +489,7 @@ define_dispatch!(
                 })?;
                 crate::lisp::native_comp::install_trampoline(interp, subroutine_index, trampoline)?;
                 let installed = interp
-                    .lookup_var("comp-installed-trampolines-h", env)
+                    .lookup_var_key(cached_symbol!("comp-installed-trampolines-h"), env)
                     .unwrap_or(Value::Nil);
                 crate::lisp::native_comp::call_c_primitive(
                     interp,

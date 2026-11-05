@@ -22,6 +22,10 @@ use crate::lisp::types::Kind;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "require_nesting",
+        "fns.c's staticpro'd require_nesting_list holds the features of the running `require' loads, none once the dump's own load ends; a session starts with none",
+    ),
+    (
         "lface_id_to_name",
         "xfaces.c:init_xfaces makes lface_id_to_name from face--new-frame-defaults, which the image carries, after a load",
     ),
@@ -435,7 +439,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "tty state set at terminal init",
     ),
     ("builtin_doc_offsets", "carried in the remembered scalars"),
-    ("require_nesting", "the running load"),
     (
         "will_dump_reported",
         "emacs.c's gflags, the running process's",
@@ -636,12 +639,12 @@ impl Interpreter {
         // each with its names in the table, and the attribute vectors
         // they share; what no name reaches any more is left out.
         {
-            let mut keys: Vec<(&String, usize)> = self
+            let mut keys: Vec<(SymbolName, usize)> = self
                 .coding_system_hash
                 .iter()
-                .map(|(name, spec)| (name, *spec))
+                .map(|(name, spec)| (*name, *spec))
                 .collect();
-            keys.sort();
+            keys.sort_by(|left, right| (left.0.as_str(), left.1).cmp(&(right.0.as_str(), right.1)));
             let mut specs: Vec<usize> = keys.iter().map(|(_, spec)| *spec).collect();
             specs.sort_unstable();
             specs.dedup();
@@ -656,7 +659,7 @@ impl Interpreter {
                 Value::list(attrs.iter().map(|attrs| {
                     let coding = &self.coding_attrs[*attrs];
                     Value::vector([
-                        Value::symbol(&coding.base),
+                        Value::Symbol(coding.base),
                         Value::Integer(coding.mnemonic),
                         Value::symbol(&coding.kind),
                         coding.ascii_compatible,
@@ -691,7 +694,7 @@ impl Interpreter {
                         Value::list(
                             keys.iter()
                                 .filter(|(_, spec)| spec == index)
-                                .map(|(name, _)| Value::symbol(name)),
+                                .map(|(name, _)| Value::Symbol(*name)),
                         ),
                     ])
                 })),
@@ -1121,7 +1124,9 @@ mod install {
                             return Err("coding system: fourteen fields expected".into());
                         }
                         self.coding_attrs.push(CodingSystemState {
-                            base: expect_symbol(&fields[0], "coding system base")?,
+                            base: fields[0].symbol_cell().ok_or_else(|| {
+                                "coding system base: a symbol expected".to_owned()
+                            })?,
                             mnemonic: expect_int(&fields[1], "mnemonic")?,
                             kind: expect_symbol(&fields[2], "coding system type")?,
                             ascii_compatible: fields[3],
@@ -1157,7 +1162,10 @@ mod install {
                             aliases: fields[1],
                             eol_type: fields[2],
                         });
-                        for name in symbol_names(&fields[3], "spec names")? {
+                        for name in expect_list(&fields[3], "spec names")? {
+                            let name = name
+                                .symbol_cell()
+                                .ok_or_else(|| "spec names: a symbol expected".to_owned())?;
                             self.coding_system_hash.insert(name, index);
                         }
                     }

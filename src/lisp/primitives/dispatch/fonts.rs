@@ -51,7 +51,7 @@ pub(super) fn composition_gstring_parts(
     }
     let font = header[0];
     if !font.is_nil()
-        && !matches!(font.kind(), Kind::Symbol(name) if interp.has_coding_system(name.as_str()))
+        && !matches!(font.kind(), Kind::Symbol(name) if interp.has_coding_system_symbol(&name))
         && font::font_kind(interp, &font) != Some(font::FontKind::Object)
     {
         return None;

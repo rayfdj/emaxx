@@ -198,7 +198,7 @@ impl Interpreter {
                 if let Kind::Cons(entry) = first.kind()
                     && entry.car.get() == Value::Integer(0)
                 {
-                    interp.set_global_binding("features", entry.cdr.get());
+                    interp.set_global_binding_key(cached_symbol!("features"), entry.cdr.get());
                 } else {
                     let history = crate::lisp::primitives::call(
                         interp,
@@ -224,7 +224,7 @@ impl Interpreter {
         if self.will_dump_reported {
             return None;
         }
-        self.lookup_var("dump-mode", env)
+        self.lookup_var_key(cached_symbol!("dump-mode"), env)
             .and_then(|mode| crate::lisp::primitives::string_like(&mode).map(|mode| mode.text))
             .filter(|mode| mode == "pdump" || mode == "pbootstrap")
     }
@@ -298,7 +298,9 @@ impl Interpreter {
         })?;
         if crate::lisp::primitives::values_equal(self, &function, &fundef)? {
             // The file `load-history' names last, as Frequire's message.
-            let loaded = self.lookup_var("load-history", env).unwrap_or(Value::Nil);
+            let loaded = self
+                .lookup_var_key(cached_symbol!("load-history"), env)
+                .unwrap_or(Value::Nil);
             let loaded = crate::lisp::primitives::call(self, "car", &[loaded], env)?;
             let loaded = crate::lisp::primitives::call(self, "car", &[loaded], env)?;
             let file = crate::lisp::primitives::string_like(&loaded)
@@ -384,7 +386,7 @@ impl Interpreter {
         };
         if result.is_ok() {
             let current = self
-                .lookup_var("current-load-list", &load_environment)
+                .lookup_var_key(cached_symbol!("current-load-list"), &load_environment)
                 .unwrap_or_else(|| Value::list([Value::string(history_filename)]));
             self.commit_entire_load_history(&Value::string(history_filename), current);
         }
@@ -403,9 +405,12 @@ impl Interpreter {
         crate::lisp::primitives::values::doprnt_quote_pair(self)
     }
 
+    /// fns.c:Frequire's `require_nesting_list' around LOAD: FEATURE (EQ)
+    /// may re-enter four active loads; the fifth signals, naming NAME.
     fn with_require_nesting<T>(
         &mut self,
-        feature: &str,
+        feature: SymbolName,
+        name: &str,
         quotes: (char, char),
         load: impl FnOnce(&mut Self) -> Result<T, LispError>,
     ) -> Result<T, LispError> {
@@ -416,21 +421,21 @@ impl Interpreter {
         let nesting = self
             .require_nesting
             .iter()
-            .filter(|nested| nested.as_str() == feature)
+            .filter(|nested| **nested == feature)
             .count();
         if nesting > 3 {
             // fns.c:3762 signals through `error' too, so this message is
             // requoted by the same rule as the one below.
             let (open, close) = quotes;
             return Err(LispError::Signal(format!(
-                "Recursive {open}require{close} for feature {open}{feature}{close}"
+                "Recursive {open}require{close} for feature {open}{name}{close}"
             )));
         }
 
-        self.require_nesting.push(feature.to_string());
+        self.require_nesting.push(feature);
         let result = load(self);
         let popped = self.require_nesting.pop();
-        debug_assert_eq!(popped.as_deref(), Some(feature));
+        debug_assert!(popped == Some(feature));
         result
     }
 
@@ -449,7 +454,9 @@ impl Interpreter {
         if self.has_feature_symbol(symbol) {
             return Ok(Value::Symbol(symbol));
         }
-        let feature = symbol.as_str();
+        // SDATA (SYMBOL_NAME (feature)): the name an uninterned feature
+        // shares with the interned one, which names the file too.
+        let feature = symbol.name_text();
         let (open, close) = self.effective_quote_pair();
         if self.will_dump_without_bootstrap(env) {
             self.will_dump_reported = true;
@@ -460,11 +467,11 @@ impl Interpreter {
         // Fload with NOERROR, which only excuses FILE's absence, and a
         // mandatory suffix when the feature's name is the file's.
         let (file, must_suffix) = if filename.is_nil() {
-            (Value::string(feature), Value::T)
+            (symbol.lisp_name(), Value::T)
         } else {
             (filename, Value::Nil)
         };
-        let loaded = self.with_require_nesting(feature, (open, close), |interp| {
+        let loaded = self.with_require_nesting(symbol, &feature, (open, close), |interp| {
             interp.load_with_autoload_queue([file, noerror, Value::T, Value::Nil, must_suffix], env)
         })?;
         if loaded.is_nil() {
@@ -480,7 +487,7 @@ impl Interpreter {
             // records last (the resolved path, not the feature), or
             // "Required feature ... was not provided" when there is none.
             let loaded_file = self
-                .lookup_var("load-history", env)
+                .lookup_var_key(cached_symbol!("load-history"), env)
                 .and_then(|history| history.car_if_list())
                 .and_then(|entry| entry.car_if_list())
                 .and_then(|file| crate::lisp::primitives::string_like(&file).map(|s| s.text));
@@ -997,7 +1004,7 @@ impl Interpreter {
     /// minibuffer it reuses (whose overlays it deletes first).
     pub(crate) fn reset_buffer(&mut self, buffer_id: u64) {
         let directory = self
-            .buffer_local_value(self.current_buffer_id, "default-directory")
+            .buffer_local_value_key(self.current_buffer_id, cached_symbol!("default-directory"))
             .unwrap_or(Value::Nil);
         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
             buffer.file = None;
@@ -1030,7 +1037,7 @@ impl Interpreter {
     /// becomes the current time.
     pub(crate) fn stamp_buffer_display(&mut self, buffer_id: u64) {
         let count = self
-            .buffer_local_value(buffer_id, "buffer-display-count")
+            .buffer_local_value_key(buffer_id, cached_symbol!("buffer-display-count"))
             .unwrap_or(Value::Nil);
         let count = match count.kind() {
             Kind::Integer(count) => Some(primitives::normalize_bigint_value(
@@ -1042,10 +1049,14 @@ impl Interpreter {
             _ => None,
         };
         if let Some(count) = count {
-            self.set_buffer_local_value(buffer_id, "buffer-display-count", count);
+            self.set_buffer_local_value_key(
+                buffer_id,
+                cached_symbol!("buffer-display-count"),
+                count,
+            );
         }
         if let Ok(now) = primitives::lisp_current_time(self) {
-            self.set_buffer_local_value(buffer_id, "buffer-display-time", now);
+            self.set_buffer_local_value_key(buffer_id, cached_symbol!("buffer-display-time"), now);
         }
     }
 
@@ -1158,21 +1169,22 @@ impl Interpreter {
 
     /// The selected frame's param_alist entry for the parameter named
     /// NAME, when it has one.
-    pub(crate) fn frame_parameter_override(&self, name: &str) -> Option<Value> {
+    /// Fassq (KEY, the selected frame's param_alist)'s value.
+    pub(crate) fn frame_parameter_override(
+        &self,
+        wanted: crate::lisp::types::symbols::SymbolKey,
+    ) -> Option<Value> {
         let mut tail = self.selected_frame_id.borrow().param_alist;
         while let Some((entry, rest)) = tail.cons_values() {
             if let Some((key, value)) = entry.cons_values()
-                && key.symbol_str() == Some(name)
+                && matches!(key.kind(), crate::lisp::types::Kind::Symbol(symbol)
+                    if wanted.with(|wanted| *wanted == symbol))
             {
                 return Some(value);
             }
             tail = rest;
         }
         None
-    }
-
-    pub(crate) fn frame_name_value(&self) -> Value {
-        self.selected_frame_id.name.get()
     }
 
     pub(crate) fn frame_and_buffer_state(&self) -> Value {
@@ -1727,10 +1739,10 @@ impl Interpreter {
                     if restore_killed_function {
                         let entry = kept(self, false);
                         kept_windows.push(entry);
-                    } else if restore_killed.symbol_str() == Some("delete")
+                    } else if restore_killed.is_key(cached_symbol!("delete"))
                         || (!dedicated.is_nil()
                             && (restore_killed.is_nil()
-                                || restore_killed.symbol_str() == Some("dedicated")))
+                                || restore_killed.is_key(cached_symbol!("dedicated"))))
                     {
                         dead_windows.push(*window);
                     }
@@ -1947,7 +1959,9 @@ impl Interpreter {
             return Ok(*id);
         }
         let mut env = crate::lisp::types::Env::new();
-        if let Ok(create) = self.lookup_function("get-scratch-buffer-create", &env) {
+        if let Ok(create) =
+            self.lookup_function_key(cached_symbol!("get-scratch-buffer-create"), &env)
+        {
             let scratch = self.safe_funcall(create, &[], &mut env)?;
             if let Kind::Buffer(scratch) = scratch.kind()
                 && let Some(id) = self.live_buffer_id(scratch)
@@ -1994,7 +2008,7 @@ impl Interpreter {
         }
         // A *scratch* made to replace the last buffer inherits its directory.
         let directory = self
-            .buffer_local_value(id, "default-directory")
+            .buffer_local_value_key(id, cached_symbol!("default-directory"))
             .unwrap_or(Value::Nil);
         // The always-local slots the bindings hold, and the mark's state,
         // as Fkill_buffer leaves them for a killed buffer's readers.
@@ -2705,8 +2719,8 @@ impl Interpreter {
 
     /// fns.c:Fprovide's update of `features': FEATURE is consed onto the
     /// front of the list unless `memq' finds it there already.
-    fn provide_feature(&mut self, feature: &str, env: &mut Env) -> Result<(), LispError> {
-        let symbol = Value::Symbol(feature.into());
+    fn provide_feature(&mut self, feature: SymbolName, env: &mut Env) -> Result<(), LispError> {
+        let symbol = Value::Symbol(feature);
         let features = self.global_value("features").unwrap_or(Value::Nil);
         // Fprovide records the list it replaces for un_autoload.
         if !self.autoload_queue.is_nil() {
@@ -2716,29 +2730,24 @@ impl Interpreter {
             );
         }
         if crate::lisp::primitives::call(self, "memq", &[symbol, features], env)?.is_nil() {
-            self.set_global_binding("features", Value::cons(symbol, features));
+            self.set_global_binding_key(cached_symbol!("features"), Value::cons(symbol, features));
         }
         Ok(())
     }
 
-    fn record_provide_in_load_history(&mut self, feature: &str) {
-        let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
-            return;
-        };
-        if current_load_list.is_nil() {
-            return;
-        }
-        let entry = Value::cons(
-            Value::Symbol("provide".into()),
-            Value::Symbol(feature.to_string().into()),
-        );
-        let entries = current_load_list.to_vec().unwrap_or_default();
-        if entries.iter().any(|item| item == &entry) {
-            return;
-        }
+    /// lisp.h:LOADHIST_ATTACH of (provide . FEATURE): consed onto
+    /// `current-load-list' each time, inside a load or not.
+    fn record_provide_in_load_history(&mut self, feature: SymbolName) {
+        let current_load_list = self
+            .symbol_value_key(cached_symbol!("current-load-list"))
+            .unwrap_or(Value::Nil);
+        let entry = Value::cons(Value::symbol("provide"), Value::Symbol(feature));
         // GNU LOADHIST_ATTACH conses onto the front: the source file name
         // stays the LAST element (`macroexp-file-name' reads it there).
-        self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
+        self.set_global_binding_key(
+            cached_symbol!("current-load-list"),
+            Value::cons(entry, current_load_list),
+        );
     }
 
     fn record_require_in_load_history(&mut self, feature: SymbolName) {
@@ -2829,7 +2838,7 @@ impl Interpreter {
         // redefinition the length of the file's list so far).
         let mut file = Value::Nil;
         let mut tail = self
-            .lookup_var("current-load-list", &Env::new())
+            .lookup_var_key(cached_symbol!("current-load-list"), &Env::new())
             .unwrap_or(Value::Nil);
         let mut seen = 0usize;
         while let Kind::Cons(cell) = tail.kind() {
@@ -2887,7 +2896,7 @@ impl Interpreter {
         }
 
         let mut history = self
-            .lookup_var("load-history", &Env::new())
+            .lookup_var_key(cached_symbol!("load-history"), &Env::new())
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default();
         history.retain(|existing| match existing.car() {
@@ -2895,18 +2904,19 @@ impl Interpreter {
             Err(_) => true,
         });
         history.insert(0, Value::list(entry));
-        self.set_global_binding("load-history", Value::list(history));
+        self.set_global_binding_key(cached_symbol!("load-history"), Value::list(history));
     }
 
+    /// fns.c:Fprovide of FEATURE with SUBFEATURES (a list).
     pub(crate) fn provide_feature_with_after_load(
         &mut self,
-        feature: &str,
+        feature: SymbolName,
         subfeatures: Value,
         env: &mut Env,
-    ) -> Result<Value, LispError> {
+    ) -> Result<(), LispError> {
         self.provide_feature(feature, env)?;
         if subfeatures.is_truthy() {
-            self.put_symbol_property(feature, "subfeatures", subfeatures);
+            self.put_symbol_property_on(&feature, "subfeatures", subfeatures);
         }
         self.record_provide_in_load_history(feature);
 
@@ -2916,12 +2926,12 @@ impl Interpreter {
         // owned by subr.el's real `eval-after-load'; the Rust host only
         // performs the C-owned lookup/invocation boundary.
         let after_load_alist = self
-            .lookup_var("after-load-alist", env)
+            .lookup_var_key(cached_symbol!("after-load-alist"), env)
             .unwrap_or(Value::Nil);
         let entry = crate::lisp::primitives::call(
             self,
             "assq",
-            &[Value::Symbol(feature.into()), after_load_alist],
+            &[Value::Symbol(feature), after_load_alist],
             env,
         )?;
         if let Some((_, functions)) = entry.cons_values() {
@@ -2932,7 +2942,7 @@ impl Interpreter {
                 env,
             )?;
         }
-        Ok(Value::Symbol(feature.to_string().into()))
+        Ok(())
     }
 
     /// Ffboundp of the interned symbol NAME: its function cell is not nil.
@@ -3447,7 +3457,7 @@ mod runtime_index_tests {
         let mut interp = Interpreter::new();
         interp.set_buffer_local_value(41, "first", Value::Integer(1));
         interp.set_buffer_local_value(42, "first", Value::Integer(20));
-        interp.set_buffer_local_value(41, "second", Value::Integer(2));
+        interp.set_buffer_local_value_key(41, cached_symbol!("second"), Value::Integer(2));
         interp.set_buffer_local_value(41, "first", Value::Integer(10));
 
         assert_eq!(

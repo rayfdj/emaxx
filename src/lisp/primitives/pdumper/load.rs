@@ -1090,7 +1090,7 @@ impl Loader<'_> {
                                 .map_err(|error| LoadError::Error(error.to_string()))
                         };
                         let minimum = integer(slots[1])? as i16;
-                        let maximum = if slots[2].symbol_str() == Some("many") {
+                        let maximum = if slots[2].is_key(cached_symbol!("many")) {
                             -2
                         } else {
                             integer(slots[2])? as i16

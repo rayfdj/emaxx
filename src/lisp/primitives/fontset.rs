@@ -381,7 +381,7 @@ fn script_ranges(
     env: &mut Env,
 ) -> Result<Vec<(u32, u32)>, LispError> {
     let table = interp
-        .lookup_var("char-script-table", env)
+        .lookup_var_key(cached_symbol!("char-script-table"), env)
         .unwrap_or(Value::Nil);
     let Kind::CharTable(table) = table.kind() else {
         return Ok(Vec::new());
@@ -515,7 +515,7 @@ pub(crate) fn set_fontset_font(
         _ => None,
     } {
         let table = interp
-            .lookup_var("char-script-table", env)
+            .lookup_var_key(cached_symbol!("char-script-table"), env)
             .unwrap_or(Value::Nil);
         let script_list = super::call(
             interp,
@@ -624,8 +624,8 @@ pub(crate) fn new_fontset(
             let aliases = interp
                 .symbol_value_symbol(&SymbolName::intern_str("fontset-alias-alist"))
                 .unwrap_or(Value::Nil);
-            interp.set_global_binding(
-                "fontset-alias-alist",
+            interp.set_global_binding_key(
+                cached_symbol!("fontset-alias-alist"),
                 Value::cons(Value::cons(name, short_name), aliases),
             );
             font::aset(

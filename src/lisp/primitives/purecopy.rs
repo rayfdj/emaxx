@@ -2,7 +2,8 @@ use super::*;
 use crate::lisp::types::Kind;
 
 fn purify_table(interp: &Interpreter, env: &Env) -> Option<crate::lisp::types::HashTableRef> {
-    let Kind::HashTable(id) = (interp.lookup_var("purify-flag", env)?).kind() else {
+    let Kind::HashTable(id) = (interp.lookup_var_key(cached_symbol!("purify-flag"), env)?).kind()
+    else {
         return None;
     };
     Some(id)
@@ -253,7 +254,9 @@ pub(crate) fn purecopy_value(
     value: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let purify = interp.lookup_var("purify-flag", env).unwrap_or(Value::Nil);
+    let purify = interp
+        .lookup_var_key(cached_symbol!("purify-flag"), env)
+        .unwrap_or(Value::Nil);
     if purify.is_nil() {
         return Ok(*value);
     }

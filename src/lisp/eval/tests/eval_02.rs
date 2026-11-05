@@ -1836,7 +1836,7 @@ fn byte_compile_file_uses_dynamic_log_buffer_across_helper_call() {
 fn bytecomp_tests_suppression_helper_matches_prefixless_defvar() {
     run_with_large_stack(|| {
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-        interp.set_global_binding("noninteractive", Value::T);
+        interp.set_global_binding_key(cached_symbol!("noninteractive"), Value::T);
         let path = upstream_emacs_repo().join("test/lisp/emacs-lisp/bytecomp-tests.el");
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
         assert_eq!(
@@ -1858,7 +1858,7 @@ fn bytecomp_tests_suppression_helper_matches_prefixless_defvar() {
 fn bytecomp_tests_suppression_case_passes_in_default_ert_run() {
     run_with_large_stack(|| {
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-        interp.set_global_binding("noninteractive", Value::T);
+        interp.set_global_binding_key(cached_symbol!("noninteractive"), Value::T);
         let path = upstream_emacs_repo().join("test/lisp/emacs-lisp/bytecomp-tests.el");
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
         let selector =
@@ -6699,7 +6699,10 @@ fn membership_checks_quit_after_the_same_traversals_as_gnu() {
             crate::lisp::primitives::call(&mut interp, name, &[Value::Integer(2), list], &mut env)
                 .expect("FOR_EACH_TAIL returns a second-element match before checking quit");
         assert_eq!(found.word(), list.cdr().expect("second cell").word());
-        assert_eq!(interp.lookup_var("quit-flag", &env), Some(Value::T));
+        assert_eq!(
+            interp.lookup_var_key(cached_symbol!("quit-flag"), &env),
+            Some(Value::T)
+        );
         let error =
             crate::lisp::primitives::call(&mut interp, name, &[Value::Integer(3), list], &mut env)
                 .expect_err("FOR_EACH_TAIL checks quit after advancing past the second cell");
@@ -6707,7 +6710,10 @@ fn membership_checks_quit_after_the_same_traversals_as_gnu() {
             crate::lisp::eval::error_condition_value(&error),
             Value::list([Value::symbol("quit")])
         );
-        assert_eq!(interp.lookup_var("quit-flag", &env), Some(Value::Nil));
+        assert_eq!(
+            interp.lookup_var_key(cached_symbol!("quit-flag"), &env),
+            Some(Value::Nil)
+        );
     }
 }
 
@@ -6794,13 +6800,13 @@ fn cl_defmacro_autoloads_and_expands_in_batch_runtime() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable(
-            "noninteractive",
+        interp.set_variable_key(
+            cached_symbol!("noninteractive"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );
-        interp.set_variable(
-            "command-line-args-left",
+        interp.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -7098,8 +7104,8 @@ fn selected_gnu_elc_never_falls_back_to_its_sibling_source() {
 
         let mut source_interp = Interpreter::new();
         source_interp.set_load_path(vec![root.clone()]);
-        source_interp.set_variable(
-            "load-suffixes",
+        source_interp.set_variable_key(
+            cached_symbol!("load-suffixes"),
             Value::list([Value::string(".el")]),
             &mut Env::new(),
         );
@@ -7181,7 +7187,10 @@ fn load_file_strict_scopes_lexical_binding_to_the_loaded_file() {
         let mut interp = Interpreter::new();
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
         assert_eq!(
-            interp.lookup_var("lexical-binding", &crate::lisp::types::Env::new()),
+            interp.lookup_var_key(
+                cached_symbol!("lexical-binding"),
+                &crate::lisp::types::Env::new()
+            ),
             Some(Value::Nil)
         );
 
@@ -7297,7 +7306,10 @@ fn load_file_strict_prebinds_current_load_list() {
             &path.display().to_string(),
         );
         assert_eq!(
-            interp.lookup_var("current-load-list", &crate::lisp::types::Env::new()),
+            interp.lookup_var_key(
+                cached_symbol!("current-load-list"),
+                &crate::lisp::types::Env::new()
+            ),
             Some(Value::Nil)
         );
 
@@ -7542,7 +7554,10 @@ fn load_in_progress_is_truthy_while_loading_files() {
             Some(Value::T)
         );
         assert_eq!(
-            interp.lookup_var("load-in-progress", &crate::lisp::types::Env::new()),
+            interp.lookup_var_key(
+                cached_symbol!("load-in-progress"),
+                &crate::lisp::types::Env::new()
+            ),
             Some(Value::Nil)
         );
 
@@ -8338,13 +8353,13 @@ fn mouse_wheel_mode_binds_scroll_command() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable(
-            "noninteractive",
+        interp.set_variable_key(
+            cached_symbol!("noninteractive"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );
-        interp.set_variable(
-            "command-line-args-left",
+        interp.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -8696,8 +8711,8 @@ fn cl_assert_signals_condition_with_asserted_form() {
         .read()
         .unwrap()
         .unwrap();
-    interp.set_variable(
-        "lexical-binding",
+    interp.set_variable_key(
+        cached_symbol!("lexical-binding"),
         Value::Nil,
         &mut crate::lisp::types::Env::new(),
     );
@@ -8800,8 +8815,8 @@ fn load_file_strict_preserves_outer_lexical_binding_and_restores_default() {
         .unwrap();
 
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-        interp.set_variable(
-            "lexical-binding",
+        interp.set_variable_key(
+            cached_symbol!("lexical-binding"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -8812,7 +8827,10 @@ fn load_file_strict_preserves_outer_lexical_binding_and_restores_default() {
         let _ = std::fs::remove_dir_all(&root);
         result.unwrap();
         assert_eq!(
-            interp.lookup_var("lexical-binding", &crate::lisp::types::Env::new()),
+            interp.lookup_var_key(
+                cached_symbol!("lexical-binding"),
+                &crate::lisp::types::Env::new()
+            ),
             Some(Value::Nil)
         );
     });
@@ -8824,8 +8842,8 @@ fn lexical_ert_body_keeps_macro_context_in_its_temporary_buffer() {
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         eval_str_with(&mut interp, "(require 'cl-macs)");
         eval_str_with(&mut interp, "(require 'ert)");
-        interp.set_variable(
-            "lexical-binding",
+        interp.set_variable_key(
+            cached_symbol!("lexical-binding"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );

@@ -1514,9 +1514,9 @@ pub(crate) struct TreeSitterNodeState {
 /// system, its eol subsidiaries' specs and through them every alias.
 #[derive(Clone, Debug)]
 pub struct CodingSystemState {
-    /// CODING_ATTR_BASE_NAME: the name Fdefine_coding_system_internal
+    /// CODING_ATTR_BASE_NAME: the symbol Fdefine_coding_system_internal
     /// made this attribute vector for.
-    pub base: String,
+    pub base: SymbolName,
     /// CODING_ATTR_MNEMONIC: the mode line's character.
     pub mnemonic: i64,
     /// CODING_ATTR_TYPE: the :coding-type symbol.
@@ -3120,6 +3120,11 @@ fn tty_default_lisp_face_vector() -> Value {
 
 type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::types::IdentityBuildHasher>;
 
+/// coding.c's Vcoding_system_hash_table, an `eq' table: each coding
+/// system symbol's spec, by index in `coding_specs'.
+pub(crate) type CodingSystemHash =
+    HashMap<SymbolName, usize, crate::lisp::types::IdentityBuildHasher>;
+
 /// A snapshot for callbacks that may intern further symbols while enumerating.
 /// Membership comes only from the owning obarray; field stores cannot invalidate it.
 #[derive(Clone)]
@@ -4709,6 +4714,9 @@ impl Interpreter {
         mark(&self.overriding_plist_environment);
         mark(&self.load_path);
         mark(&self.loads_in_progress);
+        for feature in &self.require_nesting {
+            mark(&Value::Symbol(*feature));
+        }
         for value in self.detached_forwarded_variables.values() {
             mark(value);
         }
@@ -4797,6 +4805,7 @@ impl Interpreter {
         mark(&Value::Frame(self.selected_frame_id));
         mark(&Value::Frame(self.old_selected_frame_id));
         for coding in &self.coding_attrs {
+            mark(&Value::Symbol(coding.base));
             for value in coding.values() {
                 mark(value);
             }
@@ -4804,6 +4813,9 @@ impl Interpreter {
         for spec in &self.coding_specs {
             mark(&spec.aliases);
             mark(&spec.eol_type);
+        }
+        for name in self.coding_system_hash.keys() {
+            mark(&Value::Symbol(*name));
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
@@ -5157,6 +5169,9 @@ impl Interpreter {
             clone.overriding_plist_environment = c.copy(&self.overriding_plist_environment);
             clone.load_path = c.copy(&self.load_path);
             clone.loads_in_progress = c.copy(&self.loads_in_progress);
+            for feature in &mut clone.require_nesting {
+                *feature = c.copy_symbol(*feature);
+            }
             // The C slots are the clone's symbols' own.
             clone.detached_forwarded_variables =
                 std::mem::take(&mut clone.detached_forwarded_variables)
@@ -5262,6 +5277,7 @@ impl Interpreter {
                 clone.keyboard_input.internal_last_event_frame = Some(c.copy(frame));
             }
             for coding in &mut clone.coding_attrs {
+                coding.base = c.copy_symbol(coding.base);
                 for value in [
                     &mut coding.ascii_compatible,
                     &mut coding.decode_table,
@@ -5281,6 +5297,10 @@ impl Interpreter {
                 spec.aliases = c.copy(&spec.aliases);
                 spec.eol_type = c.copy(&spec.eol_type);
             }
+            clone.coding_system_hash = std::mem::take(&mut clone.coding_system_hash)
+                .into_iter()
+                .map(|(name, spec)| (c.copy_symbol(name), spec))
+                .collect();
             clone.alternative_font_family_alist =
                 c.copy(&clone.alternative_font_family_alist.clone());
             clone.alternative_font_registry_alist =
@@ -5870,7 +5890,7 @@ pub struct InterpreterState {
     pub(crate) coding_specs: Vec<CodingSpec>,
     /// coding.c's Vcoding_system_hash_table: each coding system name's
     /// spec, by index in `coding_specs'.
-    pub(crate) coding_system_hash: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
+    pub(crate) coding_system_hash: CodingSystemHash,
     /// Vcoding_system_hash_table's books: a key for each coding system
     /// and alias.
     pub(crate) coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
@@ -6117,7 +6137,7 @@ pub struct InterpreterState {
     /// Features whose `require' loads are active, innermost last.  This is
     /// GNU's `require_nesting_list', not an alternate source of provided
     /// features: bounded recursive requires are part of the loader contract.
-    require_nesting: Vec<String>,
+    require_nesting: Vec<SymbolName>,
     lambda_capture_overrides: Vec<bool>,
     thread_states: Vec<ThreadState>,
     /// Newly allocated, never-started stacks. A child may create threads;
@@ -7268,7 +7288,7 @@ impl Interpreter {
             "undecided-mac",
             "undecided",
         ] {
-            interp.record_coding_system_name(name);
+            interp.record_coding_system_name(SymbolName::intern_str(name));
         }
 
         for name in crate::lisp::eval::bindings::C_OWNED_DEFVAR_NAMES {
@@ -7368,7 +7388,7 @@ impl Interpreter {
         let minibuffer_local_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
         interp.define_special_variable("minibuffer-local-map", minibuffer_local_map);
         let input_decode_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
-        interp.set_global_binding("input-decode-map", input_decode_map);
+        interp.set_global_binding_key(cached_symbol!("input-decode-map"), input_decode_map);
         // keyboard.c creates these identity-bearing translation/event maps
         // before bindings.el is dumped.  Keep the native map family together
         // so loading the owning Lisp bindings never depends on ad-hoc nil
@@ -7387,7 +7407,7 @@ impl Interpreter {
         let local_function_key_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
         let empty_env = crate::lisp::types::Env::new();
         let function_key_map = interp
-            .lookup_var("function-key-map", &empty_env)
+            .lookup_var_key(cached_symbol!("function-key-map"), &empty_env)
             .expect("initial function-key-map");
         primitives::set_keymap_parent(
             &mut interp,
@@ -7401,9 +7421,10 @@ impl Interpreter {
         // its order: no D-Bus (HAVE_DBUS) or w32 events, threads and inotify
         // file notification as in this build, and no `select-window' (GNU
         // keeps that one commented out).
-        if let Some(special_event_map) =
-            interp.lookup_var("special-event-map", &crate::lisp::types::Env::new())
-        {
+        if let Some(special_event_map) = interp.lookup_var_key(
+            cached_symbol!("special-event-map"),
+            &crate::lisp::types::Env::new(),
+        ) {
             for (event, command) in [
                 ("delete-frame", "handle-delete-frame"),
                 ("ns-put-working-text", "ns-put-working-text"),
@@ -7431,13 +7452,16 @@ impl Interpreter {
         }
         // keymap.c: DEFVAR_LISP's nil.  subr.el and simple.el's
         // `define-minor-mode' forms fill this and `minor-mode-list'.
-        interp.set_global_binding("minor-mode-map-alist", Value::Nil);
+        interp.set_global_binding_key(cached_symbol!("minor-mode-map-alist"), Value::Nil);
         interp.define_per_buffer_special("font-lock-mode", Value::Nil);
         interp.define_per_buffer_special("font-lock-fontified", Value::Nil);
         // buffer_defaults' slots (every buffer has its own; see
         // `reset_always_local_slots').
-        interp.set_global_binding("major-mode", Value::Symbol("fundamental-mode".into()));
-        interp.set_global_binding("mode-name", Value::Nil);
+        interp.set_global_binding_key(
+            cached_symbol!("major-mode"),
+            Value::Symbol("fundamental-mode".into()),
+        );
+        interp.set_global_binding_key(cached_symbol!("mode-name"), Value::Nil);
         // buffer.c:4794 seeds the C default as the string "%-", with the
         // comment "real setup is done in bindings.el"; that preloaded file
         // installs the real spec and its `standard-value'.  Transcribing
@@ -7454,7 +7478,10 @@ impl Interpreter {
         // pre-seeded keymaps did.
         let glyphless_char_display =
             interp.make_char_table(Some("glyphless-char-display".into()), Value::Nil);
-        interp.set_global_binding("glyphless-char-display", glyphless_char_display);
+        interp.set_global_binding_key(
+            cached_symbol!("glyphless-char-display"),
+            glyphless_char_display,
+        );
         let char_script_table =
             interp.make_char_table(Some("char-script-table".into()), Value::Nil);
         interp.define_special_variable("char-script-table", char_script_table);
@@ -7749,9 +7776,9 @@ impl Interpreter {
         // callint.c DEFVAR_KBOARD/DEFVAR_LISP variables.  Command helpers
         // dynamically bind these around calls into separately defined
         // functions, so lexical code must still observe the active prefix.
-        interp.set_global_binding("prefix-arg", Value::Nil);
-        interp.set_global_binding("last-prefix-arg", Value::Nil);
-        interp.set_global_binding("current-prefix-arg", Value::Nil);
+        interp.set_global_binding_key(cached_symbol!("prefix-arg"), Value::Nil);
+        interp.set_global_binding_key(cached_symbol!("last-prefix-arg"), Value::Nil);
+        interp.set_global_binding_key(cached_symbol!("current-prefix-arg"), Value::Nil);
         // keyboard.c exposes command-loop state through DEFVAR_LISP and
         // DEFVAR_KBOARD.  Those C definitions are special declarations just
         // like Lisp `defvar': a lexical `let' around a call must be visible
@@ -8238,7 +8265,12 @@ impl Interpreter {
 
     pub fn current_global_map_value(&self) -> Value {
         self.current_global_map
-            .or_else(|| self.lookup_var("global-map", &crate::lisp::types::Env::new()))
+            .or_else(|| {
+                self.lookup_var_key(
+                    cached_symbol!("global-map"),
+                    &crate::lisp::types::Env::new(),
+                )
+            })
             .unwrap_or(Value::Nil)
     }
 

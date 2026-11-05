@@ -539,7 +539,7 @@ fn syntax_ppss_flush_cache_alone(interp: &Interpreter, before: Value) -> bool {
     };
     matches!(first.kind(), Kind::T)
         && tail.is_nil()
-        && function.symbol_str() == Some("syntax-ppss-flush-cache")
+        && function.is_key(cached_symbol!("syntax-ppss-flush-cache"))
         && interp
             .default_value_symbol(&cached_symbol!("before-change-functions").with(Clone::clone))
             .ok()

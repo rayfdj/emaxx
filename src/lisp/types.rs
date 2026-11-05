@@ -646,6 +646,14 @@ impl SymbolName {
         Self::find(text)
     }
 
+    /// The interned symbol of a name a registry still keys by host text
+    /// (the remaining name-keyed callers of a symbol-keyed table): None
+    /// for an uninterned or private symbol's marked text, which names no
+    /// interned symbol.  Not C: GNU's callers hold the symbol.
+    pub(crate) fn find_by_host_text(text: &str) -> Option<Self> {
+        Self::find_interned(text)
+    }
+
     pub(crate) fn make_uninterned(name: Value, visible: &str, id: u64) -> Self {
         Self::new_uninterned(name, make_uninterned_symbol_name(visible, id))
     }
@@ -690,6 +698,15 @@ impl SymbolName {
 
     pub(crate) fn lisp_name(&self) -> Value {
         self.0.lisp_name.get()
+    }
+
+    /// SDATA (SYMBOL_NAME (symbol)) as text: the Lisp-visible name, the
+    /// same for an uninterned or a private obarray's symbol as for the
+    /// interned one of that name.
+    pub(crate) fn name_text(&self) -> String {
+        self.lisp_name()
+            .as_string()
+            .unwrap_or_else(|_| visible_symbol_name(self.as_str()).to_owned())
     }
 
     /// data.c:Fkeywordp: initial-obarray membership and the actual name's
@@ -2868,6 +2885,12 @@ impl Value {
             Kind::StringObject(s) => Ok(s.borrow().text()),
             _ => Err(LispError::WrongTypeArgument("stringp".into(), *self)),
         }
+    }
+
+    /// EQ (self, Qkey): whether this is the cached key's symbol.
+    #[inline]
+    pub(crate) fn is_key(&self, key: symbols::SymbolKey) -> bool {
+        PropertyKey::is(key, *self)
     }
 
     /// `as_symbol' for a caller that only asks: None for a value that is

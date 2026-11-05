@@ -205,7 +205,7 @@ fn decode_coding_region_reports_the_detected_eol_variant() {
         .expect("decode ISO-2022 text");
 
         assert_eq!(
-            interp.lookup_var("last-coding-system-used", &env),
+            interp.lookup_var_key(cached_symbol!("last-coding-system-used"), &env),
             Some(Value::Symbol(expected.into()))
         );
     }
@@ -1064,8 +1064,8 @@ fn call_process_sends_stderr_to_its_file_and_output_to_the_buffer() {
     // raw-byte expectation below is the utf-8 answer.  Binding
     // coding-system-for-read makes the contract locale-independent
     // (finding 113's hardcoded-expectation class).
-    interp.set_variable(
-        "coding-system-for-read",
+    interp.set_variable_key(
+        cached_symbol!("coding-system-for-read"),
         Value::Symbol("utf-8".into()),
         &mut env,
     );
@@ -1155,7 +1155,7 @@ fn call_process_decodes_with_the_default_process_coding_system() {
 
     assert_eq!(interp.buffer.borrow().buffer_string(), "Symbol’s\n");
     assert_eq!(
-        interp.lookup_var("last-coding-system-used", &env),
+        interp.lookup_var_key(cached_symbol!("last-coding-system-used"), &env),
         Some(Value::Symbol("utf-8-unix".into()))
     );
 }
@@ -1188,7 +1188,7 @@ fn process_coding_alist_overrides_the_default_for_synchronous_output() {
 
     assert_eq!(interp.buffer.borrow().buffer_string().chars().count(), 3);
     assert_eq!(
-        interp.lookup_var("last-coding-system-used", &env),
+        interp.lookup_var_key(cached_symbol!("last-coding-system-used"), &env),
         Some(Value::Symbol("raw-text-unix".into()))
     );
 }

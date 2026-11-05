@@ -368,10 +368,8 @@ fn describe_vector_value(
             }
         }
         other => {
-            return Err(LispError::TypeError(
-                "vector-or-char-table-p".into(),
-                other.value().type_name(),
-            ));
+            // CHECK_VECTOR_OR_CHAR_TABLE: the object is the datum.
+            return Err(wrong_type_argument("vector-or-char-table-p", other.value()));
         }
     }
 
@@ -381,7 +379,7 @@ fn describe_vector_value(
         .cloned()
         .unwrap_or_else(|| Value::Symbol("princ".into()));
     let output_buffer = Value::Buffer(interp.buffer);
-    let restore = interp.bind_special_variable("standard-output", output_buffer, env)?;
+    let restore = interp.bind_special_key(cached_symbol!("standard-output"), output_buffer, env)?;
     let mut result = (|| -> Result<Value, LispError> {
         let mut first = true;
         for (start, end, value) in ranges {
@@ -605,7 +603,7 @@ define_dispatch!(
                 }
                 if args.first().is_none_or(Value::is_nil) {
                     return Ok(interp
-                        .lookup_var("user-login-name", env)
+                        .lookup_var_key(cached_symbol!("user-login-name"), env)
                         .unwrap_or_else(|| {
                             Value::String(
                                 current_user_login_name()
@@ -622,7 +620,7 @@ define_dispatch!(
             "user-real-login-name" => {
                 need_args(name, args, 0)?;
                 Ok(interp
-                    .lookup_var("user-real-login-name", env)
+                    .lookup_var_key(cached_symbol!("user-real-login-name"), env)
                     .unwrap_or_else(|| {
                         Value::String(
                             current_real_user_login_name()
@@ -642,13 +640,15 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let Some(requested) = args.first().filter(|value| !value.is_nil()) else {
-                    return Ok(interp.lookup_var("user-full-name", env).unwrap_or_else(|| {
-                        Value::String(
-                            current_user_full_name()
-                                .unwrap_or_else(|| "unknown".into())
-                                .into(),
-                        )
-                    }));
+                    return Ok(interp
+                        .lookup_var_key(cached_symbol!("user-full-name"), env)
+                        .unwrap_or_else(|| {
+                            Value::String(
+                                current_user_full_name()
+                                    .unwrap_or_else(|| "unknown".into())
+                                    .into(),
+                            )
+                        }));
                 };
                 let full_name = match requested.kind() {
                     Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) => {
@@ -732,15 +732,15 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let last_nonmenu_event = interp
-                    .lookup_var("last-nonmenu-event", env)
+                    .lookup_var_key(cached_symbol!("last-nonmenu-event"), env)
                     .unwrap_or(Value::Nil);
                 let event_allows = last_nonmenu_event.is_nil()
                     || matches!(last_nonmenu_event.kind(), Kind::Cons(_));
                 let use_dialog = interp
-                    .lookup_var("use-dialog-box", env)
+                    .lookup_var_key(cached_symbol!("use-dialog-box"), env)
                     .is_some_and(|value| value.is_truthy());
                 let use_file_dialog = interp
-                    .lookup_var("use-file-dialog", env)
+                    .lookup_var_key(cached_symbol!("use-file-dialog"), env)
                     .is_some_and(|value| value.is_truthy());
                 let window_system =
                     crate::lisp::primitives::call(interp, "window-system", &[], env)?.is_truthy();
@@ -1091,7 +1091,9 @@ define_dispatch!(
 
             "mapbacktrace" => {
                 need_arg_range(name, args, 1, 2)?;
-                let callback = resolve_callable(interp, &args[0], env)?;
+                // backtrace_frame_apply's Ffuncall of FUNCTION for each
+                // frame: nothing is resolved when no frame is reached.
+                let callback = args[0];
                 let (offset, base) = backtrace_base(args.get(1).copied().unwrap_or(Value::Nil));
                 let frames = interp.backtrace_frames_snapshot();
                 // get_backtrace_starting_at's frame, innermost first in the
@@ -1123,7 +1125,8 @@ define_dispatch!(
             }
             "backtrace-frame--internal" => {
                 need_args(name, args, 3)?;
-                let callback = resolve_callable(interp, &args[0], env)?;
+                // backtrace_frame_apply calls FUNCTION only on a frame.
+                let callback = args[0];
                 // eval.c:get_backtrace_frame's CHECK_FIXNAT, then its walk
                 // from get_backtrace_starting_at's frame for BASE.
                 let nframes = backtrace_nframes(args[1])?;

@@ -1880,8 +1880,8 @@ define_dispatch!(
                 };
                 let version = encoded_library_version(&library.api);
                 if option_env!("EMAXX_GNUTLS_VERSION").is_none() {
-                    interp.set_global_binding(
-                        "libgnutls-version",
+                    interp.set_global_binding_key(
+                        cached_symbol!("libgnutls-version"),
                         Value::Integer(version.unwrap_or(-1)),
                     );
                 }

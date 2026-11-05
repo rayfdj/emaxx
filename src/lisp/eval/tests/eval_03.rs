@@ -4886,13 +4886,13 @@ fn align_c_function_declaration_matches_resource_output() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         interp.set_load_path(load_path);
-        interp.set_variable(
-            "noninteractive",
+        interp.set_variable_key(
+            cached_symbol!("noninteractive"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );
-        interp.set_variable(
-            "command-line-args-left",
+        interp.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -4925,13 +4925,13 @@ fn align_c_variable_declaration_rule_is_runnable_and_valid() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         interp.set_load_path(load_path);
-        interp.set_variable(
-            "noninteractive",
+        interp.set_variable_key(
+            cached_symbol!("noninteractive"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );
-        interp.set_variable(
-            "command-line-args-left",
+        interp.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -4976,13 +4976,13 @@ fn align_css_declaration_rule_matches_only_declarations() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable(
-            "noninteractive",
+        interp.set_variable_key(
+            cached_symbol!("noninteractive"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );
-        interp.set_variable(
-            "command-line-args-left",
+        interp.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -5014,13 +5014,13 @@ fn align_css_declaration_search_positions_match_buffer_lines() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable(
-            "noninteractive",
+        interp.set_variable_key(
+            cached_symbol!("noninteractive"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );
-        interp.set_variable(
-            "command-line-args-left",
+        interp.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -5071,13 +5071,13 @@ fn align_region_separator_finds_brace_line_between_css_blocks() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable(
-            "noninteractive",
+        interp.set_variable_key(
+            cached_symbol!("noninteractive"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );
-        interp.set_variable(
-            "command-line-args-left",
+        interp.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -5106,13 +5106,13 @@ fn align_region_separator_accepts_marker_bounds() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable(
-            "noninteractive",
+        interp.set_variable_key(
+            cached_symbol!("noninteractive"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );
-        interp.set_variable(
-            "command-line-args-left",
+        interp.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -5143,13 +5143,13 @@ fn align_css_resource_case_matches_output() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable(
-            "noninteractive",
+        interp.set_variable_key(
+            cached_symbol!("noninteractive"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );
-        interp.set_variable(
-            "command-line-args-left",
+        interp.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -5233,13 +5233,13 @@ fn allout_range_overlaps_keeps_prior_ranges_when_appending() {
         let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
         let mut interp = Interpreter::new();
         interp.set_load_path(load_path);
-        interp.set_variable(
-            "noninteractive",
+        interp.set_variable_key(
+            cached_symbol!("noninteractive"),
             Value::T,
             &mut crate::lisp::types::Env::new(),
         );
-        interp.set_variable(
-            "command-line-args-left",
+        interp.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );

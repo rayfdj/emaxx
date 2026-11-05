@@ -12,6 +12,7 @@
 //! matrices, faces on glass, and multiple live windows layer on top of this
 //! loop without changing its shape.
 
+use crate::lisp::cached_symbol;
 use std::io::{self, Write};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -894,7 +895,10 @@ fn wrapped_echo_cursor(
 /// (default 0.25 of the frame).
 fn max_mini_window_rows(interpreter: &Interpreter, rows: usize) -> usize {
     match interpreter
-        .lookup_var("max-mini-window-height", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("max-mini-window-height"),
+            &crate::lisp::types::Env::new(),
+        )
         .map(|v| v.kind())
     {
         Some(Kind::Integer(lines)) if lines > 0 => (lines as usize).min(rows.saturating_sub(2)),
@@ -950,7 +954,7 @@ fn draw_echo_row_composed(
         let _ = paint_row(&mut out, base + index, echo_row);
     }
     if interpreter
-        .lookup_var("cursor-in-echo-area", env)
+        .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
         .is_some_and(|value| value.is_truthy())
     {
         let (row, col) = wrapped_echo_cursor(&long, echo_cursor.unwrap_or(0), cols, mini_rows);
@@ -1212,7 +1216,7 @@ fn command_loop(
         // GNU's echo_keystrokes display of the pending prefix keys.
         // Any other command consumes the chain and its echo.
         let prefix_pending = interpreter
-            .lookup_var("prefix-arg", env)
+            .lookup_var_key(cached_symbol!("prefix-arg"), env)
             .is_some_and(|prefix| prefix.is_truthy());
         {
             let state = &mut *shared_state.borrow_mut();
@@ -1647,7 +1651,7 @@ fn window_render_geometry(
     let partial = info.width < frame_cols;
     let partial_truncates = partial
         && match interpreter
-            .lookup_var("truncate-partial-width-windows", env)
+            .lookup_var_key(cached_symbol!("truncate-partial-width-windows"), env)
             .map(|v| v.kind())
         {
             Some(Kind::Integer(columns)) => columns > info.width as i64,
@@ -1705,7 +1709,7 @@ fn window_render_geometry(
         let line_w = laid.columns.last().copied().unwrap_or(0);
         let w = body_width as i64;
         let margin = interpreter
-            .lookup_var("hscroll-margin", env)
+            .lookup_var_key(cached_symbol!("hscroll-margin"), env)
             .and_then(|value| value.integer_value())
             .unwrap_or(5)
             .clamp(0, 1_000_000);
@@ -1737,7 +1741,7 @@ fn window_render_geometry(
             // hscroll_window_tree's iterator runs with the line-number
             // glyphs produced, so its current_x carries their columns.
             let current_x = point_dcol + lnum_cols as i64;
-            let step = interpreter.lookup_var("hscroll-step", env);
+            let step = interpreter.lookup_var_key(cached_symbol!("hscroll-step"), env);
             let new_hscroll = match step.map(|v| v.kind()) {
                 Some(Kind::Float(relative)) if relative.get() >= 0.0 => {
                     let wanted = if cursor_x >= text_w - margin {
@@ -2537,7 +2541,10 @@ impl<'a> CharacterDisplayContext<'a> {
             let control = char::from_u32((code ^ 0o100) as u32).unwrap_or('?');
             return Some((vec![caret, control], face));
         }
-        let highlight = self.nobreak_char_display.symbol_str() == Some("t");
+        let highlight = matches!(
+            self.nobreak_char_display.kind(),
+            crate::lisp::types::Kind::T
+        );
         if nonascii_space && highlight {
             let shown = if self.nobreak_char_ascii_display {
                 ' '
@@ -4159,7 +4166,7 @@ fn fontify_window_ranges(
         // current, so a window whose buffer fontifies must not be
         // skipped because the selected buffer does not.
         if interpreter
-            .lookup_var("fontification-functions", env)
+            .lookup_var_key(cached_symbol!("fontification-functions"), env)
             .is_none_or(|value| value.is_nil())
         {
             continue;
@@ -4206,7 +4213,7 @@ fn fontify_buffer_range(interpreter: &mut Interpreter, env: &mut Env, start: usi
                 continue;
             }
             let functions = interpreter
-                .lookup_var("fontification-functions", env)
+                .lookup_var_key(cached_symbol!("fontification-functions"), env)
                 .unwrap_or(Value::Nil);
             let Ok(restore) =
                 interpreter.bind_special_dynamic("fontification-functions", Value::Nil, env)
@@ -4259,7 +4266,7 @@ fn run_fontification_functions(
         };
         if matches!(function.kind(), Kind::T) {
             let mut globals = interpreter
-                .default_value("fontification-functions")
+                .default_value_key(cached_symbol!("fontification-functions"))
                 .unwrap_or(Value::Nil);
             while let Kind::Cons(_) = globals.kind() {
                 let Ok(global_fn) = globals.car() else {
@@ -4634,12 +4641,12 @@ fn redraw_with_echo_policy(
             info.width
         };
         let has_header_line = interpreter
-            .buffer_local_value(info.buffer_id, "header-line-format")
-            .or_else(|| interpreter.default_value("header-line-format"))
+            .buffer_local_value_key(info.buffer_id, cached_symbol!("header-line-format"))
+            .or_else(|| interpreter.default_value_key(cached_symbol!("header-line-format")))
             .is_some_and(|format| format.is_truthy());
         let has_tab_line = interpreter
-            .buffer_local_value(info.buffer_id, "tab-line-format")
-            .or_else(|| interpreter.default_value("tab-line-format"))
+            .buffer_local_value_key(info.buffer_id, cached_symbol!("tab-line-format"))
+            .or_else(|| interpreter.default_value_key(cached_symbol!("tab-line-format")))
             .is_some_and(|format| format.is_truthy());
         let tab_rows = usize::from(has_tab_line && info.height > 2);
         let header_rows = usize::from(has_header_line && info.height > 2 + tab_rows);
@@ -4856,7 +4863,7 @@ fn redraw_with_echo_policy(
             if saved == info.buffer_id || interpreter.set_current_buffer_id(info.buffer_id).is_ok()
             {
                 if interpreter
-                    .lookup_var("fontification-functions", env)
+                    .lookup_var_key(cached_symbol!("fontification-functions"), env)
                     .is_some_and(|value| !value.is_nil())
                 {
                     for (start, end) in visible_ranges {
@@ -4875,8 +4882,8 @@ fn redraw_with_echo_policy(
         }
         {
             let mut variables = interpreter
-                .lookup_var(
-                    "overlay-arrow-variable-list",
+                .lookup_var_key(
+                    cached_symbol!("overlay-arrow-variable-list"),
                     &crate::lisp::types::Env::new(),
                 )
                 .unwrap_or(Value::Nil);
@@ -4918,8 +4925,10 @@ fn redraw_with_echo_policy(
                     .get_property_of_symbol_value(symbol_value, "overlay-arrow-string")
                     .filter(|value| value.is_string())
                     .or_else(|| {
-                        interpreter
-                            .lookup_var("overlay-arrow-string", &crate::lisp::types::Env::new())
+                        interpreter.lookup_var_key(
+                            cached_symbol!("overlay-arrow-string"),
+                            &crate::lisp::types::Env::new(),
+                        )
                     })
                     .and_then(|value| value.as_string().ok())
                     .unwrap_or_else(|| "=>".to_string());
@@ -5111,7 +5120,7 @@ fn redraw_with_echo_policy(
         }
         let mode_line_active = info.selected
             || interpreter
-                .lookup_var("mode-line-in-non-selected-windows", env)
+                .lookup_var_key(cached_symbol!("mode-line-in-non-selected-windows"), env)
                 .is_some_and(|value| value.is_nil())
             || (interpreter.minibuffer_depth() > 0
                 && interpreter.minibuffer_selected_window_id() == Some(info.window_id)
@@ -5933,7 +5942,7 @@ fn redraw_with_echo_policy(
     // changed, not per keystroke.
     if menu_lines > 0 && !frame.is_empty() {
         let mode = interpreter
-            .lookup_var("major-mode", env)
+            .lookup_var_key(cached_symbol!("major-mode"), env)
             .map(|mode| format!("{mode}"))
             .unwrap_or_default();
         let cache_key = (
@@ -6037,7 +6046,7 @@ fn redraw_with_echo_policy(
             (frame_rows + row).min(rows.saturating_sub(1)) as u16,
         );
     } else if interpreter
-        .lookup_var("cursor-in-echo-area", env)
+        .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
         .is_some_and(|value| value.is_truthy())
         && !frontend_echo_early.is_empty()
     {
@@ -6064,7 +6073,7 @@ fn redraw_with_echo_policy(
 /// redisplay must survive a callback error and continue painting the frame.
 fn run_pre_redisplay_function(interpreter: &mut Interpreter, env: &mut Env) {
     let Some(function) = interpreter
-        .lookup_var("pre-redisplay-function", env)
+        .lookup_var_key(cached_symbol!("pre-redisplay-function"), env)
         .filter(Value::is_truthy)
     else {
         return;
@@ -7007,7 +7016,7 @@ mod tests {
             // calls window.el's owners.
             let mut interpreter = crate::test_support::initialized_gnu_window_lisp_interpreter();
             let mut env = Env::new();
-            interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+            interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
             interpreter.set_tty_frame_size(80, 24);
             let queue = SharedEventQueue::default();
             queue.0.borrow_mut().extend([
@@ -7563,7 +7572,11 @@ mod tests {
         interp
             .eval(&form, &mut env)
             .expect("evaluate true-overlay invisibility probe");
-        interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        interp.set_variable_key(
+            cached_symbol!("buffer-invisibility-spec"),
+            Value::T,
+            &mut env,
+        );
         let spec = resolve_buffer_invisibility(
             &interp,
             &interp.buffer.borrow(),
@@ -7595,7 +7608,11 @@ mod tests {
         interp
             .eval(&form, &mut env)
             .expect("evaluate window overlay-string probe");
-        interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        interp.set_variable_key(
+            cached_symbol!("buffer-invisibility-spec"),
+            Value::T,
+            &mut env,
+        );
         let spec = resolve_buffer_invisibility(
             &interp,
             &interp.buffer.borrow(),
@@ -7726,7 +7743,11 @@ mod tests {
         interp
             .eval(&form, &mut env)
             .expect("evaluate invisible overlay-string probe");
-        interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        interp.set_variable_key(
+            cached_symbol!("buffer-invisibility-spec"),
+            Value::T,
+            &mut env,
+        );
         let spec = resolve_buffer_invisibility(
             &interp,
             &interp.buffer.borrow(),
@@ -7861,7 +7882,7 @@ mod tests {
     fn interactive_startup_initializes_scratch_and_messages_buffers() {
         let mut interp = initialized_interactive_runtime();
         let mut env: Env = crate::lisp::types::Env::new();
-        interp.set_variable("noninteractive", Value::Nil, &mut env);
+        interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         // This fixture now reaches the end of GNU startup, not the former
         // handwritten midpoint before its startup message. A separate GNU
         // -nw -Q session confirms this line in *Messages*. Check the text
@@ -8193,7 +8214,7 @@ mod tests {
     fn active_minibuffer_only_owns_cursor_while_its_window_is_selected() {
         let mut interpreter = initialized_interactive_runtime();
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         let ordinary_window = interpreter.selected_window_id();
         let active = crate::lisp::primitives::activate_minibuffer(
             &mut interpreter,
@@ -8217,7 +8238,7 @@ mod tests {
     fn transient_printed_value_takes_precedence_over_an_active_minibuffer() {
         let mut interpreter = initialized_interactive_runtime();
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         let active = crate::lisp::primitives::activate_minibuffer(
             &mut interpreter,
             &Value::String("Outer: ".into()),
@@ -8248,7 +8269,7 @@ mod tests {
     fn minibuffer_before_string_inherits_its_prompt_anchor_face() {
         let mut interpreter = initialized_interactive_runtime();
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         let active = crate::lisp::primitives::activate_minibuffer(
             &mut interpreter,
             &Value::String("Prompt: ".into()),
@@ -8412,7 +8433,11 @@ mod tests {
         interpreter
             .eval(&form, &mut env)
             .expect("evaluate invisible-tail window probe");
-        interpreter.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        interpreter.set_variable_key(
+            cached_symbol!("buffer-invisibility-spec"),
+            Value::T,
+            &mut env,
+        );
         let spec = resolve_buffer_invisibility(
             &interpreter,
             &interpreter.buffer.borrow(),
@@ -9005,7 +9030,7 @@ mod tests {
         let mut interpreter =
             crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         crate::test_support::eval_lisp(
             &mut interpreter,
             &mut env,
@@ -9079,7 +9104,7 @@ mod tests {
         let mut interpreter =
             crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         interpreter
             .load_target("isearch")
             .expect("isearch.el loads");
@@ -9142,7 +9167,7 @@ gamma word three
             "point at the match line's start"
         );
         let overriding = interpreter
-            .lookup_var("overriding-terminal-local-map", &env)
+            .lookup_var_key(cached_symbol!("overriding-terminal-local-map"), &env)
             .unwrap_or(Value::Nil);
         assert!(
             overriding.is_nil(),
@@ -9162,7 +9187,7 @@ gamma word three
         let mut interpreter =
             crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         interpreter.buffer.borrow_mut().insert("abcdefghijklmnop\n");
         interpreter.buffer.borrow_mut().goto_char(1);
 
@@ -9189,7 +9214,7 @@ gamma word three
         // digit dispatch digit-argument.
         assert_eq!(send(&mut interpreter, &mut env, 21), "universal-argument");
         assert_eq!(
-            interpreter.lookup_var("prefix-arg", &env),
+            interpreter.lookup_var_key(cached_symbol!("prefix-arg"), &env),
             Some(Value::list([Value::Integer(4)]))
         );
         assert_eq!(
@@ -9197,7 +9222,7 @@ gamma word three
             "digit-argument"
         );
         assert_eq!(
-            interpreter.lookup_var("prefix-arg", &env),
+            interpreter.lookup_var_key(cached_symbol!("prefix-arg"), &env),
             Some(Value::Integer(8))
         );
         // The next ordinary command consumes the accumulated prefix.
@@ -9209,7 +9234,7 @@ gamma word three
         );
         assert_eq!(
             interpreter
-                .lookup_var("prefix-arg", &env)
+                .lookup_var_key(cached_symbol!("prefix-arg"), &env)
                 .unwrap_or(Value::Nil),
             Value::Nil,
             "the chain is consumed"
@@ -9340,7 +9365,7 @@ gamma word three
         .expect("self-insert through call-interactively");
         assert_eq!(interpreter.buffer.borrow().buffer_string(), "h");
         assert_eq!(
-            interpreter.lookup_var("last-command", &env),
+            interpreter.lookup_var_key(cached_symbol!("last-command"), &env),
             Some(Value::Symbol("self-insert-command".into()))
         );
     }
@@ -9424,7 +9449,7 @@ fn make_menu_executor(
             // echoing entirely, as in GNU.
             let mut pending_keystroke_echo = crate::lisp::primitives::take_pending_keystroke_echo();
             let echo_keystrokes = interpreter
-                .lookup_var("echo-keystrokes", env)
+                .lookup_var_key(cached_symbol!("echo-keystrokes"), env)
                 .map(|value| match value.kind() {
                     Kind::Integer(seconds) => seconds as f64,
                     Kind::Float(seconds) => seconds.get(),

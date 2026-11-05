@@ -1550,7 +1550,7 @@ pub(crate) fn fexpand_file_name(
     let mut default_directory = default_directory;
     if default_directory.is_nil() {
         let dir = interp
-            .lookup_var("default-directory", env)
+            .lookup_var_key(cached_symbol!("default-directory"), env)
             .unwrap_or(Value::Nil);
         if let Some((dir_bytes, _)) = lisp_string_bytes(&dir) {
             if dir_bytes.first() == Some(&b'/') {
@@ -1558,7 +1558,7 @@ pub(crate) fn fexpand_file_name(
                 default_directory = dir;
             } else {
                 let absdir = interp
-                    .lookup_var("invocation-directory", env)
+                    .lookup_var_key(cached_symbol!("invocation-directory"), env)
                     .filter(|value| {
                         lisp_string_bytes(value)
                             .is_some_and(|(bytes, _)| bytes.first() == Some(&b'/'))
@@ -1693,7 +1693,7 @@ pub(crate) fn expand_file_name_runtime(
         Some(base) => Some(base),
         None => {
             current_directory = interp
-                .lookup_var("default-directory", env)
+                .lookup_var_key(cached_symbol!("default-directory"), env)
                 .and_then(|value| string_like(&value).map(|string| string.text));
             current_directory.as_deref()
         }
@@ -1704,7 +1704,7 @@ pub(crate) fn expand_file_name_runtime(
     let mut resolved_base = base.map(str::to_string);
     if let Some(relative_base) = base.filter(|base| !file_name_absolute_p(base))
         && let Some(default_directory) = interp
-            .lookup_var("default-directory", env)
+            .lookup_var_key(cached_symbol!("default-directory"), env)
             .and_then(|value| string_like(&value).map(|string| string.text))
         && default_directory != relative_base
     {
@@ -2116,9 +2116,12 @@ pub(crate) fn validate_file_name(path: &str) -> Result<(), LispError> {
 /// (coding.c:encode_file_name_1 and decode_file_name), checked as
 /// code_convert_string checks it.
 fn file_name_coding(interp: &Interpreter, env: &Env) -> Result<Option<String>, LispError> {
-    for variable in ["file-name-coding-system", "default-file-name-coding-system"] {
+    for variable in [
+        cached_symbol!("file-name-coding-system"),
+        cached_symbol!("default-file-name-coding-system"),
+    ] {
         if let Some(coding) = interp
-            .lookup_var(variable, env)
+            .lookup_var_key(variable, env)
             .filter(|value| !value.is_nil())
         {
             return super::checked_coding_name(interp, &coding);
@@ -2680,7 +2683,7 @@ fn file_primitive_preamble(
                 super::file_io::file_modtime_from_value(interp, timestamp)?;
             }
             let directory = interp
-                .lookup_var("default-directory", env)
+                .lookup_var_key(cached_symbol!("default-directory"), env)
                 .unwrap_or(Value::Nil);
             args[0] = fexpand_file_name(interp, env, args[0], directory)?;
             let lookups = vec![args[0]];
@@ -2752,7 +2755,7 @@ fn file_primitive_preamble(
             args[2] = expand_file_name_nil(interp, env, args[2])?;
             let mut native_args = args.clone();
             let mustbenew = args[6];
-            if mustbenew.is_truthy() && mustbenew.symbol_str() != Some("excl") {
+            if mustbenew.is_truthy() && !mustbenew.is_key(cached_symbol!("excl")) {
                 let filename = string_text(&args[2])?;
                 super::file_io::barf_or_query_if_file_exists(
                     interp,
@@ -2808,7 +2811,7 @@ fn file_primitive_preamble(
                 FilePreamble::new(operation, args, Vec::new())
             } else {
                 let file = interp
-                    .lookup_var("buffer-file-name", env)
+                    .lookup_var_key(cached_symbol!("buffer-file-name"), env)
                     .unwrap_or(Value::Nil);
                 let filename = expand_file_name_nil(interp, env, file)?;
                 FilePreamble {
@@ -2987,7 +2990,7 @@ fn file_name_handler_candidates(
         DefaultDirectorySource::Always => true,
     };
     if uses_implicit_default_directory
-        && let Some(directory) = interp.lookup_var("default-directory", env)
+        && let Some(directory) = interp.lookup_var_key(cached_symbol!("default-directory"), env)
         && string_like(&directory).is_some()
     {
         candidates.push(directory);

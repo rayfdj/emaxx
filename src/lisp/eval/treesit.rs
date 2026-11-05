@@ -21,7 +21,7 @@ fn value_string(value: &Value) -> Result<String, LispError> {
 
 fn library_suffixes(interp: &Interpreter) -> Result<Vec<String>, LispError> {
     interp
-        .lookup_var("dynamic-library-suffixes", &Env::new())
+        .lookup_var_key(cached_symbol!("dynamic-library-suffixes"), &Env::new())
         .unwrap_or(Value::Nil)
         .to_vec()?
         .iter()
@@ -34,7 +34,10 @@ fn language_override(
     language: &str,
 ) -> Result<Option<(String, String)>, LispError> {
     for entry in interp
-        .lookup_var("treesit-load-name-override-list", &Env::new())
+        .lookup_var_key(
+            cached_symbol!("treesit-load-name-override-list"),
+            &Env::new(),
+        )
         .unwrap_or(Value::Nil)
         .to_vec()?
     {
@@ -83,7 +86,7 @@ fn language_candidates(
     let mut candidates = Vec::new();
 
     for directory in interp
-        .lookup_var("treesit-extra-load-path", &Env::new())
+        .lookup_var_key(cached_symbol!("treesit-extra-load-path"), &Env::new())
         .unwrap_or(Value::Nil)
         .to_vec()?
     {
@@ -96,7 +99,9 @@ fn language_candidates(
     // GNU treesit.c:668 expands `library_base' against the *value* of
     // `user-emacs-directory', so a non-string value signals there rather than
     // being skipped.  Keep that propagation.
-    if let Some(user_directory) = interp.lookup_var("user-emacs-directory", &Env::new()) {
+    if let Some(user_directory) =
+        interp.lookup_var_key(cached_symbol!("user-emacs-directory"), &Env::new())
+    {
         candidates.extend(library_names(
             &PathBuf::from(value_string(&user_directory)?)
                 .join("tree-sitter")

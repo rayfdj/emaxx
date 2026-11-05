@@ -448,10 +448,6 @@ impl Interpreter {
         terminal.borrow().live.then_some(terminal)
     }
 
-    pub fn terminal_live(&self) -> bool {
-        self.decode_terminal(&Value::Nil).is_some()
-    }
-
     /// window.c stores the owning frame on every window, including internal
     /// and deleted windows. It must survive a frame switch and frame deletion.
     pub(crate) fn window_frame_id(&self, id: u64) -> Option<crate::lisp::types::FrameRef> {
@@ -485,7 +481,10 @@ impl Interpreter {
             name,
             kind,
             !self
-                .lookup_var("noninteractive", &crate::lisp::types::Env::new())
+                .lookup_var_key(
+                    cached_symbol!("noninteractive"),
+                    &crate::lisp::types::Env::new(),
+                )
                 .is_some_and(|value| value.is_truthy()),
         )?);
         #[cfg(not(unix))]
@@ -517,7 +516,7 @@ impl Interpreter {
             }
             let local = p::call(self, "make-sparse-keymap", &[], &mut env)?;
             let parent = self
-                .lookup_var("function-key-map", &env)
+                .lookup_var_key(cached_symbol!("function-key-map"), &env)
                 .unwrap_or(Value::Nil);
             p::call(self, "set-keymap-parent", &[local, parent], &mut env)?;
             keyboard.insert(cached_symbol!("input-decode-map").symbol(), decode);
@@ -563,12 +562,18 @@ impl Interpreter {
             .get_buffer_by_id(buffer_id)
             .map_or(1, |buffer| buffer.point());
         let menu = i64::from(
-            self.lookup_var("menu-bar-mode", &crate::lisp::types::Env::new())
-                .is_some_and(|value| value.is_truthy()),
+            self.lookup_var_key(
+                cached_symbol!("menu-bar-mode"),
+                &crate::lisp::types::Env::new(),
+            )
+            .is_some_and(|value| value.is_truthy()),
         );
         let tab = i64::from(
-            self.lookup_var("tab-bar-mode", &crate::lisp::types::Env::new())
-                .is_some_and(|value| value.is_truthy()),
+            self.lookup_var_key(
+                cached_symbol!("tab-bar-mode"),
+                &crate::lisp::types::Env::new(),
+            )
+            .is_some_and(|value| value.is_truthy()),
         );
         let margin = menu + tab;
         // frame.c:make_frame: the first of `minibuffer-list', which
@@ -802,7 +807,7 @@ impl Interpreter {
     ) -> Result<bool, LispError> {
         use std::io::Read;
         if self
-            .lookup_var("noninteractive", env)
+            .lookup_var_key(cached_symbol!("noninteractive"), env)
             .is_some_and(|value| value.is_truthy())
         {
             return Ok(false);
@@ -888,7 +893,11 @@ impl Interpreter {
         }
         let mut pending = crate::lisp::primitives::unread_command_events(self, env)?;
         pending.extend(events);
-        self.set_variable("unread-command-events", Value::list(pending), env);
+        self.set_variable_key(
+            cached_symbol!("unread-command-events"),
+            Value::list(pending),
+            env,
+        );
         Ok(true)
     }
 }

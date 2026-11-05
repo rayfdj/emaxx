@@ -263,7 +263,7 @@ impl Categories {
 
 fn latin_extra_code_table(interp: &Interpreter, env: &Env) -> Option<Vec<Value>> {
     interp
-        .lookup_var("latin-extra-code-table", env)
+        .lookup_var_key(cached_symbol!("latin-extra-code-table"), env)
         .and_then(|table| vector_items(&table).ok())
 }
 
@@ -274,9 +274,13 @@ fn latin_extra_code(table: &Option<Vec<Value>>, c: i32) -> bool {
         .is_some_and(Value::is_truthy)
 }
 
-fn truthy_var(interp: &Interpreter, name: &str, env: &Env) -> bool {
+fn truthy_var(
+    interp: &Interpreter,
+    name: crate::lisp::types::symbols::SymbolKey,
+    env: &Env,
+) -> bool {
     interp
-        .lookup_var(name, env)
+        .lookup_var_key(name, env)
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -1075,11 +1079,11 @@ fn undecided_spec(interp: &Interpreter, coding: &str, env: &Env) -> UndecidedSpe
     UndecidedSpec {
         inhibit_nbd: inhibit_flag(
             args.first(),
-            truthy_var(interp, "inhibit-null-byte-detection", env),
+            truthy_var(interp, cached_symbol!("inhibit-null-byte-detection"), env),
         ),
         inhibit_ied: inhibit_flag(
             args.get(1),
-            truthy_var(interp, "inhibit-iso-escape-detection", env),
+            truthy_var(interp, cached_symbol!("inhibit-iso-escape-detection"), env),
         ),
         prefer_utf_8: args.get(2).is_some_and(Value::is_truthy),
     }
@@ -1110,7 +1114,11 @@ impl<'a> Detector<'a> {
             categories,
             iso,
             latin_extra: latin_extra_code_table(interp, env),
-            inhibit_iso_escape_detection: truthy_var(interp, "inhibit-iso-escape-detection", env),
+            inhibit_iso_escape_detection: truthy_var(
+                interp,
+                cached_symbol!("inhibit-iso-escape-detection"),
+                env,
+            ),
         }
     }
 
@@ -1672,7 +1680,7 @@ pub(crate) fn detect_coding_outcome(
             // An auto-BOM utf-8: the BOM decides between the pair, after
             // check_ascii (whose eol bits the gap's fast path uses).
             let mut info = DetectInfo::default();
-            let inhibit = truthy_var(interp, "inhibit-eol-conversion", env)
+            let inhibit = truthy_var(interp, cached_symbol!("inhibit-eol-conversion"), env)
                 || interp.coding_system_eol_type_value(&canonical).is_some();
             let mut outcome = DetectOutcome {
                 eol_seen: Some(check_ascii_eol(src, inhibit)),
@@ -1733,8 +1741,8 @@ pub(crate) fn detect_coding_outcome(
     }
     let spec = undecided_spec(interp, &canonical, env);
     let mut info = DetectInfo::default();
-    let track_eol = !truthy_var(interp, "disable-ascii-optimization", env)
-        && !truthy_var(interp, "inhibit-eol-conversion", env);
+    let track_eol = !truthy_var(interp, cached_symbol!("disable-ascii-optimization"), env)
+        && !truthy_var(interp, cached_symbol!("inhibit-eol-conversion"), env);
     let (head_ascii, null_byte_found, eight_bit_found, eol_seen) =
         detector.head_scan(src, &spec, &mut info, track_eol);
     let found = (|| {

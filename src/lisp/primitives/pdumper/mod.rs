@@ -31,7 +31,7 @@ pub(crate) fn dump_emacs_portable(
 ) -> Result<Value, LispError> {
     // eassert (initialized): a primitive only runs in an initialized image.
     if !interp
-        .lookup_var("noninteractive", env)
+        .lookup_var_key(cached_symbol!("noninteractive"), env)
         .is_some_and(|value| value.is_truthy())
     {
         return Err(LispError::Signal(
@@ -128,9 +128,12 @@ impl DumpContextVariables {
     }
 
     fn leave(self, interp: &mut Interpreter) {
-        interp.set_global_binding("purify-flag", self.old_purify_flag);
-        interp.set_global_binding("post-gc-hook", self.old_post_gc_hook);
-        interp.set_global_binding("process-environment", self.old_process_environment);
+        interp.set_global_binding_key(cached_symbol!("purify-flag"), self.old_purify_flag);
+        interp.set_global_binding_key(cached_symbol!("post-gc-hook"), self.old_post_gc_hook);
+        interp.set_global_binding_key(
+            cached_symbol!("process-environment"),
+            self.old_process_environment,
+        );
     }
 }
 

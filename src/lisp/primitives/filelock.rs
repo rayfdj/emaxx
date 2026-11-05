@@ -48,7 +48,7 @@ fn errno() -> i32 {
 /// lisp.h's will_dump_p: this is the `--temacs' process that dumps.
 fn will_dump_p(interp: &Interpreter, env: &Env) -> bool {
     interp
-        .lookup_var("dump-mode", env)
+        .lookup_var_key(cached_symbol!("dump-mode"), env)
         .and_then(|mode| string_like(&mode).map(|mode| mode.text))
         .is_some_and(|mode| mode == "pdump" || mode == "pbootstrap")
 }
@@ -601,7 +601,7 @@ fn lock_file(interp: &mut Interpreter, env: &mut Env, file: Value) -> Result<(),
     }
     let mut lfname = None;
     if interp
-        .lookup_var("create-lockfiles", env)
+        .lookup_var_key(cached_symbol!("create-lockfiles"), env)
         .is_some_and(|value| value.is_truthy())
     {
         lfname = make_lock_file_name(interp, env, file)?;

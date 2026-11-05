@@ -91,7 +91,7 @@ fn charset_iso_revision(interp: &Interpreter, charset: &str) -> Option<u8> {
 
 pub(crate) fn iso_attributes(
     interp: &Interpreter,
-    coding: &str,
+    coding: &(impl crate::lisp::eval::coding::CodingRef + ?Sized),
 ) -> Option<std::rc::Rc<IsoAttributes>> {
     let state = interp.coding_system(coding)?;
     state.derived.iso(interp.charset_epoch.get(), || {
@@ -100,7 +100,10 @@ pub(crate) fn iso_attributes(
 }
 
 /// setup_coding_system's ISO-2022 attributes of CODING.
-fn make_iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAttributes> {
+fn make_iso_attributes(
+    interp: &Interpreter,
+    coding: &(impl crate::lisp::eval::coding::CodingRef + ?Sized),
+) -> Option<IsoAttributes> {
     let state = interp.coding_system(coding)?;
     let args = &state.type_args;
     let mut initial: [Option<String>; 4] = Default::default();
@@ -1299,7 +1302,7 @@ pub(crate) struct Iso2022EncodeCarry {
 pub(crate) fn encode(
     interp: &Interpreter,
     chars: &[u32],
-    coding: &str,
+    coding: &(impl crate::lisp::eval::coding::CodingRef + ?Sized),
     eol_type: Option<i64>,
     preferred: &[Option<String>],
     carry: &mut Option<Box<Iso2022EncodeCarry>>,

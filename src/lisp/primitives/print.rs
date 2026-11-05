@@ -551,7 +551,7 @@ fn prepare_print_numbering(interp: &mut Interpreter, env: &mut Env, options: Pri
     if !options.continuous_numbering || table.is_none_or(|value| value.is_nil()) {
         interp.print_number_index = 0;
         if table.is_none_or(|value| !value.is_nil()) {
-            interp.set_variable("print-number-table", Value::Nil, env);
+            interp.set_variable_key(cached_symbol!("print-number-table"), Value::Nil, env);
         }
     }
 }
@@ -686,7 +686,7 @@ pub(crate) fn is_end_of_file_error(error: &LispError) -> bool {
 
 fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
     match interp
-        .lookup_var("load-true-file-name", env)
+        .lookup_var_key(cached_symbol!("load-true-file-name"), env)
         .map(|v| v.kind())
     {
         Some(file @ Kind::StringObject(_)) => LispError::SignalValue(Value::list([
@@ -1187,7 +1187,7 @@ impl crate::lisp::reader::ReaderStream for CallableReader<'_> {
         };
         let obarray = self
             .interp
-            .lookup_var("obarray", self.env)
+            .lookup_var_key(cached_symbol!("obarray"), self.env)
             .unwrap_or(Value::Nil);
         intern_in_obarray(self.interp, &obarray, &name)
     }
@@ -1682,11 +1682,11 @@ pub(crate) fn md5_source_bytes(
             let e = Value::Integer(e as i64);
             if coding.is_nil() {
                 coding = interp
-                    .lookup_var("coding-system-for-write", env)
+                    .lookup_var_key(cached_symbol!("coding-system-for-write"), env)
                     .unwrap_or(Value::Nil);
                 if coding.is_nil() {
                     let default = interp
-                        .lookup_var("buffer-file-coding-system", env)
+                        .lookup_var_key(cached_symbol!("buffer-file-coding-system"), env)
                         .unwrap_or(Value::Nil);
                     coding = default;
                     let local = call(
@@ -1723,7 +1723,7 @@ pub(crate) fn md5_source_bytes(
                         coding = default;
                     }
                     let selector = interp
-                        .lookup_var("select-safe-coding-system-function", env)
+                        .lookup_var_key(cached_symbol!("select-safe-coding-system-function"), env)
                         .unwrap_or(Value::Nil);
                     if !force_raw
                         && call(interp, "fboundp", std::slice::from_ref(&selector), env)?
@@ -1864,7 +1864,7 @@ mod tests {
         print_preprocess(&mut interp, &object, &mut env).expect("preprocess shared list");
 
         let table = interp
-            .lookup_var("print-number-table", &env)
+            .lookup_var_key(cached_symbol!("print-number-table"), &env)
             .expect("public number table");
         assert_eq!(table_state(&interp, &table, &a), Some(Value::Integer(-1)));
         assert_eq!(table_state(&interp, &table, &b), Some(Value::Integer(-2)));
@@ -1881,7 +1881,7 @@ mod tests {
         print_preprocess(&mut interp, &object, &mut env).expect("preprocess cyclic list");
 
         let table = interp
-            .lookup_var("print-number-table", &env)
+            .lookup_var_key(cached_symbol!("print-number-table"), &env)
             .expect("public number table");
         assert_eq!(
             table_state(&interp, &table, &object),

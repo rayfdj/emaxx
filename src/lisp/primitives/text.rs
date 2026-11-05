@@ -72,9 +72,12 @@ pub(crate) fn digest_hex(bytes: &[u8]) -> String {
 
 /// fns.c:Fsecure_hash: secure_hash of extract_data_from_object's bytes,
 /// as `md5' reads them without a coding system or NOERROR.
+/// fns.c:secure_hash's algorithms, chosen by EQ to their symbols.
+const SECURE_HASH_ALGORITHMS: [&str; 6] = ["md5", "sha1", "sha224", "sha256", "sha384", "sha512"];
+
 pub(crate) fn secure_hash_value(
     interp: &mut Interpreter,
-    algorithm: &str,
+    algorithm: crate::lisp::types::SymbolName,
     source: &Value,
     start: Option<&Value>,
     end: Option<&Value>,
@@ -87,6 +90,15 @@ pub(crate) fn secure_hash_value(
         end.copied().unwrap_or(Value::Nil),
     ];
     let input = md5_source_bytes(interp, &spec, env)?;
+    let Some(algorithm) = SECURE_HASH_ALGORITHMS
+        .into_iter()
+        .find(|name| algorithm.is_named(name))
+    else {
+        return Err(LispError::Signal(format!(
+            "Invalid algorithm arg: {}",
+            algorithm.name_text()
+        )));
+    };
     let digest = secure_hash_digest(algorithm, &input)?;
     if binary.is_some_and(Value::is_truthy) {
         Ok(bytes_to_shared_unibyte_value(&digest))
@@ -256,7 +268,7 @@ pub(crate) fn character_width(interp: &Interpreter, c: u32, env: &Env) -> usize 
     }
     if c > 0x7F {
         let width = interp
-            .lookup_var("char-width-table", env)
+            .lookup_var_key(cached_symbol!("char-width-table"), env)
             .and_then(|table| match table.kind() {
                 Kind::CharTable(table) => interp.char_table_get(table, c),
                 _ => None,
@@ -273,7 +285,7 @@ pub(crate) fn character_width(interp: &Interpreter, c: u32, env: &Env) -> usize 
     if c == u32::from(b'\t') {
         // SANE_TAB_WIDTH.
         return interp
-            .lookup_var("tab-width", env)
+            .lookup_var_key(cached_symbol!("tab-width"), env)
             .and_then(|width| width.integer_value())
             .filter(|width| (1..=1000).contains(width))
             .unwrap_or(8) as usize;
@@ -282,7 +294,7 @@ pub(crate) fn character_width(interp: &Interpreter, c: u32, env: &Env) -> usize 
         return 0;
     }
     if interp
-        .lookup_var("ctl-arrow", env)
+        .lookup_var_key(cached_symbol!("ctl-arrow"), env)
         .is_some_and(|value| value.is_truthy())
     {
         2

@@ -506,10 +506,10 @@ define_dispatch!(
                 interp.buffer.borrow_mut().name = final_name.clone();
                 // A buffer visiting no file renames its auto-save file.
                 let visits_file = interp
-                    .lookup_var("buffer-file-name", env)
+                    .lookup_var_key(cached_symbol!("buffer-file-name"), env)
                     .is_some_and(|value| value.is_truthy());
                 let auto_saves = interp
-                    .lookup_var("buffer-auto-save-file-name", env)
+                    .lookup_var_key(cached_symbol!("buffer-auto-save-file-name"), env)
                     .is_some_and(|value| value.is_truthy());
                 if !visits_file && auto_saves {
                     crate::lisp::primitives::hooks_overlays::call_named_function(
@@ -529,7 +529,10 @@ define_dispatch!(
                 // that boundary to replace a generated `<N>' suffix with
                 // directory-derived policy; keep that policy in uniquify.el.
                 if interp.is_fbound("uniquify--rename-buffer-advice") {
-                    let callback = interp.lookup_function("uniquify--rename-buffer-advice", env)?;
+                    let callback = interp.lookup_function_key(
+                        cached_symbol!("uniquify--rename-buffer-advice"),
+                        env,
+                    )?;
                     interp.call_function_value(
                         callback,
                         Some("uniquify--rename-buffer-advice"),
@@ -844,6 +847,8 @@ define_dispatch!(
             }
             "get-variable-watchers" => {
                 need_args(name, args, 1)?;
+                // data.c reads SYMBOL_TRAPPED_WRITE_P without CHECK_SYMBOL,
+                // undefined for what is no symbol; it is checked here.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
                 interp.variable_watchers(&symbol)
             }
@@ -1445,7 +1450,7 @@ define_dispatch!(
                 let non_nil = name == "read-non-nil-coding-system";
                 need_arg_range(name, args, 1, if non_nil { 1 } else { 2 })?;
                 let collection = interp
-                    .lookup_var("coding-system-alist", env)
+                    .lookup_var_key(cached_symbol!("coding-system-alist"), env)
                     .unwrap_or(Value::Nil);
                 // coding.c: a symbol default is its name; read-coding-system
                 // binds `completion-ignore-case' to t around the reading.
@@ -1526,7 +1531,7 @@ define_dispatch!(
                 Ok(match name {
                     "coding-system-aliases" => interp.coding_specs[spec].aliases,
                     "coding-system-plist" => interp.coding_attrs[attrs].plist,
-                    _ => Value::symbol(&interp.coding_attrs[attrs].base),
+                    _ => Value::Symbol(interp.coding_attrs[attrs].base),
                 })
             }
             "coding-system-put" => {
@@ -1537,20 +1542,24 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // nil is `no-conversion', and what CODING_SYSTEM_P rejects
                 // has no eol type.
-                let coding = if args[0].is_nil() {
-                    "no-conversion"
+                let spec = if args[0].is_nil() {
+                    interp.coding_spec_index("no-conversion")
                 } else {
-                    args[0].symbol_str().unwrap_or_default()
+                    args[0]
+                        .symbol_cell()
+                        .and_then(|symbol| interp.coding_spec_index_symbol(&symbol))
                 };
-                let Some(spec) = interp.coding_spec(coding) else {
+                let Some(spec) = spec.map(|spec| &interp.coding_specs[spec]) else {
                     return Ok(Value::Nil);
                 };
                 Ok(match spec.eol_type.kind() {
                     Kind::Vector(subsidiaries) => Value::vector(subsidiaries.slots()),
-                    _ => Value::Integer(match spec.eol_type.symbol_str() {
-                        Some("unix") => 0,
-                        Some("dos") => 1,
-                        _ => 2,
+                    _ => Value::Integer(if spec.eol_type.is_key(cached_symbol!("unix")) {
+                        0
+                    } else if spec.eol_type.is_key(cached_symbol!("dos")) {
+                        1
+                    } else {
+                        2
                     }),
                 })
             }
@@ -1759,12 +1768,15 @@ define_dispatch!(
             }
             "find-operation-coding-system" => find_operation_coding_system_value(interp, args, env),
             "set-coding-system-priority" => {
-                let mut names = Vec::with_capacity(args.len());
+                let mut codings = Vec::with_capacity(args.len());
                 for coding in args {
                     super::coding_systems::checked_coding_spec(interp, coding, env)?;
-                    names.push(coding.symbol_str().unwrap_or_default().to_string());
+                    codings.push(match coding.kind() {
+                        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+                        _ => coding.symbol_cell().expect("a coding system is a symbol"),
+                    });
                 }
-                interp.set_coding_system_categories_priority(&names, env)?;
+                interp.set_coding_system_categories_priority(&codings, env)?;
                 Ok(Value::Nil)
             }
             "define-coding-system-internal" => {
@@ -1791,7 +1803,8 @@ pub(crate) fn other_buffer(
     frame: crate::lisp::types::FrameRef,
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let predicate = super::frames::frame_parameter_value(interp, frame, "buffer-predicate");
+    let predicate =
+        super::frames::frame_parameter_value(interp, frame, cached_symbol!("buffer-predicate"));
     let excluded = match buffer.kind() {
         Kind::Buffer(buffer) => Some(buffer.id),
         _ => None,

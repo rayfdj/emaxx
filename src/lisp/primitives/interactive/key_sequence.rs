@@ -38,11 +38,11 @@ impl KeySequenceReader {
     ) -> Result<Self, LispError> {
         let mut roots = RootedVec::with_capacity(10);
         for name in [
-            "input-decode-map",
-            "local-function-key-map",
-            "key-translation-map",
+            cached_symbol!("input-decode-map"),
+            cached_symbol!("local-function-key-map"),
+            cached_symbol!("key-translation-map"),
         ] {
-            let map = interp.lookup_var(name, env).unwrap_or(Value::Nil);
+            let map = interp.lookup_var_key(name, env).unwrap_or(Value::Nil);
             roots.push(map);
             roots.push(map);
         }
@@ -260,7 +260,7 @@ impl KeySequenceReader {
         if !self.roots[6].is_nil()
             || self.remaps[2].start < self.read
             || !interp
-                .lookup_var("translate-upper-case-key-bindings", env)
+                .lookup_var_key(cached_symbol!("translate-upper-case-key-bindings"), env)
                 .is_some_and(|value| value.is_truthy())
         {
             return Ok(false);
@@ -343,7 +343,11 @@ impl KeySequenceReader {
             self.shift_translated = false;
         }
         if self.shift_translated {
-            interp.set_variable("this-command-keys-shift-translated", Value::T, env);
+            interp.set_variable_key(
+                cached_symbol!("this-command-keys-shift-translated"),
+                Value::T,
+                env,
+            );
         }
         self.keys.to_vec()
     }
@@ -393,7 +397,7 @@ impl KeySequenceReader {
         } else {
             event
         });
-        interp.set_variable("last-input-event", event, env);
+        interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
         let mut expanded = false;
         if mouse_event_head(interp, &event).is_none()
             && let Some(position_tail) = event
@@ -521,10 +525,10 @@ impl KeySequenceReader {
 // need the same idle wait and may unwind this reader through a Lisp throw.
 fn wait_for_sequence_event(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
     let queued = interp
-        .lookup_var("unread-command-events", env)
+        .lookup_var_key(cached_symbol!("unread-command-events"), env)
         .is_some_and(|v| v.cons_values().is_some());
     let idle_timers = interp
-        .lookup_var("timer-idle-list", env)
+        .lookup_var_key(cached_symbol!("timer-idle-list"), env)
         .is_some_and(|value| value.is_truthy());
     if queued || has_tty_event_poller() || executing_kbd_macro_p(interp, env) || !idle_timers {
         return read_key_sequence_event(interp, env);
@@ -536,7 +540,7 @@ fn wait_for_sequence_event(interp: &mut Interpreter, env: &mut Env) -> Result<Va
         loop {
             interp.service_async_runtime_events(env, true, Some(start.elapsed().as_secs_f64()))?;
             if interp
-                .lookup_var("unread-command-events", env)
+                .lookup_var_key(cached_symbol!("unread-command-events"), env)
                 .is_some_and(|v| v.cons_values().is_some())
             {
                 return read_key_sequence_event(interp, env);

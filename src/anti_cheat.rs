@@ -1,3 +1,4 @@
+use crate::lisp::cached_symbol;
 use crate::lisp::types::LispErrorKind;
 use std::fs;
 use std::path::Path;
@@ -1041,7 +1042,7 @@ pub(crate) fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() 
     let interpreter = Interpreter::new();
     let environment = Env::new();
     assert_eq!(
-        interpreter.lookup_var("region-extract-function", &environment),
+        interpreter.lookup_var_key(cached_symbol!("region-extract-function"), &environment),
         Some(Value::Nil),
         "casefiddle.c creates region-extract-function as nil before simple.el loads"
     );
@@ -1075,7 +1076,7 @@ pub(crate) fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
     );
     assert!(
         matches!(
-            bare.lookup_function("read-key", &Env::new()).map_err(LispError::into_kind),
+            bare.lookup_function_key(cached_symbol!("read-key"), &Env::new()).map_err(LispError::into_kind),
             Err(LispErrorKind::VoidFunction(missing))
                 if matches!(missing.kind(), crate::lisp::types::Kind::Symbol(missing) if missing.is_named("read-key"))
         ),

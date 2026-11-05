@@ -33,7 +33,7 @@ pub(crate) fn memory_full(interp: &mut Interpreter, env: &Env, nbytes: usize) ->
     }
     LispError::SignalValue(
         interp
-            .lookup_var("memory-signal-data", env)
+            .lookup_var_key(cached_symbol!("memory-signal-data"), env)
             .unwrap_or(Value::Nil),
     )
 }

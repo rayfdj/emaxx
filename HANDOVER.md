@@ -14653,6 +14653,190 @@ setup_process_coding_systems's check now refuses). A 13-form
   native-compilation ones run again after the parameter binding), the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 311: native code's Ffuncall of a C subr takes the plain path,
+  and the primitives a new fuzz found apart from GNU check and name
+  their arguments as GNU does.** GNU's native code calls a function
+  outside its own primitives' link table through Ffuncall:
+  `char-from-name' calls `ucs-names' and `gethash' so, and for a C subr
+  Emaxx left its plain native path for the general one (the debugger
+  test, a full frame record, the function cell resolved again) and
+  padded the omitted optional arguments in a heap-capable small vector,
+  106 instructions of the 1,510 a call took against GNU's 1,043. A C
+  subr whose count lies in its arity is now called as funcall_subr calls
+  it, on the same plain conditions as a native function (no quit or
+  signal pending, the depth within bounds, no Edebug, no collection
+  due), a fixed one of at most eight arguments with nil for each omitted
+  one in an eight-word argbuf, a MANY one with the vector; the general
+  path pads in the same argbuf. `char-from-name' from interpreted code
+  takes 3,098 instructions a call against 3,320 (GNU's 2,838). A fuzz
+  that calls 462 of GNU's C primitives, four times each, with uninterned
+  symbols and lists and vectors of them, and a table of 154 calls that
+  give an uninterned symbol a role a primitive reads, found these apart
+  from GNU, now as it does: `require' of an uninterned feature loads the
+  file its name (SYMBOL_NAME) names and says the feature was not
+  provided, and `require_nesting_list' holds symbols; `provide' adds the
+  symbol itself to `features' and conses (provide . FEATURE) onto
+  `current-load-list' each time, as LOADHIST_ATTACH does (Emaxx added
+  the interned symbol of its name and once per load); `secure-hash'
+  knows fns.c's six algorithms only, chosen by EQ once the data is
+  extracted, and names an unknown one by its name (Emaxx also computed
+  SHA-3, Streebog and GOST, which only `gnutls-hash-digest' offers);
+  `mapbacktrace' and `backtrace-frame--internal' call FUNCTION only on a
+  frame, resolving it each call; `get-display-property' takes PROPERTIES
+  and OBJECT, reads the `display' property through `get-text-property'
+  (an object's check before a position's) and finds PROP as xdisp.c's
+  find_display_property does, by EQ, in a vector, a list of specs or one
+  spec; `copy-marker' takes no argument; `intern-soft' checks the
+  obarray before the name; `bidi-resolved-levels' and `lookup-image-map'
+  check fixnums; `start-kbd-macro' appending to a `last-kbd-macro' that
+  is no array signals `arrayp'; `make-terminal-frame' names its whole
+  parameter list in a `listp' error; `pos-visible-in-window-p' checks
+  its window and position before batch mode answers nil;
+  `serial-process-configure' finds its process as get_process does
+  ("Buffer NAME has no process"). A command-line comparison runs these
+  cases. The fuzzes of variables, function cells, fields, loading,
+  errors, coding, buffers, case, numbers, strings, printing, syntax and
+  hooks, the uninterned roles and the command-line cases of rounds 303
+  to 310 print GNU's results as before. Local validation: the grouped
+  gate's 3,501 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+
+- **Round 312: coding systems are found by their symbols, as
+  Vcoding_system_hash_table, an `eq' table, finds them, and more
+  primitives check their arguments as GNU does.** Emaxx kept the table
+  by name, which round 311's role table showed apart from GNU only
+  through the marked text of an uninterned symbol:
+  `define-coding-system-alias' of one interned that text (a checked
+  build stops on it). The table is keyed by the symbol: its keys are
+  collection roots, copied with an interpreter and written to the image
+  as symbols; Fdefine_coding_system_internal and
+  Fdefine_coding_system_alias take the symbol, intern an alias's
+  subsidiaries from its name (make_subsidiaries' SYMBOL_NAME) and push
+  it onto `coding-system-list' with its name in `coding-system-alist';
+  CODING_ATTR_BASE_NAME is the symbol; and `coding-system-p',
+  `check-coding-system', CHECK_CODING_SYSTEM and its _GET_SPEC, the name
+  a coding system stands for, `set-coding-system-priority' (the category
+  variable set to the symbol given), `coding-system-eol-type', the mode
+  line's mnemonic and the font check look the symbol up by EQ. An
+  uninterned alias is a coding system, with its target's attributes,
+  encodes and decodes, and the interned symbol of its name is none. The
+  conversions find the coding id once, as setup_coding_system does: the
+  spec and the symbol of its first name (`CodingId'), which the
+  attribute readers take as well as a name (`CodingRef'), and the
+  variables they read (`inhibit-eol-conversion', the translation tables)
+  and `last-coding-system-used' are read and stored by their symbols;
+  with the table keyed by symbols, `encode-coding-string' took 6,131
+  instructions a call, finding the same names again eight times, and
+  takes 3,930 now (GNU 3,776), `decode-coding-string' 15,259 (GNU
+  17,353). The callers that still keep a coding system by its name keep
+  such an alias as the coding system it stands for, so
+  `last-coding-system-used' names the target where GNU names the alias,
+  and a coding system defined under an uninterned symbol signals
+  `coding-system-error' where it would convert; both are recorded as
+  remaining. A call through an autoload loads the file for the symbol
+  called and calls that symbol's new definition, not its name's, and
+  `autoload' reads the symbol's own function cell (Fautoload's XSYMBOL);
+  `inotify-add-watch' reads its aspects by EQ, an unknown one the datum
+  of its error. A second fuzz pass over 581 of GNU's C primitives, with
+  a deny list of only what could leave the process, found these apart
+  from GNU, now as it does: `describe-vector' names the object it
+  rejects; `local-variable-p' decodes its buffer first;
+  `set-input-meta-mode' and `set-output-flow-control' decode their
+  terminal; `tab-bar-height' and `tool-bar-height' take any frame; the
+  lcms functions signal_error with the color (`lcms-cie-de2000' naming
+  COLOR1 for either, as GNU does) and `lcms-temp->white-point' checks a
+  number (`menu-bar-menu-at-x-y' and `get-variable-watchers' differed
+  too, but GNU reads what is no fixnum or symbol unchecked there, and
+  segfaulted on the first; Emaxx keeps checking them). The checked build
+  runs the role tables of rounds 311 and 312 through without stopping,
+  and a command-line comparison runs these cases. The fuzzes of
+  variables, function cells, fields, loading, errors, coding, buffers,
+  case, numbers, strings, printing, syntax and hooks, the uninterned
+  roles and the command-line cases of rounds 303 to 311 print GNU's
+  results as before. Local validation: the grouped gate's 3,501
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+
+- **Round 313: `frame-parameter' reads one parameter as Fframe_parameter
+  does, `frame-or-buffer-changed-p' is dispnew.c's, and the C side's
+  variable lookups by a literal name go through the symbol.** GNU's
+  Fframe_parameter answers a name it does not special-case with Fcdr
+  (Fassq (PARAMETER, Fframe_parameters (FRAME))): for a text frame that
+  is the value Fframe_parameters stores for its ten parameters (font,
+  name, height, width, modeline, unsplittable, the two buffer lists, the
+  bar lines) or its two colors, else the parameter's entry in
+  param_alist. Emaxx built that alist for every such lookup, a copy of
+  param_alist and twelve store_in_alist calls, about 40 times an
+  iteration of upstream-undo (`buffer-predicate' in each `other-buffer',
+  `min-height', `min-width' and `modeline' in each
+  frame-windows-min-size); it now reads the one value, from the table
+  Fframe_parameters itself builds from, and matches the parameter and
+  store_frame_param's special names by EQ through cached symbols rather
+  than by their text. upstream-undo takes 1,335k instructions an
+  iteration against GNU's 1,214k (1.100), down from 1.195.
+  Fframe_or_buffer_changed_p recorded only the selected frame, with its
+  `name' parameter rather than f->name, sized its vector by the buffers
+  it records rather than by every live one (35 slots in GNU at startup,
+  29 in Emaxx), compared with `eq' semantics only in part, and looked
+  VARIABLE up by its name, so an uninterned variable was void; it now
+  follows dispnew.c: every live frame and its f->name, each listed
+  buffer's `buffer-read-only' and Fbuffer_modified_p (`autosaved'
+  included), GNU's count and reallocation, EQ throughout, and
+  CHECK_SYMBOL, Fsymbol_value and Fset of the symbol. 478 lookups of a
+  variable by a literal name (245 names, the C side's Q-symbols) go
+  through cached keys, leaving 53 by name, all of variables a test
+  defines; since every key is interned when an editor is made, a
+  command-line test checks that each of the 493 names a symbol GNU's own
+  startup has interned. A finding on the workload measurements:
+  upstream-sort's two-point difference (3 runs less 1) read 1.094, but
+  Emaxx's 3-run had one more collection than its 1-run where GNU's had
+  none more (setup's last collection lands later in GNU), and a
+  collection costs Emaxx 35M instructions where GNU's costs 57M; with
+  that collection set aside it is at GNU's count (0.996). A difference
+  is comparable only when both sides collect equally often across it.
+  The fuzzes and command-line cases of rounds 303 to 312 print GNU's
+  results as before. Local validation: the grouped gate's 3,501
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 314: the C side reads, sets and binds variables and calls
+  functions through the symbols themselves, compares symbol arguments by
+  EQ, and reads a symbol's name where GNU reads SYMBOL_NAME.** After
+  round 313's variable lookups, the other accessors named by a literal
+  (`set_variable', `default_value', `buffer_local_value' and
+  `set_buffer_local_value', 301 calls; `bind_special_variable' and
+  `set_global_binding', 97; `lookup_function', 34) and the helpers that
+  took a name (the mode line's BVAR reader, the line-number layout's,
+  self-insert's, the composition tables', the coding detector's and the
+  undo limits') go through cached keys, so each finds its symbol once
+  per editor rather than by its text each call (`default_value' and
+  `set_buffer_local_value' by name interned the name they were given);
+  what is left by a literal name is 76 test variables GNU does not have.
+  31 comparisons of a symbol argument with a literal name, the eol types
+  (`coding-system-eol-type' and the mode line's mnemonics) and
+  `nobreak-char-display' are EQ with the symbol. A compile-time check
+  refuses a key listed twice (`standard-display-table' was).
+  keyboard.c's parse_solitary_modifier and parse_modifiers read
+  SYMBOL_NAME, so an uninterned `control' is a modifier to
+  `event-convert-list' and `where-is-preferred-modifier' and an
+  uninterned `s-H-x' parses as that name; Emaxx read the marked text and
+  signalled "Two bases given in one event". make-process's :buffer and
+  :stderr, make-pipe-process's :buffer and call-process's destination
+  signal (wrong-type-argument stringp OBJECT) as Fget_buffer_create's
+  CHECK_STRING does, where Emaxx made up a `buffer-or-name' error
+  holding a type name (two of the LispError::TypeError sites; a probe of
+  the other 32 found GNU's errors). A finding on the workload
+  measurements: list-traversal's 10-to-210 difference read 436,973
+  instructions an iteration because a collection fell just after the
+  210-iteration body and not after the 10-iteration one; with collection
+  held off through the body (gc-cons-threshold at most-positive-fixnum)
+  it is 270,046 against GNU's 267,033, and upstream-undo 1,339,539
+  against 1,222,667 (1.096), so mutator comparisons hold collection off
+  and collections are compared per collection. The fuzzes and
+  command-line cases of rounds 303 to 313 print GNU's results as before,
+  and a command-line comparison runs this round's cases. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17097,6 +17281,50 @@ tests after it. Round 310 binds those parameters as symbols; with that
 the checked build runs comp-tests' 178 tests as expected, and every file
 of test/src as GNU does.
 
+**On `8edccc3`** (round 310): the full Rust gate (run 41961995378)
+passed; the frozen run (run 41961998444) passed at its first attempt,
+7,928 of 7,928 outcomes matching, comp-tests among them, on a slow
+runner (the oracle's bodies 267.2 s against round 308's 224.5). Setup
+78.6 s against 63.9 s (1.230), test bodies 298.8 s against 267.2 s
+(1.118), in all 1.118, with a per-file setup median of 118 ms against
+99. The widest body gaps are ert-tests (46,035 ms against 37,661),
+tramp-tests (22,498 against 18,836), comp-tests (17,038 against 14,240),
+semantic-utest-ia (3,871 against 2,535) and mule-tests (3,234 against
+1,998), and `ert-test-run-tests-batch-expensive' is 1.21 of GNU's time.
+
+**On `c1c6504`** (round 311): the full Rust gate (run 41972087654)
+passed; the frozen run (run 41972090854) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a slow runner again (the oracle's
+bodies 268.0 s against round 310's 267.2). Setup 79.8 s against 65.4 s
+(1.222), test bodies 299.9 s against 268.0 s (1.119), in all 1.117, with
+a per-file setup median of 120 ms against 101. The widest body gaps are
+ert-tests (46,146 ms against 38,109), tramp-tests (22,732 against
+19,120), comp-tests (17,148 against 14,545), semantic-utest-ia (3,965
+against 2,611) and mule-tests (3,246 against 2,004), and
+`ert-test-run-tests-batch-expensive' is 1.20 of GNU's time.
+
+**On `06f491b`** (round 312): the full Rust gate (run 41981853253)
+passed; the frozen run (run 41981857008) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a slow runner again (the oracle's
+bodies 265.7 s against round 311's 268.0). Setup 78.8 s against 64.1 s
+(1.230), test bodies 299.7 s against 265.7 s (1.128), in all 1.124, with
+a per-file setup median of 117 ms against 98. The widest body gaps are
+ert-tests (47,483 ms against 37,981), tramp-tests (22,717 against
+19,135), comp-tests (16,891 against 14,241), semantic-utest-ia (3,958
+against 2,564) and mule-tests (3,203 against 1,989), and
+`ert-test-run-tests-batch-expensive' is 1.24 of GNU's time.
+
+**On `7c3a5dd`** (round 313): the full Rust gate (run 41986663669)
+passed; the frozen run (run 41986667814) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a faster runner (the oracle's
+bodies 261.2 s against round 312's 265.7). Setup 74.4 s against 63.0 s
+(1.181), test bodies 280.4 s against 261.2 s (1.074), in all 1.082, with
+a per-file setup median of 111 ms against 96. The widest body gaps are
+ert-tests (39,275 ms against 36,530), tramp-tests (19,980 against
+17,331), comp-tests (16,305 against 14,389), semantic-utest-ia (3,724
+against 2,718) and mule-tests (2,842 against 1,846), and
+`ert-test-run-tests-batch-expensive' is 1.07 of GNU's time.
+
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's
   `--symbol-ordering-file' with the 3,046 functions four test files'
@@ -17923,7 +18151,13 @@ and failures are still recorded.
    309 no table maps it back) and the reads still matched against it (the
    C variables' initial values and per-buffer predicates, the `as_symbol'
    and `symbol_str' readings of a symbol argument), which GNU makes from the
-   symbol's own name and forwarding descriptor; text-property intervals
+   symbol's own name and forwarding descriptor; the registries still keyed
+   by name, where GNU's are keyed by the symbol (since round 312 the
+   coding system table is the symbol's, but the conversions still carry a
+   coding system by its name: GNU's coding id, the spec, is what they
+   should carry, so that `last-coding-system-used' names an uninterned
+   alias and a coding system defined under one converts; the charsets,
+   fontsets and fringe bitmaps next); text-property intervals
    (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor

@@ -1158,8 +1158,8 @@ define_dispatch!(
                 // (the euc-jp alias stays `euc-jp'); canonicalization is the
                 // codec's business, not last-coding-system-used's.
                 load_coding_system(interp, &args[2], env)?;
-                let coding = checked_coding_name(interp, &args[2])?
-                    .map(|_| args[2].as_symbol().expect("validated symbol").to_string());
+                let coding =
+                    crate::lisp::primitives::coding::checked_coding_given(interp, &args[2])?;
                 enum Destination {
                     Replace,
                     Return,
@@ -1413,8 +1413,8 @@ define_dispatch!(
                 }
                 // Verbatim for the same reason as the region ops above.
                 load_coding_system(interp, &args[1], env)?;
-                let coding = checked_coding_name(interp, &args[1])?
-                    .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
+                let coding =
+                    crate::lisp::primitives::coding::checked_coding_given(interp, &args[1])?;
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
                 let Some(buffer_id) = code_convert_destination(interp, args.get(3))? else {
                     return encode_coding_value(interp, &args[0], coding.as_deref(), nocopy, env);
@@ -1439,8 +1439,8 @@ define_dispatch!(
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
                 }
                 load_coding_system(interp, &args[1], env)?;
-                let coding = checked_coding_name(interp, &args[1])?
-                    .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
+                let coding =
+                    crate::lisp::primitives::coding::checked_coding_given(interp, &args[1])?;
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
                 let destination = code_convert_destination(interp, args.get(3))?;
                 // code_convert_string's ASCII shortcut applies only when

@@ -334,10 +334,10 @@ pub(crate) fn compute_motion(
         0
     };
     let truncate_lines = interp
-        .lookup_var("truncate-lines", env)
+        .lookup_var_key(cached_symbol!("truncate-lines"), env)
         .is_some_and(|value| !value.is_nil());
     let truncate_partial = interp
-        .lookup_var("truncate-partial-width-windows", env)
+        .lookup_var_key(cached_symbol!("truncate-partial-width-windows"), env)
         .unwrap_or(Value::Nil);
     let multibyte = interp.buffer.borrow().is_multibyte();
     let zv = interp.buffer.borrow().point_max();

@@ -1461,7 +1461,7 @@ impl Driver<'_> {
     }
 
     fn is_lambda(value: &Value) -> bool {
-        value.symbol_str() == Some("lambda")
+        value.is_key(cached_symbol!("lambda"))
     }
 
     fn code_conversion_maps(interp: &Interpreter) -> Value {
@@ -2219,8 +2219,8 @@ mod tests {
             "eq",
             vec![(Value::Integer(17), Value::Integer(16))],
         );
-        interp.set_global_binding(
-            "translation-hash-table-vector",
+        interp.set_global_binding_key(
+            cached_symbol!("translation-hash-table-vector"),
             vector([Value::cons(Value::Symbol("table".into()), table)]),
         );
         interp.put_symbol_property("table", "translation-hash-table-id", Value::Integer(0));

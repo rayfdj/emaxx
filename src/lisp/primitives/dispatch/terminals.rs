@@ -83,7 +83,7 @@ define_dispatch!(
                 }
                 if args
                     .get(1)
-                    .is_some_and(|value| value.symbol_str() == Some("noelisp"))
+                    .is_some_and(|value| value.is_key(cached_symbol!("noelisp")))
                 {
                     interp.pending_funcalls.push(Value::list([
                         Value::symbol("run-hook-with-args"),

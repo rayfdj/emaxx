@@ -3485,7 +3485,7 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             let _ = interp.set_current_buffer_id(buffer_id);
             prim(interp, "erase-buffer", [], env)?;
             let _ = interp.set_current_buffer_id(saved);
-            interp.bind_special_variable("standard-output", buffer, env)?;
+            interp.bind_special_key(cached_symbol!("standard-output"), buffer, env)?;
             push!(buffer);
         }
         Op::TempOutputBufferShow => {
@@ -3494,7 +3494,7 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             let value = pop!();
             let buffer = pop!();
             let show = interp
-                .lookup_var("temp-buffer-show-function", env)
+                .lookup_var_key(cached_symbol!("temp-buffer-show-function"), env)
                 .unwrap_or(Value::Nil);
             interp.with_lisp_stack_roots(&value, |interp| {
                 if show.is_truthy() {

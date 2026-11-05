@@ -1,3 +1,4 @@
+use crate::lisp::cached_symbol;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -271,8 +272,8 @@ pub(crate) fn run_startup_top_level(
     interpreter: &mut Interpreter,
     command_line_args: &[String],
 ) -> Result<Value, LispError> {
-    interpreter.set_global_binding(
-        "command-line-args",
+    interpreter.set_global_binding_key(
+        cached_symbol!("command-line-args"),
         Value::list(
             command_line_args.iter().map(|argument| {
                 lisp::primitives::bytes_to_shared_unibyte_value(argument.as_bytes())
@@ -767,13 +768,13 @@ fn initialize_interpreter_attempt(
     // GNU starts batch evaluation in *scratch*, whose buffer-local
     // `lexical-binding' is t while the default remains nil.  File cookies
     // override and restore this state around loads.
-    interpreter.set_variable(
-        "lexical-binding",
+    interpreter.set_variable_key(
+        cached_symbol!("lexical-binding"),
         Value::T,
         &mut crate::lisp::types::Env::new(),
     );
-    interpreter.set_variable(
-        "noninteractive",
+    interpreter.set_variable_key(
+        cached_symbol!("noninteractive"),
         Value::T,
         &mut crate::lisp::types::Env::new(),
     );
@@ -781,8 +782,8 @@ fn initialize_interpreter_attempt(
     // phase, where delayed Custom initializers accumulate until startup;
     // an image carries the accumulated list.
     if !initialized {
-        interpreter.set_variable(
-            "custom-delayed-init-variables",
+        interpreter.set_variable_key(
+            cached_symbol!("custom-delayed-init-variables"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -791,8 +792,8 @@ fn initialize_interpreter_attempt(
     // font.c:init_font runs after syms_of_font and before loadup.el.  Merely
     // having EMACS_FONT_LOG in the environment enables logging, even when its
     // value is the empty string.
-    interpreter.set_variable(
-        "font-log",
+    interpreter.set_variable_key(
+        cached_symbol!("font-log"),
         if env::var_os("EMACS_FONT_LOG").is_some() {
             Value::Nil
         } else {
@@ -807,15 +808,18 @@ fn initialize_interpreter_attempt(
     // buffer — a dumped GNU binary starts with an empty one (loaddefs.el's
     // own `(load "theme-loaddefs.el" t)' was leaking a Loading line there).
     let saved_message_log_max = interpreter
-        .lookup_var("message-log-max", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("message-log-max"),
+            &crate::lisp::types::Env::new(),
+        )
         .unwrap_or(Value::Nil);
-    interpreter.set_variable(
-        "message-log-max",
+    interpreter.set_variable_key(
+        cached_symbol!("message-log-max"),
         Value::Nil,
         &mut crate::lisp::types::Env::new(),
     );
-    interpreter.set_variable(
-        "inhibit-message",
+    interpreter.set_variable_key(
+        cached_symbol!("inhibit-message"),
         Value::T,
         &mut crate::lisp::types::Env::new(),
     );
@@ -841,18 +845,18 @@ fn initialize_interpreter_attempt(
         // language environment) sets it again.
         interpreter.forget_charset_non_preferred_head();
         // pdumper.c writes Vpurify_flag as nil into the saved image.
-        interpreter.set_global_binding("purify-flag", Value::Nil);
+        interpreter.set_global_binding_key(cached_symbol!("purify-flag"), Value::Nil);
         Ok(())
     })(&mut interpreter);
     // Restore before propagating: a failed reconstruction must not leave the
     // session muted, or its own diagnostics would be swallowed too.
-    interpreter.set_variable(
-        "inhibit-message",
+    interpreter.set_variable_key(
+        cached_symbol!("inhibit-message"),
         Value::Nil,
         &mut crate::lisp::types::Env::new(),
     );
-    interpreter.set_variable(
-        "message-log-max",
+    interpreter.set_variable_key(
+        cached_symbol!("message-log-max"),
         saved_message_log_max,
         &mut crate::lisp::types::Env::new(),
     );
@@ -866,29 +870,32 @@ fn initialize_interpreter_attempt(
     // 1.0 only when an initialized (dump-loaded) process starts in batch mode.
     // The reconstructed image above is the temacs/loadup phase. Apply the
     // new process's C values before live-session initialization and Lisp.
-    interpreter.set_variable(
-        "noninteractive",
+    interpreter.set_variable_key(
+        cached_symbol!("noninteractive"),
         if noninteractive { Value::T } else { Value::Nil },
         &mut crate::lisp::types::Env::new(),
     );
     // emacs.c: `noninteractive && initialized ? 1.0 : 0.1', so the dumping
     // process (`--temacs') keeps 0.1 while loadup runs, as cus-start's
     // `standard-value' records it.
-    interpreter.set_variable(
-        "gc-cons-percentage",
+    interpreter.set_variable_key(
+        cached_symbol!("gc-cons-percentage"),
         Value::float(if noninteractive && !temacs { 1.0 } else { 0.1 }),
         &mut crate::lisp::types::Env::new(),
     );
     // sysdep.c:init_system_name, from init_editfns in every process: this
     // host's name, or nil after `--no-build-details'; the image carries
     // the dumping host's.
-    interpreter.set_global_binding("system-name", lisp::primitives::system_name_lisp_value());
+    interpreter.set_global_binding_key(
+        cached_symbol!("system-name"),
+        lisp::primitives::system_name_lisp_value(),
+    );
     // The arguments left for the top level.  startup.el defines
     // `command-line-args-left'; the process that builds the image
     // (`--temacs') loads it only after this, and GNU's C never sets it.
     if !temacs {
-        interpreter.set_variable(
-            "command-line-args-left",
+        interpreter.set_variable_key(
+            cached_symbol!("command-line-args-left"),
             Value::list(
                 options
                     .args_left
@@ -904,8 +911,8 @@ fn initialize_interpreter_attempt(
     // runs, and the raw initializer stays for it; a fresh batch session
     // clears it here.
     if noninteractive && !temacs {
-        interpreter.set_variable(
-            "undo-outer-limit",
+        interpreter.set_variable_key(
+            cached_symbol!("undo-outer-limit"),
             Value::Nil,
             &mut crate::lisp::types::Env::new(),
         );
@@ -984,7 +991,10 @@ fn configure_native_load_path_for_dump_reconstruction(
     // invocation-directory when a non-dumped Emacs is about to load Lisp.
     // For Emaxx this is the writable build-tree cache under target/.
     let load_path = interpreter
-        .lookup_var("native-comp-eln-load-path", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("native-comp-eln-load-path"),
+            &crate::lisp::types::Env::new(),
+        )
         .ok_or_else(|| "native-comp-eln-load-path is unbound during startup".to_string())?;
     let (initial_directory, _) = load_path
         .cons_values()
@@ -993,7 +1003,10 @@ fn configure_native_load_path_for_dump_reconstruction(
         .ok_or_else(|| "native-comp-eln-load-path initial entry is not a string".to_string())?
         .text;
     let invocation_directory = interpreter
-        .lookup_var("invocation-directory", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("invocation-directory"),
+            &crate::lisp::types::Env::new(),
+        )
         .and_then(|value| lisp::primitives::string_like(&value).map(|string| string.text))
         .ok_or_else(|| "invocation-directory is not a string during startup".to_string())?;
     let native_directory =
@@ -1006,13 +1019,16 @@ fn configure_native_load_path_for_dump_reconstruction(
     // the same native standard-library functions as the dumped GNU binary,
     // while newly compiled files continue to land in Emaxx's build tree.
     let source_directory = interpreter
-        .lookup_var("source-directory", &crate::lisp::types::Env::new())
+        .lookup_var_key(
+            cached_symbol!("source-directory"),
+            &crate::lisp::types::Env::new(),
+        )
         .and_then(|value| lisp::primitives::string_like(&value).map(|string| string.text))
         .ok_or_else(|| "source-directory is not a string during startup".to_string())?;
     let system_native_directory =
         lisp::primitives::expand_file_name("native-lisp/", Some(&source_directory));
-    interpreter.set_global_binding(
-        "native-comp-eln-load-path",
+    interpreter.set_global_binding_key(
+        cached_symbol!("native-comp-eln-load-path"),
         Value::list([
             Value::String(native_directory.into()),
             Value::String(system_native_directory.into()),
@@ -1077,8 +1093,8 @@ pub(crate) fn initialize_initial_frame_faces(interpreter: &mut Interpreter) -> R
     // loadup rather than fabricating `background-mode', `display-type', or
     // face objects in the Rust host.
     if interpreter
-        .lookup_function(
-            "tty-set-up-initial-frame-faces",
+        .lookup_function_key(
+            cached_symbol!("tty-set-up-initial-frame-faces"),
             &crate::lisp::types::Env::new(),
         )
         .is_err()
@@ -1190,13 +1206,20 @@ impl FixtureImage {
         // tree, whose `native-lisp/' holds the preloaded units, for the
         // directory the installed `native-lisp/' would be under.
         let invocation_directory = interpreter
-            .lookup_var("invocation-directory", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("invocation-directory"),
+                &crate::lisp::types::Env::new(),
+            )
             .unwrap_or(Value::Nil);
         let source_directory = interpreter
-            .lookup_var("source-directory", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("source-directory"),
+                &crate::lisp::types::Env::new(),
+            )
             .unwrap_or(Value::Nil);
-        interpreter.set_global_binding("load--bin-dest-dir", invocation_directory);
-        interpreter.set_global_binding("load--eln-dest-dir", source_directory);
+        interpreter
+            .set_global_binding_key(cached_symbol!("load--bin-dest-dir"), invocation_directory);
+        interpreter.set_global_binding_key(cached_symbol!("load--eln-dest-dir"), source_directory);
         lisp::primitives::call(
             interpreter,
             "dump-emacs-portable",
@@ -1246,7 +1269,7 @@ fn installation_lisp_load_path() -> Result<Vec<PathBuf>, String> {
 
 fn has_configured_lisp_tree(interpreter: &Interpreter) -> bool {
     interpreter
-        .lookup_var("load-path", &crate::lisp::types::Env::new())
+        .lookup_var_key(cached_symbol!("load-path"), &crate::lisp::types::Env::new())
         .and_then(|value| value.to_vec().ok())
         .is_some_and(|paths| !paths.is_empty())
 }
@@ -1273,7 +1296,7 @@ fn prepare_temacs_top_level(interpreter: &mut Interpreter, options: &BatchRunOpt
     if !options.no_loadup {
         top_level = Value::list([Value::symbol("load"), Value::string("loadup.el")]);
     }
-    interpreter.set_global_binding("top-level", top_level);
+    interpreter.set_global_binding_key(cached_symbol!("top-level"), top_level);
 }
 
 fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), String> {
@@ -1327,7 +1350,7 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     }
     // pdumper restores the live process outside the dump-time dynamic
     // binding.  The running image exposes nil, as does GNU after startup.
-    interpreter.set_global_binding("dump-mode", Value::Nil);
+    interpreter.set_global_binding_key(cached_symbol!("dump-mode"), Value::Nil);
     Ok(())
 }
 fn format_backtrace_summary(interpreter: &Interpreter) -> String {
@@ -1558,7 +1581,7 @@ mod tests {
         assert!(matches!(result.as_ref().map_err(LispError::kind),
             Err(LispErrorKind::Throw(tag, value)) if *value == Value::Integer(7) && tag.as_symbol().is_ok_and(|name| name == "stop")));
         assert_eq!(
-            interpreter.lookup_var("inhibit-quit", &env),
+            interpreter.lookup_var_key(cached_symbol!("inhibit-quit"), &env),
             Some(Value::Nil)
         );
         crate::test_support::eval_lisp(
@@ -1572,7 +1595,7 @@ mod tests {
             Err(LispErrorKind::Terminate(termination)) if termination.exit_code == 7)
         );
         assert_eq!(
-            interpreter.lookup_var("inhibit-quit", &env),
+            interpreter.lookup_var_key(cached_symbol!("inhibit-quit"), &env),
             Some(Value::Nil)
         );
     }
@@ -1664,7 +1687,7 @@ mod tests {
     #[test]
     fn batch_top_level_uses_the_form_installed_by_gnu_startup() {
         let mut interpreter = Interpreter::new();
-        interpreter.set_global_binding("top-level", Value::Integer(42));
+        interpreter.set_global_binding_key(cached_symbol!("top-level"), Value::Integer(42));
         assert_eq!(
             run_batch_through_normal_top_level(&mut interpreter, &["emaxx".into()])
                 .expect("evaluate the stored self-evaluating top-level form"),
@@ -1823,8 +1846,8 @@ mod tests {
         let mut interpreter = Interpreter::new();
         interpreter.set_load_path(vec![root.clone()]);
         for suffix in [".elc", ".el"] {
-            interpreter.set_variable(
-                "load-suffixes",
+            interpreter.set_variable_key(
+                cached_symbol!("load-suffixes"),
                 Value::list([Value::string(suffix)]),
                 &mut Env::new(),
             );
@@ -1899,7 +1922,10 @@ mod tests {
         let options = BatchRunOptions::default();
         let interpreter = initialize_batch_interpreter(&options).expect("init batch interpreter");
         assert_eq!(
-            interpreter.lookup_var("command-line-args-left", &crate::lisp::types::Env::new()),
+            interpreter.lookup_var_key(
+                cached_symbol!("command-line-args-left"),
+                &crate::lisp::types::Env::new()
+            ),
             Some(Value::Nil)
         );
     }
@@ -1908,14 +1934,20 @@ mod tests {
     fn dump_reconstruction_has_cache_then_gnu_system_native_paths() {
         let mut interpreter = Interpreter::new();
         let invocation_directory = interpreter
-            .lookup_var("invocation-directory", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("invocation-directory"),
+                &crate::lisp::types::Env::new(),
+            )
             .and_then(|value| lisp::primitives::string_like(&value))
             .expect("invocation-directory string")
             .text;
         let expected_cache =
             lisp::primitives::expand_file_name("../native-lisp/", Some(&invocation_directory));
         let source_directory = interpreter
-            .lookup_var("source-directory", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("source-directory"),
+                &crate::lisp::types::Env::new(),
+            )
             .and_then(|value| lisp::primitives::string_like(&value))
             .expect("source-directory string")
             .text;
@@ -1924,7 +1956,10 @@ mod tests {
         configure_native_load_path_for_dump_reconstruction(&mut interpreter)
             .expect("configure native paths for GNU dump reconstruction");
         let load_path = interpreter
-            .lookup_var("native-comp-eln-load-path", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("native-comp-eln-load-path"),
+                &crate::lisp::types::Env::new(),
+            )
             .expect("native-comp-eln-load-path is C-initialized")
             .to_vec()
             .expect("native-comp-eln-load-path is a proper list");
@@ -2025,7 +2060,10 @@ mod tests {
         );
 
         let history = interpreter
-            .lookup_var("load-history", &crate::lisp::types::Env::new())
+            .lookup_var_key(
+                cached_symbol!("load-history"),
+                &crate::lisp::types::Env::new(),
+            )
             .expect("load history")
             .to_vec()
             .expect("load history list");
@@ -2100,7 +2138,7 @@ mod tests {
             .expect("a shadowing -L must not break the image");
         assert!(
             interpreter
-                .lookup_function("when", &crate::lisp::types::Env::new())
+                .lookup_function_key(cached_symbol!("when"), &crate::lisp::types::Env::new())
                 .is_ok(),
             "the reconstructed image must be complete despite the shadowing -L"
         );
@@ -2246,8 +2284,8 @@ mod tests {
                 .expect("GNU Lisp root");
             interpreter.set_load_path(vec![root.clone()]);
             let mut env = crate::lisp::types::Env::new();
-            interpreter.set_variable(
-                "default-directory",
+            interpreter.set_variable_key(
+                cached_symbol!("default-directory"),
                 Value::String(format!("{}/", root.display()).into()),
                 &mut env,
             );
@@ -2255,7 +2293,7 @@ mod tests {
                 .symbol_value_cell("load-path")
                 .expect("initial load-path");
             let function = interpreter
-                .lookup_function("normal-top-level-add-to-load-path", &env)
+                .lookup_function_key(cached_symbol!("normal-top-level-add-to-load-path"), &env)
                 .expect("startup.el owns subdirectory expansion");
             interpreter
                 .call_function_value(
@@ -4226,7 +4264,10 @@ FORM"##
             let interpreter =
                 initialize_batch_interpreter_as_started(&options).expect("init batch interpreter");
             assert_eq!(
-                interpreter.lookup_var("native-comp-enable-subr-trampolines", &Env::new()),
+                interpreter.lookup_var_key(
+                    cached_symbol!("native-comp-enable-subr-trampolines"),
+                    &Env::new()
+                ),
                 Some(Value::T),
                 "unchanged loadup.el enables trampolines before calling the C dumper"
             );
@@ -4542,8 +4583,8 @@ FORM"##
             };
             let mut interpreter =
                 initialize_batch_interpreter(&options).expect("init batch interpreter");
-            interpreter.set_variable(
-                "data-directory",
+            interpreter.set_variable_key(
+                cached_symbol!("data-directory"),
                 Value::String(
                     lisp::primitives::path_to_directory_string(&emacs_repo.join("etc")).into(),
                 ),

@@ -480,7 +480,7 @@ fn text_conversion_buffer_fields_preserve_flags_sharing_and_cycles_in_images() {
         .get_buffer_by_id_mut(first_id)
         .expect("C store")
         .text_conversion_style = graph;
-    source.set_buffer_local_value(second_id, "text-conversion-style", graph);
+    source.set_buffer_local_value_key(second_id, cached_symbol!("text-conversion-style"), graph);
     for id in [first_id, second_id] {
         assert!(
             source
@@ -995,7 +995,10 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
             Value::string("restored-process-test")
         );
         assert_eq!(
-            interpreter.lookup_var("default-directory", &crate::lisp::types::Env::new()),
+            interpreter.lookup_var_key(
+                cached_symbol!("default-directory"),
+                &crate::lisp::types::Env::new()
+            ),
             Some(Value::string(&crate::lisp::primitives::default_directory()))
         );
         let environment = interpreter
@@ -1033,8 +1036,14 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
         "zz-builder-pid",
         Value::Integer(i64::from(std::process::id())),
     );
-    interpreter.set_global_binding("executing-kbd-macro", Value::string("saved macro"));
-    interpreter.set_global_binding("executing-kbd-macro-index", Value::Integer(3));
+    interpreter.set_global_binding_key(
+        cached_symbol!("executing-kbd-macro"),
+        Value::string("saved macro"),
+    );
+    interpreter.set_global_binding_key(
+        cached_symbol!("executing-kbd-macro-index"),
+        Value::Integer(3),
+    );
     interpreter.set_buffer_local_value(
         interpreter.current_buffer_id(),
         "default-directory",

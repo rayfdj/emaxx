@@ -477,7 +477,7 @@ fn comp_unit_relocations_match(
         let Ok(actual) = runtime.decode_relocation(word) else {
             return false;
         };
-        if actual.symbol_str() == Some("lambda-fixup") {
+        if actual.is_key(cached_symbol!("lambda-fixup")) {
             return false;
         }
         let native_function = matches!(actual.kind(), Kind::NativeFunction(_));
@@ -650,7 +650,7 @@ pub(super) fn load(
         let result = result?;
         // comp.c:register_native_comp_unit.
         let loaded_units = interpreter
-            .lookup_var("comp-loaded-comp-units-h", environment)
+            .lookup_var_key(cached_symbol!("comp-loaded-comp-units-h"), environment)
             .unwrap_or(Value::Nil);
         super::lisp::call_c_primitive(
             interpreter,
@@ -728,7 +728,7 @@ fn first_load(
         )?
     };
     let expected_hash = interpreter
-        .lookup_var("comp-abi-hash", environment)
+        .lookup_var_key(cached_symbol!("comp-abi-hash"), environment)
         .unwrap_or(Value::Nil);
     if !super::lisp::call_c_primitive(
         interpreter,
@@ -791,7 +791,7 @@ fn first_load(
     };
     unit.set_field(6, impure_data);
     if interpreter
-        .lookup_var("purify-flag", environment)
+        .lookup_var_key(cached_symbol!("purify-flag"), environment)
         .is_some_and(|value| value.is_truthy())
     {
         data = crate::lisp::primitives::purecopy_value(interpreter, &data, environment)?;
@@ -900,7 +900,7 @@ pub(super) fn register_with_state(
     }
     let late_pending_table = if matches!(kind, RegistrationKind::LateSubroutine) {
         let table = interpreter
-            .lookup_var("comp-deferred-pending-h", environment)
+            .lookup_var_key(cached_symbol!("comp-deferred-pending-h"), environment)
             .unwrap_or(Value::Nil);
         let pending = super::lisp::call_c_primitive(
             interpreter,
@@ -1480,7 +1480,7 @@ pub(super) fn load_dumped_unit(
         )?
     };
     let expected_hash = interpreter
-        .lookup_var("comp-abi-hash", environment)
+        .lookup_var_key(cached_symbol!("comp-abi-hash"), environment)
         .unwrap_or(Value::Nil);
     if !super::lisp::call_c_primitive(
         interpreter,
@@ -1521,7 +1521,7 @@ pub(super) fn load_dumped_unit(
     saved_unit_rollback.disarm();
     // comp.c:register_native_comp_unit.
     let loaded_units = interpreter
-        .lookup_var("comp-loaded-comp-units-h", environment)
+        .lookup_var_key(cached_symbol!("comp-loaded-comp-units-h"), environment)
         .unwrap_or(Value::Nil);
     super::lisp::call_c_primitive(
         interpreter,
@@ -1541,7 +1541,7 @@ fn fixup_eln_load_path(
     eln_filename: &str,
 ) -> Result<(), LispError> {
     let load_path = interpreter
-        .lookup_var("native-comp-eln-load-path", environment)
+        .lookup_var_key(cached_symbol!("native-comp-eln-load-path"), environment)
         .unwrap_or(Value::Nil);
     let mut last_cell = Value::Nil;
     let mut tail = load_path;
@@ -1649,7 +1649,7 @@ pub(super) fn resolve_dumped_function(
         }
         let current = runtime
             .decode_relocation(unsafe { std::ptr::read(unit.impure_relocations().add(index)) })?;
-        if current.symbol_str() != Some("lambda-fixup") {
+        if !current.is_key(cached_symbol!("lambda-fixup")) {
             return Err(super::lisp::native_ice(
                 "dumped lambda relocation is not a lambda-fixup placeholder",
             ));
@@ -1745,7 +1745,7 @@ mod tests {
         // A fresh C runtime already supplies the native ABI and loader; no
         // additional GNU Lisp is needed to load and call this simple unit.
         let mut second = Interpreter::new();
-        second.set_global_binding("purify-flag", Value::Nil);
+        second.set_global_binding_key(cached_symbol!("purify-flag"), Value::Nil);
         let mut second_env = Env::new();
         let outcome = crate::test_support::eval_lisp(
             &mut second,

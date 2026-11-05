@@ -1273,13 +1273,20 @@ impl CclDecode {
 }
 
 /// CODING_ATTR_CHARSET_LIST of a coding: None for nil.
-pub(super) fn coding_charset_list(interp: &Interpreter, canonical: &str) -> Option<Vec<String>> {
+pub(super) fn coding_charset_list(
+    interp: &Interpreter,
+    canonical: &(impl crate::lisp::eval::coding::CodingRef + ?Sized),
+) -> Option<Vec<String>> {
     let names = coding_system_charset_names(interp, canonical);
     (!names.is_empty()).then_some(names)
 }
 
 /// CODING_CCL_DECODER (INDEX 0) or CODING_CCL_ENCODER (INDEX 1).
-pub(super) fn coding_ccl_program(interp: &Interpreter, canonical: &str, index: usize) -> Value {
+pub(super) fn coding_ccl_program(
+    interp: &Interpreter,
+    canonical: &(impl crate::lisp::eval::coding::CodingRef + ?Sized),
+    index: usize,
+) -> Value {
     interp
         .coding_system(canonical)
         .and_then(|state| state.type_args.get(index).copied())

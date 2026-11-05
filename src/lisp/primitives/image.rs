@@ -429,7 +429,7 @@ fn check_image_size(interp: &Interpreter, env: &Env, width: i32, height: i32) ->
         return false;
     }
     match interp
-        .lookup_var("max-image-size", env)
+        .lookup_var_key(cached_symbol!("max-image-size"), env)
         .map(|value| value.kind())
     {
         Some(Kind::Integer(limit)) => i64::from(width) <= limit && i64::from(height) <= limit,

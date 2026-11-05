@@ -9,11 +9,6 @@
 //! let retained = Value::cons(Value::Nil, Value::Nil);
 //! ```
 
-/// Define a primitive dispatcher and derive its name probe from the same arms.
-///
-/// Dispatch routing and implementation must share one inventory: otherwise a
-/// newly implemented primitive can remain unreachable merely because a second
-/// `handles` list was not updated.
 /// A fixed Qsymbol-style reference owned by the current editor entry.
 macro_rules! cached_symbol {
     ($name:literal) => {{
@@ -22,7 +17,13 @@ macro_rules! cached_symbol {
         SYMBOL
     }};
 }
+pub(crate) use cached_symbol;
 
+/// Define a primitive dispatcher and derive its name probe from the same arms.
+///
+/// Dispatch routing and implementation must share one inventory: otherwise a
+/// newly implemented primitive can remain unreachable merely because a second
+/// `handles` list was not updated.
 macro_rules! dispatch_handles {
     ($name:ident;) => {
         false
@@ -581,9 +582,10 @@ pub(crate) fn unescaped_character_literal_warning(
     interp: &mut eval::Interpreter,
     env: &mut types::Env,
 ) -> Result<Option<String>, types::LispError> {
-    let Ok(function) =
-        interp.lookup_function("byte-run--unescaped-character-literals-warning", env)
-    else {
+    let Ok(function) = interp.lookup_function_key(
+        cached_symbol!("byte-run--unescaped-character-literals-warning"),
+        env,
+    ) else {
         return Ok(None);
     };
     let warning = interp.call_function_value(
@@ -605,7 +607,7 @@ fn format_loading_warning(
     path: &Path,
     warning: String,
 ) -> Result<String, types::LispError> {
-    let function = interp.lookup_function("format-message", env)?;
+    let function = interp.lookup_function_key(cached_symbol!("format-message"), env)?;
     let message = interp.call_function_value(
         function,
         Some("format-message"),
@@ -926,7 +928,10 @@ fn read_lisp_file_bytes(
     // `require' that defines the function must not retroactively change the
     // policy for the outer file.
     let macroexpander_ready = interp
-        .lookup_function("internal-macroexpand-for-load", &types::Env::new())
+        .lookup_function_key(
+            cached_symbol!("internal-macroexpand-for-load"),
+            &types::Env::new(),
+        )
         .is_ok();
     let eager_macroexpand = macroexpander_ready && !compiled;
     // Fload sets `lexical-binding' from a compiled file's first line
@@ -965,7 +970,7 @@ fn read_lisp_file_bytes(
         // as `(let ((load-file-name nil)) (load ...))' must be shadowed by the
         // file being loaded, then restored on every exit path.
         let macroexp_dynvars = interp
-            .lookup_var("macroexp--dynvars", &env)
+            .lookup_var_key(cached_symbol!("macroexp--dynvars"), &env)
             .unwrap_or(types::Value::Nil);
         let mut dynamic_restores = Vec::with_capacity(9);
         for (name, value) in [
@@ -1098,7 +1103,7 @@ fn read_lisp_file_bytes(
             // restores the filename in current-load-list. That unfinished
             // load must not be published as a completed history entry.
             let current_load_list = interp
-                .lookup_var("current-load-list", &types::Env::new())
+                .lookup_var_key(cached_symbol!("current-load-list"), &types::Env::new())
                 .unwrap_or_else(|| {
                     types::Value::list([types::Value::String(load_file.clone().into())])
                 });
@@ -1135,7 +1140,8 @@ fn read_lisp_file_bytes(
         // bootstrap loads deliberately have no such function yet.
         if !stopped
             && outer_load_history.is_none()
-            && let Ok(after_load) = interp.lookup_function("do-after-load-evaluation", &env)
+            && let Ok(after_load) =
+                interp.lookup_function_key(cached_symbol!("do-after-load-evaluation"), &env)
         {
             interp.call_function_value(
                 after_load,
@@ -1194,12 +1200,12 @@ fn run_ert_file_owned(
     let mut interp = crate::batch::initialize_batch_interpreter(&options)?;
     // comp.el's comp--final uses these ordinary GNU variables. Keep the
     // compiler enabled and let its normal child process report any failure.
-    interp.set_global_binding(
-        "invocation-name",
+    interp.set_global_binding_key(
+        cached_symbol!("invocation-name"),
         types::Value::string(&name.to_string_lossy()),
     );
-    interp.set_global_binding(
-        "invocation-directory",
+    interp.set_global_binding_key(
+        cached_symbol!("invocation-directory"),
         types::Value::string(&format!("{}/", directory.display())),
     );
     let helper = crate::compat::compat_path("compat/emacs_compat_runner.el");
