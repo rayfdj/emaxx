@@ -2708,7 +2708,7 @@ impl Clone for ProcessState {
             sentinel: self.sentinel,
             sentinel_notified: self.sentinel_notified,
             log: self.log,
-            name: self.name.clone(),
+            name: self.name,
             thread_id: self.thread_id,
             query_on_exit_flag: self.query_on_exit_flag,
             traffic_stopped: self.traffic_stopped,
@@ -2763,8 +2763,9 @@ struct ProcessState {
     sentinel_notified: bool,
     /// Network process :log function (server connection events).
     log: Option<Value>,
-    /// The process name (process-name / get-process).
-    name: String,
+    /// p->name: the Lisp string `process-name' returns and Vprocess_alist
+    /// pairs the process with.
+    name: Value,
     /// Thread whose event loop owns this process's descriptors.  None means
     /// any thread may service it.
     thread_id: Option<u64>,
@@ -4438,7 +4439,7 @@ impl Interpreter {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_buffer(&mut self, buffer: crate::lisp::types::BufferRef) {
         let id = buffer.id;
-        let name = buffer.borrow().name.clone();
+        let name = buffer.borrow().name();
         if id == self.current_buffer_id {
             self.buffer = buffer;
         } else {
@@ -4954,6 +4955,7 @@ impl Interpreter {
                 mark(value);
             }
             for value in [
+                &process.name,
                 &process.decoding,
                 &process.encoding,
                 &process.plist,
@@ -4973,6 +4975,12 @@ impl Interpreter {
         mark(&Value::Buffer(self.buffer));
         for (_, buffer) in &self.inactive_buffers {
             mark(&Value::Buffer(*buffer));
+        }
+        for (_, name) in &self.buffer_list {
+            mark(name);
+        }
+        for buffer in &self.minibuffer_list {
+            mark(buffer);
         }
         for id in [self.standard_obarray_id, self.selected_window_id] {
             mark(&self.record_value(id));
@@ -5140,6 +5148,9 @@ impl Interpreter {
                     unreachable!("a buffer copy has buffer storage")
                 };
                 *buffer = copied;
+            }
+            for (_, name) in &mut clone.buffer_list {
+                *name = c.copy(name);
             }
             for restriction in &mut clone.labeled_restrictions {
                 let Kind::Marker(beginning) =
@@ -5443,6 +5454,7 @@ impl Interpreter {
                 if let Some(log) = &process.log {
                     process.log = Some(c.copy(log));
                 }
+                process.name = c.copy(&process.name);
                 process.decoding = c.copy(&process.decoding.clone());
                 process.encoding = c.copy(&process.encoding.clone());
                 process.plist = c.copy(&process.plist.clone());
@@ -5747,6 +5759,10 @@ pub struct InterpreterState {
     pub(crate) keyboard_input: KeyboardInputState,
     pub(crate) command_loop_recursion_depth: usize,
     minibuffer_runtime: MinibufferRuntimeState,
+    /// minibuf.c's Vminibuffer_list: the buffer get_minibuffer made for
+    /// each depth (nil where none has been), a killed one kept until
+    /// get_minibuffer replaces it.
+    pub(crate) minibuffer_list: Vec<Value>,
     /// Monotonic identity for a read-minibuffer activation.  The TTY uses
     /// it to distinguish a new read from another redraw of the same reused
     /// ` *Minibuf-N*' buffer, so grow-only height does not leak between
@@ -5829,8 +5845,9 @@ pub struct InterpreterState {
     next_terminal_id: u64,
     /// Inactive buffers keyed by ID.
     inactive_buffers: Vec<(u64, crate::lisp::types::BufferRef)>,
-    /// Known buffers: (id, name) pairs.
-    pub buffer_list: Vec<(u64, String)>,
+    /// buffer.c's Vbuffer_alist: each live buffer's id with its name, the
+    /// buffer's own BVAR (b, name) object, in buffer-list order.
+    pub buffer_list: Vec<(u64, Value)>,
     /// Next buffer ID for identity tracking.
     next_buffer_id: u64,
     /// Charset aliases defined at runtime.
@@ -6564,6 +6581,7 @@ impl Interpreter {
             keyboard_input: KeyboardInputState::default(),
             command_loop_recursion_depth: 0,
             minibuffer_runtime: MinibufferRuntimeState::default(),
+            minibuffer_list: Vec::new(),
             minibuffer_activation_count: 0,
             modules: crate::lisp::modules::ModuleState::default(),
             native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
@@ -6597,7 +6615,7 @@ impl Interpreter {
             // GNU's batch `buffer-list' is (*scratch* " *Minibuf-0*"
             // *Messages*); *Messages* joins the list once the minibuffer
             // buffer exists, below.
-            buffer_list: vec![(0, "*scratch*".to_string())],
+            buffer_list: Vec::new(),
             next_buffer_id: 2,
             charset_aliases: Vec::new(),
             charset_ids: C_CHARSETS
@@ -6872,6 +6890,10 @@ impl Interpreter {
             state: Some(InterpreterStateOwner::new(state)),
             continuations: continuations::ThreadContinuations::default(),
         };
+        // init_buffer_once's Vbuffer_alist entry for *scratch*, whose car
+        // is the buffer's own name.
+        let scratch_name = interp.buffer.borrow().name();
+        interp.buffer_list.push((0, scratch_name));
         for (purpose, extras) in [
             ("case-table", 3),
             ("category-table", 2),
@@ -8123,7 +8145,10 @@ impl Interpreter {
         interp.stamp_buffer_display(interp.current_buffer_id);
         let minibuffer_buffer_id = primitives::get_minibuffer(&mut interp, 0);
         interp.stamp_buffer_display(minibuffer_buffer_id);
-        interp.buffer_list.push((1, "*Messages*".to_string()));
+        let messages_name = interp
+            .buffer_object(1)
+            .map_or(Value::Nil, |buffer| buffer.borrow().name());
+        interp.buffer_list.push((1, messages_name));
         let minibuffer_window = interp.create_pseudovector(
             RecordKind::Window,
             "window",

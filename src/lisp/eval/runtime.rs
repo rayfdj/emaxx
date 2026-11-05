@@ -57,11 +57,6 @@ impl Interpreter {
         id
     }
 
-    /// Check if a buffer name exists in the buffer list.
-    pub fn has_buffer(&self, name: &str) -> bool {
-        self.buffer_list.iter().any(|(_, n)| n == name)
-    }
-
     /// buffer.c:BUFFER_LIVE_P of the buffer ID names: a buffer of
     /// Vbuffer_alist, or print.c's hidden prin1 buffer, the one live
     /// buffer on no list, while it is held.
@@ -77,16 +72,27 @@ impl Interpreter {
                         .any(|(buffer_id, _)| *buffer_id == id)))
     }
 
-    /// Find a buffer by name, returning (id, name).
-    pub fn find_buffer(&self, name: &str) -> Option<(u64, String)> {
-        self.buffer_list.iter().find(|(_, n)| n == name).cloned()
-    }
-
-    /// The id of the live buffer named NAME, without a copy of the name.
-    pub(crate) fn find_buffer_id(&self, name: &str) -> Option<u64> {
+    /// The live buffer named NAME, text the host names (a buffer it made,
+    /// such as *Messages*), with its name object.
+    pub fn find_buffer(&self, name: &str) -> Option<(u64, Value)> {
         self.buffer_list
             .iter()
-            .find(|(_, n)| n == name)
+            .find(|(_, n)| primitives::string_is_text(n, name))
+            .copied()
+    }
+
+    /// The id of the live buffer named NAME, host text.
+    pub(crate) fn find_buffer_id(&self, name: &str) -> Option<u64> {
+        self.find_buffer(name).map(|(id, _)| id)
+    }
+
+    /// buffer.c:Fget_buffer's search of Vbuffer_alist for the string
+    /// NAME: assoc_ignore_text_properties, the first buffer whose name is
+    /// `string-equal' to it.
+    pub(crate) fn find_buffer_named(&self, name: &Value) -> Option<u64> {
+        self.buffer_list
+            .iter()
+            .find(|(_, n)| primitives::strings_equal(n, name))
             .map(|(id, _)| *id)
     }
 
@@ -270,10 +276,11 @@ impl Interpreter {
         if self.will_dump_without_bootstrap(env) {
             self.will_dump_reported = true;
             let name = crate::lisp::primitives::call(self, "symbol-name", &[funname], env)?;
-            return Err(LispError::Signal(format!(
+            return Err(primitives::values::doprnt_error_sdata(
+                None,
                 "Attempt to autoload {} while preparing to dump",
-                primitives::string_text(&name)?
-            )));
+                &[name],
+            ));
         }
         let symbol = crate::lisp::primitives::checked_symbol_name(self, &funname, env)?;
         let ignore_errors = if loads_macro { Value::Nil } else { macro_only };
@@ -524,12 +531,16 @@ impl Interpreter {
         &self,
         buffer_or_name: &Value,
     ) -> Result<Option<crate::lisp::types::BufferRef>, LispError> {
-        if let Kind::Buffer(buffer) = buffer_or_name.kind() {
-            return Ok(Some(buffer));
+        match buffer_or_name.kind() {
+            Kind::Buffer(buffer) => Ok(Some(buffer)),
+            Kind::StringObject(_) => Ok(self
+                .find_buffer_named(buffer_or_name)
+                .and_then(|id| self.buffer_object(id))),
+            _ => Err(LispError::WrongTypeArgument(
+                "stringp".into(),
+                *buffer_or_name,
+            )),
         }
-        let id = primitives::with_string_text(buffer_or_name, |name| self.find_buffer_id(name))
-            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *buffer_or_name))?;
-        Ok(id.and_then(|id| self.buffer_object(id)))
     }
 
     /// Fget_buffer, with buffer.c:nsberror when there is no such buffer.
@@ -566,40 +577,58 @@ impl Interpreter {
                 value.type_name(),
             )),
         }
-        .or_else(|error| {
-            primitives::string_like(value)
-                .and_then(|string| self.find_buffer(&string.text).map(|(id, _)| id))
-                .ok_or(error)
-        })
+        .or_else(|error| self.find_buffer_named(value).ok_or(error))
     }
 
-    /// Create and register a new empty buffer.
-    pub fn create_buffer(&mut self, name: &str) -> (u64, String) {
+    /// Create and register a new empty buffer named NAME, host text.
+    pub fn create_buffer(&mut self, name: &str) -> (u64, Value) {
+        let id = self.create_buffer_named(Value::string(name));
+        (
+            id,
+            self.buffer_list
+                .last()
+                .map_or(Value::Nil, |(_, name)| *name),
+        )
+    }
+
+    /// buffer.c:Fget_buffer_create's new buffer for NAME, a string no live
+    /// buffer has: BVAR (b, name) and last_name are a copy of NAME without
+    /// its text properties (`Fcopy_sequence' then set_string_intervals),
+    /// the object Vbuffer_alist's new last entry holds.
+    pub(crate) fn create_buffer_named(&mut self, name: Value) -> u64 {
+        let name = match name.kind() {
+            Kind::StringObject(state) => Value::StringObject(
+                state
+                    .borrow()
+                    .copy_without_properties(crate::lisp::alloc::StringAllocation::Ordinary),
+            ),
+            _ => name,
+        };
         // GNU reset_buffer initializes a new buffer's directory from the
         // current buffer's slot (a `let' of it there included).
         let inherited_directory = self
             .symbol_value_key(cached_symbol!("default-directory"))
             .unwrap_or(Value::Nil);
         let id = self.alloc_buffer_id();
-        let mut buffer = crate::buffer::Buffer::new(name);
+        let mut buffer = crate::buffer::Buffer::named(name);
         // buffer.c:Fget_buffer_create: `bset_last_name (b, name)'.
-        buffer.last_name = Some(name.to_string());
+        buffer.set_last_name(name);
         buffer.text_conversion_style = self.native_text_conversion_style_default();
         // buffer.c:Fget_buffer_create: `bset_undo_list (b, SREF (name, 0)
         // != ' ' ? Qnil : Qt)', no undo kept in a buffer whose name starts
         // with a space (`with-temp-buffer's, the printer's, `load's).
-        if name.starts_with(' ') {
+        if primitives::string_starts_with_byte(&name, b' ') {
             buffer.set_undo_list(Value::T);
         }
         self.inactive_buffers
             .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
-        self.buffer_list.push((id, name.to_string()));
+        self.buffer_list.push((id, name));
         // Every always-local slot is the new buffer's own from the start,
         // so neither a `let' in the creating buffer nor a `setq-default'
         // (buffer_defaults) reaches it.
         self.reset_always_local_slots(id, inherited_directory);
         primitives::casetab::reset_buffer_case_tables(self, id);
-        (id, name.to_string())
+        id
     }
 
     /// Switch the current buffer and display it in the selected window.
@@ -1923,10 +1952,10 @@ impl Interpreter {
         }
     }
 
-    /// Fminibufferp with LIVE nil, by the minibuffers' names.
+    /// Fminibufferp with LIVE nil: Fmemq of Vminibuffer_list.
     fn buffer_is_minibuffer(&self, id: u64) -> bool {
-        self.get_buffer_by_id(id)
-            .is_some_and(|buffer| buffer.name.starts_with(" *Minibuf"))
+        self.buffer_value(id)
+            .is_some_and(|buffer| primitives::minibuffer_list_has(self, &buffer))
     }
 
     /// WINDOW_LIVE_P: a window that shows a buffer.
@@ -1949,7 +1978,7 @@ impl Interpreter {
         if let Some((id, _)) = self
             .buffer_list
             .iter()
-            .find(|(id, name)| *id != buffer && !name.starts_with(' '))
+            .find(|(id, name)| *id != buffer && !primitives::string_starts_with_byte(name, b' '))
         {
             return Ok(*id);
         }
@@ -2044,7 +2073,9 @@ impl Interpreter {
             let replacement_id = self
                 .buffer_list
                 .iter()
-                .find(|(buffer_id, name)| *buffer_id != id && !name.starts_with(' '))
+                .find(|(buffer_id, name)| {
+                    *buffer_id != id && !primitives::string_starts_with_byte(name, b' ')
+                })
                 .map(|(buffer_id, _)| *buffer_id);
             self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
             if let Some((position, next_id)) = replacement_id.and_then(|next_id| {
@@ -2064,7 +2095,8 @@ impl Interpreter {
                     crate::buffer::Buffer::new("*scratch*"),
                 );
                 self.current_buffer_id = scratch_id;
-                self.buffer_list.push((scratch_id, "*scratch*".to_string()));
+                let scratch_name = self.buffer.borrow().name();
+                self.buffer_list.push((scratch_id, scratch_name));
                 self.reset_always_local_slots(scratch_id, directory);
             }
         } else {
@@ -3251,9 +3283,12 @@ impl Interpreter {
 
 /// buffer.c:nsberror: "No buffer named NAME" for a string SPEC.
 pub(crate) fn nsberror(spec: &Value) -> LispError {
-    match primitives::string_text(spec) {
-        Ok(name) => LispError::Signal(format!("No buffer named {name}")),
-        Err(_) => LispError::Signal("Invalid buffer argument".into()),
+    // error ("No buffer named %s", SDATA (spec)).
+    match spec.kind() {
+        Kind::StringObject(_) => {
+            primitives::values::doprnt_error_sdata(None, "No buffer named {}", &[*spec])
+        }
+        _ => LispError::Signal("Invalid buffer argument".into()),
     }
 }
 

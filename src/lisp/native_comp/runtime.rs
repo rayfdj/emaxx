@@ -11481,7 +11481,7 @@ mod tests {
                 panic!("the cons must still contain its buffer");
             };
             assert_eq!(buffer.id, 52);
-            assert_eq!(buffer.borrow().name.as_str(), "cons-field-buffer");
+            assert_eq!(buffer.borrow().name_text(), "cons-field-buffer");
         }
 
         let mut interpreter = Interpreter::new();
@@ -16119,7 +16119,7 @@ mod tests {
             let Kind::Buffer(buffer) = retained.kind() else {
                 panic!("the bridge must retain an allocated buffer reference")
             };
-            assert_eq!(buffer.borrow().name.as_str(), "buffer-alias-before");
+            assert_eq!(buffer.borrow().name_text(), "buffer-alias-before");
         }
 
         let mut interpreter = Interpreter::new();

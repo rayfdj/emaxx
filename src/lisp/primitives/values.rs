@@ -871,15 +871,21 @@ fn compare_buffer_objects(
     left: crate::lisp::types::BufferRef,
     right: crate::lisp::types::BufferRef,
 ) -> ValueOrder {
-    // fns.c:value_cmp(PVEC_BUFFER) compares current names, with killed
-    // buffers (nil names) before live ones. Allocation IDs are not order.
-    let left = left.borrow();
-    let right = right.borrow();
-    match (!left.killed, !right.killed) {
-        (true, true) => compare_plain_symbol_names(&left.name, &right.name),
-        (false, true) => ValueOrder::Less,
-        (true, false) => ValueOrder::Greater,
-        (false, false) => ValueOrder::Equal,
+    // fns.c:value_cmp(PVEC_BUFFER) compares the Fbuffer_name strings
+    // (string_cmp), killed buffers (nil names) before live ones.
+    // Allocation IDs are not order.
+    let (left, right) = (left.borrow().name(), right.borrow().name());
+    match (left.kind(), right.kind()) {
+        (Kind::StringObject(left), Kind::StringObject(right)) => {
+            match left.borrow().compare_contents(&right.borrow()) {
+                Ordering::Less => ValueOrder::Less,
+                Ordering::Equal => ValueOrder::Equal,
+                Ordering::Greater => ValueOrder::Greater,
+            }
+        }
+        (Kind::StringObject(_), _) => ValueOrder::Greater,
+        (_, Kind::StringObject(_)) => ValueOrder::Less,
+        _ => ValueOrder::Equal,
     }
 }
 
@@ -947,11 +953,18 @@ pub(crate) fn compare_record_values(
 
     match left_record.kind {
         crate::lisp::eval::RecordKind::Process => Ok(Some(
+            // fns.c:value_cmp(PVEC_PROCESS): the names, as strings.
             match (
-                interp.process_name(left_id.id),
-                interp.process_name(right_id.id),
+                interp.process_name(left_id.id).map(|name| name.kind()),
+                interp.process_name(right_id.id).map(|name| name.kind()),
             ) {
-                (Some(left), Some(right)) => compare_plain_symbol_names(&left, &right),
+                (Some(Kind::StringObject(left)), Some(Kind::StringObject(right))) => {
+                    match left.borrow().compare_contents(&right.borrow()) {
+                        Ordering::Less => ValueOrder::Less,
+                        Ordering::Equal => ValueOrder::Equal,
+                        Ordering::Greater => ValueOrder::Greater,
+                    }
+                }
                 _ => ValueOrder::Unordered,
             },
         )),
@@ -2732,6 +2745,47 @@ pub(crate) fn doprnt_error(
         }
     }
     LispError::Signal(message)
+}
+
+/// `doprnt_error' whose `{}' each copy a string's SDATA, as a `%s' given
+/// SDATA (STRING) copies it: its bytes up to the first NUL, the message
+/// made from all the bytes by alloc.c:make_string (multibyte only when
+/// every byte is part of a valid multibyte form).
+pub(crate) fn doprnt_error_sdata(
+    quotes: Option<&Interpreter>,
+    format: &str,
+    args: &[Value],
+) -> LispError {
+    let (open, close) = quotes.map_or(('`', '\''), doprnt_quote_pair);
+    let mut bytes = Vec::with_capacity(format.len());
+    let mut args = args.iter();
+    let mut chars = format.chars().peekable();
+    let mut buffer = [0u8; 4];
+    while let Some(c) = chars.next() {
+        let c = match c {
+            '{' if chars.peek() == Some(&'}') => {
+                chars.next();
+                if let Some(Kind::StringObject(state)) = args.next().map(|value| value.kind()) {
+                    let state = state.borrow();
+                    let data = state.bytes();
+                    let end = data
+                        .iter()
+                        .position(|&byte| byte == 0)
+                        .unwrap_or(data.len());
+                    bytes.extend_from_slice(&data[..end]);
+                }
+                continue;
+            }
+            '`' => open,
+            '\'' => close,
+            c => c,
+        };
+        bytes.extend_from_slice(c.encode_utf8(&mut buffer).as_bytes());
+    }
+    match crate::lisp::primitives::strings::make_string(bytes) {
+        Ok(message) => LispError::SignalValue(Value::list([Value::symbol("error"), message])),
+        Err(_) => LispError::Signal(format.into()),
+    }
 }
 
 /// GNU `doc.c:Ftext_quoting_style' collapses the Lisp variable to one of

@@ -3107,7 +3107,7 @@ impl Value {
                 "lambda"
             }
             .into(),
-            Kind::Buffer(buffer) => format!("buffer<{}>", buffer.borrow().name),
+            Kind::Buffer(buffer) => format!("buffer<{}>", buffer.borrow().display_name_text()),
             Kind::Marker(id) => format!("marker<{}>", id),
             Kind::Overlay(id) => format!("overlay<{}>", id),
             Kind::HashTable(table) => format!("hash-table<{:x}>", table.identity()),
@@ -3320,7 +3320,7 @@ fn format_value(
         Kind::NativeFunction(function) => write!(f, "#<subr {}>", function.name()),
         Kind::NativeCompUnit(unit) => write!(f, "#<native-comp-unit {}>", unit.field(0)),
         Kind::Closure(lambda) => write!(f, "#<lambda {}>", lambda.parameters()),
-        Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.borrow().name),
+        Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.borrow().display_name_text()),
         Kind::Marker(id) => write!(f, "#<marker id:{}>", id),
         Kind::Overlay(id) => write!(f, "#<overlay id:{}>", id),
         Kind::HashTable(table) => write!(f, "#<hash-table {:x}>", table.identity()),

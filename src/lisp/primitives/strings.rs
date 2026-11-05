@@ -514,6 +514,69 @@ pub(crate) fn with_string_text<R>(value: &Value, f: impl FnOnce(&str) -> R) -> O
     })
 }
 
+/// fns.c:Fstring_equal's test of two strings, read in place: the same
+/// number of characters in the same bytes, text properties aside.  False
+/// unless both are strings.
+pub(crate) fn strings_equal(left: &Value, right: &Value) -> bool {
+    match (left.kind(), right.kind()) {
+        (Kind::StringObject(left), Kind::StringObject(right)) => {
+            left.ptr_eq(&right) || left.borrow().contents_equal(&right.borrow())
+        }
+        _ => false,
+    }
+}
+
+/// Whether VALUE is a string `string-equal' to TEXT's multibyte string:
+/// TEXT's bytes in TEXT's number of characters.
+pub(crate) fn string_is_text(value: &Value, text: &str) -> bool {
+    let Kind::StringObject(state) = value.kind() else {
+        return false;
+    };
+    let state = state.borrow();
+    state.bytes() == text.as_bytes() && (text.is_ascii() || state.len() == text.chars().count())
+}
+
+/// SCHARS (VALUE): a string's length in characters; `None' for any other
+/// object.
+pub(crate) fn string_char_count(value: &Value) -> Option<usize> {
+    match value.kind() {
+        Kind::StringObject(state) => Some(state.borrow().len()),
+        _ => None,
+    }
+}
+
+/// SSDATA (VALUE) read as a C string: a string's bytes before the first
+/// NUL (empty for any other object).
+pub(crate) fn sdata_c_string(value: &Value) -> Vec<u8> {
+    match value.kind() {
+        Kind::StringObject(state) => {
+            let state = state.borrow();
+            let bytes = state.bytes();
+            let end = bytes
+                .iter()
+                .position(|&byte| byte == 0)
+                .unwrap_or(bytes.len());
+            bytes[..end].to_vec()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// strcmp (SSDATA (VALUE), TEXT) == 0: whether VALUE is a string whose
+/// bytes before the first NUL are TEXT.
+pub(crate) fn sdata_c_string_is(value: &Value, text: &[u8]) -> bool {
+    matches!(value.kind(), Kind::StringObject(_)) && sdata_c_string(value) == text
+}
+
+/// SREF (STRING, 0) == BYTE: whether VALUE is a string whose first byte
+/// is BYTE.
+pub(crate) fn string_starts_with_byte(value: &Value, byte: u8) -> bool {
+    match value.kind() {
+        Kind::StringObject(state) => state.borrow().bytes().first() == Some(&byte),
+        _ => false,
+    }
+}
+
 /// Whether VALUE is a multibyte string, read in place; `None' for any
 /// other object.
 pub(crate) fn string_is_multibyte(value: &Value) -> Option<bool> {

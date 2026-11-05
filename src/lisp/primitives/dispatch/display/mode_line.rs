@@ -1248,7 +1248,7 @@ impl ModeLine<'_> {
                     None,
                 ));
             }
-            'b' => Value::String(interp.buffer.borrow().name.clone().into()),
+            'b' => interp.buffer.borrow().name(),
             'c' | 'C' => {
                 let column = primitive(interp, env, "current-column", &[])?
                     .as_integer()

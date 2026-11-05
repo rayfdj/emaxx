@@ -1180,6 +1180,12 @@ pub(crate) fn scan_for_column(
     let mut prev_col = 0usize;
     let mut scan = line_start;
     let mut prev_pos = scan;
+    // The composition iterator, its W the window Fget_buffer_window finds
+    // for the current buffer (none: static compositions only).
+    let windowed =
+        dispatch::display::buffer_window(interp, interp.current_buffer_id(), &Value::Nil).is_some();
+    let mut cmp_it = dispatch::CompositionIterator::for_window(windowed);
+    cmp_it.compute_stop_pos(interp, env, scan, end);
     'scan: while scan < end {
         // skip_invisible with no window: invisible text, not the text an
         // ellipsis stands for.
@@ -1188,6 +1194,11 @@ pub(crate) fn scan_for_column(
         }
         if scan >= end {
             break;
+        }
+        // Skipping invisible text may have stepped over the stop
+        // position.
+        if scan > cmp_it.stop_pos && !cmp_it.composing() {
+            cmp_it.reseat(interp, env, scan, end);
         }
         // The goal, tested after the invisible text, so point goes before
         // the character the cursor will appear on.
@@ -1202,6 +1213,20 @@ pub(crate) fn scan_for_column(
                 scan = display_end;
                 continue;
             }
+        }
+        // A composition sequence: a static composition's width, an
+        // automatic one's a glyph cluster at a time.
+        if cmp_it.composing() || (scan == cmp_it.stop_pos && cmp_it.reseat(interp, env, scan, end))
+        {
+            cmp_it.update(interp, env);
+        }
+        if cmp_it.composing() {
+            scan += cmp_it.nchars;
+            if scan <= end {
+                col += cmp_it.width.max(0) as usize;
+            }
+            cmp_it.advance(interp, env, scan, end);
+            continue;
         }
         let Some(ch) = interp.buffer.borrow().char_at(scan) else {
             break;

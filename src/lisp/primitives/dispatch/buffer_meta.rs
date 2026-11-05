@@ -245,13 +245,14 @@ define_dispatch!(
                     return Ok(Value::Buffer(buffer));
                 }
                 {
-                    let buf_name = string_text(&args[0])?;
-                    if buf_name.is_empty() {
+                    // SCHARS (buffer_or_name) == 0; Fget_buffer has checked
+                    // it is a string.
+                    if crate::lisp::primitives::string_char_count(&args[0]) == Some(0) {
                         return Err(LispError::Signal(
                             "Empty string for buffer name is not allowed".into(),
                         ));
                     }
-                    let (id, _) = interp.create_buffer(&buf_name);
+                    let id = interp.create_buffer_named(args[0]);
                     interp.set_buffer_hooks_inhibited(id, inhibit_hooks);
                     let buffer = interp.buffer_value(id).expect("new buffer object");
                     // buffer.c:Fget_buffer_create returns its allocation even
@@ -270,44 +271,54 @@ define_dispatch!(
                 }
             }
             "generate-new-buffer-name" => {
-                need_args(name, args, 1)?;
-                let ignore = args.get(1).and_then(|ignore| {
-                    with_string_text(ignore, |ignore| {
-                        with_string_text(&args[0], |base| base == ignore)
-                    })
-                    .flatten()
-                });
-                let taken = with_string_text(&args[0], |base| interp.has_buffer(base))
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
-                if !taken || ignore == Some(true) {
-                    // buffer.c returns NAME itself, not a copy.
-                    Ok(args[0])
-                } else {
-                    let base = string_text(&args[0])?;
-                    let ignore = args
-                        .get(1)
-                        .and_then(|ignore| string_like(ignore).map(|s| s.text));
-                    // bug#1229: a name that starts with a space first tries
-                    // a random -NNNNNN suffix, so that thousands of
-                    // internal buffers do not each scan <2>, <3>, ...
-                    let genbase = if base.starts_with(' ') {
-                        let number = crate::lisp::primitives::get_random() % 1_000_000;
-                        let genbase = format!("{base}-{number}");
-                        if !interp.has_buffer(&genbase) {
-                            return Ok(Value::String(genbase.into()));
-                        }
-                        genbase
-                    } else {
-                        base
-                    };
-                    let mut n = 2;
-                    loop {
-                        let candidate = format!("{genbase}<{n}>");
-                        if ignore.as_deref() == Some(&candidate) || !interp.has_buffer(&candidate) {
-                            break Ok(Value::String(candidate.into()));
-                        }
-                        n += 1;
+                need_arg_range(name, args, 1, 2)?;
+                // buffer.c:Fgenerate_new_buffer_name.
+                let base = args[0];
+                if !matches!(base.kind(), Kind::StringObject(_)) {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), base));
+                }
+                let ignore = args.get(1).copied().unwrap_or(Value::Nil);
+                let free =
+                    |interp: &Interpreter, name: &Value| interp.find_buffer_named(name).is_none();
+                if (!ignore.is_nil()
+                    && super::call(interp, "string-equal", &[base, ignore], env)?.is_truthy())
+                    || free(interp, &base)
+                {
+                    // NAME itself, not a copy.
+                    return Ok(base);
+                }
+                // bug#1229: a name that starts with a space first tries a
+                // random -NNNNNN suffix, so that thousands of internal
+                // buffers do not each scan <2>, <3>, ...
+                let genbase = if crate::lisp::primitives::string_starts_with_byte(&base, b' ') {
+                    let number = crate::lisp::primitives::get_random() % 1_000_000;
+                    let genbase = super::call(
+                        interp,
+                        "concat",
+                        &[base, Value::string(&format!("-{number}"))],
+                        env,
+                    )?;
+                    if free(interp, &genbase) {
+                        return Ok(genbase);
                     }
+                    genbase
+                } else {
+                    base
+                };
+                let mut count = 2;
+                loop {
+                    let candidate = super::call(
+                        interp,
+                        "concat",
+                        &[genbase, Value::string(&format!("<{count}>"))],
+                        env,
+                    )?;
+                    if super::call(interp, "string-equal", &[candidate, ignore], env)?.is_truthy()
+                        || free(interp, &candidate)
+                    {
+                        break Ok(candidate);
+                    }
+                    count += 1;
                 }
             }
             "make-indirect-buffer" => {
@@ -317,25 +328,29 @@ define_dispatch!(
                 // buffer.c:Fmake_indirect_buffer: NAME a string no buffer
                 // has, BASE-BUFFER through Fget_buffer and live, NAME not
                 // empty.
-                let new_name = string_text(&args[1])?;
-                if interp.find_buffer_id(&new_name).is_some() {
-                    return Err(crate::lisp::primitives::values::doprnt_error(
-                        interp,
+                let new_name = args[1];
+                // CHECK_STRING (name); Fget_buffer (name).
+                if !matches!(new_name.kind(), Kind::StringObject(_)) {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), new_name));
+                }
+                if interp.find_buffer_named(&new_name).is_some() {
+                    return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                        Some(interp),
                         "Buffer name `{}' is in use",
-                        &[&new_name],
+                        &[new_name],
                     ));
                 }
                 let base = interp.get_buffer(&args[0])?.ok_or_else(|| {
-                    crate::lisp::primitives::values::doprnt_error(
-                        interp,
+                    crate::lisp::primitives::values::doprnt_error_sdata(
+                        Some(interp),
                         "No such buffer: `{}'",
-                        &[&string_text(&args[0]).unwrap_or_default()],
+                        &[args[0]],
                     )
                 })?;
                 let base_id = interp
                     .live_buffer_id(base)
                     .ok_or_else(|| LispError::Signal("Base buffer has been killed".into()))?;
-                if new_name.is_empty() {
+                if crate::lisp::primitives::string_char_count(&new_name) == Some(0) {
                     return Err(LispError::Signal(
                         "Empty string for buffer name is not allowed".into(),
                     ));
@@ -345,7 +360,7 @@ define_dispatch!(
                 // No double indirection: an indirect buffer's base is a
                 // buffer with its own text.
                 let base_id = interp.root_buffer_id(base_id);
-                let (new_id, _) = interp.create_buffer(&new_name);
+                let new_id = interp.create_buffer_named(new_name);
                 let (base_object, object) =
                     match (interp.buffer_object(base_id), interp.buffer_object(new_id)) {
                         (Some(base), Some(object)) => (base, object),
@@ -356,7 +371,11 @@ define_dispatch!(
                             )));
                         }
                     };
-                let mut state = crate::buffer::Buffer::new(&new_name);
+                // The name and last_name create_buffer_named gave it, a
+                // copy of NAME.
+                let new_name = object.borrow().name();
+                let mut state = crate::buffer::Buffer::named(new_name);
+                state.set_last_name(new_name);
                 state.text_conversion_style = interp.native_text_conversion_style_default();
                 object.replace_state(state);
                 // Use the base buffer's text object, and its chain of
@@ -465,45 +484,52 @@ define_dispatch!(
                 Ok(interp.buffer_value(new_id).expect("live buffer object"))
             }
             "rename-buffer" => {
-                need_args(name, args, 1)?;
+                need_arg_range(name, args, 1, 2)?;
                 // buffer.c:Frename_buffer.
-                let new_name = string_text(&args[0])?;
-                if new_name.is_empty() {
+                let mut new_name = args[0];
+                let requested_name = new_name;
+                let old_name = interp.buffer.borrow().name();
+                let Some(chars) = crate::lisp::primitives::string_char_count(&new_name) else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), new_name));
+                };
+                if chars == 0 {
                     return Err(LispError::Signal(
                         "Empty string is invalid as a buffer name".into(),
                     ));
                 }
-                let old_name = interp.buffer.borrow().name.clone();
-                let unique = args.len() > 1 && args[1].is_truthy();
-                let final_name = if interp.has_buffer(&new_name) {
-                    if !unique && new_name == old_name {
-                        return Ok(Value::String(old_name.into()));
+                let unique = args.get(1).is_some_and(Value::is_truthy);
+                if let Some(holder) = interp.find_buffer_named(&new_name) {
+                    // Don't short-circuit if UNIQUE is t.
+                    if !unique && holder == interp.current_buffer_id() {
+                        return Ok(old_name);
                     }
-                    if !unique {
-                        return Err(crate::lisp::primitives::values::doprnt_error(
+                    if unique {
+                        new_name = super::call(
                             interp,
+                            "generate-new-buffer-name",
+                            &[new_name, old_name],
+                            env,
+                        )?;
+                    } else {
+                        return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                            Some(interp),
                             "Buffer name `{}' is in use",
-                            &[&new_name],
+                            &[new_name],
                         ));
                     }
-                    // Fgenerate_new_buffer_name with the old name as the
-                    // one that may be kept, so a buffer already in NAME's
-                    // <N> sequence keeps its name.
-                    let generated = super::call(
-                        interp,
-                        "generate-new-buffer-name",
-                        &[args[0], Value::String(old_name.clone().into())],
-                        env,
-                    )?;
-                    string_text(&generated)?
-                } else {
-                    new_name
-                };
-                if let Some(pos) = interp.buffer_list.iter().position(|(_, n)| *n == old_name) {
-                    interp.buffer_list[pos].1 = final_name.clone();
                 }
-                interp.buffer.borrow_mut().last_name = Some(old_name);
-                interp.buffer.borrow_mut().name = final_name.clone();
+                // bset_last_name (current_buffer, oldname); bset_name
+                // (current_buffer, newname): the string itself, as given.
+                {
+                    let mut buffer = interp.buffer.borrow_mut();
+                    buffer.set_last_name(old_name);
+                    buffer.set_name(new_name);
+                }
+                // Fsetcar (Frassq (buf, Vbuffer_alist), newname).
+                let current = interp.current_buffer_id();
+                if let Some(entry) = interp.buffer_list.iter_mut().find(|(id, _)| *id == current) {
+                    entry.1 = new_name;
+                }
                 // A buffer visiting no file renames its auto-save file.
                 let visits_file = interp
                     .lookup_var_key(cached_symbol!("buffer-file-name"), env)
@@ -519,11 +545,15 @@ define_dispatch!(
                         env,
                     )?;
                 }
-                run_hook(
-                    interp,
-                    &cached_symbol!("buffer-list-update-hook").symbol(),
-                    env,
-                )?;
+                // run_buffer_list_update_hook (current_buffer): not for a
+                // buffer whose hooks are inhibited.
+                if !interp.buffer_hooks_inhibited(current) {
+                    run_hook(
+                        interp,
+                        &cached_symbol!("buffer-list-update-hook").symbol(),
+                        env,
+                    )?;
+                }
                 // GNU buffer.c calls the preloaded Elisp owner directly
                 // after installing the provisional name.  Uniquify uses
                 // that boundary to replace a generated `<N>' suffix with
@@ -536,11 +566,12 @@ define_dispatch!(
                     interp.call_function_value(
                         callback,
                         Some("uniquify--rename-buffer-advice"),
-                        &[args[0], args.get(1).cloned().unwrap_or(Value::Nil)],
+                        &[requested_name, args.get(1).cloned().unwrap_or(Value::Nil)],
                         env,
                     )?;
                 }
-                Ok(Value::String(interp.buffer.borrow().name.clone().into()))
+                // Refetch since that last call may have done GC.
+                Ok(interp.buffer.borrow().name())
             }
             "other-buffer" => {
                 need_arg_range(name, args, 0, 3)?;
@@ -1812,7 +1843,7 @@ pub(crate) fn other_buffer(
     for id in candidates {
         // The predicate may have killed or renamed a buffer.
         let hidden = match interp.buffer_list.iter().find(|(other, _)| *other == id) {
-            Some((_, name)) => name.starts_with(' '),
+            Some((_, name)) => crate::lisp::primitives::string_starts_with_byte(name, b' '),
             None => true,
         };
         if Some(id) == excluded || hidden {

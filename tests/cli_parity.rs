@@ -2178,6 +2178,100 @@ fn charsets_are_found_by_their_symbols() {
 }
 
 #[test]
+fn string_arguments_reach_primitives_as_their_bytes() {
+    // A sweep of every subr with multibyte, unibyte, eight-bit, NUL,
+    // propertized and wide strings: an error formatted from SDATA (NAME)
+    // takes the bytes up to the first NUL and make_string's choice of
+    // multibyte (nsberror, the process and fontset lookups); a face name
+    // is Fintern'd, raw bytes included; base64 decoding reads the string's
+    // own bytes, a non-ASCII character's being no base64 data.  A buffer's
+    // name is the Lisp string BVAR (b, name): the object `buffer-name'
+    // returns and `rename-buffer' installs as given, found by
+    // `string-equal' and printed and reported from its own bytes.  Color
+    // names are C strings; a nil locale coding system encodes a time
+    // format as `no-conversion'; columns and `format' step over and
+    // register compositions as scan_for_column and lisp_string_width do.
+    // A process's name is p->name, found by `equal' and made unique by
+    // concat2; a minibuffer is one Vminibuffer_list holds.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r##"(progn
+(dolist (f (list
+  (lambda () (let ((eight (string ?a (unibyte-char-to-multibyte 200) ?b)) (nul (string ?a 0 ?b)) (uni (string-to-unibyte (copy-sequence "a\377b"))))
+               (mapcar (lambda (s) (list (condition-case e (buffer-hash s) (error (list (cadr e) (multibyte-string-p (cadr e)) (string-bytes (cadr e)))))
+                                         (condition-case e (process-type s) (error (list (cadr e) (multibyte-string-p (cadr e)))))
+                                         (condition-case e (fontset-font s 65) (error (list (cadr e) (multibyte-string-p (cadr e)))))))
+                       (list eight nul uni (string 233) (make-string 2 #x4e2d)))))
+  (lambda () (let ((eight (string ?a (unibyte-char-to-multibyte 200) ?b)))
+               (list (condition-case e (face-font eight) (error (list (car e) (cadr e) (append (symbol-name (nth 2 e)) nil) (eq (nth 2 e) (intern eight)))))
+                     (condition-case e (internal-lisp-face-empty-p eight) (error (append (symbol-name (nth 2 e)) nil))))))
+  (lambda () (list (condition-case e (base64-decode-string (make-string 3 #x4e2d)) (error e)) (condition-case e (base64-decode-string (string #x1f600 ?x)) (error e))
+                   (condition-case e (base64-decode-string (make-string 3 #x4e2d) nil t) (error e)) (condition-case e (base64-decode-string (concat "YQ" (string #x4e2d) "==") nil t) (error e))
+                   (condition-case e (base64-decode-string (string ?Y (unibyte-char-to-multibyte 200) ?Q ?= ?=) nil t) (error e))
+                   (with-temp-buffer (insert "YQ" (string #x4e2d) "==") (list (condition-case e (base64-decode-region (point-min) (point-max)) (error e)) (condition-case e (base64-decode-region (point-min) (point-max) nil t) (error e)) (buffer-string)))
+                   (with-temp-buffer (insert "/w==") (base64-decode-region (point-min) (point-max)) (list (buffer-string) (multibyte-string-p (buffer-string)) (append (buffer-string) nil)))))
+  (lambda () (let* ((u (string-to-unibyte (copy-sequence "x\377"))) (b (get-buffer-create u)) (s (copy-sequence "probe")))
+               (list (eq (buffer-name) (buffer-name)) (multibyte-string-p (buffer-name b)) (eq (buffer-name b) u)
+                     (get-buffer (string ?x (unibyte-char-to-multibyte 255))) (eq (get-buffer u) b)
+                     (progn (with-current-buffer b (rename-buffer s)) (eq (buffer-name b) s))
+                     (progn (aset s 0 ?P) (list (buffer-name b) (buffer-last-name b)))
+                     (progn (with-current-buffer b (rename-buffer (propertize "propped" 'face 'bold))) (buffer-name b))
+                     (buffer-name (get-buffer-create (propertize "newp" 'face 'italic)))
+                     (with-current-buffer b (rename-buffer "*scratch*" t))
+                     (generate-new-buffer-name (propertize "*scratch*" 'face 'bold))
+                     (generate-new-buffer-name "*scratch*" "*scratch*<2>") (generate-new-buffer-name "*scratch*" 'foo)
+                     (condition-case e (generate-new-buffer-name "*scratch*" 5) (error e))
+                     (multibyte-string-p (generate-new-buffer-name (string-to-unibyte "*scratch*")))
+                     (with-current-buffer b (eq (rename-buffer (buffer-name)) (buffer-name)))
+                     (let ((k (get-buffer-create "killme"))) (kill-buffer k) (list (buffer-name k) (buffer-last-name k)))
+                     (prin1-to-string (get-buffer-create (string ?y (unibyte-char-to-multibyte 200))))
+                     (sort (list (get-buffer-create "zz") (get-buffer-create "aa")) #'value<))))
+  (lambda () (let ((nul (string ?a 0 ?b)) (eight (string ?a (unibyte-char-to-multibyte 200) ?b)))
+               (get-buffer-create nul) (get-buffer-create eight)
+               (mapcar (lambda (name)
+                         (mapcar (lambda (f) (condition-case e (funcall f) (error (list (cadr e) (multibyte-string-p (cadr e))))))
+                                 (list (lambda () (make-indirect-buffer "*scratch*" name)) (lambda () (make-indirect-buffer name "fresh-ind"))
+                                       (lambda () (process-type (get-buffer name))) (lambda () (with-temp-buffer (rename-buffer name)))
+                                       (lambda () (buffer-enable-undo (concat name "-gone"))))))
+                       (list nul eight))))
+  (lambda () (list (color-gray-p (string 0 ?x)) (color-supported-p (string ?r ?e ?d 0 ?z)) (color-distance (string ?r ?e ?d 0 ?z) "black")
+                   (color-gray-p "unspecified-fg") (condition-case e (color-gray-p "red" 'foo) (error e)) (condition-case e (color-supported-p 'red) (error e))
+                   (let ((locale-coding-system nil)) (format-time-string (string ?a (unibyte-char-to-multibyte 200) ?b ?% ?Y ?\N{U+e9}) 0 t))))
+  (lambda () (list (with-temp-buffer (insert "ab") (insert "xyz") (compose-region 3 6 ?λ) (end-of-line) (current-column))
+                   (with-temp-buffer (insert "abcdef") (compose-region 2 5 "Q") (list (progn (end-of-line) (current-column)) (progn (move-to-column 2) (point)) (progn (move-to-column 3) (point)) (progn (move-to-column 1) (point))))
+                   (with-temp-buffer (insert "a\tb") (compose-region 1 3 "Z") (end-of-line) (current-column))
+                   (with-temp-buffer (insert "abc") (put-text-property 1 3 'invisible t) (compose-region 2 4 "R") (end-of-line) (current-column))
+                   (let ((s (copy-sequence "abc"))) (compose-string-internal s 0 3 "X") (format "%s" s) (prog1 (object-intervals s) (format "x%s" s)))
+                   (let ((s (copy-sequence "abc"))) (compose-string-internal s 0 3 "X") (format "x%s" s) (object-intervals s))
+                   (let ((s (copy-sequence "abc"))) (compose-string-internal s 0 3 "X") (face-attributes-as-vector s) (object-intervals s))))
+  (lambda () (let* ((n (copy-sequence "pp")) (pr (make-pipe-process :name n :noquery t)) (u (make-pipe-process :name (string-to-unibyte "u\377") :noquery t))
+                    (q (make-pipe-process :name (propertize "propn" 'face 'bold) :noquery t)) (z (make-pipe-process :name (string ?z 0 ?y) :noquery t)))
+               (list (eq (process-name pr) n) (process-name (make-pipe-process :name n :noquery t)) (process-name (make-pipe-process :name n :noquery t))
+                     (eq (get-process n) pr) (eq (get-process (string-to-multibyte "pp")) pr)
+                     (multibyte-string-p (process-name u)) (get-process (string ?u (unibyte-char-to-multibyte 255))) (eq (get-process (string-to-unibyte "u\377")) u)
+                     (process-name q) (process-name (make-pipe-process :name (propertize "propn" 'face 'bold) :noquery t))
+                     (process-name z) (prin1-to-string z)
+                     (value< (make-pipe-process :name "bbb" :noquery t) (make-pipe-process :name "aaa" :noquery t))
+                     (condition-case e (get-process 5) (error e)) (process-status "nonexistent") (process-status (copy-sequence "pp"))
+                     (mapcar #'process-name (seq-filter (lambda (x) (string-prefix-p "pp" (process-name x))) (process-list))))))
+  (lambda () (list (minibufferp (get-buffer " *Minibuf-0*")) (minibufferp " *Minibuf-0*") (minibufferp (get-buffer " *Minibuf-0*") t)
+                   (minibufferp (get-buffer-create " *Minibuf-9*")) (minibufferp (get-buffer-create " *Minibuf-1*")) (minibufferp "nonexistent")
+                   (condition-case e (minibufferp 5) (error e)) (innermost-minibuffer-p (get-buffer " *Minibuf-0*")) (innermost-minibuffer-p)
+                   (minibuffer-innermost-command-loop-p (get-buffer " *Minibuf-0*"))
+                   (let ((b (get-buffer " *Minibuf-0*"))) (with-current-buffer b (rename-buffer "renamed-mini")) (list (minibufferp b) (minibufferp "renamed-mini") (buffer-name b)))
+                   (window-buffer (minibuffer-window))))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"##,
+        ],
+    );
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

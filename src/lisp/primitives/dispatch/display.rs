@@ -509,18 +509,22 @@ fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &
     // lexically bound) by their symbols.
     let buffer_name = interp
         .symbol_value_key(cached_symbol!("messages-buffer-name"))
-        .and_then(|value| string_like(&value).map(|string| string.text))
-        .unwrap_or_else(|| "*Messages*".into());
+        .filter(|value| matches!(value.kind(), Kind::StringObject(_)));
     let log_max = interp
         .symbol_value_key(cached_symbol!("message-log-max"))
         .unwrap_or(Value::T);
     if log_max.is_nil() {
         return;
     }
-    let buffer_id = interp
-        .find_buffer(&buffer_name)
-        .map(|(id, _)| id)
-        .unwrap_or_else(|| interp.create_buffer(&buffer_name).0);
+    // Fget_buffer_create (Vmessages_buffer_name, Qnil).
+    let buffer_id = match buffer_name {
+        Some(name) => interp
+            .find_buffer_named(&name)
+            .unwrap_or_else(|| interp.create_buffer_named(name)),
+        None => interp
+            .find_buffer_id("*Messages*")
+            .unwrap_or_else(|| interp.create_buffer("*Messages*").0),
+    };
     // xdisp.c message_dolog: `buffer-undo-list' is t and
     // `cache-long-scans' nil in the log buffer on every message.
     cached_symbol!("cache-long-scans")
@@ -1084,7 +1088,7 @@ fn current_frame_and_buffer_state(interp: &Interpreter) -> (Vec<Value>, usize) {
             continue;
         };
         size += 3;
-        if name.starts_with(' ') {
+        if crate::lisp::primitives::string_starts_with_byte(name, b' ') {
             continue;
         }
         state.push(interp.buffer_value(*buffer_id).expect("live buffer object"));
@@ -4124,7 +4128,7 @@ fn window_list_frames(
 /// window if it shows BUFFER_ID, else the first that does on the selected
 /// frame, else the first that does at all.  A minibuffer window counts
 /// only while a minibuffer is active and only as minibuf_window.
-pub(super) fn buffer_window(
+pub(crate) fn buffer_window(
     interp: &Interpreter,
     buffer_id: u64,
     all_frames: &Value,
@@ -5058,12 +5062,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 // buffer.c: BVAR (decode_buffer (BUFFER), last_name), the
                 // name a buffer was made, renamed or killed with.
-                Ok(interp
-                    .decode_buffer(args.first())?
-                    .borrow()
-                    .last_name
-                    .clone()
-                    .map_or(Value::Nil, |name| Value::String(name.into())))
+                Ok(interp.decode_buffer(args.first())?.borrow().last_name())
             }
 
             // ── Display stubs ──
@@ -6492,7 +6491,7 @@ define_dispatch!(
             "color-distance" => {
                 need_arg_range(name, args, 2, 4)?;
                 // FRAME is decoded before either color is read.
-                super::frames::decode_live_frame(interp, args.get(2), true)?;
+                let frame = super::frames::decode_live_frame(interp, args.get(2), true)?;
                 // xfaces.c Fcolor_distance: a (R G B) list of fixnums
                 // (parse_rgb_list, stored into unsigned shorts) or a string
                 // through the tty frame's defined_color_hook; anything else
@@ -6513,10 +6512,12 @@ define_dispatch!(
                             }
                             _ => None,
                         },
-                        _ => match string_like(value) {
-                            Some(text) => super::faces::tty_defined_color(interp, env, &text.text)?,
-                            None => None,
-                        },
+                        // STRINGP (color) && defined_color_hook (f, SSDATA
+                        // (color), ...).
+                        _ if matches!(value.kind(), Kind::StringObject(_)) => {
+                            super::faces::tty_defined_color(interp, env, frame, value)?
+                        }
+                        _ => None,
                     };
                     rgb.ok_or_else(|| signal_error("Invalid color", *value))
                 };
@@ -6676,8 +6677,7 @@ define_dispatch!(
                 }
                 let buffer_id = match object.kind() {
                     Kind::Buffer(buffer) if interp.has_buffer_id(buffer.id) => Some(buffer.id),
-                    _ => string_like(object)
-                        .and_then(|string| interp.find_buffer(&string.text).map(|(id, _)| id)),
+                    _ => interp.find_buffer_named(object),
                 };
                 let showing: Vec<u64> = buffer_id
                     .map(|buffer_id| {
@@ -6865,13 +6865,15 @@ define_dispatch!(
                         window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT).kind(),
                         Kind::T
                     ) {
+                        // error ("Window is dedicated to `%s'", SDATA (BVAR
+                        // (XBUFFER (tem), name))).
                         let name = previous
-                            .and_then(|id| interp.get_buffer_by_id(id).map(|b| b.name.clone()))
-                            .unwrap_or_default();
-                        return Err(crate::lisp::primitives::values::doprnt_error(
-                            interp,
+                            .and_then(|id| interp.get_buffer_by_id(id).map(|b| b.name()))
+                            .unwrap_or(Value::Nil);
+                        return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                            Some(interp),
                             "Window is dedicated to `{}'",
-                            &[&name],
+                            &[name],
                         ));
                     }
                     set_window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT, Value::Nil)?;
@@ -7377,8 +7379,11 @@ define_dispatch!(
                         interp.has_buffer_id(buffer.id).then_some(buffer.id)
                     }
                     Some(value) => {
-                        let name = string_text(&value.value())?;
-                        interp.find_buffer(&name).map(|(id, _)| id)
+                        let name = value.value();
+                        if !matches!(name.kind(), Kind::StringObject(_)) {
+                            return Err(wrong_type_argument("stringp", name));
+                        }
+                        interp.find_buffer_named(&name)
                     }
                 };
                 let Some(buffer_id) = buffer_id else {

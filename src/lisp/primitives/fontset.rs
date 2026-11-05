@@ -209,10 +209,10 @@ pub(crate) fn check_fontset_name(
         None => match fs_query_fontset(interp, name, 0, env)? {
             Some(id) => id,
             None => {
-                return Err(crate::lisp::primitives::values::doprnt_error(
-                    interp,
+                return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                    Some(interp),
                     "Fontset `{}' does not exist",
-                    &[&string_text(name)?],
+                    &[*name],
                 ));
             }
         },

@@ -13716,11 +13716,11 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
             Some("sh".into()),
             vec!["-c".into(), "printf child".into()],
             None,
-            Some("child".into()),
+            Value::string("child"),
         )
         .expect("create child process record");
     let connection = interp
-        .create_process(None, None, Vec::new(), None, Some("pipe".into()))
+        .create_process(None, None, Vec::new(), None, Value::string("pipe"))
         .expect("create connection process record");
 
     assert_eq!(
@@ -30608,11 +30608,11 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
             .into_iter()
             .map(|info| {
                 let name = if info.buffer_id == interp.current_buffer_id() {
-                    interp.buffer.borrow().name.clone()
+                    interp.buffer.borrow().name_text()
                 } else {
                     interp
                         .get_buffer_by_id(info.buffer_id)
-                        .map(|buffer| buffer.name.clone())
+                        .map(|buffer| buffer.name_text())
                         .unwrap_or_default()
                 };
                 (name, info.height, info.selected)
@@ -30734,7 +30734,7 @@ fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
         for info in crate::lisp::primitives::window_render_layout(interp) {
             if interp
                 .get_buffer_by_id(info.buffer_id)
-                .is_some_and(|buffer| buffer.name == "*Completions*")
+                .is_some_and(|buffer| buffer.name_is("*Completions*"))
             {
                 sink.borrow_mut().push(info.point);
             }

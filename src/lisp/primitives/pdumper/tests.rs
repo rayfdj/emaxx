@@ -1909,7 +1909,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let buffer = target
         .get_buffer_by_id(source_id)
         .expect("the buffer was installed");
-    assert_eq!(buffer.name, "zz-dump-buf");
+    assert_eq!(buffer.name_text(), "zz-dump-buf");
     assert_eq!(
         buffer.full_buffer_string(),
         format!("éllo wörld{}", crate::lisp::json::INVALID_UNICODE_SENTINEL)
@@ -2276,15 +2276,15 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
         target
             .buffer_list
             .iter()
-            .map(|(_, name)| name.clone())
+            .map(|(_, name)| *name)
             .collect::<Vec<_>>(),
         interp
             .buffer_list
             .iter()
-            .map(|(_, name)| name.clone())
+            .map(|(_, name)| *name)
             .collect::<Vec<_>>()
     );
-    assert!(target.has_buffer("zz-second"));
+    assert!(target.find_buffer_id("zz-second").is_some());
     // Ordinary startup installs the decoded symbol cells after loading
     // the object graph. The Lisp probe needs the same second step.
     target

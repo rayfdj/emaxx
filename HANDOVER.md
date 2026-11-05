@@ -15006,6 +15006,69 @@ setup_process_coding_systems's check now refuses). A 13-form
   first pass passed in the m-z group's rerun, 474 of 474), the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 319: a buffer's and a process's names are Lisp strings, the
+  minibuffers are Vminibuffer_list's, and string arguments reach
+  primitives as their bytes, as a sweep of every subr with twelve kinds
+  of string found GNU's do.** The buffer holds its name and last name as
+  Lisp strings, and the buffer list (Vbuffer_alist) pairs each buffer
+  with that same object: `buffer-name' returns it (`(eq (buffer-name)
+  (buffer-name))' is t), `rename-buffer' installs the string it is
+  given, text properties and later `aset's included, `get-buffer-create'
+  and `make-indirect-buffer' a copy without properties, `kill-buffer'
+  leaves a nil name and the old one as the last name, and an image keeps
+  the one object in both places. `get-buffer' finds a name by
+  `string-equal' (a unibyte "x\377" names no buffer a multibyte raw-byte
+  "x\377" does), the printer writes a name through print_string,
+  `value<' orders buffers by string_cmp, and `generate-new-buffer-name'
+  builds its candidates by `concat' and tests them by `string-equal' and
+  `get-buffer', a non-string IGNORE signalling as GNU's does. A
+  process's name is p->name likewise: `process-name' returns the string
+  `make-process', `make-pipe-process', `make-network-process' and
+  `make-serial-process' were given, or make_process's concat2 (NAME,
+  "<N>") when a live process has it (text properties kept, a unibyte
+  name unibyte), `get-process' and `process-status' find it by `equal',
+  an accepted connection's is the server's name and the caller
+  concatenated, the default sentinel inserts it with Finsert, `value<'
+  orders processes by it, and a pipe's stderr process is named concat2
+  (NAME, " stderr"). `minibufferp' asks Vminibuffer_list, which
+  get_minibuffer fills by depth, where Emaxx went by a " *Minibuf" name
+  prefix: a buffer a user names " *Minibuf-9*" is no minibuffer, a
+  renamed one still is, LIVE means live_minibuffer_p's active depths,
+  `innermost-minibuffer-p' is EQ to the list's minibuf_level entry, and
+  a frame's minibuffer window shows the list's first; an image keeps the
+  list. An error GNU formats from SDATA (NAME) takes the bytes before
+  the first NUL in make_string's choice of multibyte: nsberror's "No
+  buffer named", "Buffer name `%s' is in use", "No such buffer", "Buffer
+  %s has no process", "Process %s does not exist", "Cannot signal
+  process", "Process %s not running", "is not a subprocess", "is not
+  active", "Attempt to accept output from process %s locked to thread
+  %s", "Fontset `%s' does not exist", "Window is dedicated to", the
+  indirect-buffer kill refusal, the font name and key errors and the
+  autoload-while-dumping error. A face name given as a string is
+  Fintern'd, raw bytes included; base64 decoding reads the string's own
+  bytes. Color names are C strings: tty_defined_color reads SSDATA up to
+  the first NUL, asks `tty-color-desc' about build_string of it with the
+  frame (decode_any_frame for `color-gray-p' and `color-supported-p'),
+  and keeps xfaces.c's pixel rules for "unspecified-fg" and
+  "unspecified-bg". With a nil `locale-coding-system',
+  `format-time-string' encodes its format as `no-conversion', a raw-byte
+  character becoming its byte. `current-column' and `move-to-column'
+  step over a composition as indent.c's scan_for_column does (a static
+  composition's width; an automatic one only in a buffer some window
+  shows), and `format' runs lisp_string_width over a %s argument with
+  properties, registering its compositions as GNU's get_composition_id
+  does. The undo case runs 1,322,157 instructions an iteration with
+  collections held off (GNU 1,222,673, 1.081). The sweep, run in one
+  session over every subr GNU's session survives, now differs only in
+  `decode-time''s clock and `make-temp-name''s randomness. Host-side
+  formatting of a killed buffer (a Rust `Display') shows its last name,
+  where its nil name had left the first gate pass one test's expected
+  text short; the second pass found a process message formatting the
+  name object's printed form, quotes included. One command-line
+  comparison runs the cases fixed. The fuzzes and command-line cases of
+  rounds 303 to 318 print GNU's results as before. Local validation: the
+  grouped gate's 3,501 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17546,7 +17609,28 @@ widest body gaps are ert-tests (47,357 ms against 39,016), tramp-tests
 semantic-utest-ia (4,210 against 2,898) and mule-tests (3,303 against
 2,061), and `ert-test-run-tests-batch-expensive' is 1.20 of GNU's time.
 
+**On `dd1fb05`** (round 318): the full Rust gate (run 42026320258)
+passed; the frozen run (run 42026324228) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a faster runner than round 317's
+(the oracle's bodies 245.3 s against 279.7). Setup 63.5 s against 54.7 s
+(1.160), test bodies 261.5 s against 245.3 s (1.066), in all 1.101, with
+a per-file setup median of 96 ms against 84. The widest body gaps are
+ert-tests (36,346 ms against 32,930), tramp-tests (18,541 against
+15,651), comp-tests (14,814 against 12,701), semantic-utest-ia (2,964
+against 2,139) and mule-tests (2,326 against 1,526), and
+`ert-test-run-tests-batch-expensive' is 1.09 of GNU's time.
+
 **Findings recorded, not fixed:**
+- **Static compositions in the screen-line layout (round 319).** The
+  layouter the redisplay paths share (`window-text-pixel-size',
+  `buffer-text-pixel-size' and through them `string-pixel-width') lays a
+  `composition' property's characters out one by one: three NULs
+  composed into one glyph measure 6 columns where GNU's display
+  iterator, stepping over the composition, measures 2. compute_motion
+  and scan_for_column step over compositions with
+  composition_reseat_it's iterator; the layouter needs the same
+  iterator, and the glyph widths of a composed cluster, to match
+  xdisp.c.
 - **Hot functions first at link time (round 305).** LLD's
   `--symbol-ordering-file' with the 3,046 functions four test files'
   callgrind runs touched, the hottest first (99% of their instructions

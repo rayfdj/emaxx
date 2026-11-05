@@ -773,22 +773,9 @@ define_dispatch!(
                 // whose list becomes nil where it is t.
                 let buffer = match args.first().filter(|value| !value.is_nil()) {
                     None => Some(interp.buffer),
-                    Some(value) => match value.kind() {
-                        Kind::Buffer(buffer) => Some(buffer),
-                        _ => {
-                            let Some(found) =
-                                with_string_text(value, |text| interp.find_buffer_id(text))
-                            else {
-                                return Err(wrong_type_argument("stringp", *value));
-                            };
-                            let Some(id) = found else {
-                                return Err(LispError::Signal(format!(
-                                    "No buffer named {}",
-                                    string_text(value)?
-                                )));
-                            };
-                            interp.buffer_object(id)
-                        }
+                    Some(value) => match interp.get_buffer(value)? {
+                        Some(buffer) => Some(buffer),
+                        None => return Err(crate::lisp::eval::runtime::nsberror(value)),
                     },
                 };
                 if let Some(buffer) = buffer {
@@ -847,7 +834,8 @@ define_dispatch!(
                 if interp.live_buffer_id(buffer).is_none() {
                     return Ok(Value::Nil);
                 }
-                Ok(Value::String(buffer.borrow().name.clone().into()))
+                // BVAR (decode_buffer (BUFFER), name): the object itself.
+                Ok(buffer.borrow().name())
             }
             "set-buffer-multibyte" => {
                 need_args(name, args, 1)?;

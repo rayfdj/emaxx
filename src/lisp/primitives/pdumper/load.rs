@@ -1022,13 +1022,13 @@ impl Loader<'_> {
                         continue;
                     }
                     let name = self.value_at(offset + 8 * BUFFER_NAME)?;
-                    let name = string_like(&name)
-                        .map(|string| string.text)
-                        .ok_or_else(|| LoadError::Error("buffer name is not a string".into()))?;
+                    if !matches!(name.kind(), Kind::StringObject(_)) {
+                        return Err(LoadError::Error("buffer name is not a string".into()));
+                    }
                     self.objects[number] =
                         Value::Buffer(crate::lisp::types::BufferRef::for_restore(
                             id,
-                            crate::buffer::Buffer::new(&name),
+                            crate::buffer::Buffer::named(name),
                         ));
                     buffers.push((offset, number, id));
                 }
@@ -2246,9 +2246,11 @@ impl Loader<'_> {
         let word = |loader: &Self, index: u32| loader.reader.word(offset + 8 * index);
         let flags = word(self, BUFFER_FLAGS)?;
         let multibyte = flags & BUFFER_FLAG_MULTIBYTE != 0;
-        let name = string_like(&self.value_at(offset + 8 * BUFFER_NAME)?)
-            .map(|string| string.text)
-            .ok_or_else(|| LoadError::Error("buffer name is not a string".into()))?;
+        // BVAR (b, name): the string object itself.
+        let name = self.value_at(offset + 8 * BUFFER_NAME)?;
+        if !matches!(name.kind(), Kind::StringObject(_)) {
+            return Err(LoadError::Error("buffer name is not a string".into()));
+        }
         let file = self.optional_string_at(offset + 8 * BUFFER_FILE)?;
         let file_truename = self.optional_string_at(offset + 8 * BUFFER_FILE_TRUENAME)?;
         let size = word(self, BUFFER_Z)? as usize;

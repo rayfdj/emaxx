@@ -22,9 +22,9 @@ fn resolve_face_name_1(
     let face = match value.kind() {
         Kind::Symbol(symbol) => Value::Symbol(symbol),
         Kind::T => Value::T,
-        Kind::StringObject(_) => Value::Symbol(crate::lisp::types::SymbolName::intern_str(
-            &string_text(value)?,
-        )),
+        // Fintern (face_name, Qnil): the string's own characters, raw
+        // bytes included, in the obarray `obarray' names.
+        Kind::StringObject(_) => super::call(interp, "intern", &[*value], &mut Env::new())?,
         _ => return Ok(*value),
     };
     let property = cached_symbol!("face-alias").with(|symbol| Value::Symbol(*symbol));
@@ -1199,14 +1199,20 @@ define_dispatch!(
                 // xfaces.c face_color_gray_p on a tty frame: the terminal's
                 // defined_color_hook, then GNU's near-black or
                 // channels-within-a-twentieth test.
-                let color = string_text(&args[0])?;
-                let gray = tty_defined_color(interp, env, &color)?.is_some_and(|[r, g, b]| {
-                    let (r, g, b) = (i64::from(r), i64::from(g), i64::from(b));
-                    (r < 5000 && g < 5000 && b < 5000)
-                        || ((r - g).abs() < r.max(g) / 20
-                            && (g - b).abs() < g.max(b) / 20
-                            && (b - r).abs() < b.max(r) / 20)
-                });
+                // CHECK_STRING (color); decode_any_frame (frame);
+                // face_color_gray_p (f, SSDATA (color)).
+                if !matches!(args[0].kind(), Kind::StringObject(_)) {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                }
+                let frame = frames::decode_any_frame(interp, args.get(1))?;
+                let gray =
+                    tty_defined_color(interp, env, frame, &args[0])?.is_some_and(|[r, g, b]| {
+                        let (r, g, b) = (i64::from(r), i64::from(g), i64::from(b));
+                        (r < 5000 && g < 5000 && b < 5000)
+                            || ((r - g).abs() < r.max(g) / 20
+                                && (g - b).abs() < g.max(b) / 20
+                                && (b - r).abs() < b.max(r) / 20)
+                    });
                 Ok(if gray { Value::T } else { Value::Nil })
             }
             "color-supported-p" => {
@@ -1214,12 +1220,19 @@ define_dispatch!(
                 // xfaces.c face_color_supported_p on a tty frame is
                 // tty_defined_color's verdict; BACKGROUND-P only matters on
                 // window-system frames.
-                let color = string_text(&args[0])?;
-                Ok(if tty_defined_color(interp, env, &color)?.is_some() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                // CHECK_STRING (color); decode_any_frame (frame);
+                // face_color_supported_p (f, SSDATA (color), ...).
+                if !matches!(args[0].kind(), Kind::StringObject(_)) {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                }
+                let frame = frames::decode_any_frame(interp, args.get(1))?;
+                Ok(
+                    if tty_defined_color(interp, env, frame, &args[0])?.is_some() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "internal-make-lisp-face" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -1611,65 +1624,94 @@ define_dispatch!(
     }
 );
 
-/// term.c tty_defined_color, the tty frame's defined_color_hook: an empty
-/// name is the default color (black, status true); otherwise xfaces.c
-/// tty_lookup_color asks Lisp `tty-color-desc' and takes the (NAME INDEX R G
-/// B) it returns, treats a nil `tty-defined-color-alist' as "not set up yet"
-/// (true, black), and rejects anything else -- except that
-/// "unspecified-fg"/"unspecified-bg" still resolve to the default pixels.
-/// Some(rgb) is a successful lookup, None the failure the callers report as
-/// "Invalid color".
+/// xfaces.c:tty_defined_color, the tty frame's defined_color_hook, for
+/// COLOR read as GNU's callers pass it, SSDATA (COLOR) as a C string (its
+/// bytes before the first NUL).  An empty name is the default color
+/// (black, status true); otherwise tty_lookup_color asks Lisp
+/// `tty-color-desc' about build_string of the name.  A lookup that leaves
+/// the pixel FACE_TTY_DEFAULT_COLOR still resolves "unspecified-fg" and
+/// "unspecified-bg", and any other pixel makes the status true.  Some(rgb)
+/// is a true status, None the failure the callers report as "Invalid
+/// color".
 pub(crate) fn tty_defined_color(
     interp: &mut Interpreter,
     env: &mut Env,
-    color: &str,
+    frame: crate::lisp::types::FrameRef,
+    color: &Value,
 ) -> Result<Option<[u16; 3]>, LispError> {
-    if color.is_empty() {
-        return Ok(Some([0, 0, 0]));
+    // dispextern.h: FACE_TTY_DEFAULT_COLOR, _FG_COLOR and _BG_COLOR.
+    const DEFAULT: i64 = -1;
+    const DEFAULT_FG: i64 = -2;
+    const DEFAULT_BG: i64 = -3;
+    let name = crate::lisp::primitives::sdata_c_string(color);
+    let mut pixel = DEFAULT;
+    let mut rgb = [0u16; 3];
+    let mut status = true;
+    if !name.is_empty() {
+        let lisp_color = crate::lisp::primitives::strings::make_string(name.clone())
+            .map_err(|_| LispError::Signal("Memory exhausted".into()))?;
+        status = tty_lookup_color(interp, env, frame, lisp_color, &mut pixel, &mut rgb)?;
     }
-    let looked_up = if interp
-        .lookup_function_key(cached_symbol!("tty-color-desc"), env)
-        .is_ok()
-    {
-        let desc = interp.call_function_value(
-            Value::Symbol("tty-color-desc".into()),
-            Some("tty-color-desc"),
-            &[Value::String(color.into()), Value::Nil],
-            env,
-        )?;
-        let items = desc.to_vec().unwrap_or_default();
-        if items.len() >= 2 {
-            match items
-                .as_slice()
-                .iter()
-                .map(|v| v.kind())
-                .collect::<Vec<_>>()
-                .as_slice()
-            {
-                [
-                    _,
-                    Kind::Integer(_),
-                    Kind::Integer(r),
-                    Kind::Integer(g),
-                    Kind::Integer(b),
-                    ..,
-                ] => Some(Some([*r as u16, *g as u16, *b as u16])),
-                _ => Some(None),
-            }
-        } else if interp
-            .lookup_var_key(cached_symbol!("tty-defined-color-alist"), env)
-            .is_none_or(|alist| alist.is_nil())
-        {
-            Some(Some([0, 0, 0]))
-        } else {
-            Some(None)
+    if pixel == DEFAULT && !name.is_empty() {
+        if name == b"unspecified-fg" {
+            pixel = DEFAULT_FG;
+        } else if name == b"unspecified-bg" {
+            pixel = DEFAULT_BG;
         }
-    } else {
-        None
-    };
-    Ok(match looked_up {
-        Some(Some(rgb)) => Some(rgb),
-        _ if matches!(color, "unspecified-fg" | "unspecified-bg") => Some([0, 0, 0]),
-        _ => None,
-    })
+    }
+    if pixel != DEFAULT {
+        status = true;
+    }
+    Ok(status.then_some(rgb))
+}
+
+/// xfaces.c:tty_lookup_color without a STD_COLOR: `tty-color-desc' of
+/// COLOR and FRAME, whose (NAME INDEX R G B) sets the pixel to INDEX and
+/// the channels as parse_rgb_list reads them (each fixnum stored into an
+/// unsigned short, until one is missing); a nil `tty-defined-color-alist'
+/// is "colors not set up yet", a success.
+fn tty_lookup_color(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    frame: crate::lisp::types::FrameRef,
+    color: Value,
+    pixel: &mut i64,
+    rgb: &mut [u16; 3],
+) -> Result<bool, LispError> {
+    if interp
+        .lookup_function_key(cached_symbol!("tty-color-desc"), env)
+        .is_err()
+    {
+        return Ok(false);
+    }
+    let desc = interp.call_function_value(
+        Value::Symbol("tty-color-desc".into()),
+        Some("tty-color-desc"),
+        &[color, Value::Frame(frame)],
+        env,
+    )?;
+    if let Kind::Cons(desc) = desc.kind()
+        && let Kind::Cons(rest) = desc.cdr.get().kind()
+    {
+        let Kind::Integer(index) = rest.car.get().kind() else {
+            return Ok(false);
+        };
+        *pixel = index;
+        // parse_rgb_list.
+        let mut list = rest.cdr.get();
+        for field in rgb.iter_mut() {
+            let Kind::Cons(cell) = list.kind() else {
+                return Ok(false);
+            };
+            let Kind::Integer(channel) = cell.car.get().kind() else {
+                return Ok(false);
+            };
+            *field = channel as u16;
+            list = cell.cdr.get();
+        }
+        return Ok(true);
+    }
+    Ok(interp
+        .lookup_var_key(cached_symbol!("tty-defined-color-alist"), env)
+        .is_none_or(|alist| alist.is_nil()))
 }

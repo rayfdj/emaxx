@@ -521,11 +521,16 @@ impl Interpreter {
                 .unwrap_or(Value::Nil),
         ));
         groups.push((
+            RootSlot::MinibufferList,
+            Value::list(self.minibuffer_list.iter().copied()),
+        ));
+        groups.push((
             RootSlot::BufferAlist,
-            Value::list(self.buffer_list.iter().filter_map(|(id, name)| {
-                self.buffer_value(*id)
-                    .map(|buffer| pair(Value::string(name), buffer))
-            })),
+            Value::list(
+                self.buffer_list.iter().filter_map(|(id, name)| {
+                    self.buffer_value(*id).map(|buffer| pair(*name, buffer))
+                }),
+            ),
         ));
         // keyboard.c: this_command_keys, raw_keybuf and recent_keys are
         // staticpro'd vectors (syms_of_keyboard); the kboard's
@@ -1013,10 +1018,8 @@ mod install {
                     let mut list = Vec::new();
                     for entry in expect_list(value, "buffer alist")? {
                         let (name, buffer) = expect_pair(&entry, "buffer alist entry")?;
-                        list.push((
-                            expect_buffer(&buffer, "buffer alist entry")?,
-                            expect_string(&name, "buffer name")?,
-                        ));
+                        expect_string(&name, "buffer name")?;
+                        list.push((expect_buffer(&buffer, "buffer alist entry")?, name));
                     }
                     let current = self.current_buffer_id;
                     let hidden = self.prin1_to_string_buffer;
@@ -1367,6 +1370,9 @@ mod install {
                 }
                 RootSlot::LastThreadError => {
                     self.last_thread_error = opt_of(value, |v| Ok(*v))?;
+                }
+                RootSlot::MinibufferList => {
+                    self.minibuffer_list = expect_list(value, "minibuffer list")?;
                 }
                 RootSlot::Prin1ToStringBuffer => {
                     // The buffer alist's reinstall keeps only listed

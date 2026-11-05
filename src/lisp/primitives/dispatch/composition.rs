@@ -507,10 +507,19 @@ pub(crate) struct CompositionIterator {
     /// The characters and columns composition_update_it last delivered.
     pub(crate) nchars: usize,
     pub(crate) width: i64,
+    /// Whether composition_reseat_it has a window W: without one, as
+    /// scan_for_column passes for a buffer no window shows, only static
+    /// compositions compose.
+    windowed: bool,
 }
 
 impl CompositionIterator {
     pub(crate) fn new() -> Self {
+        Self::for_window(true)
+    }
+
+    /// An iterator whose reseat has a window (WINDOWED) or a null W.
+    pub(crate) fn for_window(windowed: bool) -> Self {
         Self {
             stop_pos: 0,
             ch: -2,
@@ -519,6 +528,7 @@ impl CompositionIterator {
             current: None,
             nchars: 0,
             width: 0,
+            windowed,
         }
     }
 
@@ -642,7 +652,8 @@ impl CompositionIterator {
                     return true;
                 }
             }
-        } else if charpos < endpos
+        } else if self.windowed
+            && charpos < endpos
             && let Some(c) = char::from_u32(self.ch as u32)
         {
             let mut lgstring = Value::Nil;

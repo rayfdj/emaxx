@@ -578,9 +578,9 @@ impl Interpreter {
         let margin = menu + tab;
         // frame.c:make_frame: the first of `minibuffer-list', which
         // get_minibuffer makes only when there is none.
-        let mini_buffer_id = match self.find_buffer(" *Minibuf-0*") {
-            Some((id, _)) => id,
-            None => crate::lisp::primitives::get_minibuffer(self, 0),
+        let mini_buffer_id = match crate::lisp::primitives::nth_minibuffer(self, 0).kind() {
+            Kind::Buffer(buffer) if !self.minibuffer_list.is_empty() => buffer.id,
+            _ => crate::lisp::primitives::get_minibuffer(self, 0),
         };
         let mut make_window = |buffer, point, kind, geometry| {
             let Kind::Record(window_id) = self

@@ -1424,10 +1424,7 @@ pub(crate) fn internal_complete_buffer(
             .buffer_list
             .iter()
             .map(|(id, name)| {
-                Value::cons(
-                    string_like_value(name.clone(), None),
-                    interp.buffer_value(*id).expect("live buffer object"),
-                )
+                Value::cons(*name, interp.buffer_value(*id).expect("live buffer object"))
             })
             .collect::<Vec<_>>(),
     );
@@ -1709,9 +1706,8 @@ pub(crate) fn activate_minibuffer(
     interp.set_current_buffer_id(buffer_id)?;
     // "Empty out the minibuffers of all frames, except those frames where
     // there is an active minibuffer": the level-0 one goes inactive.
-    if let Some((empty, _)) = interp.find_buffer(" *Minibuf-0*") {
-        set_minibuffer_mode(interp, empty, 0, env)?;
-    }
+    let empty = get_minibuffer(interp, 0);
+    set_minibuffer_mode(interp, empty, 0, env)?;
     // "Display this minibuffer in the proper window" (set_window_buffer,
     // its markers at the buffer's point before the erase) and
     // Fselect_window it: the read happens there, never in the entry
@@ -1906,27 +1902,46 @@ fn minibuffer_unwind(interp: &mut Interpreter, env: &mut Env) -> Result<(), Lisp
             return Ok(());
         }
     }
-    if let Some((null, _)) = interp.find_buffer(" *Minibuf-0*") {
+    // set_window_buffer (window, nth_minibuffer (0), 0, 0).
+    if let Kind::Buffer(null) = nth_minibuffer(interp, 0).kind()
+        && let Some(null) = interp.live_buffer_id(null)
+    {
         interp.show_buffer_in_window(window_id, null, false);
     }
     Ok(())
 }
 
 /// minibuf.c:this_minibuffer_depth: BUFFER's depth among the active
-/// minibuffers, or 0 when it is none of them.
+/// minibuffers (Vminibuffer_list's entries 1 to minibuf_level), or 0 when
+/// it is none of them.
 pub(crate) fn this_minibuffer_depth(interp: &Interpreter, buffer: &Value) -> usize {
-    let Kind::Buffer(buffer) = buffer.kind() else {
-        return 0;
-    };
-    if !interp
-        .buffer_object(buffer.id)
-        .is_some_and(|live| live.ptr_eq(&buffer))
-    {
-        return 0;
-    }
     (1..=interp.minibuffer_depth())
-        .find(|depth| interp.find_buffer_id(&format!(" *Minibuf-{depth}*")) == Some(buffer.id))
+        .find(|&depth| nth_minibuffer(interp, depth).eq_value(*buffer))
         .unwrap_or(0)
+}
+
+/// minibuf.c:nth_minibuffer: Vminibuffer_list's DEPTHth entry, nil past
+/// its end.
+pub(crate) fn nth_minibuffer(interp: &Interpreter, depth: usize) -> Value {
+    interp
+        .minibuffer_list
+        .get(depth)
+        .copied()
+        .unwrap_or(Value::Nil)
+}
+
+/// Fmemq (BUFFER, Vminibuffer_list).
+pub(crate) fn minibuffer_list_has(interp: &Interpreter, buffer: &Value) -> bool {
+    interp
+        .minibuffer_list
+        .iter()
+        .any(|entry| entry.eq_value(*buffer))
+}
+
+/// minibuf.c:live_minibuffer_p: BUFFER is one of the active minibuffers,
+/// never *Minibuf-0*.
+pub(crate) fn live_minibuffer_p(interp: &Interpreter, buffer: &Value) -> bool {
+    !nth_minibuffer(interp, 0).eq_value(*buffer) && this_minibuffer_depth(interp, buffer) != 0
 }
 
 /// minibuf.c:Fminibuffer_innermost_command_loop_p: BUFFER is an active
@@ -1937,21 +1952,30 @@ pub(crate) fn minibuffer_innermost_command_loop_p(interp: &Interpreter, buffer: 
         && interp.minibuffer_command_loop_level(depth) == Some(interp.command_loop_recursion_depth)
 }
 
-/// minibuf.c:get_minibuffer: the DEPTHth minibuffer; a new one has undo
-/// enabled ("Although the buffer's name starts with a space, undo should be
-/// enabled in it").
+/// minibuf.c:get_minibuffer: Vminibuffer_list's DEPTHth buffer, the list
+/// grown to hold it; a live one has both overlay lists emptied and is
+/// reset_buffer's, else Fget_buffer_create of " *Minibuf-DEPTH*" takes
+/// the place, its undo enabled ("Although the buffer's name starts with a
+/// space, undo should be enabled in it").
 pub(crate) fn get_minibuffer(interp: &mut Interpreter, depth: usize) -> u64 {
-    let name = format!(" *Minibuf-{depth}*");
-    if let Some((id, _)) = interp.find_buffer(&name) {
-        // A live one has both overlay lists emptied, so no overlay thinks
-        // it still belongs to the buffer, and is reset_buffer's.
+    if interp.minibuffer_list.len() <= depth {
+        interp.minibuffer_list.resize(depth + 1, Value::Nil);
+    }
+    if let Kind::Buffer(buffer) = interp.minibuffer_list[depth].kind()
+        && let Some(id) = interp.live_buffer_id(buffer)
+    {
         if let Some(mut buffer) = interp.get_buffer_by_id_mut(id) {
             buffer.overlays.clear();
         }
         interp.reset_buffer(id);
         return id;
     }
-    let id = interp.create_buffer(&name).0;
+    let name = format!(" *Minibuf-{depth}*");
+    let id = interp
+        .find_buffer_id(&name)
+        .unwrap_or_else(|| interp.create_buffer(&name).0);
+    // Do this before set_minibuffer_mode.
+    interp.minibuffer_list[depth] = interp.buffer_value(id).unwrap_or(Value::Nil);
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(id) {
         buffer.enable_undo();
     }

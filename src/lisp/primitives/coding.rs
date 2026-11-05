@@ -1247,9 +1247,12 @@ pub(crate) fn decode_base64_string_value(
     base64url: bool,
     ignore_invalid: bool,
 ) -> Result<Value, LispError> {
-    let string =
-        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
-    let bytes = encode_raw_text_bytes(&string.text)?;
+    // base64_decode_1 (SSDATA (string), ...): the string's own bytes, a
+    // non-ASCII character's being no base64 data.
+    let bytes = match value.kind() {
+        Kind::StringObject(state) => state.borrow().bytes().to_vec(),
+        _ => return Err(LispError::WrongTypeArgument("stringp".into(), *value)),
+    };
     let mut cursor = 0usize;
     let mut decoded = Vec::with_capacity((bytes.len() / 4) * 3);
 

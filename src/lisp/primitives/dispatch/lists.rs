@@ -2009,7 +2009,8 @@ define_dispatch!(
             "read-buffer" => {
                 need_arg_range(name, args, 1, 4)?;
                 let default = match args.get(1).cloned().unwrap_or(Value::Nil).kind() {
-                    Kind::Buffer(buffer) => Value::string(&buffer.borrow().name),
+                    // BVAR (XBUFFER (def), name).
+                    Kind::Buffer(buffer) => buffer.borrow().name(),
                     other => other.value(),
                 };
                 if let Some(function) = interp
@@ -2063,10 +2064,9 @@ define_dispatch!(
                     .unwrap_or_default()
                     .into_iter()
                     .filter_map(|buffer| match buffer.kind() {
-                        Kind::Buffer(handle) => Some(Value::cons(
-                            Value::string(&handle.borrow().name),
-                            Value::Buffer(handle),
-                        )),
+                        Kind::Buffer(handle) => {
+                            Some(Value::cons(handle.borrow().name(), Value::Buffer(handle)))
+                        }
                         _ => None,
                     })
                     .collect::<Vec<_>>();

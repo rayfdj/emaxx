@@ -548,26 +548,24 @@ define_dispatch!(
                 if args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                // minibuf.c:Fminibufferp: a string through Fget_buffer, nil
-                // for no such buffer, else CHECK_BUFFER; a killed buffer is
-                // in no minibuffer list.
-                let buffer_id = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => Some(interp.current_buffer_id()),
-                    Some(Kind::Buffer(buffer)) => interp.live_buffer_id(buffer),
+                // minibuf.c:Fminibufferp: a string through Fget_buffer (nil
+                // for no such buffer), else CHECK_BUFFER; then Fmemq of
+                // Vminibuffer_list, or live_minibuffer_p with LIVE.
+                let buffer = match args.first().map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => Value::Buffer(interp.buffer),
+                    Some(Kind::Buffer(_)) => args[0],
                     Some(Kind::StringObject(_)) => interp
                         .get_buffer(&args[0])?
-                        .and_then(|buffer| interp.live_buffer_id(buffer)),
+                        .map_or(Value::Nil, Value::Buffer),
                     Some(_) => {
                         return Err(LispError::WrongTypeArgument("bufferp".into(), args[0]));
                     }
                 };
-                let is_minibuffer = buffer_id
-                    .and_then(|buffer_id| interp.get_buffer_by_id(buffer_id))
-                    .map(|buffer| buffer.name.starts_with(" *Minibuf"))
-                    .unwrap_or(false);
-                let is_live = buffer_id == interp.active_minibuffer_buffer_id();
-                let matches =
-                    is_minibuffer && (!args.get(1).is_some_and(Value::is_truthy) || is_live);
+                let matches = if args.get(1).is_some_and(Value::is_truthy) {
+                    crate::lisp::primitives::live_minibuffer_p(interp, &buffer)
+                } else {
+                    crate::lisp::primitives::minibuffer_list_has(interp, &buffer)
+                };
                 Ok(if matches { Value::T } else { Value::Nil })
             }
             "minibuffer-depth" => {
@@ -606,22 +604,15 @@ define_dispatch!(
                         .unwrap_or(Value::Nil),
                     Some(value) => value.value(),
                 };
-                let active = interp
-                    .active_minibuffer_buffer_id()
-                    .and_then(|buffer_id| interp.buffer_identity_value(buffer_id))
-                    .unwrap_or(Value::Nil);
-                let matches = if active.is_nil() {
-                    match interp
-                        .find_buffer(" *Minibuf-0*")
-                        .and_then(|(id, _)| interp.buffer_identity_value(id))
-                    {
-                        Some(buffer) => values_equal(interp, &target, &buffer)?,
-                        None => false,
-                    }
+                // EQ (buffer, Fcar (Fnthcdr (make_fixnum (minibuf_level),
+                // Vminibuffer_list))).
+                let innermost =
+                    crate::lisp::primitives::nth_minibuffer(interp, interp.minibuffer_depth());
+                Ok(if innermost.eq_value(target) {
+                    Value::T
                 } else {
-                    values_equal(interp, &target, &active)?
-                };
-                Ok(if matches { Value::T } else { Value::Nil })
+                    Value::Nil
+                })
             }
             "abort-minibuffers" => {
                 // minibuf.c:Fabort_minibuffers.

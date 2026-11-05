@@ -1348,7 +1348,7 @@ fn value_less_vectors_break_ties_after_equal_prefix_values() {
         .set_marker(marker_id, Some(12), Some(buffer_id))
         .expect("set marker");
     let process = interp
-        .create_process(None, None, vec![], None, None)
+        .create_process(None, None, vec![], None, Value::Nil)
         .expect("create process");
     let cases = vec![
         ("number", Value::Integer(1)),
@@ -1449,10 +1449,10 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
         .expect("set mark4");
 
     let proc1 = interp
-        .create_process(None, None, vec![], None, None)
+        .create_process(None, None, vec![], None, Value::Nil)
         .expect("create proc1");
     let proc2 = interp
-        .create_process(None, None, vec![], None, None)
+        .create_process(None, None, vec![], None, Value::Nil)
         .expect("create proc2");
     let uninterned_a = call(
         &mut interp,
@@ -2214,8 +2214,13 @@ fn value_less_uses_buffer_objects_across_overlapping_owner_ids() {
     let mut left = Interpreter::new();
     let right = Interpreter::new();
     assert_eq!(left.buffer.id, right.buffer.id);
-    left.buffer.borrow_mut().name = "zebra-owner".into();
-    right.buffer.borrow_mut().name = "alpha-owner".into();
+    left.buffer
+        .borrow_mut()
+        .set_name(Value::string("zebra-owner"));
+    right
+        .buffer
+        .borrow_mut()
+        .set_name(Value::string("alpha-owner"));
     let a = Value::Buffer(right.buffer);
     let z = Value::Buffer(left.buffer);
     let mut env = Env::new();
@@ -2227,7 +2232,10 @@ fn value_less_uses_buffer_objects_across_overlapping_owner_ids() {
         call(&mut left, "value<", &[z, a], &mut env).expect("reverse buffer order"),
         Value::Nil
     );
-    right.buffer.borrow_mut().name = "zz-renamed-owner".into();
+    right
+        .buffer
+        .borrow_mut()
+        .set_name(Value::string("zz-renamed-owner"));
     assert_eq!(
         call(&mut left, "value<", &[z, a], &mut env).expect("renamed foreign buffer order"),
         Value::T
