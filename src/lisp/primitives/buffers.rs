@@ -321,14 +321,20 @@ pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result
         // point-min).  Preserve that signed boundary here rather than
         // misclassifying a negative integer as a non-position type.
         Kind::Integer(pos) => Ok((pos).max(0) as usize),
-        // A small BigInteger can arise transiently inside Emaxx even though
-        // GNU would represent the same numeric value as a fixnum.  Accept it
-        // only when it fits the ordinary signed position domain; a genuine
-        // out-of-range bignum retains GNU's integer-or-marker-p error.
-        Kind::BigInteger(pos) => pos
-            .to_i64()
-            .map(|pos| pos.max(0) as usize)
-            .ok_or_else(|| LispError::WrongTypeArgument("integer-or-marker-p".into(), *value)),
+        // fix_position (CHECK_FIXNUM_COERCE_MARKER): a bignum is
+        // MOST_POSITIVE_FIXNUM when natural, MOST_NEGATIVE_FIXNUM (point-min
+        // after the clamp) otherwise.  A value of fixnum range held as a
+        // bignum (which Emaxx can make transiently, GNU never) is itself.
+        Kind::BigInteger(pos) => {
+            const MOST_POSITIVE_FIXNUM: i64 = (1_i64 << 61) - 1;
+            Ok(match pos.to_i64() {
+                Some(pos) if (-MOST_POSITIVE_FIXNUM - 1..=MOST_POSITIVE_FIXNUM).contains(&pos) => {
+                    pos.max(0) as usize
+                }
+                _ if pos.sign() == num_bigint::Sign::Minus => 0,
+                _ => MOST_POSITIVE_FIXNUM as usize,
+            })
+        }
         Kind::Marker(id) => interp.marker_position(id).ok_or_else(marker_points_nowhere),
         _ => Err(LispError::WrongTypeArgument(
             "integer-or-marker-p".into(),
@@ -818,79 +824,86 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
     // values. Wide Integer values cross the native ABI as bignums; an
     // explicitly allocated BigInteger already has that object subtype.
     let name = match value.kind() {
-        Kind::Nil => "null",
-        Kind::T => "boolean",
+        Kind::Nil => cached_symbol!("null"),
+        Kind::T => cached_symbol!("boolean"),
         Kind::Integer(number) => {
             if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&number) {
-                "fixnum"
+                cached_symbol!("fixnum")
             } else {
-                "bignum"
+                cached_symbol!("bignum")
             }
         }
-        Kind::BigInteger(_) => "bignum",
-        Kind::Float(_) => "float",
-        Kind::StringObject(_) => "string",
-        Kind::Symbol(_) => "symbol",
-        Kind::Vector(_) => "vector",
-        Kind::Cons(_) if is_vector_value(value) => "vector",
-        Kind::Cons(_) => "cons",
-        Kind::BuiltinFunc(name) if is_special_form_name(&name) => "special-form",
-        Kind::BuiltinFunc(_) => "primitive-function",
+        Kind::BigInteger(_) => cached_symbol!("bignum"),
+        Kind::Float(_) => cached_symbol!("float"),
+        Kind::StringObject(_) => cached_symbol!("string"),
+        Kind::Symbol(_) => cached_symbol!("symbol"),
+        Kind::Vector(_) => cached_symbol!("vector"),
+        Kind::Cons(_) if is_vector_value(value) => cached_symbol!("vector"),
+        Kind::Cons(_) => cached_symbol!("cons"),
+        Kind::BuiltinFunc(name) if is_special_form_name(&name) => cached_symbol!("special-form"),
+        Kind::BuiltinFunc(_) => cached_symbol!("primitive-function"),
         Kind::Closure(closure) => {
             if closure.is_bytecode() {
-                "byte-code-function"
+                cached_symbol!("byte-code-function")
             } else {
-                "interpreted-function"
+                cached_symbol!("interpreted-function")
             }
         }
-        Kind::Buffer(_) => "buffer",
-        Kind::Marker(_) => "marker",
-        Kind::Overlay(_) => "overlay",
-        Kind::CharTable(_) => "char-table",
-        Kind::HashTable(_) => "hash-table",
-        Kind::SubCharTable(_) => "sub-char-table",
-        Kind::Frame(_) => "frame",
-        Kind::Terminal(_) => "terminal",
-        Kind::SymbolWithPos(_) => "symbol-with-pos",
-        Kind::BoolVector(_) => "bool-vector",
+        Kind::Buffer(_) => cached_symbol!("buffer"),
+        Kind::Marker(_) => cached_symbol!("marker"),
+        Kind::Overlay(_) => cached_symbol!("overlay"),
+        Kind::CharTable(_) => cached_symbol!("char-table"),
+        Kind::HashTable(_) => cached_symbol!("hash-table"),
+        Kind::SubCharTable(_) => cached_symbol!("sub-char-table"),
+        Kind::Frame(_) => cached_symbol!("frame"),
+        Kind::Terminal(_) => cached_symbol!("terminal"),
+        Kind::SymbolWithPos(_) => cached_symbol!("symbol-with-pos"),
+        Kind::BoolVector(_) => cached_symbol!("bool-vector"),
         Kind::LispRecord(record) => return Ok(record_type_of(record)),
         Kind::Record(id) => {
             let Some(record) = interp.find_record(id) else {
-                return Ok(Value::symbol("record"));
+                return Ok(Value::Symbol(cached_symbol!("record").symbol()));
             };
             let type_name = match record.kind {
                 crate::lisp::eval::RecordKind::Font => match record.symbol_type_name() {
-                    Some("font-entity") => "font-entity",
-                    Some("font-object") => "font-object",
-                    _ => "font-spec",
+                    Some("font-entity") => cached_symbol!("font-entity"),
+                    Some("font-object") => cached_symbol!("font-object"),
+                    _ => cached_symbol!("font-spec"),
                 },
-                crate::lisp::eval::RecordKind::Process => "process",
-                crate::lisp::eval::RecordKind::Obarray => "obarray",
-                crate::lisp::eval::RecordKind::Window => "window",
-                crate::lisp::eval::RecordKind::WindowConfiguration => "window-configuration",
-                crate::lisp::eval::RecordKind::Thread => "thread",
-                crate::lisp::eval::RecordKind::Mutex => "mutex",
-                crate::lisp::eval::RecordKind::ConditionVariable => "condition-variable",
-                crate::lisp::eval::RecordKind::ModuleFunction => "module-function",
-                crate::lisp::eval::RecordKind::UserPointer => "user-ptr",
-                crate::lisp::eval::RecordKind::TreeSitterParser => "treesit-parser",
-                crate::lisp::eval::RecordKind::TreeSitterNode => "treesit-node",
-                crate::lisp::eval::RecordKind::TreeSitterCompiledQuery => "treesit-compiled-query",
-                crate::lisp::eval::RecordKind::Sqlite => "sqlite",
+                crate::lisp::eval::RecordKind::Process => cached_symbol!("process"),
+                crate::lisp::eval::RecordKind::Obarray => cached_symbol!("obarray"),
+                crate::lisp::eval::RecordKind::Window => cached_symbol!("window"),
+                crate::lisp::eval::RecordKind::WindowConfiguration => {
+                    cached_symbol!("window-configuration")
+                }
+                crate::lisp::eval::RecordKind::Thread => cached_symbol!("thread"),
+                crate::lisp::eval::RecordKind::Mutex => cached_symbol!("mutex"),
+                crate::lisp::eval::RecordKind::ConditionVariable => {
+                    cached_symbol!("condition-variable")
+                }
+                crate::lisp::eval::RecordKind::ModuleFunction => cached_symbol!("module-function"),
+                crate::lisp::eval::RecordKind::UserPointer => cached_symbol!("user-ptr"),
+                crate::lisp::eval::RecordKind::TreeSitterParser => cached_symbol!("treesit-parser"),
+                crate::lisp::eval::RecordKind::TreeSitterNode => cached_symbol!("treesit-node"),
+                crate::lisp::eval::RecordKind::TreeSitterCompiledQuery => {
+                    cached_symbol!("treesit-compiled-query")
+                }
+                crate::lisp::eval::RecordKind::Sqlite => cached_symbol!("sqlite"),
             };
-            return Ok(Value::symbol(type_name));
+            return Ok(Value::Symbol(type_name.symbol()));
         }
-        Kind::NativeFunction(_) => "native-comp-function",
-        Kind::NativeCompUnit(_) => "native-comp-unit",
-        Kind::Finalizer(_) => "finalizer",
+        Kind::NativeFunction(_) => cached_symbol!("native-comp-function"),
+        Kind::NativeCompUnit(_) => cached_symbol!("native-comp-unit"),
+        Kind::Finalizer(_) => cached_symbol!("finalizer"),
         Kind::ReaderForm(_) => {
             return Err(LispError::Signal(
                 "reader form escaped object materialization".into(),
             ));
         }
-        Kind::Unbound => "unbound",
+        // Qunbound is a symbol, uninterned.
+        Kind::Unbound => cached_symbol!("symbol"),
     };
-    Ok(Value::symbol(name))
+    Ok(Value::Symbol(name.symbol()))
 }
 
 pub(crate) fn buffer_position_to_byte(buffer: &crate::buffer::Buffer, pos: usize) -> Option<usize> {
@@ -1181,10 +1194,9 @@ pub(crate) fn scan_for_column(
     let mut scan = line_start;
     let mut prev_pos = scan;
     // The composition iterator, its W the window Fget_buffer_window finds
-    // for the current buffer (none: static compositions only).
-    let windowed =
-        dispatch::display::buffer_window(interp, interp.current_buffer_id(), &Value::Nil).is_some();
-    let mut cmp_it = dispatch::CompositionIterator::for_window(windowed);
+    // for the current buffer (none: static compositions only), looked for
+    // when an automatic composition would need it.
+    let mut cmp_it = dispatch::CompositionIterator::for_window(None);
     cmp_it.compute_stop_pos(interp, env, scan, end);
     'scan: while scan < end {
         // skip_invisible with no window: invisible text, not the text an

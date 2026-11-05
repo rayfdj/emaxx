@@ -2272,6 +2272,216 @@ fn string_arguments_reach_primitives_as_their_bytes() {
 }
 
 #[test]
+fn numeric_edge_arguments_answer_as_gnu_does() {
+    // A sweep of every subr with -0.0, NaNs, infinities, the fixnum
+    // bounds, bignums and the character bound: a position is fix_position's
+    // (CHECK_FIXNUM_COERCE_MARKER), so any bignum is the fixnum bound in its
+    // direction; a line count is bol's and eol's, a bignum as many lines as
+    // a buffer can hold; `obarray-make''s range error carries SIZE itself;
+    // an hscroll is clipped to the fixnum range; `move-point-visually'
+    // reads its direction as a C int.  A sweep with lists, vectors,
+    // records, closures and symbols: the alternative font alists are
+    // CHECK_LIST'd copies whose elements Fintern or Fdowncase takes, and a
+    // face attribute is the interned keyword itself.  A sweep with live
+    // objects: Fapply stores a one-element spread list's element into the
+    // vector its frame records and pads a subr's call with nils to its
+    // MAXARGS, and `line-number-at-pos' takes another buffer's marker
+    // without the fixnum check.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r##"(progn
+(dolist (f (list
+  (lambda () (with-temp-buffer (insert "abcdef\nghi")
+               (let ((big (expt 2 70)) (nbig (- (expt 2 70))))
+                 (mapcar (lambda (g) (condition-case e (funcall g) (error e)))
+                         (list (lambda () (make-overlay big big)) (lambda () (overlays-at big)) (lambda () (overlays-in big big)) (lambda () (next-overlay-change big)) (lambda () (previous-overlay-change nbig))
+                               (lambda () (overlay-recenter big)) (lambda () (narrow-to-region big nbig)) (lambda () (prog1 (list (point-min) (point-max)) (widen)))
+                               (lambda () (get-byte big)) (lambda () (position-bytes big)) (lambda () (compare-buffer-substrings nil big nil nil 1 2))
+                               (lambda () (pos-bol big)) (lambda () (pos-eol nbig)) (lambda () (line-beginning-position big)) (lambda () (line-end-position nbig))
+                               (lambda () (pos-visible-in-window-p big)) (lambda () (posn-at-point big)) (lambda () (check-coding-systems-region big nil nil))
+                               (lambda () (goto-char big)) (lambda () (char-after big)) (lambda () (put-text-property 1 big 'face 'bold)))))))
+  (lambda () (list (condition-case e (obarray-make most-positive-fixnum) (error e))
+                   (let ((w (selected-window))) (set-window-hscroll w 0)
+                     (list (scroll-left most-positive-fixnum) (scroll-left 5) (window-hscroll w) (scroll-right most-positive-fixnum) (scroll-right 3) (scroll-left most-negative-fixnum)))
+                   (mapcar (lambda (d) (with-temp-buffer (condition-case e (move-point-visually d) (error e))))
+                           (list 1 -1 0 most-positive-fixnum (ash most-positive-fixnum -1) (ash 1 32) (1+ (ash 1 31)) most-negative-fixnum))))
+  (lambda () (list (condition-case e (internal-set-alternative-font-registry-alist '((((1))))) (error e))
+                   (internal-set-alternative-font-registry-alist (list (list "ABC" ?Q (string #x130 ?X))))
+                   (let ((r (internal-set-alternative-font-family-alist (list (list (string-to-unibyte "a\377") "Mono"))))) (list r (eq (car (car r)) (intern (string-to-unibyte "a\377")))))
+                   (condition-case e (internal-set-alternative-font-family-alist '((1))) (error e))
+                   (condition-case e (internal-set-alternative-font-family-alist '(1)) (error e))
+                   (condition-case e (internal-set-alternative-font-registry-alist '(("a" . "b"))) (error e))
+                   (let ((s (make-symbol ":foreground"))) (condition-case e (internal-set-lisp-face-attribute 'default s "red" t) (error (list (cadr e) (eq (nth 2 e) s)))))
+                   (condition-case e (internal-set-lisp-face-attribute 'default :nonesuch 1 t) (error e))))
+  (lambda () (let ((frames (lambda (name) (seq-take (seq-drop (seq-drop-while (lambda (f) (not (eq (cadr f) name))) (backtrace-frames)) 1) 1)))
+                   (seen nil))
+               (fset 'ap-frames (lambda (&rest _) (funcall frames 'ap-frames)))
+               (fset 'ap-grab (lambda (x) (setq seen (seq-take (seq-drop-while (lambda (f) (not (eq (cadr f) 'mapconcat))) (backtrace-frames)) 1)) x))
+               (list (apply #'ap-frames '(x)) (apply #'ap-frames 1 '(x)) (apply #'ap-frames '(x y)) (apply #'ap-frames '()) (apply 'ap-frames 1 2 '(3))
+                     (progn (apply #'mapconcat (list #'ap-grab '("a"))) seen) (progn (apply #'mapconcat #'ap-grab '(("a") "-")) seen)
+                     (progn (apply 'mapconcat 'ap-grab (list '("a" "b"))) seen))))
+  (lambda () (with-temp-buffer (insert "a\nb\nc")
+               (let ((m (copy-marker 5)))
+                 (with-temp-buffer (list (line-number-at-pos m) (condition-case e (line-number-at-pos m t) (error e)) (condition-case e (line-number-at-pos 5) (error e)))))))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"##,
+        ],
+    );
+}
+
+#[test]
+fn identity_and_symbol_value_answer_as_gnu_does() {
+    // lisp.h:EQ is BASE_EQ of the words, a symbol with position reckoned
+    // its bare symbol only while `symbols-with-pos-enabled' is set;
+    // fns.c:Feql adds same_float for floats and the value for bignums.
+    // Bsymbol_value is Fsymbol_value of TOP whatever its variable's kind;
+    // `type-of' and `cl-type-of' answer the interned symbols; Fget_buffer
+    // compares a name's characters and bytes.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r##"(progn
+(defvar idt-plain 1) (defvar-local idt-local 2)
+(dolist (f (list
+  (lambda () (let ((sv (byte-compile (lambda (s) (symbol-value s)))))
+     (with-temp-buffer (setq idt-local 5)
+       (mapcar (lambda (s) (condition-case e (funcall sv s) (error e)))
+               (list 'idt-plain 'idt-local 'fill-column 'case-fold-search nil t (make-symbol "void") 'idt-unbound 3 "x")))))
+  (lambda () (let ((sv (byte-compile (lambda (s) (symbol-value s)))) (p (position-symbol 'idt-plain 5)))
+     (list (condition-case e (funcall sv p) (error (car e)))
+           (let ((symbols-with-pos-enabled t)) (condition-case e (funcall sv p) (error (car e)))))))
+  (lambda () (let ((p (position-symbol 'foo 3)) (q (position-symbol 'foo 9)) (b1 (expt 2 70)) (b2 (expt 2 70))
+                   (n1 (/ 0.0 0.0)) (w (selected-window)) (eqf (byte-compile (lambda (a b) (eq a b)))))
+     (list (eq p 'foo) (eql p 'foo) (eq p q) (funcall eqf p 'foo)
+           (let ((symbols-with-pos-enabled t))
+             (list (eq p 'foo) (eq 'foo q) (eq p q) (eql p q) (funcall eqf p 'foo) (funcall eqf q p)
+                   (consp (memq p '(foo))) (consp (assq q '((foo . 1)))) (consp (rassq p '((1 . foo))))))
+           (eq b1 b2) (eql b1 b2) (eql 1.0 1.0) (eql 0.0 -0.0) (eql n1 n1) (eql n1 (/ 0.0 0.0)) (eql n1 (- n1)) (eql 1 1.0)
+           (eq (current-buffer) (current-buffer)) (memql 2.5 (list 1 2.5)) (consp (assq w (list (cons w 1))))
+           (funcall eqf w (selected-window)) (funcall eqf b1 b2) (consp (memq w (window-list))))))
+  (lambda () (mapcar (lambda (o) (list (eq (type-of o) (intern (symbol-name (type-of o)))) (type-of o) (cl-type-of o)))
+     (list nil t 1 (expt 2 70) 1.5 "s" 'a (position-symbol 'a 1) [1] '(1) (symbol-function 'car) (lambda ()) (byte-compile (lambda ()))
+           (current-buffer) (point-marker) (make-overlay 1 1) (make-char-table 'x) (make-hash-table) (selected-frame) (selected-window)
+           (current-window-configuration) (make-bool-vector 2 t) (obarray-make) (record 'foo 1))))
+  (lambda () (let ((b (get-buffer-create "idt-é")))
+     (prog1 (list (eq (get-buffer (copy-sequence "idt-é")) b) (get-buffer (string-to-unibyte "idt-\303\251")) (get-buffer "idt-e")
+                  (eq (get-buffer b) b) (string-equal "idt-é" (buffer-name b)) (string-equal (string-to-unibyte "idt-\303\251") (buffer-name b)))
+       (kill-buffer b))))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"##,
+        ],
+    );
+}
+
+#[test]
+fn window_configurations_save_and_restore_gnu_s_fields() {
+    // window.c:save_window_save saves the frame's window tree (the
+    // minibuffer window the root's next) with the fields of struct
+    // saved_window alone, the persistent parameters among them; and
+    // Fset_window_configuration revives the saved windows from
+    // delete_all_child_windows and writes those fields back, leaving a
+    // window's previous and next buffers, cursor type, other parameters
+    // and a window split after the save (deleted, its parameters kept)
+    // as they are.
+    let corpus = Corpus::new();
+    for script in [
+        r##"(defvar wc-r nil)
+(defun wc-push (&rest xs) (setq wc-r (append wc-r xs)))
+(let ((w (selected-window)) (m (get-buffer-create "*wc-other*")) (c nil))
+  (set-window-prev-buffers w nil)
+  (set-window-next-buffers w nil)
+  (set-window-parameter w 'wc-p 1)
+  (set-window-parameter w 'wc-q 1)
+  (set-window-dedicated-p w nil)
+  (setq c (current-window-configuration))
+  (set-window-prev-buffers w (list (list m 1 1)))
+  (set-window-next-buffers w (list m))
+  (set-window-parameter w 'wc-p 2)
+  (set-window-parameter w 'wc-new 3)
+  (set-window-display-table w (make-display-table))
+  (set-window-dedicated-p w t)
+  (set-window-hscroll w 4)
+  (set-window-cursor-type w 'hbar)
+  (set-window-configuration c)
+  (wc-push (length (window-prev-buffers w)) (length (window-next-buffers w))
+           (window-parameter w 'wc-p) (window-parameter w 'wc-q) (window-parameter w 'wc-new)
+           (char-table-p (window-display-table w)) (window-dedicated-p w)
+           (window-hscroll w) (window-cursor-type w))
+  (let ((w2 (split-window)))
+    (set-window-parameter w2 'kept 7)
+    (set-window-configuration c)
+    (wc-push (window-live-p w2) (window-valid-p w2) (window-parameter w2 'kept)
+             (window-buffer w2) (length (window-list))))
+  (let ((w3 (split-window)))
+    (set-window-parameter w3 'kept 8)
+    (delete-window w3)
+    (setq c (current-window-configuration))
+    (set-window-configuration c)
+    (wc-push (window-live-p w3) (window-valid-p w3) (window-parameter w3 'kept) (length (window-list)))))
+(prin1 wc-r) (terpri)
+"##,
+        r##"(defvar wc-r nil)
+(defun wc-push (&rest xs) (setq wc-r (append wc-r (list xs))))
+(defun wc-tree () (let ((tr (window-tree))) (car tr)))
+(defun wc-shape (w)
+  (if (windowp w) (list (buffer-name (window-buffer w)) (window-total-height w) (window-total-width w))
+    (cons (if (car w) 'h 'v) (mapcar #'wc-shape (cddr w)))))
+(let* ((a (get-buffer-create "wa")) (b (get-buffer-create "wb")) (c (get-buffer-create "wc"))
+       (w0 (selected-window)) conf conf2)
+  (switch-to-buffer a) (insert "aaaa\nbbbb\ncccc\n") (goto-char 3)
+  (let ((w1 (split-window w0 nil 'right)))
+    (set-window-buffer w1 b)
+    (let ((w2 (split-window w1 nil 'below)))
+      (set-window-buffer w2 c)
+      (set-window-parameter w2 'clone-of 'x)
+      (set-window-parameter w2 'other 'y)
+      (set-window-dedicated-p w2 t)
+      (setq conf (current-window-configuration))
+      (wc-push 'saved (wc-shape (wc-tree)) (window-configuration-equal-p conf (current-window-configuration)))
+      (delete-other-windows w0)
+      (wc-push 'after-delete (wc-shape (wc-tree)) (window-live-p w1) (window-live-p w2) (window-configuration-equal-p conf (current-window-configuration)))
+      (set-window-configuration conf)
+      (wc-push 'restored (wc-shape (wc-tree)) (window-live-p w1) (window-live-p w2)
+               (window-parameter w2 'clone-of) (window-parameter w2 'other) (window-dedicated-p w2)
+               (eq (selected-window) w0) (point) (window-point w0)
+               (window-configuration-equal-p conf (current-window-configuration))
+               (eq (window-configuration-frame conf) (selected-frame)))
+      ;; kill a shown buffer, then restore
+      (setq conf2 (current-window-configuration))
+      (kill-buffer b)
+      (wc-push 'killed (wc-shape (wc-tree)))
+      (set-window-configuration conf2)
+      (wc-push 'restored-killed (wc-shape (wc-tree)) (window-live-p w1) (window-live-p w2))
+      ;; save-window-excursion keeps point of the current buffer
+      (goto-char 5)
+      (save-window-excursion (delete-other-windows) (goto-char 9) (switch-to-buffer c))
+      (wc-push 'swe (wc-shape (wc-tree)) (buffer-name) (point))
+      ;; restoring twice, and a configuration across a resplit
+      (let ((conf3 (current-window-configuration)))
+        (split-window (selected-window) nil 'below)
+        (set-window-configuration conf3)
+        (set-window-configuration conf3)
+        (wc-push 'twice (wc-shape (wc-tree)) (length (window-list)))))))
+(dolist (x wc-r) (prin1 x) (terpri))
+"##,
+    ] {
+        assert_same(
+            &corpus,
+            &["--batch", "-Q", "--eval", &format!("(progn {script})")],
+        );
+    }
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

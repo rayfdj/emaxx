@@ -509,17 +509,19 @@ pub(crate) struct CompositionIterator {
     pub(crate) width: i64,
     /// Whether composition_reseat_it has a window W: without one, as
     /// scan_for_column passes for a buffer no window shows, only static
-    /// compositions compose.
-    windowed: bool,
+    /// compositions compose.  None until an automatic composition asks:
+    /// scan_for_column's Fget_buffer_window, made when it matters.
+    windowed: Option<bool>,
 }
 
 impl CompositionIterator {
     pub(crate) fn new() -> Self {
-        Self::for_window(true)
+        Self::for_window(Some(true))
     }
 
-    /// An iterator whose reseat has a window (WINDOWED) or a null W.
-    pub(crate) fn for_window(windowed: bool) -> Self {
+    /// An iterator whose reseat has a window (WINDOWED), a null W, or
+    /// (None) the window Fget_buffer_window finds for the current buffer.
+    pub(crate) fn for_window(windowed: Option<bool>) -> Self {
         Self {
             stop_pos: 0,
             ch: -2,
@@ -652,8 +654,11 @@ impl CompositionIterator {
                     return true;
                 }
             }
-        } else if self.windowed
-            && charpos < endpos
+        } else if charpos < endpos
+            && *self.windowed.get_or_insert_with(|| {
+                super::display::buffer_window(interp, interp.current_buffer_id(), &Value::Nil)
+                    .is_some()
+            })
             && let Some(c) = char::from_u32(self.ch as u32)
         {
             let mut lgstring = Value::Nil;

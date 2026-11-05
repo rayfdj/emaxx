@@ -146,13 +146,8 @@ impl TraceLispRoots for WindowConfigurationSnapshot {
                 marker.value(&Value::Record(window));
             }
         }
-        self.selected_window_slots.trace_lisp_roots(marker);
-        for (window, slots) in &self.window_records {
-            if let Some(window) = marker.interpreter.record_ref(*window) {
-                marker.value(&Value::Record(window));
-            }
-            slots.trace_lisp_roots(marker);
-        }
+        // Each saved window's vector holds its window and what it saved.
+        self.saved_windows.trace_lisp_roots(marker);
     }
 }
 

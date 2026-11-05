@@ -15069,6 +15069,133 @@ setup_process_coding_systems's check now refuses). A 13-form
   rounds 303 to 318 print GNU's results as before. Local validation: the
   grouped gate's 3,501 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 320: three more sweeps of every subr, with numeric edge
+  values, with lists, vectors and other objects, and with live objects,
+  bring the primitives they found to GNU's answers.** The first put
+  -0.0, both NaNs, both infinities, the fixnum bounds, bignums on either
+  side of them, 2^70, -1, 0, 1.0e300, the smallest float, 0.5 and the
+  character bound in each of a subr's first three arguments. A position
+  is fix_position's (CHECK_FIXNUM_COERCE_MARKER, buffer.h): any bignum
+  is the fixnum bound in its direction, where Emaxx refused one beyond
+  64 bits, so `make-overlay', `overlays-at', `overlays-in',
+  `next-overlay-change', `previous-overlay-change', `overlay-recenter',
+  `narrow-to-region', `get-byte', `position-bytes',
+  `compare-buffer-substrings', `fringe-bitmaps-at-pos',
+  `pos-visible-in-window-p', `posn-at-point' and the coding-region
+  checks answer or signal as GNU's do; `pos-bol', `pos-eol',
+  `line-beginning-position' and `line-end-position' take a bignum count
+  as bol and eol do, as many lines as a buffer can hold.
+  `obarray-make''s range error carries SIZE itself (xsignal, not
+  xsignal1); `scroll-left' and `scroll-right' clip the hscroll to the
+  fixnum range as set_window_hscroll does; `move-point-visually' reads
+  its direction as a C int, so most-positive-fixnum moves left. The
+  second put dotted and nested lists, an alist, plists, an empty vector,
+  a bool-vector, a char-table, a record, a closure, a subr, a keyword,
+  an uninterned symbol and a list of strings in each argument: the
+  alternative font family and registry alists are CHECK_LIST'd copies
+  whose elements Fintern and Fdowncase take (a character downcased, a
+  dotted entry refused), and a face attribute is the interned keyword
+  itself, an uninterned symbol of an attribute's name being no attribute
+  and the error's data the symbol given. A third put live objects
+  (another buffer, the minibuffer and its window, the selected window
+  and frame, the terminal, a marker, an overlay, a pipe process, a hash
+  table, an obarray, the thread and a mutex): Fapply stores a
+  one-element spread list's element into the very vector its frame
+  records (`args[nargs - 1] = XCAR (spread_arg)'), so a backtrace shows
+  `apply f x' where Emaxx showed `apply f (x)', and pads a subr's call
+  with nils to its MAXARGS, which the subr's frame shows; Emaxx's frame
+  now points at that respread vector, on the stack, for the call.
+  `line-number-at-pos' takes a marker (another buffer's) without the
+  fixnum range check, and a position past Z reports BEG and Z. A first
+  gate pass caught a position held internally as a bignum of fixnum
+  size, a value GNU's normalized integers never hold: it reads as its
+  value, and only a bignum beyond the fixnum range reads as the bound.
+  What the sweeps still find is `decode-time''s clock, object addresses,
+  `newline-cache-check''s region cache and `set-window-start' with a nil
+  position (the last two recorded below). One command-line comparison
+  runs the cases fixed. The fuzzes and command-line cases of rounds 303
+  to 319 print GNU's results as before. Local validation: the grouped
+  gate's 3,501 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 321: `eq' and `eql' are lisp.h's EQ and fns.c's Feql, the
+  verified byte-code loop runs Bsymbol_value, and buffer names, type
+  names and undo's text are no longer copied or interned on the way.**
+  Every object has the one word, its tagged address or a fixnum's
+  immediate value (each kind is decoded from its header, the static
+  subrs included), so BASE_EQ is the word compare and EQ adds only the
+  bare-symbol compare of a symbol with position while
+  `symbols-with-pos-enabled' is set, read as lisp.h reads the flag
+  first: the kind-by-kind identity test behind every vectorlike pair is
+  gone, and an `assq' or `memq' whose key is a buffer or a window no
+  longer calls out at each element. `eql' is Feql: the words, then a
+  float's bits (same_float) or a bignum's value. The verified loop's Beq
+  reads the flag before it looks into an operand, and `assq' takes its
+  car-or-cdr choice as a flag where it compared its name. Bsymbol_value
+  is Fsymbol_value of TOP in the loop for a variable whose value its
+  cell holds or Bvarref's redirected read finds, where it left the loop
+  for the full arm each time (137 instructions a call in a byte-code
+  loop, GNU 214, from 417). Fget_buffer reads the name's characters and
+  bytes once and compares each buffer's name as Fstring_equal, with no
+  guard counted on either string (550 a call, GNU 654, from 804);
+  `type-of' and `cl-type-of' answer their symbols from the cached keys
+  where each call interned the type's name (38 names added; the keys'
+  duplicate check, which a quadratic scan had grown past constant
+  evaluation's limit, probes a hash table). Undo's path allocates 325
+  times an iteration where it did 367: a composition iterator looks for
+  its window only when it needs it, a short plain string is inserted
+  from a stack copy, a deletion that returns no string reads the deleted
+  text in place for its undo record, and the window walks keep up to
+  eight windows on the stack. Undo runs 1,310,985 instructions an
+  iteration against GNU's 1,222,673 (1.072, from 1.084). A first gate
+  pass found `unbound' interned at startup, the key `type-of' had
+  answered for Emaxx's unbound marker where GNU never interns Qunbound;
+  Qunbound being a symbol, both primitives answer `symbol' for it. A
+  command-line comparison runs Bsymbol_value on every kind of variable,
+  `eq' and `eql' on symbols with positions, floats, NaNs and bignums,
+  `type-of' and `cl-type-of' on 24 kinds of object and `get-buffer' on
+  equal, unibyte and multibyte names. Local validation: the grouped
+  gate's 3,501 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 322: window configurations are window.c's, and native code's
+  `setq' of a plain special variable is set_internal's store.**
+  Fcurrent_window_configuration's save_window_save walks the frame's
+  window tree, each window, then an internal window's subwindows, then
+  its `next' (the root's is the minibuffer window), and keeps for each
+  the fields of struct saved_window in their order (38,
+  make_nil_vector's size, so the allocation counters read GNU's), its
+  parent's and previous sibling's indices among them and only the
+  persistent parameters, `window-persistent-parameters' set to nil when
+  its tail is circular. Emaxx copied every window record of the frame,
+  the deleted ones too, with all their slots. Fset_window_configuration
+  now revives the saved windows after delete_all_child_windows empties
+  the windows of the current tree (a leaf's buffer unshown, its markers
+  unchained and its buffer squirreled away, an internal window's
+  contents nil; their other fields kept), rebuilds their links from the
+  saved indices, makes each the leaf, minibuffer window or horizontal or
+  vertical combination GNU's contents and flags make it (an internal
+  window combines horizontally when its first child's total_cols differ
+  from its own), and writes back only the saved fields: a window's
+  previous and next buffers, its cursor type, the parameters not saved
+  and those added since stay as they are, where Emaxx restored every
+  slot and cut short the slots of a frame window it had not saved.
+  compare_window_configurations compares the saved fields by EQ (they
+  were compared by `equal'). Native code's set_internal of a symbol
+  whose value its cell holds and whose stores are plain is the store
+  alone, as the verified byte-code loop's Bvarset is (an empty native
+  `dotimes' loop setting a special variable takes 84 instructions an
+  iteration, GNU 98, from 147). Undo runs 1,281,184 instructions an
+  iteration against GNU's 1,222,673 (1.048, from 1.072): ERT saves and
+  restores the configuration around each test, capturing it cost 38,750
+  instructions an iteration against GNU's 16,764. Word-level paths for
+  the window accessors native code calls (`window-buffer',
+  `window-top-child' and ten more) were measured and left out: the
+  record's decode, not the call, is their cost (the finding below). A
+  command-line comparison saves and restores configurations across
+  splits, deletions, a killed buffer, dedicated windows, persistent and
+  other parameters, `save-window-excursion' and a repeated restore.
+  Local validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17620,7 +17747,83 @@ ert-tests (36,346 ms against 32,930), tramp-tests (18,541 against
 against 2,139) and mule-tests (2,326 against 1,526), and
 `ert-test-run-tests-batch-expensive' is 1.09 of GNU's time.
 
+**On `7d697ba`** (round 319): the full Rust gate (run 42047034538)
+passed; the frozen run (run 42047039667) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a faster runner than round 318's
+(the oracle's bodies 216.9 s against 245.3). Setup 51.0 s against 43.7 s
+(1.168), test bodies 228.2 s against 216.9 s (1.052), in all 1.057, with
+a per-file setup median of 79 ms against 70. The widest body gaps are
+tramp-tests (16,258 ms against 14,346), comp-tests (12,068 against
+10,584), mule-tests (1,926 against 1,145), semantic-utest-ia (2,352
+against 1,638) and package-tests (5,861 against 5,343), and
+`ert-test-run-tests-batch-expensive' runs in 0.96 of GNU's time,
+ert-tests as a whole 26,307 ms against 27,211.
+
+**On `164ab0f`** (round 320): the full Rust gate (run 42066137161)
+  passed; the frozen run (run 42066143882) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a slower runner than round 319's
+  (the oracle's bodies 269.6 s against 216.9). Setup 80.0 s against 65.5
+  s (1.221), test bodies 303.0 s against 269.6 s (1.124), in all 1.122,
+  with a per-file setup median of 120 ms against 101. The widest body
+  gaps are ert-tests (45,923 ms against 38,060), tramp-tests (22,914
+  against 19,196), comp-tests (17,595 against 15,171), semantic-utest-ia
+  (4,083 against 2,710) and mule-tests (3,204 against 2,006), and
+  `ert-test-run-tests-batch-expensive' runs in 1.20 of GNU's time. The
+  frozen run times the gate profile (debug assertions and overflow
+  checks on, thin LTO, sixteen code units): on this host mule-tests'
+  loop over every code point takes 1.23 s in that build, 0.83 s in the
+  release build and 0.96 s in GNU, and semantic-utest-ia's file 3.7 s,
+  2.6 s and 5.1 s, so those two files' gaps are the checked build's.
+
+**On `4ddb6b3`** (round 321): the full Rust gate (run 42082394576)
+  passed; the frozen run (run 42082400395) passed at its second attempt.
+  The first matched 7,927 of 7,928 outcomes, the one other eglot-tests'
+  where the oracle itself failed unexpectedly (GNU 48 failures against
+  Emaxx's 47), with 1.116 in all. The second matched 7,928 of 7,928:
+  setup 74.2 s against 57.9 s (1.282), test bodies 288.0 s against 255.7
+  s (1.126), in all 1.155, with a per-file setup median of 111 ms
+  against 89. The widest body gaps are ert-tests (43,596 ms against
+  35,655), tramp-tests (19,829 against 16,278), comp-tests (16,191
+  against 12,905), semantic-utest-ia (4,128 against 2,562) and
+  mule-tests (3,415 against 1,904), and
+  `ert-test-run-tests-batch-expensive' runs in 1.21 of GNU's time. The
+  frozen run times the gate profile, whose debug assertions and overflow
+  checks account for the mule-tests and semantic-utest-ia gaps (round
+  320's record).
+
 **Findings recorded, not fixed:**
+- **Windows as generic records (round 321).** A window is a record whose
+  slots are a vector apart from it, so each window primitive decodes the
+  record's kind and reads a slot through that vector; called from native
+  code, `window-top-child' takes 112 instructions where GNU's takes 25,
+  and `window-buffer', `window-valid-p' and `window-frame' each about
+  100 more than GNU's. window.el's size functions, which
+  adjust_frame_size runs from a configuration's restore, cost 128,060
+  instructions an iteration against GNU's 100,601 for it
+  (`frame-windows-min-size'). A window wants to be the pseudovector
+  GNU's struct window is, its fields in the object.
+- **Native code's calls into subrs (round 321).** A call to `bufferp'
+  from native code takes 65 instructions where GNU's takes 14, and
+  `window-top-child' 113 where GNU's takes 27: the generated wrapper,
+  `invoke_subr''s table and arity reads, the active call's thread-local
+  and handler check, the argument slice and the Result through the
+  subr's body, against GNU's call through the freloc table with the
+  arguments in registers and a signal by longjmp. Undo's iteration makes
+  722 such calls.
+- **A window start that points nowhere (round 320).** Fset_window_start
+  runs set_marker_restricted, so a nil POS leaves the start marker
+  pointing nowhere: `(set-window-start nil nil)' returns nil and
+  `window-start' then answers nil. Emaxx keeps the selected window's
+  start as a position beside the marker and signals
+  `integer-or-marker-p' for a nil POS; the selected window's start needs
+  to be the marker GNU's is, redisplay choosing a start when it points
+  nowhere.
+- **The newline region cache (round 320).** GNU's find_newline keeps a
+  region cache of the stretches with no newline (`cache-long-scans', on
+  by default), which `newline-cache-check' reports as a pair of vectors;
+  Emaxx scans without one and answers nil. The cache is GNU's
+  optimization and changes no other answer; matching the debugging
+  primitive means keeping the cache as region-cache.c does.
 - **Static compositions in the screen-line layout (round 319).** The
   layouter the redisplay paths share (`window-text-pixel-size',
   `buffer-text-pixel-size' and through them `string-pixel-width') lays a

@@ -531,6 +531,7 @@ impl FloatRef {
         self.0.as_ptr() as usize
     }
 
+    #[cfg(test)]
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }

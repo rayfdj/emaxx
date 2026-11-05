@@ -840,38 +840,6 @@ pub(crate) fn symbol_with_pos_equal_in_env(
     }
 }
 
-pub(crate) fn symbol_with_pos_eq_in_env(
-    interp: &Interpreter,
-    left: &Value,
-    right: &Value,
-    env: &Env,
-) -> Option<bool> {
-    let left_with_pos = symbol_with_pos_parts(interp, left);
-    let right_with_pos = symbol_with_pos_parts(interp, right);
-    if left_with_pos.is_none() && right_with_pos.is_none() {
-        return None;
-    }
-
-    if !symbols_with_pos_enabled(interp, env) {
-        return None;
-    }
-
-    let left_base = left_with_pos
-        .as_ref()
-        .map(|(symbol, _)| symbol)
-        .unwrap_or(left);
-    let right_base = right_with_pos
-        .as_ref()
-        .map(|(symbol, _)| symbol)
-        .unwrap_or(right);
-    Some(
-        match (plain_symbol_name(left_base), plain_symbol_name(right_base)) {
-            (Some(_), Some(_)) => left_base == right_base,
-            _ => false,
-        },
-    )
-}
-
 pub(crate) fn eval_callable_metadata_form(
     interp: &mut Interpreter,
     func: &Value,

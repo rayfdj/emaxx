@@ -790,10 +790,12 @@ define_dispatch!(
                     };
                     bits = u64::BITS - size_value.leading_zeros();
                     if bits > crate::lisp::types::obarray::MAX_BITS {
-                        return Err(LispError::SignalValue(Value::list([
+                        // xsignal (Qargs_out_of_range, size): SIZE is the
+                        // data itself.
+                        return Err(LispError::SignalValue(Value::cons(
                             Value::symbol("args-out-of-range"),
                             *size,
-                        ])));
+                        )));
                     }
                 }
                 Ok(make_obarray_with_bits(interp, bits))
@@ -1514,54 +1516,56 @@ define_dispatch!(
                 // policy belongs to cl-lib.el's advice around this subr,
                 // not to the original primitive reached by that advice.
                 let name = match args[0].kind() {
-                    Kind::Nil => "symbol",
-                    Kind::T => "symbol",
-                    Kind::Integer(_) => "integer",
-                    Kind::BigInteger(_) => "integer",
-                    Kind::Float(_) => "float",
-                    Kind::StringObject(_) => "string",
-                    Kind::Symbol(_) => "symbol",
-                    Kind::SymbolWithPos(_) if symbols_with_pos_enabled(interp, env) => "symbol",
-                    Kind::SymbolWithPos(_) => "symbol-with-pos",
-                    Kind::Vector(_) => "vector",
-                    Kind::Cons(_) if is_vector_value(&args[0]) => "vector",
-                    Kind::Cons(_) => "cons",
-                    Kind::BuiltinFunc(_) => "subr",
+                    Kind::Nil | Kind::T => cached_symbol!("symbol"),
+                    Kind::Integer(_) => cached_symbol!("integer"),
+                    Kind::BigInteger(_) => cached_symbol!("integer"),
+                    Kind::Float(_) => cached_symbol!("float"),
+                    Kind::StringObject(_) => cached_symbol!("string"),
+                    Kind::Symbol(_) => cached_symbol!("symbol"),
+                    Kind::SymbolWithPos(_) if symbols_with_pos_enabled(interp, env) => {
+                        cached_symbol!("symbol")
+                    }
+                    Kind::SymbolWithPos(_) => cached_symbol!("symbol-with-pos"),
+                    Kind::Vector(_) => cached_symbol!("vector"),
+                    Kind::Cons(_) if is_vector_value(&args[0]) => cached_symbol!("vector"),
+                    Kind::Cons(_) => cached_symbol!("cons"),
+                    Kind::BuiltinFunc(_) => cached_symbol!("subr"),
                     // data.c:Ftype_of's PVEC_CLOSURE with a cons code slot.
                     Kind::Closure(closure) => {
                         if closure.is_bytecode() {
-                            "byte-code-function"
+                            cached_symbol!("byte-code-function")
                         } else {
-                            "interpreted-function"
+                            cached_symbol!("interpreted-function")
                         }
                     }
-                    Kind::Buffer(_) => "buffer",
-                    Kind::Marker(_) => "marker",
-                    Kind::Overlay(_) => "overlay",
-                    Kind::CharTable(_) => "char-table",
-                    Kind::HashTable(_) => "hash-table",
-                    Kind::SubCharTable(_) => "sub-char-table",
-                    Kind::Frame(_) => "frame",
-                    Kind::Terminal(_) => "terminal",
+                    Kind::Buffer(_) => cached_symbol!("buffer"),
+                    Kind::Marker(_) => cached_symbol!("marker"),
+                    Kind::Overlay(_) => cached_symbol!("overlay"),
+                    Kind::CharTable(_) => cached_symbol!("char-table"),
+                    Kind::HashTable(_) => cached_symbol!("hash-table"),
+                    Kind::SubCharTable(_) => cached_symbol!("sub-char-table"),
+                    Kind::Frame(_) => cached_symbol!("frame"),
+                    Kind::Terminal(_) => cached_symbol!("terminal"),
                     Kind::LispRecord(_) => return cl_type_value(interp, &args[0]),
-                    Kind::BoolVector(_) => "bool-vector",
-                    Kind::NativeFunction(_) => "subr",
-                    Kind::NativeCompUnit(_) => "native-comp-unit",
+                    Kind::BoolVector(_) => cached_symbol!("bool-vector"),
+                    Kind::NativeFunction(_) => cached_symbol!("subr"),
+                    Kind::NativeCompUnit(_) => cached_symbol!("native-comp-unit"),
                     Kind::Record(id) => {
                         let _record = interp.find_record(id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{}>", id.id))
                         })?;
                         return cl_type_value(interp, &args[0]);
                     }
-                    Kind::Finalizer(_) => "finalizer",
+                    Kind::Finalizer(_) => cached_symbol!("finalizer"),
                     Kind::ReaderForm(_) => {
                         return Err(LispError::Signal(
                             "reader form escaped object materialization".into(),
                         ));
                     }
-                    Kind::Unbound => "unbound",
+                    // Qunbound is a symbol, uninterned.
+                    Kind::Unbound => cached_symbol!("symbol"),
                 };
-                Ok(Value::Symbol(name.into()))
+                Ok(Value::Symbol(name.symbol()))
             }
             "cl-type-of" => {
                 need_args(name, args, 1)?;

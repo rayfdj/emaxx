@@ -3619,11 +3619,22 @@ impl Buffer {
         let from0 = from - 1;
         let to0 = to - 1;
 
+        let nchars = to - from;
         // Grab text for undo before deleting, with the byte offsets of its
         // ends in the same walk.
-        let (deleted, from_stored, to_stored) = if ret_string || !self.undo_recording_disabled() {
+        let (deleted, from_stored, to_stored) = if ret_string {
             let (deleted, from_stored, to_stored) = self.text_range_with_bytes(from0, to0);
+            if !self.undo_recording_disabled() {
+                let string = self.deleted_text_value(&deleted, from, to);
+                self.record_delete(from, string, nchars);
+            }
             (Some(deleted), from_stored, to_stored)
+        } else if !self.undo_recording_disabled() {
+            // The undo record's string made from the buffer's own bytes:
+            // a range on one side of the gap is read in place.
+            let (string, from_stored, to_stored) = self.deleted_text_value_in_place(from0, to0);
+            self.record_delete(from, string, nchars);
+            (None, from_stored, to_stored)
         } else {
             (
                 None,
@@ -3631,14 +3642,6 @@ impl Buffer {
                 self.text.borrow().char_to_byte(to0),
             )
         };
-        let nchars = to - from;
-
-        if let Some(deleted) = &deleted
-            && !self.undo_recording_disabled()
-        {
-            let string = self.deleted_text_value(deleted, from, to);
-            self.record_delete(from, string, nchars);
-        }
 
         let from_byte = self.byte_position_at_stored(from, from_stored);
         let to_byte = self.byte_position_at_stored(to, to_stored);
@@ -3959,6 +3962,30 @@ impl Buffer {
 
     /// The text of [FROM, TO) as record_delete records it: a string of
     /// this buffer's multibyteness with the text's properties.
+    /// `deleted_text_value' of 0-based characters FROM0..TO0, with the
+    /// byte offsets of their ends: the text read where the buffer holds
+    /// it, copied only when the range spans the gap.
+    fn deleted_text_value_in_place(&self, from0: usize, to0: usize) -> (Value, usize, usize) {
+        let text = self.text.borrow();
+        let to0 = to0.min(text.len_chars()).max(from0);
+        let start = text.char_to_byte(from0);
+        let end = if self.text_is_ascii() {
+            to0
+        } else {
+            text.text
+                .char_to_byte_near(to0, std::iter::once((from0, start)))
+        };
+        let (before, after) = text.text.range_halves(start..end);
+        let value = if after.is_empty() {
+            self.deleted_text_value(before, from0 + 1, to0 + 1)
+        } else if before.is_empty() {
+            self.deleted_text_value(after, from0 + 1, to0 + 1)
+        } else {
+            self.deleted_text_value(&[before, after].concat(), from0 + 1, to0 + 1)
+        };
+        (value, start, end)
+    }
+
     fn deleted_text_value(&self, text: &str, from: usize, to: usize) -> Value {
         Value::StringObject(crate::lisp::types::StringObjectRef::from_text_ref(
             text,

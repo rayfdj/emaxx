@@ -5338,6 +5338,18 @@ extern "C" fn runtime_set_internal(
     where_: NativeWord,
     bind_kind: i32,
 ) {
+    // data.c:set_internal's SYMBOL_PLAINVAL, untrapped case, which reads
+    // no context: the store alone, as Bvarset's in the verified loop.
+    if where_ == 0 && bind_kind == 0 {
+        // SAFETY: generated code passes live Lisp_Object words.
+        let (name, new) = unsafe { (Value::from_word(symbol), Value::from_word(value)) };
+        if name
+            .symbol_cell()
+            .is_some_and(|symbol| symbol.cell().store_plain_value(new))
+        {
+            return;
+        }
+    }
     with_active(|active| {
         let result = (|| {
             let symbol = decode_word(active, symbol)?;

@@ -770,7 +770,7 @@ fn char_code_property_entry(
     else {
         return Ok(None);
     };
-    let entry = super::lists::direct_assq_family(interp, &[prop, alist], env, "assq")?;
+    let entry = super::lists::direct_assq_family(interp, &[prop, alist], env, true)?;
     Ok(entry.cons_ref())
 }
 

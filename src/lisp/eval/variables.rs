@@ -3071,6 +3071,36 @@ impl Interpreter {
         }
     }
 
+    /// eval.c:Fapply's `args[nargs - 1] = XCAR (spread_arg)', a store into
+    /// the vector apply's own frame records: when the innermost frame
+    /// holds ORIGINAL (the evaluated arguments of this call), it holds
+    /// SPREAD, of the same length, until `restore_backtrace_args'.  False,
+    /// and nothing changed, when the innermost frame is another's.
+    pub(crate) fn respread_backtrace_args(&mut self, original: &[Value], spread: &[Value]) -> bool {
+        match self.backtrace_frames.last_mut() {
+            Some(frame)
+                if std::ptr::eq(frame.args, original.as_ptr().cast())
+                    && frame.shape & FRAME_NATIVE_WORDS == 0
+                    && frame.shape & FRAME_NARGS == original.len()
+                    && spread.len() == original.len() =>
+            {
+                frame.args = spread.as_ptr().cast();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The frame `respread_backtrace_args' changed holds ORIGINAL again,
+    /// before SPREAD goes.
+    pub(crate) fn restore_backtrace_args(&mut self, spread: &[Value], original: &[Value]) {
+        if let Some(frame) = self.backtrace_frames.last_mut()
+            && std::ptr::eq(frame.args, spread.as_ptr().cast())
+        {
+            frame.args = original.as_ptr().cast();
+        }
+    }
+
     #[inline]
     pub fn pop_backtrace_frame(&mut self) {
         if let Some(len) = self.backtrace_frames.len().checked_sub(1) {

@@ -609,6 +609,7 @@ fn checked_face_attribute(
     interp: &mut Interpreter,
     face: Value,
     attribute: &str,
+    attribute_symbol: Value,
     value: Value,
     global: bool,
     env: &mut Env,
@@ -822,7 +823,7 @@ fn checked_face_attribute(
         _ => {
             return Err(signal_error(
                 "Invalid face attribute name",
-                Value::symbol(attribute),
+                attribute_symbol,
             ));
         }
     }
@@ -903,7 +904,7 @@ fn box_plist_valid(value: Value) -> Result<bool, LispError> {
 pub(super) fn set_face_attribute(
     interp: &mut Interpreter,
     face: Value,
-    attribute: &str,
+    attribute: Value,
     value: &Value,
     global: bool,
     env: &mut Env,
@@ -924,7 +925,7 @@ pub(super) fn set_face_attribute(
 fn set_face_attribute_on(
     interp: &mut Interpreter,
     face: Value,
-    attribute: &str,
+    attribute: Value,
     value: &Value,
     frame: Option<crate::lisp::types::FrameRef>,
     env: &mut Env,
@@ -935,9 +936,20 @@ fn set_face_attribute_on(
     {
         value = Value::symbol(":ignore-defface");
     }
-    if let Some((index, value)) =
-        checked_face_attribute(interp, face, attribute, value, frame.is_none(), env)?
-    {
+    // EQ (attr, QCfamily) and the rest: the attribute is the interned
+    // keyword itself.  An uninterned symbol's (or a private obarray's)
+    // name is marked, so no attribute's name is one of theirs.
+    let attribute_symbol = attribute;
+    let attribute = attribute_symbol.as_symbol().unwrap_or("");
+    if let Some((index, value)) = checked_face_attribute(
+        interp,
+        face,
+        attribute,
+        attribute_symbol,
+        value,
+        frame.is_none(),
+        env,
+    )? {
         let old_value = match interp.lisp_face_vector_on(face, frame) {
             Some(lface) => vector_slot_value(&lface, index)?,
             None => Value::symbol("unspecified"),
@@ -1050,23 +1062,44 @@ fn bitmap_spec_p(value: &Value) -> bool {
     height <= sbytes / bytes_per_row
 }
 
-fn transform_font_alist(value: &Value, registry: bool) -> Result<Value, LispError> {
-    let entries = value.to_vec()?;
-    let mut result = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let values = entry.to_vec()?;
-        let mut transformed = Vec::with_capacity(values.len());
-        for value in values {
-            let text = string_text(&value)?;
-            transformed.push(if registry {
-                Value::String(text.to_lowercase().into())
-            } else {
-                Value::Symbol(text.into())
-            });
+/// xfaces.c:Finternal_set_alternative_font_family_alist and _registry_alist:
+/// CHECK_LIST of ALIST and of each entry, both copied (Fcopy_sequence),
+/// each entry's elements Fintern'd (family) or Fdowncase'd (registry).
+fn transform_font_alist(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    value: &Value,
+    registry: bool,
+) -> Result<Value, LispError> {
+    let check_list = |value: &Value| {
+        if matches!(value.kind(), Kind::Nil | Kind::Cons(_)) {
+            Ok(())
+        } else {
+            Err(LispError::WrongTypeArgument("listp".into(), *value))
         }
-        result.push(Value::list(transformed));
+    };
+    check_list(value)?;
+    let alist = super::call(interp, "copy-sequence", &[*value], env)?;
+    let mut tail = alist;
+    while let Kind::Cons(cell) = tail.kind() {
+        let entry = cell.car.get();
+        check_list(&entry)?;
+        let entry = super::call(interp, "copy-sequence", &[entry], env)?;
+        cell.car.set(entry);
+        let mut tail2 = entry;
+        while let Kind::Cons(element) = tail2.kind() {
+            let converted = super::call(
+                interp,
+                if registry { "downcase" } else { "intern" },
+                &[element.car.get()],
+                env,
+            )?;
+            element.car.set(converted);
+            tail2 = element.cdr.get();
+        }
+        tail = cell.cdr.get();
     }
-    Ok(Value::list(result))
+    Ok(alist)
 }
 
 /// xfaces.c:face_boolean_x_resource_value: VALUE's "on"/"true" t,
@@ -1294,7 +1327,9 @@ define_dispatch!(
             "internal-set-lisp-face-attribute" => {
                 need_arg_range(name, args, 3, 4)?;
                 let face = resolve_face_name(interp, &face_symbol(&args[0])?)?;
-                let attribute = args[1].as_symbol()?;
+                // CHECK_SYMBOL (attr); the symbol itself is the attribute.
+                args[1].as_symbol()?;
+                let attribute = args[1];
                 let frame = args.get(3).unwrap_or(&Value::Nil);
                 if matches!(frame.kind(), Kind::Integer(0)) {
                     if interp.lisp_face_vector(face, true).is_none() {
@@ -1584,13 +1619,13 @@ define_dispatch!(
             }
             "internal-set-alternative-font-family-alist" => {
                 need_args(name, args, 1)?;
-                let transformed = transform_font_alist(&args[0], false)?;
+                let transformed = transform_font_alist(interp, env, &args[0], false)?;
                 interp.alternative_font_family_alist = transformed;
                 Ok(transformed)
             }
             "internal-set-alternative-font-registry-alist" => {
                 need_args(name, args, 1)?;
-                let transformed = transform_font_alist(&args[0], true)?;
+                let transformed = transform_font_alist(interp, env, &args[0], true)?;
                 interp.alternative_font_registry_alist = transformed;
                 Ok(transformed)
             }

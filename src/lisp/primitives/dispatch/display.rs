@@ -1517,38 +1517,42 @@ fn is_live_ordinary_window(interp: &Interpreter, id: u64) -> bool {
 /// depth-first walk that descends first children and follows sibling
 /// chains.  `next-window' cycles and `window-list' both follow it, and it
 /// is the top-to-bottom, left-to-right order the glass paints.
-fn window_tree_leaf_ids(interp: &Interpreter) -> Vec<u64> {
+/// Window record ids as the window walks collect them: a frame's
+/// handful kept on the stack, as window_loop keeps none on the heap.
+pub(crate) type WindowIds = smallvec::SmallVec<[u64; 8]>;
+
+fn window_tree_leaf_ids(interp: &Interpreter) -> WindowIds {
     frame_window_tree_leaf_ids(interp, interp.selected_frame_id)
 }
 
 fn frame_window_tree_leaf_ids(
     interp: &Interpreter,
     frame: crate::lisp::types::FrameRef,
-) -> Vec<u64> {
+) -> WindowIds {
     let root_id = frame.borrow().root_window_id();
     // A frame of one window is its root.
     if window_link(interp, root_id, WINDOW_FIRST_CHILD_SLOT).is_none() {
-        return vec![root_id];
+        return smallvec::smallvec![root_id];
     }
     // A malformed tree (stale sibling links) must not loop forever; no
     // healthy tree revisits a window record.
     let budget = interp.record_count_by_type("window").saturating_add(1);
-    let mut leaves = Vec::new();
-    let mut stack = vec![root_id];
+    let mut leaves = WindowIds::new();
+    let mut stack: WindowIds = smallvec::smallvec![root_id];
     let mut visited = 0usize;
     while let Some(id) = stack.pop() {
         visited += 1;
         if visited > budget {
-            return Vec::new();
+            return WindowIds::new();
         }
         match window_link(interp, id, WINDOW_FIRST_CHILD_SLOT) {
             Some(child) => {
-                let mut chain = Vec::new();
+                let mut chain = WindowIds::new();
                 let mut walk = Some(child);
                 while let Some(node) = walk {
                     chain.push(node);
                     if chain.len() > budget {
-                        return Vec::new();
+                        return WindowIds::new();
                     }
                     walk = window_link(interp, node, WINDOW_NEXT_SIBLING_SLOT);
                 }
@@ -1560,8 +1564,8 @@ fn frame_window_tree_leaf_ids(
     leaves
 }
 
-pub(crate) fn live_ordinary_window_ids(interp: &Interpreter) -> Vec<u64> {
-    let from_tree: Vec<u64> = window_tree_leaf_ids(interp)
+pub(crate) fn live_ordinary_window_ids(interp: &Interpreter) -> WindowIds {
+    let from_tree: WindowIds = window_tree_leaf_ids(interp)
         .into_iter()
         .filter(|id| is_live_ordinary_window(interp, *id))
         .collect();
@@ -4041,7 +4045,8 @@ fn set_window_hscroll_value(
     window_id: u64,
     requested: i64,
 ) -> Result<Value, LispError> {
-    let hscroll = requested.max(0);
+    // clip_to_bounds (0, hscroll, min (MOST_POSITIVE_FIXNUM, PTRDIFF_MAX)).
+    let hscroll = requested.clamp(0, (1_i64 << 61) - 1);
     if window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT).integer_value() != Some(hscroll) {
         // set_window_hscroll: a changed hscroll redisplays the window.
         interp.wset_redisplay(window_id);
@@ -4100,7 +4105,7 @@ fn window_list_frames(
     interp: &Interpreter,
     own_frame: crate::lisp::types::FrameRef,
     frame_filter: &Value,
-) -> Vec<crate::lisp::types::FrameRef> {
+) -> smallvec::SmallVec<[crate::lisp::types::FrameRef; 4]> {
     interp
         .frame_states
         .iter()
@@ -4177,8 +4182,8 @@ fn window_list_ids(
     minibuf: Option<&Value>,
     start: Option<&Value>,
     frames: &[crate::lisp::types::FrameRef],
-) -> Vec<u64> {
-    let mut ids = Vec::new();
+) -> WindowIds {
+    let mut ids = WindowIds::new();
     for frame in frames {
         let mut leaves = frame_window_tree_leaf_ids(interp, *frame);
         leaves.retain(|id| is_live_ordinary_window(interp, *id));
@@ -6333,7 +6338,9 @@ define_dispatch!(
                     return Err(wrong_type_argument("fixnump", args[0]));
                 };
                 with_selected_window_buffer(interp, |interp| {
-                    let right = direction > 0;
+                    // `int dir = XFIXNUM (direction)': the fixnum's low 32
+                    // bits, so most-positive-fixnum moves left.
+                    let right = (direction as i32) > 0;
                     let right_to_left = matches!(
                         current_bidi_paragraph_direction_value(interp, env).kind(),
                         Kind::Symbol(ref direction) if direction.is_named("right-to-left")

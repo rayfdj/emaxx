@@ -1138,7 +1138,7 @@ define_dispatch!(
                 copy_alist_value(&args[0])
             }
             "memq" | "memql" | "member" => direct_member_family(interp, args, env, name),
-            "assq" | "rassq" => direct_assq_family(interp, args, env, name),
+            "assq" | "rassq" => direct_assq_family(interp, args, env, name == "assq"),
             "rassoc" => {
                 need_args(name, args, 2)?;
                 direct_assoc_family(interp, &[args[0], args[1], Value::Nil], env, false)
@@ -1328,16 +1328,20 @@ define_dispatch!(
                 if is_vector_value(last) {
                     return Err(LispError::WrongTypeArgument("listp".into(), *last));
                 }
-                // SAFE_ALLOCA_LISP's array: eight stack slots (visible to
-                // the stack scan, as eval_sub's are), the heap past them.
+                // SAFE_ALLOCA_LISP's array: the function and eight argument
+                // slots on the stack (visible to the stack scan, as
+                // eval_sub's are), the heap past them.  Slot 0 holds the
+                // function, so a respread call's frame vector is a prefix.
                 let fixed = &args[1..args.len() - 1];
-                let mut stack = [Value::Nil; 8];
-                let mut count = 0;
+                let mut stack = [Value::Nil; 9];
+                stack[0] = *func;
+                let mut count = 1;
                 let mut spilled: Vec<Value> = Vec::new();
-                if fixed.len() <= stack.len() {
-                    stack[..fixed.len()].copy_from_slice(fixed);
-                    count = fixed.len();
+                if fixed.len() < stack.len() {
+                    stack[1..=fixed.len()].copy_from_slice(fixed);
+                    count += fixed.len();
                 } else {
+                    spilled.push(*func);
                     spilled.extend_from_slice(fixed);
                 }
                 last.visit_list_elements(|value| {
@@ -1352,10 +1356,63 @@ define_dispatch!(
                     }
                     Ok(())
                 })?;
-                let call_args = if spilled.is_empty() {
-                    &stack[..count]
+                let total = if spilled.is_empty() {
+                    count
                 } else {
-                    &spilled[..]
+                    spilled.len()
+                } - 1;
+                let numargs = total - fixed.len();
+                if numargs == 1 {
+                    // `args[nargs - 1] = XCAR (spread_arg); return Ffuncall
+                    // (nargs, args)': the element takes the list's slot in
+                    // the vector apply's own frame records.
+                    let respread: &[Value] = if spilled.is_empty() {
+                        &stack[..count]
+                    } else {
+                        &spilled[..]
+                    };
+                    let changed = interp.respread_backtrace_args(args, respread);
+                    let result = interp.call_function_value(*func, None, &respread[1..], env);
+                    if changed {
+                        interp.restore_backtrace_args(respread, args);
+                    }
+                    return result;
+                }
+                // A subr that takes more arguments than these, and no fewer
+                // than its MINARGS, gets nil for each missing optional one
+                // (funcall_args padded to MAXARGS).
+                if numargs > 1 {
+                    let fun =
+                        crate::lisp::primitives::keymap::indirect_function(interp, *func, env);
+                    // MAX_ARGS as recorded: a count, or UNEVALLED or MANY
+                    // (negative), which no count is below.
+                    let (minimum, maximum) = match fun.kind() {
+                        Kind::BuiltinFunc(subr) => (
+                            i64::from(subr.descriptor().min_args),
+                            i64::from(subr.descriptor().max_args_word()),
+                        ),
+                        Kind::NativeFunction(function) => (
+                            i64::from(function.min_args()),
+                            i64::from(function.max_args_word()),
+                        ),
+                        _ => (0, -1),
+                    };
+                    if maximum > total as i64 && total as i64 >= minimum {
+                        let padded = maximum as usize + 1;
+                        if spilled.is_empty() && padded <= stack.len() {
+                            count = padded;
+                        } else {
+                            if spilled.is_empty() {
+                                spilled.extend_from_slice(&stack[..count]);
+                            }
+                            spilled.resize(padded, Value::Nil);
+                        }
+                    }
+                }
+                let call_args = if spilled.is_empty() {
+                    &stack[1..count]
+                } else {
+                    &spilled[1..]
                 };
                 interp.call_function_value(*func, None, call_args, env)
             }
@@ -2319,13 +2376,11 @@ pub(super) fn direct_assq_family(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut crate::lisp::types::Env,
-    name: &str,
+    want_car: bool,
 ) -> Result<Value, LispError> {
-    need_args(name, args, 2)?;
-    let want_car = name == "assq";
+    need_args(if want_car { "assq" } else { "rassq" }, args, 2)?;
     let key = args[0];
     let mut tail = args[1];
-    let key_vectorlike = key.is_vectorlike();
     let mut walk = crate::lisp::types::TailWalk::new(tail);
     while let Some(cons) = tail.cons_ref() {
         // The cell once for its car and its cdr, as XCAR and XCDR read
@@ -2338,12 +2393,7 @@ pub(super) fn direct_assq_family(
             } else {
                 entry.cdr.get()
             };
-            // lisp.h:EQ: the words, or a symbol with position (always
-            // vectorlike) against its symbol.
-            if entry_key.word() == key.word()
-                || ((key_vectorlike || entry_key.is_vectorlike())
-                    && values_eq_in_env(interp, &entry_key, &key, env))
-            {
+            if values_eq_in_env(interp, &entry_key, &key, env) {
                 return Ok(item);
             }
         }
@@ -2363,7 +2413,7 @@ pub(super) fn direct_assq(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    direct_assq_family(interp, args, env, "assq")
+    direct_assq_family(interp, args, env, true)
 }
 
 pub(super) fn direct_rassq(
@@ -2371,7 +2421,7 @@ pub(super) fn direct_rassq(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    direct_assq_family(interp, args, env, "rassq")
+    direct_assq_family(interp, args, env, false)
 }
 
 /// fns.c:eq_comparable_value: SYMBOLP or FIXNUMP, whose `equal' is `eq'.
@@ -2394,12 +2444,7 @@ fn direct_assoc_family(
 ) -> Result<Value, LispError> {
     let [key, alist, testfn] = *args;
     if testfn.is_nil() && eq_comparable_value(interp, &key, env) {
-        return direct_assq_family(
-            interp,
-            &[key, alist],
-            env,
-            if car { "assq" } else { "rassq" },
-        );
+        return direct_assq_family(interp, &[key, alist], env, car);
     }
     let mut tail = alist;
     let mut walk = crate::lisp::types::TailWalk::new(tail);
