@@ -3231,9 +3231,12 @@ define_dispatch!(
 
             "make-marker" => Ok(interp.make_marker()),
             "copy-marker" => {
-                need_args(name, args, 1)?;
+                // marker.c:Fcopy_marker takes 0 to 2 arguments; an omitted
+                // MARKER is nil, a marker pointing nowhere.
+                need_arg_range(name, args, 0, 2)?;
                 let insertion_type = args.get(1).is_some_and(Value::is_truthy);
-                interp.copy_marker_value(&args[0], insertion_type)
+                interp
+                    .copy_marker_value(&args.first().copied().unwrap_or(Value::Nil), insertion_type)
             }
             "point-marker" => {
                 let position = interp.buffer.borrow().point() as i64;
@@ -3307,7 +3310,10 @@ define_dispatch!(
 /// process.c:get_process: the process NAME designates -- a process, the
 /// name of a process or of a buffer, a buffer, or nil for the current
 /// buffer -- signaling when there is none.
-fn get_process(interp: &mut Interpreter, name: Option<&Value>) -> Result<Value, LispError> {
+pub(crate) fn get_process(
+    interp: &mut Interpreter,
+    name: Option<&Value>,
+) -> Result<Value, LispError> {
     let name = name.copied().unwrap_or(Value::Nil);
     let buffer = if let Some(text) = string_like(&name) {
         // Fget_process, then Fget_buffer.

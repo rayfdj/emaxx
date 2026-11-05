@@ -3639,10 +3639,10 @@ impl DirectFuncallTarget {
             // eval.c:funcall_subr copies only to supply omitted optional
             // arguments. Fully supplied fixed calls use the original words.
             if arguments.len() < maximum {
-                let mut padded = smallvec::SmallVec::<[NativeWord; 8]>::new();
-                padded.extend_from_slice(arguments);
-                padded.resize(maximum, 0);
-                return Ok(unsafe { call_word_target(target, convention, &padded) });
+                // funcall_subr's argbuf: a fixed target takes at most eight.
+                let mut padded = [0; 8];
+                padded[..arguments.len()].copy_from_slice(arguments);
+                return Ok(unsafe { call_word_target(target, convention, &padded[..maximum]) });
             }
         }
         Ok(unsafe { call_word_target(target, convention, arguments) })
@@ -3780,7 +3780,18 @@ fn invoke_plain_native_funcall(
         Some(name) => name.cell().function.get(),
         None => function,
     };
-    let native = RegisteredNative(callee.native_function_ref()?);
+    let Some(native) = callee.native_function_ref() else {
+        return invoke_plain_builtin_funcall(
+            interpreter,
+            runtime,
+            environment,
+            function,
+            name,
+            callee,
+            arguments,
+        );
+    };
+    let native = RegisteredNative(native);
     if !native.admits(arguments.len())
         || !interpreter.plain_bcall_entry(name)
         || !runtime.heap.collection_cannot_be_due()
@@ -3791,6 +3802,67 @@ fn invoke_plain_native_funcall(
     // SAFETY: the register counts admit this many arguments for the native
     // function's fixed-arity target.
     let word = unsafe { native.call(arguments) };
+    let result = if interpreter.current_backtrace_debug_on_exit() {
+        native_funcall_exit_debugger(interpreter, runtime, environment, word)
+    } else {
+        Ok(word)
+    };
+    if let Err(error) = &result {
+        interpreter.capture_batch_error_backtrace(error, environment);
+    }
+    interpreter.leave_plain_funcall(depth);
+    Some(result)
+}
+
+/// eval.c:Ffuncall -> funcall_subr of a C subr (FUNCTION, or the one in
+/// its function cell CALLEE) under the conditions of
+/// `invoke_plain_native_funcall': ARGUMENTS within its arity, passed to a
+/// fixed subr of at most eight arguments with nil for each omitted
+/// optional one (funcall_subr's argbuf), else as a MANY vector.  None,
+/// with nothing changed, for any other callee or count; the full path
+/// signals for those.
+#[inline(always)]
+fn invoke_plain_builtin_funcall(
+    interpreter: &mut Interpreter,
+    runtime: &mut NativeRuntime,
+    environment: &mut Env,
+    function: Value,
+    name: Option<SymbolName>,
+    callee: Value,
+    arguments: &[NativeWord],
+) -> Option<Result<NativeWord, LispError>> {
+    let descriptor = callee.builtin_ref()?.descriptor();
+    let count = arguments.len();
+    let maximum = descriptor.max_args_word();
+    // UNEVALLED is -1, MANY -2; a finite count above eight is called as
+    // MANY without an upper bound, as funcall_subr calls it.
+    let many = maximum == -2 || maximum > 8;
+    if count < usize::from(descriptor.min_args)
+        || maximum == -1
+        || (!many && count > maximum as usize)
+        || !interpreter.plain_bcall_entry(name)
+        || !runtime.heap.collection_cannot_be_due()
+    {
+        return None;
+    }
+    let depth = interpreter.enter_plain_native_funcall(function, arguments);
+    let target = descriptor.function;
+    // SAFETY: the descriptor's target takes this convention and count.
+    let word = unsafe {
+        if many {
+            call_word_target(target, NativeCallingConvention::Many, arguments)
+        } else if count == maximum as usize {
+            call_word_target(target, NativeCallingConvention::Fixed, arguments)
+        } else {
+            let mut padded = [0; 8];
+            padded[..count].copy_from_slice(arguments);
+            call_word_target(
+                target,
+                NativeCallingConvention::Fixed,
+                &padded[..maximum as usize],
+            )
+        }
+    };
     let result = if interpreter.current_backtrace_debug_on_exit() {
         native_funcall_exit_debugger(interpreter, runtime, environment, word)
     } else {

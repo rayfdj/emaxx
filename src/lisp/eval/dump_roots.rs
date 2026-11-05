@@ -22,6 +22,10 @@ use crate::lisp::types::Kind;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "require_nesting",
+        "fns.c's staticpro'd require_nesting_list holds the features of the running `require' loads, none once the dump's own load ends; a session starts with none",
+    ),
+    (
         "lface_id_to_name",
         "xfaces.c:init_xfaces makes lface_id_to_name from face--new-frame-defaults, which the image carries, after a load",
     ),
@@ -435,7 +439,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "tty state set at terminal init",
     ),
     ("builtin_doc_offsets", "carried in the remembered scalars"),
-    ("require_nesting", "the running load"),
     (
         "will_dump_reported",
         "emacs.c's gflags, the running process's",

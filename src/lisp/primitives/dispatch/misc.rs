@@ -491,7 +491,9 @@ define_dispatch!(
             }
             "secure-hash" => {
                 need_arg_range(name, args, 2, 5)?;
-                let algorithm = args[0].as_symbol()?;
+                // CHECK_SYMBOL; the algorithm is chosen by EQ once the
+                // data is extracted.
+                let algorithm = checked_symbol_identity(interp, &args[0], env)?;
                 secure_hash_value(
                     interp,
                     algorithm,
@@ -634,14 +636,14 @@ define_dispatch!(
                 // GNU 30.2 fns.c:Fprovide uses CHECK_SYMBOL/XSYMBOL, so
                 // positioned reader symbols denote their underlying symbol
                 // while `symbols-with-pos-enabled' is dynamically non-nil.
-                let feature = checked_symbol_name(interp, &args[0], env)?;
+                let feature = checked_symbol_identity(interp, &args[0], env)?;
                 let subfeatures = args.get(1).cloned().unwrap_or(Value::Nil);
                 // CHECK_LIST, even when the feature was already present.
                 if !matches!(subfeatures.kind(), Kind::Nil | Kind::Cons(_)) {
                     return Err(wrong_type_argument("listp", subfeatures));
                 }
                 interp
-                    .provide_feature_with_after_load(&feature, subfeatures, env)
+                    .provide_feature_with_after_load(feature, subfeatures, env)
                     .map(|_| args[0])
             }
             "require" => {
@@ -774,6 +776,26 @@ define_dispatch!(
                             .lookup_var("obarray", env)
                             .filter(|value| !value.is_nil())
                     });
+                // lread.c:Fintern_soft: check_obarray before NAME is looked
+                // at.
+                let obarray = match obarray {
+                    Some(obarray) => {
+                        let coerced =
+                            crate::lisp::primitives::completion::coerce_legacy_vector_obarray(
+                                interp, &obarray,
+                            )?;
+                        let standard = matches!(coerced.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id));
+                        if !standard
+                            && !crate::lisp::primitives::completion::is_obarray_like_value(
+                                interp, &coerced,
+                            )
+                        {
+                            return Err(wrong_type_argument("obarrayp", obarray));
+                        }
+                        Some(coerced)
+                    }
+                    None => None,
+                };
                 if let Some(symbol) = standard_oblookup(interp, args) {
                     return Ok(Value::Symbol(symbol));
                 }

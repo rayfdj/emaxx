@@ -403,9 +403,12 @@ impl Interpreter {
         crate::lisp::primitives::values::doprnt_quote_pair(self)
     }
 
+    /// fns.c:Frequire's `require_nesting_list' around LOAD: FEATURE (EQ)
+    /// may re-enter four active loads; the fifth signals, naming NAME.
     fn with_require_nesting<T>(
         &mut self,
-        feature: &str,
+        feature: SymbolName,
+        name: &str,
         quotes: (char, char),
         load: impl FnOnce(&mut Self) -> Result<T, LispError>,
     ) -> Result<T, LispError> {
@@ -416,21 +419,21 @@ impl Interpreter {
         let nesting = self
             .require_nesting
             .iter()
-            .filter(|nested| nested.as_str() == feature)
+            .filter(|nested| **nested == feature)
             .count();
         if nesting > 3 {
             // fns.c:3762 signals through `error' too, so this message is
             // requoted by the same rule as the one below.
             let (open, close) = quotes;
             return Err(LispError::Signal(format!(
-                "Recursive {open}require{close} for feature {open}{feature}{close}"
+                "Recursive {open}require{close} for feature {open}{name}{close}"
             )));
         }
 
-        self.require_nesting.push(feature.to_string());
+        self.require_nesting.push(feature);
         let result = load(self);
         let popped = self.require_nesting.pop();
-        debug_assert_eq!(popped.as_deref(), Some(feature));
+        debug_assert!(popped == Some(feature));
         result
     }
 
@@ -449,7 +452,9 @@ impl Interpreter {
         if self.has_feature_symbol(symbol) {
             return Ok(Value::Symbol(symbol));
         }
-        let feature = symbol.as_str();
+        // SDATA (SYMBOL_NAME (feature)): the name an uninterned feature
+        // shares with the interned one, which names the file too.
+        let feature = symbol.name_text();
         let (open, close) = self.effective_quote_pair();
         if self.will_dump_without_bootstrap(env) {
             self.will_dump_reported = true;
@@ -460,11 +465,11 @@ impl Interpreter {
         // Fload with NOERROR, which only excuses FILE's absence, and a
         // mandatory suffix when the feature's name is the file's.
         let (file, must_suffix) = if filename.is_nil() {
-            (Value::string(feature), Value::T)
+            (symbol.lisp_name(), Value::T)
         } else {
             (filename, Value::Nil)
         };
-        let loaded = self.with_require_nesting(feature, (open, close), |interp| {
+        let loaded = self.with_require_nesting(symbol, &feature, (open, close), |interp| {
             interp.load_with_autoload_queue([file, noerror, Value::T, Value::Nil, must_suffix], env)
         })?;
         if loaded.is_nil() {
@@ -2705,8 +2710,8 @@ impl Interpreter {
 
     /// fns.c:Fprovide's update of `features': FEATURE is consed onto the
     /// front of the list unless `memq' finds it there already.
-    fn provide_feature(&mut self, feature: &str, env: &mut Env) -> Result<(), LispError> {
-        let symbol = Value::Symbol(feature.into());
+    fn provide_feature(&mut self, feature: SymbolName, env: &mut Env) -> Result<(), LispError> {
+        let symbol = Value::Symbol(feature);
         let features = self.global_value("features").unwrap_or(Value::Nil);
         // Fprovide records the list it replaces for un_autoload.
         if !self.autoload_queue.is_nil() {
@@ -2721,21 +2726,13 @@ impl Interpreter {
         Ok(())
     }
 
-    fn record_provide_in_load_history(&mut self, feature: &str) {
-        let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
-            return;
-        };
-        if current_load_list.is_nil() {
-            return;
-        }
-        let entry = Value::cons(
-            Value::Symbol("provide".into()),
-            Value::Symbol(feature.to_string().into()),
-        );
-        let entries = current_load_list.to_vec().unwrap_or_default();
-        if entries.iter().any(|item| item == &entry) {
-            return;
-        }
+    /// lisp.h:LOADHIST_ATTACH of (provide . FEATURE): consed onto
+    /// `current-load-list' each time, inside a load or not.
+    fn record_provide_in_load_history(&mut self, feature: SymbolName) {
+        let current_load_list = self
+            .symbol_value_key(cached_symbol!("current-load-list"))
+            .unwrap_or(Value::Nil);
+        let entry = Value::cons(Value::symbol("provide"), Value::Symbol(feature));
         // GNU LOADHIST_ATTACH conses onto the front: the source file name
         // stays the LAST element (`macroexp-file-name' reads it there).
         self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
@@ -2898,15 +2895,16 @@ impl Interpreter {
         self.set_global_binding("load-history", Value::list(history));
     }
 
+    /// fns.c:Fprovide of FEATURE with SUBFEATURES (a list).
     pub(crate) fn provide_feature_with_after_load(
         &mut self,
-        feature: &str,
+        feature: SymbolName,
         subfeatures: Value,
         env: &mut Env,
-    ) -> Result<Value, LispError> {
+    ) -> Result<(), LispError> {
         self.provide_feature(feature, env)?;
         if subfeatures.is_truthy() {
-            self.put_symbol_property(feature, "subfeatures", subfeatures);
+            self.put_symbol_property_on(&feature, "subfeatures", subfeatures);
         }
         self.record_provide_in_load_history(feature);
 
@@ -2921,7 +2919,7 @@ impl Interpreter {
         let entry = crate::lisp::primitives::call(
             self,
             "assq",
-            &[Value::Symbol(feature.into()), after_load_alist],
+            &[Value::Symbol(feature), after_load_alist],
             env,
         )?;
         if let Some((_, functions)) = entry.cons_values() {
@@ -2932,7 +2930,7 @@ impl Interpreter {
                 env,
             )?;
         }
-        Ok(Value::Symbol(feature.to_string().into()))
+        Ok(())
     }
 
     /// Ffboundp of the interned symbol NAME: its function cell is not nil.

@@ -1381,8 +1381,11 @@ define_dispatch!(
                             .chars()
                             .map(|character| Value::Integer(character as i64))
                             .collect()
-                    } else {
+                    } else if is_vector_value(&previous) {
                         vector_items(&previous)?
+                    } else {
+                        // macros.c: CHECK_VECTOR_OR_STRING.
+                        return Err(wrong_type_argument("arrayp", previous));
                     };
                     interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
                     if !args.get(1).is_some_and(Value::is_truthy) {

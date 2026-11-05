@@ -692,6 +692,15 @@ impl SymbolName {
         self.0.lisp_name.get()
     }
 
+    /// SDATA (SYMBOL_NAME (symbol)) as text: the Lisp-visible name, the
+    /// same for an uninterned or a private obarray's symbol as for the
+    /// interned one of that name.
+    pub(crate) fn name_text(&self) -> String {
+        self.lisp_name()
+            .as_string()
+            .unwrap_or_else(|_| visible_symbol_name(self.as_str()).to_owned())
+    }
+
     /// data.c:Fkeywordp: initial-obarray membership and the actual name's
     /// first byte. Constant state is separate and survives uninterning.
     pub(crate) fn is_keyword(&self) -> bool {

@@ -4709,6 +4709,9 @@ impl Interpreter {
         mark(&self.overriding_plist_environment);
         mark(&self.load_path);
         mark(&self.loads_in_progress);
+        for feature in &self.require_nesting {
+            mark(&Value::Symbol(*feature));
+        }
         for value in self.detached_forwarded_variables.values() {
             mark(value);
         }
@@ -5157,6 +5160,9 @@ impl Interpreter {
             clone.overriding_plist_environment = c.copy(&self.overriding_plist_environment);
             clone.load_path = c.copy(&self.load_path);
             clone.loads_in_progress = c.copy(&self.loads_in_progress);
+            for feature in &mut clone.require_nesting {
+                *feature = c.copy_symbol(*feature);
+            }
             // The C slots are the clone's symbols' own.
             clone.detached_forwarded_variables =
                 std::mem::take(&mut clone.detached_forwarded_variables)
@@ -6117,7 +6123,7 @@ pub struct InterpreterState {
     /// Features whose `require' loads are active, innermost last.  This is
     /// GNU's `require_nesting_list', not an alternate source of provided
     /// features: bounded recursive requires are part of the loader contract.
-    require_nesting: Vec<String>,
+    require_nesting: Vec<SymbolName>,
     lambda_capture_overrides: Vec<bool>,
     thread_states: Vec<ThreadState>,
     /// Newly allocated, never-started stacks. A child may create threads;

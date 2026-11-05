@@ -5546,14 +5546,22 @@ define_dispatch!(
             }
             "pos-visible-in-window-p" => {
                 need_arg_range(name, args, 0, 3)?;
+                let window = args.get(1).filter(|value| !value.is_nil());
+                let window_id = live_window_id_or_selected(interp, window)?;
+                // xdisp.c: decode_live_window, then fix_position of a POS
+                // that is neither t nor nil, before anything is displayed.
+                if let Some(pos) = args
+                    .first()
+                    .filter(|pos| !matches!(pos.kind(), Kind::Nil | Kind::T))
+                {
+                    position_from_value(interp, pos)?;
+                }
                 if interp
                     .lookup_var_key(cached_symbol!("noninteractive"), env)
                     .is_some_and(|value| !value.is_nil())
                 {
                     return Ok(Value::Nil);
                 }
-                let window = args.get(1).filter(|value| !value.is_nil());
-                let window_id = live_window_id_or_selected(interp, window)?;
                 let buffer_id = if let Some(window) = window {
                     window_buffer_id(interp, window)
                         .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), *window))?
@@ -6106,15 +6114,30 @@ define_dispatch!(
                 Ok(size)
             }
             "get-display-property" => {
-                need_args(name, args, 2)?;
-                let pos = args[0].as_integer()?.max(0) as usize;
-                let property = args[1].as_symbol()?;
-                let display = interp
-                    .buffer
-                    .borrow()
-                    .text_property_at(pos, "display")
-                    .unwrap_or(Value::Nil);
-                Ok(display_property_value(&display, property).unwrap_or(Value::Nil))
+                need_arg_range(name, args, 2, 4)?;
+                // xdisp.c:Fget_display_property: PROPERTIES, else
+                // POSITION's `display' text property in OBJECT.
+                let properties = match args.get(3).copied().filter(|value| !value.is_nil()) {
+                    Some(properties) => {
+                        if !properties.is_cons() {
+                            return Err(wrong_type_argument("listp", properties));
+                        }
+                        properties
+                    }
+                    None => crate::lisp::primitives::call(
+                        interp,
+                        "get-text-property",
+                        &[
+                            args[0],
+                            Value::symbol("display"),
+                            args.get(2).copied().unwrap_or(Value::Nil),
+                        ],
+                        env,
+                    )?,
+                };
+                Ok(crate::lisp::primitives::hash_insert::find_display_property(
+                    properties, args[1],
+                ))
             }
             "bidi-find-overridden-directionality" => {
                 need_arg_range(name, args, 3, 4)?;
@@ -6208,8 +6231,11 @@ define_dispatch!(
             }
             "bidi-resolved-levels" => {
                 need_arg_range(name, args, 0, 1)?;
-                if let Some(vpos) = args.first().filter(|value| !value.is_nil()) {
-                    vpos.as_integer()?;
+                // CHECK_FIXNUM (vpos).
+                if let Some(vpos) = args.first().filter(|value| !value.is_nil())
+                    && vpos.fixnum().is_none()
+                {
+                    return Err(wrong_type_argument("fixnump", *vpos));
                 }
                 // Emaxx's headless renderer intentionally retains no glyph
                 // matrix between evaluations, exactly the stale-display case
@@ -6308,8 +6334,15 @@ define_dispatch!(
                 if args[0].is_nil() {
                     return Ok(Value::Nil);
                 }
-                let x = args[1].as_integer()?;
-                let y = args[2].as_integer()?;
+                // xdisp.c:Flookup_image_map: CHECK_FIXNUM (x), (y).
+                let (Some(x), Some(y)) = (args[1].fixnum(), args[2].fixnum()) else {
+                    let bad = if args[1].fixnum().is_none() {
+                        args[1]
+                    } else {
+                        args[2]
+                    };
+                    return Err(wrong_type_argument("fixnump", bad));
+                };
                 Ok(lookup_image_map(&args[0], x, y))
             }
             "redisplay" => {

@@ -1231,7 +1231,11 @@ fn make_terminal_frame(
     parameters: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let entries = parameters.to_vec()?;
+    // frame.c:Fmake_terminal_frame's Fassq of PARMS: a list that does not
+    // end in nil is the datum of its error.
+    let entries = parameters
+        .to_vec()
+        .map_err(|_| wrong_type_argument("listp", *parameters))?;
     let parameter = |name: &str| {
         entries.iter().find_map(|entry| {
             let (key, value) = entry.cons_values()?;

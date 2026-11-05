@@ -15,7 +15,7 @@ pub(crate) use composition::{
 pub(crate) mod display;
 mod emacs_module;
 mod faces;
-mod files_process;
+pub(crate) mod files_process;
 pub(crate) use files_process::file_attributes;
 mod fonts;
 mod frames;

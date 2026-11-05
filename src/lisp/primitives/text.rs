@@ -72,9 +72,12 @@ pub(crate) fn digest_hex(bytes: &[u8]) -> String {
 
 /// fns.c:Fsecure_hash: secure_hash of extract_data_from_object's bytes,
 /// as `md5' reads them without a coding system or NOERROR.
+/// fns.c:secure_hash's algorithms, chosen by EQ to their symbols.
+const SECURE_HASH_ALGORITHMS: [&str; 6] = ["md5", "sha1", "sha224", "sha256", "sha384", "sha512"];
+
 pub(crate) fn secure_hash_value(
     interp: &mut Interpreter,
-    algorithm: &str,
+    algorithm: crate::lisp::types::SymbolName,
     source: &Value,
     start: Option<&Value>,
     end: Option<&Value>,
@@ -87,6 +90,15 @@ pub(crate) fn secure_hash_value(
         end.copied().unwrap_or(Value::Nil),
     ];
     let input = md5_source_bytes(interp, &spec, env)?;
+    let Some(algorithm) = SECURE_HASH_ALGORITHMS
+        .into_iter()
+        .find(|name| algorithm.is_named(name))
+    else {
+        return Err(LispError::Signal(format!(
+            "Invalid algorithm arg: {}",
+            algorithm.name_text()
+        )));
+    };
     let digest = secure_hash_digest(algorithm, &input)?;
     if binary.is_some_and(Value::is_truthy) {
         Ok(bytes_to_shared_unibyte_value(&digest))

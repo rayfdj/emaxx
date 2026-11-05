@@ -14653,6 +14653,54 @@ setup_process_coding_systems's check now refuses). A 13-form
   native-compilation ones run again after the parameter binding), the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 311: native code's Ffuncall of a C subr takes the plain path,
+  and the primitives a new fuzz found apart from GNU check and name
+  their arguments as GNU does.** GNU's native code calls a function
+  outside its own primitives' link table through Ffuncall:
+  `char-from-name' calls `ucs-names' and `gethash' so, and for a C subr
+  Emaxx left its plain native path for the general one (the debugger
+  test, a full frame record, the function cell resolved again) and
+  padded the omitted optional arguments in a heap-capable small vector,
+  106 instructions of the 1,510 a call took against GNU's 1,043. A C
+  subr whose count lies in its arity is now called as funcall_subr calls
+  it, on the same plain conditions as a native function (no quit or
+  signal pending, the depth within bounds, no Edebug, no collection
+  due), a fixed one of at most eight arguments with nil for each omitted
+  one in an eight-word argbuf, a MANY one with the vector; the general
+  path pads in the same argbuf. `char-from-name' from interpreted code
+  takes 3,098 instructions a call against 3,320 (GNU's 2,838). A fuzz
+  that calls 462 of GNU's C primitives, four times each, with uninterned
+  symbols and lists and vectors of them, and a table of 154 calls that
+  give an uninterned symbol a role a primitive reads, found these apart
+  from GNU, now as it does: `require' of an uninterned feature loads the
+  file its name (SYMBOL_NAME) names and says the feature was not
+  provided, and `require_nesting_list' holds symbols; `provide' adds the
+  symbol itself to `features' and conses (provide . FEATURE) onto
+  `current-load-list' each time, as LOADHIST_ATTACH does (Emaxx added
+  the interned symbol of its name and once per load); `secure-hash'
+  knows fns.c's six algorithms only, chosen by EQ once the data is
+  extracted, and names an unknown one by its name (Emaxx also computed
+  SHA-3, Streebog and GOST, which only `gnutls-hash-digest' offers);
+  `mapbacktrace' and `backtrace-frame--internal' call FUNCTION only on a
+  frame, resolving it each call; `get-display-property' takes PROPERTIES
+  and OBJECT, reads the `display' property through `get-text-property'
+  (an object's check before a position's) and finds PROP as xdisp.c's
+  find_display_property does, by EQ, in a vector, a list of specs or one
+  spec; `copy-marker' takes no argument; `intern-soft' checks the
+  obarray before the name; `bidi-resolved-levels' and `lookup-image-map'
+  check fixnums; `start-kbd-macro' appending to a `last-kbd-macro' that
+  is no array signals `arrayp'; `make-terminal-frame' names its whole
+  parameter list in a `listp' error; `pos-visible-in-window-p' checks
+  its window and position before batch mode answers nil;
+  `serial-process-configure' finds its process as get_process does
+  ("Buffer NAME has no process"). A command-line comparison runs these
+  cases. The fuzzes of variables, function cells, fields, loading,
+  errors, coding, buffers, case, numbers, strings, printing, syntax and
+  hooks, the uninterned roles and the command-line cases of rounds 303
+  to 310 print GNU's results as before. Local validation: the grouped
+  gate's 3,501 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17097,6 +17145,17 @@ tests after it. Round 310 binds those parameters as symbols; with that
 the checked build runs comp-tests' 178 tests as expected, and every file
 of test/src as GNU does.
 
+**On `8edccc3`** (round 310): the full Rust gate (run 41961995378)
+passed; the frozen run (run 41961998444) passed at its first attempt,
+7,928 of 7,928 outcomes matching, comp-tests among them, on a slow
+runner (the oracle's bodies 267.2 s against round 308's 224.5). Setup
+78.6 s against 63.9 s (1.230), test bodies 298.8 s against 267.2 s
+(1.118), in all 1.118, with a per-file setup median of 118 ms against
+99. The widest body gaps are ert-tests (46,035 ms against 37,661),
+tramp-tests (22,498 against 18,836), comp-tests (17,038 against 14,240),
+semantic-utest-ia (3,871 against 2,535) and mule-tests (3,234 against
+1,998), and `ert-test-run-tests-batch-expensive' is 1.21 of GNU's time.
+
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's
   `--symbol-ordering-file' with the 3,046 functions four test files'
@@ -17923,7 +17982,11 @@ and failures are still recorded.
    309 no table maps it back) and the reads still matched against it (the
    C variables' initial values and per-buffer predicates, the `as_symbol'
    and `symbol_str' readings of a symbol argument), which GNU makes from the
-   symbol's own name and forwarding descriptor; text-property intervals
+   symbol's own name and forwarding descriptor; the registries still keyed
+   by name, where GNU's are keyed by the symbol (coding.c's
+   Vcoding_system_hash_table first: round 311's checked build stops on
+   `define-coding-system-alias' of an uninterned alias, and its role table
+   is the check); text-property intervals
    (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor

@@ -2005,6 +2005,45 @@ fn uninterned_symbols_keep_their_roles_by_object() {
 }
 
 #[test]
+fn primitives_check_and_name_their_arguments_as_gnu_does() {
+    // A feature, an algorithm and a backtrace base named by an uninterned
+    // symbol, and the argument checks of primitives given a symbol where
+    // GNU expects a number, an obarray, an array or a proper list: what
+    // GNU reads (SYMBOL_NAME, EQ, CHECK_FIXNUM, check_obarray first) and
+    // what it signals, in its order.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(let ((f (make-symbol "cl-lib"))) (prin1 (condition-case e (require f) (error (list (car e) (and (string-match-p "failed to provide feature .cl-lib.\\'" (cadr e)) t)))))) (terpri)
+(let ((f (make-symbol "zfeat"))) (provide f) (prin1 (list (featurep f) (featurep 'zfeat) (eq (car features) f)))) (terpri)
+(prin1 (list (condition-case e (secure-hash (make-symbol "md5") "a") (error e)) (condition-case e (secure-hash 'sha3-256 "a") (error e)) (secure-hash 'sha224 "a"))) (terpri)
+(prin1 (list (markerp (copy-marker)) (marker-position (copy-marker)) (marker-insertion-type (copy-marker nil t)))) (terpri)
+(prin1 (list (condition-case e (bidi-resolved-levels 'x) (error e)) (condition-case e (bidi-resolved-levels 1.0) (error e)))) (terpri)
+(prin1 (list (condition-case e (lookup-image-map '((x)) 'a 1) (error e)) (lookup-image-map nil 'a 'b))) (terpri)
+(prin1 (list (condition-case e (intern-soft 5 'not-an-obarray) (error e)) (condition-case e (intern-soft 5) (error e)))) (terpri)
+(prin1 (list (with-temp-buffer (insert "abc") (put-text-property 1 2 'display '((height 2) (raise 1))) (list (get-display-property 1 'raise) (get-display-property 1 'height) (get-display-property 1 'x)))
+             (get-display-property 0 'raise (propertize "a" 'display [(raise 3)]))
+             (get-display-property 0 'raise nil '(raise 4))
+             (get-display-property 0 'raise nil '((raise 5) . 7))
+             (condition-case e (get-display-property 'a 'raise) (error e))
+             (condition-case e (get-display-property 1 'raise 'not-a-buffer) (error e))
+             (condition-case e (get-display-property 1 'raise nil 5) (error e)))) (terpri)
+(prin1 (condition-case e (make-terminal-frame '(a . b)) (error e))) (terpri)
+(prin1 (list (mapbacktrace (make-symbol "zcb") (cons (make-symbol "x") "y")) (backtrace-frame--internal (make-symbol "zcb") 0 (make-symbol "none")))) (terpri)
+(prin1 (list (condition-case e (pos-visible-in-window-p 'x) (error e)) (pos-visible-in-window-p) (pos-visible-in-window-p t))) (terpri)
+(prin1 (with-temp-buffer (condition-case e (serial-process-configure) (error e)))) (terpri)
+(prin1 (let ((current-load-list nil)) (provide 'zfeat2) (provide 'zfeat2) current-load-list)) (terpri)
+(let ((last-kbd-macro '(1 2))) (prin1 (condition-case e (start-kbd-macro t) (error e)))) (terpri))"#,
+        ],
+    );
+}
+
+#[test]
 fn generated_uninterned_symbol_programs_run_as_gnu_runs_them() {
     // 150 generated programs that give a fresh uninterned symbol one of 26
     // roles (function, variable, local variable, property owner, hash

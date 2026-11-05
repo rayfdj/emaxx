@@ -4410,31 +4410,13 @@ fn configure_serial_descriptor(
     Ok(())
 }
 
+/// process.c:Fserial_process_configure's process: the first of :process,
+/// :name, :buffer and :port that is not nil, as get_process takes it.
 fn serial_process_designator(interp: &mut Interpreter, args: &[Value]) -> Result<u64, LispError> {
     let requested = [":process", ":name", ":buffer", ":port"]
         .into_iter()
         .find_map(|key| plist_member_value(args, key).filter(Value::is_truthy));
-    let process = match requested.as_ref().map(|v| v.kind()) {
-        None => interp.process_value_for_buffer(interp.current_buffer_id()),
-        Some(process @ Kind::Record(_)) => Some(process.value()),
-        Some(value) if string_like(&value.value()).is_some() => {
-            let text = string_text(&value.value())?;
-            interp
-                .find_process_id_by_name(&text)
-                .map(|id| interp.record_value(id))
-                .or_else(|| {
-                    interp
-                        .resolve_buffer_id(&value.value())
-                        .ok()
-                        .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id))
-                })
-        }
-        Some(value) => interp
-            .resolve_buffer_id(&value.value())
-            .ok()
-            .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id)),
-    }
-    .ok_or_else(|| wrong_type_argument("processp", requested.unwrap_or(Value::Nil)))?;
+    let process = super::dispatch::files_process::get_process(interp, requested.as_ref())?;
     let process_id = interp.resolve_process_id(&process)?;
     if !interp.is_serial_process(process_id) {
         return Err(LispError::Signal("Not a serial process".into()));

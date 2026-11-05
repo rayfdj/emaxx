@@ -450,25 +450,36 @@ fn libxml_attributes_in_source_order(node: &LibxmlNode) -> Vec<Value> {
     attributes
 }
 
-pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Value> {
-    if let Kind::Vector(vector) = value.kind() {
-        return vector
-            .slots()
-            .find_map(|item| display_property_value(&item, property));
+/// xdisp.c:find_display_property: PROP's value in the display spec DISP,
+/// a vector or list of specs or one spec, each spec a list whose car is
+/// EQ to PROP; nil when none is.  A dotted list of specs ends where its
+/// cdr is no cons.
+pub(crate) fn find_display_property(disp: Value, prop: Value) -> Value {
+    let spec_value = |elem: Value| {
+        elem.cons_values()
+            .filter(|(head, rest)| rest.is_cons() && head.eq_value(prop))
+            .and_then(|(_, rest)| rest.cons_values())
+            .map(|(value, _)| value)
+    };
+    if disp.is_nil() {
+        return Value::Nil;
     }
-    if let Ok(items) = value.to_vec() {
-        if let Some(Kind::Symbol(name)) = items.first().map(|v| v.kind())
-            && name.is_named(property)
-        {
-            return items.get(1).cloned();
-        }
-        for item in items {
-            if let Some(found) = display_property_value(&item, property) {
-                return Some(found);
+    if let Kind::Vector(vector) = disp.kind() {
+        return vector.slots().find_map(spec_value).unwrap_or(Value::Nil);
+    }
+    if let Some((first, _)) = disp.cons_values()
+        && first.is_cons()
+    {
+        let mut tail = disp;
+        while let Some((elem, rest)) = tail.cons_values() {
+            if let Some(value) = spec_value(elem) {
+                return value;
             }
+            tail = if rest.is_cons() { rest } else { Value::Nil };
         }
+        return Value::Nil;
     }
-    None
+    spec_value(disp).unwrap_or(Value::Nil)
 }
 
 /// The first position from FROM below TO in TEXT (whose first character

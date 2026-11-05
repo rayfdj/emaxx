@@ -1091,7 +1091,9 @@ define_dispatch!(
 
             "mapbacktrace" => {
                 need_arg_range(name, args, 1, 2)?;
-                let callback = resolve_callable(interp, &args[0], env)?;
+                // backtrace_frame_apply's Ffuncall of FUNCTION for each
+                // frame: nothing is resolved when no frame is reached.
+                let callback = args[0];
                 let (offset, base) = backtrace_base(args.get(1).copied().unwrap_or(Value::Nil));
                 let frames = interp.backtrace_frames_snapshot();
                 // get_backtrace_starting_at's frame, innermost first in the
@@ -1123,7 +1125,8 @@ define_dispatch!(
             }
             "backtrace-frame--internal" => {
                 need_args(name, args, 3)?;
-                let callback = resolve_callable(interp, &args[0], env)?;
+                // backtrace_frame_apply calls FUNCTION only on a frame.
+                let callback = args[0];
                 // eval.c:get_backtrace_frame's CHECK_FIXNAT, then its walk
                 // from get_backtrace_starting_at's frame for BASE.
                 let nframes = backtrace_nframes(args[1])?;
