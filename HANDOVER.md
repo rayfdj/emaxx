@@ -14438,6 +14438,221 @@ setup_process_coding_systems's check now refuses). A 13-form
   (`is_named(&name)' of a `&str'), its own fix removed them, and clippy
   and the command-line tests pass on the result, whose compiled code the
   borrows do not change.
+- **Round 305: the uninterned symbols' name lookups counted and taken
+  out, and `defconst' as Fdefconst_1.** A traced build marked each
+  lookup that found an uninterned or private obarray symbol again by its
+  marked text, and gdb counted them by caller over 439 upstream test
+  files under ERT (the four longest, tramp, eglot, comp and
+  semantic-utest-ia's, apart): past round 304's fixes, 300 lookups in 21
+  files, from seven places (235 of them `kill-all-local-variables'
+  telling a variable's watchers, 53 `defalias'). They now hold the
+  symbol: `kill-all-local-variables' and, found reading the same code,
+  `kill-local-variable' tell a variable's watchers and kill its binding
+  by the object (`kill-local-variable' found its variable by name,
+  killed the binding by name and returned the symbol interned again),
+  `defalias' reads the old definition, records the load history and
+  `function-history', asks `defalias-fset-function', stores, documents
+  and queues an unloaded defsubst by the symbol, `interactive-form'
+  walks an alias chain by the symbols, a local `(defvar SYM)' pushes SYM
+  itself, CCL reads a program symbol's properties from the object, and
+  `clone-buffer''s copy of the local variables keeps their symbols; the
+  name-keyed `notify_variable_watchers', `fset_function' and
+  `record_definition_in_load_history' are gone. One remains: an error's
+  `void-function' or `void-variable' carries its symbol's name, so a
+  void uninterned function's error names a symbol found again by that
+  name. eval.c's Fdefconst_1 declares the symbol as given with
+  internal--define-uninitialized-variable (the lexical-binding refusal
+  and the load history included) and stores with Fset_default; Emaxx's
+  special form stored the top-level value, so `(let ((x 1)) (defconst x
+  2) x)' gave 1 and left 2 behind where GNU gives 2 and restores the old
+  value, and put an alias's documentation and `risky-local-variable' on
+  its base, and `defconst-1' recorded no load history and returned the
+  symbol interned again. A local `(defvar SYM)' is pushed only for a
+  symbol not already special, as Fdefvar's `!declared_special' test
+  asks. A command-line comparison runs the cases. The fuzzes of
+  variables, function cells, fields, load, errors, codings, buffers,
+  case, numbers, strings, printing and syntax print GNU's results as
+  before. Local validation: the grouped gate's 3,502 library tests,
+  the integration targets and clippy with `--all-targets --all-features
+  -D warnings' pass.
+- **Round 306: a void variable's or function's error holds the symbol,
+  and the reader and the watchers keep symbols as objects.** eval.c's
+  `(void-variable SYMBOL)' and data.c's `(void-function SYMBOL)' carry
+  the symbol object; Emaxx's error kinds carried its name, and the
+  condition the handler saw interned that name again, so a void
+  uninterned function's error named a symbol found by its marked text
+  (the last place round 305's census saw) or, once a collection during
+  unwinding had swept the symbol, a fresh one. The kinds now hold the
+  symbol (nil and t as themselves), traced as a root with the other
+  error payloads while `unwind-protect' unwinds, and the message prints
+  its name as before. The reader's `#:' and the empty `#:' make their
+  symbol directly rather than interning a fresh marked text, and
+  `add-variable-watcher', `remove-variable-watcher' and
+  `get-variable-watchers' read their argument with CHECK_SYMBOL and work
+  on the symbol rather than its name. Taking the uninterned registry
+  away at once, which a debug assertion on any lookup by marked text
+  would have guarded, was tried and put back: the watcher primitives
+  broke for an uninterned variable in the release build, and 133 more
+  `as_symbol' readings of a symbol argument, the hook machinery and its
+  separate store of buffer-local hook values among them, still find
+  their symbol by name. A command-line comparison runs the cases. The
+  fuzzes of variables, function cells, errors, buffers, printing,
+  strings and syntax print GNU's results as before. Local validation:
+  the grouped gate's 3,502 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 307: hooks run as eval.c's run_hook_with_args runs them, by
+  symbol, and the separate store of buffer-local hook values is gone.**
+  eval.c:run_hook_with_args reads the hook symbol's value as
+  find_symbol_value does and walks the conses as they stand: a value
+  that is not a cons, or is a lambda, is the one function; a `t', in a
+  local value or a global one, runs the default value's functions in its
+  place through Fdefault_value, so a void default signals; the next tail
+  is read after each call, so a function's `setcdr' of the list is seen;
+  a dotted tail ends the run; and `run-hooks' and its relatives check
+  each argument with CHECK_SYMBOL. Emaxx copied the functions into a
+  vector by the hook's name first: it called a lambda value's elements
+  as functions, spliced a `t' only when the buffer had a local binding
+  and ran nothing for a void default, never saw a change to the list,
+  signalled for a dotted one, skipped a non-symbol argument of
+  `run-hooks', and found an uninterned hook again by its marked text.
+  The C-side runners (`first-change-hook', the command-loop hooks,
+  `kill-buffer-query-functions', `window-scroll-functions',
+  `buffer-list-update-hook' and the rest, about 30 places) hand
+  run_hook, run_hook_with_args or safe_run_hooks the symbol;
+  keyboard.c:safe_run_hooks binds `inhibit-quit' to t as GNU does, and
+  its second copy in the batch driver, used at startup and by redisplay,
+  is now the same function. `run-window-scroll-functions' passes the
+  hook its window argument as given, nil included.
+  eval.c:funcall_general signals `invalid-function' with the function
+  called, so `(funcall 'when 1)' names `when' where Emaxx named the
+  macro's definition. With run_hook_with_args now honouring a cleared
+  Vrun_hooks as GNU's does, the embedder session the test harness
+  continues past its batch run's `kill-emacs' (which no process
+  outlives) sets Vrun_hooks again; the first gate run, without that, ran
+  no hook in 88 library tests. The store of buffer-local hook lists
+  beside the local bindings, which nothing but a dump load ever filled,
+  goes with its tracing, copying and dump section, and so do the by-name
+  scope helpers left without callers. A byte-compiled loop of 100,000
+  `(run-hooks 'h)' over two functions takes 1,381 instructions a call
+  against 1,909 (GNU's 1,064), and `run-hook-with-args' over a local
+  list with `t' 3,624 against 4,499 (GNU's 2,904). 500 generated
+  programs that add, remove and set hook functions and run them by every
+  runner print GNU's output, where 491 had differed on round 302's
+  build; a command-line comparison runs 150 of them, and others run the
+  cases above. The fuzzes of variables, function cells, fields, loading,
+  errors, coding, time, buffers, case, numbers, strings, printing and
+  syntax print GNU's results as before. Local validation: the grouped
+  gate's 3,502 library tests, the integration targets and clippy
+  with `--all-targets --all-features -D warnings' pass.
+- **Round 308: a private obarray's symbols are held by that obarray
+  alone, and a name interned again after `obarray-clear' is a new
+  symbol.** A traced build, run over the 439 upstream test files and
+  over the fuzzes and command-line cases of rounds 301 to 307, counted
+  the lookups that still found an uninterned or private-obarray symbol
+  by its marked text: one was left, in abbrev-tests, and it was a
+  private obarray's own intern. GNU keeps a private obarray's symbols in
+  that obarray's buckets alone. Emaxx also filed them, by their marked
+  text, in a process-wide table that was a collection root, so they were
+  never freed, and through which lread.c:intern_driver's fresh symbol
+  could come back as an older one: the marked text carries a serial that
+  a new process counts from 1 again, so after `clear-abbrev-table' on
+  the image's `tab-switcher-mode-abbrev-table' the empty name interned
+  again was the old symbol, where GNU makes a new one. A private
+  obarray's symbol is now an ordinary heap object that its obarray's
+  buckets hold and the collector frees with them, made so by the intern,
+  by the image loader (which keeps the one it makes for a record read
+  early) and by the image clone; interning or looking up a private
+  obarray's marked text fails a debug assertion. The book of live
+  uninterned symbols by their marked text stays for now: a checked build
+  that asserted on every lookup of an uninterned symbol's marked text,
+  run through the library gate, found that the upstream tests never
+  reach such a lookup but about a hundred call sites still can (the
+  purpose of a char table, a coding system's properties, the
+  buffer-local bindings an image restores, a function stream's calls),
+  and three it found are fixed: `get' with a key that is not a bare
+  symbol (a symbol with a position, an integer) read the plist of the
+  symbol's name, `overriding-plist-environment' matched entries by name,
+  and a coding system's `translation-table' property was read by the
+  table symbol's name. A command-line comparison runs the obarray cases.
+  The fuzzes of variables, function cells, fields, loading, errors,
+  coding, buffers, case, numbers, strings, printing, syntax and hooks
+  print GNU's results as before. Local validation: the grouped gate's
+  3,502 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
+- **Round 309: no table maps an uninterned symbol's marked text back to
+  it, and the C variables are dispatched by their symbols.** A checked
+  build that asserted on every lookup that found an uninterned symbol by
+  its marked text, run through the grouped library gate (the upstream
+  tests reach none, round 308's census found), stopped in the tests of
+  that book itself and nowhere else once four more readings by name were
+  made readings of the symbol: the `char-table-extra-slots' property of
+  a char table's purpose, a coding system's pending
+  `coding-system-define-form', the LOCALIZED flag of the buffer-local
+  bindings an image restores, and a function stream's calls (`read' from
+  a symbol is Ffuncall of that symbol). The book, its weak entries and
+  their sweep are removed, and interning or looking up an uninterned
+  symbol's marked text fails a debug assertion, as a private obarray's
+  does since round 308. `make-symbol' no longer files its symbol: a
+  byte-compiled loop of 100,000 `(make-symbol "abc")' takes 2,323
+  instructions a call against 2,795, collections included (GNU's 1,523),
+  and 1,163 against 1,401 without them (GNU's 386); what is left is the
+  symbol's host text, which the migration still carries. The list of
+  declared special variables by name, beside the SPECIAL bit GNU calls
+  `declared_special' and which the image already keeps per symbol, is
+  gone. The C variables' dispatch reads the symbol: each terminal's
+  KBOARD variables are a table by symbol (the image clone maps its keys
+  to the clone's symbols), buffer.c's DEFVAR_PER_BUFFER slots carry a
+  bit of their own from which the always-local and permanent facts are
+  read, the evaluator's forwarded cells (`quit-flag', `inhibit-quit',
+  `load-path', `max-lisp-eval-depth' and the rest) are normalized and
+  stored by symbol, the C slots `makunbound' detaches are kept by
+  symbol, and `text-conversion-style' and the slots the buffer record
+  holds are recognized by symbol, the by-name buffer-local accessors
+  delegating to those of the symbol. The fuzzes of variables, function
+  cells, fields, loading, errors, coding, time, buffers, case, numbers,
+  strings, printing, syntax and hooks and the command-line cases of
+  rounds 303 to 308 print GNU's results as before. Local validation: the
+  grouped gate's 3,501 library tests (its lightweight group run
+  again after the tests of the book became tests of reclamation), the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 310: an uninterned symbol keeps its roles when they are read
+  from the symbol.** Round 309 removed the book that found an uninterned
+  symbol by its marked text, and the readings of a symbol by name that
+  no test reached then found nothing: on the round 309 release build
+  `make-hash-table' with an uninterned `define-hash-table-test' name
+  signalled "Invalid hash table test", and its frozen run failed in
+  comp-tests, where a function native-compiled under dynamic binding
+  bound its lambda list's parameters by name, so cl-lib's uninterned
+  `--cl-rest--' was interned anew (the checked build stops on that). The
+  parameters are bound as the symbols they are, as funcall_lambda's
+  specbind does; the checked build runs comp-tests' 178 tests as
+  expected and every file of test/src as GNU does. The remaining
+  readings by name that a symbol fed are now readings of the symbol: the
+  `hash-table-test' property `define-hash-table-test' writes and
+  `make-hash-table' reads, `func-arity''s indirect function,
+  `macroexpand' (an environment entry found by Fassq, by EQ; the
+  indirect function; the `autoload-macro' property; the expander called
+  under the symbol), keyboard.c's Fget and Fput of event symbols (nil
+  and t among them), `:advertised-binding' and `non-key-event', a
+  condition's `error-conditions' in the keyboard-macro command loop,
+  `event-kind', `interactive-args' and `enable-recursive-minibuffers', a
+  coding system's pending define form in `check-coding-system', the
+  `fringe' property, the CCL program and code-conversion-map properties,
+  and the overlay-arrow variables the terminal display reads. 300
+  generated programs that give a fresh uninterned symbol one of 26 roles
+  (function, variable, buffer-local variable, property owner, hash-table
+  test, char-table purpose, error, hook, macro, key, text and overlay
+  property, catch tag, command, watched variable, a compiled call's
+  callee) print GNU's output, as round 302's build did; a command-line
+  comparison runs 150 of them and another the cases above. The fuzzes of
+  variables, function cells, fields, loading, errors, coding, buffers,
+  case, numbers, strings, printing, syntax and hooks and the
+  command-line cases of rounds 303 to 309 print GNU's results as before.
+  Local validation: the grouped gate's 3,501 library tests (the
+  native-compilation ones run again after the parameter binding), the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -16816,7 +17031,86 @@ against 28,090), semantic-utest-ia (2,548 against 1,825) and mule-tests
 (1,918 against 1,267), and `ert-test-run-tests-batch-expensive' is 1.02
 of GNU's time on this runner, against 1.19 to 1.23 on the slow ones.
 
+**On `8a35490`** (round 304): the full Rust gate (run 41876569383)
+passed; the frozen run (run 41876576061) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a slow runner again (the oracle's
+bodies 274.8 s against round 303's 220.2). Setup 84.0 s against 68.9 s
+(1.219), test bodies 303.2 s against 274.8 s (1.103), in all 1.113, with
+a per-file setup median of 128 ms against 108. The widest body gaps are
+ert-tests (45,851 ms against 38,316), tramp-tests (23,065 against
+19,302), comp-tests (17,020 against 14,745), semantic-utest-ia (4,392
+against 3,073) and mule-tests (3,154 against 2,029), and
+`ert-test-run-tests-batch-expensive' is 1.19 of GNU's time.
+
+**On `6fa174b`** (round 305): the full Rust gate (run 41895078978)
+passed; the frozen run (run 41895084049) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a runner as slow as round 304's
+(the oracle's bodies 277.3 s against 274.8). Setup 85.0 s against 70.7 s
+(1.202), test bodies 309.2 s against 277.3 s (1.115), in all 1.120, with
+a per-file setup median of 128 ms against 109. The widest body gaps are
+ert-tests (46,508 ms against 39,143), tramp-tests (23,803 against
+20,012), comp-tests (18,035 against 15,672), semantic-utest-ia (4,370
+against 3,009) and mule-tests (3,131 against 2,050), and
+`ert-test-run-tests-batch-expensive' is 1.18 of GNU's time.
+
+**On `1375f20`** (round 306): the full Rust gate (run 41904892380)
+passed; the frozen run (run 41904906194) passed at its first attempt,
+7,928 of 7,928 outcomes matching (the oracle's bodies 272.1 s against
+round 305's 277.3). Setup 82.5 s against 67.7 s (1.218), test bodies
+304.1 s against 272.1 s (1.118), in all 1.119, with a per-file setup
+median of 124 ms against 105. The widest body gaps are ert-tests (45,628
+ms against 38,614), tramp-tests (23,341 against 19,610), comp-tests
+(17,715 against 15,015), semantic-utest-ia (4,082 against 2,707) and
+mule-tests (3,182 against 2,021), and
+`ert-test-run-tests-batch-expensive' is 1.17 of GNU's time.
+
+**On `182bc3f`** (round 307): the full Rust gate (run 41932196458)
+passed; the frozen run (run 41932201784) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a fast runner (the oracle's bodies
+214.9 s against round 306's 272.1). Setup 49.6 s against 42.8 s (1.159),
+test bodies 226.3 s against 214.9 s (1.053), in all 1.056, with a
+per-file setup median of 76 ms against 67. The widest body gaps are
+ert-tests (27,641 ms against 25,234), tramp-tests (16,038 against
+14,128), comp-tests (11,655 against 10,777), mule-tests (1,807 against
+1,108) and semantic-utest-ia (2,134 against 1,454), and
+`ert-test-run-tests-batch-expensive' is 1.09 of GNU's time.
+
+**On `4703b25`** (round 308): the full Rust gate (run 41948210422)
+passed; the frozen run (run 41948214362) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a fast runner (the oracle's bodies
+224.5 s against round 307's 214.9). Setup 55.4 s against 48.3 s (1.147),
+test bodies 234.7 s against 224.5 s (1.046), in all 1.063, with a
+per-file setup median of 89 ms against 79. The widest body gaps are
+tramp-tests (16,791 ms against 14,327), comp-tests (13,122 against
+11,913), ert-tests (26,970 against 26,141), mule-tests (1,879 against
+1,151) and semantic-utest-ia (2,859 against 2,301), and
+`ert-test-run-tests-batch-expensive' is 1.02 of GNU's time.
+
+**On `2c8bf0a`** (round 309): the full Rust gate (run 41955354760)
+passed; the frozen run (run 41955358041) failed, not rerun: in
+comp-tests, which neither round 308's census nor the library gate runs,
+the checked build stopped on its assertion that an uninterned symbol's
+marked text was interned (cl-lib's `--cl-rest--', a lambda-list
+parameter of a function native-compiled under dynamic binding), the
+file's outcomes went missing and the run ended there, before the source
+tests after it. Round 310 binds those parameters as symbols; with that
+the checked build runs comp-tests' 178 tests as expected, and every file
+of test/src as GNU does.
+
 **Findings recorded, not fixed:**
+- **Hot functions first at link time (round 305).** LLD's
+  `--symbol-ordering-file' with the 3,046 functions four test files'
+  callgrind runs touched, the hottest first (99% of their instructions
+  in 603 functions and 1.39 MB, 99.9% in 1,292 and 2.05 MB), put
+  `run_verified' and the rest at the head of `.text'. Callgrind's cache
+  simulation of a test file's setup (fns-tests.el under ERT) then read
+  3.38M first-level instruction-cache misses against the linker's own
+  order's 3.03M (GNU's 0.83M), and the wall times of five workloads
+  moved within the noise of a loaded host. The hot code is larger than
+  the first-level cache in either order, and packing it hottest first
+  adds conflicts there; the order is left as the linker makes it. The
+  host has no hardware counters (Firecracker exposes none), so
+  instruction-TLB effects went unmeasured.
 - **Found, not fixed (GNU faults):** transpose-regions with unequal
   regions and a middle region of multibyte text moves the middle by its
   character count where its byte count belongs (editfns.c's `memmove
@@ -17624,11 +17918,13 @@ and failures are still recorded.
    Iterate with instruction counts (callgrind) on the locked workloads for
    both editors; timing pilots at merges. Remaining adapters that show up in
    profiles are fixed as performance work.
-3. **Remaining architecture and ownership:** the `vector-literal` head that
-   carries vectors through lists, which Lisp data can forge (the mapcar
-   bullet: `list`, `copy-sequence`, `reverse`, `butlast` and `take` turn a
-   list headed by that symbol into a vector); symbol host-name, buffer-local and
-   function adapters; text-property intervals (also needed for
+3. **Remaining architecture and ownership:** the symbols' host-side name
+   text (an uninterned or private symbol's carries a marker; since round
+   309 no table maps it back) and the reads still matched against it (the
+   C variables' initial values and per-buffer predicates, the `as_symbol'
+   and `symbol_str' readings of a symbol argument), which GNU makes from the
+   symbol's own name and forwarding descriptor; text-property intervals
+   (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor
    lifetimes and reclamation; the September 21 audit findings.

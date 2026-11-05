@@ -95,7 +95,10 @@ fn define_fringe_bitmap(
                 .unwrap_or_default(),
         );
         interp.set_global_binding("fringe-bitmaps", Value::list(bitmaps));
-        interp.put_symbol_property(&name, "fringe", Value::Integer(bitmap_id));
+        // Fput (bitmap, Qfringe, ...) on the symbol itself.
+        if let Some(symbol) = args[0].symbol_cell() {
+            interp.put_symbol_property_on(&symbol, "fringe", Value::Integer(bitmap_id));
+        }
     }
     let definition = Value::list([
         args[1],
@@ -148,7 +151,9 @@ fn destroy_fringe_bitmap(
         interp.fringe_bitmap_states[index].face = Value::Nil;
     } else {
         interp.fringe_bitmap_states.remove(index);
-        interp.put_symbol_property(&name, "fringe", Value::Nil);
+        if let Some(symbol) = bitmap.symbol_cell() {
+            interp.put_symbol_property_on(&symbol, "fringe", Value::Nil);
+        }
         let bitmaps = interp
             .lookup_var("fringe-bitmaps", env)
             .and_then(|value| value.to_vec().ok())
@@ -229,10 +234,10 @@ pub(super) fn bare_symbol_name(interp: &Interpreter, env: &Env, value: &Value) -
 fn symbol_property_by_eq(
     interp: &Interpreter,
     env: &Env,
-    symbol: &str,
+    symbol: &crate::lisp::types::SymbolName,
     property: &Value,
 ) -> Option<Value> {
-    let mut tail = interp.symbol_plist(symbol);
+    let mut tail = interp.symbol_plist_symbol(symbol);
     let mut guard = crate::lisp::types::CycleGuard::new();
     while let Kind::Cons(ref cell) = tail.kind() {
         if guard.step(crate::lisp::types::ConsCell::identity(cell)) {
@@ -254,8 +259,8 @@ fn symbol_property_by_eq(
 fn overriding_plist_property(
     interp: &Interpreter,
     env: &Env,
-    symbol: &str,
-    property: &str,
+    symbol: &crate::lisp::types::SymbolName,
+    property: &crate::lisp::types::SymbolName,
 ) -> Option<Value> {
     // fns.c:Fget reads Voverriding_plist_environment directly.  Its
     // DEFVAR_LISP cell already reflects any active dynamic binding.
@@ -269,11 +274,12 @@ fn overriding_plist_property(
             break;
         }
         let entry = entries.car_if_list()?;
+        // Fassq: the entry's key EQ to SYMBOL.
         let entry_key = entry
             .car()
             .ok()
-            .and_then(|key| bare_symbol_name(interp, env, &key));
-        if entry_key.as_deref() == Some(symbol) {
+            .and_then(|key| bare_symbol_identity(interp, env, &key));
+        if entry_key.as_ref() == Some(symbol) {
             let mut plist = entry.cdr_if_list()?;
             let mut plist_guard = crate::lisp::types::CycleGuard::new();
             while let Kind::Cons(ref plist_cell) = plist.kind() {
@@ -285,7 +291,7 @@ fn overriding_plist_property(
                 if !matches!(rest.kind(), Kind::Cons(_)) {
                     break;
                 }
-                if bare_symbol_name(interp, env, &key).as_deref() == Some(property) {
+                if bare_symbol_identity(interp, env, &key).as_ref() == Some(property) {
                     let value = rest.car_if_list()?;
                     // plist_get stops at the first key, even when its
                     // value is nil. Fget then falls back to the real
@@ -322,54 +328,16 @@ fn macroexpand_dispatch(
     }
 }
 
+/// eval.c:Frun_hooks: each HOOK run in turn by run_hook, whose
+/// find_symbol_value is CHECK_SYMBOL's.
 fn run_hooks_dispatch(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut crate::lisp::types::Env,
-    mode_hooks: bool,
 ) -> Result<Value, LispError> {
-    if mode_hooks
-        && interp
-            .lookup_var("delay-mode-hooks", env)
-            .is_some_and(|value| value.is_truthy())
-    {
-        let mut delayed = interp
-            .lookup_var("delayed-mode-hooks", env)
-            .and_then(|value| value.to_vec().ok())
-            .unwrap_or_default();
-        delayed.extend(args.iter().cloned());
-        interp.set_variable("delayed-mode-hooks", Value::list(delayed), env);
-        return Ok(Value::Nil);
-    }
     for hook in args {
-        if let Ok(hook_name) = hook.as_symbol() {
-            run_named_hooks(interp, hook_name, env, Some(interp.current_buffer_id()))?;
-        }
-    }
-    if mode_hooks {
-        let delayed = interp
-            .lookup_var("delayed-mode-hooks", env)
-            .and_then(|value| value.to_vec().ok())
-            .unwrap_or_default();
-        if !delayed.is_empty() {
-            interp.set_variable("delayed-mode-hooks", Value::Nil, env);
-            for hook in delayed {
-                if let Ok(hook_name) = hook.as_symbol() {
-                    run_named_hooks(interp, hook_name, env, Some(interp.current_buffer_id()))?;
-                }
-            }
-        }
-        let mut after_hooks = interp
-            .lookup_var("delayed-after-hook-functions", env)
-            .and_then(|value| value.to_vec().ok())
-            .unwrap_or_default();
-        if !after_hooks.is_empty() {
-            interp.set_variable("delayed-after-hook-functions", Value::Nil, env);
-            after_hooks.reverse();
-            for hook in after_hooks {
-                call_function_value(interp, &hook, &[], env)?;
-            }
-        }
+        let hook = checked_symbol_identity(interp, hook, env)?;
+        run_hook(interp, &hook, env)?;
     }
     Ok(Value::Nil)
 }
@@ -408,7 +376,7 @@ pub(crate) fn set_internal_symbol(
 
 /// data.c:set_default_internal checks the original object's trapped_write,
 /// then follows its alias redirect to the actual default cell.
-fn set_default_internal_symbol(
+pub(crate) fn set_default_internal_symbol(
     interp: &mut Interpreter,
     symbol: &crate::lisp::types::SymbolName,
     value: Value,
@@ -575,12 +543,7 @@ define_dispatch!(
                 // In supported Emaxx use the Lisp runtime is owned by the batch
                 // process.  GNU uses safe_run_hooks in this mode: an ordinary
                 // hook error is reported but cannot cancel orderly shutdown.
-                safe_run_named_hooks(
-                    interp,
-                    "kill-emacs-hook",
-                    env,
-                    Some(interp.current_buffer_id()),
-                )?;
+                safe_run_hooks(interp, &cached_symbol!("kill-emacs-hook").symbol(), env)?;
                 // shut_down_emacs (0, ...): no hook runs from now on, each
                 // buffer is auto-saved and the files unlocked (the
                 // subprocesses are hung up when the process ends).
@@ -1001,14 +964,20 @@ define_dispatch!(
                 // diverge from GNU at the 64th link, and the sibling
                 // `command-modes' walk is likewise uncapped.
                 let mut probe = args[0];
-                while let Ok(symbol) = probe.as_symbol() {
-                    let symbol = symbol.to_string();
-                    if let Some(form) = interp.get_symbol_property(&symbol, "interactive-form")
+                loop {
+                    let symbol = match probe.kind() {
+                        Kind::Symbol(symbol) => symbol,
+                        Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
+                        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+                        _ => break,
+                    };
+                    if let Some(form) = cached_symbol!("interactive-form")
+                        .with(|property| interp.get_symbol_property_of(&symbol, property))
                         && !matches!(form.kind(), Kind::Nil)
                     {
                         return Ok(form);
                     }
-                    match interp.logical_function_binding(&symbol, env) {
+                    match interp.raw_function_binding_symbol(&symbol, env) {
                         Some(next) => probe = next,
                         None => break,
                     }
@@ -1132,7 +1101,7 @@ define_dispatch!(
                 // local_if_set symbol without a cell, outside a let made for
                 // this buffer, gets a new void cell.  The default is
                 // untouched either way.
-                let localized_store = !interp.has_native_text_conversion_style(symbol.as_str())
+                let localized_store = !interp.has_native_text_conversion_style(&symbol)
                     && (interp.has_buffer_local_binding_symbol(buffer_id, &symbol)
                         || (interp.is_auto_buffer_local_symbol(&symbol)
                             && !interp.is_per_buffer_symbol(&symbol)
@@ -1165,7 +1134,7 @@ define_dispatch!(
                     // Keep only a detachment marker for them: retaining a
                     // snapshot here would falsely root an old object after
                     // C independently overwrites its slot.
-                    let slot_value = if interp.has_native_text_conversion_style(symbol.as_str()) {
+                    let slot_value = if interp.has_native_text_conversion_style(&symbol) {
                         if !interp.buffer.borrow().text_conversion_style_is_local {
                             if interp.let_shadows_buffer_binding(symbol.as_str()) {
                                 // set_internal first changes the C default
@@ -1388,19 +1357,13 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let symbol = args[0].as_symbol()?;
-                let symbol_name = symbol.to_string();
-                interp.mark_special_variable(symbol);
-                if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
-                    let doc = purecopy_value(interp, doc, env)?;
-                    interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
-                }
-                let value = purecopy_value(interp, &args[1], env)?;
-                // eval.c:Fdefconst_1 stores with Fset_default, which refuses
-                // a constant.
-                super::call(interp, "set-default", &[args[0], value], env)?;
-                interp.put_symbol_property(&symbol_name, "risky-local-variable", Value::T);
-                Ok(Value::Symbol(symbol_name.into()))
+                // eval.c:Fdefconst_1: CHECK_SYMBOL, then SYMBOL as given
+                // declared and stored with Fset_default (which refuses a
+                // constant); SYMBOL itself comes back.
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                let doc = args.get(2).copied().unwrap_or(Value::Nil);
+                interp.defconst_1(&symbol, args[1], doc, env)?;
+                Ok(args[0])
             }
             "internal-make-var-non-special" => {
                 need_args(name, args, 1)?;
@@ -1536,64 +1499,66 @@ define_dispatch!(
                 }
                 Ok(Value::Integer(interp.lossage_size))
             }
-            "run-hooks" => run_hooks_dispatch(interp, args, env, false),
+            "run-hooks" => run_hooks_dispatch(interp, args, env),
 
             "run-hook-with-args" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let hook_name = args[0].as_symbol()?;
-                for hook in hook_values(interp, hook_name, env, Some(interp.current_buffer_id())) {
-                    call_function_value(interp, &hook, &args[1..], env)?;
-                }
+                let hook = checked_symbol_identity(interp, &args[0], env)?;
+                run_hook_with_args(interp, &hook, env, |interp, function, env| {
+                    call_function_value(interp, &function, &args[1..], env)?;
+                    Ok(Value::Nil)
+                })?;
                 Ok(Value::Nil)
             }
             "run-hook-with-args-until-success" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let hook_name = args[0].as_symbol()?;
-                for hook in hook_values(interp, hook_name, env, Some(interp.current_buffer_id())) {
-                    let result = call_function_value(interp, &hook, &args[1..], env)?;
-                    if result.is_truthy() {
-                        return Ok(result);
-                    }
-                }
-                Ok(Value::Nil)
+                let hook = checked_symbol_identity(interp, &args[0], env)?;
+                run_hook_with_args(interp, &hook, env, |interp, function, env| {
+                    call_function_value(interp, &function, &args[1..], env)
+                })
             }
             "run-hook-with-args-until-failure" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let hook_name = args[0].as_symbol()?;
-                for hook in hook_values(interp, hook_name, env, Some(interp.current_buffer_id())) {
-                    let result = call_function_value(interp, &hook, &args[1..], env)?;
-                    if result.is_nil() {
-                        return Ok(Value::Nil);
-                    }
-                }
-                Ok(Value::T)
+                // run_hook_with_args_until_failure_funcall: a nil answer
+                // stops the run.
+                let hook = checked_symbol_identity(interp, &args[0], env)?;
+                let failed = run_hook_with_args(interp, &hook, env, |interp, function, env| {
+                    let answer = call_function_value(interp, &function, &args[1..], env)?;
+                    Ok(if answer.is_nil() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    })
+                })?;
+                Ok(if failed.is_nil() {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
 
             "run-hook-wrapped" => {
                 if args.len() < 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let hook_name = args[0].as_symbol()?;
-                let wrapper = resolve_callable(interp, &args[1], env)?;
-                // Merge global and buffer-local members like `run-hooks'
-                // (also strips the local-hook `t' sentinel).
-                let hook_values =
-                    hook_values(interp, hook_name, env, Some(interp.current_buffer_id()));
-                for hook in hook_values {
-                    let mut wrapper_args = vec![hook];
-                    wrapper_args.extend_from_slice(&args[2..]);
-                    let value = interp.call_function_value(wrapper, None, &wrapper_args, env)?;
-                    if value.is_truthy() {
-                        return Ok(value);
-                    }
-                }
-                Ok(Value::Nil)
+                // run_hook_wrapped_funcall: WRAP-FUNCTION called with
+                // each function and ARGS, its non-nil answer stopping the
+                // run.
+                let hook = checked_symbol_identity(interp, &args[0], env)?;
+                let wrapper = args[1];
+                // The function's slot is filled from the list, which the
+                // run holds; the other arguments are the caller's.
+                let mut wrapper_args = args[1..].to_vec();
+                run_hook_with_args(interp, &hook, env, |interp, function, env| {
+                    wrapper_args[0] = function;
+                    call_function_value(interp, &wrapper, &wrapper_args, env)
+                })
             }
 
             "mapatoms" => {
@@ -2407,11 +2372,11 @@ fn parse_doc_file(bytes: &[u8]) -> std::collections::HashMap<String, String> {
 /// `overriding-plist-environment' first, then the symbol's plist.
 pub(in crate::lisp::primitives) fn bare_symbol_get(
     interp: &Interpreter,
-    symbol: &str,
-    property: &str,
+    symbol: &crate::lisp::types::SymbolName,
+    property: &crate::lisp::types::SymbolName,
 ) -> Value {
     overriding_plist_property(interp, &crate::lisp::types::Env::new(), symbol, property)
-        .or_else(|| interp.get_symbol_property(symbol, property))
+        .or_else(|| interp.get_symbol_property_of(symbol, property))
         .unwrap_or(Value::Nil)
 }
 
@@ -2443,16 +2408,14 @@ pub(in crate::lisp::primitives) fn direct_get(
     // `function-put'/`define-symbol-prop') before the symbol's
     // own plist, returning the first non-nil hit.
     if let Some(property) = &property {
-        if let Some(overriding) =
-            overriding_plist_property(interp, env, symbol.as_str(), property.as_str())
-        {
+        if let Some(overriding) = overriding_plist_property(interp, env, &symbol, property) {
             return Ok(overriding);
         }
         return Ok(interp
             .get_symbol_property_of(&symbol, property)
             .unwrap_or(Value::Nil));
     }
-    Ok(symbol_property_by_eq(interp, env, symbol.as_str(), &args[1]).unwrap_or(Value::Nil))
+    Ok(symbol_property_by_eq(interp, env, &symbol, &args[1]).unwrap_or(Value::Nil))
 }
 
 /// The `symbol-value' primitive, callable directly (a subr's function pointer).

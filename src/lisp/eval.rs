@@ -17,7 +17,6 @@ use super::types::{
 use crate::compat::DiscoveredTest;
 #[cfg(test)]
 use crate::compat::{BatchSummary, TestOutcome, TestStatus};
-use hashlink::LinkedHashMap;
 #[cfg(test)]
 use regex::Regex;
 
@@ -142,6 +141,90 @@ const GNU_EMACS_LOCALE_SPECIAL_VARIABLES: &[&str] =
 
 const GNU_TREESIT_SPECIAL_VARIABLES: &[&str] =
     &["treesit-extra-load-path", "treesit-load-name-override-list"];
+
+/// The variables C makes special at startup beside its DEFVARs (their
+/// `declared_special' bits), in declaration order.
+const INITIAL_SPECIAL_VARIABLES: &[&str] = &[
+    "case-fold-search",
+    "executing-kbd-macro",
+    "executing-kbd-macro-index",
+    "defining-kbd-macro",
+    "kbd-macro-termination-hook",
+    "last-kbd-macro",
+    "track-mouse",
+    "last-input-event",
+    "last-command-event",
+    "last-event-frame",
+    "last-nonmenu-event",
+    "prefix-arg",
+    "last-prefix-arg",
+    "current-prefix-arg",
+    "signal-hook-function",
+    "command-error-function",
+    "gensym-counter",
+    "minor-mode-overriding-map-alist",
+    "overriding-terminal-local-map",
+    "overriding-local-map",
+    "standard-input",
+    "debug-on-error",
+    "debug-on-quit",
+    "inhibit-redisplay",
+    "inhibit-quit",
+    "quit-flag",
+    "unread-command-events",
+    "coding-system-alist",
+    "char-code-property-alist",
+    "load-read-function",
+    "command-line-args",
+    "current-load-list",
+    "load-history",
+    "default-frame-alist",
+    "delay-mode-hooks",
+    "delayed-after-hook-functions",
+    "delayed-mode-hooks",
+    "display-hourglass",
+    "exec-path",
+    "file-name-handler-alist",
+    "gc-cons-threshold",
+    "inhibit-read-only",
+    "inhibit-file-name-handlers",
+    "inhibit-file-name-operation",
+    "indent-tabs-mode",
+    "initial-window-system",
+    "last-coding-system-used",
+    "coding-system-for-read",
+    "coding-system-for-write",
+    "file-coding-system-alist",
+    "process-coding-system-alist",
+    "network-coding-system-alist",
+    "line-spacing",
+    "left-margin",
+    "last-command",
+    "load-force-doc-strings",
+    "load-read-function",
+    "null-device",
+    "overwrite-mode",
+    "default-process-coding-system",
+    "delete-exited-processes",
+    "fast-read-process-output",
+    "internal--daemon-sockname",
+    "interrupt-process-functions",
+    "process-adaptive-read-buffering",
+    "process-connection-type",
+    "process-error-pause-time",
+    "inherit-process-coding-system",
+    "process-environment",
+    "process-prioritize-lower-fds",
+    "read-process-output-max",
+    "selection-converter-alist",
+    "signal-process-functions",
+    "window-system",
+    "scroll-preserve-screen-position",
+    "scroll-up-aggressively",
+    "standard-output",
+    "vertical-scroll-bar",
+    "vc-directory-exclusion-list",
+];
 
 // image.c's native image variables exist before image.el or shr.el load and
 // retain dynamic binding semantics under lexical binding.  Keep the complete
@@ -505,21 +588,27 @@ pub(crate) const BUFFER_LOCAL_VARIABLES_ORDER: &[&str] = &[
 
 /// A DEFVAR_PER_BUFFER slot (BUFFER_OBJFWD) as buffer.c treats it:
 /// whether its buffer_local_flags index is -1 (always local) and whether
-/// buffer_permanent_local_flags keeps it.
+/// buffer_permanent_local_flags keeps it (an indexed slot only).
 #[derive(Clone, Copy)]
 pub(crate) struct PerBufferSlot {
     pub(crate) always_local: bool,
     pub(crate) permanent: bool,
 }
 
-pub(crate) fn native_per_buffer_slot(name: &str) -> Option<PerBufferSlot> {
-    GNU_NATIVE_PER_BUFFER_VARIABLES
-        .iter()
-        .find(|variable| variable.name == name)
-        .map(|variable| PerBufferSlot {
-            always_local: variable.always_local,
-            permanent: variable.permanent,
-        })
+/// SYMBOL's DEFVAR_PER_BUFFER slot, read from the symbol: its
+/// buffer_local_flags index is -1 when it is always local, and
+/// buffer_permanent_local_flags marks two indexed slots permanent.
+pub(crate) fn native_per_buffer_slot(symbol: &SymbolName) -> Option<PerBufferSlot> {
+    if !symbol.cell().is_native_buffer_slot() {
+        return None;
+    }
+    let always_local = symbol.cell().flags.get() & symbol_cell_flags::ALWAYS_LOCAL != 0;
+    let permanent = cached_symbol!("buffer-file-coding-system").with(|key| key == symbol)
+        || cached_symbol!("truncate-lines").with(|key| key == symbol);
+    Some(PerBufferSlot {
+        always_local,
+        permanent,
+    })
 }
 
 fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
@@ -3029,16 +3118,7 @@ fn tty_default_lisp_face_vector() -> Value {
     Value::vector(attributes)
 }
 
-type OrderedHooks = LinkedHashMap<String, Vec<Value>, crate::lisp::primitives::FnvBuildHasher>;
-
-fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> OrderedHooks {
-    let mut hooks = OrderedHooks::with_hasher(Default::default());
-    hooks.extend(entries);
-    hooks
-}
-
 type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::types::IdentityBuildHasher>;
-type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
 
 /// A snapshot for callbacks that may intern further symbols while enumerating.
 /// Membership comes only from the owning obarray; field stores cannot invalidate it.
@@ -3133,6 +3213,10 @@ impl ImageGraphCopier {
                 crate::lisp::types::visible_symbol_name(symbol.as_str()),
                 crate::lisp::primitives::next_make_symbol_id(),
             )
+        } else if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
+            // A private obarray's symbol: the copied obarray's buckets
+            // hold the copy.
+            SymbolName::make_private(symbol.as_str().to_owned(), Value::Nil)
         } else {
             SymbolName::intern_with_lisp_name(symbol.as_str().to_owned(), Some(Value::Nil))
         };
@@ -3168,12 +3252,6 @@ impl ImageGraphCopier {
             .plist
             .set(self.copy(&symbol.cell().plist.get()));
         copied
-    }
-
-    fn copy_symbol_spelling(&mut self, name: &mut String) {
-        if crate::lisp::types::is_uninterned_symbol(name) {
-            *name = self.copy_symbol(SymbolName::intern_str(name)).into_string();
-        }
     }
 
     fn copy(&mut self, value: &Value) -> Value {
@@ -3258,9 +3336,13 @@ impl ImageGraphCopier {
                     };
                     copied.borrow_mut().top_frame = Some(top);
                 }
-                for entry in copied.borrow_mut().keyboard.values_mut() {
-                    *entry = self.copy(entry);
-                }
+                // The KBOARD's variables are the copy's symbols.
+                let keyboard = std::mem::take(&mut copied.borrow_mut().keyboard);
+                let keyboard = keyboard
+                    .into_iter()
+                    .map(|(symbol, value)| (self.copy_symbol(symbol), self.copy(&value)))
+                    .collect();
+                copied.borrow_mut().keyboard = keyboard;
                 value
             }
             Kind::Marker(marker) => {
@@ -4299,20 +4381,6 @@ impl Interpreter {
             .unwrap_or_default()
     }
 
-    /// The buffer's local hook lists (GNU: the local bindings of the
-    /// hook variables), in first-binding order.
-    pub(crate) fn buffer_local_hook_lists(&self, id: u64) -> Vec<(String, Vec<Value>)> {
-        self.buffer_local_hooks
-            .get(&id)
-            .map(|hooks| {
-                hooks
-                    .iter()
-                    .map(|(name, functions)| (name.clone(), functions.clone()))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// BVAR (b, syntax_table) when the buffer has set one.
     pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<CharTableRef> {
         self.buffer_syntax_tables.get(id)
@@ -4447,8 +4515,7 @@ impl Interpreter {
     pub(crate) fn install_buffer_local_cells(&mut self, id: u64, cells: Vec<(SymbolName, Value)>) {
         let mut locals = LocalCells::default();
         for (symbol, value) in cells {
-            self.globals
-                .set_flag_by_name(symbol.as_str(), symbol_cell_flags::LOCALIZED);
+            self.globals.set_flag(&symbol, symbol_cell_flags::LOCALIZED);
             locals.insert(&symbol, value, &self.loaded_bindings);
         }
         self.remove_buffer_locals(id);
@@ -4662,13 +4729,6 @@ impl Interpreter {
                 mark(&value);
             }
         }
-        for hooks in self.buffer_local_hooks.values() {
-            for (_, functions) in hooks {
-                for function in functions {
-                    mark(function);
-                }
-            }
-        }
         for value in &self.kbd_macro_definition {
             mark(value);
         }
@@ -4747,7 +4807,8 @@ impl Interpreter {
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
-        for (_, value) in &self.deferred_defsubst_unbindings {
+        for (symbol, value) in &self.deferred_defsubst_unbindings {
+            mark(&Value::Symbol(*symbol));
             mark(value);
         }
         if let Some(value) = &self.last_thread_error {
@@ -5049,9 +5110,6 @@ impl Interpreter {
             clone
                 .globals
                 .map_symbols(symbol_owner, |symbol| c.copy_symbol(symbol));
-            for name in &mut clone.special_variables {
-                c.copy_symbol_spelling(name);
-            }
             let Kind::Buffer(buffer) = c.copy(&Value::Buffer(self.buffer)).kind() else {
                 unreachable!("a buffer copy has buffer storage")
             };
@@ -5099,9 +5157,12 @@ impl Interpreter {
             clone.overriding_plist_environment = c.copy(&self.overriding_plist_environment);
             clone.load_path = c.copy(&self.load_path);
             clone.loads_in_progress = c.copy(&self.loads_in_progress);
-            for value in clone.detached_forwarded_variables.values_mut() {
-                *value = c.copy(value);
-            }
+            // The C slots are the clone's symbols' own.
+            clone.detached_forwarded_variables =
+                std::mem::take(&mut clone.detached_forwarded_variables)
+                    .into_iter()
+                    .map(|(symbol, value)| (c.copy_symbol(symbol), c.copy(&value)))
+                    .collect();
             for call in &mut clone.pending_funcalls {
                 *call = c.copy(call);
             }
@@ -5113,18 +5174,6 @@ impl Interpreter {
                 for value in bindings.values_mut() {
                     *value = c.copy(value);
                 }
-            }
-            for hooks in clone.buffer_local_hooks.values_mut() {
-                *hooks = std::mem::take(hooks)
-                    .into_iter()
-                    .map(|(mut name, mut functions)| {
-                        c.copy_symbol_spelling(&mut name);
-                        for function in &mut functions {
-                            *function = c.copy(function);
-                        }
-                        (name, functions)
-                    })
-                    .collect();
             }
             for value in &mut clone.kbd_macro_definition {
                 *value = c.copy(value);
@@ -5236,8 +5285,8 @@ impl Interpreter {
                 c.copy(&clone.alternative_font_family_alist.clone());
             clone.alternative_font_registry_alist =
                 c.copy(&clone.alternative_font_registry_alist.clone());
-            for (name, value) in &mut clone.deferred_defsubst_unbindings {
-                c.copy_symbol_spelling(name);
+            for (symbol, value) in &mut clone.deferred_defsubst_unbindings {
+                *symbol = c.copy_symbol(*symbol);
                 *value = c.copy(value);
             }
             if let Some(error) = &clone.last_thread_error {
@@ -5645,7 +5694,7 @@ pub struct InterpreterState {
     /// evaluator fields above own their values and use nil markers here;
     /// other forwarded slots retain their detached values in this map.
     pub(crate) detached_forwarded_variables:
-        HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
+        HashMap<SymbolName, Value, crate::lisp::types::IdentityBuildHasher>,
     /// THREAD_EVENTs `thread-signal' queued for the main thread
     /// (keyboard.c kbd_buffer_store_event), delivered by the input reader
     /// through `special-event-map'.
@@ -5655,9 +5704,6 @@ pub struct InterpreterState {
     /// timer of its copied lists still waiting is ripe, None with none.
     pub(crate) timer_check_delay: Option<std::time::Duration>,
     /// Variable aliases keyed by alias name.
-    /// Variables with dynamic binding semantics, in declaration order; the
-    /// membership test is the SPECIAL flag in `globals'.
-    special_variables: Vec<String>,
     /// Names ever declared locally special via a non-top-level one-arg
     /// `defvar`; lets of other names skip the env marker scan entirely.
     pub(crate) lisp_eval_depth: usize,
@@ -5911,7 +5957,6 @@ pub struct InterpreterState {
     /// Next generated symbol ID used by built-in macro expansion helpers.
     /// Buffer-local hook lists grouped by buffer, in per-buffer insertion
     /// order.  This is the sole backing store for local hook metadata.
-    buffer_local_hooks: BufferLocalHooks,
     /// Buffer-local variable cells grouped by buffer, in per-buffer insertion
     /// order.  GNU's buffer slot lookup is constant-time; mode-heavy code must
     /// not scan every other live buffer's locals on each variable read.
@@ -6096,7 +6141,7 @@ pub struct InterpreterState {
     /// defsubst definitions removed by loadhist alive until the active timer
     /// returns, matching calls that GNU compiled inline into the callback.
     timer_callback_depth: usize,
-    deferred_defsubst_unbindings: Vec<(String, Value)>,
+    deferred_defsubst_unbindings: Vec<(SymbolName, Value)>,
     pending_file_notifications: Vec<PendingFileNotification>,
     file_notify_watches: HashMap<i64, FileNotifyWatch>,
     #[cfg(target_os = "macos")]
@@ -6493,87 +6538,6 @@ impl Interpreter {
             native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
             default_file_modes: initial_default_file_modes(),
             local_time_zone_rule,
-            special_variables: vec![
-                "case-fold-search".into(),
-                "executing-kbd-macro".into(),
-                "executing-kbd-macro-index".into(),
-                "defining-kbd-macro".into(),
-                "kbd-macro-termination-hook".into(),
-                "last-kbd-macro".into(),
-                "track-mouse".into(),
-                "last-input-event".into(),
-                "last-command-event".into(),
-                "last-event-frame".into(),
-                "last-nonmenu-event".into(),
-                "prefix-arg".into(),
-                "last-prefix-arg".into(),
-                "current-prefix-arg".into(),
-                "signal-hook-function".into(),
-                "command-error-function".into(),
-                "gensym-counter".into(),
-                "minor-mode-overriding-map-alist".into(),
-                "overriding-terminal-local-map".into(),
-                "overriding-local-map".into(),
-                "standard-input".into(),
-                "debug-on-error".into(),
-                "debug-on-quit".into(),
-                "inhibit-redisplay".into(),
-                "inhibit-quit".into(),
-                "quit-flag".into(),
-                "unread-command-events".into(),
-                "coding-system-alist".into(),
-                "char-code-property-alist".into(),
-                "load-read-function".into(),
-                "command-line-args".into(),
-                "current-load-list".into(),
-                "load-history".into(),
-                "default-frame-alist".into(),
-                "delay-mode-hooks".into(),
-                "delayed-after-hook-functions".into(),
-                "delayed-mode-hooks".into(),
-                "display-hourglass".into(),
-                "exec-path".into(),
-                "file-name-handler-alist".into(),
-                "gc-cons-threshold".into(),
-                "inhibit-read-only".into(),
-                "inhibit-file-name-handlers".into(),
-                "inhibit-file-name-operation".into(),
-                "indent-tabs-mode".into(),
-                "initial-window-system".into(),
-                "last-coding-system-used".into(),
-                "coding-system-for-read".into(),
-                "coding-system-for-write".into(),
-                "file-coding-system-alist".into(),
-                "process-coding-system-alist".into(),
-                "network-coding-system-alist".into(),
-                "line-spacing".into(),
-                "left-margin".into(),
-                "last-command".into(),
-                "load-force-doc-strings".into(),
-                "load-read-function".into(),
-                "null-device".into(),
-                "overwrite-mode".into(),
-                "default-process-coding-system".into(),
-                "delete-exited-processes".into(),
-                "fast-read-process-output".into(),
-                "internal--daemon-sockname".into(),
-                "interrupt-process-functions".into(),
-                "process-adaptive-read-buffering".into(),
-                "process-connection-type".into(),
-                "process-error-pause-time".into(),
-                "inherit-process-coding-system".into(),
-                "process-environment".into(),
-                "process-prioritize-lower-fds".into(),
-                "read-process-output-max".into(),
-                "selection-converter-alist".into(),
-                "signal-process-functions".into(),
-                "window-system".into(),
-                "scroll-preserve-screen-position".into(),
-                "scroll-up-aggressively".into(),
-                "standard-output".into(),
-                "vertical-scroll-bar".into(),
-                "vc-directory-exclusion-list".into(),
-            ],
             known_symbols_cache: RefCell::new(None),
             obarray_epoch: 0,
             standard_obarray_id,
@@ -6768,7 +6732,6 @@ impl Interpreter {
             finalizers_run: 0,
             image_reconstruction_handoff: false,
             pdumper_loaded: None,
-            buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             loaded_bindings: LoadedBindings::default(),
             buffer_syntax_tables: coding::BufferCharTables::default(),
@@ -6909,14 +6872,16 @@ impl Interpreter {
         // intrinsically special.  Fold declarations and values through one
         // registration path so a new startup global cannot require a shadow
         // entry in `special_variables'; this also removes duplicate names.
-        let declared_specials = std::mem::take(&mut interp.special_variables);
         let startup_globals = interp
             .globals
             .iter()
-            .map(|(name, _)| name.as_str().to_owned())
+            .map(|(symbol, _)| symbol)
             .collect::<Vec<_>>();
-        for name in declared_specials.into_iter().chain(startup_globals) {
-            interp.mark_special_variable(&name);
+        for name in INITIAL_SPECIAL_VARIABLES {
+            interp.mark_special_variable(name);
+        }
+        for symbol in startup_globals {
+            interp.mark_special_variable_symbol(&symbol);
         }
         interp.initialize_native_face_variables();
         // alloc.c:syms_of_alloc's Fadd_variable_watcher calls.
@@ -6926,7 +6891,7 @@ impl Interpreter {
         {
             interp
                 .add_variable_watcher(
-                    variable,
+                    &SymbolName::intern_str(variable),
                     Value::BuiltinFunc(crate::lisp::types::BuiltinRef::from_subr(watcher)),
                 )
                 .expect("a C variable takes a watcher");
@@ -7373,6 +7338,9 @@ impl Interpreter {
             } else {
                 interp.mark_per_buffer_special(variable.name);
             }
+            SymbolName::intern_str(variable.name)
+                .cell()
+                .mark_native_buffer_slot();
             if variable.permanent {
                 interp.put_symbol_property(variable.name, "permanent-local", Value::T);
             }
@@ -8189,10 +8157,10 @@ impl Interpreter {
         let completed_startup_globals = self
             .globals
             .iter()
-            .map(|(name, _)| name.as_str().to_owned())
+            .map(|(symbol, _)| symbol)
             .collect::<Vec<_>>();
-        for name in completed_startup_globals {
-            self.mark_special_variable(&name);
+        for symbol in completed_startup_globals {
+            self.mark_special_variable_symbol(&symbol);
         }
         // lread.c:defsubr interns each configured C primitive and stores
         // its actual subr in the function cell. The same registration
@@ -8291,7 +8259,7 @@ impl Interpreter {
         self.load_path = value;
         // init_lread writes the C slot. After makunbound that slot is
         // independent of the now-plain Lisp symbol (data.c:set_internal).
-        if !self.detached_forwarded_variables.contains_key("load-path") {
+        if !self.forwarded_variable_detached(&cached_symbol!("load-path").symbol()) {
             self.set_symbol_value_cell("load-path", value);
         }
     }
@@ -8483,14 +8451,12 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             Value::Symbol(predicate.clone().into()),
             *value,
         ]),
-        LispErrorKind::Void(symbol) => Value::list([
-            Value::Symbol("void-variable".into()),
-            Value::Symbol(symbol.clone().into()),
-        ]),
-        LispErrorKind::VoidFunction(symbol) => Value::list([
-            Value::Symbol("void-function".into()),
-            Value::Symbol(symbol.clone().into()),
-        ]),
+        LispErrorKind::Void(symbol) => {
+            Value::list([Value::Symbol("void-variable".into()), *symbol])
+        }
+        LispErrorKind::VoidFunction(symbol) => {
+            Value::list([Value::Symbol("void-function".into()), *symbol])
+        }
         LispErrorKind::WrongNumberOfArgs(name, count) => Value::list([
             Value::Symbol("wrong-number-of-arguments".into()),
             Value::Symbol(name.clone().into()),

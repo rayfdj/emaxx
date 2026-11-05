@@ -93,7 +93,10 @@ impl TraceLispRoots for PendingFileNotification {
 impl TraceLispRoots for LispError {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         match self.kind() {
-            LispErrorKind::WrongTypeArgument(_, value) | LispErrorKind::SignalValue(value) => {
+            LispErrorKind::WrongTypeArgument(_, value)
+            | LispErrorKind::SignalValue(value)
+            | LispErrorKind::Void(value)
+            | LispErrorKind::VoidFunction(value) => {
                 marker.value(value);
             }
             LispErrorKind::Throw(tag, value) => {
@@ -101,8 +104,6 @@ impl TraceLispRoots for LispError {
                 marker.value(value);
             }
             LispErrorKind::TypeError(..)
-            | LispErrorKind::Void(_)
-            | LispErrorKind::VoidFunction(_)
             | LispErrorKind::WrongNumberOfArgs(..)
             | LispErrorKind::Signal(_)
             | LispErrorKind::Terminate(_)

@@ -1811,11 +1811,10 @@ impl Interpreter {
             self.record_buffer_front(buffer_id);
             if !self.buffer_hooks_inhibited(buffer_id) {
                 self.set_current_buffer_id(buffer_id)?;
-                primitives::run_named_hooks(
+                primitives::run_hook(
                     self,
-                    "buffer-list-update-hook",
+                    &cached_symbol!("buffer-list-update-hook").symbol(),
                     &mut crate::lisp::types::Env::new(),
-                    None,
                 )?;
             }
         }
@@ -2011,7 +2010,6 @@ impl Interpreter {
             buffer.killed_locals = Some(slots);
         }
         self.remove_buffer_locals(id);
-        self.buffer_local_hooks.remove(&id);
         self.buffer_case_tables.remove(id);
         self.reset_buffer_syntax_table(id);
         self.reset_buffer_category_table(id);
@@ -2259,9 +2257,13 @@ impl Interpreter {
         purpose: Value,
         initial: Value,
     ) -> Result<Value, LispError> {
-        let name = purpose.as_symbol()?;
+        // chartab.c:Fmake_char_table's CHECK_SYMBOL, then Fget (PURPOSE,
+        // Qchar_table_extra_slots) of the symbol itself.
+        if !purpose.is_symbol() {
+            return Err(LispError::WrongTypeArgument("symbolp".into(), purpose));
+        }
         let extra = self
-            .get_symbol_property(name, "char-table-extra-slots")
+            .get_property_of_symbol_value(purpose, "char-table-extra-slots")
             .unwrap_or(Value::Nil);
         let extras = match extra.kind() {
             Kind::Nil => 0,
@@ -2775,10 +2777,6 @@ impl Interpreter {
         self.set_global_binding_resolved(&symbol, list);
     }
 
-    pub(crate) fn record_definition_in_load_history(&mut self, kind: &str, name: &str) {
-        self.record_symbol_definition_in_load_history(kind, &SymbolName::intern_str(name));
-    }
-
     pub(crate) fn record_symbol_definition_in_load_history(
         &mut self,
         kind: &str,
@@ -2813,13 +2811,17 @@ impl Interpreter {
     /// defines a symbol repeatedly, unloading it must restore the definition
     /// from before that file first touched the symbol, not an intermediate
     /// definition from the same load.
-    pub(crate) fn record_function_redefinition(&mut self, name: &str, old_definition: Value) {
+    pub(crate) fn record_function_redefinition(
+        &mut self,
+        symbol: &SymbolName,
+        old_definition: Value,
+    ) {
         if old_definition.is_nil() {
             return;
         }
         // data.c:defalias queues the symbol for un_autoload first.
         if !self.autoload_queue.is_nil() {
-            self.autoload_queue = Value::cons(Value::symbol(name), self.autoload_queue);
+            self.autoload_queue = Value::cons(Value::Symbol(*symbol), self.autoload_queue);
         }
         // data.c's add_to_function_history walks `current-load-list' to
         // its last element and takes it when it is a string; the walk
@@ -2844,12 +2846,12 @@ impl Interpreter {
             }
             tail = next;
         }
-        let past = self
-            .get_symbol_property(name, "function-history")
+        let past = cached_symbol!("function-history")
+            .with(|property| self.get_symbol_property_of(symbol, property))
             .unwrap_or(Value::Nil);
         let Ok(mut entries) = past.to_vec() else {
-            self.put_symbol_property(
-                name,
+            self.put_symbol_property_on(
+                symbol,
                 "function-history",
                 Value::cons(file, Value::cons(old_definition, past)),
             );
@@ -2869,7 +2871,7 @@ impl Interpreter {
         }
         entries.insert(0, old_definition);
         entries.insert(0, file);
-        self.put_symbol_property(name, "function-history", Value::list(entries));
+        self.put_symbol_property_on(symbol, "function-history", Value::list(entries));
     }
 
     /// Commit the definitions accumulated in `current-load-list`.
@@ -3447,8 +3449,6 @@ mod runtime_index_tests {
         interp.set_buffer_local_value(42, "first", Value::Integer(20));
         interp.set_buffer_local_value(41, "second", Value::Integer(2));
         interp.set_buffer_local_value(41, "first", Value::Integer(10));
-        interp.set_buffer_local_hook(41, "first", vec![Value::symbol("local-hook")]);
-        interp.set_buffer_local_hook(42, "first", vec![Value::symbol("other-hook")]);
 
         assert_eq!(
             interp.buffer_local_variables(41),
@@ -3457,28 +3457,18 @@ mod runtime_index_tests {
                 ("second".into(), Value::Integer(2)),
             ]
         );
-        assert_eq!(
-            interp.buffer_local_hook(41, "first"),
-            Some(vec![Value::symbol("local-hook")])
-        );
 
         interp.remove_buffer_local_value(41, "first");
         assert_eq!(
             interp.buffer_local_variables(41),
             vec![("second".into(), Value::Integer(2))]
         );
-        assert!(interp.buffer_local_hook(41, "first").is_none());
         assert_eq!(
             interp.buffer_local_value(42, "first"),
             Some(Value::Integer(20))
         );
-        assert_eq!(
-            interp.buffer_local_hook(42, "first"),
-            Some(vec![Value::symbol("other-hook")])
-        );
 
         interp.clear_buffer_local_state(42);
         assert!(interp.buffer_local_variables(42).is_empty());
-        assert!(interp.buffer_local_hook(42, "first").is_none());
     }
 }

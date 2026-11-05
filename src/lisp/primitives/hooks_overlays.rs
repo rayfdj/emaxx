@@ -1,6 +1,7 @@
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
+use crate::lisp::types::SymbolName;
 
 /// Ffuncall of FUNCTION, unnamed: a forwarder, inline at every caller.
 #[inline(always)]
@@ -21,13 +22,6 @@ pub(crate) enum ChangeHook {
 }
 
 impl ChangeHook {
-    fn name(self) -> &'static str {
-        match self {
-            ChangeHook::Before => "before-change-functions",
-            ChangeHook::After => "after-change-functions",
-        }
-    }
-
     fn symbol(self) -> crate::lisp::types::SymbolName {
         match self {
             ChangeHook::Before => cached_symbol!("before-change-functions").with(Clone::clone),
@@ -56,31 +50,17 @@ pub(crate) fn run_change_functions(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
-    let hook_name = hook.name();
-    let hooks = hook_values_of(
-        interp,
-        Some(&hook.symbol()),
-        hook_name,
-        env,
-        Some(interp.current_buffer_id()),
-    );
-    if hooks.is_empty() {
-        return Ok(());
-    }
-    let result = interp.with_lisp_stack_roots(&hooks, |interp| {
-        for function in &hooks {
-            call_function_value(interp, function, args, env)?;
-        }
-        Ok(())
+    let symbol = hook.symbol();
+    let result = run_hook_with_args(interp, &symbol, env, |interp, function, env| {
+        call_function_value(interp, &function, args, env)?;
+        Ok(Value::Nil)
     });
     if result.is_err() {
-        let local_buffer_id = interp.assignment_buffer_id(hook_name);
-        interp.set_variable(hook_name, Value::Nil, env);
-        if let Some(buffer_id) = local_buffer_id {
-            interp.remove_buffer_local_hook(buffer_id, hook_name);
-        }
+        // `*rvoe_arg->location = Qnil': the C variable, which is the
+        // current binding, stored without notifying watchers.
+        interp.set_symbol_value_cell_resolved(&symbol, Value::Nil);
     }
-    result
+    result.map(drop)
 }
 
 /// insdel.c:Fcombine_after_change_execute: the changes deferred under
@@ -136,186 +116,207 @@ pub(crate) fn flush_combined_after_change(
     Ok(Value::Nil)
 }
 
-pub(crate) fn hook_values(
-    interp: &Interpreter,
-    hook_name: &str,
-    env: &crate::lisp::types::Env,
-    buffer_id: Option<u64>,
-) -> Vec<Value> {
-    // The hook's symbol once (no name hash per hook run): the value and
-    // the buffer's binding are read by it when the name is interned.  The
-    // two change hooks, run per edit, are held interned.
-    let symbol = match hook_name {
-        "before-change-functions" => {
-            Some(cached_symbol!("before-change-functions").with(Clone::clone))
-        }
-        "after-change-functions" => {
-            Some(cached_symbol!("after-change-functions").with(Clone::clone))
-        }
-        _ => crate::lisp::types::SymbolName::interned_cached(hook_name),
-    };
-    hook_values_of(interp, symbol.as_ref(), hook_name, env, buffer_id)
+/// FUNCTIONP of a cons, as run_hook_with_args asks it: a lambda list.
+fn is_lambda_list(value: Value) -> bool {
+    value.cons_ref().is_some_and(|cell| {
+        cell.car
+            .get()
+            .symbol_cell()
+            .is_some_and(|car| car.is_named("lambda"))
+    })
 }
 
-/// `hook_values' of the hook HOOK_NAME, whose symbol is SYMBOL when the
-/// name is interned.
-fn hook_values_of(
-    interp: &Interpreter,
-    symbol: Option<&crate::lisp::types::SymbolName>,
-    hook_name: &str,
-    env: &crate::lisp::types::Env,
-    buffer_id: Option<u64>,
-) -> Vec<Value> {
-    let value_hooks = |value: Option<Value>| {
-        value
-            .map(|value| {
-                if value.is_nil() {
-                    Vec::new()
+/// eval.c:run_hook_with_args.  HOOK's value is read as find_symbol_value
+/// reads it: a void or nil value runs nothing, a value that is not a cons,
+/// or is a lambda, is the one function, and a list's functions run in
+/// order while FUNCALL answers nil, a `t' running the default value's in
+/// its place (Fdefault_value, so a void default signals; a `t' among the
+/// default's functions is skipped).  The list is walked as it stands, the
+/// next tail read after each call, so a function's change to the conses
+/// is seen as GNU sees it; the tail in hand is a Rust local, which the
+/// stack scan finds as it finds GNU's.  The answer is FUNCALL's last.
+/// Nothing runs once shut_down_emacs has cleared Vrun_hooks.
+pub(crate) fn run_hook_with_args(
+    interp: &mut Interpreter,
+    hook: &SymbolName,
+    env: &mut Env,
+    mut funcall: impl FnMut(&mut Interpreter, Value, &mut Env) -> Result<Value, LispError>,
+) -> Result<Value, LispError> {
+    if interp.hooks_cleared {
+        return Ok(Value::Nil);
+    }
+    let Some(mut val) = interp.symbol_value_symbol(hook) else {
+        return Ok(Value::Nil);
+    };
+    if val.is_nil() {
+        return Ok(Value::Nil);
+    }
+    if !val.is_cons() || is_lambda_list(val) {
+        return funcall(interp, val, env);
+    }
+    let mut ret = Value::Nil;
+    while ret.is_nil()
+        && let Some(cell) = val.cons_ref()
+    {
+        let function = cell.car.get();
+        if matches!(function.kind(), Kind::T) {
+            // t: this hook has a local binding, and the global one runs
+            // here too.
+            let mut global = interp
+                .default_value_symbol(hook)?
+                .ok_or_else(|| LispError::Void(Value::Symbol(*hook)))?;
+            if !global.is_nil() {
+                if !global.is_cons() || is_lambda_list(global) {
+                    ret = funcall(interp, global, env)?;
                 } else {
-                    value.to_vec().unwrap_or_else(|_| vec![value])
+                    while ret.is_nil()
+                        && let Some(global_cell) = global.cons_ref()
+                    {
+                        let function = global_cell.car.get();
+                        // In a global value, t should not occur; one is
+                        // ignored, which avoids an endless loop.
+                        if !matches!(function.kind(), Kind::T) {
+                            ret = funcall(interp, function, env)?;
+                        }
+                        global = global_cell.cdr.get();
+                    }
                 }
-            })
-            .unwrap_or_default()
-    };
-    // run_hook_with_args reads the hook with find_symbol_value.
-    let current = match symbol {
-        Some(symbol) => interp.symbol_value_symbol(symbol),
-        None => interp.lookup_var(hook_name, env),
-    };
-    // A void or nil hook runs nothing, whatever the buffer's own binding
-    // (the functions run are the current value's, a local `t' splicing
-    // the default in): signal_before_change's NILP test.
-    if current.is_none_or(|value| value.is_nil()) {
-        return Vec::new();
-    }
-    let local = buffer_id.is_some_and(|id| {
-        let has_local_value = match &symbol {
-            Some(symbol) => interp
-                .buffer_local_binding_symbol(id, symbol)
-                .is_some_and(|binding| binding.is_some()),
-            None => interp.buffer_local_value(id, hook_name).is_some(),
-        };
-        has_local_value || interp.has_buffer_local_hook(id, hook_name)
-    });
-    let mut hooks = value_hooks(current);
-    if !local {
-        hooks.retain(|hook| !matches!(hook.kind(), Kind::T));
-        return hooks;
-    }
-
-    // The Lisp-visible local/default value cells are authoritative.  GNU's
-    // Elisp `add-hook' owner can create or mutate a local hook without going
-    // through the native bootstrap helper, so the Rust depth mirror may be
-    // absent.  A local `t' sentinel splices the default at that exact point;
-    // local nil deliberately suppresses the default.
-    let mut default = value_hooks(match &symbol {
-        Some(symbol) => interp.default_value_symbol(symbol).ok().flatten(),
-        None => interp.default_value(hook_name),
-    });
-    default.retain(|hook| !matches!(hook.kind(), Kind::T));
-    let mut result = Vec::new();
-    for hook in hooks {
-        if matches!(hook.kind(), Kind::T) {
-            result.extend(default.iter().cloned());
+            }
         } else {
-            result.push(hook);
+            ret = funcall(interp, function, env)?;
+        }
+        val = cell.cdr.get();
+    }
+    Ok(ret)
+}
+
+/// eval.c:run_hook: HOOK's functions called with no arguments
+/// (Frun_hook_with_args with funcall_nil).
+pub(crate) fn run_hook(
+    interp: &mut Interpreter,
+    hook: &SymbolName,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    run_hook_with_args(interp, hook, env, |interp, function, env| {
+        call_function_value(interp, &function, &[], env)?;
+        Ok(Value::Nil)
+    })
+    .map(drop)
+}
+
+/// keyboard.c:safe_run_hooks: HOOK run with `inhibit-quit' bound to t,
+/// each function under internal_condition_case_n with Qt, so neither an
+/// outer handler-bind handler nor the debugger sees its error, which is
+/// reported and takes the function out of the hook (safe_run_hooks_error);
+/// the remaining functions still run.  Nonlocal exits keep propagating.
+pub(crate) fn safe_run_hooks(
+    interp: &mut Interpreter,
+    hook: &SymbolName,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    safe_run_hooks_with_args(interp, hook, &[], env)
+}
+
+/// keyboard.c:safe_run_hooks_2 and the like: `safe_run_hooks' calling
+/// each function with ARGS.
+pub(crate) fn safe_run_hooks_with_args(
+    interp: &mut Interpreter,
+    hook: &SymbolName,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let count = interp.specpdl_index();
+    let result = interp
+        .specbind_symbol(
+            &cached_symbol!("inhibit-quit").with(|symbol| *symbol),
+            Value::T,
+            env,
+        )
+        .and_then(|()| {
+            run_hook_with_args(interp, hook, env, |interp, function, env| {
+                safe_run_hook_funcall(interp, hook, function, args, env).map(|()| Value::Nil)
+            })
+        });
+    let unbound = interp.unbind_to(count, env);
+    result.and(unbound)
+}
+
+/// keyboard.c:safe_run_hook_funcall: FUNCTION called with ARGS under
+/// internal_condition_case_n, which establishes its catch before the
+/// call, its error handled by safe_run_hooks_error.
+fn safe_run_hook_funcall(
+    interp: &mut Interpreter,
+    hook: &SymbolName,
+    function: Value,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let handlers = interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
+    let depth = env.len();
+    let result = call_function_value(interp, &function, args, env);
+    interp.pop_handler_bindings(handlers);
+    env.truncate(depth);
+    match result.map_err(LispError::into_kind) {
+        Ok(_) => Ok(()),
+        Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+            Err(LispError::from(error))
+        }
+        Err(error) => {
+            // The handler ran: no backtrace of this error is left for
+            // batch mode's exit report.
+            interp.clear_batch_error_backtrace();
+            let condition = crate::lisp::eval::error_condition_value(&LispError::from(error));
+            safe_run_hooks_error(interp, hook, function, condition, env)
         }
     }
-    result
 }
 
-pub(crate) fn run_named_hooks(
+/// keyboard.c:safe_run_hooks_error: CALLN (Fmessage, "Error in %s (%S):
+/// %S", hook, fun, error), the data formatted by `message' so a `%' in a
+/// printed object is no directive; then FUN is deleted from HOOK's
+/// current value with Fset, or failing that from its default value with
+/// Fset_default, the other functions kept in order.
+fn safe_run_hooks_error(
     interp: &mut Interpreter,
-    hook_name: &str,
-    env: &mut crate::lisp::types::Env,
-    buffer_id: Option<u64>,
+    hook: &SymbolName,
+    fun: Value,
+    error: Value,
+    env: &mut Env,
 ) -> Result<(), LispError> {
-    for hook in hook_values(interp, hook_name, env, buffer_id) {
-        call_function_value(interp, &hook, &[], env)?;
-    }
-    Ok(())
-}
-
-// GNU runs the command-loop hooks through safe_run_hooks: an error in one
-// hook function is demoted to a message and the remaining functions still
-// run.  Nonlocal exits (throw) keep propagating.
-pub(crate) fn safe_run_named_hooks(
-    interp: &mut Interpreter,
-    hook_name: &str,
-    env: &mut crate::lisp::types::Env,
-    buffer_id: Option<u64>,
-) -> Result<(), LispError> {
-    for hook in hook_values(interp, hook_name, env, buffer_id) {
-        // safe_run_hook_funcall's internal_condition_case_n with Qt: the
-        // handler search stops here, so neither outer handler-bind
-        // handlers nor the debugger see the error.
-        let handlers =
-            interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
-        let result = call_function_value(interp, &hook, &[], env);
-        interp.pop_handler_bindings(handlers);
-        match result.map_err(LispError::into_kind) {
-            Ok(_) => {}
-            Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
-                return Err(LispError::from(error));
-            }
-            Err(error) => {
-                // GNU keyboard.c:safe_run_hooks_error — message with prin1
-                // renderings, then remove the failing function from the
-                // hook's local value (or, failing that, its default) so a
-                // broken hook cannot wedge every subsequent command.
-                // GNU keyboard.c:1896 does
-                // CALLN (Fmessage, "Error in %s (%S): %S", hook, fun, error),
-                // so the data is formatted BY `message' and a `%' inside a
-                // printed object cannot be reinterpreted as a directive.
-                let condition =
-                    crate::lisp::eval::error_condition_value(&LispError::from(error.clone()));
-                let _ = crate::lisp::primitives::call(
-                    interp,
-                    "message",
-                    &[
-                        Value::String("Error in %s (%S): %S".into()),
-                        Value::symbol(hook_name),
-                        hook,
-                        condition,
-                    ],
-                    env,
-                );
-                remove_hook_function_after_error(interp, hook_name, &hook, env);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// GNU keyboard.c:safe_run_hooks_error's recovery step: delete FUN from
-/// HOOK's Lisp-visible value.  The local (current) value is preferred; if
-/// FUN only appears in the default value, edit that instead.
-fn remove_hook_function_after_error(
-    interp: &mut Interpreter,
-    hook_name: &str,
-    fun: &Value,
-    env: &mut crate::lisp::types::Env,
-) {
-    let filter = |interp: &Interpreter, value: Option<Value>| -> Option<Vec<Value>> {
-        let items = value?.to_vec().ok()?;
+    crate::lisp::primitives::call(
+        interp,
+        "message",
+        &[
+            Value::String("Error in %s (%S): %S".into()),
+            Value::Symbol(*hook),
+            fun,
+            error,
+        ],
+        env,
+    )?;
+    let without = |interp: &Interpreter, env: &Env, mut val: Value| {
         let mut found = false;
-        let mut kept = Vec::with_capacity(items.len());
-        for item in items {
-            if crate::lisp::primitives::values::values_eq_in_env(interp, &item, fun, env) {
+        let mut newval = Vec::new();
+        while let Some(cell) = val.cons_ref() {
+            let element = cell.car.get();
+            if crate::lisp::primitives::values::values_eq_in_env(interp, &fun, &element, env) {
                 found = true;
             } else {
-                kept.push(item);
+                newval.push(element);
             }
+            val = cell.cdr.get();
         }
-        found.then_some(kept)
+        found.then(|| Value::list(newval))
     };
-    if let Some(kept) = filter(interp, interp.lookup_var(hook_name, env)) {
-        interp.set_variable(hook_name, Value::list(kept), env);
-        return;
+    let current = interp.symbol_value_symbol(hook).unwrap_or(Value::Nil);
+    if let Some(newval) = without(interp, env, current) {
+        return crate::lisp::primitives::set_internal_symbol(interp, hook, newval, env);
     }
-    if let Some(kept) = filter(interp, interp.default_value(hook_name)) {
-        interp.set_default_toplevel_value(hook_name, Value::list(kept));
+    let default = interp.default_value_symbol(hook)?.unwrap_or(Value::Nil);
+    if let Some(newval) = without(interp, env, default) {
+        return crate::lisp::primitives::set_default_internal_symbol(interp, hook, newval, env);
     }
+    Ok(())
 }
 
 pub(crate) fn call_named_function(

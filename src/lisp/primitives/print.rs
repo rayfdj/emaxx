@@ -1115,6 +1115,12 @@ impl CallableReader<'_> {
     fn call(&mut self, args: &[Value]) -> Result<Value, LispError> {
         // GNU call0/call1 resolve a symbol stream on every invocation. The
         // callback can redefine that function, including during unread.
+        // A symbol is called as itself, as Ffuncall's ORIGINAL_FUN.
+        if self.source.is_symbol() {
+            return self
+                .interp
+                .call_function_value(self.source, None, args, self.env);
+        }
         let callable = resolve_callable(self.interp, &self.source, self.env)?;
         self.interp
             .call_function_value(callable, self.source.symbol_str(), args, self.env)

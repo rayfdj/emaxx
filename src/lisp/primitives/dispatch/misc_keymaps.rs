@@ -816,9 +816,10 @@ define_dispatch!(
             }
             "define-hash-table-test" => {
                 need_args(name, args, 3)?;
-                let symbol = args[0].as_symbol()?;
+                // Fput (name, Qhash_table_test, ...) on the symbol itself.
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
                 let spec = Value::list([args[1], args[2]]);
-                interp.put_symbol_property(symbol, "hash-table-test", spec);
+                interp.put_symbol_property_on(&symbol, "hash-table-test", spec);
                 Ok(spec)
             }
             "make-hash-table" => {
@@ -1340,7 +1341,11 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let buffer_id = interp.current_buffer_id();
                 let kill_permanent = args.first().is_some_and(Value::is_truthy);
-                run_named_hooks(interp, "change-major-mode-hook", env, Some(buffer_id))?;
+                run_hook(
+                    interp,
+                    &cached_symbol!("change-major-mode-hook").symbol(),
+                    env,
+                )?;
                 // buffer.c:reset_buffer_local_variables.  Only the alist
                 // cells (ordinary buffer-local variables) participate in
                 // watchers and `permanent-local' properties; the
@@ -1355,7 +1360,7 @@ define_dispatch!(
                 for (name, value) in &locals {
                     if let Some(slot) = interp
                         .is_per_buffer_symbol(name)
-                        .then(|| crate::lisp::eval::native_per_buffer_slot(name.as_str()))
+                        .then(|| crate::lisp::eval::native_per_buffer_slot(name))
                         .flatten()
                     {
                         if slot.always_local || (slot.permanent && !kill_permanent) {
@@ -1368,8 +1373,8 @@ define_dispatch!(
                     let prop = cached_symbol!("permanent-local")
                         .with(|property| interp.get_symbol_property_of(name, property))
                         .filter(|value| !kill_permanent && value.is_truthy());
-                    interp.notify_variable_watchers(
-                        name.as_str(),
+                    interp.notify_variable_watchers_symbol(
+                        name,
                         Value::Nil,
                         "makunbound",
                         Some(buffer_id),
@@ -1380,8 +1385,8 @@ define_dispatch!(
                         // elements that want to be kept.
                         Some(prop) if prop.eq_value(Value::symbol("permanent-local-hook")) => {
                             let newlist = permanent_hook_elements(interp, *value, env)?;
-                            interp.notify_variable_watchers(
-                                name.as_str(),
+                            interp.notify_variable_watchers_symbol(
+                                name,
                                 newlist,
                                 "makunbound",
                                 Some(buffer_id),

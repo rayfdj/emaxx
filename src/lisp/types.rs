@@ -377,37 +377,10 @@ impl<T: Default> ProcessTable<T> {
 /// object retained by a previous editor instance.
 static INTERNED_SYMBOL_NAMES: symbols::InternedNames = symbols::InternedNames;
 
-/// Live uninterned states by their private internal text. Name-keyed
-/// callers must resolve a live key to the existing symbol allocation.
-/// This weak table belongs to the process-wide heap, just like the interned
-/// table above. A later serialized host entry can run on another OS thread;
-/// its sweep must retire entries made by every previous thread.
-/// Access uses the existing runtime ownership boundary, without a second
-/// lock on lookup/allocation. Entries are not GC roots and are removed by
-/// sweep_symbol_cells before the corresponding allocation is released.
-static UNINTERNED_SYMBOL_BOOK: ProcessTable<
-    HashSet<symbols::NameEntry, crate::lisp::primitives::FnvBuildHasher>,
-> = ProcessTable::new();
-
-/// alloc.c's `sweep_symbols': remove the weak lookup entry before releasing
-/// the allocation whose own text is its key. The book holds no extra string
-/// and never roots a symbol. It is a migration adapter for name-keyed callers.
+/// alloc.c's `sweep_symbols': an unmarked symbol is freed.  No table
+/// maps an uninterned symbol's text back to it, so nothing else lets it go.
 pub(crate) fn sweep_symbol_cells(epoch: u32) {
-    crate::lisp::alloc::sweep_symbols(epoch, |cell| {
-        if !cell.is_uninterned() {
-            return;
-        }
-        UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
-            // Internal constructors can reuse an encoded key. Retire only
-            // this allocation's entry, never a later live symbol's entry.
-            if book
-                .get(cell.internal.as_str())
-                .is_some_and(|symbol| symbol.identity_ptr() == std::ptr::from_ref(cell) as usize)
-            {
-                book.remove(cell.internal.as_str());
-            }
-        });
-    });
+    crate::lisp::alloc::sweep_symbols(epoch, |_| {});
 }
 
 impl SymbolName {
@@ -427,9 +400,12 @@ impl SymbolName {
             byte == OBARRAY_SYMBOL_MARKER_CHAR as u8 || byte == UNINTERNED_SYMBOL_MARKER_CHAR as u8
         });
         if marked && text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
-            if let Some(existing) = Self::live_uninterned(text.as_str()) {
-                return existing;
-            }
+            // An uninterned symbol is reached only through the objects that
+            // hold it, as GNU's is; its marked text names no symbol.
+            debug_assert!(
+                false,
+                "an uninterned symbol's marked text {text:?} interned"
+            );
             let visible = visible_symbol_name(&text).to_owned();
             return Self::new_uninterned(
                 lisp_name.unwrap_or_else(|| Value::String(SharedText::from(visible))),
@@ -437,7 +413,13 @@ impl SymbolName {
             );
         }
         if marked && text.contains(OBARRAY_SYMBOL_MARKER) {
-            return Self::intern_private(text, lisp_name);
+            // A private obarray's symbol is reached through its obarray's
+            // buckets (`make_private'), as GNU's is; no table maps its
+            // marked text back to it.
+            debug_assert!(false, "a private obarray's marked text {text:?} interned");
+            let lisp_name = lisp_name
+                .unwrap_or_else(|| Value::String(SharedText::from(visible_symbol_name(&text))));
+            return Self::make_private(text, lisp_name);
         }
         let lisp_name = lisp_name.filter(|name| matches!(name.kind(), Kind::StringObject(_)));
         INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
@@ -515,18 +497,12 @@ impl SymbolName {
         })
     }
 
-    /// A symbol of a private obarray, by its marked key.
-    fn intern_private(text: String, lisp_name: Option<Value>) -> Self {
-        symbols::with_private_names_mut(|names| {
-            if let Some(name) = names.get(text.as_str()) {
-                return name.0;
-            }
-            let lisp_name = lisp_name
-                .unwrap_or_else(|| Value::String(SharedText::from(visible_symbol_name(&text))));
-            let name = Self::allocate(text, lisp_name);
-            names.insert(symbols::NameEntry(name));
-            name
-        })
+    /// lread.c:intern_driver's new symbol for a private obarray, named
+    /// LISP_NAME under the marked TEXT: an ordinary heap object, which the
+    /// obarray's buckets hold (and the collector frees with them), never
+    /// found again by its text.
+    pub(crate) fn make_private(text: String, lisp_name: Value) -> Self {
+        Self::allocate(text, lisp_name)
     }
 
     /// alloc.c's Fmake_symbol's allocation: a cell with no value, function
@@ -585,11 +561,7 @@ impl SymbolName {
         let chars = if obarray::plain_ascii(bytes) {
             bytes.len()
         } else if !is_visible_symbol_name(text) {
-            return if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
-                None
-            } else {
-                symbols::with_private_names(|names| names.get(text).map(|entry| entry.0))
-            };
+            return None;
         } else {
             text.chars().count()
         };
@@ -621,11 +593,15 @@ impl SymbolName {
         Self::intern(text.to_owned())
     }
 
-    /// The existing object, without allocating.
+    /// The existing object, without allocating: an initial-obarray
+    /// symbol's.  A marked text names none: an uninterned or private
+    /// obarray's symbol is reached through the objects that hold it, so a
+    /// caller with such a text has lost its symbol on the way.
     pub(crate) fn find(text: &str) -> Option<Self> {
-        if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
-            return Self::live_uninterned(text);
-        }
+        debug_assert!(
+            !text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) && !text.contains(OBARRAY_SYMBOL_MARKER),
+            "a marked text {text:?} looked up"
+        );
         Self::find_interned(text)
     }
 
@@ -670,20 +646,22 @@ impl SymbolName {
         Self::find(text)
     }
 
-    fn live_uninterned(text: &str) -> Option<Self> {
-        UNINTERNED_SYMBOL_BOOK.with_borrow(|book| book.get(text).map(|entry| entry.0))
-    }
-
     pub(crate) fn make_uninterned(name: Value, visible: &str, id: u64) -> Self {
         Self::new_uninterned(name, make_uninterned_symbol_name(visible, id))
+    }
+
+    /// Fmake_symbol under the private TEXT a caller marked
+    /// (`make_uninterned_symbol_name'), named LISP_NAME or, for none, a
+    /// string of TEXT's visible part.
+    pub(crate) fn make_uninterned_with_text(text: String, lisp_name: Option<Value>) -> Self {
+        let lisp_name = lisp_name
+            .unwrap_or_else(|| Value::String(SharedText::from(visible_symbol_name(&text))));
+        Self::new_uninterned(lisp_name, text)
     }
 
     fn new_uninterned(lisp_name: Value, internal: String) -> Self {
         let name = Self::allocate(internal, lisp_name);
         name.cell().mark_uninterned();
-        UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
-            book.replace(symbols::NameEntry(name));
-        });
         name
     }
 
@@ -746,8 +724,10 @@ pub(crate) fn mark_interned_symbol_roots(mark: &mut dyn FnMut(&Value)) {
     symbols::mark_scope_roots(mark);
 }
 
+/// The allocated symbols that are uninterned (a census for tests).
+#[cfg(test)]
 pub(crate) fn census_live_uninterned_symbols() -> usize {
-    UNINTERNED_SYMBOL_BOOK.with_borrow(|book| book.len())
+    crate::lisp::alloc::allocated_uninterned_symbols()
 }
 
 impl PartialEq for SymbolName {
@@ -2450,6 +2430,17 @@ pub(crate) fn visible_symbol_name(symbol: &str) -> &str {
         .unwrap_or(symbol)
 }
 
+/// An error datum's symbol as the message prints it: its name escaped as
+/// print.c escapes a symbol's, `nil' and `t' as themselves.
+fn render_error_symbol(symbol: &Value) -> String {
+    match symbol.kind() {
+        Kind::Symbol(symbol) => render_error_symbol_name(symbol.as_str()),
+        Kind::Nil => "nil".into(),
+        Kind::T => "t".into(),
+        _ => format!("{symbol}"),
+    }
+}
+
 fn render_error_symbol_name(symbol: &str) -> String {
     let visible = visible_symbol_name(symbol);
     if visible.is_empty() {
@@ -3349,10 +3340,11 @@ pub enum LispErrorKind {
     /// construction sites migrate here as their predicates are verified
     /// against the oracle.
     WrongTypeArgument(String, Value),
-    /// Unbound variable
-    Void(String),
-    /// Unbound function cell
-    VoidFunction(String),
+    /// eval.c's `(void-variable SYMBOL)': the symbol object itself, so a
+    /// void uninterned variable's error names that symbol.
+    Void(Value),
+    /// data.c's `(void-function SYMBOL)': the symbol object itself.
+    VoidFunction(Value),
     /// Wrong number of arguments
     WrongNumberOfArgs(String, usize),
     /// Generic error with a message (like Emacs's `error` function)
@@ -3409,16 +3401,16 @@ impl fmt::Display for LispErrorKind {
             LispErrorKind::WrongTypeArgument(predicate, value) => {
                 write!(f, "Wrong type argument: {}, {}", predicate, value)
             }
-            LispErrorKind::Void(name) => write!(
+            LispErrorKind::Void(symbol) => write!(
                 f,
                 "Symbol's value as variable is void: {}",
-                render_error_symbol_name(name)
+                render_error_symbol(symbol)
             ),
-            LispErrorKind::VoidFunction(name) => {
+            LispErrorKind::VoidFunction(symbol) => {
                 write!(
                     f,
                     "Symbol's function definition is void: {}",
-                    render_error_symbol_name(name)
+                    render_error_symbol(symbol)
                 )
             }
             LispErrorKind::WrongNumberOfArgs(name, n) => {
@@ -3568,11 +3560,11 @@ impl LispError {
         Self::boxed(LispErrorKind::WrongTypeArgument(a0, a1))
     }
 
-    pub fn Void(a0: String) -> Self {
+    pub fn Void(a0: Value) -> Self {
         Self::boxed(LispErrorKind::Void(a0))
     }
 
-    pub fn VoidFunction(a0: String) -> Self {
+    pub fn VoidFunction(a0: Value) -> Self {
         Self::boxed(LispErrorKind::VoidFunction(a0))
     }
 
@@ -3737,8 +3729,8 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
 mod tests {
     use super::{
         EnvFrame, Kind, LispError, SharedCons, StringObjectRef, SymbolName, Value, assq_binding,
-        census_live_conses, census_live_floats, census_live_vectors, environment_declares_special,
-        make_uninterned_symbol_name,
+        census_live_conses, census_live_floats, census_live_uninterned_symbols,
+        census_live_vectors, environment_declares_special,
     };
 
     #[test]
@@ -4084,29 +4076,35 @@ mod tests {
     }
 
     #[test]
-    fn uninterned_symbol_names_remain_reclaimable() {
-        // An uninterned symbol nothing names is freed by the sweep (not by
-        // the drop of a handle), and its entry in the book goes with it.
-        // The stack is scanned conservatively: the symbol is made out of
-        // this frame and the frames below are clobbered before the
-        // collection.
+    fn uninterned_symbols_remain_reclaimable() {
+        // An uninterned symbol nothing reaches is freed by the sweep (not
+        // by the drop of a handle); no table keeps it.  The stack is
+        // scanned conservatively: the symbols are made out of this frame
+        // and the frames below are clobbered before the collection.
         #[inline(never)]
-        fn make(text: &str) {
-            let name = SymbolName::from(text.to_owned());
-            assert!(SymbolName::intern_str(text).0.ptr_eq(&name.0));
+        fn make(count: u64) {
+            for id in 0..count {
+                let symbol =
+                    SymbolName::make_uninterned(Value::string("temporary"), "temporary", id);
+                assert!(symbol.cell().is_uninterned());
+            }
         }
-        let mut interp = crate::lisp::eval::Interpreter::new();
-        let mut env = super::Env::new();
-        let text = make_uninterned_symbol_name("temporary", 1);
-        make(&text);
-        assert!(SymbolName::live_uninterned(&text).is_some());
-        crate::lisp::alloc::clobber_stack();
-        crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
-            .expect("collect");
-        assert!(
-            SymbolName::live_uninterned(&text).is_none(),
-            "the unreached uninterned symbol is swept and leaves the book"
-        );
+        crate::lisp::runtime::with_runtime(|| {
+            let mut interp = crate::lisp::eval::Interpreter::new();
+            let mut env = super::Env::new();
+            crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+                .expect("collect");
+            let before = census_live_uninterned_symbols();
+            make(64);
+            assert_eq!(census_live_uninterned_symbols(), before + 64);
+            crate::lisp::alloc::clobber_stack();
+            crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+                .expect("collect");
+            assert!(
+                census_live_uninterned_symbols() <= before,
+                "the unreached uninterned symbols are swept"
+            );
+        });
     }
 
     #[test]
@@ -4124,24 +4122,17 @@ mod tests {
     }
 
     #[test]
-    fn symbol_ids_resolve_across_serialized_host_threads_and_expire_with_the_object() {
+    fn symbol_ids_resolve_across_serialized_host_threads() {
+        // An interned symbol is the same object for every serialized host
+        // entry, on whatever OS thread, and stays one after a collection a
+        // later entry runs in an editor of its own.
         const INTERNED: &str = "runtime-symbol-id-thread-probe";
-        let text = make_uninterned_symbol_name("runtime-symbol-id-weak-probe", 317);
-        let first_text = text.clone();
-        let (interned, uninterned) = std::thread::spawn(move || {
-            crate::lisp::runtime::with_runtime(|| {
-                let interned = SymbolName::intern_str(INTERNED);
-                let uninterned = SymbolName::intern_str(&first_text);
-                uninterned.cell().set_value(Value::Integer(73));
-                uninterned.cell().function.set(Value::T);
-                uninterned.cell().plist.set(Value::Integer(91));
-                (interned.identity_ptr(), uninterned.identity_ptr())
-            })
+        let interned = std::thread::spawn(move || {
+            crate::lisp::runtime::with_runtime(|| SymbolName::intern_str(INTERNED).identity_ptr())
         })
         .join()
         .expect("first serialized host entry");
 
-        let second_text = text.clone();
         std::thread::spawn(move || {
             crate::lisp::runtime::with_runtime(|| {
                 assert_eq!(
@@ -4149,22 +4140,11 @@ mod tests {
                     Some(interned)
                 );
                 assert_eq!(SymbolName::intern_str(INTERNED).identity_ptr(), interned);
-                assert_eq!(
-                    SymbolName::find(&second_text).map(|symbol| symbol.identity_ptr()),
-                    Some(uninterned)
-                );
-                assert_eq!(
-                    SymbolName::intern_str(&second_text).identity_ptr(),
-                    uninterned
-                );
             });
         })
         .join()
         .expect("lookup uses the allocated objects on another OS thread");
 
-        // Both creator frames and their OS threads have ended. Only the weak
-        // name lookup remains; it must not retain the uninterned allocation.
-        let collected_text = text.clone();
         std::thread::spawn(move || {
             crate::lisp::runtime::with_runtime(|| {
                 let host = super::symbols::SymbolOwner::default();
@@ -4173,33 +4153,17 @@ mod tests {
                 crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
                     .expect("collect after both creator threads have exited");
                 // The new editor has its own canonical objects. Return to
-                // the original host owner for the unchanged lifetime checks.
+                // the original host owner for the unchanged lifetime check.
                 assert_ne!(SymbolName::intern_str(INTERNED).identity_ptr(), interned);
                 let _host = host.enter();
                 assert_eq!(
                     SymbolName::find(INTERNED).map(|symbol| symbol.identity_ptr()),
                     Some(interned)
                 );
-                assert_eq!(
-                    SymbolName::find(&collected_text).map(|symbol| symbol.identity_ptr()),
-                    None
-                );
-                assert!(SymbolName::live_uninterned(&collected_text).is_none());
-                let replacement = SymbolName::intern_str(&collected_text);
-                // The free list may reuse the old address after reclamation.
-                // The replacement must have freshly initialized object fields.
-                assert!(replacement.cell().is_uninterned());
-                assert!(replacement.cell().value().is_none());
-                assert!(replacement.cell().function.get().is_nil());
-                assert!(replacement.cell().plist.get().is_nil());
-                assert_eq!(
-                    SymbolName::find(&collected_text).map(|symbol| symbol.identity_ptr()),
-                    Some(replacement.identity_ptr())
-                );
             });
         })
         .join()
-        .expect("weak entry retires before the symbol allocation is reused");
+        .expect("the interned symbol survives another editor's collection");
     }
 
     #[test]
@@ -4396,11 +4360,11 @@ mod tests {
     #[test]
     fn void_function_errors_print_function_symbols_readably() {
         assert_eq!(
-            LispError::VoidFunction("not-defined".into()).to_string(),
+            LispError::VoidFunction(Value::symbol("not-defined")).to_string(),
             "Symbol's function definition is void: not-defined"
         );
         assert_eq!(
-            LispError::VoidFunction("(setf gv-test-foo)".into()).to_string(),
+            LispError::VoidFunction(Value::symbol("(setf gv-test-foo)")).to_string(),
             r"Symbol's function definition is void: \(setf\ gv-test-foo\)"
         );
     }

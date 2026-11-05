@@ -915,7 +915,10 @@ impl Loader<'_> {
                 DumpType::Symbol => {
                     let flags = self.reader.word(offset)?;
                     let name = self.value_at(offset + 8)?;
-                    let symbol = self.symbol_of_record(offset, flags, name)?;
+                    let symbol = match self.object(number).and_then(|value| value.symbol_cell()) {
+                        Some(symbol) => symbol,
+                        None => self.symbol_of_record(offset, flags, name)?,
+                    };
                     self.objects[number] = Value::Symbol(symbol);
                     symbol_records.push((offset, symbol, flags));
                 }
@@ -2012,7 +2015,11 @@ impl Loader<'_> {
                         "a record's type tag is an uninterned symbol read early".into(),
                     ));
                 }
-                Ok(Value::Symbol(self.symbol_of_record(target, flags, name)?))
+                // The record's object from now on: the pass over the
+                // symbol records finds it made.
+                let symbol = Value::Symbol(self.symbol_of_record(target, flags, name)?);
+                self.objects[number] = symbol;
+                Ok(symbol)
             }
             _ => self.value_at(field_offset),
         }
@@ -2087,10 +2094,9 @@ impl Loader<'_> {
                     "symbol {key:?}: not an other-obarray name"
                 )));
             }
-            return Ok(SymbolName::intern_with_lisp_name(
-                key.to_owned(),
-                Some(name),
-            ));
+            // A private obarray's own symbol: its obarray's buckets, loaded
+            // with the record, hold it.
+            return Ok(SymbolName::make_private(key.to_owned(), name));
         }
         if !crate::lisp::types::obarray::plain_ascii(key.as_bytes())
             && !crate::lisp::types::is_visible_symbol_name(key)
@@ -2333,20 +2339,6 @@ impl Loader<'_> {
             locals.push((symbol, value));
             at += 16;
         }
-        let nhooks = self.reader.word(at)? as usize;
-        at += 8;
-        let mut hooks = Vec::with_capacity(nhooks);
-        for _ in 0..nhooks {
-            let name = symbol_of(self.value_at(at)?, "buffer-local hook")?;
-            let nfunctions = self.reader.word(at + 8)? as usize;
-            at += 16;
-            let mut functions = Vec::with_capacity(nfunctions);
-            for _ in 0..nfunctions {
-                functions.push(self.value_at(at)?);
-                at += 8;
-            }
-            hooks.push((name.as_str().to_owned(), functions));
-        }
         let nmarkers = self.reader.word(at)? as usize;
         at += 8;
         let mut marker_chain = Vec::with_capacity(nmarkers);
@@ -2399,9 +2391,6 @@ impl Loader<'_> {
             self.interp.register_indirect_buffer(id, base);
         }
         self.interp.install_buffer_local_cells(id, locals);
-        for (name, functions) in hooks {
-            self.interp.set_buffer_local_hook(id, &name, functions);
-        }
         if let Some(table) = syntax_table {
             self.interp.install_buffer_syntax_table(id, table);
         }

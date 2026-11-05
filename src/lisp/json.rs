@@ -1370,7 +1370,11 @@ mod tests {
     #[test]
     fn serializer_uses_the_visible_name_of_uninterned_object_keys() {
         let mut interp = Interpreter::new();
-        let uninterned = Value::Symbol("key\u{1f}123".into());
+        let uninterned = Value::Symbol(crate::lisp::types::SymbolName::make_uninterned(
+            Value::string("key"),
+            "key",
+            123,
+        ));
         let serialized = serialize(
             &mut interp,
             &Value::list([Value::cons(uninterned, Value::Integer(1))]),

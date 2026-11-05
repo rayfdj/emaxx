@@ -3200,11 +3200,11 @@ pub(crate) fn do_auto_save(
     // Ordinarily don't quit within this function.
     let oquit = interp.lookup_var("quit-flag", env).unwrap_or(Value::Nil);
     interp.set_variable("quit-flag", Value::Nil, env);
-    // run_hook_with_args does nothing once shut_down_emacs has cleared
-    // Vrun_hooks.
-    if !interp.hooks_cleared {
-        crate::batch::safe_run_hooks(interp, "auto-save-hook")?;
-    }
+    crate::lisp::primitives::safe_run_hooks(
+        interp,
+        &cached_symbol!("auto-save-hook").symbol(),
+        env,
+    )?;
     let mut stream = None;
     if let Some(list_file) = interp
         .lookup_var("auto-save-list-file-name", env)

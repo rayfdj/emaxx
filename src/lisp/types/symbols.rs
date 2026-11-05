@@ -13,11 +13,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
-/// Not GNU: the symbols of private obarrays by their host keys, which
-/// carry the obarray's mark (see `make_obarray_symbol_name'); a
-/// name-keyed caller finds them here, and they are roots, as they were
-/// when one table held every interned key.
-type PrivateNames = HashSet<NameEntry, ObarrayBuildHasher>;
 /// Host text's address with its length in the high bits a user-space
 /// address leaves clear (`SymbolName::find_interned'), each in the slot
 /// one multiply picks: the symbol last found for a text there.  A slot
@@ -418,12 +413,39 @@ const KEY_NAMES: &[&str] = &[
     "gnutls-code",
     "function-documentation",
     "suppress-keymap",
+    "defalias-fset-function",
+    "function-history",
+    "byte-optimizer",
+    "first-change-hook",
+    "kbd-macro-termination-hook",
+    "post-command-hook",
+    "pre-command-hook",
+    "suspend-hook",
+    "suspend-resume-hook",
+    "change-major-mode-hook",
+    "buffer-list-update-hook",
+    "window-scroll-functions",
+    "kill-buffer-query-functions",
+    "kill-buffer-hook",
+    "minibuffer-setup-hook",
+    "minibuffer-exit-hook",
+    "kill-emacs-hook",
+    "post-gc-hook",
+    "post-self-insert-hook",
+    "clone-indirect-buffer-hook",
+    "delayed-warnings-hook",
+    "after-pdump-load-hook",
+    "window-state-change-hook",
+    "auto-save-hook",
+    "buffer-file-coding-system",
+    "truncate-lines",
+    "enable-multibyte-characters",
+    "user-init-file",
 ];
 
 struct Symbols {
     /// Vobarray: the initial obarray's buckets.
     names: RefCell<StandardBuckets>,
-    private: RefCell<PrivateNames>,
     by_address: RefCell<AddressNames>,
     builtins: [Cell<Option<SymbolName>>; 2],
     keys: [Cell<Option<SymbolName>>; KEY_NAMES.len()],
@@ -434,7 +456,6 @@ impl Default for Symbols {
     fn default() -> Self {
         Self {
             names: RefCell::new(StandardBuckets::default()),
-            private: RefCell::new(PrivateNames::default()),
             by_address: RefCell::new(AddressNames::default()),
             builtins: std::array::from_fn(|_| Cell::new(None)),
             keys: std::array::from_fn(|_| Cell::new(None)),
@@ -536,14 +557,15 @@ impl SymbolOwner {
         self.find(name).is_some()
     }
 
-    /// The symbol host text NAME names: oblookup in the initial obarray,
-    /// or a private obarray's key among the private names.
+    /// The symbol host text NAME names: oblookup in the initial obarray.
+    /// A marked text (a private obarray's or an uninterned symbol's) names
+    /// none of its symbols.
     pub(crate) fn find(&self, name: &str) -> Option<SymbolName> {
         if super::obarray::plain_ascii(name.as_bytes()) || super::is_visible_symbol_name(name) {
             let (bytes, chars) = text_key(name);
             self.0.names.borrow().lookup(bytes, chars).ok()
         } else {
-            self.0.private.borrow().get(name).map(|entry| entry.0)
+            None
         }
     }
 
@@ -587,12 +609,9 @@ impl SymbolOwner {
         self.0.by_address.borrow_mut().forget(symbol);
     }
 
-    /// The initial obarray's symbols in DOOBARRAY's order, then the
-    /// private names.
+    /// The initial obarray's symbols in DOOBARRAY's order.
     pub(crate) fn names(&self) -> Vec<SymbolName> {
-        let mut names = self.0.names.borrow().symbols();
-        names.extend(self.0.private.borrow().iter().map(|entry| entry.0));
-        names
+        self.0.names.borrow().symbols()
     }
 
     /// Finternal__obarray_buckets of the initial obarray.
@@ -712,14 +731,6 @@ impl InternedNames {
     }
 }
 
-pub(super) fn with_private_names<R>(body: impl FnOnce(&PrivateNames) -> R) -> R {
-    with_current(|symbols| body(&symbols.private.borrow()))
-}
-
-pub(super) fn with_private_names_mut<R>(body: impl FnOnce(&mut PrivateNames) -> R) -> R {
-    with_current(|symbols| body(&mut symbols.private.borrow_mut()))
-}
-
 pub(super) fn with_address_names<R>(body: impl FnOnce(&AddressNames) -> R) -> R {
     with_current(|symbols| body(&symbols.by_address.borrow()))
 }
@@ -782,6 +793,12 @@ impl SymbolKey {
     #[inline(never)]
     fn intern(self) -> SymbolName {
         with_current(|symbols| self.get(symbols))
+    }
+
+    /// The key's symbol itself (Qsymbol).
+    #[inline]
+    pub(crate) fn symbol(self) -> SymbolName {
+        self.with(|symbol| *symbol)
     }
 
     /// The name the key's symbol has.
@@ -855,9 +872,6 @@ fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
         .names
         .borrow()
         .for_each(|name| mark_symbol(name, mark));
-    for name in symbols.private.borrow().iter() {
-        mark_symbol(name.0, mark);
-    }
     // GNU's lispsym/static Qsymbol references remain roots after unintern.
     for name in symbols
         .builtins

@@ -841,7 +841,7 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
             "src/lisp/eval/symbol_cells.rs",
             &[
                 "a_symbol_and_its_name_address_one_cell",
-                "a_live_uninterned_symbol_is_reached_through_its_private_name",
+                "two_uninterned_symbols_of_one_name_are_two_variables",
                 "bound_values_enumerate_in_first_binding_order_and_a_rebinding_moves_last",
                 "a_cloned_table_does_not_share_cells_and_flags_follow_the_symbol",
                 "a_cells_native_word_is_cleared_by_every_data_c_write_transition",
@@ -1076,7 +1076,8 @@ pub(crate) fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
     assert!(
         matches!(
             bare.lookup_function("read-key", &Env::new()).map_err(LispError::into_kind),
-            Err(LispErrorKind::VoidFunction(ref missing)) if missing == "read-key"
+            Err(LispErrorKind::VoidFunction(missing))
+                if matches!(missing.kind(), crate::lisp::types::Kind::Symbol(missing) if missing.is_named("read-key"))
         ),
         "bare runtime unexpectedly owned GNU subr.el function `read-key`"
     );
@@ -1182,7 +1183,7 @@ pub(crate) fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
             .expect("ownership probe contains one form");
         let result = Interpreter::new().eval(&form, &mut Env::new());
         assert!(
-            matches!(result.as_ref().map_err(LispError::kind), Err(LispErrorKind::VoidFunction(missing)) if missing == name),
+            matches!(result.as_ref().map_err(LispError::kind), Err(LispErrorKind::VoidFunction(missing)) if matches!(missing.kind(), crate::lisp::types::Kind::Symbol(missing) if missing.is_named(name))),
             "bare runtime unexpectedly owned GNU Elisp form `{name}`: {result:?}"
         );
     }
@@ -1493,15 +1494,9 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
     let mut undocumented = Vec::new();
     for capture in field_pattern.captures_iter(&source[struct_start..struct_end]) {
         let (name, kind) = (&capture[1], &capture[2]);
-        let holds_objects = [
-            "Value",
-            "SymbolCells",
-            "LocalCells",
-            "BufferLocalBindings",
-            "BufferLocalHooks",
-        ]
-        .iter()
-        .any(|marker| kind.contains(marker));
+        let holds_objects = ["Value", "SymbolCells", "LocalCells", "BufferLocalBindings"]
+            .iter()
+            .any(|marker| kind.contains(marker));
         if !holds_objects {
             continue;
         }

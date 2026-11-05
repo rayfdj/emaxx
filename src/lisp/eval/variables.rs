@@ -178,56 +178,18 @@ impl Interpreter {
         self.buffer.borrow_mut().file = file;
     }
 
-    /// Whether `buffer_local_hook' has one, without its copy.
-    pub(crate) fn has_buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> bool {
-        self.buffer_local_hooks
-            .get(&buffer_id)
-            .is_some_and(|hooks| hooks.contains_key(hook_name))
-    }
-
-    pub fn buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> Option<Vec<Value>> {
-        self.buffer_local_hooks
-            .get(&buffer_id)
-            .and_then(|hooks| hooks.get(hook_name))
-            .cloned()
-    }
-
-    pub fn remove_buffer_local_hook(&mut self, buffer_id: u64, hook_name: &str) {
-        let remove_buffer = self
-            .buffer_local_hooks
-            .get_mut(&buffer_id)
-            .is_some_and(|hooks| {
-                hooks.remove(hook_name);
-                hooks.is_empty()
-            });
-        if remove_buffer {
-            self.buffer_local_hooks.remove(&buffer_id);
-        }
-    }
-
-    pub fn set_buffer_local_hook(&mut self, buffer_id: u64, hook_name: &str, hooks: Vec<Value>) {
-        let local_hooks = self
-            .buffer_local_hooks
-            .entry(buffer_id)
-            .or_insert_with(|| super::ordered_hooks([]));
-        if let Some(existing) = local_hooks.get_mut(hook_name) {
-            *existing = hooks;
-        } else {
-            local_hooks.insert(hook_name.to_string(), hooks);
-        }
-    }
-
-    /// The Lisp symbol is still forwarded to buffer.h's native field.
-    pub(crate) fn has_native_text_conversion_style(&self, name: &str) -> bool {
-        name == "text-conversion-style" && self.is_forwarded_variable(name)
+    /// SYMBOL is `text-conversion-style', still forwarded to buffer.h's
+    /// native field.
+    pub(crate) fn has_native_text_conversion_style(&self, symbol: &SymbolName) -> bool {
+        cached_symbol!("text-conversion-style").with(|key| key == symbol)
+            && self.globals.has_flag(symbol, FORWARDED)
     }
 
     /// The C default survives disconnection of its Lisp symbol. The existing
     /// detached-slot storage then owns that default, not a buffer field copy.
     pub(crate) fn native_text_conversion_style_default(&self) -> Value {
-        if let Some(value) = self
-            .detached_forwarded_variables
-            .get("text-conversion-style")
+        if let Some(value) = cached_symbol!("text-conversion-style")
+            .with(|symbol| self.detached_forwarded_variables.get(symbol))
         {
             return *value;
         }
@@ -238,17 +200,13 @@ impl Interpreter {
             .unwrap_or(Value::Nil)
     }
 
-    /// The always-local slot NAME names that the buffer record holds.
-    fn buffer_field_slot_named(&self, name: &str) -> Option<BufferFieldSlot> {
-        buffer_field_slot(name).filter(|_| self.globals.has_flag_by_name(name, ALWAYS_LOCAL))
-    }
-
-    /// `buffer_field_slot_named' for a symbol in hand: the flag first.
+    /// The always-local slot SYMBOL forwards to that the buffer record
+    /// holds: the flag first.
     fn buffer_field_slot_of(&self, symbol: &SymbolName) -> Option<BufferFieldSlot> {
         if !self.globals.has_flag(symbol, ALWAYS_LOCAL) {
             return None;
         }
-        buffer_field_slot(symbol.as_str())
+        buffer_field_slot(symbol)
     }
 
     /// BVAR (BUFFER, SLOT); None for no live buffer.
@@ -369,36 +327,47 @@ impl Interpreter {
     /// The bound value of a native field or local alist cell.
     /// Callers that need the locality flag use `buffer_local_binding'.
     pub fn buffer_local_value(&self, buffer_id: u64, name: &str) -> Option<Value> {
-        if self.has_native_text_conversion_style(name) {
+        SymbolName::find(name).and_then(|symbol| self.buffer_local_value_symbol(buffer_id, &symbol))
+    }
+
+    /// `buffer_local_value' of the symbol in hand: `text-conversion-style'
+    /// answers its field whether or not it is local.
+    pub(crate) fn buffer_local_value_symbol(
+        &self,
+        buffer_id: u64,
+        symbol: &SymbolName,
+    ) -> Option<Value> {
+        if self.has_native_text_conversion_style(symbol) {
             return self
                 .get_buffer_by_id(buffer_id)
                 .map(|buffer| buffer.text_conversion_style);
         }
-        if let Some(slot) = self.buffer_field_slot_named(name) {
+        if let Some(slot) = self.buffer_field_slot_of(symbol) {
             return self.buffer_field_value(buffer_id, slot);
         }
         self.buffer_locals
             .get(&buffer_id)
-            .and_then(|locals| locals.binding_by_name(name))
+            .and_then(|locals| locals.binding(symbol))
             .flatten()
     }
 
     /// `assq_no_quit (symbol, BVAR (buffer, local_var_alist))': `Some(None)'
     /// is a binding whose value is void.
     pub(crate) fn buffer_local_binding(&self, buffer_id: u64, name: &str) -> Option<Option<Value>> {
-        if self.has_native_text_conversion_style(name) {
+        let symbol = SymbolName::find(name)?;
+        if self.has_native_text_conversion_style(&symbol) {
             return self.get_buffer_by_id(buffer_id).and_then(|buffer| {
                 buffer
                     .text_conversion_style_is_local
                     .then_some(Some(buffer.text_conversion_style))
             });
         }
-        if let Some(slot) = self.buffer_field_slot_named(name) {
+        if let Some(slot) = self.buffer_field_slot_of(&symbol) {
             return self.buffer_field_value(buffer_id, slot).map(Some);
         }
         self.buffer_locals
             .get(&buffer_id)
-            .and_then(|locals| locals.binding_by_name(name))
+            .and_then(|locals| locals.binding(&symbol))
     }
 
     pub(crate) fn buffer_local_binding_symbol(
@@ -411,7 +380,7 @@ impl Interpreter {
         if let Some(loaded) = self.loaded_bindings.get(symbol, buffer_id) {
             return loaded.map(|value| live(value.get()));
         }
-        if self.has_native_text_conversion_style(symbol.as_str()) {
+        if self.has_native_text_conversion_style(symbol) {
             return self.get_buffer_by_id(buffer_id).and_then(|buffer| {
                 buffer
                     .text_conversion_style_is_local
@@ -452,48 +421,23 @@ impl Interpreter {
     }
 
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
-        if self.has_native_text_conversion_style(name) {
-            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                buffer.text_conversion_style = value;
-                buffer.text_conversion_style_is_local = true;
-            }
-            return;
-        }
-        if let Some(slot) = self.buffer_field_slot_named(name) {
-            self.set_buffer_field_value(buffer_id, slot, value);
-            return;
-        }
-        self.globals.set_flag_by_name(name, LOCALIZED);
-        let value = if matches!(value.kind(), Kind::Unbound) {
-            value
-        } else {
-            let value = self.normalize_forwarded_eval_cell(name, value);
-            if buffer_id == self.current_buffer_id() {
-                self.update_forwarded_eval_cell(name, &value);
-            }
-            value
-        };
-        let symbol = SymbolName::intern_str(name);
-        let state = &mut **self;
-        state.buffer_locals.entry(buffer_id).or_default().insert(
-            &symbol,
-            value,
-            &state.loaded_bindings,
-        );
+        self.set_buffer_local_value_symbol(buffer_id, &SymbolName::intern_str(name), value);
     }
 
     /// `set_buffer_local_value' for the symbol in hand: the flag and the
     /// buffer's cell by id, the forwarded C cell only for a symbol that
-    /// has one (the name path matched every store against the forwarded
-    /// names and interned the name for the cell).
+    /// has one.
     pub(crate) fn set_buffer_local_value_symbol(
         &mut self,
         buffer_id: u64,
         symbol: &SymbolName,
         value: Value,
     ) {
-        if self.has_native_text_conversion_style(symbol.as_str()) {
-            self.set_buffer_local_value(buffer_id, symbol.as_str(), value);
+        if self.has_native_text_conversion_style(symbol) {
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                buffer.text_conversion_style = value;
+                buffer.text_conversion_style_is_local = true;
+            }
             return;
         }
         if let Some(slot) = self.buffer_field_slot_of(symbol) {
@@ -504,9 +448,9 @@ impl Interpreter {
         let value = if matches!(value.kind(), Kind::Unbound) {
             value
         } else if self.has_c_slot_symbol(symbol) {
-            let value = self.normalize_forwarded_eval_cell(symbol.as_str(), value);
+            let value = self.normalize_forwarded_eval_cell(symbol, value);
             if buffer_id == self.current_buffer_id() {
-                self.update_forwarded_eval_cell(symbol.as_str(), &value);
+                self.update_forwarded_eval_cell(symbol, &value);
             }
             value
         } else {
@@ -521,12 +465,20 @@ impl Interpreter {
     }
 
     pub fn remove_buffer_local_value(&mut self, buffer_id: u64, name: &str) {
-        if self.has_native_text_conversion_style(name) {
+        // No symbol of that name, no binding of it anywhere.
+        if let Some(symbol) = SymbolName::find(name) {
+            self.remove_buffer_local_value_symbol(buffer_id, &symbol);
+        }
+    }
+
+    /// The binding of SYMBOL in BUFFER_ID killed: its alist cell, or the
+    /// `text-conversion-style' field's flag; a slot on the buffer record is
+    /// never unmade (buffer_local_flags index -1: always local).
+    pub(crate) fn remove_buffer_local_value_symbol(&mut self, buffer_id: u64, symbol: &SymbolName) {
+        if self.has_native_text_conversion_style(symbol) {
             self.reset_buffer_text_conversion_style(buffer_id);
         }
-        // A slot on the buffer record is never unmade (buffer_local_flags
-        // index -1: always local).
-        if self.buffer_field_slot_named(name).is_some() {
+        if self.buffer_field_slot_of(symbol).is_some() {
             return;
         }
         let state = &mut **self;
@@ -534,26 +486,22 @@ impl Interpreter {
             .buffer_locals
             .get_mut(&buffer_id)
             .is_some_and(|locals| {
-                locals.remove(name, &state.loaded_bindings);
+                locals.remove(symbol, &state.loaded_bindings);
                 locals.is_empty()
             });
         if remove_buffer {
             self.buffer_locals.remove(&buffer_id);
         }
         if buffer_id == self.current_buffer_id()
-            && let Some(value) = self.global_binding_value(name)
+            && let Some(value) = self.global_binding_value_symbol(symbol)
         {
-            self.update_forwarded_eval_cell(name, &value);
+            self.update_forwarded_eval_cell(symbol, &value);
         }
-        // Buffer-local hooks are part of the local binding: killing the
-        // local variable discards them, as in GNU Emacs.
-        self.remove_buffer_local_hook(buffer_id, name);
     }
 
     pub fn clear_buffer_local_state(&mut self, buffer_id: u64) {
         self.reset_buffer_text_conversion_style(buffer_id);
         self.remove_buffer_alist_locals(buffer_id);
-        self.buffer_local_hooks.remove(&buffer_id);
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
         self.reset_buffer_syntax_table(buffer_id);
         self.reset_buffer_category_table(buffer_id);
@@ -600,48 +548,9 @@ impl Interpreter {
         }
     }
 
-    // `kill-all-local-variables' keeps buffer-local hook functions whose
-    // hook variable is marked `permanent-local', like `write-file-functions'
-    // in an archive member buffer surviving `normal-mode'.
     pub fn clear_buffer_local_state_for_mode_change(&mut self, buffer_id: u64) {
         self.reset_buffer_text_conversion_style(buffer_id);
-        let permanent_hooks = self
-            .buffer_local_hooks
-            .get(&buffer_id)
-            .into_iter()
-            .flat_map(|hooks| hooks.iter())
-            .filter_map(|(name, values)| {
-                let prop = self
-                    .get_symbol_property(name, "permanent-local")
-                    .filter(|value| value.is_truthy())?;
-                // A partially permanent hook keeps t and the functions with
-                // a `permanent-local-hook' property, as
-                // reset_buffer_local_variables keeps them.
-                let values = if prop.eq_value(Value::symbol("permanent-local-hook")) {
-                    values
-                        .iter()
-                        .copied()
-                        .filter(|element| {
-                            matches!(element.kind(), Kind::T)
-                                || element.symbol_str().is_some_and(|function| {
-                                    self.get_symbol_property(function, "permanent-local-hook")
-                                        .is_some_and(|value| value.is_truthy())
-                                })
-                        })
-                        .collect()
-                } else {
-                    values.clone()
-                };
-                Some((name.clone(), values))
-            })
-            .collect::<Vec<_>>();
         self.remove_buffer_alist_locals(buffer_id);
-        if permanent_hooks.is_empty() {
-            self.buffer_local_hooks.remove(&buffer_id);
-        } else {
-            self.buffer_local_hooks
-                .insert(buffer_id, super::ordered_hooks(permanent_hooks));
-        }
         crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
         // The syntax and category tables' per-buffer indices are not
         // permanent (buffer_permanent_local_flags), so they return to the
@@ -669,21 +578,10 @@ impl Interpreter {
             .get(&from_buffer_id)
             .into_iter()
             .flat_map(|locals| locals.iter())
-            .map(|(name, value)| (name.as_str().to_owned(), value))
+            .map(|(symbol, value)| (*symbol, value))
             .collect::<Vec<_>>();
-        for (name, value) in locals {
-            self.set_buffer_local_value(to_buffer_id, &name, value);
-        }
-
-        let hooks = self
-            .buffer_local_hooks
-            .get(&from_buffer_id)
-            .into_iter()
-            .flat_map(|hooks| hooks.iter())
-            .map(|(name, values)| (name.clone(), values.clone()))
-            .collect::<Vec<_>>();
-        for (name, values) in hooks {
-            self.set_buffer_local_hook(to_buffer_id, &name, values);
+        for (symbol, value) in locals {
+            self.set_buffer_local_value_symbol(to_buffer_id, &symbol, value);
         }
 
         if let Some(tables) = self.buffer_case_tables(from_buffer_id) {
@@ -715,11 +613,10 @@ impl Interpreter {
     ) -> Result<(), LispError> {
         let saved_buffer_id = self.current_buffer_id();
         self.set_current_buffer_id(new_buffer_id)?;
-        let result = crate::lisp::primitives::run_named_hooks(
+        let result = crate::lisp::primitives::run_hook(
             self,
-            "clone-indirect-buffer-hook",
+            &cached_symbol!("clone-indirect-buffer-hook").symbol(),
             env,
-            Some(new_buffer_id),
         );
         let restore = self.set_current_buffer_id(saved_buffer_id);
         match (result, restore) {
@@ -782,10 +679,6 @@ impl Interpreter {
         self.globals.set_flag(symbol, LOCAL_IF_SET | LOCALIZED);
     }
 
-    pub fn is_auto_buffer_local(&self, name: &str) -> bool {
-        self.globals.has_flag_by_name(name, LOCAL_IF_SET)
-    }
-
     pub(crate) fn is_auto_buffer_local_symbol(&self, symbol: &SymbolName) -> bool {
         self.globals.has_flag(symbol, LOCAL_IF_SET)
     }
@@ -830,6 +723,7 @@ impl Interpreter {
         self.globals.set_flag_by_name(name, ALWAYS_LOCAL);
     }
 
+    #[cfg(test)]
     pub fn is_per_buffer_special(&self, name: &str) -> bool {
         self.globals.has_flag_by_name(name, PER_BUFFER)
     }
@@ -852,7 +746,11 @@ impl Interpreter {
     ) -> Vec<(&'static str, Value)> {
         BUFFER_LOCAL_VARIABLES_ORDER
             .iter()
-            .filter(|name| native_per_buffer_slot(name).is_some_and(|slot| slot.always_local))
+            .filter(|name| {
+                SymbolName::find(name)
+                    .and_then(|symbol| native_per_buffer_slot(&symbol))
+                    .is_some_and(|slot| slot.always_local)
+            })
             .filter_map(|name| {
                 let value = match *name {
                     "major-mode" => Value::symbol("fundamental-mode"),
@@ -861,7 +759,9 @@ impl Interpreter {
                     "mark-active" => buffer.killed_locals.as_ref()?[FIXED_SLOTS]?,
                     _ => match FIXED_SLOT_NAMES.iter().position(|fixed| fixed == name) {
                         Some(slot) => buffer.killed_locals.as_ref()?[slot]?,
-                        None => buffer_field_of(buffer, buffer_field_slot(name)?),
+                        None => {
+                            buffer_field_of(buffer, buffer_field_slot(&SymbolName::find(name)?)?)
+                        }
                     },
                 };
                 Some((*name, value))
@@ -880,7 +780,7 @@ impl Interpreter {
     pub(crate) fn is_buffer_objfwd_symbol(&self, symbol: &SymbolName) -> bool {
         symbol.cell().has_c_slot()
             && self.globals.has_flag(symbol, PER_BUFFER)
-            && super::native_per_buffer_slot(symbol.as_str()).is_some()
+            && super::native_per_buffer_slot(symbol).is_some()
     }
 
     /// data.c's SYMBOL_LOCALIZED redirect: SYMBOL has been made
@@ -906,7 +806,7 @@ impl Interpreter {
         // (Fmake_local_variable sets its flag alone); Emaxx flags it
         // LOCALIZED once a buffer holds a value of its own.
         if self.globals.has_flag(symbol, PER_BUFFER | ALWAYS_LOCAL)
-            || self.has_native_text_conversion_style(symbol.as_str())
+            || self.has_native_text_conversion_style(symbol)
         {
             Redirect::BufferSlot
         } else if self.globals.has_flag(symbol, LOCALIZED) {
@@ -949,23 +849,13 @@ impl Interpreter {
         self.mark_special_variable_symbol(&SymbolName::intern_str(name));
     }
 
+    /// The symbol's `declared_special' bit, set.
     pub(crate) fn mark_special_variable_symbol(&mut self, symbol: &SymbolName) {
-        if self.globals.set_flag(symbol, SPECIAL) {
-            self.special_variables.push(symbol.as_str().to_owned());
-        }
+        self.globals.set_flag(symbol, SPECIAL);
     }
 
-    /// eval.c:Finternal_make_var_non_special: clear `declared_special',
-    /// whichever path set it (a forwarded C variable's flag is set without
-    /// an entry in `special_variables').
+    /// eval.c:Finternal_make_var_non_special: clear `declared_special'.
     pub fn unmark_special_variable(&mut self, name: &str) {
-        if let Some(index) = self
-            .special_variables
-            .iter()
-            .rposition(|existing| existing == name)
-        {
-            self.special_variables.remove(index);
-        }
         self.globals.clear_flag_by_name(name, SPECIAL);
     }
 
@@ -975,9 +865,9 @@ impl Interpreter {
     /// the declaration lasts to the end of the enclosing scope (the file,
     /// at top level).  `let's of the name in that scope bind dynamically
     /// (Flet's Fmemq) without the global special flag.
-    pub(crate) fn push_local_special_declaration(&mut self, name: &str, env: &mut Env) {
+    pub(crate) fn push_local_special_declaration(&mut self, symbol: &SymbolName, env: &mut Env) {
         let declared = Value::cons(
-            Value::Symbol(name.into()),
+            Value::Symbol(*symbol),
             crate::lisp::types::current_environment_value(env),
         );
         match env.last_mut() {
@@ -1024,11 +914,6 @@ impl Interpreter {
     /// Ordinary queries do not classify names or maintain a negative cache.
     pub(crate) fn has_c_slot_symbol(&self, symbol: &SymbolName) -> bool {
         symbol.cell().has_c_slot()
-    }
-
-    #[cfg(test)]
-    pub fn special_variable_names(&self) -> Vec<String> {
-        self.special_variables.clone()
     }
 
     /// fns.c:Fget's plist_get on the symbol's own plist: SYMBOL addresses
@@ -1276,8 +1161,8 @@ impl Interpreter {
 
     /// data.c:Fget_variable_watchers: the variable's watchers while its
     /// stores are trapped (not while they are being notified).
-    pub fn variable_watchers(&self, name: &str) -> Result<Value, LispError> {
-        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
+    pub(crate) fn variable_watchers(&self, symbol: &SymbolName) -> Result<Value, LispError> {
+        let symbol = self.resolve_variable_symbol(symbol)?;
         Ok(if symbol.cell().is_trapped_write() {
             self.watchers_property(&symbol)
         } else {
@@ -1287,8 +1172,12 @@ impl Interpreter {
 
     /// data.c:Fadd_variable_watcher: the variable's stores are trapped, and
     /// WATCHER goes in front of its watchers unless one is `equal' to it.
-    pub fn add_variable_watcher(&mut self, name: &str, watcher: Value) -> Result<(), LispError> {
-        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
+    pub(crate) fn add_variable_watcher(
+        &mut self,
+        symbol: &SymbolName,
+        watcher: Value,
+    ) -> Result<(), LispError> {
+        let symbol = self.resolve_variable_symbol(symbol)?;
         set_symbol_trapped_write(&symbol)?;
         symbol.cell().set_trapped_write(true);
         self.globals.set_plain_store(&symbol, false);
@@ -1304,12 +1193,12 @@ impl Interpreter {
     /// data.c:Fremove_variable_watcher: WATCHER is deleted from the
     /// variable's watchers, and with the last of them its stores are no
     /// longer trapped.
-    pub fn remove_variable_watcher(
+    pub(crate) fn remove_variable_watcher(
         &mut self,
-        name: &str,
+        symbol: &SymbolName,
         watcher: &Value,
     ) -> Result<(), LispError> {
-        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
+        let symbol = self.resolve_variable_symbol(symbol)?;
         let watchers = self.watchers_property(&symbol);
         let watchers =
             crate::lisp::primitives::call(self, "delete", &[*watcher, watchers], &mut Env::new())?;
@@ -1416,18 +1305,6 @@ impl Interpreter {
     /// data.c:notify_variable_watchers: the variable NAME is an alias of
     /// (or NAME itself) tells its watchers, as the variable it is, of the
     /// store of VALUE by ACTION in the buffer BUFFER_ID.
-    pub fn notify_variable_watchers(
-        &mut self,
-        name: &str,
-        value: Value,
-        action: &str,
-        buffer_id: Option<u64>,
-        env: &mut Env,
-    ) -> Result<(), LispError> {
-        let symbol = self.resolve_variable_symbol(&SymbolName::intern_str(name))?;
-        self.notify_variable_watchers_symbol(&symbol, value, action, buffer_id, env)
-    }
-
     pub(super) fn direct_variable_alias(&self, name: &str) -> Option<String> {
         self.globals
             .alias_by_name(name)
@@ -1533,10 +1410,6 @@ impl Interpreter {
 
     /// `SYMBOL_FORWARDED': a DEFVAR_* the pinned oracle build carries, and
     /// that `makunbound' has not detached from its C slot.
-    pub(crate) fn is_forwarded_variable(&self, name: &str) -> bool {
-        self.globals.has_flag_by_name(name, FORWARDED)
-    }
-
     /// lread.c:defvar_lisp/defvar_bool/defvar_int at interpreter
     /// construction: every name the contracted oracle build forwards gets
     /// its redirect kind in the symbol cell, so stores coerce or check as
@@ -1572,9 +1445,8 @@ impl Interpreter {
         symbol: &SymbolName,
         slot_value: Value,
     ) {
-        let name = symbol.as_str();
         symbol.cell().set_c_slot(false);
-        if self.has_native_text_conversion_style(name) {
+        if self.has_native_text_conversion_style(symbol) {
             // The symbol becomes plain; the buffer's actual C field and its
             // local flag continue to exist independently of that redirect.
             self.globals
@@ -1583,7 +1455,7 @@ impl Interpreter {
         self.globals
             .clear_flag(symbol, FORWARDED | FWD_BOOL | FWD_INT);
         self.detached_forwarded_variables
-            .insert(name.to_owned(), slot_value);
+            .insert(*symbol, slot_value);
     }
 
     /// A forwarded name the oracle build already reports `SYMBOL_LOCALIZED'
@@ -1627,10 +1499,11 @@ impl Interpreter {
 
     #[cfg(test)]
     pub fn remove_global_binding(&mut self, name: &str) {
+        let symbol = SymbolName::intern_str(name);
         for terminal in &mut self.terminals {
-            terminal.borrow_mut().keyboard.remove(name);
+            terminal.borrow_mut().keyboard.remove(&symbol);
         }
-        self.globals.remove_by_name(name);
+        self.globals.remove(&symbol);
     }
 
     /// `remove_global_binding' for a symbol in hand.
@@ -1638,68 +1511,85 @@ impl Interpreter {
         // Only a KBOARD variable has terminal-local values.
         if symbol.cell().is_kboard_forwarded() {
             for terminal in &mut self.terminals {
-                terminal.borrow_mut().keyboard.remove(symbol.as_str());
+                terminal.borrow_mut().keyboard.remove(symbol);
             }
         }
         self.globals.remove(symbol);
     }
 
-    fn normalize_forwarded_eval_cell(&self, name: &str, value: Value) -> Value {
-        match name {
-            // lread.c:defvar_bool exposes only t or nil from the forwarded
-            // C bool even when Lisp stores an arbitrary non-nil object.
-            "debug-on-next-call" | "symbols-with-pos-enabled"
-                if !self.forwarded_variable_detached(name) =>
-            {
-                if value.is_nil() {
-                    Value::Nil
-                } else {
-                    Value::T
-                }
-            }
-            // data.c:store_symval_forwarding stores an intmax_t and
-            // do_symval_forwarding recreates the corresponding Lisp integer.
-            "max-lisp-eval-depth" if !self.forwarded_variable_detached(name) => value
+    /// data.c:store_symval_forwarding's conversion of VALUE for SYMBOL's
+    /// slot kind, for the forwarded slots the evaluator holds.
+    fn normalize_forwarded_eval_cell(&self, symbol: &SymbolName, value: Value) -> Value {
+        let is = |key: crate::lisp::types::symbols::SymbolKey| key.with(|key| key == symbol);
+        // lread.c:defvar_bool exposes only t or nil from the forwarded
+        // C bool even when Lisp stores an arbitrary non-nil object.
+        if (is(cached_symbol!("debug-on-next-call"))
+            || is(cached_symbol!("symbols-with-pos-enabled")))
+            && !self.forwarded_variable_detached(symbol)
+        {
+            return if value.is_nil() { Value::Nil } else { Value::T };
+        }
+        // data.c:store_symval_forwarding stores an intmax_t and
+        // do_symval_forwarding recreates the corresponding Lisp integer.
+        if is(cached_symbol!("max-lisp-eval-depth")) && !self.forwarded_variable_detached(symbol) {
+            return value
                 .as_integer()
                 .map(crate::lisp::primitives::normalize_integer_value)
-                .unwrap_or(value),
-            _ => value,
+                .unwrap_or(value);
         }
+        value
     }
 
-    pub(super) fn update_forwarded_eval_cell(&mut self, name: &str, value: &Value) {
+    /// The evaluator's own copy of SYMBOL's C slot, stored: the variables
+    /// of `FORWARDED_EVAL_CELLS'.
+    pub(super) fn update_forwarded_eval_cell(&mut self, symbol: &SymbolName, value: &Value) {
         // data.c:set_internal turns a voided forwarded symbol into a plain
         // symbol. Later stores cannot reconnect it to the C variable.
-        if self.forwarded_variable_detached(name) {
+        if self.forwarded_variable_detached(symbol) {
             return;
         }
-        match name {
-            "quit-flag" => {
+        let Some(index) = FORWARDED_EVAL_CELLS
+            .iter()
+            .position(|key| key.with(|key| key == symbol))
+        else {
+            return;
+        };
+        // In FORWARDED_EVAL_CELLS' order.
+        match index {
+            // quit-flag
+            0 => {
                 self.quit_flag = *value;
                 self.refresh_call_depth_gate();
             }
-            "inhibit-quit" => self.inhibit_quit = *value,
-            "throw-on-input" => self.throw_on_input = *value,
-            "overriding-plist-environment" => self.overriding_plist_environment = *value,
-            "load-path" => self.load_path = *value,
-            "max-lisp-eval-depth" => {
+            // inhibit-quit, throw-on-input, overriding-plist-environment,
+            // load-path
+            1 => self.inhibit_quit = *value,
+            2 => self.throw_on_input = *value,
+            3 => self.overriding_plist_environment = *value,
+            4 => self.load_path = *value,
+            // max-lisp-eval-depth
+            5 => {
                 if let Ok(depth) = value.as_integer() {
                     self.max_lisp_eval_depth = depth;
                     self.refresh_call_depth_gate();
                 }
             }
-            "debug-on-next-call" => {
+            // debug-on-next-call
+            6 => {
                 self.debug_on_next_call = value.is_truthy();
                 self.refresh_call_depth_gate();
             }
-            "symbols-with-pos-enabled" => {
+            // symbols-with-pos-enabled
+            7 => {
                 self.symbols_with_positions_enabled.set(value.is_truthy());
             }
-            "undo-inhibit-record-point" => self.set_undo_inhibit_record_point(value.is_truthy()),
-            "attempt-orderly-shutdown-on-fatal-signal" => {
+            // undo-inhibit-record-point
+            8 => self.set_undo_inhibit_record_point(value.is_truthy()),
+            // attempt-orderly-shutdown-on-fatal-signal
+            9 => {
                 crate::lisp::primitives::set_attempt_orderly_shutdown(value.is_truthy());
             }
-            _ => {}
+            _ => unreachable!("FORWARDED_EVAL_CELLS has ten entries"),
         }
     }
 
@@ -1741,13 +1631,12 @@ impl Interpreter {
 
     pub(super) fn refresh_forwarded_eval_cells(&mut self) {
         for key in FORWARDED_EVAL_CELLS {
-            let name = key.with(|symbol| *symbol);
-            let name = name.as_str();
+            let symbol = key.symbol();
             if let Some(value) = self
-                .buffer_local_value(self.current_buffer_id(), name)
-                .or_else(|| self.global_binding_value(name))
+                .buffer_local_value_symbol(self.current_buffer_id(), &symbol)
+                .or_else(|| self.global_binding_value_symbol(&symbol))
             {
-                self.update_forwarded_eval_cell(name, &value);
+                self.update_forwarded_eval_cell(&symbol, &value);
             }
         }
     }
@@ -1838,10 +1727,7 @@ impl Interpreter {
         if !self.debug_on_next_call {
             return;
         }
-        if self
-            .detached_forwarded_variables
-            .contains_key("debug-on-next-call")
-        {
+        if self.forwarded_variable_detached(&cached_symbol!("debug-on-next-call").symbol()) {
             self.debug_on_next_call = false;
             self.refresh_call_depth_gate();
         } else {
@@ -1850,14 +1736,13 @@ impl Interpreter {
     }
 
     pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
-        self.terminal_keyboard_value(name)
-            .or_else(|| self.globals.value_by_name(name))
+        SymbolName::find(name).and_then(|symbol| self.global_binding_value_symbol(&symbol))
     }
 
     pub(crate) fn global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
         if name.cell().is_kboard_forwarded()
             && Self::is_keyboard_variable(name)
-            && let Some(value) = self.terminal_keyboard_value(name.as_str())
+            && let Some(value) = self.terminal_keyboard_value(name)
         {
             return Some(value);
         }
@@ -1900,9 +1785,8 @@ impl Interpreter {
             }
             return;
         }
-        let name = symbol.as_str();
-        let value = self.normalize_forwarded_eval_cell(name, value);
-        if self.has_native_text_conversion_style(name) {
+        let value = self.normalize_forwarded_eval_cell(symbol, value);
+        if self.has_native_text_conversion_style(symbol) {
             // data.c:set_default_internal updates every live buffer whose
             // independent local flag is clear, including earlier C stores.
             for buffer in std::iter::once(self.buffer)
@@ -1914,7 +1798,7 @@ impl Interpreter {
                 }
             }
         }
-        if self.set_terminal_keyboard_value(name, &value) {
+        if self.set_terminal_keyboard_value(symbol, &value) {
             return;
         }
         if self
@@ -1924,7 +1808,7 @@ impl Interpreter {
             .flatten()
             .is_none()
         {
-            self.update_forwarded_eval_cell(name, &value);
+            self.update_forwarded_eval_cell(symbol, &value);
         }
         if !self.globals.replace_bound_value(symbol, value) {
             self.globals.insert(symbol, value);
@@ -1941,23 +1825,8 @@ impl Interpreter {
     /// default (Some (Global)).  Any other binding, a buffer-local one made
     /// in another buffer included, leaves the store to the current
     /// buffer's own binding or the default.
+    /// The restore records carry symbols, so the match is by identity.
     pub(super) fn active_special_assignment_scope(
-        &self,
-        name: &str,
-    ) -> Option<SpecialBindingScope> {
-        let current = self.current_buffer_id();
-        self.let_records()
-            .any(|restore| {
-                restore.let_default()
-                    && restore.where_buffer_id() == current
-                    && restore.name.is_named(name)
-            })
-            .then_some(SpecialBindingScope::Global)
-    }
-
-    /// `active_special_assignment_scope' for a symbol in hand: the
-    /// restore records carry symbols, so the match is by identity.
-    pub(super) fn active_special_assignment_scope_symbol(
         &self,
         symbol: &SymbolName,
     ) -> Option<SpecialBindingScope> {
@@ -2110,15 +1979,6 @@ impl Interpreter {
         true
     }
 
-    pub fn set_default_toplevel_value(&mut self, name: &str, value: Value) {
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        if !self.set_active_global_toplevel_value(&resolved, Some(value)) {
-            self.set_global_binding(&resolved, value);
-        }
-    }
-
     pub fn buffer_local_toplevel_value(&self, buffer_id: u64, name: &str) -> Option<Value> {
         let resolved = self
             .resolve_variable_name(name)
@@ -2129,33 +1989,14 @@ impl Interpreter {
         self.buffer_local_value(buffer_id, &resolved)
     }
 
-    pub(super) fn assignment_scope(&self, name: &str) -> Option<SpecialBindingScope> {
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        // data.c:set_internal SYMBOL_LOCALIZED: an existing alist cell (bound
-        // or void) receives the store; otherwise a let made for this buffer
-        // keeps the default, and only then does local_if_set create a cell.
-        if self.has_buffer_local_binding(self.current_buffer_id(), &resolved) {
-            return Some(SpecialBindingScope::BufferLocal(self.current_buffer_id()));
-        }
-        if let Some(scope) = self.active_special_assignment_scope(&resolved) {
-            return Some(scope);
-        }
-        if self.is_auto_buffer_local(&resolved) {
-            return Some(SpecialBindingScope::BufferLocal(self.current_buffer_id()));
-        }
-        None
-    }
-
-    /// `assignment_scope' for a symbol whose alias chain is resolved: the
-    /// buffer-local cell and the auto-local flag are read by id.
-    pub(super) fn assignment_scope_symbol(
-        &self,
-        resolved: &SymbolName,
-    ) -> Option<SpecialBindingScope> {
+    /// The scope a store to RESOLVED, a symbol whose alias chain is
+    /// resolved, lands in.  data.c:set_internal SYMBOL_LOCALIZED: an
+    /// existing alist cell (bound or void) receives the store; otherwise a
+    /// let made for this buffer keeps the default, and only then does
+    /// local_if_set create a cell.
+    pub(super) fn assignment_scope(&self, resolved: &SymbolName) -> Option<SpecialBindingScope> {
         let buffer_id = self.current_buffer_id();
-        if self.has_native_text_conversion_style(resolved.as_str())
+        if self.has_native_text_conversion_style(resolved)
             && self.buffer.borrow().text_conversion_style_is_local
         {
             return Some(SpecialBindingScope::BufferLocal(buffer_id));
@@ -2172,20 +2013,13 @@ impl Interpreter {
         {
             return Some(SpecialBindingScope::BufferLocal(buffer_id));
         }
-        if let Some(scope) = self.active_special_assignment_scope_symbol(resolved) {
+        if let Some(scope) = self.active_special_assignment_scope(resolved) {
             return Some(scope);
         }
         if self.globals.has_flag(resolved, LOCAL_IF_SET) {
             return Some(SpecialBindingScope::BufferLocal(buffer_id));
         }
         None
-    }
-
-    pub fn assignment_buffer_id(&self, name: &str) -> Option<u64> {
-        match self.assignment_scope(name) {
-            Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
-            _ => None,
-        }
     }
 
     /// set_internal/set_default_internal check the original symbol before
@@ -2215,20 +2049,20 @@ impl Interpreter {
         if !symbol.cell().has_c_slot() {
             return Ok(value);
         }
-        self.prepare_variable_assignment_with(symbol.as_str(), value, |flag| {
+        self.prepare_variable_assignment_with(symbol, value, |flag| {
             self.globals.has_flag(symbol, flag)
         })
     }
 
     fn prepare_variable_assignment_with(
         &self,
-        name: &str,
+        symbol: &SymbolName,
         value: Value,
         has_flag: impl Fn(u8) -> bool,
     ) -> Result<Value, LispError> {
         // CHECK_SYMBOL/constant checks still apply, but the symbol no longer
         // forwards through a typed C slot after data.c:set_internal voids it.
-        if self.forwarded_variable_detached(name) {
+        if self.forwarded_variable_detached(symbol) {
             return Ok(value);
         }
         // data.c:store_symval_forwarding by the slot's kind.  Lisp_Fwd_Int:
@@ -2251,7 +2085,7 @@ impl Interpreter {
         // One name converts its value here; another's is stored as it is.
         // (A per-buffer variable's predicate is set_internal's check,
         // `check_per_buffer_predicate'.)
-        if name == "display-hourglass" {
+        if symbol.is_named("display-hourglass") {
             return Ok(if value.is_nil() { Value::Nil } else { Value::T });
         }
         Ok(value)
@@ -2410,7 +2244,6 @@ impl Interpreter {
     }
 
     pub(crate) fn learn_plain_store(&mut self, symbol: &SymbolName) {
-        let name = symbol.as_str();
         let plain = self.globals.alias(symbol).is_none()
             && !self.globals.has_flag(
                 symbol,
@@ -2423,7 +2256,7 @@ impl Interpreter {
                     | FWD_INT,
             )
             && !symbol.cell().is_trapped_write()
-            && !self.forwarded_variable_detached(name)
+            && !self.forwarded_variable_detached(symbol)
             && !symbol.cell().is_constant()
             && !symbol.cell().has_c_slot();
         self.globals.set_plain_store(symbol, plain);
@@ -2460,9 +2293,7 @@ impl Interpreter {
             return true;
         }
         if !self.globals.has_flag(symbol, LOCAL_IF_SET)
-            || self
-                .active_special_assignment_scope_symbol(symbol)
-                .is_some()
+            || self.active_special_assignment_scope(symbol).is_some()
         {
             return false;
         }
@@ -2673,7 +2504,7 @@ impl Interpreter {
                 frame_depth,
             )
         } else {
-            let previous = if self.has_native_text_conversion_style(name) {
+            let previous = if self.has_native_text_conversion_style(&resolved) {
                 Some(self.buffer.borrow().text_conversion_style)
             } else {
                 self.global_binding_value_symbol(&resolved)
@@ -2686,12 +2517,11 @@ impl Interpreter {
             } else {
                 super::BindingKind::Let
             };
-            let keyboard =
-                if resolved.cell().is_kboard_forwarded() && Self::is_keyboard_variable(&resolved) {
-                    self.keyboard_binding_terminal(name)
-                } else {
-                    None
-                };
+            // eval.c:specbind's SYMBOL_FORWARDED KBOARD case remembers the
+            // keyboard the binding was made on.
+            let keyboard = (resolved.cell().is_kboard_forwarded()
+                && Self::is_keyboard_variable(&resolved))
+            .then(|| self.selected_terminal_id());
             SpecialBindingRestore::new(resolved, kind, previous, buffer_id, frame_depth)
                 .local_if_set(self.globals.has_flag(&resolved, LOCAL_IF_SET))
                 .keyboard(keyboard)
@@ -2817,9 +2647,9 @@ impl Interpreter {
                 continue;
             }
             if let Some(terminal) = record.keyboard_terminal_id() {
-                let current = self.keyboard_binding_value_on(terminal, record.name.as_str());
+                let current = self.keyboard_binding_value_on(terminal, &record.name);
                 let previous = record.take_previous().unwrap_or(Value::Unbound);
-                self.set_keyboard_binding_on(terminal, record.name.as_str(), previous);
+                self.set_keyboard_binding_on(terminal, &record.name, previous);
                 record.set_previous(current);
                 continue;
             }
@@ -2921,7 +2751,7 @@ impl Interpreter {
                 if let Some(terminal) = restore.keyboard_terminal_id() {
                     self.set_keyboard_binding_on(
                         terminal,
-                        restore.name.as_str(),
+                        &restore.name,
                         restore.previous().unwrap_or(Value::Unbound),
                     );
                 } else if let Some(value) = restore.previous() {
@@ -3208,13 +3038,13 @@ impl Interpreter {
 /// already holds the state (the byte-code VM's call and return) pays
 /// the shell's parked test once.
 impl InterpreterState {
-    /// Whether NAME is a forwarded variable `makunbound' detached from its
-    /// C slot (data.c:set_internal).  The table is empty unless one was, so
-    /// a store asks that first instead of hashing the name.
+    /// Whether SYMBOL is a forwarded variable `makunbound' detached from
+    /// its C slot (data.c:set_internal).  The table is empty unless one
+    /// was, so a store asks that first.
     #[inline(always)]
-    pub(crate) fn forwarded_variable_detached(&self, name: &str) -> bool {
+    pub(crate) fn forwarded_variable_detached(&self, symbol: &SymbolName) -> bool {
         !self.detached_forwarded_variables.is_empty()
-            && self.detached_forwarded_variables.contains_key(name)
+            && self.detached_forwarded_variables.contains_key(symbol)
     }
 
     /// record_in_backtrace and Ffuncall's depth for a call that does
@@ -4416,15 +4246,29 @@ fn buffer_field_of(buffer: &crate::buffer::Buffer, slot: BufferFieldSlot) -> Val
     }
 }
 
-fn buffer_field_slot(name: &str) -> Option<BufferFieldSlot> {
-    match name {
-        "buffer-file-name" => Some(BufferFieldSlot::FileName),
-        "buffer-file-truename" => Some(BufferFieldSlot::FileTruename),
-        "mark-active" => Some(BufferFieldSlot::MarkActive),
-        "enable-multibyte-characters" => Some(BufferFieldSlot::Multibyte),
-        "buffer-undo-list" => Some(BufferFieldSlot::UndoList),
-        _ => None,
-    }
+/// The buffer-record field SYMBOL's slot is held in, by its symbol.
+fn buffer_field_slot(symbol: &SymbolName) -> Option<BufferFieldSlot> {
+    [
+        (
+            cached_symbol!("buffer-file-name"),
+            BufferFieldSlot::FileName,
+        ),
+        (
+            cached_symbol!("buffer-file-truename"),
+            BufferFieldSlot::FileTruename,
+        ),
+        (cached_symbol!("mark-active"), BufferFieldSlot::MarkActive),
+        (
+            cached_symbol!("enable-multibyte-characters"),
+            BufferFieldSlot::Multibyte,
+        ),
+        (
+            cached_symbol!("buffer-undo-list"),
+            BufferFieldSlot::UndoList,
+        ),
+    ]
+    .into_iter()
+    .find_map(|(key, slot)| key.with(|key| key == symbol).then_some(slot))
 }
 
 /// What the handler search stops at for a signal (`catching_clause').

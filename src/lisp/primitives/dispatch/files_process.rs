@@ -139,7 +139,11 @@ fn bury_buffer_in_lists(
         // run_buffer_list_update_hook: not for a buffer whose hooks are
         // inhibited.
         if !interp.buffer_hooks_inhibited(buffer_id) {
-            run_named_hooks(interp, "buffer-list-update-hook", env, Some(buffer_id))?;
+            run_hook(
+                interp,
+                &cached_symbol!("buffer-list-update-hook").symbol(),
+                env,
+            )?;
         }
     }
     Ok(())
@@ -2990,13 +2994,24 @@ define_dispatch!(
                     interp.set_current_buffer_id(id)?;
                 }
                 let consultation = (|| -> Result<bool, LispError> {
+                    // CALLN (Frun_hook_with_args_until_failure,
+                    // Qkill_buffer_query_functions).
                     if !inhibit_hooks {
-                        for hook in
-                            hook_values(interp, "kill-buffer-query-functions", env, Some(id))
-                        {
-                            if call_function_value(interp, &hook, &[], env)?.is_nil() {
-                                return Ok(false);
-                            }
+                        let failed = run_hook_with_args(
+                            interp,
+                            &cached_symbol!("kill-buffer-query-functions").symbol(),
+                            env,
+                            |interp, function, env| {
+                                let answer = call_function_value(interp, &function, &[], env)?;
+                                Ok(if answer.is_nil() {
+                                    Value::T
+                                } else {
+                                    Value::Nil
+                                })
+                            },
+                        )?;
+                        if failed.is_truthy() {
+                            return Ok(false);
                         }
                     }
                     let mut modified = interp
@@ -3057,7 +3072,7 @@ define_dispatch!(
                     if !inhibit_hooks {
                         // The kill hooks run with the dying buffer current, as
                         // in GNU (auto-revert's rm-watch reads its locals).
-                        run_named_hooks(interp, "kill-buffer-hook", env, Some(id))?;
+                        run_hook(interp, &cached_symbol!("kill-buffer-hook").symbol(), env)?;
                     }
                     Ok(true)
                 })();
@@ -3173,7 +3188,11 @@ define_dispatch!(
                 }
                 interp.kill_buffer_id(id);
                 if !inhibit_hooks {
-                    run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
+                    run_hook(
+                        interp,
+                        &cached_symbol!("buffer-list-update-hook").symbol(),
+                        env,
+                    )?;
                 }
                 Ok(Value::T)
             }

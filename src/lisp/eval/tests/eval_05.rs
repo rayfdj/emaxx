@@ -5775,7 +5775,8 @@ fn cached_source_dispatch_analysis_observes_head_mutation() {
         .expect("literal should exist");
     assert!(matches!(
         interp.eval(&literal, &mut env).map_err(LispError::into_kind),
-        Err(LispErrorKind::VoidFunction(name)) if name == "vector-literal"
+        Err(LispErrorKind::VoidFunction(name))
+            if matches!(name.kind(), Kind::Symbol(name) if name.is_named("vector-literal"))
     ));
     literal
         .set_car(Value::symbol("quote"))

@@ -288,11 +288,10 @@ fn internal_self_insert(
         }
     }
 
-    run_named_hooks(
+    run_hook(
         interp,
-        "post-self-insert-hook",
+        &cached_symbol!("post-self-insert-hook").symbol(),
         env,
-        Some(interp.current_buffer_id()),
     )?;
     Ok(hairy)
 }
@@ -1080,7 +1079,7 @@ define_dispatch!(
                 if args.get(2).is_some_and(Value::is_truthy) {
                     let extractor = interp
                         .lookup_var("region-extract-function", env)
-                        .ok_or_else(|| LispError::Void("region-extract-function".into()))?;
+                        .ok_or_else(|| LispError::Void(Value::symbol("region-extract-function")))?;
                     let bounds = call_function_value(
                         interp,
                         &extractor,

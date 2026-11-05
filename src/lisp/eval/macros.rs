@@ -390,7 +390,7 @@ impl Interpreter {
         // GNU 30.2 data.c:Fdefalias uses CHECK_SYMBOL/XSYMBOL.  Preserve the
         // original object for its return value while installing the function
         // on the positioned symbol's bare owner.
-        let name = crate::lisp::primitives::checked_symbol_name(self, &args[0], env)?;
+        let name = crate::lisp::primitives::checked_symbol_identity(self, &args[0], env)?;
         let mut function = args[1];
         let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
         // No cycle check here: data.c:defalias leaves it to Ffset, which
@@ -402,7 +402,7 @@ impl Interpreter {
         {
             function = crate::lisp::primitives::purecopy_value(self, &function, env)?;
         }
-        let old_definition = self.logical_function_binding(&name, &Env::new());
+        let old_definition = self.raw_function_binding_symbol(&name, &Env::new());
         // data.c:defalias records no autoload in the dumping process
         // (loaddefs.el's would fill the image's `load-history').
         let autoload = matches!(
@@ -410,7 +410,7 @@ impl Interpreter {
             Some(Kind::Symbol(head)) if head.is_named("autoload")
         );
         if !autoload || !self.will_dump(env) {
-            self.record_definition_in_load_history("defun", &name);
+            self.record_symbol_definition_in_load_history("defun", &name);
         }
         if let Some(old_definition) = old_definition {
             self.record_function_redefinition(&name, old_definition);
@@ -429,11 +429,11 @@ impl Interpreter {
                         args[0],
                     ])));
                 }
-                self.fset_function(&name, function, env)?;
+                self.fset_function_symbol(&name, function, env)?;
             }
         }
         if !docstring.is_nil() {
-            self.put_symbol_property(&name, "function-documentation", docstring);
+            self.put_symbol_property_on(&name, "function-documentation", docstring);
         }
         Ok(args[0])
     }
@@ -446,26 +446,22 @@ impl Interpreter {
     fn call_macro_environment_expander(
         &mut self,
         expander: Value,
-        name: &str,
+        symbol: &SymbolName,
         args: &[Value],
     ) -> Result<Value, LispError> {
         let mut expander_env = Env::new();
-        self.call_expander(expander, name, args, &mut expander_env)
+        self.call_expander(expander, symbol, args, &mut expander_env)
     }
 
-    /// The expander called under the macro's name: by its symbol when the
-    /// name is an interned symbol's (no interning per expansion).
+    /// The expander called under the macro's symbol.
     fn call_expander(
         &mut self,
         expander: Value,
-        name: &str,
+        symbol: &SymbolName,
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        match SymbolName::interned_cached(name) {
-            Some(symbol) => self.call_function_value_as(expander, &symbol, args, env),
-            None => self.call_function_value(expander, Some(name), args, env),
-        }
+        self.call_function_value_as(expander, symbol, args, env)
     }
 
     /// Run only the macro expander itself with GNU's temporary
@@ -535,25 +531,29 @@ impl Interpreter {
         }
     }
 
+    /// eval.c:Fmacroexpand's one step for a form headed by SYMBOL: an
+    /// entry of MACRO_ENVIRONMENT for the symbol (Fassq, by EQ), else the
+    /// symbol's function, through its aliases, a macro or a macro's
+    /// autoload.
     pub(super) fn try_macroexpand_with_environment(
         &mut self,
-        name: &str,
+        symbol: &SymbolName,
         args: &[Value],
         macro_environment: Option<&Value>,
         caller: MacroCaller,
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
-        if let Some(expander) = macro_environment_expander(macro_environment, name) {
+        if let Some(expander) = macro_environment_expander(macro_environment, symbol) {
             return self
                 .with_macro_lexical_binding(caller, env, |interp, _env| {
-                    interp.call_macro_environment_expander(expander, name, args)
+                    interp.call_macro_environment_expander(expander, symbol, args)
                 })
                 .map(Some);
         }
 
         let mut attempted_autoload = false;
         loop {
-            let Some(function) = self.macro_position_function(name, env) else {
+            let Some(function) = self.macro_position_function_symbol(symbol, env) else {
                 return Ok(None);
             };
             let Some((head, expander)) = function.cons_values() else {
@@ -564,7 +564,7 @@ impl Interpreter {
             // per-name cache. Resolve once, including symbol aliases.
             if matches!(head.kind(), Kind::Symbol(name) if name.is_named("macro")) {
                 let expanded = self.with_macro_lexical_binding(caller, env, |interp, env| {
-                    interp.call_expander(expander, name, args, env)
+                    interp.call_expander(expander, symbol, args, env)
                 })?;
                 return Ok(Some(expanded));
             }
@@ -578,12 +578,17 @@ impl Interpreter {
                 return Ok(None);
             }
             let loads_macro =
-                crate::lisp::primitives::autoload_is_macro(self, Some(name), &function);
+                crate::lisp::primitives::autoload_is_macro(self, Some(symbol), &function);
             if !loads_macro {
                 return Ok(None);
             }
             // eval.c:Fmacroexpand: Fautoload_do_load with MACRO-ONLY `macro'.
-            self.autoload_do_load(function, Value::symbol(name), Value::symbol("macro"), env)?;
+            self.autoload_do_load(
+                function,
+                Value::Symbol(*symbol),
+                Value::symbol("macro"),
+                env,
+            )?;
             attempted_autoload = true;
         }
     }
@@ -597,12 +602,12 @@ impl Interpreter {
         let Ok(items) = form.to_vec() else {
             return Ok(*form);
         };
-        let Some(Kind::Symbol(name)) = items.first().map(|v| v.kind()) else {
+        let Some(Kind::Symbol(symbol)) = items.first().map(|v| v.kind()) else {
             return Ok(*form);
         };
         Ok(self
             .try_macroexpand_with_environment(
-                name.as_str(),
+                &symbol,
                 &items[1..],
                 macro_environment,
                 MacroCaller::Macroexpand,
@@ -621,13 +626,16 @@ pub(super) enum MacroCaller {
     Macroexpand,
 }
 
-fn macro_environment_expander(macro_environment: Option<&Value>, name: &str) -> Option<Value> {
+fn macro_environment_expander(
+    macro_environment: Option<&Value>,
+    symbol: &SymbolName,
+) -> Option<Value> {
     let mut entries = *macro_environment?;
     while let Kind::Cons(_) = entries.kind() {
         let entry = entries.car_if_list()?;
         if let Kind::Cons(_) = entry.kind() {
-            let symbol = entry.car_if_list()?;
-            if symbol.symbol_str()? == name {
+            // Fassq: the entry's key EQ to SYMBOL.
+            if entry.car_if_list()?.symbol_cell() == Some(*symbol) {
                 return entry.cdr_if_list();
             }
         }

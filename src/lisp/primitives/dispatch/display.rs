@@ -2384,7 +2384,11 @@ fn run_record_buffer_hook(interp: &mut Interpreter, env: &mut Env) -> Result<(),
     if interp.buffer_hooks_inhibited(buffer_id) {
         return Ok(());
     }
-    run_named_hooks(interp, "buffer-list-update-hook", env, None)
+    run_hook(
+        interp,
+        &cached_symbol!("buffer-list-update-hook").symbol(),
+        env,
+    )
 }
 
 /// window.c's decode_valid_window: a live or internal window, nil being
@@ -3068,25 +3072,37 @@ fn set_window_buffer_hooks(
     buffer_id: u64,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let hooks = hook_values(interp, "window-scroll-functions", env, Some(buffer_id));
-    if hooks.is_empty() {
-        return Ok(());
-    }
     let window = interp.record_value(window_id);
     let start = Value::Integer(window_start_marker(interp, window_id, buffer_id) as i64);
     let original_buffer = interp.current_buffer_id();
     interp.set_current_buffer_id(buffer_id)?;
-    let mut result = Ok(());
-    for hook in hooks {
-        if let Err(error) = call_function_value(interp, &hook, &[window, start], env) {
-            result = Err(error);
-            break;
-        }
-    }
+    let result = run_window_scroll_functions(interp, window, start, env);
     if interp.has_buffer_id(original_buffer) {
         interp.set_current_buffer_id(original_buffer)?;
     }
     result
+}
+
+/// `if (!NILP (Vwindow_scroll_functions)) run_hook_with_args_2
+/// (Qwindow_scroll_functions, window, start)' in the current buffer.
+fn run_window_scroll_functions(
+    interp: &mut Interpreter,
+    window: Value,
+    start: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let hook = cached_symbol!("window-scroll-functions");
+    if !interp
+        .symbol_value_key(hook)
+        .is_some_and(|value| !value.is_nil())
+    {
+        return Ok(());
+    }
+    run_hook_with_args(interp, &hook.symbol(), env, |interp, function, env| {
+        call_function_value(interp, &function, &[window, start], env)?;
+        Ok(Value::Nil)
+    })
+    .map(drop)
 }
 
 /// window.c:Fdelete_window_internal.  `delete-window' has staged the new
@@ -3433,12 +3449,8 @@ fn run_window_change_functions_1(
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default(),
         Some(buffer) => interp
-            .buffer_local_hook(buffer, symbol)
-            .or_else(|| {
-                interp
-                    .buffer_local_value(buffer, symbol)
-                    .and_then(|value| value.to_vec().ok())
-            })
+            .buffer_local_value(buffer, symbol)
+            .and_then(|value| value.to_vec().ok())
             .unwrap_or_default(),
     };
     for function in functions {
@@ -3730,10 +3742,14 @@ fn run_window_change_functions_body(
     }
     if run_window_state_change_hook
         && interp
-            .lookup_var("window-state-change-hook", env)
+            .symbol_value_key(cached_symbol!("window-state-change-hook"))
             .is_some_and(|value| value.is_truthy())
     {
-        crate::batch::safe_run_hooks(interp, "window-state-change-hook")?;
+        safe_run_hooks(
+            interp,
+            &cached_symbol!("window-state-change-hook").symbol(),
+            env,
+        )?;
     }
     Ok(())
 }
@@ -6613,15 +6629,10 @@ define_dispatch!(
                         continue;
                     };
                     // GNU Elisp's `add-hook' LOCAL registration lives in
-                    // the buffer-local value cell; the native depth mirror
-                    // only sees hooks installed through the Rust bootstrap.
+                    // the buffer-local value cell.
                     let local_hooks = interp
-                        .buffer_local_hook(buffer_id, "window-configuration-change-hook")
-                        .or_else(|| {
-                            interp
-                                .buffer_local_value(buffer_id, "window-configuration-change-hook")
-                                .map(|value| value.to_vec().unwrap_or_else(|_| vec![value]))
-                        });
+                        .buffer_local_value(buffer_id, "window-configuration-change-hook")
+                        .map(|value| value.to_vec().unwrap_or_else(|_| vec![value]));
                     let Some(local_hooks) = local_hooks else {
                         continue;
                     };
@@ -7100,26 +7111,25 @@ define_dispatch!(
             }
             "run-window-scroll-functions" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window = args
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| interp.selected_window_value());
+                // The hook hears WINDOW as given, nil included; the
+                // selected window stands in for nil only to be decoded.
+                let given = args.first().cloned().unwrap_or(Value::Nil);
+                let window = if given.is_nil() {
+                    interp.selected_window_value()
+                } else {
+                    given
+                };
                 let buffer_id = window_buffer_id(interp, &window).ok_or_else(|| {
                     LispError::TypeError("window-live-p".into(), window.type_name())
                 })?;
                 let start = Value::Integer(window_start(interp, Some(&window))? as i64);
                 let original_buffer = interp.current_buffer_id();
                 interp.set_current_buffer_id(buffer_id)?;
-                let hooks = hook_values(interp, "window-scroll-functions", env, Some(buffer_id));
-                let mut result = Ok(Value::Nil);
-                for hook in hooks {
-                    if let Err(error) = call_function_value(interp, &hook, &[window, start], env) {
-                        result = Err(error);
-                        break;
-                    }
+                let result = run_window_scroll_functions(interp, given, start, env);
+                if interp.has_buffer_id(original_buffer) {
+                    interp.set_current_buffer_id(original_buffer)?;
                 }
-                interp.set_current_buffer_id(original_buffer)?;
-                result
+                result.map(|()| Value::Nil)
             }
             "window-dedicated-p" => {
                 need_arg_range(name, args, 0, 1)?;

@@ -309,7 +309,6 @@ pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::native_elisp_load;
 #[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
-pub(crate) use dispatch::set_internal_symbol;
 pub(crate) use dispatch::unibyte_doc_string;
 pub(crate) use dispatch::{
     EchoSpans, echo_area_message_tick, echo_area_print_logged, echo_display_message,
@@ -326,6 +325,7 @@ pub(crate) use dispatch::{
 };
 pub use dispatch::{call, is_builtin};
 pub(crate) use dispatch::{call_with_facts, call_with_facts_arity_checked};
+pub(crate) use dispatch::{set_default_internal_symbol, set_internal_symbol};
 pub(crate) use search::category_member;
 pub(crate) use search::fast_string_match;
 #[cfg(test)]

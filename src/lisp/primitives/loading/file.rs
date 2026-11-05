@@ -113,7 +113,7 @@ pub(crate) fn load_file(
     {
         if let Some(slot) = interp
             .detached_forwarded_variables
-            .get_mut("user-init-file")
+            .get_mut(&cached_symbol!("user-init-file").symbol())
         {
             *slot = found.name;
         } else {

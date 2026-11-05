@@ -327,9 +327,10 @@ fn is_index(value: &Option<Value>) -> bool {
     value.as_ref().and_then(int_fixnum).is_some_and(|n| n >= 0)
 }
 
-/// fns.c:Fget of SYMBOL's PROPERTY.
+/// fns.c:Fget of SYMBOL's PROPERTY: the symbol object's plist, PROPERTY
+/// compared as plist_get compares a Rust caller's name.
 fn fget(interp: &Interpreter, symbol: &Value, property: &str) -> Option<Value> {
-    interp.get_symbol_property(symbol.as_symbol().ok()?, property)
+    interp.get_property_of_symbol_value(*symbol, property)
 }
 
 /// What resolve_symbol_ccl_program makes of a vector.
@@ -506,13 +507,23 @@ fn larger_vector(vec: &Value) -> Value {
     Value::vector(old.into_iter().chain(std::iter::repeat_n(Value::Nil, incr)))
 }
 
+/// CHECK_SYMBOL's symbol of VALUE, nil and t among them.
+fn checked_symbol(value: &Value) -> Result<crate::lisp::types::SymbolName, LispError> {
+    match value.kind() {
+        Kind::Symbol(symbol) => Ok(symbol),
+        Kind::Nil => Ok(crate::lisp::types::symbols::builtin_boolean(false)),
+        Kind::T => Ok(crate::lisp::types::symbols::builtin_boolean(true)),
+        _ => Err(LispError::WrongTypeArgument("symbolp".into(), *value)),
+    }
+}
+
 /// Fregister_ccl_program.
 fn register_ccl_program(
     interp: &mut Interpreter,
     name: &Value,
     ccl_prog: &Value,
 ) -> Result<Value, LispError> {
-    let symbol = name.as_symbol()?.to_string();
+    let symbol = checked_symbol(name)?;
     let mut ccl_prog = *ccl_prog;
     let mut resolved = Value::Nil;
     if !ccl_prog.is_nil() {
@@ -553,7 +564,7 @@ fn register_ccl_program(
         idx,
         Value::vector([*name, ccl_prog, resolved, Value::T]),
     )?;
-    interp.put_symbol_property(&symbol, "ccl-program-idx", Value::Integer(idx as i64));
+    interp.put_symbol_property_on(&symbol, "ccl-program-idx", Value::Integer(idx as i64));
     Ok(Value::Integer(idx as i64))
 }
 
@@ -563,7 +574,7 @@ fn register_code_conversion_map(
     symbol: &Value,
     map: &Value,
 ) -> Result<Value, LispError> {
-    let name = symbol.as_symbol()?.to_string();
+    let name = checked_symbol(symbol)?;
     if !matches!(map.kind(), Kind::Vector(_)) {
         return Err(LispError::WrongTypeArgument("vectorp".into(), *map));
     }
@@ -584,8 +595,8 @@ fn register_code_conversion_map(
         if cell.car.get() == *symbol {
             let idx = Value::Integer(i as i64);
             cell.cdr.set(*map);
-            interp.put_symbol_property(&name, "code-conversion-map", *map);
-            interp.put_symbol_property(&name, "code-conversion-map-id", idx);
+            interp.put_symbol_property_on(&name, "code-conversion-map", *map);
+            interp.put_symbol_property_on(&name, "code-conversion-map-id", idx);
             return Ok(idx);
         }
         i += 1;
@@ -595,8 +606,8 @@ fn register_code_conversion_map(
         interp.set_c_variable("code-conversion-map-vector", vector);
     }
     let idx = Value::Integer(i as i64);
-    interp.put_symbol_property(&name, "code-conversion-map", *map);
-    interp.put_symbol_property(&name, "code-conversion-map-id", idx);
+    interp.put_symbol_property_on(&name, "code-conversion-map", *map);
+    interp.put_symbol_property_on(&name, "code-conversion-map-id", idx);
     aset_vector_value(&vector, i, Value::cons(*symbol, *map))?;
     Ok(idx)
 }

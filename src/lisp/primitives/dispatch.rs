@@ -25,8 +25,8 @@ pub(crate) mod gnutls;
 mod gui_actions;
 pub(super) mod lists;
 pub(super) mod misc;
-pub(crate) use misc::set_internal_symbol;
 pub(crate) use misc::unibyte_doc_string;
+pub(crate) use misc::{set_default_internal_symbol, set_internal_symbol};
 mod misc_keymaps;
 mod numeric;
 

@@ -124,6 +124,7 @@ impl SymbolCells {
         symbol.cell().value()
     }
 
+    #[cfg(test)]
     pub(crate) fn value_by_name(&self, name: &str) -> Option<Value> {
         SymbolName::find(name)?.cell().value()
     }
@@ -145,6 +146,7 @@ impl SymbolCells {
         previous
     }
 
+    #[cfg(test)]
     pub(crate) fn insert_by_name(&mut self, name: &str, value: Value) -> Option<Value> {
         self.insert(&SymbolName::intern_str(name), value)
     }
@@ -620,16 +622,17 @@ mod tests {
     }
 
     #[test]
-    fn a_live_uninterned_symbol_is_reached_through_its_private_name() {
+    fn two_uninterned_symbols_of_one_name_are_two_variables() {
         let mut cells = fresh_cells();
         let first = SymbolName::make_uninterned(Value::string("cell"), "cell", 41);
         let second = SymbolName::make_uninterned(Value::string("cell"), "cell", 42);
         cells.insert(&first, Value::Integer(1));
-        assert_eq!(cells.value_by_name(first.as_str()), Some(Value::Integer(1)));
+        assert_eq!(cells.value(&first), Some(Value::Integer(1)));
         assert!(cells.value(&second).is_none());
-        // `make-symbol' twice with one name makes two variables.
+        // `make-symbol' twice with one name makes two variables, neither
+        // the interned symbol of that name.
         assert_ne!(first, second);
-        assert_eq!(SymbolName::intern_str(first.as_str()), first);
+        assert!(cells.value_by_name("cell").is_none());
     }
 
     #[test]

@@ -160,7 +160,7 @@ fn execute_kbd_macro(
         // loop-function termination, and command errors.
         let mut result = result.map(|()| Value::Nil);
         if let Err(hook_error) = interp.with_lisp_stack_roots(&result, |interp| {
-            run_named_hooks(interp, "kbd-macro-termination-hook", env, None)
+            run_hook(interp, &cached_symbol!("kbd-macro-termination-hook").symbol(), env)
         }) {
             result = Err(hook_error);
         }
@@ -327,7 +327,7 @@ pub(crate) fn prepare_kbd_macro_minibuffer_entry(
     // command's pending cycle before the first minibuffer key is read.
     // Kmacro's step editor uses this boundary to carry the outer macro index
     // into the minibuffer.
-    let result = safe_run_named_hooks(interp, "post-command-hook", env, Some(prompting_buffer_id));
+    let result = safe_run_hooks(interp, &cached_symbol!("post-command-hook").symbol(), env);
     if interp.has_buffer_id(prompting_buffer_id) {
         interp.set_current_buffer_id(prompting_buffer_id)?;
     }
@@ -765,12 +765,7 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
     let entry_hooks = if !executing_kbd_macro_p(interp, env) {
         Ok(())
     } else {
-        safe_run_named_hooks(
-            interp,
-            "post-command-hook",
-            env,
-            Some(interp.current_buffer_id()),
-        )
+        safe_run_hooks(interp, &cached_symbol!("post-command-hook").symbol(), env)
     };
     // GNU's recursive edit runs command_loop_2 under
     // internal_condition_case with `error': signal_or_quit stops its
@@ -887,12 +882,7 @@ fn execute_kbd_macro_resolved_command(
     interp.set_variable("real-this-command", command, env);
     crate::lisp::primitives::record_command_lossage(interp, command);
     increment_num_input_keys(interp, env);
-    safe_run_named_hooks(
-        interp,
-        "pre-command-hook",
-        env,
-        Some(interp.current_buffer_id()),
-    )?;
+    safe_run_hooks(interp, &cached_symbol!("pre-command-hook").symbol(), env)?;
     let dispatched_command = interp.lookup_var("this-command", env).unwrap_or(Value::Nil);
     // keyboard.c:command_loop_1 calls the unchanged Lisp `undefined' when
     // the map (or pre-command-hook) leaves this-command nil. In particular,
@@ -945,17 +935,19 @@ fn execute_kbd_macro_resolved_command(
     Ok(())
 }
 
+/// Whether ERROR's condition is the interned symbol EXPECTED or lists it
+/// among its `error-conditions' (read from the condition symbol itself).
 fn error_matches_condition(interp: &Interpreter, error: &LispError, expected: &str) -> bool {
-    let condition = error.condition_type();
-    condition == expected
+    let condition = error.condition_symbol();
+    condition.is_named(expected)
         || interp
-            .get_symbol_property(&condition, "error-conditions")
+            .get_property_of_symbol_value(Value::Symbol(condition), "error-conditions")
             .and_then(|conditions| conditions.to_vec().ok())
             .is_some_and(|conditions| {
                 conditions.iter().any(|condition| {
                     condition
-                        .as_symbol()
-                        .is_ok_and(|condition| condition == expected)
+                        .symbol_cell()
+                        .is_some_and(|condition| condition.is_named(expected))
                 })
             })
 }
@@ -1585,12 +1577,12 @@ define_dispatch!(
                         *stuff_string,
                     ));
                 }
-                run_named_hooks(interp, "suspend-hook", env, None)?;
+                run_hook(interp, &cached_symbol!("suspend-hook").symbol(), env)?;
                 // Emaxx currently exposes a headless batch terminal.  There is no
                 // foreground terminal process group to stop and later resume;
                 // the observable native contract in that environment is the
                 // paired hook transition.
-                run_named_hooks(interp, "suspend-resume-hook", env, None)?;
+                run_hook(interp, &cached_symbol!("suspend-resume-hook").symbol(), env)?;
                 Ok(Value::Nil)
             }
             "recursive-edit" => {

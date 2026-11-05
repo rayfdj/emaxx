@@ -353,14 +353,11 @@ fn signal_before_change(
     preserved: Option<&mut usize>,
     env: &mut Env,
 ) -> Result<OverlayHookCalls, LispError> {
+    // MODIFF <= SAVE_MODIFF && !NILP (Vfirst_change_hook).
     let first_change = !interp.buffer.borrow().is_modified()
-        && !hook_values(
-            interp,
-            "first-change-hook",
-            env,
-            Some(interp.current_buffer_id()),
-        )
-        .is_empty();
+        && interp
+            .symbol_value_key(cached_symbol!("first-change-hook"))
+            .is_some_and(|value| !value.is_nil());
     let before_change = has_change_functions(interp, ChangeHook::Before);
     let overlays = !interp.buffer.borrow().overlays.is_empty();
     if !first_change && !before_change && !overlays {
@@ -389,18 +386,7 @@ fn signal_before_change(
                 None => (start, end),
             };
             if first_change {
-                let hooks = hook_values(
-                    interp,
-                    "first-change-hook",
-                    env,
-                    Some(interp.current_buffer_id()),
-                );
-                interp.with_lisp_stack_roots(&hooks, |interp| {
-                    for hook in &hooks {
-                        call_function_value(interp, hook, &[], env)?;
-                    }
-                    Ok::<(), LispError>(())
-                })?;
+                run_hook(interp, &cached_symbol!("first-change-hook").symbol(), env)?;
             }
             if has_change_functions(interp, ChangeHook::Before) {
                 let (start, end) = fetch(interp);

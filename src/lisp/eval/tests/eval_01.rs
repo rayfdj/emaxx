@@ -6415,7 +6415,7 @@ fn native_per_buffer_manifest_is_special_and_automatically_local() {
             "GNU DEFVAR_PER_BUFFER `{name}` must retain native forwarding semantics"
         );
         assert!(
-            interp.is_auto_buffer_local(name),
+            interp.is_auto_buffer_local_symbol(&SymbolName::intern_str(name)),
             "GNU DEFVAR_PER_BUFFER `{name}` must become local when assigned"
         );
         assert_eq!(
@@ -6823,13 +6823,6 @@ fn startup_global_values_and_special_declarations_share_one_registry() {
             );
         }
     }
-    let names = interp.special_variable_names();
-    let unique = names.iter().collect::<std::collections::HashSet<_>>();
-    assert_eq!(
-        unique.len(),
-        names.len(),
-        "special-variable registry contains duplicate declarations"
-    );
 }
 
 #[test]
@@ -6982,7 +6975,7 @@ fn native_syntax_propertize_progress_is_buffer_local() {
         interp.builtin_var_value("syntax-propertize--done"),
         Some(Value::Integer(-1))
     );
-    assert!(interp.is_auto_buffer_local("syntax-propertize--done"));
+    assert!(interp.is_auto_buffer_local_symbol(&SymbolName::intern_str("syntax-propertize--done")));
     assert!(
         interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(
             "syntax-propertize--done"

@@ -327,9 +327,9 @@ pub(crate) fn intern_in_obarray_with_name(
         return Ok(Value::Symbol(existing));
     }
     let name = make_name(interp)?;
-    let symbol = crate::lisp::types::SymbolName::intern_with_lisp_name(
+    let symbol = crate::lisp::types::SymbolName::make_private(
         crate::lisp::types::make_fresh_obarray_symbol_name(symbol_name, id.id),
-        Some(name),
+        name,
     );
     let record = interp.find_record_mut(id).expect("validated obarray");
     let mut buckets = obarray::RecordBuckets(&mut record.slots);
@@ -1522,11 +1522,10 @@ pub(crate) fn run_active_minibuffer<T>(
         if interp.has_buffer_id(minibuffer.buffer_id) {
             interp.set_current_buffer_id(minibuffer.buffer_id)?;
         }
-        run_named_hooks(
+        run_hook(
             interp,
-            "minibuffer-setup-hook",
+            &cached_symbol!("minibuffer-setup-hook").symbol(),
             env,
-            Some(minibuffer.buffer_id),
         )?;
 
         // A setup hook may temporarily select another buffer (most notably
@@ -2059,11 +2058,10 @@ fn run_exit_minibuf_hook(
     if interp.has_buffer_id(buffer_id) {
         interp.set_current_buffer_id(buffer_id)?;
     }
-    let result = super::safe_run_named_hooks(
+    let result = super::safe_run_hooks(
         interp,
-        "minibuffer-exit-hook",
+        &cached_symbol!("minibuffer-exit-hook").symbol(),
         env,
-        Some(interp.current_buffer_id()),
     );
     if interp.has_buffer_id(saved) {
         interp.set_current_buffer_id(saved)?;

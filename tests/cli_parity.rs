@@ -1647,3 +1647,414 @@ fn overlay_categories_and_symbol_properties_are_read_by_object() {
         ],
     );
 }
+
+#[test]
+fn defconst_stores_with_set_default_and_uninterned_symbols_are_kept_as_objects() {
+    // eval.c:Fdefconst_1 declares the symbol as given and stores with
+    // Fset_default, so into a `let''s binding of the variable; and an
+    // uninterned symbol keeps its identity through `kill-local-variable',
+    // `kill-all-local-variables', `defalias' with advice and an
+    // `interactive-form' alias chain, each reading the object rather than
+    // its name.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defvar t5-log nil)
+(defun t5-watch (sym val op where) (push (list (symbol-name sym) val op (and where t)) t5-log))
+;; kill-local-variable and kill-all-local-variables of an uninterned
+;; variable tell its own watchers and return it.
+(let ((v (make-symbol "t5-local")))
+  (add-variable-watcher v #'t5-watch)
+  (with-temp-buffer
+    (set (make-local-variable v) 1)
+    (prin1 (list (eq (kill-local-variable v) v) (local-variable-p v)))
+    (set (make-local-variable v) 2)
+    (kill-all-local-variables)
+    (prin1 (list (local-variable-p v) (nreverse t5-log))))
+  (terpri))
+;; defalias of an uninterned symbol: its history, docstring and advice.
+(let ((f (make-symbol "t5-fn")))
+  (defalias f (lambda (x) (* x 2)) "Doubles.")
+  (advice-add f :around (lambda (orig x) (1+ (funcall orig x))))
+  (defalias f (lambda (x) (* x 3)))
+  (prin1 (list (funcall f 2) (documentation f) (and (advice-member-p (lambda (orig x) (1+ (funcall orig x))) f) t)
+               (eq (car-safe (get f 'function-history)) nil)))
+  (terpri))
+;; interactive-form along an alias chain of uninterned symbols.
+(let ((a (make-symbol "t5-a")) (b (make-symbol "t5-b")))
+  (defalias b (lambda () (interactive "p") 1))
+  (defalias a b)
+  (put b 'interactive-form '(interactive "P"))
+  (prin1 (list (interactive-form a) (commandp a)))
+  (terpri))
+;; defconst stores with set-default, and declares the symbol as given.
+(defvar t5-c 0)
+(prin1 (list (let ((t5-c 1)) (defconst t5-c 2) t5-c) t5-c))
+(terpri)
+(defvaralias 't5-al 't5-base)
+(defconst t5-al 7 "Alias doc.")
+(prin1 (list t5-base (get 't5-al 'variable-documentation) (get 't5-base 'variable-documentation)
+             (get 't5-al 'risky-local-variable) (get 't5-base 'risky-local-variable)))
+(terpri)
+(prin1 (list (defconst-1 't5-c1 3 "C1 doc.") t5-c1 (get 't5-c1 'variable-documentation) (special-variable-p 't5-c1)))
+(terpri)
+)"#,
+        ],
+    );
+}
+
+#[test]
+fn void_errors_carry_their_symbol_through_a_collection() {
+    // eval.c's `(void-variable SYMBOL)' and `(void-function SYMBOL)' hold
+    // the symbol object: an uninterned one is `eq' to itself in the
+    // handler, interpreted or byte-compiled, and the error alone keeps it
+    // through a collection while `unwind-protect' unwinds.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+;; A void uninterned function's or variable's error names the symbol itself.
+(let ((f (make-symbol "t6-nf")))
+  (prin1 (list (condition-case e (funcall f) (void-function (eq (cadr e) f)))
+               (condition-case e (symbol-value f) (void-variable (eq (cadr e) f)))
+               (condition-case e (eval f t) (void-variable (eq (cadr e) f)))
+               (condition-case e (eval (list f) t) (void-function (eq (cadr e) f)))
+               (condition-case e (funcall (byte-compile (list 'lambda () (list f)))) (void-function (eq (cadr e) f)))))
+  (terpri))
+;; The error alone holds the symbol across a collection during unwinding.
+(let ((r (condition-case e
+             (unwind-protect (funcall (make-symbol "t6-gone"))
+               (garbage-collect) (make-list 10000 nil) (garbage-collect))
+           (void-function e))))
+  (prin1 (list (car r) (symbolp (cadr r)) (symbol-name (cadr r)) (intern-soft (symbol-name (cadr r)))
+               (error-message-string r)))
+  (terpri))
+(prin1 (list (condition-case e (funcall nil) (error e)) (condition-case e (t6-undefined-fn 1) (error e))
+             (condition-case e t6-unbound-var (error e)) (error-message-string '(void-function \(setf\ x\)))))
+(terpri)
+)"#,
+        ],
+    );
+}
+
+#[test]
+fn hooks_run_as_eval_c_walks_them() {
+    // eval.c:run_hook_with_args reads the hook symbol's value as C reads
+    // a variable: a lambda value is the one function, a `t' (in a local
+    // or a global value) runs the default's functions in its place, a void
+    // default signals, the conses are walked as they stand while the
+    // functions run, and every argument of `run-hooks' must be a symbol.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defvar zlog nil)
+(defun zl (&rest a) (push (cons 'zl a) zlog) nil)
+(defun zm (&rest a) (push (cons 'zm a) zlog) nil)
+(defun zt (&rest a) (push (cons 'zt a) zlog) t)
+(defmacro zrun (&rest body) `(progn (setq zlog nil) (let ((r (condition-case e (progn ,@body) (error (list 'err e))))) (list r (reverse zlog)))))
+(defvar zh1 nil) (defvar zh2 nil) (defvar zh3 nil)
+;; A lambda value is the one function.
+(setq zh1 '(lambda (&rest a) (push (cons 'lam a) zlog)))
+(prin1 (zrun (run-hook-with-args 'zh1 1 2))) (terpri)
+;; A t in the global value runs the default in its place.
+(setq zh2 '(zl t zm))
+(prin1 (zrun (run-hooks 'zh2))) (terpri)
+;; A non-symbol argument.
+(prin1 (zrun (run-hooks 'zh2 1))) (terpri)
+(prin1 (zrun (run-hook-with-args 2))) (terpri)
+;; A local list with t, a default that is a lambda.
+(with-temp-buffer
+  (setq-default zh3 '(lambda () (push 'deflam zlog)))
+  (setq-local zh3 '(zl t zm))
+  (prin1 (zrun (run-hooks 'zh3))) (terpri)
+  (setq-default zh3 'zm)
+  (prin1 (zrun (run-hooks 'zh3))) (terpri)
+  (setq-default zh3 nil)
+  (prin1 (zrun (run-hook-with-args-until-success 'zh3))) (terpri))
+;; A local t with a void default.
+(let ((s (make-symbol "zgen")))
+  (with-temp-buffer
+    (set (make-local-variable s) (list 'zl t))
+    (prin1 (zrun (run-hooks s))) (terpri)
+    (prin1 (zrun (run-hook-with-args s 7))) (terpri))
+  (set s (list 'zm 'zl))
+  (prin1 (zrun (run-hook-with-args s 8))) (terpri)
+  (prin1 (zrun (run-hook-with-args-until-failure s 8))) (terpri)
+  (prin1 (zrun (run-hook-wrapped s (lambda (f &rest a) (push (cons 'wrap f) zlog) nil) 9))) (terpri))
+;; Destructive change of the list while it runs.
+(defvar zh4 nil)
+(defun zcut () (push 'cut zlog) (setcdr zh4 (list 'zm)))
+(setq zh4 (list 'zcut 'zl 'zl))
+(prin1 (zrun (run-hooks 'zh4))) (terpri)
+;; A hook that removes itself.
+(defvar zh5 nil)
+(defun zself () (push 'self zlog) (remove-hook 'zh5 'zself))
+(setq zh5 (list 'zself 'zl))
+(prin1 (zrun (run-hooks 'zh5) (run-hooks 'zh5))) (terpri)
+;; until-success / until-failure with t
+(setq zh2 '(zl zt zm))
+(prin1 (zrun (run-hook-with-args-until-success 'zh2 3))) (terpri)
+(prin1 (zrun (run-hook-with-args-until-failure 'zh2 3))) (terpri)
+;; Lexical binding of the hook name is not read.
+(prin1 (zrun (funcall (eval '(lambda () (let ((zh-lex '(zl))) (run-hooks 'zh-lex))) t)))) (terpri)
+;; dotted list, non-list value
+(setq zh1 (cons 'zl 'zm))
+(prin1 (zrun (run-hooks 'zh1))) (terpri)
+(setq zh1 "str")
+(prin1 (zrun (run-hooks 'zh1))) (terpri)
+(setq zh1 '(t))
+(prin1 (zrun (run-hooks 'zh1))) (terpri)
+;; void hook
+(prin1 (zrun (run-hooks 'zh-void-never))) (terpri)
+(prin1 (zrun (run-mode-hooks 'zh2))) (terpri)
+)"#,
+        ],
+    );
+}
+
+#[test]
+fn safe_run_hooks_binds_inhibit_quit_and_drops_a_failing_function() {
+    // keyboard.c:safe_run_hooks runs `kill-emacs-hook' in batch with
+    // `inhibit-quit' bound to t; a function's error is reported and the
+    // function deleted from the hook, the others still running.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defun zk1 () (princ (format "k1 %S\n" inhibit-quit)))
+(defun zk2 () (error "boom %d" 2))
+(defun zk3 () (princ (format "k3 %S\n" kill-emacs-hook)))
+(setq kill-emacs-hook (list 'zk1 'zk2 'zk3))
+(let ((s (make-symbol "zg")))
+  (set s (list 'zk1 'zk2 'zk3))
+  (setq post-gc-hook nil))
+(kill-emacs 0))"#,
+        ],
+    );
+}
+
+#[test]
+fn an_invalid_function_error_names_the_function_called() {
+    // eval.c:funcall_general signals `invalid-function' with ORIGINAL_FUN:
+    // the symbol called (an alias included) when its definition is a
+    // macro, a cons that is no lambda or any other non-function, and the
+    // definition itself only when that was what was called.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(defalias 'zz-when 'when)
+(defalias 'zz-junk '(foo . bar))
+(defalias 'zz-junk2 "str")
+(defalias 'zz-junk3 '((x) 1))
+(defalias 'zz-sf 'if)
+(dolist (form '((funcall 'when 1) (funcall 'zz-when 1) (funcall (symbol-function 'when) 1) (apply 'lambda '(5)) (funcall 'zz-junk) (funcall 'zz-junk2) (funcall 'zz-junk3)
+                (funcall 'zz-sf 1) (funcall 'if 1) (mapcar 'when '(1)) (zz-junk) (zz-junk3) (funcall (byte-compile '(lambda () (zz-junk3)))) (funcall (byte-compile '(lambda () (funcall 'when 1))))
+                (run-hooks 'zz-junk) (funcall '(macro . car) 1) (funcall '(closure) 1)))
+  (prin1 (list form (condition-case e (eval form t) (error (if (memq (car e) '(invalid-function void-function)) (list (car e) (if (symbolp (cadr e)) (cadr e) (type-of (cadr e)))) e))))) (terpri)))"#,
+        ],
+    );
+}
+
+#[test]
+fn generated_hook_programs_run_as_gnu_runs_them() {
+    // 150 generated programs that add, remove and set hook functions
+    // locally and globally (`t' markers, lambdas, a function that edits
+    // the list it is run from, one that removes itself, one that signals),
+    // run them by every runner and print each run's answer and calls.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(random "hook-fuzz")
+(defvar hk-log nil)
+(defun hk-try (f &rest args) (condition-case e (apply f args) (error (list 'err (car e) (cdr e)))))
+(dolist (n '(hk-a hk-b hk-c hk-d))
+  (defalias n (let ((n n)) (lambda (&rest args) (push (cons n args) hk-log) (eq n 'hk-c)))))
+(defalias 'hk-x (lambda (&rest _) (push 'x hk-log) (error "hk-x failed")))
+(defalias 'hk-cut (lambda (&rest _) (push 'cut hk-log) (when (consp hk-h) (setcdr hk-h nil)) nil))
+(defalias 'hk-self (lambda (&rest _) (push 'self hk-log) (remove-hook 'hk-h 'hk-self) (remove-hook 'hk-h 'hk-self t) nil))
+(defvar hk-h nil)
+(defun hk-fn () (nth (random 8) '(hk-a hk-b hk-c hk-d hk-x hk-cut hk-self (lambda (&rest a) (push (cons 'lam a) hk-log) nil))))
+(defun hk-run ()
+  (setq hk-log nil)
+  (let ((r (pcase (random 7)
+             (0 (hk-try #'run-hooks 'hk-h))
+             (1 (hk-try #'run-hook-with-args 'hk-h 1 2))
+             (2 (hk-try #'run-hook-with-args-until-success 'hk-h 3))
+             (3 (hk-try #'run-hook-with-args-until-failure 'hk-h 4))
+             (4 (hk-try #'run-hook-wrapped 'hk-h (lambda (f &rest a) (push (list 'w f a) hk-log) (eq f 'hk-b)) 5))
+             (5 (hk-try #'run-hooks 'hk-h 'hk-h))
+             (_ (hk-try #'run-mode-hooks 'hk-h)))))
+    (list r (reverse hk-log))))
+(dotimes (i 150)
+  (makunbound 'hk-h) (defvar hk-h nil) (setq-default hk-h nil)
+  (with-temp-buffer
+    (let ((log nil))
+      (dotimes (_ (+ 1 (random 6)))
+        (push (pcase (random 9)
+                (0 (hk-try #'add-hook 'hk-h (hk-fn)))
+                (1 (hk-try #'add-hook 'hk-h (hk-fn) (nth (random 4) '(nil t 90 -90)) t))
+                (2 (hk-try #'remove-hook 'hk-h (hk-fn) (zerop (random 2))))
+                (3 (hk-try #'set 'hk-h (nth (random 5) (list nil (hk-fn) (list (hk-fn) t (hk-fn)) (cons (hk-fn) (hk-fn)) '(t)))))
+                (4 (hk-try #'set-default 'hk-h (nth (random 5) (list nil (hk-fn) (list (hk-fn) t) '(lambda () (push 'deflam hk-log)) '(t hk-a)))))
+                (5 (hk-try #'kill-local-variable 'hk-h))
+                (6 (hk-try #'make-local-variable 'hk-h))
+                (7 (hk-run))
+                (_ (hk-try #'makunbound 'hk-h)))
+              log))
+      (prin1 (list i (nreverse log) (hk-run) (hk-try #'symbol-value 'hk-h) (hk-try #'default-value 'hk-h) (local-variable-p 'hk-h)))
+      (terpri))))
+)"#,
+        ],
+    );
+}
+
+#[test]
+fn a_name_interned_again_after_obarray_clear_is_a_new_symbol() {
+    // lread.c:intern_driver makes a new symbol on every obarray miss: after
+    // `obarray-clear' (here through `clear-abbrev-table', on every table
+    // the image holds) the name is interned as a new object, not the one
+    // the obarray held before.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+;; A symbol interned after `clear-abbrev-table' (obarray-clear) is a new
+;; object, in the tables the image holds as in new ones.
+(let ((same nil))
+  (dolist (name abbrev-table-name-list)
+    (let* ((tab (symbol-value name)) (old (obarray-get tab "")))
+      (clear-abbrev-table tab)
+      (when (eq old (obarray-get tab "")) (push name same))))
+  (prin1 (list 'same-after-clear same)) (terpri))
+(let* ((tab (obarray-make)) (a (intern "x" tab)))
+  (put a 'p 1)
+  (obarray-clear tab)
+  (let ((b (intern "x" tab)))
+    (prin1 (list (eq a b) (get b 'p) (eq (intern-soft "x" tab) b) (intern-soft "x"))) (terpri))))"#,
+        ],
+    );
+}
+
+#[test]
+fn uninterned_symbols_keep_their_roles_by_object() {
+    // A symbol `make-symbol' made, as a function (its arity), a macro
+    // (`macroexpand' with and without an environment entry for it), a
+    // property owner, a hash-table test, a char-table purpose, a coding
+    // system and a command with `interactive-args': each role is read
+    // from the symbol itself, not from a name, which names none.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(let ((s (make-symbol "zf")) (m (make-symbol "zm")) (p (make-symbol "zp")))
+  (fset s 'car)
+  (defalias m (cons 'macro (lambda (x) (list 'quote x))))
+  (put p 'event-kind 'mouse-click)
+  (prin1 (list (condition-case e (func-arity s) (error e))
+               (condition-case e (macroexpand (list m 1)) (error e))
+               (condition-case e (macroexpand-1 (list m 2) (list (cons m (lambda (x) (list 'quote (list x x)))))) (error e))
+               (get p 'event-kind)
+               (progn (define-hash-table-test (make-symbol "zt") 'eq 'sxhash-eq) 'ok)
+               (let ((h (make-symbol "zh"))) (define-hash-table-test h 'equal 'sxhash-equal) (hash-table-count (make-hash-table :test h)))
+               (let ((ct (make-symbol "zct"))) (put ct 'char-table-extra-slots 2) (char-table-extra-slot (make-char-table ct) 1))))
+  (terpri))
+(let ((cs (make-symbol "zcs")))
+  (prin1 (list (coding-system-p cs) (condition-case e (check-coding-system cs) (error (car e))))) (terpri))
+(let ((f (make-symbol "zcmd")))
+  (fset f (lambda (x) (interactive "p") (* x 2)))
+  (put f 'interactive-args '((x 21)))
+  (prin1 (list (commandp f) (call-interactively f))) (terpri)))"#,
+        ],
+    );
+}
+
+#[test]
+fn generated_uninterned_symbol_programs_run_as_gnu_runs_them() {
+    // 150 generated programs that give a fresh uninterned symbol one of 26
+    // roles (function, variable, local variable, property owner, hash
+    // test, char-table purpose, error, hook, macro, key, text and overlay
+    // property, catch tag, command, watched variable, compiled callee)
+    // and print what each role answers.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(random "uninterned-fuzz")
+(defun un-try (f) (condition-case e (funcall f) (error (list 'err (car e) (and (cdr e) (if (symbolp (cadr e)) (symbol-name (cadr e)) (cadr e)))))))
+(defvar un-log nil)
+(defun un-case (s n)
+  (pcase n
+    (0 (fset s (lambda (&rest a) (cons 'called a))) (list (funcall s 1) (apply s '(2 3)) (func-arity s) (functionp s) (fboundp s) (commandp s)))
+    (1 (set s 41) (list (symbol-value s) (boundp s) (default-value s) (progn (makunbound s) (boundp s))))
+    (2 (put s 'zk 7) (list (get s 'zk) (symbol-plist s) (function-get s 'zk) (progn (function-put s 'zj 8) (get s 'zj))))
+    (3 (define-hash-table-test s 'equal 'sxhash-equal) (let ((h (make-hash-table :test s))) (puthash "a" 1 h) (list (gethash "a" h) (hash-table-count h) (eq (hash-table-test h) s))))
+    (4 (put s 'char-table-extra-slots 1) (let ((ct (make-char-table s 0))) (set-char-table-extra-slot ct 0 'x) (list (char-table-extra-slot ct 0) (eq (char-table-subtype ct) s) (aref ct ?a))))
+    (5 (define-error s "Zz failure") (list (condition-case e (signal s '(1)) (error (list (eq (car e) s) (cdr e) (error-message-string e)))) (get s 'error-message)))
+    (6 (set s nil) (add-hook s (lambda () (push 'h1 un-log))) (setq un-log nil) (run-hooks s) (list un-log (symbol-value s)))
+    (7 (defalias s (cons 'macro (lambda (x) (list 'quote (list x x))))) (list (macroexpand (list s 1)) (eval (list s 2) t) (macrop s)))
+    (8 (let ((m (make-sparse-keymap))) (define-key m (vector s) 'ignore) (list (lookup-key m (vector s)) (where-is-internal 'ignore (list m)))))
+    (9 (with-temp-buffer (insert "abc") (put-text-property 1 3 s 'v) (list (get-text-property 1 s) (text-properties-at 1) (next-single-property-change 1 s))))
+    (10 (with-temp-buffer (insert "abc") (let ((o (make-overlay 1 3))) (overlay-put o s 9) (list (overlay-get o s) (get-char-property 1 s)))))
+    (11 (list (plist-get (list s 1) s) (assq s (list (cons s 2))) (memq s (list 'a s)) (intern-soft (symbol-name s)) (eq s (intern (symbol-name s)))))
+    (12 (fset s (lambda (x) (interactive "p") (* x 2))) (list (commandp s) (interactive-form s) (call-interactively s)))
+    (13 (with-temp-buffer (set (make-local-variable s) 5) (list (local-variable-p s) (buffer-local-value s (current-buffer)) (symbol-value s) (default-boundp s))))
+    (14 (eval (list 'defvar s 3)) (list (special-variable-p s) (eval (list 'let (list (list s 4)) (list 'symbol-value (list 'quote s))) t)))
+    (15 (fset s 'car) (list (funcall (byte-compile (list 'lambda () (list s ''(1 2))))) (func-arity s) (indirect-function s)))
+    (16 (put s 'variable-documentation "Doc of zz.") (list (documentation-property s 'variable-documentation)))
+    (17 (let ((log nil)) (set s 1) (add-variable-watcher s (lambda (&rest a) (push (nth 2 a) log))) (set s 2) (list log (get-variable-watchers s))))
+    (18 (list (prin1-to-string s) (let ((print-gensym t)) (prin1-to-string s)) (format "%S" (list s)) (symbol-name s)))
+    (19 (defalias s 'list) (list (funcall s 1 2) (symbol-function s) (indirect-function s) (eq (symbol-function s) 'list)))
+    (20 (set s 10) (list (eval s t) (eval (list 'setq s 11) t) (symbol-value s) (eval (list '1+ s) t)))
+    (21 (fset s (lambda () 'z)) (list (funcall (byte-compile (list 'lambda () (list s)))) (eval (list s) t) (mapcar s nil)))
+    (22 (with-temp-buffer (make-local-variable s) (list (local-variable-p s) (boundp s) (local-variable-if-set-p s))))
+    (23 (list (catch s (throw s 'thrown)) (condition-case e (throw s 1) (no-catch (list (eq (cadr e) s))))))
+    (24 (let ((tbl (obarray-make))) (list (intern-soft (symbol-name s) tbl) (eq (intern (symbol-name s) tbl) s))))
+    (25 (set s 1) (list (eval (list 'let* (list (list s 2)) s) t) (eval (list 'let (list (list s 3)) (list 'boundp (list 'quote s))) nil)))))
+(dotimes (i 150)
+  (let* ((s (make-symbol (format "un-%d" (random 5))))
+         (n (random 26)))
+    (prin1 (list i n (un-try (lambda () (un-case s n))))) (terpri)))
+)"#,
+        ],
+    );
+}

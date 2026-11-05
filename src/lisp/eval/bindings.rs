@@ -270,12 +270,12 @@ impl Interpreter {
                 None => self.localized_default_symbol(symbol),
             };
         }
-        let c_slot = resolved_symbol
+        let found = resolved_symbol
             .copied()
-            .or_else(|| SymbolName::find(resolved))
-            .is_some_and(|symbol| symbol.cell().has_c_slot());
+            .or_else(|| SymbolName::find(resolved));
+        let c_slot = found.is_some_and(|symbol| symbol.cell().has_c_slot());
         let builtin = || c_slot.then(|| self.builtin_var_value(resolved)).flatten();
-        if c_slot && self.has_native_text_conversion_style(resolved) {
+        if c_slot && found.is_some_and(|symbol| self.has_native_text_conversion_style(&symbol)) {
             let value = self.buffer.borrow().text_conversion_style;
             return (!matches!(value.kind(), Kind::Unbound)).then_some(value);
         }
@@ -339,8 +339,8 @@ impl Interpreter {
     }
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
-        let symbol =
-            SymbolName::interned_cached(name).ok_or_else(|| LispError::Void(name.to_owned()))?;
+        let symbol = SymbolName::interned_cached(name)
+            .ok_or_else(|| LispError::Void(Value::symbol(name)))?;
         self.symbol_value_cell_symbol(&symbol)
     }
 
@@ -378,7 +378,7 @@ impl Interpreter {
 
     pub(crate) fn symbol_value_cell_symbol(&self, name: &SymbolName) -> Result<Value, LispError> {
         if let Some(value) = self.loaded_local_value(name) {
-            return value.ok_or_else(|| LispError::Void(name.as_str().to_owned()));
+            return value.ok_or_else(|| LispError::Void(Value::Symbol(*name)));
         }
         let resolved_owned;
         let resolved = if self.globals.alias(name).is_none() {
@@ -388,7 +388,7 @@ impl Interpreter {
             &resolved_owned
         };
         self.resolved_dynamic_value(resolved)
-            .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()))
+            .ok_or_else(|| LispError::Void(Value::Symbol(*resolved)))
     }
 
     /// data.c:find_symbol_value of NAME's alias chain's end with no
@@ -428,7 +428,8 @@ impl Interpreter {
             return Some(value);
         }
         if !self.detached_forwarded_variables.is_empty()
-            && let Some(detached) = self.detached_forwarded_variables.get(name)
+            && let Some(detached) = SymbolName::find(name)
+                .and_then(|symbol| self.detached_forwarded_variables.get(&symbol))
         {
             return Some(*detached);
         }
@@ -443,7 +444,7 @@ impl Interpreter {
         key: crate::lisp::types::symbols::SymbolKey,
     ) -> Option<Value> {
         if !self.detached_forwarded_variables.is_empty()
-            && let Some(detached) = self.detached_forwarded_variables.get(key.name())
+            && let Some(detached) = key.with(|symbol| self.detached_forwarded_variables.get(symbol))
         {
             return Some(*detached);
         }
@@ -453,19 +454,23 @@ impl Interpreter {
     /// The remaining native slot adapter is reached only through the object
     /// that the C initializer registered, never through a reused spelling.
     pub(crate) fn builtin_symbol_value(&self, symbol: &SymbolName) -> Option<Value> {
-        symbol
-            .cell()
-            .has_c_slot()
-            .then(|| self.builtin_var_value(symbol.as_str()))
-            .flatten()
+        // A symbol `makunbound' detached from its C slot stays void until
+        // something stores into it again (data.c set_internal).
+        if !symbol.cell().has_c_slot() || self.forwarded_variable_detached(symbol) {
+            return None;
+        }
+        self.builtin_default_value(symbol.as_str())
     }
 
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
-        // A symbol `makunbound' detached from its C slot stays void until
-        // something stores into it again (data.c set_internal).
-        if self.forwarded_variable_detached(name) {
+        if SymbolName::find(name).is_some_and(|symbol| self.forwarded_variable_detached(&symbol)) {
             return None;
         }
+        self.builtin_default_value(name)
+    }
+
+    /// The value the C variable NAME has from its initializer.
+    fn builtin_default_value(&self, name: &str) -> Option<Value> {
         match name {
             // casefiddle.c creates this value cell as nil; simple.el installs
             // the real extraction policy during loadup.
@@ -886,7 +891,7 @@ impl Interpreter {
         // the end of its redirect chain.
         let resolved = self.resolve_variable_name(name)?;
         self.lookup_var_with_resolved_name(name, &resolved, env, None)?
-            .ok_or_else(|| LispError::Void(name.to_owned()))
+            .ok_or_else(|| LispError::Void(Value::symbol(name)))
     }
 
     /// Evaluate an already-interned symbol without rebuilding and rehashing
@@ -971,7 +976,7 @@ impl Interpreter {
         env: &Env,
     ) -> Result<Value, LispError> {
         let Some(binding) = self.raw_function_binding_symbol(symbol, env) else {
-            return Err(LispError::VoidFunction(symbol.as_str().to_string()));
+            return Err(LispError::VoidFunction(Value::Symbol(*symbol)));
         };
         let Kind::Symbol(next) = binding.kind() else {
             return Ok(binding);
@@ -991,7 +996,7 @@ impl Interpreter {
                 ])));
             }
             let Some(binding) = self.raw_function_binding_symbol(&current, env) else {
-                return Err(LispError::VoidFunction(symbol.as_str().to_string()));
+                return Err(LispError::VoidFunction(Value::Symbol(*symbol)));
             };
             match binding.kind() {
                 Kind::Symbol(next) => current = next,
@@ -1020,14 +1025,20 @@ impl Interpreter {
     /// eval.c:Fmacroexpand resolves the current function cell, then reads
     /// its actual car/cdr. No cached verdict may outlive a direct cons store.
     /// The usual non-alias path needs no allocation or indirection tracking.
-    pub(crate) fn macro_position_function(&self, name: &str, env: &Env) -> Option<Value> {
-        let binding = self.raw_function_binding(name, env)?;
+    /// SYMBOL's function through its aliases, as Fmacroexpand's
+    /// indirect_function reads it; None for a cycle or a void cell.
+    pub(crate) fn macro_position_function_symbol(
+        &self,
+        symbol: &SymbolName,
+        env: &Env,
+    ) -> Option<Value> {
+        let binding = self.raw_function_binding_symbol(symbol, env)?;
         let Kind::Symbol(mut current) = binding.kind() else {
             return Some(binding);
         };
         let mut seen = Vec::new();
         loop {
-            if current.as_str() == name || seen.contains(&current) {
+            if current == *symbol || seen.contains(&current) {
                 return None;
             }
             seen.push(current);
@@ -1043,7 +1054,7 @@ impl Interpreter {
         // so don't pay for indirection-cycle bookkeeping until a symbol
         // chain actually appears.
         let Some(binding) = self.raw_function_binding(name, env) else {
-            return Err(LispError::VoidFunction(name.to_string()));
+            return Err(LispError::VoidFunction(Value::symbol(name)));
         };
         let Kind::Symbol(next) = binding.kind() else {
             return Ok(binding);
@@ -1061,7 +1072,7 @@ impl Interpreter {
             }
 
             let Some(binding) = self.raw_function_binding(&current, env) else {
-                return Err(LispError::VoidFunction(name.to_string()));
+                return Err(LispError::VoidFunction(Value::symbol(name)));
             };
             match binding.kind() {
                 Kind::Symbol(next) => current = next.to_string(),
@@ -1247,8 +1258,7 @@ impl Interpreter {
         let resolved = symbol.as_str();
 
         if !symbol.cell().has_c_slot() {
-            if let Some(SpecialBindingScope::BufferLocal(buffer_id)) =
-                self.assignment_scope_symbol(symbol)
+            if let Some(SpecialBindingScope::BufferLocal(buffer_id)) = self.assignment_scope(symbol)
             {
                 self.set_buffer_local_value_symbol(buffer_id, symbol, value);
             } else {
@@ -1283,7 +1293,7 @@ impl Interpreter {
             self.buffer.borrow_mut().set_undo_list(value);
             return;
         }
-        if let Some(scope) = self.assignment_scope_symbol(symbol) {
+        if let Some(scope) = self.assignment_scope(symbol) {
             match scope {
                 SpecialBindingScope::Global => {
                     self.set_global_binding_resolved(symbol, value);
@@ -1302,27 +1312,26 @@ impl Interpreter {
     // directly.  Returns true when the property handled the definition.
     pub(crate) fn defalias_fset_function_handles(
         &mut self,
-        name: &str,
+        symbol: &SymbolName,
         definition: &Value,
         env: &mut Env,
     ) -> bool {
-        let Some(fsetfun) = self.get_symbol_property(name, "defalias-fset-function") else {
+        let Some(fsetfun) = cached_symbol!("defalias-fset-function")
+            .with(|property| self.get_symbol_property_of(symbol, property))
+        else {
             return false;
         };
         if !fsetfun.is_truthy() {
             return false;
         }
-        let handled = self.call_function_value(
-            fsetfun,
-            None,
-            &[Value::Symbol(name.to_string().into()), *definition],
-            env,
-        );
+        let handled =
+            self.call_function_value(fsetfun, None, &[Value::Symbol(*symbol), *definition], env);
         handled.is_ok()
     }
 
     /// GNU keeps macro-ness and callable identity in the same function
     /// cell. Rebinding changes that payload without changing the obarray.
+    #[cfg(test)]
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {
         let symbol = SymbolName::intern_str(name);
         self.set_function_binding_symbol(&symbol, function);
@@ -1342,15 +1351,6 @@ impl Interpreter {
     /// Lisp `comp-subr-trampoline-install' before replacing an ordinary
     /// primitive, so the Rust runtime must do the same while leaving all
     /// trampoline policy and synthesis in comp-run.el/comp.el.
-    pub(crate) fn fset_function(
-        &mut self,
-        name: &str,
-        definition: Value,
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        self.fset_function_symbol(&SymbolName::intern_str(name), definition, env)
-    }
-
     pub(crate) fn fset_function_symbol(
         &mut self,
         symbol: &SymbolName,
@@ -1397,26 +1397,29 @@ impl Interpreter {
         self.timer_callback_depth += 1;
     }
 
-    pub(crate) fn defer_unloaded_defsubst(&mut self, name: &str, env: &Env) -> bool {
+    pub(crate) fn defer_unloaded_defsubst(&mut self, symbol: &SymbolName, env: &Env) -> bool {
         if self.timer_callback_depth == 0
             || !self
                 .lookup_var("loadhist-unload-filename", env)
                 .is_some_and(|value| value.is_truthy())
-            || self.get_symbol_property(name, "byte-optimizer")
-                != Some(Value::Symbol("byte-compile-inline-expand".into()))
+            || !cached_symbol!("byte-optimizer")
+                .with(|property| self.get_symbol_property_of(symbol, property))
+                .is_some_and(|optimizer| {
+                    matches!(optimizer.kind(), Kind::Symbol(name) if name.is_named("byte-compile-inline-expand"))
+                })
         {
             return false;
         }
-        let Some(definition) = self.globals.function_by_name(name) else {
+        let Some(definition) = self.globals.function(symbol) else {
             return false;
         };
         if !self
             .deferred_defsubst_unbindings
             .iter()
-            .any(|(queued, _)| queued == name)
+            .any(|(queued, _)| queued == symbol)
         {
             self.deferred_defsubst_unbindings
-                .push((name.to_string(), definition));
+                .push((*symbol, definition));
         }
         true
     }
@@ -1427,9 +1430,9 @@ impl Interpreter {
         if self.timer_callback_depth != 0 {
             return;
         }
-        for (name, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
-            if self.globals.function_by_name(&name) == Some(definition) {
-                self.set_function_binding(&name, None);
+        for (symbol, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
+            if self.globals.function(&symbol) == Some(definition) {
+                self.set_function_binding_symbol(&symbol, None);
             }
         }
     }

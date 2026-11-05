@@ -81,9 +81,12 @@ pub(crate) fn hash_table_test_descriptor(
     let (compare, hash) = if standard.is_some() {
         (Value::Nil, Value::Nil)
     } else {
-        let name = test.as_symbol()?;
+        // Fget (test, Qhash_table_test) of the symbol itself.
+        if !test.is_symbol() {
+            return Err(LispError::WrongTypeArgument("symbolp".into(), test));
+        }
         let functions = interp
-            .get_symbol_property(name, "hash-table-test")
+            .get_property_of_symbol_value(test, "hash-table-test")
             .and_then(|prop| prop.cons_values())
             .and_then(|(compare, tail)| tail.cons_values().map(|(hash, _)| (compare, hash)));
         functions.ok_or_else(|| {

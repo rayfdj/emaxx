@@ -1857,7 +1857,6 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         panic!("buffer")
     };
     let source_id = source_buffer.id;
-    interp.set_buffer_local_hook(source_id, "zz-dump-hook", vec![Value::symbol("car")]);
     let source_undo_value = interp
         .get_buffer_by_id(source_id)
         .expect("live")
@@ -2101,12 +2100,6 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     assert_eq!(overlay.plist().word(), slots[8].word());
     assert!(ov.buffer().is_none());
 
-    // The local hook list came with the buffer.
-    assert_eq!(
-        target.buffer_local_hook_lists(source_id),
-        vec![("zz-dump-hook".to_owned(), vec![Value::symbol("car")])]
-    );
-
     // The killed buffer is an object with no buffer behind it.
     let Kind::Buffer(killed) = slots[7].kind() else {
         panic!("killed buffer")
@@ -2193,9 +2186,10 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
     interp.eval(&form, &mut env).expect("setup evaluates");
     interp.keyboard_input.recent_keys = vec![Value::Integer(97), Value::symbol("f1")];
     interp.keyboard_input.command_keys = vec![Value::Integer(97)];
-    interp
-        .detached_forwarded_variables
-        .insert("zz-detached".into(), Value::list([Value::Integer(1)]));
+    interp.detached_forwarded_variables.insert(
+        SymbolName::intern_str("zz-detached"),
+        Value::list([Value::Integer(1)]),
+    );
     interp.schedule_timer_after(Value::symbol("car"), vec![Value::Nil], 1000.0, Some(5.0));
     interp.ert_tests.push(crate::lisp::eval::ErtTestDefinition {
         name: "zz-test".into(),
