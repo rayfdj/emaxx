@@ -1419,7 +1419,6 @@ pub(crate) fn internal_complete_buffer(
             args.len(),
         ));
     }
-    let input = string_text(&args[0])?;
     let buffer_alist = Value::list(
         interp
             .buffer_list
@@ -1435,8 +1434,9 @@ pub(crate) fn internal_complete_buffer(
     match args[2].kind() {
         Kind::Nil => try_completion(interp, &[args[0], buffer_alist, args[1]], env),
         Kind::T => {
+            // Fall_completions checks STRING; only this flag reads it here.
             let completions = all_completions(interp, &[args[0], buffer_alist, args[1]], env)?;
-            if !input.is_empty() {
+            if !string_text(&args[0])?.is_empty() {
                 return Ok(completions);
             }
             let all = completions.to_vec()?;

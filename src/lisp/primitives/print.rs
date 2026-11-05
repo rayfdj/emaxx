@@ -1768,15 +1768,16 @@ pub(crate) fn md5_source_bytes(
         };
         return crate::lisp::primitives::text::iv_auto_bytes(length as usize);
     } else {
-        return Err(LispError::SignalValue(Value::list([
-            Value::symbol("error"),
-            Value::string("Invalid object argument"),
+        // signal_error ("Invalid object argument", NILP (object) ?
+        // build_string ("nil") : object).
+        return Err(crate::lisp::primitives::values::signal_error(
+            "Invalid object argument",
             if source.is_nil() {
                 Value::string("nil")
             } else {
                 *source
             },
-        ])));
+        ));
     };
     let object = if string_multibyte_p(&object).expect("extracted string") {
         // Explicit buffer coding is checked by code_convert_string only

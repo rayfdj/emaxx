@@ -2288,8 +2288,7 @@ define_dispatch!(
             "internal-default-process-sentinel" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let message = string_text(&args[1])?;
-                internal_default_process_sentinel(interp, process_id, &message, env)?;
+                internal_default_process_sentinel(interp, process_id, args[1], env)?;
                 Ok(Value::Nil)
             }
             "set-process-sentinel" => {
@@ -2443,7 +2442,9 @@ define_dispatch!(
             }
             "get-process" => {
                 need_args(name, args, 1)?;
-                if matches!(args[0].kind(), Kind::Record(_)) {
+                // PROCESSP (name) answers it; anything else is CHECK_STRING'd.
+                if matches!(args[0].kind(), Kind::Record(record) if record.kind == crate::lisp::eval::RecordKind::Process)
+                {
                     return Ok(args[0]);
                 }
                 let requested = string_text(&args[0])?;

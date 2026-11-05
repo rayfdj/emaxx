@@ -880,6 +880,8 @@ define_dispatch!(
                 loop {
                     let symbol = match current.kind() {
                         Kind::Symbol(symbol) => symbol,
+                        // SYMBOLP (t): its function cell is read too.
+                        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
                         _ if symbols_with_pos_enabled(interp, env) => {
                             let Some((Kind::Symbol(symbol), _)) =
                                 symbol_with_pos_parts(interp, &current)
@@ -902,7 +904,7 @@ define_dispatch!(
                         .lookup_function_symbol(&symbol, env)
                         .map_err(LispError::into_kind)
                     {
-                        Ok(resolved) if matches!(resolved.kind(), Kind::Symbol(_)) => {
+                        Ok(resolved) if matches!(resolved.kind(), Kind::Symbol(_) | Kind::T) => {
                             current = resolved;
                         }
                         Ok(resolved) => return Ok(resolved),

@@ -2571,7 +2571,7 @@ fn insert_with_read_only_cleared(
 pub(crate) fn internal_default_process_sentinel(
     interp: &mut Interpreter,
     process_id: u64,
-    message: &str,
+    message: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
     if matches!(
@@ -2602,10 +2602,13 @@ pub(crate) fn internal_default_process_sentinel(
     interp.buffer.borrow_mut().goto_char(insert_at);
     // process.c's four insertions, each through the change protocol.
     let inserted = insert_with_read_only_cleared(interp, buffer_id, env, |interp, env| {
-        for text in ["\nProcess ", process_name.as_str(), " ", message] {
+        for text in ["\nProcess ", process_name.as_str(), " "] {
             insert_text_with_hooks(interp, text, None, &[], false, false, env)?;
         }
-        Ok(())
+        // Finsert (1, &msg): a message that is no string or character
+        // signals once the rest is in, as GNU's does.
+        crate::lisp::primitives::hash_insert::insert_impl(interp, &[message], env, false, false)
+            .map(|_| ())
     });
     let new_pos = interp.buffer.borrow().point();
     let result = inserted.and_then(|()| interp.set_marker(mark_id, Some(new_pos), Some(buffer_id)));
@@ -4547,7 +4550,7 @@ fn run_process_sentinel(
                 env,
             )?;
         } else {
-            internal_default_process_sentinel(interp, process_id, event, env)?;
+            internal_default_process_sentinel(interp, process_id, Value::string(event), env)?;
         }
         Ok(())
     })

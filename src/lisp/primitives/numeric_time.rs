@@ -2318,7 +2318,8 @@ pub(crate) fn numeric_result_value(
 ) -> Result<Value, LispError> {
     match value.kind() {
         Kind::Integer(number) => Ok(Value::Integer(number)),
-        Kind::BigInteger(number) => Ok(normalize_bigint_value((number).into())),
+        // The bignum object itself: minmax_driver returns an argument.
+        Kind::BigInteger(_) => Ok(*value),
         Kind::Float(number) => Ok(Value::Float(number)),
         Kind::Marker(id) => Ok(Value::Integer(
             interp

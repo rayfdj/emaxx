@@ -1534,15 +1534,33 @@ define_dispatch!(
             }
             "internal-set-font-selection-order" => {
                 need_args(name, args, 1)?;
-                let values = args[0].to_vec()?;
+                // CHECK_LIST (order); then up to four of the attribute
+                // keywords, and signal_error naming ORDER for any other
+                // shape.
+                let order = args[0];
+                if !matches!(order.kind(), Kind::Nil | Kind::Cons(_)) {
+                    return Err(wrong_type_argument("listp", order));
+                }
                 let expected = [":width", ":height", ":weight", ":slant"];
-                if values.len() != expected.len()
-                || values.iter().any(|value| {
-                    !matches!(value.kind(), Kind::Symbol(symbol) if expected.contains(&symbol.as_str()))
-                })
-            {
-                return Err(LispError::Signal("Invalid font sort order".into()));
-            }
+                let mut values = Vec::with_capacity(expected.len());
+                let mut list = order;
+                while values.len() < expected.len() {
+                    let Some((attribute, rest)) = list.cons_values() else {
+                        break;
+                    };
+                    if !matches!(attribute.kind(), Kind::Symbol(symbol) if expected.iter().any(|keyword| symbol.is_named(keyword)))
+                    {
+                        break;
+                    }
+                    values.push(attribute);
+                    list = rest;
+                }
+                if !list.is_nil() || values.len() != expected.len() {
+                    return Err(crate::lisp::primitives::values::signal_error(
+                        "Invalid font sort order",
+                        order,
+                    ));
+                }
                 interp.font_selection_order = std::array::from_fn(|index| {
                     values[index]
                         .as_symbol()

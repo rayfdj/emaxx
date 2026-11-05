@@ -2178,6 +2178,104 @@ fn charsets_are_found_by_their_symbols() {
 }
 
 #[test]
+fn argument_types_are_checked_and_answered_as_gnu_does() {
+    // A sweep of every subr with ordinary values of each type in each
+    // argument found these: abs, max, min and the one-argument logical
+    // operations return their argument itself (data.c and floatfns.c),
+    // compose-string-internal takes nil ends (validate_subarray),
+    // list_length names a dotted list's tail, signal_error splices a
+    // proper-list datum (font-shape-gstring, md5, secure-hash,
+    // internal-set-font-selection-order), goto-char refuses a bignum,
+    // indirect-function reads t's function cell, posn-at-x-y is
+    // CHECK_FIXNAT's, and window margins and new pixel sizes are
+    // check_integer_range's.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r##"(progn
+(dolist (f (list
+  (lambda () (let ((x 1.5) (b (1+ most-positive-fixnum)) (n -2.5)) (list (eq (abs x) x) (eq (abs b) b) (eq (max b) b) (eq (min b) b) (eq (logand b) b) (eq (logior b) b) (eq (logxor b) b) (eq (abs n) n) (eq (max x) x) (eq (+ b) b) (eq (* b) b) (eq (- b) b))))
+  (lambda () (let ((s (copy-sequence "abc"))) (list (compose-string-internal s nil nil) (get-text-property 0 'composition s) (condition-case e (compose-string-internal s 1 0) (error e)))))
+  (lambda () (list (condition-case e (composition-sort-rules '(1 . 2)) (error e)) (condition-case e (composition-sort-rules '(1 2)) (error e)) (composition-sort-rules '(x)) (condition-case e (composition-sort-rules 5) (error e))))
+  (lambda () (list (condition-case e (font-shape-gstring '(1 2) nil) (error e)) (condition-case e (md5 '(1 2)) (error e)) (condition-case e (secure-hash 'md5 '(1 2)) (error e)) (condition-case e (md5 '(1 . 2)) (error e))))
+  (lambda () (with-temp-buffer (insert "abc") (list (condition-case e (goto-char (1+ most-positive-fixnum)) (error e)) (condition-case e (goto-char 1.5) (error e)) (point))))
+  (lambda () (list (indirect-function t) (indirect-function nil) (indirect-function 'car) (indirect-function 5) (indirect-function "x")))
+  (lambda () (list (condition-case e (internal-set-font-selection-order '(1 . 2)) (error e)) (condition-case e (internal-set-font-selection-order '(1 2)) (error e)) (condition-case e (internal-set-font-selection-order 5) (error e))))
+  (lambda () (list (condition-case e (posn-at-x-y 0 nil) (error e)) (condition-case e (posn-at-x-y -1 nil) (error e)) (condition-case e (posn-at-x-y -2 0) (error e)) (condition-case e (posn-at-x-y nil 0) (error e))))
+  (lambda () (list (condition-case e (set-window-margins nil (1+ most-positive-fixnum)) (error e)) (condition-case e (set-window-margins nil 0 (1+ most-positive-fixnum)) (error e)) (condition-case e (set-window-margins nil -1) (error e)) (condition-case e (set-window-margins nil 1.5) (error e))))
+  (lambda () (list (condition-case e (set-window-new-pixel nil -1) (error e)) (condition-case e (set-window-new-pixel nil (1+ most-positive-fixnum)) (error e)) (condition-case e (set-window-new-pixel nil 1.5) (error e)) (condition-case e (set-window-new-pixel nil -5 t) (error e))))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"##,
+        ],
+    );
+}
+
+#[test]
+fn dead_objects_reach_primitives_as_gnu_decodes_them() {
+    // A killed buffer, a deleted window, a deleted process, a deleted
+    // overlay and a marker pointing nowhere in each argument of the
+    // primitives a sweep of every subr found answering otherwise: a killed
+    // buffer's freed text is empty (buffer-hash, buffer-line-statistics,
+    // object-intervals, current-bidi-paragraph-direction), a window
+    // argument is decode_live_window'd (font-at, the bidi scan), each
+    // argument is checked in GNU's order (posn-at-point's fix_position,
+    // fringe-bitmaps-at-pos's window point, internal-complete-buffer's
+    // flag, the default sentinel's Finsert), get-process returns only a
+    // process itself, and make-hash-table signals with signal_error.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r##"(progn
+(setq print-gensym nil print-circle nil print-length 20 print-level 4)
+(defvar dd-deny-prefixes '("kill-emacs" "suspend" "recursive-edit" "top-level" "exit-" "abort-" "read" "sleep-" "sit-for" "accept-process" "sqlite" "module" "native-" "comp-" "dump" "pdumper" "unexec" "daemon" "x-" "w32" "ns-" "dbus" "gnutls" "debug" "prin" "terpri" "write-char" "external-debugging" "open-dribble" "open-termscript" "redirect-debugging" "send-string-to-terminal" "set-input-mode" "set-output-flow" "set-quit-char" "resume-tty" "suspend-tty" "delete-terminal" "delete-frame" "make-frame" "make-terminal-frame" "garbage-collect" "memory-" "malloc" "call-process" "make-process" "make-network" "make-serial" "make-pipe" "start-kbd-macro" "end-kbd-macro" "execute-kbd-macro" "call-last-kbd" "command-execute" "call-interactively" "execute-extended" "yes-or-no" "y-or-n" "play-sound" "ding" "beep" "unix-sync" "thread" "mutex" "condition-" "make-thread" "treesit" "invocation-" "list-system" "current-cpu" "get-internal-run" "current-time" "float-time" "time-" "random" "emacs-pid" "getenv" "setenv" "system-" "user-" "group-" "file-" "directory-" "delete-file" "rename-file" "copy-file" "make-directory" "delete-directory" "set-file" "add-name-to-file" "make-symbolic-link" "insert-file" "write-region" "find-file" "do-auto-save" "lock-" "unlock-" "inotify" "sxhash" "re--describe" "process-attributes" "num-processors" "network-" "current-idle" "recent-keys" "lossage" "discard-input" "input-pending" "track-mouse" "profiler" "Snarf" "init-image" "lookup-image" "load" "require" "autoload" "eval" "funcall" "apply" "throw" "signal" "mapatoms" "maphash" "map-" "mapc" "mapcar" "mapconcat" "mapcan" "fset" "defalias" "setplist" "makunbound" "fmakunbound" "set-default" "setq-default" "defvar" "defconst" "internal--define-uninitialized" "set-standard" "set-locale" "set-time-zone" "define-" "unintern" "obarray-clear" "set-keyboard-coding" "set-terminal-coding" "set-safe-terminal" "set-binary-mode" "kill-buffer" "kill-all-local" "set-buffer-multibyte" "set-window-configuration" "redisplay" "force-mode-line" "message" "minibuffer-message" "set-message" "display-warning" "run-hook" "run-mode-hooks" "byte-code" "make-byte-code" "make-closure" "internal-make-closure" "make-interpreted-closure" "frame-" "set-frame-" "select-frame" "handle-switch-frame" "make-char-table" "bury-buffer" "set-window-buffer" "switch-to" "pop-to" "set-buffer" "other-window" "delete-other-windows" "delete-window" "split-window" "select-window" "set-frame-selected-window" "set-minibuffer-window" "next-frame" "previous-frame" "process-send" "signal-process" "kill-process" "interrupt-process" "stop-process" "continue-process" "quit-process" "set-process" "store-kbd" "set-match-data" "store-match-data"))
+(defun dd-denied (name) (seq-some (lambda (p) (string-prefix-p p name)) dd-deny-prefixes))
+(defvar dd-dead nil)
+(defun dd-make-dead ()
+  (list (cons 'DEAD-BUFFER (let ((b (generate-new-buffer "dd"))) (kill-buffer b) b))
+        (cons 'DEAD-WINDOW (let ((w (split-window))) (delete-window w) w))
+        (cons 'DEAD-PROCESS (let ((p (make-pipe-process :name "dd" :noquery t))) (delete-process p) p))
+        (cons 'DEAD-OVERLAY (with-temp-buffer (let ((o (make-overlay 1 1))) (delete-overlay o) o)))
+        (cons 'DETACHED-MARKER (make-marker))))
+(defun dd-walk (v depth)
+  (let ((d (rassq v dd-dead)))
+    (cond (d (car d))
+          ((> depth 4) '...)
+          ((consp v) (let ((out nil) (n 0))
+                       (while (and (consp v) (< n 20)) (push (dd-walk (car v) (1+ depth)) out) (setq v (cdr v) n (1+ n)))
+                       (let ((tail (if (consp v) '... (dd-walk v (1+ depth))))) (nconc (nreverse out) tail))))
+          ((and (vectorp v) (< (length v) 20)) (apply #'vector (mapcar (lambda (x) (dd-walk x (1+ depth))) v)))
+          (t v))))
+(defun dd-show (v)
+  (condition-case nil
+      (let ((s (prin1-to-string (dd-walk v 0))))
+        (if (string-match-p "#<\\|0x[0-9a-f]\\{6,\\}" s) (list 'opaque (type-of v)) s))
+    (error 'unprintable)))
+(setq dd-dead (dd-make-dead))
+(let ((subrs '(bidi-find-overridden-directionality buffer-hash buffer-line-statistics current-bidi-paragraph-direction font-at fringe-bitmaps-at-pos get-process internal-complete-buffer internal-default-process-sentinel make-hash-table object-intervals posn-at-point)))
+  (dolist (f subrs)
+    (when (fboundp f)
+      (let* ((arity (func-arity f)) (min (car arity)) (max (if (numberp (cdr arity)) (cdr arity) 3))
+             (npos (min 3 max)))
+        (dotimes (pos npos)
+          (dolist (dead dd-dead)
+            (let ((args (make-list (max min (1+ pos)) nil)))
+              (setcar (nthcdr pos args) (cdr dead))
+              (message "%s" (format "%s %d %s => %s" f pos (car dead)
+                                    (dd-show (condition-case e (with-temp-buffer (apply f args)) (error (list 'ERR e))))))
+              (ignore-errors (delete-other-windows))))))))))"##,
+        ],
+    );
+}
+
+#[test]
 fn window_kinds_and_links_are_read_from_the_window_record() {
     // window.c tells a window's kind from w->contents and its flags, so
     // no symbol names a kind; Fwindow_parent and its siblings read the

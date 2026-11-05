@@ -869,11 +869,11 @@ define_dispatch!(
                             index += 2;
                             continue;
                         }
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::symbol("error"),
-                            Value::string("Invalid argument list"),
+                        // signal_error ("Invalid argument list", args[i]).
+                        return Err(crate::lisp::primitives::values::signal_error(
+                            "Invalid argument list",
                             args[index],
-                        ])));
+                        ));
                     }
                     index += 1;
                 }

@@ -2672,6 +2672,14 @@ pub(super) fn direct_goto_char(
 ) -> Result<Value, LispError> {
     let name = "goto-char";
     need_args(name, args, 1)?;
+    // editfns.c:Fgoto_char takes a marker or a fixnum; a bignum is
+    // wrong_type_argument (Qinteger_or_marker_p) there.
+    if matches!(args[0].kind(), Kind::BigInteger(_)) {
+        return Err(LispError::WrongTypeArgument(
+            "integer-or-marker-p".into(),
+            args[0],
+        ));
+    }
     let pos = position_from_value(interp, &args[0])?;
     interp.buffer.borrow_mut().goto_char(pos);
     // GNU Fgoto_char returns its POSITION argument unchanged (a

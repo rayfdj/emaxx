@@ -14952,6 +14952,60 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 318: a call from native code into a C subr reads one word for
+  its entry, and two sweeps of every subr bring 29 more primitives'
+  argument handling to GNU's.** An ordinary subr (one with no word-level
+  path) that the generated entry calls with its whole fixed arity
+  records its direct entry on that first call, and later calls read that
+  one word where they read the subr's kind, its resolved entry and its
+  arity: `frame-windows-min-size' takes 24,277 instructions a call
+  against 24,973 (GNU 21,797). `apply' spreads up to eight arguments on
+  the stack, as SAFE_ALLOCA_LISP does, where it filled a heap vector.
+  The undo case runs 1,330,859 instructions an iteration with
+  collections held off (GNU 1,222,673, 1.088) and 1,326,070 with them
+  (1.093). A first sweep called every subr outside a deny list of
+  process, terminal, file and editor-exiting calls (923) with a killed
+  buffer, a deleted window, a deleted process, a deleted overlay and a
+  marker pointing nowhere in each of its first three arguments:
+  `buffer-hash', `buffer-line-statistics', `object-intervals' and
+  `current-bidi-paragraph-direction' signalled for a killed buffer,
+  whose freed text GNU reads as empty;
+  `bidi-find-overridden-directionality' and `font-at' took a deleted
+  window that decode_live_window refuses; `fringe-bitmaps-at-pos'
+  returned nil where marker_position of a deleted window's unchained
+  point marker signals; `posn-at-point' skipped
+  Fpos_visible_in_window_p's fix_position of POS; `get-process' returned
+  any record (a window) where only a process answers itself;
+  `internal-complete-buffer' checked STRING before the FLAG GNU reads
+  first; the default sentinel checked the message before the insertions
+  where Finsert signals `char-or-string-p'; and `make-hash-table''s
+  invalid argument list error carried a nil that signal_error splices
+  away. A second sweep put seventeen ordinary values (fixnums, a float,
+  a bignum, strings, a character, a vector, a dotted pair, a list, a
+  bool-vector, a char-table, a hash table, a marker, symbols, a keyword,
+  t), each made fresh for its call, in each position: `abs', `max',
+  `min' and one-argument `logand', `logior' and `logxor' return the
+  argument itself, as data.c and floatfns.c do, where a bignum or float
+  was copied; `compose-string-internal' takes nil ends
+  (validate_subarray); `composition-sort-rules' signals with the tail
+  list_length stops at; `font-shape-gstring', `md5', `secure-hash' and
+  `internal-set-font-selection-order' signal through signal_error, which
+  splices a proper list; `goto-char' refuses a bignum;
+  `indirect-function' reads t's function cell; `posn-at-x-y''s checks
+  are CHECK_FIXNAT's (`wholenump'); and `set-window-margins' and
+  `set-window-new-pixel' take check_integer_range's `args-out-of-range'
+  VALUE LO HI, a bignum included. What the sweeps still find is
+  `decode-time''s clock, `make-temp-name''s randomness and state earlier
+  calls leave in a session (GNU's session ends at
+  `get-unused-iso-final-char', so the next chunk starts afresh where
+  Emaxx's continues); each such case run in a fresh session prints GNU's
+  result. Two command-line comparisons run the cases fixed. The fuzzes
+  and command-line cases of rounds 303 to 317 print GNU's results as
+  before. Local validation: the grouped gate's 3,501 library tests
+  (one process test whose timing a concurrent fuzz run upset in the
+  first pass passed in the m-z group's rerun, 474 of 474), the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17480,6 +17534,17 @@ mule-tests (3,249 against 2,025), and
 release builds on this host, mule-tests takes 1.48 s against GNU's 1.96
 and semantic-utest-ia 2.90 s against 3.38 (17.24G instructions against
 19.15G): their gaps are the checked build's.
+
+**On `aa9d9fa`** (round 317): the full Rust gate (run 42015775065)
+passed; the frozen run (run 42015779519) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a slow runner (the oracle's bodies
+279.7 s against round 316's second attempt's 271.8). Setup 86.8 s
+against 72.4 s (1.199), test bodies 314.5 s against 279.7 s (1.124), in
+all 1.135, with a per-file setup median of 131 ms against 112. The
+widest body gaps are ert-tests (47,357 ms against 39,016), tramp-tests
+(24,555 against 20,599), comp-tests (19,665 against 16,900),
+semantic-utest-ia (4,210 against 2,898) and mule-tests (3,303 against
+2,061), and `ert-test-run-tests-batch-expensive' is 1.20 of GNU's time.
 
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's

@@ -305,10 +305,20 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // floatfns.c:Fabs: CHECK_NUMBER.
                 check_number(&args[0])?;
+                // ARG itself unless its sign is negative.
                 if let Kind::Float(value) = args[0].kind() {
-                    Ok(Value::float(value.abs()))
+                    Ok(if value.is_sign_negative() {
+                        Value::float(value.abs())
+                    } else {
+                        args[0]
+                    })
                 } else if matches!(args[0].kind(), Kind::BigInteger(_)) {
-                    make_integer(interp, integer_like_bigint(interp, &args[0])?.abs())
+                    let value = integer_like_bigint(interp, &args[0])?;
+                    if value.sign() == num_bigint::Sign::Minus {
+                        make_integer(interp, value.abs())
+                    } else {
+                        Ok(args[0])
+                    }
                 } else {
                     let value = integer_like_i64(interp, &args[0])?;
                     match value.checked_abs() {
@@ -526,6 +536,9 @@ define_dispatch!(
                 Ok(Value::Integer(count))
             }
             "logand" => {
+                if let [only] = args {
+                    return single_logical_operand(interp, only);
+                }
                 if let Some(result) = fold_fixnums(args, -1, |a, b| a & b) {
                     return Ok(normalize_integer_value(result));
                 }
@@ -536,6 +549,9 @@ define_dispatch!(
                 make_integer(interp, result)
             }
             "logior" => {
+                if let [only] = args {
+                    return single_logical_operand(interp, only);
+                }
                 if let Some(result) = fold_fixnums(args, 0, |a, b| a | b) {
                     return Ok(normalize_integer_value(result));
                 }
@@ -546,6 +562,9 @@ define_dispatch!(
                 make_integer(interp, result)
             }
             "logxor" => {
+                if let [only] = args {
+                    return single_logical_operand(interp, only);
+                }
                 if let Some(result) = fold_fixnums(args, 0, |a, b| a ^ b) {
                     return Ok(normalize_integer_value(result));
                 }
@@ -1166,6 +1185,19 @@ fn integer_operand(value: &Value) -> Result<BigInt, LispError> {
 /// with check_integer_coerce_marker, and arith_driver the others with
 /// check_number_coerce_marker before it refuses a float, so a later one
 /// that is no number names `number-or-marker-p'.
+/// Flogand, Flogior and Flogxor of one argument: its
+/// check_integer_coerce_marker, the integer itself.
+fn single_logical_operand(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
+    match value.kind() {
+        Kind::Integer(_) | Kind::BigInteger(_) => Ok(*value),
+        Kind::Marker(_) => Ok(normalize_integer_value(integer_like_i64(interp, value)?)),
+        _ => Err(LispError::WrongTypeArgument(
+            "integer-or-marker-p".into(),
+            *value,
+        )),
+    }
+}
+
 fn logical_operand(interp: &Interpreter, value: &Value, first: bool) -> Result<BigInt, LispError> {
     match value.kind() {
         Kind::Integer(_) | Kind::BigInteger(_) | Kind::Marker(_) => {

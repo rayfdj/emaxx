@@ -2445,6 +2445,12 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
     let Some(subroutine) = super::abi::native_subrs().get(index) else {
         return invoke_subr_outside_abi();
     };
+    // The usual call: an ordinary subr given its whole arity, whose
+    // direct entry its first such call recorded, called as native code's
+    // freloc call is once the handlers are current.
+    if let Some(direct) = subroutine.full_arity_entry(arguments.len()) {
+        return invoke_direct_subr(subroutine, direct, arguments);
+    }
     // Every path from here is a call in tail position, so that the
     // dispatch saves no registers: a subr with no word-level path is
     // called at once, from a body of its own.
@@ -2519,6 +2525,33 @@ fn invoke_other_subr(
     let (Some(direct), true) = (direct, unsafe { &*active.runtime }.handlers_in_sync()) else {
         return invoke_other_subr_slow(subroutine, arguments);
     };
+    subroutine.note_full_arity_entry(arguments.len(), direct);
+    // SAFETY: generated code passes live Lisp_Object words.
+    let values = unsafe { live_values(arguments) };
+    match direct(unsafe { &mut *active.interpreter }, values, unsafe {
+        &mut *active.environment.get()
+    }) {
+        Ok(value) => value.word(),
+        Err(error) => remember_active_helper_error(error),
+    }
+}
+
+/// `invoke_other_subr' through DIRECT, SUBROUTINE's full-arity entry.
+#[inline(always)]
+fn invoke_direct_subr(
+    subroutine: &'static super::abi::NativeSubr,
+    direct: crate::lisp::primitives::DirectPrimitive,
+    arguments: &[NativeWord],
+) -> NativeWord {
+    let active = ACTIVE_CALL.get();
+    if active.is_null() {
+        std::process::abort();
+    }
+    // SAFETY: as `invoke_other_subr'.
+    let active = unsafe { &*active };
+    if !unsafe { &*active.runtime }.handlers_in_sync() {
+        return invoke_other_subr_slow(subroutine, arguments);
+    }
     // SAFETY: generated code passes live Lisp_Object words.
     let values = unsafe { live_values(arguments) };
     match direct(unsafe { &mut *active.interpreter }, values, unsafe {

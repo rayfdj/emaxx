@@ -41,6 +41,12 @@ pub(crate) struct NativeSubr {
     /// `direct_entry's answer once its facts are known: 0 before, 1 for
     /// none, otherwise the function pointer.
     direct: std::sync::atomic::AtomicUsize,
+    /// The direct entry of an ordinary subr (no word-level path) that
+    /// takes its full arity, as the generated entry passes it: 0 until its
+    /// first such call through `invoke_subr'.  The usual call from native
+    /// code reads this one word where it read the kind, the entry and the
+    /// arity.
+    full_arity_entry: std::sync::atomic::AtomicUsize,
 }
 
 // lisp.h:struct Lisp_Subr on both supported HAVE_NATIVE_COMP targets.
@@ -110,6 +116,40 @@ impl NativeSubr {
             kind: std::sync::atomic::AtomicU8::new(0),
             facts: std::sync::OnceLock::new(),
             direct: std::sync::atomic::AtomicUsize::new(0),
+            full_arity_entry: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// `full_arity_entry' for a call of COUNT arguments: only a fixed
+    /// subr's whole arity has one.
+    #[inline(always)]
+    pub(crate) fn full_arity_entry(
+        &self,
+        count: usize,
+    ) -> Option<crate::lisp::primitives::DirectPrimitive> {
+        let word = self
+            .full_arity_entry
+            .load(std::sync::atomic::Ordering::Relaxed);
+        // A MANY or UNEVALLED subr's negative maximum equals no count.
+        (word != 0 && count as isize == isize::from(self.max_args_word))
+            // SAFETY: a nonzero word was stored from a function pointer of
+            // this type (`note_full_arity_entry').
+            .then(|| unsafe {
+                std::mem::transmute::<usize, crate::lisp::primitives::DirectPrimitive>(word)
+            })
+    }
+
+    /// Remember DIRECT, the direct entry admitting COUNT arguments, as the
+    /// full-arity entry when COUNT is this subr's whole fixed arity.
+    #[inline]
+    pub(crate) fn note_full_arity_entry(
+        &self,
+        count: usize,
+        direct: crate::lisp::primitives::DirectPrimitive,
+    ) {
+        if count as isize == isize::from(self.max_args_word) {
+            self.full_arity_entry
+                .store(direct as usize, std::sync::atomic::Ordering::Relaxed);
         }
     }
 

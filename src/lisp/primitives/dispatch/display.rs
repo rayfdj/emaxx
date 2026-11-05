@@ -1364,14 +1364,18 @@ fn position_at_coordinates(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let mut x = super::collections::fixnum_index_arg(&args[0])?;
-    let mut y = super::collections::fixnum_index_arg(&args[1])?;
+    // keyboard.c:Fposn_at_x_y: CHECK_FIXNUM (x), CHECK_FIXNAT (x) unless it
+    // is -1, then CHECK_FIXNAT (y).
+    let Kind::Integer(mut x) = args[0].kind() else {
+        return Err(wrong_type_argument("fixnump", args[0]));
+    };
     if x < -1 {
-        return Err(wrong_type_argument("natnump", args[0]));
+        return Err(wrong_type_argument("wholenump", args[0]));
     }
-    if y < 0 {
-        return Err(wrong_type_argument("natnump", args[1]));
-    }
+    let mut y = match args[1].kind() {
+        Kind::Integer(y) if y >= 0 => y,
+        _ => return Err(wrong_type_argument("wholenump", args[1])),
+    };
     let requested = args.get(2).copied().unwrap_or(Value::Nil);
     let frame = if requested.is_nil() || is_window_value(interp, &requested) {
         let window = live_window_id_or_selected(interp, Some(&requested))?;
@@ -2342,7 +2346,7 @@ pub(crate) fn render_mode_line_glass(
     Ok(text.trim_end().to_string())
 }
 
-fn live_window_id_or_selected(
+pub(super) fn live_window_id_or_selected(
     interp: &Interpreter,
     value: Option<&Value>,
 ) -> Result<u64, LispError> {
@@ -3066,18 +3070,7 @@ fn set_window_margins(
         if dimension.is_nil() {
             return Ok(0);
         }
-        let Kind::Integer(cols) = dimension.kind() else {
-            return Err(LispError::WrongTypeArgument("integerp".into(), dimension));
-        };
-        if !(0..=i64::from(i32::MAX)).contains(&cols) {
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("args-out-of-range"),
-                dimension,
-                Value::Integer(0),
-                Value::Integer(i64::from(i32::MAX)),
-            ])));
-        }
-        Ok(cols)
+        crate::lisp::primitives::values::check_integer_range(dimension, 0, i64::from(i32::MAX))
     };
     let left = extract(left_width)?;
     let right = extract(right_width)?;
@@ -5842,13 +5835,6 @@ define_dispatch!(
             "set-window-new-pixel" | "set-window-new-total" => {
                 need_arg_range(name, args, 2, 3)?;
                 let window_id = valid_window_id(interp, &args[0])?;
-                // check_integer_range's CHECK_INTEGER for a pixel size,
-                // CHECK_FIXNUM for a total one.
-                let requested = match args[1].kind() {
-                    Kind::Integer(size) => size,
-                    _ if name == "set-window-new-pixel" => args[1].as_integer()?,
-                    _ => return Err(wrong_type_argument("fixnump", args[1])),
-                };
                 let slot = if name == "set-window-new-pixel" {
                     WINDOW_NEW_PIXEL_SLOT
                 } else {
@@ -5857,14 +5843,27 @@ define_dispatch!(
                 let current = window_slot_value(interp, window_id, slot)
                     .as_integer()
                     .unwrap_or(0);
-                let requested = if args.get(2).is_some_and(Value::is_truthy) {
+                let add = args.get(2).is_some_and(Value::is_truthy);
+                let requested = if name == "set-window-new-pixel" {
+                    // check_integer_range (size, size_min, size_max): from
+                    // zero, or from minus the current size when ADD.
+                    let size_min = if add { -current } else { 0 };
+                    let size_max = size_min + i64::from(i32::MAX);
+                    crate::lisp::primitives::values::check_integer_range(
+                        args[1], size_min, size_max,
+                    )?
+                } else {
+                    // CHECK_FIXNUM (size).
+                    match args[1].kind() {
+                        Kind::Integer(size) => size,
+                        _ => return Err(wrong_type_argument("fixnump", args[1])),
+                    }
+                };
+                let requested = if add {
                     current.saturating_add(requested)
                 } else {
                     requested
                 };
-                if name == "set-window-new-pixel" && requested < 0 {
-                    return Err(LispError::Signal(format!("Args out of range: {requested}")));
-                }
                 set_window_slot_value(interp, window_id, slot, Value::Integer(requested))
             }
             "set-window-new-normal" => {
@@ -6213,11 +6212,14 @@ define_dispatch!(
                 let buffer_id = match object.kind() {
                     Kind::Nil => interp.current_buffer_id(),
                     Kind::Buffer(_) => interp.resolve_buffer_id(&object)?,
-                    _ if crate::lisp::primitives::window::window_buffer_id(interp, &object)
-                        .is_some() =>
-                    {
-                        crate::lisp::primitives::window::window_buffer_id(interp, &object)
-                            .expect("a live window's buffer")
+                    // WINDOWP: decode_live_window's buffer.
+                    _ if window_record(&object).is_some() => {
+                        let window_id = live_window_id_or_selected(interp, Some(&object))?;
+                        crate::lisp::primitives::window::window_buffer_id(
+                            interp,
+                            &interp.record_value(window_id),
+                        )
+                        .expect("a live window's buffer")
                     }
                     _ => return Err(wrong_type_argument("stringp", object)),
                 };
@@ -6263,6 +6265,11 @@ define_dispatch!(
                 let Kind::Buffer(buffer_value) = buffer.kind() else {
                     return Err(wrong_type_argument("bufferp", *buffer));
                 };
+                // CHECK_BUFFER passes a killed buffer, whose freed text has
+                // no strong character: the paragraph is left-to-right.
+                if !buffer_value.is_live() {
+                    return Ok(Value::symbol("left-to-right"));
+                }
                 let buffer_id = buffer_value.id;
                 if !interp.has_buffer_id(buffer_id) {
                     return Err(wrong_type_argument("bufferp", *buffer));
@@ -7202,6 +7209,13 @@ define_dispatch!(
                 // keyboard.c:Fposn_at_point: Fpos_visible_in_window_p's
                 // decode_live_window (window) first.
                 live_window_id_or_selected(interp, args.get(1))?;
+                // Then its fix_position of a POS that is neither nil nor t.
+                if let Some(pos) = args
+                    .first()
+                    .filter(|pos| !pos.is_nil() && **pos != Value::T)
+                {
+                    position_from_value(interp, pos)?;
+                }
                 // Like GNU --batch, Emaxx has no realized glyph matrix from
                 // which to derive a screen position.  An interactive
                 // session publishes live window geometry, from which the

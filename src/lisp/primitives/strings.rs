@@ -1093,6 +1093,8 @@ pub(crate) fn object_intervals_value(
 ) -> Result<Value, LispError> {
     let intervals = match object.kind() {
         Kind::StringObject(state) => state.borrow().props.intervals().cloned(),
+        // A killed buffer's text has no intervals left.
+        Kind::Buffer(buffer) if !buffer.is_live() => None,
         Kind::Buffer(_) => {
             let buffer_id = interp.resolve_buffer_id(object)?;
             let buffer = interp

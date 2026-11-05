@@ -2,7 +2,7 @@ use super::*;
 use crate::lisp::primitives::buffers::position_from_value;
 use crate::lisp::primitives::font;
 use crate::lisp::primitives::fontset;
-use crate::lisp::primitives::window::{window_buffer_id, window_record_id_from_value};
+use crate::lisp::primitives::window::window_buffer_id;
 use crate::lisp::types::Kind;
 
 fn require_character(value: &Value) -> Result<(), LispError> {
@@ -23,15 +23,9 @@ fn window_system_frame_required() -> LispError {
     LispError::Signal("Window system frame should be used".into())
 }
 
+/// signal_error ("Invalid glyph-string: ", GSTRING).
 fn invalid_glyph_string(gstring: &Value) -> LispError {
-    let mut data = vec![
-        Value::symbol("error"),
-        Value::string("Invalid glyph-string: "),
-    ];
-    if !gstring.is_nil() {
-        data.push(*gstring);
-    }
-    LispError::SignalValue(Value::list(data))
+    crate::lisp::primitives::values::signal_error("Invalid glyph-string: ", *gstring)
 }
 
 pub(super) fn composition_gstring_parts(
@@ -186,14 +180,9 @@ define_dispatch!(
             "font-at" => {
                 need_arg_range(name, args, 1, 3)?;
                 let window = args.get(1).filter(|value| !value.is_nil());
-                let window = match window {
-                    Some(window) => {
-                        window_record_id_from_value(interp, window)
-                            .ok_or_else(|| wrong_type_argument("window-live-p", *window))?;
-                        *window
-                    }
-                    None => interp.record_value(interp.selected_window_id()),
-                };
+                // CHECK_LIVE_WINDOW, nil the selected window.
+                let window = interp
+                    .record_value(super::display::live_window_id_or_selected(interp, window)?);
                 if let Some(string) = args.get(2).filter(|value| !value.is_nil()) {
                     let Kind::Integer(position) = args[0].kind() else {
                         return Err(wrong_type_argument("fixnump", args[0]));

@@ -1322,15 +1322,42 @@ define_dispatch!(
                 }
                 let func = &args[0];
                 let last = &args[args.len() - 1];
-                let mut all_args: Vec<Value> = args[1..args.len() - 1].to_vec();
                 // Fapply calls list_length and then walks XCAR/XCDR.  Its
                 // spread argument is a proper list, not an arbitrary Emacs
                 // sequence.
                 if is_vector_value(last) {
                     return Err(LispError::WrongTypeArgument("listp".into(), *last));
                 }
-                last.extend_list_elements(&mut all_args)?;
-                interp.call_function_value(*func, None, &all_args, env)
+                // SAFE_ALLOCA_LISP's array: eight stack slots (visible to
+                // the stack scan, as eval_sub's are), the heap past them.
+                let fixed = &args[1..args.len() - 1];
+                let mut stack = [Value::Nil; 8];
+                let mut count = 0;
+                let mut spilled: Vec<Value> = Vec::new();
+                if fixed.len() <= stack.len() {
+                    stack[..fixed.len()].copy_from_slice(fixed);
+                    count = fixed.len();
+                } else {
+                    spilled.extend_from_slice(fixed);
+                }
+                last.visit_list_elements(|value| {
+                    if spilled.is_empty() && count < stack.len() {
+                        stack[count] = value;
+                        count += 1;
+                    } else {
+                        if spilled.is_empty() {
+                            spilled.extend_from_slice(&stack[..count]);
+                        }
+                        spilled.push(value);
+                    }
+                    Ok(())
+                })?;
+                let call_args = if spilled.is_empty() {
+                    &stack[..count]
+                } else {
+                    &spilled[..]
+                };
+                interp.call_function_value(*func, None, call_args, env)
             }
             "funcall" => {
                 if args.is_empty() {

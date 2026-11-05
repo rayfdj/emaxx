@@ -1236,6 +1236,22 @@ pub(crate) fn proper_list_length(value: &Value) -> Option<usize> {
     tail.is_nil().then_some(len)
 }
 
+/// lisp.h:check_integer_range: an integer from LO to HI, `integerp' for
+/// anything else, `args-out-of-range' VALUE LO HI for an integer (a
+/// bignum included) outside the range.
+pub(crate) fn check_integer_range(value: Value, lo: i64, hi: i64) -> Result<i64, LispError> {
+    match value.kind() {
+        Kind::Integer(n) if (lo..=hi).contains(&n) => Ok(n),
+        Kind::Integer(_) | Kind::BigInteger(_) => Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            value,
+            Value::Integer(lo),
+            Value::Integer(hi),
+        ]))),
+        _ => Err(LispError::WrongTypeArgument("integerp".into(), value)),
+    }
+}
+
 /// eval.c:signal_error: `(error S . ARG)', ARG made a one-element list
 /// unless it already is a proper list.
 pub(crate) fn signal_error(message: &str, arg: Value) -> LispError {
