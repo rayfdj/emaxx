@@ -2708,7 +2708,7 @@ impl Clone for ProcessState {
             sentinel: self.sentinel,
             sentinel_notified: self.sentinel_notified,
             log: self.log,
-            name: self.name.clone(),
+            name: self.name,
             thread_id: self.thread_id,
             query_on_exit_flag: self.query_on_exit_flag,
             traffic_stopped: self.traffic_stopped,
@@ -2763,8 +2763,9 @@ struct ProcessState {
     sentinel_notified: bool,
     /// Network process :log function (server connection events).
     log: Option<Value>,
-    /// The process name (process-name / get-process).
-    name: String,
+    /// p->name: the Lisp string `process-name' returns and Vprocess_alist
+    /// pairs the process with.
+    name: Value,
     /// Thread whose event loop owns this process's descriptors.  None means
     /// any thread may service it.
     thread_id: Option<u64>,
@@ -2979,8 +2980,9 @@ struct ScheduledTimer {
 }
 
 #[derive(Clone, Debug)]
+/// fringe.c's fringe_bitmaps[ID] and fringe_faces[ID]: a bitmap is found
+/// by the number its symbol's `fringe' property holds.
 pub(crate) struct FringeBitmapState {
-    pub(crate) name: String,
     pub(crate) id: i64,
     pub(crate) standard: bool,
     pub(crate) definition: Option<Value>,
@@ -4437,7 +4439,7 @@ impl Interpreter {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_buffer(&mut self, buffer: crate::lisp::types::BufferRef) {
         let id = buffer.id;
-        let name = buffer.borrow().name.clone();
+        let name = buffer.borrow().name();
         if id == self.current_buffer_id {
             self.buffer = buffer;
         } else {
@@ -4780,6 +4782,14 @@ impl Interpreter {
         {
             mark(&Value::CharTable(*table));
         }
+        // Vcharset_hash_table's keys: each charset's name and alias.
+        for (name, _) in &self.charset_ids {
+            mark(&Value::Symbol(*name));
+        }
+        for (alias, target) in &self.charset_aliases {
+            mark(&Value::Symbol(*alias));
+            mark(&Value::Symbol(*target));
+        }
         for (_, value) in &self.charset_plists {
             mark(value);
         }
@@ -4945,6 +4955,7 @@ impl Interpreter {
                 mark(value);
             }
             for value in [
+                &process.name,
                 &process.decoding,
                 &process.encoding,
                 &process.plist,
@@ -4964,6 +4975,12 @@ impl Interpreter {
         mark(&Value::Buffer(self.buffer));
         for (_, buffer) in &self.inactive_buffers {
             mark(&Value::Buffer(*buffer));
+        }
+        for (_, name) in &self.buffer_list {
+            mark(name);
+        }
+        for buffer in &self.minibuffer_list {
+            mark(buffer);
         }
         for id in [self.standard_obarray_id, self.selected_window_id] {
             mark(&self.record_value(id));
@@ -5132,6 +5149,9 @@ impl Interpreter {
                 };
                 *buffer = copied;
             }
+            for (_, name) in &mut clone.buffer_list {
+                *name = c.copy(name);
+            }
             for restriction in &mut clone.labeled_restrictions {
                 let Kind::Marker(beginning) =
                     c.copy(&Value::Marker(restriction.beg_marker_id)).kind()
@@ -5251,12 +5271,15 @@ impl Interpreter {
             for (_, tables) in clone.buffer_case_tables.iter_mut() {
                 *tables = tables.map(|table| copy_table(c, table));
             }
-            for (_, plist) in &mut clone.charset_plists {
+            for (name, plist) in &mut clone.charset_plists {
+                *name = c.copy_symbol(*name);
                 *plist = c.copy(plist);
             }
-            for (_, def) in &mut clone.charset_defs {
+            for (name, def) in &mut clone.charset_defs {
+                *name = c.copy_symbol(*name);
                 *def = c.copy(def);
             }
+            clone.copy_charset_symbols(|name| c.copy_symbol(name));
             clone.ccl_program_table = c.copy(&clone.ccl_program_table);
             for slot in clone.records.values_mut() {
                 let Kind::Record(copied) = c.copy(&Value::Record(*slot)).kind() else {
@@ -5431,6 +5454,7 @@ impl Interpreter {
                 if let Some(log) = &process.log {
                     process.log = Some(c.copy(log));
                 }
+                process.name = c.copy(&process.name);
                 process.decoding = c.copy(&process.decoding.clone());
                 process.encoding = c.copy(&process.encoding.clone());
                 process.plist = c.copy(&process.plist.clone());
@@ -5735,6 +5759,10 @@ pub struct InterpreterState {
     pub(crate) keyboard_input: KeyboardInputState,
     pub(crate) command_loop_recursion_depth: usize,
     minibuffer_runtime: MinibufferRuntimeState,
+    /// minibuf.c's Vminibuffer_list: the buffer get_minibuffer made for
+    /// each depth (nil where none has been), a killed one kept until
+    /// get_minibuffer replaces it.
+    pub(crate) minibuffer_list: Vec<Value>,
     /// Monotonic identity for a read-minibuffer activation.  The TTY uses
     /// it to distinguish a new read from another redraw of the same reused
     /// ` *Minibuf-N*' buffer, so grow-only height does not leak between
@@ -5817,35 +5845,36 @@ pub struct InterpreterState {
     next_terminal_id: u64,
     /// Inactive buffers keyed by ID.
     inactive_buffers: Vec<(u64, crate::lisp::types::BufferRef)>,
-    /// Known buffers: (id, name) pairs.
-    pub buffer_list: Vec<(u64, String)>,
+    /// buffer.c's Vbuffer_alist: each live buffer's id with its name, the
+    /// buffer's own BVAR (b, name) object, in buffer-list order.
+    pub buffer_list: Vec<(u64, Value)>,
     /// Next buffer ID for identity tracking.
     next_buffer_id: u64,
     /// Charset aliases defined at runtime.
-    charset_aliases: Vec<(String, String)>,
+    charset_aliases: Vec<(SymbolName, SymbolName)>,
     /// Registered charsets and their stable GNU-compatible numeric IDs.
-    charset_ids: Vec<(String, i64)>,
+    charset_ids: Vec<(SymbolName, i64)>,
     /// charset.c's Vcharset_hash_table: each registered name's ID.
-    charset_id_index: HashMap<String, i64, crate::lisp::primitives::FnvBuildHasher>,
+    charset_id_index: HashMap<SymbolName, i64, crate::lisp::types::IdentityBuildHasher>,
     /// `charset_aliases' by alias name.
-    charset_alias_index: HashMap<String, String, crate::lisp::primitives::FnvBuildHasher>,
+    charset_alias_index: HashMap<SymbolName, SymbolName, crate::lisp::types::IdentityBuildHasher>,
     /// Vcharset_hash_table's books: a key for each charset and alias.
     pub(crate) charset_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
     /// Charset plist overrides keyed by canonical charset name.
-    charset_plists: Vec<(String, Value)>,
+    charset_plists: Vec<(SymbolName, Value)>,
     /// charset.c's charset attributes apart from the plist: each canonical
     /// charset's `define-charset-internal' arguments from its dimension to
     /// its unify-map (charset_table's definition), which `set-charset-plist'
     /// leaves alone.
-    pub(crate) charset_defs: Vec<(String, Value)>,
+    pub(crate) charset_defs: Vec<(SymbolName, Value)>,
     /// charset.c Vemacs_mule_charset_list: the charsets with an emacs-mule
     /// id, in definition order until `set-charset-priority' reorders them.
-    pub(crate) emacs_mule_charset_list: Vec<String>,
+    pub(crate) emacs_mule_charset_list: Vec<SymbolName>,
     /// Current charset priority order.
-    charset_priority: Vec<String>,
+    charset_priority: Vec<SymbolName>,
     /// Charsets defined with :supplementary-p; they sort after every
     /// non-supplementary charset in the ordered (priority) list.
-    charset_supplementary: HashSet<String>,
+    charset_supplementary: HashSet<SymbolName, crate::lisp::types::IdentityBuildHasher>,
     /// coding.c's Vsjis_coding_system: the most recently defined
     /// shift-jis-type coding system.  decode-sjis-char/encode-sjis-char
     /// convert through ITS charset list -- japanese.el defines
@@ -5859,7 +5888,7 @@ pub struct InterpreterState {
     /// flag, set by `unify-charset').  mule-conf.el unifies the CJK
     /// offset-method charsets at load; while unified, code<->character
     /// conversion goes through the charset's `:unify-map' file.
-    charset_unified: HashSet<String>,
+    charset_unified: HashSet<SymbolName, crate::lisp::types::IdentityBuildHasher>,
     /// charset.c's charset table: each charset's attributes read once from
     /// its plist, by the name asked for.  Emptied whenever a charset, an
     /// alias, a plist or a unification changes.
@@ -5869,21 +5898,21 @@ pub struct InterpreterState {
     pub(crate) charset_epoch: std::cell::Cell<u64>,
     pub(crate) charset_table: RefCell<
         HashMap<
-            String,
+            SymbolName,
             std::rc::Rc<crate::lisp::primitives::CharsetInfo>,
-            crate::lisp::primitives::FnvBuildHasher,
+            crate::lisp::types::IdentityBuildHasher,
         >,
     >,
     /// ISO charset associations keyed by (dimension, chars, final).
-    iso_charsets: Vec<(i64, i64, u32, String)>,
+    iso_charsets: Vec<(i64, i64, u32, SymbolName)>,
     /// charset.c Viso_2022_charset_list: the charsets with an ISO final
     /// byte, in definition order until `set-charset-priority' reorders
     /// them by priority.
-    iso_2022_charset_list: Vec<String>,
+    iso_2022_charset_list: Vec<SymbolName>,
     /// charset.c Vcharset_non_preferred_head: the first charset of the
     /// ordered list that `set-charset-priority' did not move to the front;
     /// char_charset answers `unicode' for a Unicode character on reaching it.
-    charset_non_preferred_head: Option<String>,
+    charset_non_preferred_head: Option<SymbolName>,
     /// coding.c's attribute vectors, one for each definition.
     pub(crate) coding_attrs: Vec<CodingSystemState>,
     /// coding.c's spec vectors, by index.
@@ -6364,8 +6393,7 @@ impl Interpreter {
         let fringe_bitmap_states = primitives::STANDARD_FRINGE_BITMAPS
             .iter()
             .enumerate()
-            .map(|(index, name)| FringeBitmapState {
-                name: (*name).into(),
+            .map(|(index, _)| FringeBitmapState {
                 id: (index + 1) as i64,
                 standard: true,
                 definition: None,
@@ -6553,6 +6581,7 @@ impl Interpreter {
             keyboard_input: KeyboardInputState::default(),
             command_loop_recursion_depth: 0,
             minibuffer_runtime: MinibufferRuntimeState::default(),
+            minibuffer_list: Vec::new(),
             minibuffer_activation_count: 0,
             modules: crate::lisp::modules::ModuleState::default(),
             native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
@@ -6586,16 +6615,16 @@ impl Interpreter {
             // GNU's batch `buffer-list' is (*scratch* " *Minibuf-0*"
             // *Messages*); *Messages* joins the list once the minibuffer
             // buffer exists, below.
-            buffer_list: vec![(0, "*scratch*".to_string())],
+            buffer_list: Vec::new(),
             next_buffer_id: 2,
             charset_aliases: Vec::new(),
             charset_ids: C_CHARSETS
                 .iter()
-                .map(|&(name, id)| (name.to_string(), id))
+                .map(|&(name, id)| (SymbolName::intern_str(name), id))
                 .collect(),
             charset_id_index: C_CHARSETS
                 .iter()
-                .map(|&(name, id)| (name.to_string(), id))
+                .map(|&(name, id)| (SymbolName::intern_str(name), id))
                 .collect(),
             charset_alias_index: HashMap::default(),
             charset_table_books:
@@ -6686,24 +6715,21 @@ impl Interpreter {
             // ordered list keeps non-supplementary charsets first (`emacs'
             // and `eight-bit' are supplementary), and `charset-list' holds
             // newest-first.
-            charset_priority: vec![
-                "ascii".into(),
-                "iso-8859-1".into(),
-                "unicode".into(),
-                "emacs".into(),
-                "eight-bit".into(),
-            ],
-            charset_supplementary: ["emacs".to_string(), "eight-bit".to_string()]
+            charset_priority: ["ascii", "iso-8859-1", "unicode", "emacs", "eight-bit"]
+                .map(SymbolName::intern_str)
+                .to_vec(),
+            charset_supplementary: ["emacs", "eight-bit"]
+                .map(SymbolName::intern_str)
                 .into_iter()
                 .collect(),
-            charset_unified: HashSet::new(),
+            charset_unified: HashSet::default(),
             charset_epoch: std::cell::Cell::new(0),
             charset_table: RefCell::new(HashMap::default()),
             sjis_coding_system: "sjis".into(),
             big5_coding_system: "big5".into(),
-            iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
-            iso_2022_charset_list: vec!["ascii".into()],
-            emacs_mule_charset_list: vec!["ascii".into()],
+            iso_charsets: vec![(1, 94, 'B' as u32, SymbolName::intern_str("ascii"))],
+            iso_2022_charset_list: vec![SymbolName::intern_str("ascii")],
+            emacs_mule_charset_list: vec![SymbolName::intern_str("ascii")],
             charset_non_preferred_head: None,
             coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks::with_keys(
                 coding_system_hash.len(),
@@ -6864,6 +6890,10 @@ impl Interpreter {
             state: Some(InterpreterStateOwner::new(state)),
             continuations: continuations::ThreadContinuations::default(),
         };
+        // init_buffer_once's Vbuffer_alist entry for *scratch*, whose car
+        // is the buffer's own name.
+        let scratch_name = interp.buffer.borrow().name();
+        interp.buffer_list.push((0, scratch_name));
         for (purpose, extras) in [
             ("case-table", 3),
             ("category-table", 2),
@@ -8115,7 +8145,10 @@ impl Interpreter {
         interp.stamp_buffer_display(interp.current_buffer_id);
         let minibuffer_buffer_id = primitives::get_minibuffer(&mut interp, 0);
         interp.stamp_buffer_display(minibuffer_buffer_id);
-        interp.buffer_list.push((1, "*Messages*".to_string()));
+        let messages_name = interp
+            .buffer_object(1)
+            .map_or(Value::Nil, |buffer| buffer.borrow().name());
+        interp.buffer_list.push((1, messages_name));
         let minibuffer_window = interp.create_pseudovector(
             RecordKind::Window,
             "window",
@@ -8123,7 +8156,7 @@ impl Interpreter {
                 &interp,
                 Some(minibuffer_buffer_id),
                 1,
-                Value::Symbol(primitives::MINIBUFFER_WINDOW_KIND.into()),
+                primitives::WindowKind::Minibuffer.value(),
                 (
                     interp.frame_width(),
                     1,
@@ -8398,7 +8431,7 @@ fn c_charset_def(
     ascii_compatible: bool,
     supplementary: bool,
     code_offset: i64,
-) -> (String, Value) {
+) -> (SymbolName, Value) {
     let mut space = [0i64; 8];
     space[..code_space.len()].copy_from_slice(code_space);
     let flag = |on: bool| if on { Value::T } else { Value::Nil };
@@ -8422,7 +8455,7 @@ fn c_charset_def(
         Value::Nil,
         Value::Nil,
     ]);
-    (name.to_string(), def)
+    (SymbolName::intern_str(name), def)
 }
 
 fn c_charset_plist(
@@ -8433,7 +8466,7 @@ fn c_charset_plist(
     emacs_mule_id: Option<i64>,
     ascii_compatible: bool,
     code_offset: i64,
-) -> (String, Value) {
+) -> (SymbolName, Value) {
     let mut space = [0i64; 8];
     space[..code_space.len()].copy_from_slice(code_space);
     let plist = Value::list([
@@ -8456,7 +8489,7 @@ fn c_charset_plist(
         Value::symbol(":code-offset"),
         Value::Integer(code_offset),
     ]);
-    (name.to_string(), plist)
+    (SymbolName::intern_str(name), plist)
 }
 
 #[cfg(test)]

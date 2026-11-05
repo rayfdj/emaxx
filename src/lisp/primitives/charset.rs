@@ -49,17 +49,14 @@ fn check_character(x: &Value) -> Result<u32, LispError> {
     }
 }
 
-/// CHECK_CHARSET_GET_ID / CHECK_CHARSET_GET_ATTR: the canonical name of
-/// the charset the symbol X names.
-pub(crate) fn check_charset_get_id(interp: &Interpreter, x: &Value) -> Result<String, LispError> {
-    let name = match x.kind() {
-        Kind::Nil => "nil".to_string(),
-        Kind::T => "t".to_string(),
-        Kind::Symbol(name) => name.to_string(),
-        _ => return Err(wrong_type_argument("charsetp", *x)),
-    };
+/// CHECK_CHARSET_GET_ID / CHECK_CHARSET_GET_ATTR: the charset the symbol
+/// X names in Vcharset_hash_table (by EQ), as its canonical symbol.
+pub(crate) fn check_charset_get_id(
+    interp: &Interpreter,
+    x: &Value,
+) -> Result<crate::lisp::types::SymbolName, LispError> {
     interp
-        .charset_canonical_name(&name)
+        .charset_canonical_name(x)
         .ok_or_else(|| wrong_type_argument("charsetp", *x))
 }
 
@@ -300,12 +297,7 @@ pub(crate) fn define_charset_internal(
         check_fixnat(&parent_max)?;
         let parent_offset = super::call(interp, "nth", &[Value::Integer(3), val], env)?;
         check_fixnum(&parent_offset)?;
-        subset = Value::list([
-            Value::symbol(&parent),
-            parent_min,
-            parent_max,
-            parent_offset,
-        ]);
+        subset = Value::list([Value::Symbol(parent), parent_min, parent_max, parent_offset]);
     } else if !args[14].is_nil() {
         let mut val = super::call(interp, "copy-sequence", &[args[14]], env)?;
         let mut members = Vec::new();
@@ -314,10 +306,10 @@ pub(crate) fn define_charset_internal(
             let member = if let Some((car, cdr)) = elt.cons_values() {
                 let id = check_charset_get_id(interp, &car)?;
                 let offset = check_integer_range(&cdr, i64::from(i32::MIN), i64::from(i32::MAX))?;
-                Value::cons(Value::symbol(&id), Value::Integer(offset))
+                Value::cons(Value::Symbol(id), Value::Integer(offset))
             } else {
                 let id = check_charset_get_id(interp, &elt)?;
-                Value::cons(Value::symbol(&id), Value::Integer(0))
+                Value::cons(Value::Symbol(id), Value::Integer(0))
             };
             members.push(member);
             val = super::call(interp, "cdr", &[val], env)?;
@@ -359,21 +351,17 @@ pub(crate) fn define_charset_internal(
     def[charset_table::DEF_SUBSET] = subset;
     def[charset_table::DEF_SUPERSET] = superset;
     def[charset_table::DEF_UNIFY_MAP] = unify_map;
-    let name = name.symbol_str().map(str::to_string).unwrap_or_else(|| {
-        if name.is_nil() {
-            "nil".to_string()
-        } else {
-            "t".to_string()
-        }
-    });
+    // args[charset_arg_name], a symbol (CHECK_SYMBOL above).
+    let name = crate::lisp::eval::coding::CharsetRef::charset_symbol(&name)
+        .expect("the charset name is a symbol");
     let def = Value::vector(def);
     // The hash table and charset_table hold the charset before a map
     // charset's map loads (a failing load leaves it registered).
-    let (id, new_definition) = interp.register_charset(&name, def, plist);
+    let (id, new_definition) = interp.register_charset(name, def, plist);
     if !map.is_nil() {
         check_charset_map(interp, &map, env)?;
     }
-    interp.finish_charset_definition(&name, id, new_definition, def);
+    interp.finish_charset_definition(name, id, new_definition, def);
     Ok(Value::Nil)
 }
 
@@ -384,18 +372,13 @@ pub(crate) fn define_charset_alias(
     charset: &Value,
 ) -> Result<Value, LispError> {
     let target = check_charset_get_id(interp, charset)?;
-    let alias = match alias.kind() {
-        Kind::Nil => "nil".to_string(),
-        Kind::T => "t".to_string(),
-        Kind::Symbol(name) => name.to_string(),
-        // Fputhash takes any key, which no charset lookup reaches (they
-        // want a symbol); `charset-list' gains it all the same.
-        _ => {
-            interp.push_charset_list(*alias);
-            return Ok(Value::Nil);
-        }
+    // Fputhash takes any key, which no charset lookup reaches (they want a
+    // symbol); `charset-list' gains it all the same.
+    let Some(alias_symbol) = crate::lisp::eval::coding::CharsetRef::charset_symbol(alias) else {
+        interp.push_charset_list(*alias);
+        return Ok(Value::Nil);
     };
-    interp.define_charset_alias(&alias, &target)?;
+    interp.define_charset_alias(alias_symbol, target);
     Ok(Value::Nil)
 }
 
@@ -406,7 +389,7 @@ pub(crate) fn set_charset_plist(
     plist: Value,
 ) -> Result<Value, LispError> {
     let name = check_charset_get_id(interp, charset)?;
-    interp.set_charset_plist_value(&name, plist)?;
+    interp.set_charset_plist_value(name, plist);
     Ok(plist)
 }
 
@@ -441,7 +424,9 @@ pub(crate) fn unify_charset(
     let offset = info.as_ref().and_then(|info| info.code_offset);
     if info.as_ref().is_none_or(|info| info.has_direct_map) || offset.is_none_or(|o| o < 0x11_0000)
     {
-        let shown = charset.symbol_str().unwrap_or("nil").to_string();
+        // SDATA (SYMBOL_NAME (charset)), the symbol given.
+        let shown = crate::lisp::eval::coding::CharsetRef::charset_symbol(charset)
+            .map_or_else(String::new, |symbol| symbol.name_text());
         return Err(crate::lisp::primitives::values::doprnt_error(
             interp,
             "Can't unify charset: {}",
@@ -522,7 +507,7 @@ pub(crate) fn declare_equiv_charset(
         dimension,
         if chars_96 { 96 } else { 94 },
         final_char,
-        &charset,
+        charset,
     );
     Ok(Value::Nil)
 }
@@ -533,7 +518,7 @@ pub(crate) fn iso_charset(interp: &Interpreter, args: &[Value]) -> Result<Value,
         check_iso_charset_parameter(interp, &args[0], &args[1], &args[2])?;
     Ok(interp
         .iso_charset(dimension, if chars_96 { 96 } else { 94 }, final_char)
-        .map_or(Value::Nil, |name| Value::symbol(&name)))
+        .map_or(Value::Nil, Value::Symbol))
 }
 
 /// Fset_charset_priority.

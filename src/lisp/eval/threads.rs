@@ -630,11 +630,16 @@ impl Interpreter {
         program: Option<String>,
         argv: Vec<String>,
         runtime: Option<RunningProcess>,
-        name: Option<String>,
+        name: Value,
     ) -> Result<Value, LispError> {
         // GNU names the process after the NAME argument (uniquified with
-        // <N> on collision), not the program.
-        let name = self.unique_process_name(&name.or_else(|| program.clone()).unwrap_or_default());
+        // <N> on collision, make_process), not the program.
+        let name = if name.is_nil() {
+            Value::string(program.as_deref().unwrap_or_default())
+        } else {
+            name
+        };
+        let name = self.make_process_name(name)?;
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
         let Kind::Record(record_id) = process.kind() else {
             unreachable!("create_record returns a record")
@@ -725,7 +730,7 @@ impl Interpreter {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_network_process(
         &mut self,
-        name: &str,
+        name: Value,
         buffer_id: Option<u64>,
         inherit_coding_system_flag: bool,
         filter: Option<Value>,
@@ -780,7 +785,7 @@ impl Interpreter {
             sentinel,
             sentinel_notified: false,
             log,
-            name: name.to_string(),
+            name,
             thread_id,
             query_on_exit_flag: true,
             traffic_stopped: false,
@@ -824,7 +829,7 @@ impl Interpreter {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_serial_process(
         &mut self,
-        name: &str,
+        name: Value,
         buffer_id: u64,
         filter: Option<Value>,
         sentinel: Option<Value>,
@@ -836,7 +841,7 @@ impl Interpreter {
         query_on_exit_flag: bool,
         stopped: bool,
     ) -> Result<Value, LispError> {
-        let name = self.unique_process_name(name);
+        let name = self.make_process_name(name)?;
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
         let Kind::Record(record_id) = process.kind() else {
             unreachable!("create_record returns a record")
@@ -924,9 +929,17 @@ impl Interpreter {
             .map(|process| process.contact)
     }
 
-    pub fn process_name(&self, record_id: u64) -> Option<String> {
+    /// p->name: the Lisp string itself.
+    pub fn process_name(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id)
-            .map(|process| process.name.clone())
+            .map(|process| process.name)
+    }
+
+    /// The name's text, for host code that shows it.
+    pub fn process_name_text(&self, record_id: u64) -> Option<String> {
+        self.process_name(record_id).map(|name| {
+            crate::lisp::primitives::with_string_text(&name, str::to_owned).unwrap_or_default()
+        })
     }
 
     pub fn process_os_id(&self, record_id: u64) -> Option<u32> {
@@ -978,27 +991,35 @@ impl Interpreter {
         })
     }
 
-    pub fn find_process_id_by_name(&self, name: &str) -> Option<u64> {
+    /// process.c:Fget_process's search of Vprocess_alist for the string
+    /// NAME: Fassoc, so the first process whose name is `equal' to it.
+    pub(crate) fn find_process_named(&self, name: &Value) -> Option<u64> {
         self.process_states
             .iter()
             .rev()
-            .find(|process| process.name == name && Self::in_process_alist(process))
+            .find(|process| {
+                crate::lisp::primitives::strings_equal(&process.name, name)
+                    && Self::in_process_alist(process)
+            })
             .map(|process| process.record_id)
     }
 
-    /// A unique process name: NAME, then NAME<1>, NAME<2>, ... (GNU).
-    pub fn unique_process_name(&self, base: &str) -> String {
-        if self.find_process_id_by_name(base).is_none() {
-            return base.to_string();
-        }
-        let mut index = 1;
-        loop {
-            let candidate = format!("{base}<{index}>");
-            if self.find_process_id_by_name(&candidate).is_none() {
-                return candidate;
-            }
+    /// process.c:make_process's name for a new process: NAME itself when
+    /// no process has it, else the first concat2 (NAME, "<I>"), I from 1,
+    /// that none has.
+    pub(crate) fn make_process_name(&mut self, name: Value) -> Result<Value, LispError> {
+        let mut candidate = name;
+        let mut index = 1_i64;
+        while self.find_process_named(&candidate).is_some() {
+            candidate = crate::lisp::primitives::call(
+                self,
+                "concat",
+                &[name, Value::string(&format!("<{index}>"))],
+                &mut Env::new(),
+            )?;
             index += 1;
         }
+        Ok(candidate)
     }
 
     pub fn process_sentinel(&self, record_id: u64) -> Option<Value> {
@@ -1490,11 +1511,16 @@ impl Interpreter {
         ) {
             return Ok(());
         }
-        Err(LispError::Signal(format!(
+        // error ("Process %s not running: %s", SDATA (p->name), SDATA
+        // (status_message (p))).
+        Err(crate::lisp::primitives::values::doprnt_error_sdata(
+            None,
             "Process {} not running: {}",
-            process.name,
-            Self::process_status_message(process)
-        )))
+            &[
+                process.name,
+                Value::string(&Self::process_status_message(process)),
+            ],
+        ))
     }
 
     pub(crate) fn take_process_encoder(
@@ -2029,16 +2055,18 @@ impl Interpreter {
             .find_process_state(record_id)
             .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         if process.kind != ProcessKind::Real {
-            return Err(LispError::Signal(format!(
+            return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                None,
                 "Process {} is not a subprocess",
-                process.name
-            )));
+                &[process.name],
+            ));
         }
         let Some(runtime) = process.runtime.as_ref() else {
-            return Err(LispError::Signal(format!(
+            return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                None,
                 "Process {} is not active",
-                process.name
-            )));
+                &[process.name],
+            ));
         };
         #[cfg(unix)]
         {
@@ -2114,21 +2142,26 @@ impl Interpreter {
             .find_process_state(record_id)
             .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         if process.kind != ProcessKind::Real {
-            return Err(LispError::Signal(format!(
+            return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                None,
                 "Process {} is not a subprocess",
-                process.name
-            )));
+                &[process.name],
+            ));
         }
         let Some(runtime) = process.runtime.as_ref() else {
-            return Err(LispError::Signal(format!(
+            return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                None,
                 "Process {} is not active",
-                process.name
-            )));
+                &[process.name],
+            ));
         };
-        let pid = process
-            .os_pid
-            .ok_or_else(|| LispError::Signal(format!("Process {} is not active", process.name)))?
-            as libc::pid_t;
+        let pid = process.os_pid.ok_or_else(|| {
+            crate::lisp::primitives::values::doprnt_error_sdata(
+                None,
+                "Process {} is not active",
+                &[process.name],
+            )
+        })? as libc::pid_t;
         let uses_input_pty = runtime.pty_input.is_some();
         let mut group = pid;
         if uses_input_pty && current_group.is_truthy() {
@@ -3975,12 +4008,16 @@ impl Interpreter {
         if thread_id == self.active_thread_id {
             return Ok(());
         }
-        let owner = crate::lisp::primitives::string_text(&self.thread_name(thread_id))
-            .unwrap_or_else(|_| format!("#<thread id:{thread_id}>"));
-        Err(LispError::Signal(format!(
-            "Attempt to accept output from process {} locked to thread {owner}",
-            process.name
-        )))
+        // SDATA of the thread's name, or of its printed form.
+        let owner = match self.thread_name(thread_id) {
+            name if matches!(name.kind(), crate::lisp::types::Kind::StringObject(_)) => name,
+            _ => Value::string(&format!("#<thread id:{thread_id}>")),
+        };
+        Err(crate::lisp::primitives::values::doprnt_error_sdata(
+            None,
+            "Attempt to accept output from process {} locked to thread {}",
+            &[process.name, owner],
+        ))
     }
 
     fn unlock_processes_for_thread(&mut self, thread_id: u64) {

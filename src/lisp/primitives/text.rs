@@ -113,13 +113,16 @@ pub(crate) fn buffer_hash_value(
     interp: &mut Interpreter,
     buffer_or_name: Option<&Value>,
 ) -> Result<Value, LispError> {
-    // Fget_buffer and nsberror (GNU reads a killed buffer's freed text).
+    // Fget_buffer and nsberror; a killed buffer's freed text is empty
+    // (BUF_BEG and BUF_Z meet), whose hash GNU answers.
     let buffer_id = match buffer_or_name {
         Some(value) if !value.is_nil() => {
             let buffer = interp.get_buffer_or_error(value)?;
-            interp
-                .live_buffer_id(buffer)
-                .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?
+            let Some(buffer_id) = interp.live_buffer_id(buffer) else {
+                let digest = secure_hash_digest("sha1", &[])?;
+                return Ok(Value::String(digest_hex(&digest).into()));
+            };
+            buffer_id
         }
         _ => interp.current_buffer_id(),
     };
@@ -201,13 +204,16 @@ pub(crate) fn buffer_line_statistics_value(
     let (text, multibyte) = match buffer_or_name {
         Some(value) if !value.is_nil() => {
             let buffer = interp.get_buffer_or_error(value)?;
-            let buffer_id = interp
-                .live_buffer_id(buffer)
-                .ok_or_else(|| LispError::Signal("Selecting deleted buffer".into()))?;
-            let buffer = interp
-                .get_buffer_by_id(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            (buffer.buffer_string(), buffer.is_multibyte())
+            // A killed buffer's freed text is empty.
+            match interp.live_buffer_id(buffer) {
+                Some(buffer_id) => {
+                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
+                        LispError::Signal(format!("No buffer with id {buffer_id}"))
+                    })?;
+                    (buffer.buffer_string(), buffer.is_multibyte())
+                }
+                None => (String::new(), true),
+            }
         }
         _ => (
             interp.buffer.borrow().buffer_string(),

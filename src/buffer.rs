@@ -108,11 +108,14 @@ impl Clone for BufferMark {
 /// before the first character, position (len+1) is after the last.
 /// Internally we convert to 0-based char indices into the text.
 pub struct Buffer {
-    /// Human-visible name (e.g. "*scratch*" or "main.rs").
-    pub name: String,
+    /// BVAR (b, name): the Lisp string naming the buffer (the object
+    /// `buffer-name' returns and Vbuffer_alist's entry holds), nil once
+    /// Fkill_buffer kills it.
+    name: Value,
 
-    /// Previous name, set by rename-buffer.
-    pub last_name: Option<String>,
+    /// BVAR (b, last_name): the name before the last `rename-buffer',
+    /// the name itself at creation and once killed.
+    last_name: Value,
 
     /// buffer.h's `text': the buffer_text this buffer and the rest of its
     /// indirect family share, its own (GNU's own_text) unless indirect.
@@ -223,8 +226,8 @@ pub struct Buffer {
 impl Clone for Buffer {
     fn clone(&self) -> Self {
         Self {
-            name: self.name.clone(),
-            last_name: self.last_name.clone(),
+            name: self.name,
+            last_name: self.last_name,
             // A snapshot's own text, apart from any family's.
             text: Rc::new(RefCell::new(self.text.borrow().clone())),
             position_markers: None,
@@ -953,7 +956,7 @@ fn undo_first_change_marker(modtime: ModtimeStamp) -> Value {
 /// has any; the writer checks `overlays' itself), and neither are the
 /// derived caches, which a restored buffer rebuilds.
 pub(crate) struct BufferImage {
-    pub(crate) name: String,
+    pub(crate) name: Value,
     pub(crate) text: String,
     pub(crate) pt: usize,
     pub(crate) mark: Option<usize>,
@@ -1138,10 +1141,15 @@ impl std::error::Error for BufferError {}
 impl Buffer {
     /// Create an empty buffer with the given name.
     pub fn new(name: &str) -> Self {
+        Self::named(Value::string(name))
+    }
+
+    /// An empty buffer whose BVAR (b, name) is NAME, a Lisp string.
+    pub(crate) fn named(name: Value) -> Self {
         let text = BufferText::from_str("");
         Buffer {
-            name: name.to_string(),
-            last_name: None,
+            name,
+            last_name: Value::Nil,
             text: Rc::new(RefCell::new(text)),
             position_markers: None,
             positions_away: false,
@@ -1172,13 +1180,56 @@ impl Buffer {
         }
     }
 
+    /// BVAR (b, name): the Lisp string, or nil for a killed buffer.
+    pub fn name(&self) -> Value {
+        self.name
+    }
+
+    /// bset_name.
+    pub(crate) fn set_name(&mut self, name: Value) {
+        self.name = name;
+    }
+
+    /// BVAR (b, last_name).
+    pub(crate) fn last_name(&self) -> Value {
+        self.last_name
+    }
+
+    /// bset_last_name.
+    pub(crate) fn set_last_name(&mut self, name: Value) {
+        self.last_name = name;
+    }
+
+    /// The name's text, for host code that shows or matches it (empty for
+    /// a killed buffer's nil name).
+    pub fn name_text(&self) -> String {
+        crate::lisp::primitives::with_string_text(&self.name, str::to_owned).unwrap_or_default()
+    }
+
+    /// The text host formatting shows for the buffer: its name's, or a
+    /// killed buffer's last name's.
+    pub(crate) fn display_name_text(&self) -> String {
+        let name = if self.name.is_nil() {
+            self.last_name
+        } else {
+            self.name
+        };
+        crate::lisp::primitives::with_string_text(&name, str::to_owned).unwrap_or_default()
+    }
+
+    /// Whether the name is the string TEXT: Fstring_equal of the name and
+    /// TEXT's multibyte string (the same characters in the same bytes).
+    pub(crate) fn name_is(&self, text: &str) -> bool {
+        crate::lisp::primitives::string_is_text(&self.name, text)
+    }
+
     /// Create a buffer from a string (useful for tests and loading files).
     pub fn from_text(name: &str, s: &str) -> Self {
         let text = BufferText::from_str(s);
         let len = text.len_chars();
         Buffer {
-            name: name.to_string(),
-            last_name: None,
+            name: Value::string(name),
+            last_name: Value::Nil,
             text: Rc::new(RefCell::new(text)),
             position_markers: None,
             positions_away: false,
@@ -2218,6 +2269,8 @@ impl Buffer {
     /// Rewrite every Lisp value stored in this buffer through COPY
     /// (image-template deep clone; see `Interpreter::deep_clone_image').
     pub(crate) fn rewrite_lisp_values(&mut self, copy: &mut impl FnMut(&Value) -> Value) {
+        self.name = copy(&self.name);
+        self.last_name = copy(&self.last_name);
         self.text_conversion_style = copy(&self.text_conversion_style);
         self.mark_active = copy(&self.mark_active);
         if let Some(intervals) = &mut self.text.borrow_mut().intervals {
@@ -2232,6 +2285,8 @@ impl Buffer {
     /// positions and file metadata are native data, while the intervals'
     /// plists, the undo list and attached overlay objects are Lisp roots.
     pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
+        visit(&self.name);
+        visit(&self.last_name);
         visit(&self.text_conversion_style);
         visit(&self.mark_active);
         if let Some(marker) = self.mark_object() {
@@ -3988,13 +4043,16 @@ impl Buffer {
         self.pt = 1;
         self.begv = 1;
         self.zv = 1;
-        self.last_name = Some(self.name.clone());
+        // Fkill_buffer: `bset_last_name (b, BVAR (b, name));
+        // bset_name (b, Qnil)'.
+        self.last_name = self.name;
+        self.name = Value::Nil;
     }
 
     /// The fields `dump_buffer' writes, copied out of this buffer.
     pub(crate) fn image_parts(&self) -> BufferImage {
         BufferImage {
-            name: self.name.clone(),
+            name: self.name,
             text: self.text.borrow().whole_string(),
             pt: self.pt,
             mark: self.mark(),
@@ -4025,7 +4083,7 @@ impl Buffer {
     pub(crate) fn from_image_parts(parts: BufferImage) -> Self {
         Buffer {
             name: parts.name,
-            last_name: None,
+            last_name: Value::Nil,
             text: Rc::new(RefCell::new(BufferText {
                 modiff: parts.modiff,
                 chars_modiff: parts.chars_modiff,

@@ -3180,7 +3180,10 @@ pub(crate) fn directory_files(
     Ok(Value::list(entries.into_iter().map(|(_, entry)| entry)))
 }
 
-pub(crate) fn default_charset_plist(name: &str, interp: &Interpreter) -> Option<Value> {
+pub(crate) fn default_charset_plist(
+    name: &(impl crate::lisp::eval::coding::CharsetRef + ?Sized),
+    interp: &Interpreter,
+) -> Option<Value> {
     match interp.charset_canonical_name(name)?.as_str() {
         "ascii" => Some(Value::list([
             Value::Symbol(":short-name".into()),
@@ -3213,33 +3216,34 @@ pub(crate) fn find_charsets_in_text(
     multibyte: bool,
     table: &Value,
 ) -> Vec<Value> {
-    let mut names: Vec<String> = Vec::new();
-    let mut note = |name: String| {
+    let mut names: Vec<crate::lisp::types::SymbolName> = Vec::new();
+    let mut note = |name: crate::lisp::types::SymbolName| {
         if !names.contains(&name) {
             names.push(name);
         }
     };
     let all_ascii = codes.iter().all(|&c| c < 0x80);
     if multibyte && all_ascii {
-        note("ascii".into());
+        note(cached_symbol!("ascii").symbol());
     } else if !multibyte {
         for &c in codes {
             let c = translate_char(interp, table, c);
-            note(if c < 0x80 { "ascii" } else { "eight-bit" }.into());
+            note(if c < 0x80 {
+                cached_symbol!("ascii").symbol()
+            } else {
+                cached_symbol!("eight-bit").symbol()
+            });
         }
     } else {
         let ordered = interp.charset_priority_list();
         let head = interp.charset_non_preferred_head();
         for &c in codes {
             let c = translate_char(interp, table, c);
-            note(char_charset_ordered(interp, &ordered, head.as_deref(), c).0);
+            note(char_charset_ordered(interp, &ordered, head, c).0);
         }
     }
     names.sort_by_key(|name| interp.charset_id(name).unwrap_or(i64::MAX));
-    names
-        .into_iter()
-        .map(|value| Value::Symbol(value.into()))
-        .collect()
+    names.into_iter().map(Value::Symbol).collect()
 }
 
 pub(crate) fn normalize_path(path: &Path) -> PathBuf {

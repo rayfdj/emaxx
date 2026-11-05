@@ -25,18 +25,10 @@ fn checked_string_region(
     start: &Value,
     end: &Value,
 ) -> Result<(usize, usize), LispError> {
+    // CHECK_STRING, then fns.c:validate_subarray: nil is either end.
     let text = string_like(string).ok_or_else(|| wrong_type_argument("stringp", *string))?;
-    let len = text.text.chars().count() as i64;
-    let normalize = |value: &Value| -> Result<i64, LispError> {
-        let raw = value.as_integer()?;
-        Ok(if raw < 0 { len + raw } else { raw })
-    };
-    let from = normalize(start)?;
-    let to = normalize(end)?;
-    if from < 0 || to < 0 || from > to || to > len {
-        return Err(args_out_of_range([*string, *start, *end]));
-    }
-    Ok((from as usize, to as usize))
+    let len = text.text.chars().count();
+    crate::lisp::primitives::strings::validate_subarray(*string, *start, *end, len)
 }
 
 fn composition_property(length: usize, components: Value, modification: Value) -> Value {
@@ -515,10 +507,19 @@ pub(crate) struct CompositionIterator {
     /// The characters and columns composition_update_it last delivered.
     pub(crate) nchars: usize,
     pub(crate) width: i64,
+    /// Whether composition_reseat_it has a window W: without one, as
+    /// scan_for_column passes for a buffer no window shows, only static
+    /// compositions compose.
+    windowed: bool,
 }
 
 impl CompositionIterator {
     pub(crate) fn new() -> Self {
+        Self::for_window(true)
+    }
+
+    /// An iterator whose reseat has a window (WINDOWED) or a null W.
+    pub(crate) fn for_window(windowed: bool) -> Self {
         Self {
             stop_pos: 0,
             ch: -2,
@@ -527,6 +528,7 @@ impl CompositionIterator {
             current: None,
             nchars: 0,
             width: 0,
+            windowed,
         }
     }
 
@@ -650,7 +652,8 @@ impl CompositionIterator {
                     return true;
                 }
             }
-        } else if charpos < endpos
+        } else if self.windowed
+            && charpos < endpos
             && let Some(c) = char::from_u32(self.ch as u32)
         {
             let mut lgstring = Value::Nil;
@@ -1703,9 +1706,20 @@ fn get_glyph_string(
 
 fn sort_rules(rules: &Value) -> Result<Value, LispError> {
     let original = rules;
-    let mut rules = original
-        .to_vec()
-        .map_err(|_| wrong_type_argument("listp", *original))?;
+    // CHECK_LIST (rules), then list_length, whose CHECK_LIST_END names the
+    // tail that ends a dotted list.
+    if !matches!(original.kind(), Kind::Nil | Kind::Cons(_)) {
+        return Err(wrong_type_argument("listp", *original));
+    }
+    let mut rules = Vec::new();
+    let mut tail = *original;
+    while let Some((element, rest)) = tail.cons_values() {
+        rules.push(element);
+        tail = rest;
+    }
+    if !tail.is_nil() {
+        return Err(wrong_type_argument("listp", tail));
+    }
     if rules.len() <= 1 {
         return Ok(*original);
     }

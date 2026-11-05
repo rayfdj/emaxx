@@ -827,9 +827,9 @@ impl<'a> IsoCategories<'a> {
             .as_deref()
     }
 
-    fn safe(&self, category: usize, charset: &str) -> bool {
+    fn safe(&self, category: usize, charset: SymbolName) -> bool {
         self.attrs(category)
-            .is_some_and(|attrs| attrs.safe.contains_key(charset))
+            .is_some_and(|attrs| attrs.safe.contains_key(&charset))
     }
 
     fn flags(&self, category: usize) -> u32 {
@@ -855,7 +855,7 @@ fn detect_iso_2022(
     let mut composition_count: i32 = -1;
     info.checked |= MASK_ISO;
 
-    let designation_found = |rejected: &mut u32, found: &mut u32, charset: &str| {
+    let designation_found = |rejected: &mut u32, found: &mut u32, charset: SymbolName| {
         *rejected |= MASK_ISO_8BIT;
         for (category, bit) in [
             (CODING_CATEGORY_ISO_7, MASK_ISO_7),
@@ -947,7 +947,7 @@ fn detect_iso_2022(
                         }
                         continue;
                     };
-                    designation_found(&mut rejected, &mut found, &charset);
+                    designation_found(&mut rejected, &mut found, charset);
                 }
             }
             ISO_CODE_SO | ISO_CODE_SI => {

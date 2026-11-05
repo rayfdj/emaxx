@@ -888,8 +888,11 @@ pub(crate) fn styled_format(
                     (state.len(), state.bytes().len())
                 };
                 // The width only pads to a field width or stops at a
-                // precision; without either nothing reads it.
-                if prec < 0 && field_width == 0 {
+                // precision; without either nothing reads it, but
+                // lisp_string_width still runs over a string with
+                // properties, registering each composition it finds
+                // (get_composition_id rewrites the `composition' value).
+                if prec < 0 && field_width == 0 && !intervals {
                     (0, whole_chars, whole_bytes)
                 } else {
                     let measured = lisp_string_width(interp, env, &text, 0, whole_chars, prec)?;

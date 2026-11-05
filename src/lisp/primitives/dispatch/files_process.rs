@@ -111,15 +111,12 @@ fn move_to_system_trash(path: &str) -> Result<(), trash::Error> {
     }
 }
 
-fn buffer_visiting_exact_file_name(
-    interp: &Interpreter,
-    expanded_file_name: &str,
-) -> Option<(u64, String)> {
-    interp.buffer_list.iter().find_map(|(id, name)| {
+fn buffer_visiting_exact_file_name(interp: &Interpreter, expanded_file_name: &str) -> Option<u64> {
+    interp.buffer_list.iter().find_map(|(id, _)| {
         interp
             .get_buffer_by_id(*id)
             .is_some_and(|buffer| buffer.file.as_deref() == Some(expanded_file_name))
-            .then(|| (*id, name.clone()))
+            .then_some(*id)
     })
 }
 
@@ -683,8 +680,13 @@ define_dispatch!(
                 let buffer_id = interp.live_buffer_id(buffer).ok_or_else(|| {
                     LispError::Signal("Attempt to set major mode for a dead buffer".into())
                 })?;
-                let buffer_name = buffer.borrow().name.clone();
-                let mode = if buffer_name == "*scratch*" {
+                // strcmp (SSDATA (BVAR (XBUFFER (buffer), name)),
+                // "*scratch*") == 0.
+                let is_scratch = crate::lisp::primitives::sdata_c_string_is(
+                    &buffer.borrow().name(),
+                    b"*scratch*",
+                );
+                let mode = if is_scratch {
                     interp
                         .lookup_var_key(cached_symbol!("initial-major-mode"), env)
                         .unwrap_or(Value::Nil)
@@ -726,7 +728,7 @@ define_dispatch!(
                 let expanded =
                     string_text(&super::call(interp, "expand-file-name", &[args[0]], env)?)?;
                 Ok(buffer_visiting_exact_file_name(interp, &expanded)
-                    .map(|(id, name)| interp.buffer_value(id).expect("live buffer object"))
+                    .map(|id| interp.buffer_value(id).expect("live buffer object"))
                     .unwrap_or(Value::Nil))
             }
             "get-truename-buffer" => {
@@ -2140,10 +2142,8 @@ define_dispatch!(
                 let buffer_id = match args[0].kind() {
                     Kind::Nil => None,
                     Kind::Buffer(buffer) => Some(buffer.id),
-                    _ => match string_like(&args[0]) {
-                        Some(name) => interp.find_buffer(&name.text).map(|(id, _)| id),
-                        None => return Err(wrong_type_argument("stringp", args[0])),
-                    },
+                    Kind::StringObject(_) => interp.find_buffer_named(&args[0]),
+                    _ => return Err(wrong_type_argument("stringp", args[0])),
                 };
                 Ok(buffer_id
                     .and_then(|id| interp.process_value_for_buffer(id))
@@ -2166,12 +2166,12 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // Fprocess_status: a name finds only a process, and none
                 // is nil; anything else is get_process's.
-                let process = match string_like(&args[0]) {
-                    Some(text) => match interp.find_process_id_by_name(&text.text) {
+                let process = match args[0].kind() {
+                    Kind::StringObject(_) => match interp.find_process_named(&args[0]) {
                         Some(id) => interp.record_value(id),
                         None => return Ok(Value::Nil),
                     },
-                    None => get_process(interp, args.first())?,
+                    _ => get_process(interp, args.first())?,
                 };
                 let process_id = interp.resolve_process_id(&process)?;
                 interp
@@ -2288,8 +2288,7 @@ define_dispatch!(
             "internal-default-process-sentinel" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let message = string_text(&args[1])?;
-                internal_default_process_sentinel(interp, process_id, &message, env)?;
+                internal_default_process_sentinel(interp, process_id, args[1], env)?;
                 Ok(Value::Nil)
             }
             "set-process-sentinel" => {
@@ -2406,10 +2405,8 @@ define_dispatch!(
             "process-name" => {
                 need_args(name, args, 1)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                Ok(interp
-                    .process_name(process_id)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
+                // p->name itself.
+                Ok(interp.process_name(process_id).unwrap_or(Value::Nil))
             }
             "process-command" => {
                 need_args(name, args, 1)?;
@@ -2443,12 +2440,16 @@ define_dispatch!(
             }
             "get-process" => {
                 need_args(name, args, 1)?;
-                if matches!(args[0].kind(), Kind::Record(_)) {
+                // PROCESSP (name) answers it; anything else is CHECK_STRING'd.
+                if matches!(args[0].kind(), Kind::Record(record) if record.kind == crate::lisp::eval::RecordKind::Process)
+                {
                     return Ok(args[0]);
                 }
-                let requested = string_text(&args[0])?;
+                if !matches!(args[0].kind(), Kind::StringObject(_)) {
+                    return Err(wrong_type_argument("stringp", args[0]));
+                }
                 Ok(interp
-                    .find_process_id_by_name(&requested)
+                    .find_process_named(&args[0])
                     .map(|id| interp.record_value(id))
                     .unwrap_or(Value::Nil))
             }
@@ -3120,11 +3121,14 @@ define_dispatch!(
                                 continue;
                             };
                             super::call(interp, "kill-buffer", &[value], env)?;
-                            if let Some(survivor) = interp.get_buffer_by_id(other) {
-                                return Err(crate::lisp::primitives::values::doprnt_error(
-                                    interp,
+                            let survivor =
+                                interp.get_buffer_by_id(other).map(|buffer| buffer.name());
+                            if let Some(survivor) = survivor {
+                                // SDATA (BVAR (other, name)).
+                                return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                                    Some(interp),
                                     "Unable to kill buffer whose indirect buffer `{}' cannot be killed",
-                                    &[&survivor.name],
+                                    &[survivor],
                                 ));
                             }
                         }
@@ -3314,14 +3318,19 @@ pub(crate) fn get_process(
     name: Option<&Value>,
 ) -> Result<Value, LispError> {
     let name = name.copied().unwrap_or(Value::Nil);
-    let buffer = if let Some(text) = string_like(&name) {
+    let buffer = if matches!(name.kind(), Kind::StringObject(_)) {
         // Fget_process, then Fget_buffer.
-        if let Some(id) = interp.find_process_id_by_name(&text.text) {
+        if let Some(id) = interp.find_process_named(&name) {
             return Ok(interp.record_value(id));
         }
-        interp
-            .find_buffer_id(&text.text)
-            .ok_or_else(|| LispError::Signal(format!("Process {} does not exist", text.text)))?
+        interp.find_buffer_named(&name).ok_or_else(|| {
+            // error ("Process %s does not exist", SDATA (name)).
+            crate::lisp::primitives::values::doprnt_error_sdata(
+                None,
+                "Process {} does not exist",
+                &[name],
+            )
+        })?
     } else {
         match name.kind() {
             Kind::Nil => interp.current_buffer_id(),
@@ -3345,13 +3354,18 @@ pub(crate) fn get_process(
         }
     };
     interp.process_value_for_buffer(buffer).ok_or_else(|| {
+        // error ("Buffer %s has no process", SDATA (BVAR (XBUFFER (obj),
+        // name))).
         let buffer_name = interp
             .buffer_list
             .iter()
             .find(|(id, _)| *id == buffer)
-            .map(|(_, name)| name.as_str())
-            .unwrap_or_default();
-        LispError::Signal(format!("Buffer {buffer_name} has no process"))
+            .map_or(Value::Nil, |(_, name)| *name);
+        crate::lisp::primitives::values::doprnt_error_sdata(
+            None,
+            "Buffer {} has no process",
+            &[buffer_name],
+        )
     })
 }
 
@@ -3482,18 +3496,15 @@ fn make_process_value(
     drop(stderr_writer);
     let runtime = runtime.transpose()?;
     if let Some(stderr_buffer_id) = parsed.stderr_buffer_id {
-        let requested_name = parsed
-            .name
-            .clone()
-            .or_else(|| parsed.program.clone())
-            .unwrap_or_default();
-        let stderr = interp.create_process(
-            Some(stderr_buffer_id),
-            None,
-            Vec::new(),
-            None,
-            Some(format!("{requested_name} stderr")),
+        // Fmake_pipe_process's :name, concat2 (name, " stderr").
+        let stderr_name = super::call(
+            interp,
+            "concat",
+            &[parsed.name_value, Value::string(" stderr")],
+            env,
         )?;
+        let stderr =
+            interp.create_process(Some(stderr_buffer_id), None, Vec::new(), None, stderr_name)?;
         let stderr_process_id = interp.resolve_process_id(&stderr)?;
         if let Some(channels) = stderr_channels {
             interp.install_pipe_process_channels(stderr_process_id, channels);
@@ -3505,7 +3516,7 @@ fn make_process_value(
             stderr_process_id,
             Value::list([
                 Value::symbol(":name"),
-                Value::string(&format!("{requested_name} stderr")),
+                stderr_name,
                 Value::symbol(":buffer"),
                 stderr_buffer,
                 Value::symbol(":noquery"),
@@ -3524,7 +3535,7 @@ fn make_process_value(
         parsed.program,
         parsed.argv,
         runtime,
-        parsed.name,
+        parsed.name_value,
     )?;
     let process_id = interp.resolve_process_id(&process)?;
     if let Some(channels) = pipe_channels {
@@ -3772,8 +3783,8 @@ fn signal_process_target_pid(
     };
     let mut process = *target;
     if let Kind::StringObject(string) = target.kind() {
-        let found = string_like(target)
-            .and_then(|name| interp.find_process_id_by_name(&name.text))
+        let found = interp
+            .find_process_named(target)
             .map(|id| interp.record_value(id));
         process = match found {
             Some(found) => found,
@@ -3800,8 +3811,14 @@ fn signal_process_target_pid(
     match interp.process_os_id(process_id) {
         Some(pid) if pid > 0 => Ok(Some(pid as libc::pid_t)),
         _ => {
-            let name = interp.process_name(process_id).unwrap_or_default();
-            Err(LispError::Signal(format!("Cannot signal process {name}")))
+            // error ("Cannot signal process %s", SDATA (XPROCESS
+            // (process)->name)).
+            let name = interp.process_name(process_id).unwrap_or(Value::Nil);
+            Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                None,
+                "Cannot signal process {}",
+                &[name],
+            ))
         }
     }
 }

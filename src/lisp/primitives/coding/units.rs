@@ -12,6 +12,7 @@
 
 use super::charset_table::CharsetBuiltin;
 use super::{CharsetInfo, DecodedText, RAW_BYTE8_BASE, RAW_BYTE8_CHARS};
+use crate::lisp::types::SymbolName;
 
 /// ONE_MORE_BYTE: the next unit of SRC at P, or ON_END (no_more_source).
 macro_rules! one_more {
@@ -250,7 +251,7 @@ pub(crate) enum CallEnd {
 /// ones DECODE_CHAR could not decode, stored as -1, which produce_chars
 /// skips as an annotation of length one.
 pub(crate) struct CallRuns {
-    last: Option<String>,
+    last: Option<SymbolName>,
     /// The charset record of the open run, compared by identity, when it
     /// was opened from one.
     last_info: *const CharsetInfo,
@@ -279,7 +280,7 @@ impl CallRuns {
 
     /// Open a run of CHARSET (see `open').
     pub(crate) fn open_info(&mut self, charset: &CharsetInfo, out: &mut DecodedText) -> usize {
-        let used = self.open(&charset.name, out);
+        let used = self.open(charset.name, out);
         self.last_info = charset;
         used
     }
@@ -300,8 +301,8 @@ impl CallRuns {
         self.uncounted += count;
     }
 
-    pub(crate) fn is(&self, charset: &str) -> bool {
-        self.last.as_deref() == Some(charset)
+    pub(crate) fn is(&self, charset: SymbolName) -> bool {
+        self.last == Some(charset)
     }
 
     /// ADD_CHARSET_DATA for the open run, whose annotation produce_charset
@@ -321,10 +322,10 @@ impl CallRuns {
 
     /// Open a run of CHARSET at char_offset (closing the open one; the
     /// charbuf ints that takes).
-    pub(crate) fn open(&mut self, charset: &str, out: &mut DecodedText) -> usize {
+    pub(crate) fn open(&mut self, charset: SymbolName, out: &mut DecodedText) -> usize {
         let used = self.close(out);
         self.last_offset = self.char_offset(out);
-        self.last = Some(charset.to_string());
+        self.last = Some(charset);
         used
     }
 

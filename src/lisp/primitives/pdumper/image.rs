@@ -581,6 +581,8 @@ pub(crate) enum RootSlot {
     EmacsMuleCharsetList = 62,
     /// print.c's staticpro'd Vprin1_to_string_buffer.
     Prin1ToStringBuffer = 63,
+    /// minibuf.c's staticpro'd Vminibuffer_list.
+    MinibufferList = 64,
 }
 
 impl RootSlot {
@@ -644,6 +646,7 @@ impl RootSlot {
             61 => Self::FontStyleTable,
             62 => Self::EmacsMuleCharsetList,
             63 => Self::Prin1ToStringBuffer,
+            64 => Self::MinibufferList,
             _ => return None,
         })
     }

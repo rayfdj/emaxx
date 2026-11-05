@@ -1557,9 +1557,26 @@ fn locale_encoded_bytes(
     let coding = interp
         .lookup_var_key(cached_symbol!("locale-coding-system"), env)
         .unwrap_or(Value::Nil);
-    let source = if coding.is_nil() {
+    // code_convert_string_norecord (STRING, Vlocale_coding_system, 1): a
+    // nil coding system encodes as `no-conversion' (DST_OBJECT is t), a
+    // multibyte string's raw-byte characters becoming their bytes; a
+    // unibyte or all-ASCII string is its own bytes.
+    let identity = coding.is_nil()
+        && match string.kind() {
+            Kind::StringObject(state) => {
+                let state = state.borrow();
+                !state.is_multibyte() || state.len() == state.bytes().len()
+            }
+            _ => true,
+        };
+    let source = if identity {
         *string
     } else {
+        let coding = if coding.is_nil() {
+            Value::symbol("no-conversion")
+        } else {
+            coding
+        };
         call(
             interp,
             "encode-coding-string",
@@ -2318,7 +2335,8 @@ pub(crate) fn numeric_result_value(
 ) -> Result<Value, LispError> {
     match value.kind() {
         Kind::Integer(number) => Ok(Value::Integer(number)),
-        Kind::BigInteger(number) => Ok(normalize_bigint_value((number).into())),
+        // The bignum object itself: minmax_driver returns an argument.
+        Kind::BigInteger(_) => Ok(*value),
         Kind::Float(number) => Ok(Value::Float(number)),
         Kind::Marker(id) => Ok(Value::Integer(
             interp

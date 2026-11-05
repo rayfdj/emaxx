@@ -3174,7 +3174,7 @@ fn auto_save_error(interp: &mut Interpreter, env: &mut Env, error: &LispError) {
     AUTO_SAVE_ERROR_OCCURRED.set(true);
     let _ = super::dispatch::display::ring_bell(interp, env);
     let condition = crate::lisp::eval::error_condition_value(error);
-    let name = Value::string(&interp.buffer.borrow().name);
+    let name = interp.buffer.borrow().name();
     let message = call(interp, "error-message-string", &[condition], env).and_then(|text| {
         call(
             interp,
@@ -3346,7 +3346,7 @@ pub(crate) fn do_auto_save(
                         auto_raise,
                         env,
                     );
-                    let name = Value::string(&buffer.borrow().name);
+                    let name = buffer.borrow().name();
                     super::dispatch::display::message_with_string(
                         interp,
                         "Buffer %s has shrunk a lot; auto save disabled in that buffer until next real save",

@@ -432,11 +432,8 @@ pub(crate) fn print_prune_string_charset(
         }
         if !unsafe_charset {
             let charset = value_cell.map_or(Value::Nil, |rest| rest.car.get());
-            let expected = charset.symbol_str().map(|name| {
-                interp
-                    .charset_canonical_name(name)
-                    .unwrap_or_else(|| name.to_string())
-            });
+            let expected = crate::lisp::eval::coding::CharsetRef::charset_symbol(&charset)
+                .map(|name| interp.charset_canonical_name(&name).unwrap_or(name));
             let (ordered, head) = ordered.get_or_insert_with(|| {
                 (
                     interp.charset_priority_list(),
@@ -445,8 +442,7 @@ pub(crate) fn print_prune_string_charset(
             });
             unsafe_charset = codes.iter().skip(start).take(end - start).any(|&code| {
                 code >= 0x80
-                    && Some(char_charset_ordered(interp, ordered, head.as_deref(), code).0)
-                        != expected
+                    && Some(char_charset_ordered(interp, ordered, *head, code).0) != expected
             });
         }
     }
@@ -1772,15 +1768,16 @@ pub(crate) fn md5_source_bytes(
         };
         return crate::lisp::primitives::text::iv_auto_bytes(length as usize);
     } else {
-        return Err(LispError::SignalValue(Value::list([
-            Value::symbol("error"),
-            Value::string("Invalid object argument"),
+        // signal_error ("Invalid object argument", NILP (object) ?
+        // build_string ("nil") : object).
+        return Err(crate::lisp::primitives::values::signal_error(
+            "Invalid object argument",
             if source.is_nil() {
                 Value::string("nil")
             } else {
                 *source
             },
-        ])));
+        ));
     };
     let object = if string_multibyte_p(&object).expect("extracted string") {
         // Explicit buffer coding is checked by code_convert_string only

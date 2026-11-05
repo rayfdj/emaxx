@@ -14837,6 +14837,238 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 315: charsets are found by their symbols, as
+  Vcharset_hash_table, an `eq' table, finds them.** Emaxx kept every
+  part of charset.c's registry by name text: the hash table (each name's
+  and alias's id), charset_table's cache, the ordered list and
+  Vcharset_non_preferred_head, Viso_2022_charset_list,
+  Vemacs_mule_charset_list, ISO_CHARSET_TABLE, the aliases, plists,
+  definitions and the supplementary and unified flags. An uninterned
+  symbol was found again through its marked text, so
+  `define-charset-alias' of one consed onto `charset-list' a different
+  symbol made from that text, and once round 309 stopped mapping marked
+  text back, an uninterned alias or charset was no charset at all to the
+  callers that still passed a name. Each part is keyed by the symbol
+  now: its names are collection roots, copied with an interpreter and
+  written to the image as symbols (charset.c's dump of charset_table and
+  the hash table), and the readers take a symbol, or for a caller that
+  still holds a name, the symbol whose text it is (`CharsetRef').
+  CHECK_CHARSET, CHECK_CHARSET_GET_ID and `charsetp' look the object up
+  by EQ; Fdefine_charset_internal registers args[charset_arg_name]
+  itself and Fdefine_charset_alias the alias itself; `char-charset',
+  `find-charset-string', `split-char', the ISO-2022 coder's designations
+  and safe registers, the emacs-mule layout, the CCL charset list, the
+  decoded `charset' runs and the preferred charsets of encoding carry
+  symbols; and the errors that name a charset (Funify_charset's, the
+  coding system definition's dimension check) take SYMBOL_NAME of the
+  symbol given. `char-charset' takes 3,424 instructions a call against
+  GNU's 4,413, `charsetp' 3,258 against 4,233, `encode-char' 3,636
+  against 4,364, and `encode-coding-string' to iso-2022-jp 14,440
+  against 13,320, in an interpreted loop. A command-line comparison runs
+  uninterned aliases and charsets through definition, priority, ISO
+  designation, unification and conversion; the fuzzes and command-line
+  cases of rounds 303 to 314 print GNU's results as before. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 316: fringe bitmaps are found through their `fringe' property,
+  as fringe.c's lookup_fringe_bitmap finds them, and `set-fontset-font'
+  takes its script or charset by EQ.** Emaxx kept each fringe bitmap
+  under its name text and found it by that; GNU keeps fringe_bitmaps and
+  fringe_faces by number alone and finds a bitmap through Fget (BITMAP,
+  Qfringe): a number below MAX_STANDARD_FRINGE_BITMAPS, or one with a
+  bitmap defined now, below max_used_fringe_bitmap. So a symbol given
+  another bitmap's number is that bitmap: `define-fringe-bitmap'
+  redefines it in place, without a new number or an entry in
+  `fringe-bitmaps', and `set-fringe-bitmap-face' and
+  `destroy-fringe-bitmap' reach it, where Emaxx made a new bitmap or
+  signalled "Undefined fringe bitmap". The registry holds no names now
+  (the image too), the bitmap argument is CHECK_SYMBOL'd, and the align
+  argument compared by EQ with `top', `bottom' and `center'.
+  Fset_fontset_font's symbol target is tested with EQ (Qlatin) and
+  CHARSETP of the symbol itself, and its error names the symbol by
+  SYMBOL_NAME; an uninterned `latin' is no script there, as in GNU. A
+  command-line comparison runs these cases; the fuzzes and command-line
+  cases of rounds 303 to 315 print GNU's results as before. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 317: a killed buffer stays the buffer object wherever it is
+  held, windows hold their buffers' objects, a window's kind is no
+  symbol, and 54 window primitives decode their arguments as window.c
+  does.** BUFFER_LIVE_P reads the buffer itself: Fkill_buffer clears a
+  liveness flag on the object (and the buffer list loses it), so
+  `buffer-live-p' of a killed buffer is nil whatever buffers are made
+  after it, and a window's buffer slot holds the buffer object, as
+  w->contents does, where it held an id; the window code reads liveness
+  from that object. An image's restore marks killed the buffers its
+  buffer list no longer holds, and keeps print.c's hidden ` prin1'
+  buffer, which no list holds, live (a first gate found it restored
+  killed, so that `kill-buffer' of it failed in
+  `replace-buffer-in-windows'). A window's kind was an interned symbol
+  (`internal-vertical', `internal-horizontal', `deleted', `minibuffer'),
+  so after the first split `(intern-soft "internal-vertical")' found a
+  symbol GNU never interns; window.c tells the kinds apart by
+  w->contents and its flags, and the kind slot now holds nil for a leaf
+  and a fixnum code otherwise, tested with a word compare. `windowp',
+  `window-valid-p' and `window-live-p', the parent and sibling readers
+  and the two child readers were shared bodies that tested their own
+  names on every call; each is a subr of its own, and the links are
+  returned from the record's slot. A sweep calling every window subr
+  with a deleted window, a fixnum and a symbol found 54 that decoded
+  their window as decode_any_window where window.c uses
+  decode_valid_window or decode_live_window (so a deleted window was
+  accepted, or the error named `windowp'), checked their other arguments
+  in another order (`set-window-hscroll' and `set-window-new-total'
+  check the size first or with CHECK_FIXNUM, `set-window-vscroll' with
+  CHECK_NUMBER, `coordinates-in-window-p' with CHECK_CONS, `window-at'
+  with CHECK_NUMBER after its frame), took nil for the selected window
+  where CHECK_VALID_WINDOW does not (`window-combination-limit'),
+  signalled with a type name instead of the object
+  (`window-configuration-equal-p', `run-window-scroll-functions'), or
+  accepted anything (`set-window-configuration' had no
+  CHECK_WINDOW_CONFIGURATION); `window-scroll-bar-height' reads no
+  argument at all, as WINDOW_HAS_HORIZONTAL_SCROLL_BAR is false in this
+  configuration. All now answer as GNU does; `window-system-for-display'
+  alone still differs, through `display-format-alist', which GNU's dump
+  fills from term/x-win, and this build has no X. Four command-line
+  comparisons run these cases. In undo-tests a call of
+  `frame-windows-min-size' (eight an iteration, from
+  set-window-configuration's adjust_frame_size) costs 16,578
+  instructions against GNU's 12,575: the primitives' own bodies cost
+  what GNU's do (6,733 against 6,875) and the funcall path 546 more, and
+  the rest, about 3,600, is the call from native code into a C subr (the
+  generated entry, invoke_subr's kind test, the active call, the arity
+  and handler tests: some 45 instructions a call), which GNU's direct
+  call through the freloc table does not spend. The undo case runs
+  1,338,867 instructions an iteration with collections held off, against
+  GNU's 1,222,673 (1.095), and 1.099 with them; sorting is at 0.989 with
+  collections held off and the dynamic interpreter loop at 1.023. Rust
+  heap allocation is the other large share of the undo excess: 469
+  allocations an iteration (buffer creation and killing, text copied out
+  of buffers and strings, vector growth) cost about 39,000 instructions
+  against GNU's 6,500 in malloc and free. The fuzzes and command-line
+  cases of rounds 303 to 316 print GNU's results as before. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 318: a call from native code into a C subr reads one word for
+  its entry, and two sweeps of every subr bring 29 more primitives'
+  argument handling to GNU's.** An ordinary subr (one with no word-level
+  path) that the generated entry calls with its whole fixed arity
+  records its direct entry on that first call, and later calls read that
+  one word where they read the subr's kind, its resolved entry and its
+  arity: `frame-windows-min-size' takes 24,277 instructions a call
+  against 24,973 (GNU 21,797). `apply' spreads up to eight arguments on
+  the stack, as SAFE_ALLOCA_LISP does, where it filled a heap vector.
+  The undo case runs 1,330,859 instructions an iteration with
+  collections held off (GNU 1,222,673, 1.088) and 1,326,070 with them
+  (1.093). A first sweep called every subr outside a deny list of
+  process, terminal, file and editor-exiting calls (923) with a killed
+  buffer, a deleted window, a deleted process, a deleted overlay and a
+  marker pointing nowhere in each of its first three arguments:
+  `buffer-hash', `buffer-line-statistics', `object-intervals' and
+  `current-bidi-paragraph-direction' signalled for a killed buffer,
+  whose freed text GNU reads as empty;
+  `bidi-find-overridden-directionality' and `font-at' took a deleted
+  window that decode_live_window refuses; `fringe-bitmaps-at-pos'
+  returned nil where marker_position of a deleted window's unchained
+  point marker signals; `posn-at-point' skipped
+  Fpos_visible_in_window_p's fix_position of POS; `get-process' returned
+  any record (a window) where only a process answers itself;
+  `internal-complete-buffer' checked STRING before the FLAG GNU reads
+  first; the default sentinel checked the message before the insertions
+  where Finsert signals `char-or-string-p'; and `make-hash-table''s
+  invalid argument list error carried a nil that signal_error splices
+  away. A second sweep put seventeen ordinary values (fixnums, a float,
+  a bignum, strings, a character, a vector, a dotted pair, a list, a
+  bool-vector, a char-table, a hash table, a marker, symbols, a keyword,
+  t), each made fresh for its call, in each position: `abs', `max',
+  `min' and one-argument `logand', `logior' and `logxor' return the
+  argument itself, as data.c and floatfns.c do, where a bignum or float
+  was copied; `compose-string-internal' takes nil ends
+  (validate_subarray); `composition-sort-rules' signals with the tail
+  list_length stops at; `font-shape-gstring', `md5', `secure-hash' and
+  `internal-set-font-selection-order' signal through signal_error, which
+  splices a proper list; `goto-char' refuses a bignum;
+  `indirect-function' reads t's function cell; `posn-at-x-y''s checks
+  are CHECK_FIXNAT's (`wholenump'); and `set-window-margins' and
+  `set-window-new-pixel' take check_integer_range's `args-out-of-range'
+  VALUE LO HI, a bignum included. What the sweeps still find is
+  `decode-time''s clock, `make-temp-name''s randomness and state earlier
+  calls leave in a session (GNU's session ends at
+  `get-unused-iso-final-char', so the next chunk starts afresh where
+  Emaxx's continues); each such case run in a fresh session prints GNU's
+  result. Two command-line comparisons run the cases fixed. The fuzzes
+  and command-line cases of rounds 303 to 317 print GNU's results as
+  before. Local validation: the grouped gate's 3,501 library tests
+  (one process test whose timing a concurrent fuzz run upset in the
+  first pass passed in the m-z group's rerun, 474 of 474), the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 319: a buffer's and a process's names are Lisp strings, the
+  minibuffers are Vminibuffer_list's, and string arguments reach
+  primitives as their bytes, as a sweep of every subr with twelve kinds
+  of string found GNU's do.** The buffer holds its name and last name as
+  Lisp strings, and the buffer list (Vbuffer_alist) pairs each buffer
+  with that same object: `buffer-name' returns it (`(eq (buffer-name)
+  (buffer-name))' is t), `rename-buffer' installs the string it is
+  given, text properties and later `aset's included, `get-buffer-create'
+  and `make-indirect-buffer' a copy without properties, `kill-buffer'
+  leaves a nil name and the old one as the last name, and an image keeps
+  the one object in both places. `get-buffer' finds a name by
+  `string-equal' (a unibyte "x\377" names no buffer a multibyte raw-byte
+  "x\377" does), the printer writes a name through print_string,
+  `value<' orders buffers by string_cmp, and `generate-new-buffer-name'
+  builds its candidates by `concat' and tests them by `string-equal' and
+  `get-buffer', a non-string IGNORE signalling as GNU's does. A
+  process's name is p->name likewise: `process-name' returns the string
+  `make-process', `make-pipe-process', `make-network-process' and
+  `make-serial-process' were given, or make_process's concat2 (NAME,
+  "<N>") when a live process has it (text properties kept, a unibyte
+  name unibyte), `get-process' and `process-status' find it by `equal',
+  an accepted connection's is the server's name and the caller
+  concatenated, the default sentinel inserts it with Finsert, `value<'
+  orders processes by it, and a pipe's stderr process is named concat2
+  (NAME, " stderr"). `minibufferp' asks Vminibuffer_list, which
+  get_minibuffer fills by depth, where Emaxx went by a " *Minibuf" name
+  prefix: a buffer a user names " *Minibuf-9*" is no minibuffer, a
+  renamed one still is, LIVE means live_minibuffer_p's active depths,
+  `innermost-minibuffer-p' is EQ to the list's minibuf_level entry, and
+  a frame's minibuffer window shows the list's first; an image keeps the
+  list. An error GNU formats from SDATA (NAME) takes the bytes before
+  the first NUL in make_string's choice of multibyte: nsberror's "No
+  buffer named", "Buffer name `%s' is in use", "No such buffer", "Buffer
+  %s has no process", "Process %s does not exist", "Cannot signal
+  process", "Process %s not running", "is not a subprocess", "is not
+  active", "Attempt to accept output from process %s locked to thread
+  %s", "Fontset `%s' does not exist", "Window is dedicated to", the
+  indirect-buffer kill refusal, the font name and key errors and the
+  autoload-while-dumping error. A face name given as a string is
+  Fintern'd, raw bytes included; base64 decoding reads the string's own
+  bytes. Color names are C strings: tty_defined_color reads SSDATA up to
+  the first NUL, asks `tty-color-desc' about build_string of it with the
+  frame (decode_any_frame for `color-gray-p' and `color-supported-p'),
+  and keeps xfaces.c's pixel rules for "unspecified-fg" and
+  "unspecified-bg". With a nil `locale-coding-system',
+  `format-time-string' encodes its format as `no-conversion', a raw-byte
+  character becoming its byte. `current-column' and `move-to-column'
+  step over a composition as indent.c's scan_for_column does (a static
+  composition's width; an automatic one only in a buffer some window
+  shows), and `format' runs lisp_string_width over a %s argument with
+  properties, registering its compositions as GNU's get_composition_id
+  does. The undo case runs 1,322,157 instructions an iteration with
+  collections held off (GNU 1,222,673, 1.081). The sweep, run in one
+  session over every subr GNU's session survives, now differs only in
+  `decode-time''s clock and `make-temp-name''s randomness. Host-side
+  formatting of a killed buffer (a Rust `Display') shows its last name,
+  where its nil name had left the first gate pass one test's expected
+  text short; the second pass found a process message formatting the
+  name object's printed form, quotes included. One command-line
+  comparison runs the cases fixed. The fuzzes and command-line cases of
+  rounds 303 to 318 print GNU's results as before. Local validation: the
+  grouped gate's 3,501 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17325,7 +17557,80 @@ ert-tests (39,275 ms against 36,530), tramp-tests (19,980 against
 against 2,718) and mule-tests (2,842 against 1,846), and
 `ert-test-run-tests-batch-expensive' is 1.07 of GNU's time.
 
+**On `62d801d`** (round 314): the full Rust gate (run 41991212454)
+passed; the frozen run (run 41991216862) passed at its first attempt,
+7,928 of 7,928 outcomes matching (the oracle's bodies 268.5 s against
+round 313's 261.2). Setup 79.2 s against 66.8 s (1.185), test bodies
+290.2 s against 268.5 s (1.080), in all 1.085, with a per-file setup
+median of 120 ms against 102. The widest body gaps are tramp-tests
+(20,940 ms against 17,960), comp-tests (18,093 against 15,581),
+ert-tests (40,186 against 37,837), mule-tests (2,811 against 1,856) and
+semantic-utest-ia (3,853 against 3,026), and
+`ert-test-run-tests-batch-expensive' is 1.05 of GNU's time.
+
+**On `dbe49cf`** (round 315): the full Rust gate (run 41999068185)
+passed; the frozen run (run 41999073223) passed at its first attempt,
+7,928 of 7,928 outcomes matching (the oracle's bodies 264.8 s against
+round 314's 268.5). Setup 75.5 s against 62.5 s (1.209), test bodies
+291.3 s against 264.8 s (1.100), in all 1.106, with a per-file setup
+median of 113 ms against 96. The widest body gaps are ert-tests (44,588
+ms against 37,919), tramp-tests (22,211 against 18,866), comp-tests
+(16,374 against 14,062), semantic-utest-ia (3,669 against 2,419) and
+mule-tests (3,017 against 1,926), and
+`ert-test-run-tests-batch-expensive' is 1.17 of GNU's time.
+
+**On `ec8b6c1`** (round 316): the full Rust gate (run 42004103686)
+passed; the frozen run (run 42004107700) differed at its first attempt
+only in eglot-tests, where the oracle's
+`eglot-test-rust-completion-exit-function' failed with a jsonrpc-error
+and Emaxx's passed (as at round 295), and passed at its second, 7,928 of
+7,928 outcomes matching. The two attempts ran on runners of very
+different speed: the first, the fastest yet, timed setup 50.4 s against
+44.3 s (1.138), test bodies 227.9 s against 223.5 s (1.020), in all
+1.028; the second setup 90.7 s against 67.4 s (1.347), test bodies 310.8
+s against 271.8 s (1.143), in all 1.172, with a per-file setup median of
+141 ms against 104. The second's widest body gaps are ert-tests (46,318
+ms against 38,114), comp-tests (19,248 against 15,244), tramp-tests
+(23,909 against 19,982), semantic-utest-ia (4,048 against 2,609) and
+mule-tests (3,249 against 2,025), and
+`ert-test-run-tests-batch-expensive' is 1.20 of GNU's time. Run in
+release builds on this host, mule-tests takes 1.48 s against GNU's 1.96
+and semantic-utest-ia 2.90 s against 3.38 (17.24G instructions against
+19.15G): their gaps are the checked build's.
+
+**On `aa9d9fa`** (round 317): the full Rust gate (run 42015775065)
+passed; the frozen run (run 42015779519) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a slow runner (the oracle's bodies
+279.7 s against round 316's second attempt's 271.8). Setup 86.8 s
+against 72.4 s (1.199), test bodies 314.5 s against 279.7 s (1.124), in
+all 1.135, with a per-file setup median of 131 ms against 112. The
+widest body gaps are ert-tests (47,357 ms against 39,016), tramp-tests
+(24,555 against 20,599), comp-tests (19,665 against 16,900),
+semantic-utest-ia (4,210 against 2,898) and mule-tests (3,303 against
+2,061), and `ert-test-run-tests-batch-expensive' is 1.20 of GNU's time.
+
+**On `dd1fb05`** (round 318): the full Rust gate (run 42026320258)
+passed; the frozen run (run 42026324228) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a faster runner than round 317's
+(the oracle's bodies 245.3 s against 279.7). Setup 63.5 s against 54.7 s
+(1.160), test bodies 261.5 s against 245.3 s (1.066), in all 1.101, with
+a per-file setup median of 96 ms against 84. The widest body gaps are
+ert-tests (36,346 ms against 32,930), tramp-tests (18,541 against
+15,651), comp-tests (14,814 against 12,701), semantic-utest-ia (2,964
+against 2,139) and mule-tests (2,326 against 1,526), and
+`ert-test-run-tests-batch-expensive' is 1.09 of GNU's time.
+
 **Findings recorded, not fixed:**
+- **Static compositions in the screen-line layout (round 319).** The
+  layouter the redisplay paths share (`window-text-pixel-size',
+  `buffer-text-pixel-size' and through them `string-pixel-width') lays a
+  `composition' property's characters out one by one: three NULs
+  composed into one glyph measure 6 columns where GNU's display
+  iterator, stepping over the composition, measures 2. compute_motion
+  and scan_for_column step over compositions with
+  composition_reseat_it's iterator; the layouter needs the same
+  iterator, and the glyph widths of a composed cluster, to match
+  xdisp.c.
 - **Hot functions first at link time (round 305).** LLD's
   `--symbol-ordering-file' with the 3,046 functions four test files'
   callgrind runs touched, the hottest first (99% of their instructions
@@ -18156,8 +18461,16 @@ and failures are still recorded.
    coding system table is the symbol's, but the conversions still carry a
    coding system by its name: GNU's coding id, the spec, is what they
    should carry, so that `last-coding-system-used' names an uninterned
-   alias and a coding system defined under one converts; the charsets,
-   fontsets and fringe bitmaps next); text-property intervals
+   alias and a coding system defined under one converts; since rounds 315
+   and 316 the charsets and fringe bitmaps are the symbol's); the buffer
+   registry, which keeps buffers by id in lists the C side scans where GNU
+   holds the buffer object (since round 317 a window's buffer and
+   `buffer-live-p' read the object; the buffer list, the current buffer's
+   switch and the frame's buffer lists remain); window records found by
+   id through the record registry, where GNU's window.c reads w->parent,
+   w->next and w->contents from the window itself (the links and child
+   readers read the record's slots since round 317); text-property
+   intervals
    (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor

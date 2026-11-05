@@ -209,10 +209,10 @@ pub(crate) fn check_fontset_name(
         None => match fs_query_fontset(interp, name, 0, env)? {
             Some(id) => id,
             None => {
-                return Err(crate::lisp::primitives::values::doprnt_error(
-                    interp,
+                return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                    Some(interp),
                     "Fontset `{}' does not exist",
-                    &[&string_text(name)?],
+                    &[*name],
                 ));
             }
         },
@@ -291,8 +291,7 @@ fn find_font_encoding(
             if super::search::fast_string_match(interp, env, &regexp, fontname, Some(canon), false)?
                 .is_some()
             {
-                let charsetp =
-                    |value: &Value| value.as_symbol().is_ok_and(|name| interp.has_charset(name));
+                let charsetp = |value: &Value| value.is_symbol() && interp.has_charset(value);
                 let valid = match encoding.kind() {
                     Kind::Nil | Kind::T | Kind::Symbol(_) => charsetp(&encoding),
                     _ => encoding
@@ -313,7 +312,7 @@ fn find_font_encoding(
 fn charset_symbol_id(interp: &Interpreter, charset: &Value) -> Result<i64, LispError> {
     let name = super::coding::check_charset(interp, charset)?;
     interp
-        .charset_id(name)
+        .charset_id(&name)
         .ok_or_else(|| wrong_type_argument("charsetp", *charset))
 }
 
@@ -322,10 +321,10 @@ fn char_charset_p(interp: &Interpreter, c: u32, id: i64) -> bool {
     let Some(name) = interp.charset_name_of_id(id) else {
         return false;
     };
-    if c < 0x80 && super::coding::charset_ascii_compatible_p(interp, name) {
+    if c < 0x80 && super::coding::charset_ascii_compatible_p(interp, &name) {
         return true;
     }
-    super::coding::encode_charset_char(interp, name, c).is_some()
+    super::coding::encode_charset_char(interp, &name, c).is_some()
 }
 
 /// Fset_fontset_font's set_fontset_font, map_charset_chars' callback: a
@@ -474,7 +473,7 @@ pub(crate) fn set_fontset_font(
     let is_character =
         |value: &Value| matches!(value.kind(), Kind::Integer(c) if (0..=0x3f_ffff).contains(&c));
     let mut ascii_changed = false;
-    let mut charset: Option<String> = None;
+    let mut charset: Option<crate::lisp::types::SymbolName> = None;
     let mut range_list: Vec<Option<(u32, u32)>> = Vec::new();
     let mut script_range_list: Vec<(u32, u32)> = Vec::new();
     if let Kind::Integer(c) = characters.kind()
@@ -510,8 +509,9 @@ pub(crate) fn set_fontset_font(
         }
         range_list.push(Some((from as u32, to as u32)));
     } else if let Some(name) = match characters.kind() {
-        Kind::Symbol(name) => Some(name.to_string()),
-        Kind::T => Some("t".to_string()),
+        // SYMBOLP (CHARACTERS), nil apart (the default font below).
+        Kind::Symbol(name) => Some(name),
+        Kind::T => Some(crate::lisp::types::SymbolName::intern_str("t")),
         _ => None,
     } {
         let table = interp
@@ -524,7 +524,7 @@ pub(crate) fn set_fontset_font(
             env,
         )?;
         if !super::call(interp, "memq", &[characters, script_list], env)?.is_nil() {
-            if name == "latin" {
+            if characters.is_key(cached_symbol!("latin")) {
                 ascii_changed = true;
             }
             script_range_list = script_ranges(interp, &characters, env)?;
@@ -536,7 +536,8 @@ pub(crate) fn set_fontset_font(
             charset = Some(name);
         } else if script_range_list.is_empty() {
             return Err(LispError::Signal(format!(
-                "Invalid script or charset name: {name}"
+                "Invalid script or charset name: {}",
+                name.name_text()
             )));
         }
     } else if characters.is_nil() {

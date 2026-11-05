@@ -57,11 +57,6 @@ impl Interpreter {
         id
     }
 
-    /// Check if a buffer name exists in the buffer list.
-    pub fn has_buffer(&self, name: &str) -> bool {
-        self.buffer_list.iter().any(|(_, n)| n == name)
-    }
-
     /// buffer.c:BUFFER_LIVE_P of the buffer ID names: a buffer of
     /// Vbuffer_alist, or print.c's hidden prin1 buffer, the one live
     /// buffer on no list, while it is held.
@@ -77,16 +72,27 @@ impl Interpreter {
                         .any(|(buffer_id, _)| *buffer_id == id)))
     }
 
-    /// Find a buffer by name, returning (id, name).
-    pub fn find_buffer(&self, name: &str) -> Option<(u64, String)> {
-        self.buffer_list.iter().find(|(_, n)| n == name).cloned()
-    }
-
-    /// The id of the live buffer named NAME, without a copy of the name.
-    pub(crate) fn find_buffer_id(&self, name: &str) -> Option<u64> {
+    /// The live buffer named NAME, text the host names (a buffer it made,
+    /// such as *Messages*), with its name object.
+    pub fn find_buffer(&self, name: &str) -> Option<(u64, Value)> {
         self.buffer_list
             .iter()
-            .find(|(_, n)| n == name)
+            .find(|(_, n)| primitives::string_is_text(n, name))
+            .copied()
+    }
+
+    /// The id of the live buffer named NAME, host text.
+    pub(crate) fn find_buffer_id(&self, name: &str) -> Option<u64> {
+        self.find_buffer(name).map(|(id, _)| id)
+    }
+
+    /// buffer.c:Fget_buffer's search of Vbuffer_alist for the string
+    /// NAME: assoc_ignore_text_properties, the first buffer whose name is
+    /// `string-equal' to it.
+    pub(crate) fn find_buffer_named(&self, name: &Value) -> Option<u64> {
+        self.buffer_list
+            .iter()
+            .find(|(_, n)| primitives::strings_equal(n, name))
             .map(|(id, _)| *id)
     }
 
@@ -270,10 +276,11 @@ impl Interpreter {
         if self.will_dump_without_bootstrap(env) {
             self.will_dump_reported = true;
             let name = crate::lisp::primitives::call(self, "symbol-name", &[funname], env)?;
-            return Err(LispError::Signal(format!(
+            return Err(primitives::values::doprnt_error_sdata(
+                None,
                 "Attempt to autoload {} while preparing to dump",
-                primitives::string_text(&name)?
-            )));
+                &[name],
+            ));
         }
         let symbol = crate::lisp::primitives::checked_symbol_name(self, &funname, env)?;
         let ignore_errors = if loads_macro { Value::Nil } else { macro_only };
@@ -524,12 +531,16 @@ impl Interpreter {
         &self,
         buffer_or_name: &Value,
     ) -> Result<Option<crate::lisp::types::BufferRef>, LispError> {
-        if let Kind::Buffer(buffer) = buffer_or_name.kind() {
-            return Ok(Some(buffer));
+        match buffer_or_name.kind() {
+            Kind::Buffer(buffer) => Ok(Some(buffer)),
+            Kind::StringObject(_) => Ok(self
+                .find_buffer_named(buffer_or_name)
+                .and_then(|id| self.buffer_object(id))),
+            _ => Err(LispError::WrongTypeArgument(
+                "stringp".into(),
+                *buffer_or_name,
+            )),
         }
-        let id = primitives::with_string_text(buffer_or_name, |name| self.find_buffer_id(name))
-            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *buffer_or_name))?;
-        Ok(id.and_then(|id| self.buffer_object(id)))
     }
 
     /// Fget_buffer, with buffer.c:nsberror when there is no such buffer.
@@ -566,40 +577,58 @@ impl Interpreter {
                 value.type_name(),
             )),
         }
-        .or_else(|error| {
-            primitives::string_like(value)
-                .and_then(|string| self.find_buffer(&string.text).map(|(id, _)| id))
-                .ok_or(error)
-        })
+        .or_else(|error| self.find_buffer_named(value).ok_or(error))
     }
 
-    /// Create and register a new empty buffer.
-    pub fn create_buffer(&mut self, name: &str) -> (u64, String) {
+    /// Create and register a new empty buffer named NAME, host text.
+    pub fn create_buffer(&mut self, name: &str) -> (u64, Value) {
+        let id = self.create_buffer_named(Value::string(name));
+        (
+            id,
+            self.buffer_list
+                .last()
+                .map_or(Value::Nil, |(_, name)| *name),
+        )
+    }
+
+    /// buffer.c:Fget_buffer_create's new buffer for NAME, a string no live
+    /// buffer has: BVAR (b, name) and last_name are a copy of NAME without
+    /// its text properties (`Fcopy_sequence' then set_string_intervals),
+    /// the object Vbuffer_alist's new last entry holds.
+    pub(crate) fn create_buffer_named(&mut self, name: Value) -> u64 {
+        let name = match name.kind() {
+            Kind::StringObject(state) => Value::StringObject(
+                state
+                    .borrow()
+                    .copy_without_properties(crate::lisp::alloc::StringAllocation::Ordinary),
+            ),
+            _ => name,
+        };
         // GNU reset_buffer initializes a new buffer's directory from the
         // current buffer's slot (a `let' of it there included).
         let inherited_directory = self
             .symbol_value_key(cached_symbol!("default-directory"))
             .unwrap_or(Value::Nil);
         let id = self.alloc_buffer_id();
-        let mut buffer = crate::buffer::Buffer::new(name);
+        let mut buffer = crate::buffer::Buffer::named(name);
         // buffer.c:Fget_buffer_create: `bset_last_name (b, name)'.
-        buffer.last_name = Some(name.to_string());
+        buffer.set_last_name(name);
         buffer.text_conversion_style = self.native_text_conversion_style_default();
         // buffer.c:Fget_buffer_create: `bset_undo_list (b, SREF (name, 0)
         // != ' ' ? Qnil : Qt)', no undo kept in a buffer whose name starts
         // with a space (`with-temp-buffer's, the printer's, `load's).
-        if name.starts_with(' ') {
+        if primitives::string_starts_with_byte(&name, b' ') {
             buffer.set_undo_list(Value::T);
         }
         self.inactive_buffers
             .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
-        self.buffer_list.push((id, name.to_string()));
+        self.buffer_list.push((id, name));
         // Every always-local slot is the new buffer's own from the start,
         // so neither a `let' in the creating buffer nor a `setq-default'
         // (buffer_defaults) reaches it.
         self.reset_always_local_slots(id, inherited_directory);
         primitives::casetab::reset_buffer_case_tables(self, id);
-        (id, name.to_string())
+        id
     }
 
     /// Switch the current buffer and display it in the selected window.
@@ -715,11 +744,10 @@ impl Interpreter {
     /// Make ID current and show it in the selected window.
     fn show_buffer_in_selected_window(&mut self, id: u64) -> Result<(), LispError> {
         let current_id = self.current_buffer_id;
-        let selected_window_already_displays_target = self
-            .find_record(self.selected_window_id)
-            .and_then(|window| window.slots.first())
-            .and_then(|value| value.integer_value())
-            == Some(id as i64);
+        let selected_window_already_displays_target = primitives::window_slot_buffer_id(
+            self.find_record(self.selected_window_id)
+                .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT)),
+        ) == Some(id);
         if id == current_id && selected_window_already_displays_target {
             return Ok(());
         }
@@ -836,11 +864,11 @@ impl Interpreter {
     }
 
     pub fn selected_window_buffer_id(&self) -> u64 {
-        self.find_record(self.selected_window_id)
-            .and_then(|record| record.slots.first())
-            .and_then(|value| value.integer_value())
-            .map(|value| value.max(0) as u64)
-            .unwrap_or(self.current_buffer_id)
+        primitives::window_slot_buffer_id(
+            self.find_record(self.selected_window_id)
+                .and_then(|record| record.slots.get(primitives::WINDOW_BUFFER_SLOT)),
+        )
+        .unwrap_or(self.current_buffer_id)
     }
 
     pub fn buffer_bounds_by_id(&self, id: u64) -> Option<(usize, usize)> {
@@ -911,10 +939,10 @@ impl Interpreter {
     }
 
     fn window_record_buffer_id(&self, window_id: u64) -> Option<u64> {
-        self.find_record(window_id)
-            .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT))
-            .and_then(|value| value.integer_value())
-            .map(|id| id.max(0) as u64)
+        primitives::window_slot_buffer_id(
+            self.find_record(window_id)
+                .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT)),
+        )
     }
 
     /// window.c unshow_buffer: WINDOW_ID stops showing its buffer, which
@@ -966,13 +994,15 @@ impl Interpreter {
             .copied()
             .unwrap_or(1)
             .clamp(point_min, point_max);
+        let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
         if let Some(window) = self.find_record_mut(window_id) {
             if window.slots.len() <= primitives::WINDOW_START_AT_LINE_BEG_SLOT {
                 window
                     .slots
                     .resize(primitives::WINDOW_START_AT_LINE_BEG_SLOT + 1, Value::Nil);
             }
-            window.slots[primitives::WINDOW_BUFFER_SLOT] = Value::Integer(buffer_id as i64);
+            // wset_buffer: w->contents is the buffer object.
+            window.slots[primitives::WINDOW_BUFFER_SLOT] = buffer;
             window.slots[primitives::WINDOW_END_POS_SLOT] = Value::Integer(0);
             if !keep {
                 window.slots[primitives::WINDOW_HSCROLL_SLOT] = Value::Integer(0);
@@ -1254,12 +1284,17 @@ impl Interpreter {
     /// from its buffer (its own is stale), the points of insertion type
     /// `window-point-insertion-type' in that buffer.
     fn save_window_markers(&self, slots: &mut [Value], selected: bool) {
-        let buffer = slots
+        let buffer = match slots
             .get(primitives::WINDOW_BUFFER_SLOT)
-            .and_then(|value| value.integer_value())
-            .map(|id| id.max(0) as u64)
-            .filter(|id| self.has_buffer_id(*id))
-            .and_then(|id| self.buffer_object(id));
+            .map(|value| value.kind())
+        {
+            Some(Kind::Buffer(buffer)) => buffer.is_live().then_some(buffer),
+            Some(Kind::Integer(id)) => {
+                let id = id.max(0) as u64;
+                self.buffer_object(id)
+            }
+            _ => None,
+        };
         let insertion_type =
             buffer.is_some_and(|buffer| primitives::window_point_insertion_type(self, buffer.id));
         for slot in primitives::WINDOW_MARKER_SLOTS {
@@ -1321,8 +1356,12 @@ impl Interpreter {
         value: &Value,
         dont_set_miniwindow: bool,
     ) -> Result<bool, LispError> {
+        // CHECK_WINDOW_CONFIGURATION (configuration).
         let Some(snapshot) = self.window_configuration_snapshot_from_value(value) else {
-            return Ok(false);
+            return Err(LispError::WrongTypeArgument(
+                "window-configuration-p".into(),
+                *value,
+            ));
         };
         if !self.frame_is_live(snapshot.frame_id) {
             return Ok(false);
@@ -1437,7 +1476,7 @@ impl Interpreter {
         let snapshot = |value: &Value| {
             self.window_configuration_snapshot_from_value(value)
                 .ok_or_else(|| {
-                    LispError::TypeError("window-configuration-p".into(), value.type_name())
+                    LispError::WrongTypeArgument("window-configuration-p".into(), *value)
                 })
         };
         let left = snapshot(left)?;
@@ -1502,10 +1541,8 @@ impl Interpreter {
         // when the configuration was made (the snapshot holds every window
         // record of the frame, the deleted ones too).
         let saved_in_tree = |slots: &[Value]| {
-            !matches!(
-                slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-                Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::DELETED_WINDOW_KIND)
-            )
+            primitives::WindowKind::of_slot(slots.get(primitives::WINDOW_KIND_SLOT))
+                != primitives::WindowKind::Deleted
         };
         // A window that gets another buffer records its old one.
         for (window, slots) in saved_windows
@@ -1597,7 +1634,7 @@ impl Interpreter {
                     .resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
                 record.slots[primitives::WINDOW_BUFFER_SLOT] = Value::Nil;
                 record.slots[primitives::WINDOW_KIND_SLOT] =
-                    Value::Symbol(primitives::DELETED_WINDOW_KIND.into());
+                    primitives::WindowKind::Deleted.value();
                 for slot in [
                     primitives::WINDOW_PARENT_SLOT,
                     primitives::WINDOW_PREV_SIBLING_SLOT,
@@ -1621,10 +1658,8 @@ impl Interpreter {
             .iter()
             .filter(|(_, slots)| saved_in_tree(slots))
         {
-            let mini = matches!(
-                slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-                Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::MINIBUFFER_WINDOW_KIND)
-            );
+            let mini = primitives::WindowKind::of_slot(slots.get(primitives::WINDOW_KIND_SLOT))
+                == primitives::WindowKind::Minibuffer;
             let saved = saved_buffer(slots);
             let saved_start = slots.get(primitives::WINDOW_START_SLOT).copied();
             let saved_point = slots.get(primitives::WINDOW_POINT_SLOT).copied();
@@ -1652,11 +1687,8 @@ impl Interpreter {
                 // The saved buffer is installed, the window's markers
                 // set_marker_restricted to the saved ones (a saved marker
                 // that points nowhere unchains the window's).
-                self.set_window_slot(
-                    *window,
-                    primitives::WINDOW_BUFFER_SLOT,
-                    Value::Integer(buffer as i64),
-                );
+                let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
+                self.set_window_slot(*window, primitives::WINDOW_BUFFER_SLOT, object);
                 for slot in primitives::WINDOW_MARKER_SLOTS {
                     match primitives::slot_marker_position(slots.get(slot)) {
                         Some(position) => primitives::set_window_marker_restricted(
@@ -1693,11 +1725,8 @@ impl Interpreter {
                 // point nowhere, go to the start of the accessible portion
                 // and to the buffer's point.
                 let point = self.buffer_point_by_id(buffer_id);
-                self.set_window_slot(
-                    *window,
-                    primitives::WINDOW_BUFFER_SLOT,
-                    Value::Integer(buffer_id as i64),
-                );
+                let object = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
+                self.set_window_slot(*window, primitives::WINDOW_BUFFER_SLOT, object);
                 for (slot, position) in [
                     (primitives::WINDOW_START_SLOT, 0),
                     (primitives::WINDOW_POINT_SLOT, point),
@@ -1722,11 +1751,8 @@ impl Interpreter {
                 // A leaf window with no live buffer gets one, its markers
                 // at the start of the accessible portion.
                 let buffer = self.other_buffer_safely(self.current_buffer_id())?;
-                self.set_window_slot(
-                    *window,
-                    primitives::WINDOW_BUFFER_SLOT,
-                    Value::Integer(buffer as i64),
-                );
+                let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
+                self.set_window_slot(*window, primitives::WINDOW_BUFFER_SLOT, object);
                 for slot in primitives::WINDOW_MARKER_SLOTS {
                     primitives::set_window_marker_restricted(self, *window, slot, buffer, 0);
                 }
@@ -1926,24 +1952,22 @@ impl Interpreter {
         }
     }
 
-    /// Fminibufferp with LIVE nil, by the minibuffers' names.
+    /// Fminibufferp with LIVE nil: Fmemq of Vminibuffer_list.
     fn buffer_is_minibuffer(&self, id: u64) -> bool {
-        self.get_buffer_by_id(id)
-            .is_some_and(|buffer| buffer.name.starts_with(" *Minibuf"))
+        self.buffer_value(id)
+            .is_some_and(|buffer| primitives::minibuffer_list_has(self, &buffer))
     }
 
     /// WINDOW_LIVE_P: a window that shows a buffer.
     fn window_is_live_record(&self, id: u64) -> bool {
         self.find_record(id).is_some_and(|record| {
             record.kind == RecordKind::Window
-                && record
-                    .slots
-                    .get(primitives::WINDOW_BUFFER_SLOT)
-                    .is_some_and(|value| value.integer_value().is_some())
-                && !matches!(
-                    record.slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-                    Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::DELETED_WINDOW_KIND)
+                && primitives::window_slot_buffer_id(
+                    record.slots.get(primitives::WINDOW_BUFFER_SLOT),
                 )
+                .is_some()
+                && primitives::WindowKind::of_slot(record.slots.get(primitives::WINDOW_KIND_SLOT))
+                    != primitives::WindowKind::Deleted
         })
     }
 
@@ -1954,7 +1978,7 @@ impl Interpreter {
         if let Some((id, _)) = self
             .buffer_list
             .iter()
-            .find(|(id, name)| *id != buffer && !name.starts_with(' '))
+            .find(|(id, name)| *id != buffer && !primitives::string_starts_with_byte(name, b' '))
         {
             return Ok(*id);
         }
@@ -1998,6 +2022,10 @@ impl Interpreter {
 
     /// Kill a buffer by ID, switching away if it is current.
     pub fn kill_buffer_id(&mut self, id: u64) {
+        // bset_name (b, Qnil): the object answers BUFFER_LIVE_P no more.
+        if let Some(object) = self.buffer_object(id) {
+            object.live.set(false);
+        }
         self.frames_discard_buffer(id);
         self.delete_buffer_overlays(id);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
@@ -2045,7 +2073,9 @@ impl Interpreter {
             let replacement_id = self
                 .buffer_list
                 .iter()
-                .find(|(buffer_id, name)| *buffer_id != id && !name.starts_with(' '))
+                .find(|(buffer_id, name)| {
+                    *buffer_id != id && !primitives::string_starts_with_byte(name, b' ')
+                })
                 .map(|(buffer_id, _)| *buffer_id);
             self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
             if let Some((position, next_id)) = replacement_id.and_then(|next_id| {
@@ -2065,7 +2095,8 @@ impl Interpreter {
                     crate::buffer::Buffer::new("*scratch*"),
                 );
                 self.current_buffer_id = scratch_id;
-                self.buffer_list.push((scratch_id, "*scratch*".to_string()));
+                let scratch_name = self.buffer.borrow().name();
+                self.buffer_list.push((scratch_id, scratch_name));
                 self.reset_always_local_slots(scratch_id, directory);
             }
         } else {
@@ -2078,23 +2109,22 @@ impl Interpreter {
         // window leaves non-selected windows looking live while their buffer
         // slot names a dead ID.
         let replacement_id = self.current_buffer_id;
+        let replacement = self.buffer_value(replacement_id).unwrap_or(Value::Nil);
         let replacement_start = self
             .buffer_bounds_by_id(replacement_id)
             .map(|(point_min, _)| point_min)
             .unwrap_or(1);
         let window_ids = self.record_ids_by_type("window");
         for window_id in window_ids {
-            let showed_killed_buffer = self
-                .find_record(window_id)
-                .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT))
-                .and_then(|value| value.integer_value())
-                .is_some_and(|buffer_id| buffer_id.max(0) as u64 == id);
+            let showed_killed_buffer = primitives::window_slot_buffer_id(
+                self.find_record(window_id)
+                    .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT)),
+            ) == Some(id);
             if !showed_killed_buffer {
                 continue;
             }
             if let Some(window) = self.find_record_mut(window_id) {
-                window.slots[primitives::WINDOW_BUFFER_SLOT] =
-                    Value::Integer(replacement_id as i64);
+                window.slots[primitives::WINDOW_BUFFER_SLOT] = replacement;
                 window.slots[primitives::WINDOW_START_SLOT] =
                     Value::Integer(replacement_start as i64);
             }
@@ -3096,10 +3126,8 @@ fn saved_windows(
         }
     }
     let minibuffer = snapshot.window_records.iter().find(|(_, slots)| {
-        matches!(
-            slots.get(primitives::WINDOW_KIND_SLOT).map(|value| value.kind()),
-            Some(Kind::Symbol(ref kind)) if kind.is_named(primitives::MINIBUFFER_WINDOW_KIND)
-        )
+        primitives::WindowKind::of_slot(slots.get(primitives::WINDOW_KIND_SLOT))
+            == primitives::WindowKind::Minibuffer
     });
     if let Some((id, _)) = minibuffer {
         order.push(*id);
@@ -3255,9 +3283,12 @@ impl Interpreter {
 
 /// buffer.c:nsberror: "No buffer named NAME" for a string SPEC.
 pub(crate) fn nsberror(spec: &Value) -> LispError {
-    match primitives::string_text(spec) {
-        Ok(name) => LispError::Signal(format!("No buffer named {name}")),
-        Err(_) => LispError::Signal("Invalid buffer argument".into()),
+    // error ("No buffer named %s", SDATA (spec)).
+    match spec.kind() {
+        Kind::StringObject(_) => {
+            primitives::values::doprnt_error_sdata(None, "No buffer named {}", &[*spec])
+        }
+        _ => LispError::Signal("Invalid buffer argument".into()),
     }
 }
 

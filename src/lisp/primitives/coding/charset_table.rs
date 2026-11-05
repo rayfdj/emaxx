@@ -7,7 +7,9 @@
 //! defining a charset or an alias, or (un)unifying one, empties it.
 
 use super::*;
+use crate::lisp::eval::coding::CharsetRef;
 use crate::lisp::primitives::FnvBuildHasher;
+use crate::lisp::types::SymbolName;
 use std::cell::OnceCell;
 use std::rc::Rc;
 
@@ -99,7 +101,7 @@ impl CharsetMap {
 /// struct charset: what a charset's plist said when the table read it.
 pub(crate) struct CharsetInfo {
     /// The canonical name.
-    pub(crate) name: String,
+    pub(crate) name: SymbolName,
     pub(crate) builtin: CharsetBuiltin,
     /// CHARSET_DIMENSION: `:dimension', else the code space's.
     pub(crate) dimension: u32,
@@ -117,9 +119,9 @@ pub(crate) struct CharsetInfo {
     pub(crate) unified: bool,
     map_source: Option<MapSource>,
     /// CHARSET_METHOD_SUBSET: (PARENT MIN MAX OFFSET).
-    pub(crate) subset: Option<(String, i64, i64, i64)>,
+    pub(crate) subset: Option<(SymbolName, i64, i64, i64)>,
     /// CHARSET_METHOD_SUPERSET: (CHILD . OFFSET) pairs.
-    pub(crate) superset: Option<Vec<(String, i64)>>,
+    pub(crate) superset: Option<Vec<(SymbolName, i64)>>,
     /// CHARSET_ASCII_COMPATIBLE_P: `:ascii-compatible-p', or an offset
     /// charset from 0 reaching past ASCII.
     pub(crate) ascii_compatible_p: Option<bool>,
@@ -142,19 +144,26 @@ impl CharsetInfo {
     /// The attributes of the charset CANONICAL as its definition gives
     /// them: struct charset's method is the first of a code offset, a map,
     /// a subset and a superset the definition names.
-    fn read(interp: &Interpreter, canonical: &str) -> Self {
+    fn read(interp: &Interpreter, canonical: SymbolName) -> Self {
         let def = interp
-            .charset_def_value(canonical)
+            .charset_def_value(&canonical)
             .and_then(|def| vector_items(&def))
             .unwrap_or_default();
         let slot = |index: usize| def.get(index).copied().filter(|value| !value.is_nil());
-        let builtin = match canonical {
-            "ascii" => CharsetBuiltin::Ascii,
-            "iso-8859-1" => CharsetBuiltin::Iso8859_1,
-            "unicode" => CharsetBuiltin::Unicode,
-            "emacs" => CharsetBuiltin::Emacs,
-            "eight-bit" => CharsetBuiltin::EightBit,
-            _ => CharsetBuiltin::None,
+        // charset.c's charset_ascii and the others: the C-defined charsets
+        // syms_of_charset made under these symbols.
+        let builtin = if canonical.is_named("ascii") {
+            CharsetBuiltin::Ascii
+        } else if canonical.is_named("iso-8859-1") {
+            CharsetBuiltin::Iso8859_1
+        } else if canonical.is_named("unicode") {
+            CharsetBuiltin::Unicode
+        } else if canonical.is_named("emacs") {
+            CharsetBuiltin::Emacs
+        } else if canonical.is_named("eight-bit") {
+            CharsetBuiltin::EightBit
+        } else {
+            CharsetBuiltin::None
         };
 
         // charset.code_space: (min, max) of each of the four bytes.
@@ -202,7 +211,7 @@ impl CharsetInfo {
 
         let code_offset = slot(DEF_CODE_OFFSET).and_then(|value| value.integer_value());
         let direct_map = slot(DEF_MAP).filter(|_| code_offset.is_none());
-        let unified = interp.charset_is_unified(canonical);
+        let unified = interp.charset_is_unified(&canonical);
         // Unified charsets (charset.c's UNIFIED_P, set by `unify-charset')
         // convert through their unify-map; only codes absent from the
         // table fall back to the code-offset rule.
@@ -249,7 +258,7 @@ impl CharsetInfo {
                     return None;
                 }
                 Some((
-                    items[0].symbol_str()?.to_string(),
+                    items[0].charset_symbol()?,
                     items[1].integer_value()?,
                     items[2].integer_value()?,
                     items[3].integer_value()?,
@@ -260,13 +269,13 @@ impl CharsetInfo {
             .filter(|_| other_method && subset.is_none())
             .and_then(|superset| {
                 let items = superset.to_vec().ok()?;
-                let children: Vec<(String, i64)> = items
+                let children: Vec<(SymbolName, i64)> = items
                     .iter()
                     .filter_map(|item| match item.kind() {
-                        Kind::Symbol(name) => Some((name.to_string(), 0)),
+                        Kind::Symbol(name) => Some((name, 0)),
                         other => {
                             let (car, cdr) = other.value().cons_values()?;
-                            Some((car.symbol_str()?.to_string(), cdr.integer_value()?))
+                            Some((car.charset_symbol()?, cdr.integer_value()?))
                         }
                     })
                     .collect();
@@ -297,7 +306,7 @@ impl CharsetInfo {
             .and_then(|value| u32::try_from(value).ok());
 
         CharsetInfo {
-            name: canonical.to_string(),
+            name: canonical,
             builtin,
             dimension,
             code_space,
@@ -516,7 +525,7 @@ impl CharsetInfo {
 /// goes into its attributes, unless `inhibit-load-charset-map' (which
 /// loadup sets while dumping) sends the table to temp_charset_work, so
 /// that the dumped charset has none.
-pub(crate) fn load_deunifier(interp: &Interpreter, name: &str) {
+pub(crate) fn load_deunifier(interp: &Interpreter, name: &(impl CharsetRef + ?Sized)) {
     let Some(def) = interp.charset_def_value(name) else {
         return;
     };
@@ -542,16 +551,20 @@ pub(crate) fn load_deunifier(interp: &Interpreter, name: &str) {
 
 /// The charset CHARSET (a name or an alias) as the charset table holds
 /// it, read from its plist the first time.
-pub(crate) fn charset_info(interp: &Interpreter, charset: &str) -> Option<Rc<CharsetInfo>> {
-    if let Some(info) = interp.charset_table.borrow().get(charset) {
+pub(crate) fn charset_info(
+    interp: &Interpreter,
+    charset: &(impl CharsetRef + ?Sized),
+) -> Option<Rc<CharsetInfo>> {
+    let symbol = charset.charset_symbol()?;
+    if let Some(info) = interp.charset_table.borrow().get(&symbol) {
         return Some(info.clone());
     }
-    let canonical = interp.charset_canonical_name(charset)?;
-    let info = Rc::new(CharsetInfo::read(interp, &canonical));
+    let canonical = interp.charset_canonical_name(&symbol)?;
+    let info = Rc::new(CharsetInfo::read(interp, canonical));
     interp
         .charset_table
         .borrow_mut()
-        .insert(charset.to_string(), info.clone());
+        .insert(symbol, info.clone());
     Some(info)
 }
 

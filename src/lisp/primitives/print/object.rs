@@ -837,6 +837,20 @@ impl Printer {
         Ok(true)
     }
 
+    /// print.c:print_string of NAME, a buffer's BVAR (b, name): its
+    /// characters as `princ' prints them.
+    fn push_name_string(&mut self, interp: &Interpreter, env: &Env, name: Value) {
+        if let Kind::StringObject(state) = name.kind() {
+            let rendered = render_princ_string(
+                interp,
+                &state.borrow(),
+                env,
+                self.options.output_is_function,
+            );
+            self.out.append(&rendered);
+        }
+    }
+
     /// print.c:print_vectorlike_unreadable.
     fn print_vectorlike_unreadable(
         &mut self,
@@ -859,7 +873,8 @@ impl Printer {
                     Some(buffer) => {
                         self.out
                             .push_str(&format!("at {} in ", marker.last_position()));
-                        self.out.push_str(&buffer.borrow().name);
+                        let name = buffer.borrow().name();
+                        self.push_name_string(interp, env, name);
                     }
                 }
                 self.out.push('>');
@@ -882,7 +897,8 @@ impl Printer {
                     Some(buffer) => {
                         let (start, end) = overlay.bounds();
                         self.out.push_str(&format!("from {start} to {end} in "));
-                        self.out.push_str(&buffer.borrow().name);
+                        let name = buffer.borrow().name();
+                        self.push_name_string(interp, env, name);
                     }
                 }
                 self.out.push('>');
@@ -908,15 +924,18 @@ impl Printer {
                 }
                 self.out.push('>');
             }
-            Kind::Buffer(buffer) => match interp.get_buffer_by_id(buffer.id) {
-                None => self.out.push_str("#<killed buffer>"),
-                Some(live) if escape => {
-                    self.out.push_str("#<buffer ");
-                    self.out.push_str(&live.name);
-                    self.out.push('>');
+            Kind::Buffer(buffer) => {
+                // print_string (BVAR (XBUFFER (obj), name)).
+                match interp.get_buffer_by_id(buffer.id).map(|live| live.name()) {
+                    None => self.out.push_str("#<killed buffer>"),
+                    Some(name) if escape => {
+                        self.out.push_str("#<buffer ");
+                        self.push_name_string(interp, env, name);
+                        self.out.push('>');
+                    }
+                    Some(name) => self.push_name_string(interp, env, name),
                 }
-                Some(live) => self.out.push_str(&live.name),
-            },
+            }
             Kind::Frame(frame) => {
                 let id = frame.identity();
                 let name = string_text(&frame.name.get())
@@ -981,7 +1000,7 @@ impl Printer {
             // escapeflag.
             RecordKind::Process => {
                 let name = interp
-                    .process_name(id.id)
+                    .process_name_text(id.id)
                     .unwrap_or_else(|| format!("0x{:x}", id.identity()));
                 if escape {
                     format!("#<process {name}>")
@@ -1004,7 +1023,7 @@ impl Printer {
                     .and_then(|buffer_id| interp.get_buffer_by_id(buffer_id))
                 {
                     rendered.push_str(" on ");
-                    rendered.push_str(&buffer.name);
+                    rendered.push_str(&buffer.name_text());
                 }
                 rendered.push('>');
                 rendered

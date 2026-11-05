@@ -34,6 +34,15 @@ fn decode_frame(
     Ok(id)
 }
 
+/// frame.c:decode_any_frame: nil for the selected frame, else any frame,
+/// a dead one among them.
+pub(super) fn decode_any_frame(
+    interp: &Interpreter,
+    value: Option<&Value>,
+) -> Result<crate::lisp::types::FrameRef, LispError> {
+    decode_frame(interp, value, true, false)
+}
+
 pub(super) fn decode_live_frame(
     interp: &Interpreter,
     value: Option<&Value>,

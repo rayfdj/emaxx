@@ -784,6 +784,18 @@ const KEY_NAMES: &[&str] = &[
     "undo-auto--add-boundary",
     "uniquify--rename-buffer-advice",
     "when",
+    "ascii",
+    "unicode",
+    "emacs",
+    "eight-bit",
+    "iso-8859-1",
+    "iso-2022",
+    "emacs-mule",
+    "fringe",
+    "top",
+    "bottom",
+    "center",
+    "latin",
 ];
 
 struct Symbols {

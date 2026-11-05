@@ -308,10 +308,59 @@ pub(crate) fn slot_marker_position(value: Option<&Value>) -> Option<usize> {
         _ => None,
     }
 }
-pub(crate) const MINIBUFFER_WINDOW_KIND: &str = "minibuffer";
-pub(crate) const INTERNAL_HORIZONTAL_WINDOW_KIND: &str = "internal-horizontal";
-pub(crate) const INTERNAL_VERTICAL_WINDOW_KIND: &str = "internal-vertical";
-pub(crate) const DELETED_WINDOW_KIND: &str = "deleted";
+/// What a window record is, held in its kind slot: what GNU's struct
+/// window tells apart by w->contents (a buffer for a leaf, the first
+/// child for an internal window, nil once deleted), w->horizontal and
+/// w->mini.  The slot holds nil for a leaf and a fixnum code otherwise, so
+/// no symbol stands for a kind and a test of one is a word compare.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum WindowKind {
+    Leaf,
+    Minibuffer,
+    InternalHorizontal,
+    InternalVertical,
+    Deleted,
+}
+
+impl WindowKind {
+    /// The kind slot's value for this kind.
+    pub(crate) fn value(self) -> Value {
+        match self {
+            WindowKind::Leaf => Value::Nil,
+            WindowKind::Minibuffer => Value::Integer(1),
+            WindowKind::InternalHorizontal => Value::Integer(2),
+            WindowKind::InternalVertical => Value::Integer(3),
+            WindowKind::Deleted => Value::Integer(4),
+        }
+    }
+
+    /// The kind a kind slot's value holds; a missing slot is a leaf's.
+    #[inline]
+    pub(crate) fn of_slot(slot: Option<&Value>) -> WindowKind {
+        match slot.and_then(Value::integer_value) {
+            Some(1) => WindowKind::Minibuffer,
+            Some(2) => WindowKind::InternalHorizontal,
+            Some(3) => WindowKind::InternalVertical,
+            Some(4) => WindowKind::Deleted,
+            _ => WindowKind::Leaf,
+        }
+    }
+
+    /// The kind of WINDOW's record.
+    #[inline]
+    pub(crate) fn of(window: crate::lisp::types::RecordRef) -> WindowKind {
+        WindowKind::of_slot(window.slots.get(WINDOW_KIND_SLOT))
+    }
+
+    /// An internal window's (window_resize_check's !NILP (w->contents)
+    /// && !BUFFERP).
+    pub(crate) fn is_internal(self) -> bool {
+        matches!(
+            self,
+            WindowKind::InternalHorizontal | WindowKind::InternalVertical
+        )
+    }
+}
 
 /// make_window's slots for a leaf window showing BUFFER_ID: its start,
 /// point and old point markers at START of that buffer, the point
@@ -409,21 +458,32 @@ pub(crate) fn window_record_id_from_value(_interp: &Interpreter, value: &Value) 
     window_record(value).map(|record| record.id)
 }
 
+/// w->contents of a window record's buffer slot, BUFFERP: the buffer
+/// object a leaf window shows (an id where a test built the record by
+/// hand), whether or not it is live.
+pub(crate) fn window_slot_buffer_id(slot: Option<&Value>) -> Option<u64> {
+    match slot?.kind() {
+        Kind::Buffer(buffer) => Some(buffer.id),
+        Kind::Integer(id) => Some(id.max(0) as u64),
+        _ => None,
+    }
+}
+
 /// The live buffer the window VALUE shows (BUFFERP (w->contents)), read
 /// from the record itself; the selected window with no buffer of its own
 /// shows the current one.
 pub(crate) fn window_buffer_id(interp: &Interpreter, value: &Value) -> Option<u64> {
     let window = window_record(value)?;
-    let buffer_id = match window
-        .slots
-        .get(WINDOW_BUFFER_SLOT)
-        .and_then(|slot| slot.integer_value())
-    {
-        Some(buffer_id) => buffer_id.max(0) as u64,
-        None if window.id == interp.selected_window_id() => interp.current_buffer_id(),
-        None => return None,
-    };
-    interp.has_buffer_id(buffer_id).then_some(buffer_id)
+    match window.slots.get(WINDOW_BUFFER_SLOT).map(|slot| slot.kind()) {
+        // BUFFER_LIVE_P of the object itself.
+        Some(Kind::Buffer(buffer)) => buffer.is_live().then_some(buffer.id),
+        Some(Kind::Integer(id)) => {
+            let id = id.max(0) as u64;
+            interp.has_buffer_id(id).then_some(id)
+        }
+        _ if window.id == interp.selected_window_id() => Some(interp.current_buffer_id()),
+        _ => None,
+    }
 }
 
 pub(crate) fn window_start(

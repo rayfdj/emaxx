@@ -2165,19 +2165,23 @@ pub(crate) fn font_spec(
             return Err(wrong_type_argument("symbolp", key));
         }
         let Some(&val) = args.get(i + 1) else {
-            return Err(crate::lisp::primitives::values::doprnt_error(
-                interp,
+            // error ("No value for key `%s'", SDATA (SYMBOL_NAME (key))).
+            let name = crate::lisp::primitives::call(interp, "symbol-name", &[key], env)?;
+            return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                Some(interp),
                 "No value for key `{}'",
-                &[&symbol_name_text(&key).unwrap_or_default()],
+                &[name],
             ));
         };
         if key.eq_value(keyword(":name")) {
             let bytes = string_sdata(&val)?;
             if !font_parse_name(interp, &bytes, &spec, env)? {
-                return Err(LispError::Signal(format!(
+                // error ("Invalid font name: %s", SSDATA (val)).
+                return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                    None,
                     "Invalid font name: {}",
-                    string_text(&val)?
-                )));
+                    &[val],
+                ));
             }
             font_put_extra(interp, &spec, key, Some(val), env)?;
         } else {

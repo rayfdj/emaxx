@@ -8,8 +8,10 @@
 
 use super::units::{CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units, charbuf_size};
 use super::*;
+use crate::lisp::eval::coding::CharsetRef;
 use crate::lisp::eval::coding::*;
 use crate::lisp::types::Kind;
+use crate::lisp::types::SymbolName;
 
 const ISO_CODE_SO: u8 = 0x0E;
 const ISO_CODE_SI: u8 = 0x0F;
@@ -25,19 +27,24 @@ const MAX_COMPOSITION_COMPONENTS: usize = 16;
 #[derive(Clone)]
 pub(crate) struct IsoAttributes {
     pub(crate) flags: u32,
-    pub(crate) initial: [Option<String>; 4],
-    pub(crate) charset_list: Vec<String>,
+    pub(crate) initial: [Option<SymbolName>; 4],
+    pub(crate) charset_list: Vec<SymbolName>,
     /// charset -> graphic register (setup_iso_safe_charsets).
-    pub(crate) safe: HashMap<String, u8>,
+    pub(crate) safe: HashMap<SymbolName, u8, crate::lisp::types::IdentityBuildHasher>,
     pub(crate) ascii_compatible: bool,
     pub(crate) default_char: u32,
     /// The charset list's records, resolved once (setup_coding_system).
     charsets: Vec<std::rc::Rc<CharsetInfo>>,
     /// latin-jisx0201, japanese-jisx0208 and japanese-jisx0208-1978, for
     /// the use-roman and use-oldjis flags.
-    roman: Option<String>,
-    jisx0208: Option<String>,
-    jisx0208_1978: Option<String>,
+    roman: Option<SymbolName>,
+    jisx0208: Option<SymbolName>,
+    jisx0208_1978: Option<SymbolName>,
+}
+
+/// charset.c's charset_ascii.
+fn ascii() -> SymbolName {
+    cached_symbol!("ascii").symbol()
 }
 
 impl IsoAttributes {
@@ -50,18 +57,21 @@ impl IsoAttributes {
             .find_map(|charset| charset.encode(interp, c).map(|code| (&**charset, code)))
     }
 
-    fn safe_charset(&self, charset: &str) -> bool {
-        self.safe.contains_key(charset)
+    fn safe_charset(&self, charset: SymbolName) -> bool {
+        self.safe.contains_key(&charset)
     }
 
     /// CODING_ISO_REQUEST: the register the charset asks for, if it is a
     /// usable one.
-    fn request(&self, charset: &str) -> Option<u8> {
-        self.safe.get(charset).copied().filter(|reg| *reg < 4)
+    fn request(&self, charset: SymbolName) -> Option<u8> {
+        self.safe.get(&charset).copied().filter(|reg| *reg < 4)
     }
 }
 
-pub(crate) fn charset_iso_chars_96(interp: &Interpreter, charset: &str) -> bool {
+pub(crate) fn charset_iso_chars_96(
+    interp: &Interpreter,
+    charset: &(impl CharsetRef + ?Sized),
+) -> bool {
     // charset.c: iso_chars_96 = (code_space[2] == 96), the size of the
     // least significant byte range.
     charset_code_space(interp, charset)
@@ -69,13 +79,16 @@ pub(crate) fn charset_iso_chars_96(interp: &Interpreter, charset: &str) -> bool 
         .is_some_and(|(min, max)| max.saturating_sub(min) + 1 == 96)
 }
 
-pub(crate) fn charset_dimension(interp: &Interpreter, charset: &str) -> u32 {
+pub(crate) fn charset_dimension(interp: &Interpreter, charset: &(impl CharsetRef + ?Sized)) -> u32 {
     charset_info(interp, charset).map_or(1, |info| info.dimension)
 }
 
 /// The charset's ISO final byte (CHARSET_ISO_FINAL), else the ISO charset
 /// table's.
-pub(super) fn charset_iso_final(interp: &Interpreter, charset: &str) -> Option<u8> {
+pub(super) fn charset_iso_final(
+    interp: &Interpreter,
+    charset: &(impl CharsetRef + ?Sized),
+) -> Option<u8> {
     charset_info(interp, charset)
         .and_then(|info| info.iso_final)
         .or_else(|| {
@@ -85,7 +98,7 @@ pub(super) fn charset_iso_final(interp: &Interpreter, charset: &str) -> Option<u
         })
 }
 
-fn charset_iso_revision(interp: &Interpreter, charset: &str) -> Option<u8> {
+fn charset_iso_revision(interp: &Interpreter, charset: &(impl CharsetRef + ?Sized)) -> Option<u8> {
     charset_info(interp, charset).and_then(|info| info.iso_revision)
 }
 
@@ -106,13 +119,10 @@ fn make_iso_attributes(
 ) -> Option<IsoAttributes> {
     let state = interp.coding_system(coding)?;
     let args = &state.type_args;
-    let mut initial: [Option<String>; 4] = Default::default();
+    let mut initial: [Option<SymbolName>; 4] = Default::default();
     if let Some(items) = args.first().and_then(|value| vector_items(value).ok()) {
         for (slot, item) in initial.iter_mut().zip(items) {
-            *slot = item
-                .as_symbol()
-                .ok()
-                .and_then(|name| interp.charset_canonical_name(name));
+            *slot = interp.charset_canonical_name(&item);
         }
     }
     let reg_usage = args
@@ -125,7 +135,7 @@ fn make_iso_attributes(
             )
         })
         .unwrap_or((4, 4));
-    let request: Vec<(String, u8)> = args
+    let request: Vec<(SymbolName, u8)> = args
         .get(2)
         .and_then(|value| value.to_vec().ok())
         .unwrap_or_default()
@@ -133,7 +143,7 @@ fn make_iso_attributes(
         .filter_map(|pair| {
             let (charset, reg) = pair.cons_values()?;
             Some((
-                interp.charset_canonical_name(charset.symbol_str()?)?,
+                interp.charset_canonical_name(&charset)?,
                 u8::try_from(reg.integer_value()?).ok()?,
             ))
         })
@@ -149,7 +159,7 @@ fn make_iso_attributes(
         } else {
             0
         };
-    let charset_list: Vec<String> = if full_support {
+    let charset_list: Vec<SymbolName> = if full_support {
         interp.iso_2022_charset_list()
     } else {
         state
@@ -157,10 +167,10 @@ fn make_iso_attributes(
             .to_vec()
             .unwrap_or_default()
             .iter()
-            .filter_map(|value| interp.charset_canonical_name(value.symbol_str()?))
+            .filter_map(|value| interp.charset_canonical_name(value))
             .collect()
     };
-    let mut safe = HashMap::new();
+    let mut safe = HashMap::default();
     if full_support {
         // setup_iso_safe_charsets, which the encoder and decoder re-run
         // once `set-charset-priority' has replaced Viso_2022_charset_list:
@@ -168,13 +178,13 @@ fn make_iso_attributes(
         // one is usable.
         for charset in &charset_list {
             if let Some((_, reg)) = request.iter().find(|(name, _)| name == charset) {
-                safe.insert(charset.clone(), *reg);
+                safe.insert(*charset, *reg);
             } else if charset_iso_chars_96(interp, charset) {
                 if reg_usage.1 < 4 {
-                    safe.insert(charset.clone(), reg_usage.1 as u8);
+                    safe.insert(*charset, reg_usage.1 as u8);
                 }
             } else if reg_usage.0 < 4 {
-                safe.insert(charset.clone(), reg_usage.0 as u8);
+                safe.insert(*charset, reg_usage.0 as u8);
             }
         }
     } else {
@@ -185,7 +195,7 @@ fn make_iso_attributes(
         // explicit charset list never take effect (the oracle designates
         // iso-2022-kr's KSC5601 to G0 with ESC $ ( C, no locking shift).
         for charset in &charset_list {
-            safe.insert(charset.clone(), 0);
+            safe.insert(*charset, 0);
         }
     }
     let charsets = charset_list
@@ -212,13 +222,13 @@ enum Designation {
     Empty,
     /// -2: an invalid designation was seen.
     Invalid,
-    Charset(String),
+    Charset(SymbolName),
 }
 
 impl Designation {
-    fn charset(&self) -> Option<&str> {
+    fn charset(&self) -> Option<SymbolName> {
         match self {
-            Designation::Charset(name) => Some(name),
+            Designation::Charset(name) => Some(*name),
             _ => None,
         }
     }
@@ -236,7 +246,7 @@ impl IsoState {
         // setup_coding_system: register 0 to plane 0, register 1 to
         // plane 1 unless 7-bit, the designations at their initial state.
         let designation = std::array::from_fn(|reg| match &attrs.initial[reg] {
-            Some(charset) => Designation::Charset(charset.clone()),
+            Some(charset) => Designation::Charset(*charset),
             None => Designation::Empty,
         });
         IsoState {
@@ -255,16 +265,16 @@ impl IsoState {
     }
 
     /// CODING_ISO_INVOKED_CHARSET.
-    fn invoked_charset(&self, plane: usize) -> Option<String> {
+    fn invoked_charset(&self, plane: usize) -> Option<SymbolName> {
         let reg = self.invocation[plane];
         if reg < 0 {
             return None;
         }
-        self.designation[reg as usize].charset().map(str::to_string)
+        self.designation[reg as usize].charset()
     }
 
     /// Whether CHARSET is CODING_ISO_INVOKED_CHARSET (PLANE).
-    fn invoked_charset_is(&self, plane: usize, charset: &str) -> bool {
+    fn invoked_charset_is(&self, plane: usize, charset: SymbolName) -> bool {
         let reg = self.invocation[plane];
         reg >= 0 && self.designation[reg as usize].charset() == Some(charset)
     }
@@ -508,23 +518,23 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
             } else {
                 interp.iso_charset_for(dim, chars_96, final_char)
             };
-            let Some(mut id) = charset.filter(|charset| attrs.safe_charset(charset)) else {
+            let Some(mut id) = charset.filter(|charset| attrs.safe_charset(*charset)) else {
                 state.designation[reg] = Designation::Invalid;
                 return false;
             };
             let prev = state.designation[reg].clone();
-            if Some(&id) == roman.as_ref() {
+            if Some(id) == roman {
                 if use_roman {
-                    id = "ascii".into();
+                    id = ascii();
                 }
-            } else if Some(&id) == jisx0208_1978.as_ref()
+            } else if Some(id) == jisx0208_1978
                 && use_oldjis
-                && let Some(modern) = &jisx0208
+                && let Some(modern) = jisx0208
             {
-                id = modern.clone();
+                id = modern;
             }
-            state.designation[reg] = Designation::Charset(id.clone());
-            !(prev == Designation::Invalid && id == "ascii")
+            state.designation[reg] = Designation::Charset(id);
+            !(prev == Designation::Invalid && id == ascii())
         };
 
     let end = 'main: loop {
@@ -608,23 +618,24 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
 
             // The charset and first position code of the character to
             // produce, after the switch over iso_code_class.
-            let charset: String;
+            let charset: SymbolName;
             let mut first = c1;
             match c1 {
                 0x20 | 0x7F => {
-                    charset = match &charset_id_0 {
-                        Some(id) if charset_iso_chars_96(interp, id) => id.clone(),
-                        _ => "ascii".into(),
+                    charset = match charset_id_0 {
+                        Some(id) if charset_iso_chars_96(interp, &id) => id,
+                        _ => ascii(),
                     };
                 }
                 0x21..=0x7E => {
-                    charset = charset_id_0.clone().unwrap_or_else(|| "ascii".into());
+                    charset = charset_id_0.unwrap_or_else(ascii);
                 }
-                0xA0 | 0xFF => match &charset_id_1 {
+                0xA0 | 0xFF => match charset_id_1 {
                     Some(id)
-                        if charset_iso_chars_96(interp, id) && flags & ISO_FLAG_SEVEN_BITS == 0 =>
+                        if charset_iso_chars_96(interp, &id)
+                            && flags & ISO_FLAG_SEVEN_BITS == 0 =>
                     {
-                        charset = id.clone();
+                        charset = id;
                     }
                     _ => {
                         invalid = true;
@@ -632,11 +643,11 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
                     }
                 },
                 0xA1..=0xFE => {
-                    let Some(id) = &charset_id_1 else {
+                    let Some(id) = charset_id_1 else {
                         invalid = true;
                         break 'step;
                     };
-                    charset = id.clone();
+                    charset = id;
                 }
                 ISO_CODE_SO => {
                     if flags & ISO_FLAG_LOCKING_SHIFT == 0 || !state.designated(1) {
@@ -787,10 +798,7 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
                                     invalid = true;
                                     break 'step;
                                 }
-                                charset = state.designation[reg]
-                                    .charset()
-                                    .map(str::to_string)
-                                    .unwrap_or_else(|| "ascii".into());
+                                charset = state.designation[reg].charset().unwrap_or_else(ascii);
                                 let next = one_more!(src, p, break 'main CallEnd::Ended(src_base));
                                 let Ok(next) = u8::try_from(next) else {
                                     invalid = true;
@@ -988,8 +996,8 @@ pub(crate) fn decode_call<S: Units + ?Sized>(
                 }
             }
 
-            if cmp.state == ComposingState::No && charset != "ascii" && !runs.is(&charset) {
-                annotations += runs.open(&charset, out);
+            if cmp.state == ComposingState::No && charset != ascii() && !runs.is(charset) {
+                annotations += runs.open(charset, out);
             }
 
             // Now we know CHARSET and the first position code; fetch the
@@ -1111,18 +1119,18 @@ impl Encoder<'_> {
     }
 
     /// ENCODE_DESIGNATION.
-    fn encode_designation(&mut self, charset: &str, reg: usize) {
-        let final_char = charset_iso_final(self.interp, charset).unwrap_or(b'B');
-        let chars_96 = charset_iso_chars_96(self.interp, charset);
+    fn encode_designation(&mut self, charset: SymbolName, reg: usize) {
+        let final_char = charset_iso_final(self.interp, &charset).unwrap_or(b'B');
+        let chars_96 = charset_iso_chars_96(self.interp, &charset);
         let intermediate_94 = b"()*+";
         let intermediate_96 = b",-./";
         if self.flags() & ISO_FLAG_REVISION != 0
-            && let Some(revision) = charset_iso_revision(self.interp, charset)
+            && let Some(revision) = charset_iso_revision(self.interp, &charset)
         {
             self.out.extend([ISO_CODE_ESC, b'&', b'@' + revision]);
         }
         self.out.push(ISO_CODE_ESC);
-        if charset_dimension(self.interp, charset) == 1 {
+        if charset_dimension(self.interp, &charset) == 1 {
             self.out.push(if chars_96 {
                 intermediate_96[reg]
             } else {
@@ -1142,7 +1150,7 @@ impl Encoder<'_> {
             }
         }
         self.out.push(final_char);
-        self.state.designation[reg] = Designation::Charset(charset.to_string());
+        self.state.designation[reg] = Designation::Charset(charset);
     }
 
     fn shift_in(&mut self) {
@@ -1151,7 +1159,7 @@ impl Encoder<'_> {
     }
 
     /// encode_invocation_designation.
-    fn encode_invocation_designation(&mut self, charset: &str) {
+    fn encode_invocation_designation(&mut self, charset: SymbolName) {
         let reg = match self
             .state
             .designation
@@ -1199,28 +1207,28 @@ impl Encoder<'_> {
             self.shift_in();
         }
         for reg in 0..4 {
-            if let Some(initial) = self.attrs.initial[reg].clone()
-                && self.state.designation[reg].charset() != Some(initial.as_str())
+            if let Some(initial) = self.attrs.initial[reg]
+                && self.state.designation[reg].charset() != Some(initial)
             {
-                self.encode_designation(&initial, reg);
+                self.encode_designation(initial, reg);
             }
         }
     }
 
     /// ENCODE_ISO_CHARACTER.
-    fn encode_iso_character(&mut self, charset: &str, dimension: u32, code: u32) {
+    fn encode_iso_character(&mut self, charset: SymbolName, dimension: u32, code: u32) {
         let attrs = self.attrs;
         let mut charset = charset;
         if dimension == 1 {
             if self.flags() & ISO_FLAG_USE_ROMAN != 0
-                && charset == "ascii"
-                && let Some(roman) = attrs.roman.as_deref()
+                && charset == ascii()
+                && let Some(roman) = attrs.roman
             {
                 charset = roman;
             }
         } else if self.flags() & ISO_FLAG_USE_OLDJIS != 0
-            && Some(charset) == attrs.jisx0208.as_deref()
-            && let Some(old) = attrs.jisx0208_1978.as_deref()
+            && Some(charset) == attrs.jisx0208
+            && let Some(old) = attrs.jisx0208_1978
         {
             charset = old;
         }
@@ -1253,7 +1261,7 @@ impl Encoder<'_> {
     /// encode_designation_at_bol: designate, ahead of the line, the
     /// charsets its characters request.
     fn encode_designation_at_bol(&mut self, chars: &[u32]) {
-        let mut registers: [Option<String>; 4] = Default::default();
+        let mut registers: [Option<SymbolName>; 4] = Default::default();
         let mut found = 0;
         for &c in chars {
             if found >= 4 {
@@ -1265,19 +1273,19 @@ impl Encoder<'_> {
             let Some((charset, _)) = self.attrs.char_charset(self.interp, c) else {
                 continue;
             };
-            if let Some(reg) = self.attrs.request(&charset.name)
+            if let Some(reg) = self.attrs.request(charset.name)
                 && registers[usize::from(reg)].is_none()
             {
                 found += 1;
-                registers[usize::from(reg)] = Some(charset.name.clone());
+                registers[usize::from(reg)] = Some(charset.name);
             }
         }
         if found > 0 {
             for (reg, requested) in registers.iter().enumerate() {
-                if let Some(charset) = requested.clone()
-                    && self.state.designation[reg].charset() != Some(charset.as_str())
+                if let Some(charset) = *requested
+                    && self.state.designation[reg].charset() != Some(charset)
                 {
-                    self.encode_designation(&charset, reg);
+                    self.encode_designation(charset, reg);
                 }
             }
         }
@@ -1304,7 +1312,7 @@ pub(crate) fn encode(
     chars: &[u32],
     coding: &(impl crate::lisp::eval::coding::CodingRef + ?Sized),
     eol_type: Option<i64>,
-    preferred: &[Option<String>],
+    preferred: &[Option<SymbolName>],
     carry: &mut Option<Box<Iso2022EncodeCarry>>,
     last: bool,
 ) -> Result<Vec<u8>, LispError> {
@@ -1337,7 +1345,7 @@ pub(crate) fn encode(
                 if flags & ISO_FLAG_INIT_AT_BOL != 0 {
                     for reg in 0..4 {
                         encoder.state.designation[reg] = match &attrs.initial[reg] {
-                            Some(charset) => Designation::Charset(charset.clone()),
+                            Some(charset) => Designation::Charset(*charset),
                             None => Designation::Empty,
                         };
                     }
@@ -1351,15 +1359,16 @@ pub(crate) fn encode(
             if ascii_compatible {
                 encoder.out.push(c as u8);
             } else {
-                encoder.encode_iso_character("ascii", 1, c);
+                encoder.encode_iso_character(ascii(), 1, c);
             }
         } else if RAW_BYTE8_CHARS.contains(&c) {
             encoder.out.push((c - RAW_BYTE8_BASE) as u8);
         } else {
             let preferred_charset = preferred
                 .get(index)
-                .and_then(Option::as_deref)
-                .and_then(|name| charset_info(interp, name))
+                .copied()
+                .flatten()
+                .and_then(|name| charset_info(interp, &name))
                 .filter(|charset| attrs.charset_list.contains(&charset.name));
             let found = match &preferred_charset {
                 Some(charset) => charset.encode(interp, c).map(|code| (&**charset, code)),
@@ -1368,19 +1377,19 @@ pub(crate) fn encode(
             .or_else(|| attrs.char_charset(interp, c));
             match found {
                 Some((charset, code)) => {
-                    encoder.encode_iso_character(&charset.name, charset.dimension, code);
+                    encoder.encode_iso_character(charset.name, charset.dimension, code);
                 }
                 // CODING_MODE_SAFE_ENCODING (the `safe' flag) writes the
                 // inhibit-substitution marker `?'; otherwise the default
                 // character stands in.
                 None if flags & ISO_FLAG_SAFE != 0 => {
-                    encoder.encode_iso_character("ascii", 1, u32::from(b'?'));
+                    encoder.encode_iso_character(ascii(), 1, u32::from(b'?'));
                 }
                 None => match attrs.char_charset(interp, attrs.default_char) {
                     Some((charset, code)) => {
-                        encoder.encode_iso_character(&charset.name, charset.dimension, code);
+                        encoder.encode_iso_character(charset.name, charset.dimension, code);
                     }
-                    None => encoder.encode_iso_character("ascii", 1, u32::from(b' ')),
+                    None => encoder.encode_iso_character(ascii(), 1, u32::from(b' ')),
                 },
             }
         }

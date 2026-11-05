@@ -773,22 +773,9 @@ define_dispatch!(
                 // whose list becomes nil where it is t.
                 let buffer = match args.first().filter(|value| !value.is_nil()) {
                     None => Some(interp.buffer),
-                    Some(value) => match value.kind() {
-                        Kind::Buffer(buffer) => Some(buffer),
-                        _ => {
-                            let Some(found) =
-                                with_string_text(value, |text| interp.find_buffer_id(text))
-                            else {
-                                return Err(wrong_type_argument("stringp", *value));
-                            };
-                            let Some(id) = found else {
-                                return Err(LispError::Signal(format!(
-                                    "No buffer named {}",
-                                    string_text(value)?
-                                )));
-                            };
-                            interp.buffer_object(id)
-                        }
+                    Some(value) => match interp.get_buffer(value)? {
+                        Some(buffer) => Some(buffer),
+                        None => return Err(crate::lisp::eval::runtime::nsberror(value)),
                     },
                 };
                 if let Some(buffer) = buffer {
@@ -847,7 +834,8 @@ define_dispatch!(
                 if interp.live_buffer_id(buffer).is_none() {
                     return Ok(Value::Nil);
                 }
-                Ok(Value::String(buffer.borrow().name.clone().into()))
+                // BVAR (decode_buffer (BUFFER), name): the object itself.
+                Ok(buffer.borrow().name())
             }
             "set-buffer-multibyte" => {
                 need_args(name, args, 1)?;
@@ -2175,20 +2163,14 @@ fn live_motion_window(interp: &Interpreter, value: &Value) -> Result<Value, Lisp
     let Some(window_id) = window_record_id_from_value(interp, &window) else {
         return Err(wrong_type_argument("window-live-p", window));
     };
-    let kind = interp
-        .find_record(window_id)
-        .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
-        .cloned()
-        .unwrap_or(Value::Nil);
-    if matches!(
-        kind.kind(),
-        Kind::Symbol(ref kind)
-            if matches!(
-                kind.as_str(),
-                INTERNAL_HORIZONTAL_WINDOW_KIND
-                    | INTERNAL_VERTICAL_WINDOW_KIND
-                    | DELETED_WINDOW_KIND
-            )
+    let kind = crate::lisp::primitives::WindowKind::of_slot(
+        interp
+            .find_record(window_id)
+            .and_then(|record| record.slots.get(WINDOW_KIND_SLOT)),
+    );
+    if !matches!(
+        kind,
+        crate::lisp::primitives::WindowKind::Leaf | crate::lisp::primitives::WindowKind::Minibuffer
     ) || window_buffer_id(interp, &window).is_none()
     {
         return Err(wrong_type_argument("window-live-p", window));
@@ -2678,6 +2660,14 @@ pub(super) fn direct_goto_char(
 ) -> Result<Value, LispError> {
     let name = "goto-char";
     need_args(name, args, 1)?;
+    // editfns.c:Fgoto_char takes a marker or a fixnum; a bignum is
+    // wrong_type_argument (Qinteger_or_marker_p) there.
+    if matches!(args[0].kind(), Kind::BigInteger(_)) {
+        return Err(LispError::WrongTypeArgument(
+            "integer-or-marker-p".into(),
+            args[0],
+        ));
+    }
     let pos = position_from_value(interp, &args[0])?;
     interp.buffer.borrow_mut().goto_char(pos);
     // GNU Fgoto_char returns its POSITION argument unchanged (a

@@ -1998,12 +1998,12 @@ pub(crate) fn process_buffer_target(
     if value.is_nil() {
         return Ok(None);
     }
-    if let Some(buffer) = string_like(value) {
+    if matches!(value.kind(), Kind::StringObject(_)) {
+        // Fget_buffer_create.
         return Ok(Some(
             interp
-                .find_buffer(&buffer.text)
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| interp.create_buffer(&buffer.text).0),
+                .find_buffer_named(value)
+                .unwrap_or_else(|| interp.create_buffer_named(*value)),
         ));
     }
     if matches!(value.kind(), Kind::Buffer(_)) {
@@ -2144,7 +2144,6 @@ pub(crate) struct MakeProcessArgs {
     pub(crate) argv: Vec<String>,
     pub(crate) filter: Option<Value>,
     pub(crate) sentinel: Option<Value>,
-    pub(crate) name: Option<String>,
     pub(crate) stderr_process_id: Option<u64>,
     pub(crate) stderr_buffer_id: Option<u64>,
     pub(crate) query_on_exit_flag: bool,
@@ -2188,21 +2187,19 @@ pub(crate) fn parse_make_process_args(
     // process.c:get_required_string_keyword_param for :name, after the
     // process's buffer is made (Fmake_process) or first (Fmake_pipe_process,
     // which has no :command).
-    let required_name = |value: Option<Value>| -> Result<(String, Value), LispError> {
+    let required_name = |value: Option<Value>| -> Result<Value, LispError> {
         let value =
             value.ok_or_else(|| LispError::Signal("Missing :name keyword parameter".into()))?;
-        match string_like(&value) {
-            Some(text) => Ok((text.text, value)),
-            None => Err(LispError::Signal(":name value not a string".into())),
+        match value.kind() {
+            Kind::StringObject(_) => Ok(value),
+            _ => Err(LispError::Signal(":name value not a string".into())),
         }
     };
     let has_command = first(":command").is_some();
     if has_command && let Some(buffer) = first(":buffer") {
         buffer_id = process_buffer_target(interp, &buffer)?;
     }
-    let (checked_name, checked_value) = required_name(first(":name"))?;
-    let name = Some(checked_name);
-    let name_value = checked_value;
+    let name_value = required_name(first(":name"))?;
 
     for pair in args.as_chunks::<2>().0 {
         let key = pair[0].as_symbol()?;
@@ -2251,7 +2248,6 @@ pub(crate) fn parse_make_process_args(
         argv,
         filter,
         sentinel,
-        name,
         stderr_process_id,
         stderr_buffer_id,
         query_on_exit_flag,
@@ -2571,7 +2567,7 @@ fn insert_with_read_only_cleared(
 pub(crate) fn internal_default_process_sentinel(
     interp: &mut Interpreter,
     process_id: u64,
-    message: &str,
+    message: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
     if matches!(
@@ -2589,7 +2585,7 @@ pub(crate) fn internal_default_process_sentinel(
     let Some(mark_id) = interp.process_mark_id(process_id) else {
         return Ok(());
     };
-    let process_name = interp.process_name(process_id).unwrap_or_default();
+    let process_name = interp.process_name(process_id).unwrap_or(Value::Nil);
     let saved_buffer_id = interp.current_buffer_id();
     let switched = buffer_id != saved_buffer_id;
     if switched {
@@ -2602,10 +2598,21 @@ pub(crate) fn internal_default_process_sentinel(
     interp.buffer.borrow_mut().goto_char(insert_at);
     // process.c's four insertions, each through the change protocol.
     let inserted = insert_with_read_only_cleared(interp, buffer_id, env, |interp, env| {
-        for text in ["\nProcess ", process_name.as_str(), " ", message] {
-            insert_text_with_hooks(interp, text, None, &[], false, false, env)?;
-        }
-        Ok(())
+        // insert_string ("\nProcess "); Finsert (1, &p->name);
+        // insert_string (" ").
+        insert_text_with_hooks(interp, "\nProcess ", None, &[], false, false, env)?;
+        crate::lisp::primitives::hash_insert::insert_impl(
+            interp,
+            &[process_name],
+            env,
+            false,
+            false,
+        )?;
+        insert_text_with_hooks(interp, " ", None, &[], false, false, env)?;
+        // Finsert (1, &msg): a message that is no string or character
+        // signals once the rest is in, as GNU's does.
+        crate::lisp::primitives::hash_insert::insert_impl(interp, &[message], env, false, false)
+            .map(|_| ())
     });
     let new_pos = interp.buffer.borrow().point();
     let result = inserted.and_then(|()| interp.set_marker(mark_id, Some(new_pos), Some(buffer_id)));
@@ -2797,16 +2804,11 @@ pub(crate) fn append_process_bytes_to_buffer(
     let target_id = match destination.kind() {
         Kind::T => interp.current_buffer_id(),
         Kind::Buffer(_) => interp.resolve_buffer_id(destination)?,
-        value => {
-            let Some(name) = string_like(&value.value()) else {
-                // Fget_buffer_create's CHECK_STRING.
-                return Err(wrong_type_argument("stringp", *destination));
-            };
-            interp
-                .find_buffer(&name.text)
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| interp.create_buffer(&name.text).0)
-        }
+        Kind::StringObject(_) => interp
+            .find_buffer_named(destination)
+            .unwrap_or_else(|| interp.create_buffer_named(*destination)),
+        // Fget_buffer_create's CHECK_STRING.
+        _ => return Err(wrong_type_argument("stringp", *destination)),
     };
     let original_id = interp.current_buffer_id();
     if target_id != original_id {
@@ -3763,10 +3765,11 @@ pub(crate) fn make_network_process(
         let value = &pair[1];
         match key {
             ":name" => {
-                name = Some(match string_like(value) {
-                    Some(text) => text.text,
-                    None => return Err(LispError::Signal(":name value not a string".into())),
-                });
+                // get_required_string_keyword_param: the string itself.
+                if !matches!(value.kind(), Kind::StringObject(_)) {
+                    return Err(LispError::Signal(":name value not a string".into()));
+                }
+                name = Some(*value);
             }
             ":buffer" => buffer_id = process_buffer_target(interp, value)?,
             ":filter" => filter = (!value.is_nil()).then_some(*value),
@@ -3856,14 +3859,13 @@ pub(crate) fn make_network_process(
         interp,
         env,
         ConnectionCoding::Network {
-            name: Value::string(&name),
+            name,
             host: plist_member_value(args, ":host").unwrap_or(Value::Nil),
             service: plist_member_value(args, ":service").unwrap_or(Value::Nil),
         },
         coding,
         buffer,
     )?;
-    let name = interp.unique_process_name(&name);
     // GNU keeps the original keyword plist as the process's contact info
     // (p->childp), updating :service and appending the resolved :local /
     // :remote address vectors after the socket is set up.
@@ -3946,7 +3948,7 @@ pub(crate) fn make_network_process(
             plist_items_put(&mut contact_items, ":remote", sockaddr_vector(remote));
         }
         let process = interp.create_network_process(
-            &name,
+            name,
             buffer_id,
             inherit_coding_system,
             filter,
@@ -3992,7 +3994,7 @@ pub(crate) fn make_network_process(
                 Value::String(path.clone().into()),
             );
             return interp.create_network_process(
-                &name,
+                name,
                 buffer_id,
                 inherit_coding_system,
                 filter,
@@ -4024,7 +4026,7 @@ pub(crate) fn make_network_process(
             Value::String(String::new().into()),
         );
         let process = interp.create_network_process(
-            &name,
+            name,
             buffer_id,
             inherit_coding_system,
             filter,
@@ -4079,7 +4081,7 @@ pub(crate) fn make_network_process(
             plist_items_put(&mut contact_items, ":local", sockaddr_vector(addr));
         }
         interp.create_network_process(
-            &name,
+            name,
             buffer_id,
             inherit_coding_system,
             filter,
@@ -4139,7 +4141,7 @@ pub(crate) fn make_network_process(
             plist_items_put(&mut contact_items, ":local", sockaddr_vector(addr));
         }
         let process = interp.create_network_process(
-            &name,
+            name,
             buffer_id,
             inherit_coding_system,
             filter,
@@ -4486,14 +4488,16 @@ pub(crate) fn make_serial_process(
     } else {
         contact
     };
+    // name = plist_get (contact, QCname), PORT when nil; CHECK_STRING.
     let name = plist_member_value(args, ":name")
         .filter(Value::is_truthy)
-        .map(|value| string_text(&value))
-        .transpose()?
-        .unwrap_or_else(|| port_name.clone());
+        .unwrap_or(port_value);
+    if !matches!(name.kind(), Kind::StringObject(_)) {
+        return Err(wrong_type_argument("stringp", name));
+    }
     let buffer = plist_member_value(args, ":buffer")
         .filter(Value::is_truthy)
-        .unwrap_or_else(|| Value::String(name.clone().into()));
+        .unwrap_or(name);
     let buffer_id =
         process_buffer_target(interp, &buffer)?.expect("a serial process always has a buffer");
     let filter = plist_member_value(args, ":filter").filter(Value::is_truthy);
@@ -4506,7 +4510,7 @@ pub(crate) fn make_serial_process(
     let noquery = plist_member_value(args, ":noquery").is_some_and(|value| value.is_truthy());
     let stopped = plist_member_value(args, ":stop").is_some_and(|value| value.is_truthy());
     let process = interp.create_serial_process(
-        &name,
+        name,
         buffer_id,
         filter,
         sentinel,
@@ -4547,7 +4551,7 @@ fn run_process_sentinel(
                 env,
             )?;
         } else {
-            internal_default_process_sentinel(interp, process_id, event, env)?;
+            internal_default_process_sentinel(interp, process_id, Value::string(event), env)?;
         }
         Ok(())
     })
@@ -4958,21 +4962,26 @@ fn pump_connection_processes_for(
                 && interp
                     .process_inherit_coding_system_flag(server_id)
                     .unwrap_or(false);
-            let base_name = interp.process_name(server_id).unwrap_or_default();
+            let base_name = interp
+                .process_name(server_id)
+                .unwrap_or_else(|| Value::string(""));
             // GNU names inet children "NAME <HOST:PORT>" (note the space)
-            // and unnamed-peer children "NAME <N>" from connect_counter.
-            let child_name = if let (Some(peer_addr), Some(host)) = (peer_addr, &host) {
+            // and unnamed-peer children "NAME <N>" from connect_counter,
+            // Fformat of the server's name and the caller; make_process
+            // makes it unique.
+            let suffix = if let (Some(peer_addr), Some(host)) = (peer_addr, &host) {
                 let port = peer_addr.port();
-                interp.unique_process_name(&if peer_addr.is_ipv6() {
-                    format!("{base_name} <[{host}]:{port}>")
+                if peer_addr.is_ipv6() {
+                    format!(" <[{host}]:{port}>")
                 } else {
-                    format!("{base_name} <{host}:{port}>")
-                })
+                    format!(" <{host}:{port}>")
+                }
             } else {
-                interp.unique_process_name(&format!("{base_name} <{connect_number}>"))
+                format!(" <{connect_number}>")
             };
+            let child_name = call(interp, "concat", &[base_name, Value::string(&suffix)], env)?;
             let child = interp.create_network_process(
-                &child_name,
+                child_name,
                 // GNU's accepted process inherits the listener's filter,
                 // sentinel, log function, plist, and coding systems, but it
                 // does not inherit the listener's process buffer.  Giving

@@ -442,7 +442,7 @@ mod tests {
                 "{name} retained the builder's value"
             );
         }
-        assert_eq!(interpreter.buffer.borrow().name, "*scratch*");
+        assert_eq!(interpreter.buffer.borrow().name_text(), "*scratch*");
         assert_eq!(
             interpreter.lookup_var_key(
                 cached_symbol!("default-directory"),

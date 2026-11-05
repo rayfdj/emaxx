@@ -911,29 +911,29 @@ fn ccl_execute_on_string(
 fn char_charset(
     interp: &Interpreter,
     c: i32,
-    list: &[String],
+    list: &[crate::lisp::types::SymbolName],
     maybe_null: bool,
-) -> Option<(String, Option<u32>)> {
-    let non_preferred_head = interp.charset_non_preferred_head_ref();
+) -> Option<(crate::lisp::types::SymbolName, Option<u32>)> {
+    let non_preferred_head = interp.charset_non_preferred_head();
     for (index, charset) in list.iter().enumerate() {
         if c >= 0
             && let Some(code) = super::coding::encode_charset_char(interp, charset, c as u32)
         {
-            return Some((charset.clone(), Some(code)));
+            return Some((*charset, Some(code)));
         }
         if !maybe_null
             && c <= super::coding::MAX_UNICODE_CHAR as i32
-            && list.get(index + 1).map(String::as_str) == non_preferred_head
+            && list.get(index + 1).copied() == non_preferred_head
         {
-            return Some(("unicode".into(), None));
+            return Some((cached_symbol!("unicode").symbol(), None));
         }
     }
     if maybe_null {
         None
     } else if c <= 0x3F_FF7F {
-        Some(("emacs".into(), None))
+        Some((cached_symbol!("emacs").symbol(), None))
     } else {
-        Some(("eight-bit".into(), None))
+        Some((cached_symbol!("eight-bit").symbol(), None))
     }
 }
 
@@ -1003,7 +1003,7 @@ struct Driver<'a> {
     /// mapping_stack and mapping_stack_pointer.
     mapping: [(i32, i32); MAX_MAP_SET_LEVEL],
     sp: usize,
-    charset_list: Option<&'a [String]>,
+    charset_list: Option<&'a [crate::lisp::types::SymbolName]>,
     /// CCL_ENCODE_CHAR's ncode.
     ncode: u32,
 }
@@ -1199,7 +1199,7 @@ impl Driver<'_> {
         }
         interp
             .charset_name_of_id(i64::from(id))
-            .and_then(|charset| super::coding::decode_charset_code(interp, charset, code as u32))
+            .and_then(|charset| super::coding::decode_charset_code(interp, &charset, code as u32))
             .map_or(-1, |c| c as i32)
     }
 
@@ -2069,7 +2069,7 @@ pub(crate) fn ccl_driver<H: CclHost + ?Sized>(
     ccl: &mut CclProgram,
     source: Option<&[i32]>,
     destination: Option<&mut [i32]>,
-    charset_list: Option<&[String]>,
+    charset_list: Option<&[crate::lisp::types::SymbolName]>,
 ) -> Result<(), LispError> {
     let has_destination = destination.is_some();
     let mut driver = Driver {
