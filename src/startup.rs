@@ -1,6 +1,7 @@
 //! C-owned library-path initialization. GNU startup.el owns expansion of
 //! subdirs.el and command-line -L arguments; neither belongs in this module.
 
+use crate::lisp::cached_symbol;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives;
 use crate::lisp::types::{LispError, Value};
@@ -60,7 +61,7 @@ pub(crate) fn initialize_exec_path(interpreter: &mut Interpreter) -> Result<(), 
         }
     };
     exec_path = c(interpreter, "nconc", &[exec_path, programs])?;
-    interpreter.set_global_binding("exec-path", exec_path);
+    interpreter.set_global_binding_key(cached_symbol!("exec-path"), exec_path);
     Ok(())
 }
 
@@ -346,8 +347,8 @@ mod tests {
     fn decode_env_path_quotes_only_unsafe_file_handlers() {
         let mut interpreter = Interpreter::new();
         let handler = Value::symbol("identity");
-        interpreter.set_global_binding(
-            "file-name-handler-alist",
+        interpreter.set_global_binding_key(
+            cached_symbol!("file-name-handler-alist"),
             Value::list([Value::cons(Value::string("remote"), handler)]),
         );
         let quoted =
@@ -460,8 +461,9 @@ mod tests {
         std::fs::write(build.join("src/Makefile"), b"").expect("mark an out-of-tree build");
         let directory = |path: &std::path::Path| Value::String(path.display().to_string().into());
         let mut interpreter = Interpreter::new();
-        interpreter.set_global_binding("installation-directory", directory(&build));
-        interpreter.set_global_binding("source-directory", directory(&source));
+        interpreter
+            .set_global_binding_key(cached_symbol!("installation-directory"), directory(&build));
+        interpreter.set_global_binding_key(cached_symbol!("source-directory"), directory(&source));
         let dump = Value::list([directory(&source.join("lisp"))]);
         let without_site = default_load_path(&mut interpreter, &dump, false, true);
         let with_site = default_load_path(&mut interpreter, &dump, false, false);

@@ -124,14 +124,14 @@ impl Interpreter {
             }
         }
         let mut last_boundary = if next.is_cons() { prev } else { Value::Nil };
-        let limit_of = |interp: &Self, name: &str| {
+        let limit_of = |interp: &Self, name: crate::lisp::types::symbols::SymbolKey| {
             interp
-                .lookup_var(name, env)
+                .lookup_var_key(name, env)
                 .and_then(|value| value.integer_value())
                 .unwrap_or(0)
         };
-        let undo_limit = limit_of(self, "undo-limit");
-        let undo_strong_limit = limit_of(self, "undo-strong-limit");
+        let undo_limit = limit_of(self, cached_symbol!("undo-limit"));
+        let undo_strong_limit = limit_of(self, cached_symbol!("undo-strong-limit"));
         // Keep additional undo data, if it fits in the limits.
         while let Some((element, tail)) = next.cons_values() {
             if element.is_nil() {

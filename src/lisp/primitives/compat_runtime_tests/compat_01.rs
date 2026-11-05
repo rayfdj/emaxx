@@ -1495,8 +1495,8 @@ fn get_buffer_window_only_reports_selected_buffer() {
 fn find_operation_coding_system_accepts_file_buffer_cons() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable(
-        "file-coding-system-alist",
+    interp.set_variable_key(
+        cached_symbol!("file-coding-system-alist"),
         Value::list([Value::cons(
             Value::String("\\.txt\\'".into()),
             Value::Symbol("utf-8-unix".into()),

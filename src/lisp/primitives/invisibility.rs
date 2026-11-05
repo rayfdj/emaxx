@@ -55,7 +55,7 @@ pub(crate) fn resolve_buffer_invisibility(
         return InvisibilitySpec::default();
     }
     let spec = interpreter
-        .buffer_local_value(buffer_id, "buffer-invisibility-spec")
+        .buffer_local_value_key(buffer_id, cached_symbol!("buffer-invisibility-spec"))
         .or_else(|| {
             interpreter.lookup_var_key(
                 cached_symbol!("buffer-invisibility-spec"),
@@ -97,7 +97,7 @@ pub(crate) fn resolve_buffer_invisibility_in(
         return InvisibilitySpec::default();
     }
     let spec = interpreter
-        .buffer_local_value(buffer_id, "buffer-invisibility-spec")
+        .buffer_local_value_key(buffer_id, cached_symbol!("buffer-invisibility-spec"))
         .or_else(|| {
             interpreter.lookup_var_key(
                 cached_symbol!("buffer-invisibility-spec"),

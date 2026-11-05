@@ -1064,8 +1064,8 @@ fn call_process_sends_stderr_to_its_file_and_output_to_the_buffer() {
     // raw-byte expectation below is the utf-8 answer.  Binding
     // coding-system-for-read makes the contract locale-independent
     // (finding 113's hardcoded-expectation class).
-    interp.set_variable(
-        "coding-system-for-read",
+    interp.set_variable_key(
+        cached_symbol!("coding-system-for-read"),
         Value::Symbol("utf-8".into()),
         &mut env,
     );

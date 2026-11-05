@@ -167,7 +167,9 @@ pub(crate) fn load_file(
     interp.loads_in_progress = saved_loads;
     let (result, found, after_load) = result?;
     if let Some(completion) = after_load {
-        if let Ok(function) = interp.lookup_function("do-after-load-evaluation", env) {
+        if let Ok(function) =
+            interp.lookup_function_key(cached_symbol!("do-after-load-evaluation"), env)
+        {
             interp.call_function_value(
                 function,
                 Some("do-after-load-evaluation"),
@@ -191,7 +193,7 @@ fn load_with_context(
     mut found: search::SearchMatch,
     env: &mut Env,
 ) -> Result<(Value, Value, Option<LoadCompletion>), LispError> {
-    let lexical = interp.bind_special_variable("lexical-binding", Value::Nil, env)?;
+    let lexical = interp.bind_special_key(cached_symbol!("lexical-binding"), Value::Nil, env)?;
     let result = (|| {
         let path = PathBuf::from(string_text(&found.name)?);
         let native = path.extension().is_some_and(|extension| extension == "eln");
@@ -221,8 +223,11 @@ fn load_with_context(
         } else {
             effective
         };
-        let warning =
-            interp.bind_special_variable("lread--unescaped-character-literals", Value::Nil, env)?;
+        let warning = interp.bind_special_key(
+            cached_symbol!("lread--unescaped-character-literals"),
+            Value::Nil,
+            env,
+        )?;
         let mut result = (|| {
             let is_elc = path.extension().is_some_and(|extension| extension == "elc");
             // version 1 is an empty file, which loads as source.
@@ -510,7 +515,7 @@ mod tests {
         let path = gnu_root().join("test/src/comp-resources/comp-test-45603.el");
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        interp.set_variable("purify-flag", Value::Nil, &mut env);
+        interp.set_variable_key(cached_symbol!("purify-flag"), Value::Nil, &mut env);
         let file = fs::File::open(&path).expect("open unchanged GNU fixture");
         let descriptor = Value::string(&format!("/dev/fd/{}", file.as_raw_fd()));
         let before = super::super::super::call(
@@ -530,7 +535,11 @@ mod tests {
             &[192, 193, 33, 135],
             vec![Value::symbol("file-exists-p"), descriptor],
         );
-        interp.set_variable("load-source-file-function", callback, &mut env);
+        interp.set_variable_key(
+            cached_symbol!("load-source-file-function"),
+            callback,
+            &mut env,
+        );
         let name = Value::string(&path.display().to_string());
         let request = LoadRequest::new(&[name, Value::Nil, Value::T])
             .expect("construct a valid load request");
@@ -555,7 +564,11 @@ mod tests {
     fn direct_load_keeps_the_selected_inode_when_its_filename_is_replaced() {
         let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
         let mut env = Env::new();
-        interp.set_variable("load-source-file-function", Value::Nil, &mut env);
+        interp.set_variable_key(
+            cached_symbol!("load-source-file-function"),
+            Value::Nil,
+            &mut env,
+        );
         let root = std::env::temp_dir().join(format!(
             "load-descriptor-{}-{}",
             std::process::id(),

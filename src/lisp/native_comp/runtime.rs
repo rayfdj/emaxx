@@ -7459,8 +7459,8 @@ mod tests {
             Value::Integer(41)
         );
 
-        interpreter.set_global_binding(
-            "overriding-plist-environment",
+        interpreter.set_global_binding_key(
+            cached_symbol!("overriding-plist-environment"),
             Value::list([Value::cons(
                 symbol,
                 Value::list([property, Value::Integer(99)]),
@@ -7479,8 +7479,8 @@ mod tests {
             Value::Integer(99)
         );
 
-        interpreter.set_global_binding(
-            "overriding-plist-environment",
+        interpreter.set_global_binding_key(
+            cached_symbol!("overriding-plist-environment"),
             Value::list([Value::cons(symbol, Value::list([property, Value::Nil]))]),
         );
         assert_eq!(
@@ -8916,7 +8916,7 @@ mod tests {
                 &crate::lisp::types::SymbolName::intern_str("value-error-final"),
             )
             .expect("extend the alias chain after its first link was installed");
-        interpreter.set_global_binding("symbols-with-pos-enabled", Value::T);
+        interpreter.set_global_binding_key(cached_symbol!("symbols-with-pos-enabled"), Value::T);
         let uninterned = crate::lisp::primitives::call(
             &mut interpreter,
             "make-symbol",
@@ -8997,7 +8997,7 @@ mod tests {
             &mut environment,
         )
         .expect("position an unbound symbol");
-        interpreter.set_global_binding("symbols-with-pos-enabled", Value::Nil);
+        interpreter.set_global_binding_key(cached_symbol!("symbols-with-pos-enabled"), Value::Nil);
         for invalid in [Value::Integer(7), positioned] {
             for target in [
                 None,
@@ -9212,7 +9212,7 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         let tag = "cl-struct-type-boundary-probe";
-        interpreter.set_global_binding("cl-old-struct-compat-mode", Value::T);
+        interpreter.set_global_binding_key(cached_symbol!("cl-old-struct-compat-mode"), Value::T);
         interpreter.put_symbol_property("type-boundary-probe", "cl--class", Value::T);
         interpreter.set_function_binding(tag, Some(Value::symbol(":quick-object-witness-check")));
         let vector = Value::vector(vec![Value::symbol(tag)]);
@@ -9250,8 +9250,8 @@ mod tests {
         let record = interpreter.create_record("type-boundary-probe", vec![Value::Nil]);
         // Internal negative control, not a claim that Lisp may set these
         // constants. Fcl_type_of must not read their Lisp value cells at all.
-        interpreter.set_global_binding("most-positive-fixnum", Value::Nil);
-        interpreter.set_global_binding("most-negative-fixnum", Value::Nil);
+        interpreter.set_global_binding_key(cached_symbol!("most-positive-fixnum"), Value::Nil);
+        interpreter.set_global_binding_key(cached_symbol!("most-negative-fixnum"), Value::Nil);
         for (value, expected) in [
             (Value::Nil, "null"),
             (Value::T, "boolean"),
@@ -9613,7 +9613,10 @@ mod tests {
         let previous_debugger = interpreter
             .symbol_value_cell("debugger")
             .expect("the debugger variable has a default value");
-        interpreter.set_global_binding("debugger", Value::BuiltinFunc("list".into()));
+        interpreter.set_global_binding_key(
+            cached_symbol!("debugger"),
+            Value::BuiltinFunc("list".into()),
+        );
 
         // (funcall 'backtrace-debug 0 t) marks its own frame, the native
         // Ffuncall's, which enters the debugger with (exit t) on its way
@@ -9632,7 +9635,7 @@ mod tests {
             )
             .expect("backtrace-debug marks the active native Ffuncall frame");
 
-        interpreter.set_global_binding("debugger", previous_debugger);
+        interpreter.set_global_binding_key(cached_symbol!("debugger"), previous_debugger);
         assert_eq!(result, Value::list([Value::symbol("exit"), Value::T]));
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
@@ -10382,7 +10385,7 @@ mod tests {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
         let handlers = Value::list([Value::cons(Value::string("x"), Value::symbol("first"))]);
-        interpreter.set_global_binding("file-name-handler-alist", handlers);
+        interpreter.set_global_binding_key(cached_symbol!("file-name-handler-alist"), handlers);
         let mut heap = NativeHeap::new();
         heap.begin_call();
         let word = heap.encode(&handlers).expect("encode handlers");
@@ -13492,7 +13495,7 @@ mod tests {
 
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
-        interpreter.set_global_binding("case-fold-search", Value::Nil);
+        interpreter.set_global_binding_key(cached_symbol!("case-fold-search"), Value::Nil);
         let punctuation = Value::cons(Value::Integer(1), Value::Nil);
         let word = Value::cons(Value::Integer(2), Value::Nil);
         let table = CharTableRef::new(Value::symbol("syntax-table"), punctuation, 0);
@@ -14907,8 +14910,12 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         let payload = Value::list([Value::symbol("error"), Value::string("allocation-probe-47")]);
-        interpreter.set_variable("memory-signal-data", payload, &mut environment);
-        interpreter.set_variable("memory-full", Value::Nil, &mut environment);
+        interpreter.set_variable_key(
+            cached_symbol!("memory-signal-data"),
+            payload,
+            &mut environment,
+        );
+        interpreter.set_variable_key(cached_symbol!("memory-full"), Value::Nil, &mut environment);
         for code in [97, 128, 0x20_0000] {
             let args = [Value::Integer(1_i64 << 58), Value::Integer(code)];
             let error = crate::lisp::primitives::call(
@@ -15345,7 +15352,7 @@ mod tests {
             .to_vec()
             .expect("alist")
             .into_iter()
-            .find(|entry| entry.car().expect("pair").symbol_str() == Some("name"))
+            .find(|entry| entry.car().expect("pair").is_key(cached_symbol!("name")))
             .expect("name parameter");
         assert_eq!(pair.cdr().expect("parameter value").word(), name.word());
     }

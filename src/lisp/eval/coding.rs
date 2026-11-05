@@ -508,7 +508,7 @@ impl Interpreter {
         let current = self
             .symbol_value_symbol(&SymbolName::intern_str("charset-list"))
             .unwrap_or(Value::Nil);
-        self.set_global_binding("charset-list", Value::cons(name, current));
+        self.set_global_binding_key(cached_symbol!("charset-list"), Value::cons(name, current));
     }
 
     pub fn charset_priority_list(&self) -> Vec<String> {
@@ -733,11 +733,15 @@ impl Interpreter {
         &self,
         coding: &(impl CodingRef + ?Sized),
     ) -> Option<i64> {
-        match self.coding_spec(coding)?.eol_type.symbol_str()? {
-            "unix" => Some(0),
-            "dos" => Some(1),
-            "mac" => Some(2),
-            _ => None,
+        let eol_type = self.coding_spec(coding)?.eol_type;
+        if eol_type.is_key(cached_symbol!("unix")) {
+            Some(0)
+        } else if eol_type.is_key(cached_symbol!("dos")) {
+            Some(1)
+        } else if eol_type.is_key(cached_symbol!("mac")) {
+            Some(2)
+        } else {
+            None
         }
     }
 
@@ -982,7 +986,7 @@ impl Interpreter {
                 .iter()
                 .map(|category| Value::Symbol(CODING_CATEGORY_NAMES[*category].into())),
         );
-        self.set_variable("coding-category-list", list, env);
+        self.set_variable_key(cached_symbol!("coding-category-list"), list, env);
         Ok(())
     }
 
@@ -999,8 +1003,8 @@ impl Interpreter {
         let list = self
             .lookup_var_key(cached_symbol!("coding-system-list"), &env)
             .unwrap_or(Value::Nil);
-        self.set_variable(
-            "coding-system-list",
+        self.set_variable_key(
+            cached_symbol!("coding-system-list"),
             Value::cons(Value::Symbol(name), list),
             &mut env,
         );
@@ -1019,8 +1023,8 @@ impl Interpreter {
             }
             tail = rest;
         }
-        self.set_variable(
-            "coding-system-alist",
+        self.set_variable_key(
+            cached_symbol!("coding-system-alist"),
             Value::cons(Value::list([name.lisp_name()]), alist),
             &mut env,
         );

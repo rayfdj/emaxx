@@ -551,7 +551,7 @@ fn prepare_print_numbering(interp: &mut Interpreter, env: &mut Env, options: Pri
     if !options.continuous_numbering || table.is_none_or(|value| value.is_nil()) {
         interp.print_number_index = 0;
         if table.is_none_or(|value| !value.is_nil()) {
-            interp.set_variable("print-number-table", Value::Nil, env);
+            interp.set_variable_key(cached_symbol!("print-number-table"), Value::Nil, env);
         }
     }
 }

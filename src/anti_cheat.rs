@@ -1076,7 +1076,7 @@ pub(crate) fn bare_runtime_rejects_gnu_elisp_owned_definition_forms() {
     );
     assert!(
         matches!(
-            bare.lookup_function("read-key", &Env::new()).map_err(LispError::into_kind),
+            bare.lookup_function_key(cached_symbol!("read-key"), &Env::new()).map_err(LispError::into_kind),
             Err(LispErrorKind::VoidFunction(missing))
                 if matches!(missing.kind(), crate::lisp::types::Kind::Symbol(missing) if missing.is_named("read-key"))
         ),

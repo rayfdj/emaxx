@@ -1034,9 +1034,9 @@ pub(crate) fn update_compositions(
 fn char_table_id_from_var(
     interp: &Interpreter,
     env: &Env,
-    name: &str,
+    name: crate::lisp::types::symbols::SymbolKey,
 ) -> Option<crate::lisp::types::CharTableRef> {
-    match (interp.lookup_var(name, env)?).kind() {
+    match (interp.lookup_var_key(name, env)?).kind() {
         Kind::CharTable(id) => Some(id),
         _ => None,
     }
@@ -1059,7 +1059,7 @@ fn char_composable_p(interp: &Interpreter, env: &Env, c: char) -> bool {
             || c == ZERO_WIDTH_JOINER
             || (TAG_SPACE..=CANCEL_TAG).contains(&c)
             || matches!(
-                char_table_id_from_var(interp, env, "unicode-category-table")
+                char_table_id_from_var(interp, env, cached_symbol!("unicode-category-table"))
                     .and_then(|id| interp.char_table_get(id, c)).map(|v| v.kind()),
                 Some(Kind::Integer(category)) if category <= UNICODE_CATEGORY_ZS
             ))
@@ -1095,7 +1095,9 @@ fn target_char_at(interp: &Interpreter, string: &Value, pos: usize) -> Option<ch
 /// [PATTERN LOOKBACK FUNC] rules.  The C walks only a proper cons chain
 /// (`for (...; CONSP (val); val = XCDR (val))'); a bare vector is ignored.
 fn composition_rules_for_char(interp: &Interpreter, env: &Env, c: char) -> Vec<Value> {
-    let Some(table_id) = char_table_id_from_var(interp, env, "composition-function-table") else {
+    let Some(table_id) =
+        char_table_id_from_var(interp, env, cached_symbol!("composition-function-table"))
+    else {
         return Vec::new();
     };
     let Some(value) = interp.char_table_get(table_id, c as u32) else {
@@ -1555,7 +1557,7 @@ fn fill_gstring_body(interp: &Interpreter, env: &Env, gstring: &Value, codes: &[
             glyph = nil_vector(10);
             aset(gstring, i + 2, glyph);
         }
-        let width = char_table_id_from_var(interp, env, "char-width-table")
+        let width = char_table_id_from_var(interp, env, cached_symbol!("char-width-table"))
             .and_then(|id| interp.char_table_get(id, *code as u32))
             .and_then(|value| value.integer_value())
             .unwrap_or(0);

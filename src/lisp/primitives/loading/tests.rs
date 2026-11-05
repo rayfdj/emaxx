@@ -34,7 +34,7 @@ fn eval_buffer_uses_the_supplied_history_filename_without_visiting_it() {
     interp.buffer.borrow_mut().file = Some("buffer-visited-name.el".into());
     let filename = Value::string("explicit-history-name.el");
     let outer = Value::list([Value::string("outer-load.el")]);
-    interp.set_variable("current-load-list", outer, &mut env);
+    interp.set_variable_key(cached_symbol!("current-load-list"), outer, &mut env);
     let result = super::super::call(
         &mut interp,
         "eval-buffer",
@@ -87,7 +87,7 @@ fn eval_buffer_nil_filename_records_an_independent_nil_history_entry() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     let outer = Value::list([Value::string("outer-file.el")]);
-    interp.set_variable("current-load-list", outer, &mut env);
+    interp.set_variable_key(cached_symbol!("current-load-list"), outer, &mut env);
     for _ in 0..2 {
         super::super::call(&mut interp, "eval-buffer", &[], &mut env)
             .expect("nil filename is a valid read/eval-loop source name");
@@ -169,15 +169,19 @@ fn load_source_callback_receives_gnu_arguments_and_owns_the_return_value() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     interp.set_load_path(vec![directory]);
-    interp.set_variable("load-source-file-function", Value::symbol("list"), &mut env);
+    interp.set_variable_key(
+        cached_symbol!("load-source-file-function"),
+        Value::symbol("list"),
+        &mut env,
+    );
     for (purifying, force) in [(false, false), (true, false), (false, true)] {
-        interp.set_variable(
-            "purify-flag",
+        interp.set_variable_key(
+            cached_symbol!("purify-flag"),
             if purifying { Value::T } else { Value::Nil },
             &mut env,
         );
-        interp.set_variable(
-            "force-load-messages",
+        interp.set_variable_key(
+            cached_symbol!("force-load-messages"),
             if force { Value::T } else { Value::Nil },
             &mut env,
         );
@@ -219,8 +223,12 @@ fn load_source_callback_observes_and_restores_the_outer_c_bindings() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     let old_warning = Value::list([Value::Integer(63)]);
-    interp.set_variable("lexical-binding", Value::T, &mut env);
-    interp.set_variable("lread--unescaped-character-literals", old_warning, &mut env);
+    interp.set_variable_key(cached_symbol!("lexical-binding"), Value::T, &mut env);
+    interp.set_variable_key(
+        cached_symbol!("lread--unescaped-character-literals"),
+        old_warning,
+        &mut env,
+    );
     let callback = source_callback(
         &mut interp,
         &[8, 9, 68, 135],
@@ -229,7 +237,11 @@ fn load_source_callback_observes_and_restores_the_outer_c_bindings() {
             Value::symbol("lread--unescaped-character-literals"),
         ],
     );
-    interp.set_variable("load-source-file-function", callback, &mut env);
+    interp.set_variable_key(
+        cached_symbol!("load-source-file-function"),
+        callback,
+        &mut env,
+    );
     let result = super::super::call(
         &mut interp,
         "load",
@@ -263,8 +275,12 @@ fn load_source_callback_nonlocal_exit_unwinds_even_with_noerror() {
         &[192, 193, 194, 34, 135],
         vec![Value::symbol("throw"), tag, Value::Integer(23)],
     );
-    interp.set_variable("load-source-file-function", callback, &mut env);
-    interp.set_variable("lexical-binding", Value::T, &mut env);
+    interp.set_variable_key(
+        cached_symbol!("load-source-file-function"),
+        callback,
+        &mut env,
+    );
+    interp.set_variable_key(cached_symbol!("lexical-binding"), Value::T, &mut env);
     interp.push_active_catch_tag(tag);
     let result = super::super::call(
         &mut interp,
@@ -292,7 +308,11 @@ fn load_source_callback_reads_the_detached_c_slot() {
     let file = gnu_root().join("test/src/comp-resources/comp-test-45603.el");
     let mut interp = Interpreter::new();
     let mut env = Env::new();
-    interp.set_variable("load-source-file-function", Value::symbol("list"), &mut env);
+    interp.set_variable_key(
+        cached_symbol!("load-source-file-function"),
+        Value::symbol("list"),
+        &mut env,
+    );
     super::super::call(
         &mut interp,
         "makunbound",
@@ -326,7 +346,11 @@ fn load_recursion_limit_counts_only_the_same_file_and_restores_the_stack() {
     );
     let mut interp = Interpreter::new();
     let mut env = Env::new();
-    interp.set_variable("load-source-file-function", Value::symbol("list"), &mut env);
+    interp.set_variable_key(
+        cached_symbol!("load-source-file-function"),
+        Value::symbol("list"),
+        &mut env,
+    );
     for count in [3, 4] {
         let saved = Value::list(
             std::iter::repeat_n(file, count).chain([Value::string("unrelated-file.el")]),
@@ -369,8 +393,8 @@ fn load_search_obeys_the_gnu_suffix_list_instead_of_a_private_vm_preference() {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         interp.set_load_path(vec![root.clone()]);
-        interp.set_variable(
-            "load-suffixes",
+        interp.set_variable_key(
+            cached_symbol!("load-suffixes"),
             Value::list([Value::string(suffix)]),
             &mut env,
         );
@@ -401,8 +425,8 @@ fn load_search_expands_home_from_the_lisp_process_environment() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     interp.set_load_path(vec![root.clone()]);
-    interp.set_variable(
-        "process-environment",
+    interp.set_variable_key(
+        cached_symbol!("process-environment"),
         Value::list([Value::string(&format!("HOME={}", root.display()))]),
         &mut env,
     );
@@ -419,9 +443,9 @@ fn load_search_nil_path_uses_the_current_buffers_default_directory() {
     let root = gnu_root().join("test/src/comp-resources");
     let mut interp = Interpreter::new();
     let mut env = Env::new();
-    interp.set_variable("load-path", Value::Nil, &mut env);
-    interp.set_variable(
-        "default-directory",
+    interp.set_variable_key(cached_symbol!("load-path"), Value::Nil, &mut env);
+    interp.set_variable_key(
+        cached_symbol!("default-directory"),
         Value::string(&format!("{}/", root.display())),
         &mut env,
     );
@@ -558,16 +582,16 @@ fn load_suffix_product_reads_c_slots_and_obeys_gnu_tail_iteration() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     // concat2 accepts character sequences, not just strings.
-    interp.set_variable(
-        "load-suffixes",
+    interp.set_variable_key(
+        cached_symbol!("load-suffixes"),
         Value::cons(
             Value::list([Value::Integer(46), Value::Integer(101), Value::Integer(108)]),
             Value::Integer(7),
         ),
         &mut env,
     );
-    interp.set_variable(
-        "load-file-rep-suffixes",
+    interp.set_variable_key(
+        cached_symbol!("load-file-rep-suffixes"),
         Value::cons(Value::string(""), Value::T),
         &mut env,
     );
@@ -639,7 +663,7 @@ fn load_search_newer_stays_in_first_directory_and_preserves_suffix_ties() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     interp.set_load_path(vec![first.clone(), second]);
-    interp.set_variable("load-prefer-newer", Value::T, &mut env);
+    interp.set_variable_key(cached_symbol!("load-prefer-newer"), Value::T, &mut env);
     assert_eq!(
         resolve_load_target_in_env(&mut interp, "sample", &env).expect("newest in first entry"),
         Some(first.join("sample.el"))
@@ -655,7 +679,7 @@ fn load_search_newer_stays_in_first_directory_and_preserves_suffix_ties() {
         resolve_load_target_in_env(&mut interp, "sample", &env).expect("earlier suffix wins tie"),
         Some(first.join("sample.elc"))
     );
-    interp.set_variable("load-prefer-newer", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("load-prefer-newer"), Value::Nil, &mut env);
     assert_eq!(
         resolve_load_target_in_env(&mut interp, "sample", &env).expect("normal suffix order"),
         Some(first.join("sample.elc"))

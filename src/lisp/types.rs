@@ -2887,6 +2887,12 @@ impl Value {
         }
     }
 
+    /// EQ (self, Qkey): whether this is the cached key's symbol.
+    #[inline]
+    pub(crate) fn is_key(&self, key: symbols::SymbolKey) -> bool {
+        PropertyKey::is(key, *self)
+    }
+
     /// `as_symbol' for a caller that only asks: None for a value that is
     /// no symbol, with no error built.
     #[inline]

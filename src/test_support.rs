@@ -1,3 +1,4 @@
+use crate::lisp::cached_symbol;
 use std::cell::RefCell;
 use std::sync::{Condvar, Mutex, OnceLock};
 
@@ -219,7 +220,7 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter() -> Interpreter {
     // loadup.el, whose final pre-dump assignment clears `purify-flag'.
     // Materialize that already-established phase boundary here so runtime
     // definitions are not recursively copied into simulated pure storage.
-    interpreter.set_global_binding("purify-flag", Value::Nil);
+    interpreter.set_global_binding_key(cached_symbol!("purify-flag"), Value::Nil);
     configure_embedded_native_compilation(&mut interpreter);
     interpreter
 }

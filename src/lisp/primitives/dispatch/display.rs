@@ -709,9 +709,9 @@ pub(crate) fn ring_bell(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             .and_then(|()| output.flush())
             .map_err(|error| LispError::Signal(error.to_string()));
     }
-    interp.set_variable("ring-bell-function", Value::Nil, env);
+    interp.set_variable_key(cached_symbol!("ring-bell-function"), Value::Nil, env);
     interp.call_function_value(function, None, &[], env)?;
-    interp.set_variable("ring-bell-function", function, env);
+    interp.set_variable_key(cached_symbol!("ring-bell-function"), function, env);
     Ok(())
 }
 
@@ -1993,7 +1993,7 @@ pub(crate) fn window_face_spans(
         // uses, which is how comint's font-lock-face-only output reaches
         // the glass.
         let face_alias_names: Vec<String> = interp
-            .buffer_local_value(buffer_id, "char-property-alias-alist")
+            .buffer_local_value_key(buffer_id, cached_symbol!("char-property-alias-alist"))
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default()
             .into_iter()
@@ -3947,28 +3947,30 @@ pub(crate) fn window_line_number_layout(
     begv_line: usize,
     text_rows: usize,
 ) -> Option<LineNumberLayout> {
-    let buffer_local = |name: &str| {
+    let buffer_local = |name: crate::lisp::types::symbols::SymbolKey| {
         interp
-            .buffer_local_value(buffer_id, name)
-            .or_else(|| interp.default_value(name))
+            .buffer_local_value_key(buffer_id, name)
+            .or_else(|| interp.default_value_key(name))
             .unwrap_or(Value::Nil)
     };
-    let mode = match buffer_local("display-line-numbers").kind() {
+    let mode = match buffer_local(cached_symbol!("display-line-numbers")).kind() {
         Kind::Nil => return None,
         Kind::Symbol(ref name) if name.is_named("relative") => LineNumberMode::Relative,
         Kind::Symbol(ref name) if name.is_named("visual") => LineNumberMode::Visual,
         _ => LineNumberMode::Absolute,
     };
-    let current_absolute = buffer_local("display-line-numbers-current-absolute").is_truthy();
+    let current_absolute =
+        buffer_local(cached_symbol!("display-line-numbers-current-absolute")).is_truthy();
     let offset = match mode {
-        LineNumberMode::Absolute => buffer_local("display-line-numbers-offset")
+        LineNumberMode::Absolute => buffer_local(cached_symbol!("display-line-numbers-offset"))
             .as_integer()
             .unwrap_or(0),
         _ => 0,
     };
     // A non-zero offset forces counting from the buffer's beginning, as
     // if display-line-numbers-widen were non-nil.
-    let widen = buffer_local("display-line-numbers-widen").is_truthy() || offset != 0;
+    let widen =
+        buffer_local(cached_symbol!("display-line-numbers-widen")).is_truthy() || offset != 0;
     let displayed = |line: usize| {
         if widen {
             line
@@ -3984,15 +3986,15 @@ pub(crate) fn window_line_number_layout(
         _ => displayed(top_line).saturating_add(text_rows) - 1,
     };
     let needed = max_lnum.max(1).to_string().len();
-    let explicit = buffer_local("display-line-numbers-width")
+    let explicit = buffer_local(cached_symbol!("display-line-numbers-width"))
         .as_integer()
         .ok()
         .filter(|width| *width >= 0)
         .unwrap_or(0) as usize;
     let width = needed.max(explicit);
-    let tick = |name: &str| {
+    let tick = |name: crate::lisp::types::symbols::SymbolKey| {
         interp
-            .lookup_var(name, &crate::lisp::types::Env::new())
+            .lookup_var_key(name, &crate::lisp::types::Env::new())
             .and_then(|value| value.integer_value())
             .unwrap_or(0)
     };
@@ -4003,8 +4005,8 @@ pub(crate) fn window_line_number_layout(
         current_absolute,
         offset,
         widen,
-        major_tick: tick("display-line-numbers-major-tick"),
-        minor_tick: tick("display-line-numbers-minor-tick"),
+        major_tick: tick(cached_symbol!("display-line-numbers-major-tick")),
+        minor_tick: tick(cached_symbol!("display-line-numbers-minor-tick")),
     })
 }
 
@@ -4211,10 +4213,14 @@ pub(crate) fn prin1_to_string_buffer(
             let previous = interp.current_buffer_id();
             interp.set_current_buffer_id(id)?;
             let made = (|| -> Result<(), LispError> {
-                interp.set_variable("default-directory", Value::Nil, env);
+                interp.set_variable_key(cached_symbol!("default-directory"), Value::Nil, env);
                 let fontify = Value::symbol("buffer-access-fontify-functions");
                 super::call(interp, "make-local-variable", &[fontify], env)?;
-                interp.set_variable("buffer-access-fontify-functions", Value::Nil, env);
+                interp.set_variable_key(
+                    cached_symbol!("buffer-access-fontify-functions"),
+                    Value::Nil,
+                    env,
+                );
                 Ok(())
             })();
             interp.set_current_buffer_id(previous)?;
@@ -4780,10 +4786,10 @@ define_dispatch!(
                             .truncate(state.kbd_macro_committed_len);
                     }
                     let last_macro = Value::vector(interp.kbd_macro_definition.iter().cloned());
-                    interp.set_variable("last-kbd-macro", last_macro, env);
+                    interp.set_variable_key(cached_symbol!("last-kbd-macro"), last_macro, env);
                 }
-                interp.set_variable("unread-command-events", Value::Nil, env);
-                interp.set_variable("defining-kbd-macro", Value::Nil, env);
+                interp.set_variable_key(cached_symbol!("unread-command-events"), Value::Nil, env);
+                interp.set_variable_key(cached_symbol!("defining-kbd-macro"), Value::Nil, env);
                 crate::lisp::primitives::discard_tty_input();
                 Ok(Value::Nil)
             }
@@ -6677,7 +6683,10 @@ define_dispatch!(
                     // GNU Elisp's `add-hook' LOCAL registration lives in
                     // the buffer-local value cell.
                     let local_hooks = interp
-                        .buffer_local_value(buffer_id, "window-configuration-change-hook")
+                        .buffer_local_value_key(
+                            buffer_id,
+                            cached_symbol!("window-configuration-change-hook"),
+                        )
                         .map(|value| value.to_vec().unwrap_or_else(|_| vec![value]));
                     let Some(local_hooks) = local_hooks else {
                         continue;
@@ -6710,7 +6719,7 @@ define_dispatch!(
                 }
                 if result.is_ok() {
                     let default_hooks = interp
-                        .default_value("window-configuration-change-hook")
+                        .default_value_key(cached_symbol!("window-configuration-change-hook"))
                         .map(|value| value.to_vec().unwrap_or_else(|_| vec![value]))
                         .unwrap_or_default();
                     for hook in default_hooks
@@ -6830,7 +6839,7 @@ define_dispatch!(
                     }
                     set_window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT, Value::Nil)?;
                     if let Ok(record_window_buffer) =
-                        interp.lookup_function("record-window-buffer", env)
+                        interp.lookup_function_key(cached_symbol!("record-window-buffer"), env)
                     {
                         interp.call_function_value(
                             record_window_buffer,
@@ -7761,9 +7770,9 @@ mod tests {
                 Value::symbol("dont-clear-message"),
             ],
         );
-        interp.set_variable("clear-message-function", callback, &mut env);
-        interp.set_variable("inhibit-quit", Value::Nil, &mut env);
-        interp.set_variable("inhibit-redisplay", Value::Nil, &mut env);
+        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
+        interp.set_variable_key(cached_symbol!("inhibit-quit"), Value::Nil, &mut env);
+        interp.set_variable_key(cached_symbol!("inhibit-redisplay"), Value::Nil, &mut env);
         set_echo_area_message(Some("preserved".into()));
         let tick = echo_area_message_tick();
         clear_message(&mut interp, &mut env, true, true).expect("run preserving callback");
@@ -7798,13 +7807,17 @@ mod tests {
             &[192, 135],
             vec![Value::symbol("dont-clear-message")],
         );
-        interp.set_variable("clear-message-function", callback, &mut env);
+        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
         for gc_inhibited in [true, false] {
             set_echo_area_message(Some("must clear".into()));
             if gc_inhibited {
                 interp.inhibit_garbage_collection();
             } else {
-                interp.set_variable("inhibit-eval-during-redisplay", Value::T, &mut env);
+                interp.set_variable_key(
+                    cached_symbol!("inhibit-eval-during-redisplay"),
+                    Value::T,
+                    &mut env,
+                );
             }
             let result = clear_message(&mut interp, &mut env, true, true);
             if gc_inhibited {
@@ -7813,8 +7826,16 @@ mod tests {
             result.expect("inhibited callbacks do not preserve the message");
             assert!(echo_area_message().is_none());
         }
-        interp.set_variable("inhibit-eval-during-redisplay", Value::Nil, &mut env);
-        interp.set_variable("clear-message-function", Value::Integer(42), &mut env);
+        interp.set_variable_key(
+            cached_symbol!("inhibit-eval-during-redisplay"),
+            Value::Nil,
+            &mut env,
+        );
+        interp.set_variable_key(
+            cached_symbol!("clear-message-function"),
+            Value::Integer(42),
+            &mut env,
+        );
         set_echo_area_message(Some("nonfunction".into()));
         clear_message(&mut interp, &mut env, true, true).expect("FUNCTIONP rejects nonfunctions");
         assert!(echo_area_message().is_none());
@@ -7840,9 +7861,13 @@ mod tests {
             &mut env,
         )
         .expect("install a test-owned bytecode callback");
-        interp.set_variable("clear-message-function", Value::symbol("ignore"), &mut env);
-        interp.set_variable("inhibit-quit", Value::Nil, &mut env);
-        interp.set_variable("inhibit-redisplay", Value::Nil, &mut env);
+        interp.set_variable_key(
+            cached_symbol!("clear-message-function"),
+            Value::symbol("ignore"),
+            &mut env,
+        );
+        interp.set_variable_key(cached_symbol!("inhibit-quit"), Value::Nil, &mut env);
+        interp.set_variable_key(cached_symbol!("inhibit-redisplay"), Value::Nil, &mut env);
         set_echo_area_message(Some("old message".into()));
         let tick = echo_area_message_tick();
         clear_message(&mut interp, &mut env, true, true).expect("callback signal is caught");
@@ -7878,9 +7903,9 @@ mod tests {
             &[192, 193, 194, 34, 135],
             vec![Value::symbol("throw"), tag, Value::Integer(7)],
         );
-        interp.set_variable("clear-message-function", callback, &mut env);
-        interp.set_variable("inhibit-quit", Value::Nil, &mut env);
-        interp.set_variable("inhibit-redisplay", Value::Nil, &mut env);
+        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
+        interp.set_variable_key(cached_symbol!("inhibit-quit"), Value::Nil, &mut env);
+        interp.set_variable_key(cached_symbol!("inhibit-redisplay"), Value::Nil, &mut env);
         set_echo_area_message(Some("not reached".into()));
         interp.push_active_catch_tag(tag);
         let result = clear_message(&mut interp, &mut env, true, true);
@@ -7918,7 +7943,7 @@ mod tests {
                 Value::symbol("current-local-map"),
             ],
         );
-        interp.set_variable("clear-message-function", callback, &mut env);
+        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
         let map = super::super::call(&mut interp, "make-sparse-keymap", &[], &mut env)
             .expect("allocate the minibuffer keymap");
         let active = crate::lisp::primitives::activate_minibuffer(
@@ -7960,7 +7985,7 @@ mod tests {
             &[192, 193, 194, 34, 135],
             vec![Value::symbol("throw"), tag, Value::Integer(7)],
         );
-        interp.set_variable("clear-message-function", callback, &mut env);
+        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
         interp.push_active_catch_tag(tag);
         let result = crate::lisp::primitives::activate_minibuffer(
             &mut interp,
@@ -7995,7 +8020,7 @@ mod tests {
             &[192, 135],
             vec![Value::symbol("dont-clear-message")],
         );
-        interp.set_variable("clear-message-function", callback, &mut env);
+        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
         crate::lisp::eval::Interpreter::push_bindings(
             &mut env,
             vec![

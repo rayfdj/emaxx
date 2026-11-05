@@ -295,7 +295,7 @@ pub(crate) fn set_window_point_insertion_type(
 /// `window-point-insertion-type' as BUFFER_ID sees it.
 pub(crate) fn window_point_insertion_type(interp: &Interpreter, buffer_id: u64) -> bool {
     interp
-        .buffer_local_value(buffer_id, "window-point-insertion-type")
+        .buffer_local_value_key(buffer_id, cached_symbol!("window-point-insertion-type"))
         .or_else(|| interp.global_binding_value("window-point-insertion-type"))
         .is_some_and(|value| value.is_truthy())
 }

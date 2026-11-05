@@ -61,7 +61,7 @@ fn single_display_spec(spec: &Value) -> Option<DisplaySpec> {
     }
     let (head, tail) = spec.cons_values()?;
     if let Some((margin, _)) = head.cons_values()
-        && margin.symbol_str() == Some("margin")
+        && margin.is_key(cached_symbol!("margin"))
     {
         let value = tail.cons_values().map_or(Value::Nil, |(value, _)| value);
         return Some(string_spec(&value, false).unwrap_or(DisplaySpec::Other));
@@ -82,7 +82,7 @@ fn single_display_spec(spec: &Value) -> Option<DisplaySpec> {
 fn display_spec(value: Value) -> DisplaySpec {
     let mut spec = value;
     if let Some((head, tail)) = spec.cons_values()
-        && head.symbol_str() == Some("disable-eval")
+        && head.is_key(cached_symbol!("disable-eval"))
     {
         spec = tail.cons_values().map_or(Value::Nil, |(inner, _)| inner);
     }
@@ -99,7 +99,7 @@ fn display_spec(value: Value) -> DisplaySpec {
             )
             && !head
                 .cons_values()
-                .is_some_and(|(margin, _)| margin.symbol_str() == Some("margin"))
+                .is_some_and(|(margin, _)| margin.is_key(cached_symbol!("margin")))
     });
     let specs = if list_of_specs {
         let mut items = Vec::new();

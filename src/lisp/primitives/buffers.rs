@@ -1339,7 +1339,7 @@ fn check_display_width(
     };
     let mut plist = Value::Nil;
     let width = match value.cons_values() {
-        Some((head, tail)) if head.symbol_str() == Some("space") => {
+        Some((head, tail)) if head.is_key(cached_symbol!("space")) => {
             plist = tail;
             let col = col as i64;
             let align_to_max = col.saturating_add(INT_MAX);

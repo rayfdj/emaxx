@@ -578,7 +578,7 @@ pub(crate) fn pre_write_convert(
             .unwrap_or(Ok(())),
         _ => Ok(()),
     };
-    interp.set_variable("deactivate-mark", old_deactivate_mark, env);
+    interp.set_variable_key(cached_symbol!("deactivate-mark"), old_deactivate_mark, env);
     let restored = code_conversion_restore(interp, work, env);
     let (converted, _) = converted?;
     killed?;
@@ -670,7 +670,7 @@ pub(crate) fn decode_into_work_buffer(
             extended_chars: buffer.substring_extended_chars(begv, zv),
         })
     })();
-    interp.set_variable("deactivate-mark", old_deactivate_mark, env);
+    interp.set_variable_key(cached_symbol!("deactivate-mark"), old_deactivate_mark, env);
     let restored = code_conversion_restore(interp, work, env);
     let result = result?;
     restored?;
@@ -3518,13 +3518,13 @@ pub(crate) fn find_operation_coding_system_value(
         target = file;
     }
     let alist_name = if insert || operation_name.is_named("write-region") {
-        "file-coding-system-alist"
+        cached_symbol!("file-coding-system-alist")
     } else if network {
-        "network-coding-system-alist"
+        cached_symbol!("network-coding-system-alist")
     } else {
-        "process-coding-system-alist"
+        cached_symbol!("process-coding-system-alist")
     };
-    let mut chain = interp.lookup_var(alist_name, env).unwrap_or(Value::Nil);
+    let mut chain = interp.lookup_var_key(alist_name, env).unwrap_or(Value::Nil);
     while let Some((elt, rest)) = chain.cons_values() {
         chain = rest;
         let Some((key, val)) = elt.cons_values() else {

@@ -416,7 +416,7 @@ fn validate_predicate(
     if predicate.is_cons() {
         let car = predicate.car()?;
         let cdr = predicate.cdr()?;
-        if car.symbol_str() == Some("not") {
+        if car.is_key(cached_symbol!("not")) {
             let values = cdr.to_vec()?;
             if values.len() != 1 {
                 return Err(predicate_signal(
@@ -427,7 +427,7 @@ fn validate_predicate(
             }
             return validate_predicate(interp, &values[0], language, env, depth + 1);
         }
-        if car.symbol_str() == Some("or") {
+        if car.is_key(cached_symbol!("or")) {
             let values = cdr.to_vec()?;
             if values.is_empty() {
                 return Err(predicate_signal(
@@ -502,7 +502,7 @@ fn node_matches(
     }
     let car = predicate.car()?;
     let cdr = predicate.cdr()?;
-    if car.symbol_str() == Some("not") {
+    if car.is_key(cached_symbol!("not")) {
         return Ok(!node_matches(
             interp,
             source,
@@ -513,7 +513,7 @@ fn node_matches(
             env,
         )?);
     }
-    if car.symbol_str() == Some("or") {
+    if car.is_key(cached_symbol!("or")) {
         for option in cdr.to_vec()? {
             if node_matches(interp, source, tree, index, &option, language, env)? {
                 return Ok(true);

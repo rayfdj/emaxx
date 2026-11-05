@@ -198,7 +198,7 @@ impl Interpreter {
                 if let Kind::Cons(entry) = first.kind()
                     && entry.car.get() == Value::Integer(0)
                 {
-                    interp.set_global_binding("features", entry.cdr.get());
+                    interp.set_global_binding_key(cached_symbol!("features"), entry.cdr.get());
                 } else {
                     let history = crate::lisp::primitives::call(
                         interp,
@@ -1004,7 +1004,7 @@ impl Interpreter {
     /// minibuffer it reuses (whose overlays it deletes first).
     pub(crate) fn reset_buffer(&mut self, buffer_id: u64) {
         let directory = self
-            .buffer_local_value(self.current_buffer_id, "default-directory")
+            .buffer_local_value_key(self.current_buffer_id, cached_symbol!("default-directory"))
             .unwrap_or(Value::Nil);
         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
             buffer.file = None;
@@ -1037,7 +1037,7 @@ impl Interpreter {
     /// becomes the current time.
     pub(crate) fn stamp_buffer_display(&mut self, buffer_id: u64) {
         let count = self
-            .buffer_local_value(buffer_id, "buffer-display-count")
+            .buffer_local_value_key(buffer_id, cached_symbol!("buffer-display-count"))
             .unwrap_or(Value::Nil);
         let count = match count.kind() {
             Kind::Integer(count) => Some(primitives::normalize_bigint_value(
@@ -1049,10 +1049,14 @@ impl Interpreter {
             _ => None,
         };
         if let Some(count) = count {
-            self.set_buffer_local_value(buffer_id, "buffer-display-count", count);
+            self.set_buffer_local_value_key(
+                buffer_id,
+                cached_symbol!("buffer-display-count"),
+                count,
+            );
         }
         if let Ok(now) = primitives::lisp_current_time(self) {
-            self.set_buffer_local_value(buffer_id, "buffer-display-time", now);
+            self.set_buffer_local_value_key(buffer_id, cached_symbol!("buffer-display-time"), now);
         }
     }
 
@@ -1735,10 +1739,10 @@ impl Interpreter {
                     if restore_killed_function {
                         let entry = kept(self, false);
                         kept_windows.push(entry);
-                    } else if restore_killed.symbol_str() == Some("delete")
+                    } else if restore_killed.is_key(cached_symbol!("delete"))
                         || (!dedicated.is_nil()
                             && (restore_killed.is_nil()
-                                || restore_killed.symbol_str() == Some("dedicated")))
+                                || restore_killed.is_key(cached_symbol!("dedicated"))))
                     {
                         dead_windows.push(*window);
                     }
@@ -1955,7 +1959,9 @@ impl Interpreter {
             return Ok(*id);
         }
         let mut env = crate::lisp::types::Env::new();
-        if let Ok(create) = self.lookup_function("get-scratch-buffer-create", &env) {
+        if let Ok(create) =
+            self.lookup_function_key(cached_symbol!("get-scratch-buffer-create"), &env)
+        {
             let scratch = self.safe_funcall(create, &[], &mut env)?;
             if let Kind::Buffer(scratch) = scratch.kind()
                 && let Some(id) = self.live_buffer_id(scratch)
@@ -2002,7 +2008,7 @@ impl Interpreter {
         }
         // A *scratch* made to replace the last buffer inherits its directory.
         let directory = self
-            .buffer_local_value(id, "default-directory")
+            .buffer_local_value_key(id, cached_symbol!("default-directory"))
             .unwrap_or(Value::Nil);
         // The always-local slots the bindings hold, and the mark's state,
         // as Fkill_buffer leaves them for a killed buffer's readers.
@@ -2724,7 +2730,7 @@ impl Interpreter {
             );
         }
         if crate::lisp::primitives::call(self, "memq", &[symbol, features], env)?.is_nil() {
-            self.set_global_binding("features", Value::cons(symbol, features));
+            self.set_global_binding_key(cached_symbol!("features"), Value::cons(symbol, features));
         }
         Ok(())
     }
@@ -2738,7 +2744,10 @@ impl Interpreter {
         let entry = Value::cons(Value::symbol("provide"), Value::Symbol(feature));
         // GNU LOADHIST_ATTACH conses onto the front: the source file name
         // stays the LAST element (`macroexp-file-name' reads it there).
-        self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
+        self.set_global_binding_key(
+            cached_symbol!("current-load-list"),
+            Value::cons(entry, current_load_list),
+        );
     }
 
     fn record_require_in_load_history(&mut self, feature: SymbolName) {
@@ -2895,7 +2904,7 @@ impl Interpreter {
             Err(_) => true,
         });
         history.insert(0, Value::list(entry));
-        self.set_global_binding("load-history", Value::list(history));
+        self.set_global_binding_key(cached_symbol!("load-history"), Value::list(history));
     }
 
     /// fns.c:Fprovide of FEATURE with SUBFEATURES (a list).
@@ -3448,7 +3457,7 @@ mod runtime_index_tests {
         let mut interp = Interpreter::new();
         interp.set_buffer_local_value(41, "first", Value::Integer(1));
         interp.set_buffer_local_value(42, "first", Value::Integer(20));
-        interp.set_buffer_local_value(41, "second", Value::Integer(2));
+        interp.set_buffer_local_value_key(41, cached_symbol!("second"), Value::Integer(2));
         interp.set_buffer_local_value(41, "first", Value::Integer(10));
 
         assert_eq!(

@@ -192,9 +192,9 @@ fn dsafe_eval(interp: &mut Interpreter, env: &mut Env, sexpr: Value) -> Result<V
 
 /// A buffer-local C variable as redisplay reads it (BVAR, or the
 /// variable's value in the current buffer).
-fn bvar(interp: &Interpreter, name: &str) -> Value {
+fn bvar(interp: &Interpreter, name: crate::lisp::types::symbols::SymbolKey) -> Value {
     interp
-        .lookup_var(name, &crate::lisp::types::Env::new())
+        .lookup_var_key(name, &crate::lisp::types::Env::new())
         .unwrap_or(Value::Nil)
 }
 
@@ -581,7 +581,7 @@ impl<'a> ModeLine<'a> {
                 }
                 let prec = precision - n;
                 if c == 'M' {
-                    let global = bvar(interp, "global-mode-string");
+                    let global = bvar(interp, cached_symbol!("global-mode-string"));
                     n += self.display_mode_element(
                         interp, env, depth, field, prec, global, props, risky,
                     )?;
@@ -1204,7 +1204,7 @@ impl ModeLine<'_> {
         let width = field_width.min(message_buf_size);
         let text = |s: &str| (s.chars().collect::<Vec<char>>(), None);
         let modified = interp.buffer.borrow().is_modified();
-        let read_only = bvar(interp, "buffer-read-only").is_truthy();
+        let read_only = bvar(interp, cached_symbol!("buffer-read-only")).is_truthy();
         let obj = match c {
             '*' => {
                 return Ok(text(if read_only {
@@ -1257,11 +1257,13 @@ impl ModeLine<'_> {
                 return Ok(text(&pint2str(width, shown)));
             }
             'e' => {
-                return Ok(text(if bvar(interp, "memory-full").is_nil() {
-                    ""
-                } else {
-                    "!MEM FULL! "
-                }));
+                return Ok(text(
+                    if bvar(interp, cached_symbol!("memory-full")).is_nil() {
+                        ""
+                    } else {
+                        "!MEM FULL! "
+                    },
+                ));
             }
             'F' => {
                 // The frame's title, else its name (a terminal frame's).
@@ -1283,7 +1285,7 @@ impl ModeLine<'_> {
                 };
                 return Ok(text(&string_text(&name).unwrap_or_default()));
             }
-            'f' => bvar(interp, "buffer-file-name"),
+            'f' => bvar(interp, cached_symbol!("buffer-file-name")),
             'i' | 'I' => {
                 let size = {
                     let buffer = interp.buffer.borrow();
@@ -1296,7 +1298,7 @@ impl ModeLine<'_> {
                 }));
             }
             'l' => return Ok(text(&self.line_number_spec(interp, width))),
-            'm' => bvar(interp, "mode-name"),
+            'm' => bvar(interp, cached_symbol!("mode-name")),
             'n' => {
                 let buffer = interp.buffer.borrow();
                 if buffer.point_min() > 1 || buffer.point_max() < buffer.size_total() + 1 {
@@ -1315,7 +1317,7 @@ impl ModeLine<'_> {
                 primitive(interp, env, "symbol-name", &[status])?
             }
             '@' => {
-                let directory = bvar(interp, "default-directory");
+                let directory = bvar(interp, cached_symbol!("default-directory"));
                 let remote = if directory.is_string() {
                     redisplay_safe_call(interp, Value::symbol("file-remote-p"), &[directory], env)?
                 } else {
@@ -1331,7 +1333,7 @@ impl ModeLine<'_> {
                     let coding = primitive(interp, env, source, &[]).unwrap_or(Value::Nil);
                     decode_mode_spec_coding(interp, &coding, &mut buf, false);
                 }
-                let coding = bvar(interp, "buffer-file-coding-system");
+                let coding = bvar(interp, cached_symbol!("buffer-file-coding-system"));
                 decode_mode_spec_coding(interp, &coding, &mut buf, c == 'Z');
                 return Ok(text(&buf));
             }
@@ -1397,13 +1399,14 @@ impl ModeLine<'_> {
         if base.pos == -1 {
             return no_value();
         }
-        if let Some(limit) = bvar(interp, "line-number-display-limit").integer_value()
+        if let Some(limit) =
+            bvar(interp, cached_symbol!("line-number-display-limit")).integer_value()
             && (zv - begv) as i64 > limit
         {
             return no_value();
         }
         let selective = {
-            let value = bvar(interp, "selective-display");
+            let value = bvar(interp, cached_symbol!("selective-display"));
             !value.is_nil() && value.integer_value().is_none()
         };
         let (mut line, linepos) =
@@ -1421,7 +1424,7 @@ impl ModeLine<'_> {
             base.number = topline;
             base.pos = begv as i64;
         } else if nlines < height + 25 || nlines > height * 3 + 50 || linepos == begv {
-            let limit_width = bvar(interp, "line-number-display-limit-width")
+            let limit_width = bvar(interp, cached_symbol!("line-number-display-limit-width"))
                 .integer_value()
                 .unwrap_or(200);
             let distance = if limit_width < 0 {
@@ -1606,17 +1609,12 @@ fn decode_mode_spec_coding(
         .symbol_cell()
         .and_then(|symbol| interp.coding_spec_index_symbol(&symbol))
         .map(|spec| &interp.coding_specs[spec])
-        .map(|spec| {
-            (
-                interp.coding_attrs[spec.attrs].mnemonic,
-                spec.eol_type.symbol_str().map(str::to_string),
-            )
-        });
+        .map(|spec| (interp.coding_attrs[spec.attrs].mnemonic, spec.eol_type));
     let eoltype = match spec {
         // Not yet decided.
         None => {
             buf.push(if multibyte { '-' } else { ' ' });
-            bvar(interp, "eol-mnemonic-undecided")
+            bvar(interp, cached_symbol!("eol-mnemonic-undecided"))
         }
         Some((mnemonic, eol_value)) => {
             buf.push(if multibyte {
@@ -1626,12 +1624,15 @@ fn decode_mode_spec_coding(
             });
             bvar(
                 interp,
-                match eol_value.as_deref() {
-                    Some("unix") => "eol-mnemonic-unix",
-                    Some("dos") => "eol-mnemonic-dos",
-                    Some("mac") => "eol-mnemonic-mac",
+                if eol_value.is_key(cached_symbol!("unix")) {
+                    cached_symbol!("eol-mnemonic-unix")
+                } else if eol_value.is_key(cached_symbol!("dos")) {
+                    cached_symbol!("eol-mnemonic-dos")
+                } else if eol_value.is_key(cached_symbol!("mac")) {
+                    cached_symbol!("eol-mnemonic-mac")
+                } else {
                     // A vector of subsidiaries: not yet decided.
-                    _ => "eol-mnemonic-undecided",
+                    cached_symbol!("eol-mnemonic-undecided")
                 },
             )
         }
@@ -1847,13 +1848,13 @@ pub(super) fn display_mode_line(
     compact: bool,
     cells: &dyn ModeLineCells,
 ) -> Result<(String, FaceSpans), LispError> {
-    let tab_width = match bvar(interp, "tab-width").kind() {
+    let tab_width = match bvar(interp, cached_symbol!("tab-width")).kind() {
         Kind::Integer(width) if (1..=1000).contains(&width) => width as usize,
         _ => 8,
     };
     let invisibility = crate::lisp::primitives::invisibility::invisibility_spec_of(bvar(
         interp,
-        "buffer-invisibility-spec",
+        cached_symbol!("buffer-invisibility-spec"),
     ));
     let mut ml = ModeLine::new(Target::Display, window_id);
     ml.row = Some(Row {
@@ -1872,7 +1873,7 @@ pub(super) fn display_mode_line(
     // record_unwind_save_match_data.
     let match_data = primitive(interp, env, "match-data", &[])?;
     let result = (|| -> Result<(), LispError> {
-        let compact_value = bvar(interp, "mode-line-compact");
+        let compact_value = bvar(interp, cached_symbol!("mode-line-compact"));
         if !compact || compact_value.is_nil() {
             ml.display_mode_element(interp, env, 0, 0, 0, format, Value::Nil, false)?;
             return Ok(());

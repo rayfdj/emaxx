@@ -546,7 +546,7 @@ fn encode_process_input_with(
         *encoder = EncoderSpec::default();
         encoder.coding = Some(Value::symbol(&raw_text));
     }
-    interp.set_variable("last-coding-system-used", last_used, env);
+    interp.set_variable_key(cached_symbol!("last-coding-system-used"), last_used, env);
     send_process_bytes(interp, text, encoder, env)
 }
 
@@ -2009,10 +2009,8 @@ pub(crate) fn process_buffer_target(
     if matches!(value.kind(), Kind::Buffer(_)) {
         return Ok(Some(interp.resolve_buffer_id(value)?));
     }
-    Err(LispError::TypeError(
-        "buffer-or-name".into(),
-        value.type_name(),
-    ))
+    // Fget_buffer_create's CHECK_STRING of what is no buffer.
+    Err(wrong_type_argument("stringp", *value))
 }
 
 pub(crate) fn process_command_parts(value: &Value) -> Result<(String, Vec<String>), LispError> {
@@ -2064,7 +2062,7 @@ pub(crate) fn connection_coding_systems(
 ) -> Result<(Value, Value), LispError> {
     let buffer_unibyte = match buffer.kind() {
         Kind::Nil => interp
-            .default_value("enable-multibyte-characters")
+            .default_value_key(cached_symbol!("enable-multibyte-characters"))
             .is_some_and(|value| value.is_nil()),
         _ => interp
             .resolve_buffer_id(&buffer)
@@ -2554,11 +2552,15 @@ fn insert_with_read_only_cleared(
         .symbol_value_key(cached_symbol!("buffer-read-only"))
         .unwrap_or(Value::Nil);
     if !read_only.is_nil() {
-        interp.set_buffer_local_value(buffer_id, "buffer-read-only", Value::Nil);
+        interp.set_buffer_local_value_key(
+            buffer_id,
+            cached_symbol!("buffer-read-only"),
+            Value::Nil,
+        );
     }
     let result = interp.with_lisp_stack_roots(&read_only, |interp| body(interp, env));
     if !read_only.is_nil() && interp.has_buffer_id(buffer_id) {
-        interp.set_buffer_local_value(buffer_id, "buffer-read-only", read_only);
+        interp.set_buffer_local_value_key(buffer_id, cached_symbol!("buffer-read-only"), read_only);
     }
     result
 }
@@ -2797,10 +2799,8 @@ pub(crate) fn append_process_bytes_to_buffer(
         Kind::Buffer(_) => interp.resolve_buffer_id(destination)?,
         value => {
             let Some(name) = string_like(&value.value()) else {
-                return Err(LispError::TypeError(
-                    "buffer-or-name".into(),
-                    destination.type_name(),
-                ));
+                // Fget_buffer_create's CHECK_STRING.
+                return Err(wrong_type_argument("stringp", *destination));
             };
             interp
                 .find_buffer(&name.text)
@@ -2847,8 +2847,8 @@ pub(crate) fn append_process_bytes_to_buffer(
     };
     let result = insert_process_output(interp, bytes, &coding, multibyte, env);
     let result = result.map(|coding_used| {
-        interp.set_variable(
-            "last-coding-system-used",
+        interp.set_variable_key(
+            cached_symbol!("last-coding-system-used"),
             Value::Symbol(coding_used.into()),
             env,
         );
@@ -3004,9 +3004,9 @@ fn decode_process_bytes_at_point(
         let undo_list = interp
             .lookup_var_key(cached_symbol!("buffer-undo-list"), env)
             .unwrap_or(Value::Nil);
-        interp.set_variable("buffer-undo-list", Value::T, env);
+        interp.set_variable_key(cached_symbol!("buffer-undo-list"), Value::T, env);
         let result = interp.safe_funcall(function, &[Value::Integer(produced as i64)], env);
-        interp.set_variable("buffer-undo-list", undo_list, env);
+        interp.set_variable_key(cached_symbol!("buffer-undo-list"), undo_list, env);
         let value = result?;
         if value.integer_value().is_none_or(|count| count < 0) {
             return Err(LispError::WrongTypeArgument("wholenump".into(), value));
@@ -3061,7 +3061,11 @@ fn decode_process_output(
     } = decoded?;
     let text = decoded_string_value(interp, decoded, !for_unibyte, env)?;
     let settled_value = Value::symbol(&settled);
-    interp.set_variable("last-coding-system-used", settled_value, env);
+    interp.set_variable_key(
+        cached_symbol!("last-coding-system-used"),
+        settled_value,
+        env,
+    );
     if decoding != settled_value {
         let encoding = if encoding.is_nil() && interp.process_is_live(process_id) {
             super::file_io::inherit_write_coding_eol(interp, settled_value, Value::Nil)?

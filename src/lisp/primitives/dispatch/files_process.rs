@@ -3031,7 +3031,10 @@ define_dispatch!(
                     }
                     if modified {
                         let auto_save_path = interp
-                            .buffer_local_value(id, "buffer-auto-save-file-name")
+                            .buffer_local_value_key(
+                                id,
+                                cached_symbol!("buffer-auto-save-file-name"),
+                            )
                             .as_ref()
                             .and_then(|value| string_text(value).ok());
                         let visited_path = interp
@@ -4554,7 +4557,7 @@ pub(crate) fn file_attributes(
     if metadata.file_type().is_symlink() && file_type.is_nil() {
         return Ok(Value::Nil);
     }
-    let names = !(id_format.is_nil() || id_format.symbol_str() == Some("integer"));
+    let names = !(id_format.is_nil() || id_format.is_key(cached_symbol!("integer")));
     let uid = metadata.uid();
     let gid = metadata.gid();
     let user = match names.then(|| user_name_from_uid(uid)).flatten() {

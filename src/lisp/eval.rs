@@ -7388,7 +7388,7 @@ impl Interpreter {
         let minibuffer_local_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
         interp.define_special_variable("minibuffer-local-map", minibuffer_local_map);
         let input_decode_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
-        interp.set_global_binding("input-decode-map", input_decode_map);
+        interp.set_global_binding_key(cached_symbol!("input-decode-map"), input_decode_map);
         // keyboard.c creates these identity-bearing translation/event maps
         // before bindings.el is dumped.  Keep the native map family together
         // so loading the owning Lisp bindings never depends on ad-hoc nil
@@ -7452,13 +7452,16 @@ impl Interpreter {
         }
         // keymap.c: DEFVAR_LISP's nil.  subr.el and simple.el's
         // `define-minor-mode' forms fill this and `minor-mode-list'.
-        interp.set_global_binding("minor-mode-map-alist", Value::Nil);
+        interp.set_global_binding_key(cached_symbol!("minor-mode-map-alist"), Value::Nil);
         interp.define_per_buffer_special("font-lock-mode", Value::Nil);
         interp.define_per_buffer_special("font-lock-fontified", Value::Nil);
         // buffer_defaults' slots (every buffer has its own; see
         // `reset_always_local_slots').
-        interp.set_global_binding("major-mode", Value::Symbol("fundamental-mode".into()));
-        interp.set_global_binding("mode-name", Value::Nil);
+        interp.set_global_binding_key(
+            cached_symbol!("major-mode"),
+            Value::Symbol("fundamental-mode".into()),
+        );
+        interp.set_global_binding_key(cached_symbol!("mode-name"), Value::Nil);
         // buffer.c:4794 seeds the C default as the string "%-", with the
         // comment "real setup is done in bindings.el"; that preloaded file
         // installs the real spec and its `standard-value'.  Transcribing
@@ -7475,7 +7478,10 @@ impl Interpreter {
         // pre-seeded keymaps did.
         let glyphless_char_display =
             interp.make_char_table(Some("glyphless-char-display".into()), Value::Nil);
-        interp.set_global_binding("glyphless-char-display", glyphless_char_display);
+        interp.set_global_binding_key(
+            cached_symbol!("glyphless-char-display"),
+            glyphless_char_display,
+        );
         let char_script_table =
             interp.make_char_table(Some("char-script-table".into()), Value::Nil);
         interp.define_special_variable("char-script-table", char_script_table);
@@ -7770,9 +7776,9 @@ impl Interpreter {
         // callint.c DEFVAR_KBOARD/DEFVAR_LISP variables.  Command helpers
         // dynamically bind these around calls into separately defined
         // functions, so lexical code must still observe the active prefix.
-        interp.set_global_binding("prefix-arg", Value::Nil);
-        interp.set_global_binding("last-prefix-arg", Value::Nil);
-        interp.set_global_binding("current-prefix-arg", Value::Nil);
+        interp.set_global_binding_key(cached_symbol!("prefix-arg"), Value::Nil);
+        interp.set_global_binding_key(cached_symbol!("last-prefix-arg"), Value::Nil);
+        interp.set_global_binding_key(cached_symbol!("current-prefix-arg"), Value::Nil);
         // keyboard.c exposes command-loop state through DEFVAR_LISP and
         // DEFVAR_KBOARD.  Those C definitions are special declarations just
         // like Lisp `defvar': a lexical `let' around a call must be visible

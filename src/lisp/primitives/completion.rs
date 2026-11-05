@@ -1583,32 +1583,32 @@ fn activate_completing_read_minibuffer(
     };
     let require_match = args.get(3).is_some_and(Value::is_truthy);
     let map_name = if require_match {
-        "minibuffer-local-must-match-map"
+        cached_symbol!("minibuffer-local-must-match-map")
     } else {
-        "minibuffer-local-completion-map"
+        cached_symbol!("minibuffer-local-completion-map")
     };
-    let local_map = interp.lookup_var(map_name, env).unwrap_or(Value::Nil);
+    let local_map = interp.lookup_var_key(map_name, env).unwrap_or(Value::Nil);
     let active = activate_minibuffer(interp, prompt, &initial_input, local_map, env)?;
     let buffer_id = active.buffer_id;
 
-    interp.set_buffer_local_value(
+    interp.set_buffer_local_value_key(
         buffer_id,
-        "minibuffer-completion-table",
+        cached_symbol!("minibuffer-completion-table"),
         args.get(1).cloned().unwrap_or(Value::Nil),
     );
-    interp.set_buffer_local_value(
+    interp.set_buffer_local_value_key(
         buffer_id,
-        "minibuffer-completion-predicate",
+        cached_symbol!("minibuffer-completion-predicate"),
         args.get(2).cloned().unwrap_or(Value::Nil),
     );
-    interp.set_buffer_local_value(
+    interp.set_buffer_local_value_key(
         buffer_id,
-        "minibuffer--require-match",
+        cached_symbol!("minibuffer--require-match"),
         args.get(3).cloned().unwrap_or(Value::Nil),
     );
-    interp.set_buffer_local_value(
+    interp.set_buffer_local_value_key(
         buffer_id,
-        "minibuffer-default",
+        cached_symbol!("minibuffer-default"),
         args.get(6).cloned().unwrap_or(Value::Nil),
     );
     Ok(active)
@@ -1671,7 +1671,7 @@ pub(crate) fn activate_minibuffer(
         .and_then(|id| interp.buffer_identity_value(id))
         && this_minibuffer_depth(interp, &shown) != 0
         && interp
-            .lookup_function("push-window-buffer-onto-prev", env)
+            .lookup_function_key(cached_symbol!("push-window-buffer-onto-prev"), env)
             .is_ok()
     {
         call_function_value(
@@ -1696,12 +1696,16 @@ pub(crate) fn activate_minibuffer(
     // kill-all-local-variables drops what the previous read left local.
     set_minibuffer_mode(interp, buffer_id, depth, env)?;
     if let Some(default_directory) = default_directory {
-        interp.set_buffer_local_value(buffer_id, "default-directory", default_directory);
+        interp.set_buffer_local_value_key(
+            buffer_id,
+            cached_symbol!("default-directory"),
+            default_directory,
+        );
     }
-    interp.set_buffer_local_value(buffer_id, "buffer-read-only", Value::Nil);
+    interp.set_buffer_local_value_key(buffer_id, cached_symbol!("buffer-read-only"), Value::Nil);
     // "Defeat (setq-default truncate-lines t), since truncated lines do
     // not work correctly in minibuffers."
-    interp.set_buffer_local_value(buffer_id, "truncate-lines", Value::Nil);
+    interp.set_buffer_local_value_key(buffer_id, cached_symbol!("truncate-lines"), Value::Nil);
     interp.set_current_buffer_id(buffer_id)?;
     // "Empty out the minibuffers of all frames, except those frames where
     // there is an active minibuffer": the level-0 one goes inactive.
@@ -2114,7 +2118,7 @@ fn read_minibuf_unwind(interp: &mut Interpreter, state: ActiveMinibuffer, env: &
     if expired {
         let _ = erase_expired_minibuffer(interp, env);
         if interp
-            .lookup_function("minibuffer-inactive-mode", env)
+            .lookup_function_key(cached_symbol!("minibuffer-inactive-mode"), env)
             .is_ok()
         {
             let _ = interp.call_function_value(
@@ -2191,7 +2195,7 @@ fn completing_read_contents(
     {
         if real_minibuffer_machinery_available(interp, env)
             && interp
-                .lookup_function("completing-read-default", env)
+                .lookup_function_key(cached_symbol!("completing-read-default"), env)
                 .is_ok()
         {
             return call_function_value(
@@ -2450,7 +2454,7 @@ fn apply_minibuffer_completion(
     // separate from their candidate strings, which cannot be
     // reconstructed from `all-completions' alone.
     if interp
-        .lookup_function("completion-try-completion", env)
+        .lookup_function_key(cached_symbol!("completion-try-completion"), env)
         .is_ok()
     {
         let result = call_function_value(
@@ -2579,7 +2583,10 @@ pub(crate) fn push_minibuffer_history(
     {
         return;
     }
-    if interp.lookup_function("add-to-history", env).is_ok() {
+    if interp
+        .lookup_function_key(cached_symbol!("add-to-history"), env)
+        .is_ok()
+    {
         let _ = interp.call_function_value(
             Value::Symbol("add-to-history".into()),
             Some("add-to-history"),
@@ -2630,7 +2637,9 @@ fn history_entries(interp: &Interpreter, env: &Env, variable: &str) -> Vec<Strin
 /// editing subset below, like a batch runtime without isearch.el leaves
 /// C-s unbound.
 fn real_minibuffer_machinery_available(interp: &mut Interpreter, env: &mut Env) -> bool {
-    interp.lookup_function("exit-minibuffer", env).is_ok()
+    interp
+        .lookup_function_key(cached_symbol!("exit-minibuffer"), env)
+        .is_ok()
         && interp
             .lookup_var_key(cached_symbol!("minibuffer-local-map"), env)
             .is_some_and(|map| crate::lisp::primitives::is_keymap_value(interp, &map))
@@ -2662,10 +2671,14 @@ pub(crate) fn interactive_minibuffer_command_loop(
         .ok()
         .and_then(|position| position.integer_value())
         .unwrap_or(0);
-    interp.set_buffer_local_value(buffer_id, "minibuffer-history-variable", history_variable);
-    interp.set_buffer_local_value(
+    interp.set_buffer_local_value_key(
         buffer_id,
-        "minibuffer-history-position",
+        cached_symbol!("minibuffer-history-variable"),
+        history_variable,
+    );
+    interp.set_buffer_local_value_key(
+        buffer_id,
+        cached_symbol!("minibuffer-history-position"),
         Value::Integer(history_position),
     );
     if let Some(variable) = history_variable_name(history_spec) {

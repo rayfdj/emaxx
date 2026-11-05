@@ -1132,8 +1132,8 @@ mod tests {
     #[test]
     fn loads_libgccjit_and_executes_a_smoke_test_function() {
         let before = crate::lisp::eval::Interpreter::new();
-        let initial = before.default_value("initial-environment");
-        let process = before.default_value("process-environment");
+        let initial = before.default_value_key(cached_symbol!("initial-environment"));
+        let process = before.default_value_key(cached_symbol!("process-environment"));
         let api = api().expect("the native compiler test host must provide libgccjit");
         // Every entry point the binding resolves exists from GCC 9 onward.
         assert!(api.version().0 >= 9, "libgccjit {:?}", api.version());
@@ -1168,16 +1168,34 @@ mod tests {
         // A real GCC compile may update host GCC_EXEC_PREFIX. Fresh Lisp
         // instances still start from the process's original environment.
         let mut after = crate::lisp::eval::Interpreter::new();
-        assert_eq!(after.default_value("initial-environment"), initial);
-        assert_eq!(after.default_value("process-environment"), process);
+        assert_eq!(
+            after.default_value_key(cached_symbol!("initial-environment")),
+            initial
+        );
+        assert_eq!(
+            after.default_value_key(cached_symbol!("process-environment")),
+            process
+        );
         // Restored sessions use the same initialization boundary. The
         // image's environment is replaced without rereading driver changes.
-        after.set_global_binding("initial-environment", crate::lisp::types::Value::Nil);
-        after.set_global_binding("process-environment", crate::lisp::types::Value::Nil);
+        after.set_global_binding_key(
+            cached_symbol!("initial-environment"),
+            crate::lisp::types::Value::Nil,
+        );
+        after.set_global_binding_key(
+            cached_symbol!("process-environment"),
+            crate::lisp::types::Value::Nil,
+        );
         after
             .init_after_pdump_load()
             .expect("initialize restored process");
-        assert_eq!(after.default_value("initial-environment"), initial);
-        assert_eq!(after.default_value("process-environment"), process);
+        assert_eq!(
+            after.default_value_key(cached_symbol!("initial-environment")),
+            initial
+        );
+        assert_eq!(
+            after.default_value_key(cached_symbol!("process-environment")),
+            process
+        );
     }
 }

@@ -477,7 +477,7 @@ fn comp_unit_relocations_match(
         let Ok(actual) = runtime.decode_relocation(word) else {
             return false;
         };
-        if actual.symbol_str() == Some("lambda-fixup") {
+        if actual.is_key(cached_symbol!("lambda-fixup")) {
             return false;
         }
         let native_function = matches!(actual.kind(), Kind::NativeFunction(_));
@@ -1649,7 +1649,7 @@ pub(super) fn resolve_dumped_function(
         }
         let current = runtime
             .decode_relocation(unsafe { std::ptr::read(unit.impure_relocations().add(index)) })?;
-        if current.symbol_str() != Some("lambda-fixup") {
+        if !current.is_key(cached_symbol!("lambda-fixup")) {
             return Err(super::lisp::native_ice(
                 "dumped lambda relocation is not a lambda-fixup placeholder",
             ));
@@ -1745,7 +1745,7 @@ mod tests {
         // A fresh C runtime already supplies the native ABI and loader; no
         // additional GNU Lisp is needed to load and call this simple unit.
         let mut second = Interpreter::new();
-        second.set_global_binding("purify-flag", Value::Nil);
+        second.set_global_binding_key(cached_symbol!("purify-flag"), Value::Nil);
         let mut second_env = Env::new();
         let outcome = crate::test_support::eval_lisp(
             &mut second,

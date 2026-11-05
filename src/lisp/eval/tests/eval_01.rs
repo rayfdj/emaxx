@@ -3750,8 +3750,8 @@ fn ert_resource_file_uses_test_defining_file_during_execution() {
         .to_string_lossy()
         .into_owned();
     interp.set_current_load_file(Some(test_file.clone()));
-    interp.set_variable(
-        "current-load-list",
+    interp.set_variable_key(
+        cached_symbol!("current-load-list"),
         Value::list([Value::String(test_file.clone().into())]),
         &mut crate::lisp::types::Env::new(),
     );
@@ -3764,8 +3764,8 @@ fn ert_resource_file_uses_test_defining_file_during_execution() {
                 "#
         ),
     );
-    interp.set_variable(
-        "current-load-list",
+    interp.set_variable_key(
+        cached_symbol!("current-load-list"),
         Value::Nil,
         &mut crate::lisp::types::Env::new(),
     );
@@ -3812,8 +3812,8 @@ fn macroexp_file_name_survives_nested_ert_macro_expansion() {
     let (_permit, mut interp) = upstream_batch_interpreter_with_features(&["ert"]);
     let test_file = "/tmp/sample-nested-resource-tests.el";
     interp.set_current_load_file(Some(test_file.into()));
-    interp.set_variable(
-        "current-load-list",
+    interp.set_variable_key(
+        cached_symbol!("current-load-list"),
         Value::list([Value::String(test_file.into())]),
         &mut crate::lisp::types::Env::new(),
     );
@@ -3828,8 +3828,8 @@ fn macroexp_file_name_survives_nested_ert_macro_expansion() {
                 "#
         ),
     );
-    interp.set_variable(
-        "current-load-list",
+    interp.set_variable_key(
+        cached_symbol!("current-load-list"),
         Value::Nil,
         &mut crate::lisp::types::Env::new(),
     );

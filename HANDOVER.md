@@ -14798,6 +14798,45 @@ setup_process_coding_systems's check now refuses). A 13-form
   results as before. Local validation: the grouped gate's 3,501
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 314: the C side reads, sets and binds variables and calls
+  functions through the symbols themselves, compares symbol arguments by
+  EQ, and reads a symbol's name where GNU reads SYMBOL_NAME.** After
+  round 313's variable lookups, the other accessors named by a literal
+  (`set_variable', `default_value', `buffer_local_value' and
+  `set_buffer_local_value', 301 calls; `bind_special_variable' and
+  `set_global_binding', 97; `lookup_function', 34) and the helpers that
+  took a name (the mode line's BVAR reader, the line-number layout's,
+  self-insert's, the composition tables', the coding detector's and the
+  undo limits') go through cached keys, so each finds its symbol once
+  per editor rather than by its text each call (`default_value' and
+  `set_buffer_local_value' by name interned the name they were given);
+  what is left by a literal name is 76 test variables GNU does not have.
+  31 comparisons of a symbol argument with a literal name, the eol types
+  (`coding-system-eol-type' and the mode line's mnemonics) and
+  `nobreak-char-display' are EQ with the symbol. A compile-time check
+  refuses a key listed twice (`standard-display-table' was).
+  keyboard.c's parse_solitary_modifier and parse_modifiers read
+  SYMBOL_NAME, so an uninterned `control' is a modifier to
+  `event-convert-list' and `where-is-preferred-modifier' and an
+  uninterned `s-H-x' parses as that name; Emaxx read the marked text and
+  signalled "Two bases given in one event". make-process's :buffer and
+  :stderr, make-pipe-process's :buffer and call-process's destination
+  signal (wrong-type-argument stringp OBJECT) as Fget_buffer_create's
+  CHECK_STRING does, where Emaxx made up a `buffer-or-name' error
+  holding a type name (two of the LispError::TypeError sites; a probe of
+  the other 32 found GNU's errors). A finding on the workload
+  measurements: list-traversal's 10-to-210 difference read 436,973
+  instructions an iteration because a collection fell just after the
+  210-iteration body and not after the 10-iteration one; with collection
+  held off through the body (gc-cons-threshold at most-positive-fixnum)
+  it is 270,046 against GNU's 267,033, and upstream-undo 1,339,539
+  against 1,222,667 (1.096), so mutator comparisons hold collection off
+  and collections are compared per collection. The fuzzes and
+  command-line cases of rounds 303 to 313 print GNU's results as before,
+  and a command-line comparison runs this round's cases. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17274,6 +17313,17 @@ ert-tests (47,483 ms against 37,981), tramp-tests (22,717 against
 19,135), comp-tests (16,891 against 14,241), semantic-utest-ia (3,958
 against 2,564) and mule-tests (3,203 against 1,989), and
 `ert-test-run-tests-batch-expensive' is 1.24 of GNU's time.
+
+**On `7c3a5dd`** (round 313): the full Rust gate (run 41986663669)
+passed; the frozen run (run 41986667814) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a faster runner (the oracle's
+bodies 261.2 s against round 312's 265.7). Setup 74.4 s against 63.0 s
+(1.181), test bodies 280.4 s against 261.2 s (1.074), in all 1.082, with
+a per-file setup median of 111 ms against 96. The widest body gaps are
+ert-tests (39,275 ms against 36,530), tramp-tests (19,980 against
+17,331), comp-tests (16,305 against 14,389), semantic-utest-ia (3,724
+against 2,718) and mule-tests (2,842 against 1,846), and
+`ert-test-run-tests-batch-expensive' is 1.07 of GNU's time.
 
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's

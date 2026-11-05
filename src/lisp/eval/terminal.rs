@@ -893,7 +893,11 @@ impl Interpreter {
         }
         let mut pending = crate::lisp::primitives::unread_command_events(self, env)?;
         pending.extend(events);
-        self.set_variable("unread-command-events", Value::list(pending), env);
+        self.set_variable_key(
+            cached_symbol!("unread-command-events"),
+            Value::list(pending),
+            env,
+        );
         Ok(true)
     }
 }

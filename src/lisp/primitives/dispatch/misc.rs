@@ -94,7 +94,7 @@ fn define_fringe_bitmap(
                 .and_then(|value| value.to_vec().ok())
                 .unwrap_or_default(),
         );
-        interp.set_global_binding("fringe-bitmaps", Value::list(bitmaps));
+        interp.set_global_binding_key(cached_symbol!("fringe-bitmaps"), Value::list(bitmaps));
         // Fput (bitmap, Qfringe, ...) on the symbol itself.
         if let Some(symbol) = args[0].symbol_cell() {
             interp.put_symbol_property_on(&symbol, "fringe", Value::Integer(bitmap_id));
@@ -161,7 +161,7 @@ fn destroy_fringe_bitmap(
             .into_iter()
             .filter(|candidate| !values_eq_in_env(interp, candidate, bitmap, env))
             .collect::<Vec<_>>();
-        interp.set_global_binding("fringe-bitmaps", Value::list(bitmaps));
+        interp.set_global_binding_key(cached_symbol!("fringe-bitmaps"), Value::list(bitmaps));
     }
     Ok(Value::Nil)
 }
@@ -432,7 +432,7 @@ define_dispatch!(
                     .unwrap_or(Value::Nil);
                 // lread.c:Fread and Fread_positioning_symbols share these
                 // defaults and resolve read-minibuffer through its cell.
-                if matches!(source.kind(), Kind::T) || source.symbol_str() == Some("read-char") {
+                if matches!(source.kind(), Kind::T) || source.is_key(cached_symbol!("read-char")) {
                     call_named_function(
                         interp,
                         "read-minibuffer",
@@ -2062,8 +2062,8 @@ fn snarf_documentation(
         .lookup_var_key(cached_symbol!("build-files"), env)
         .is_none_or(|value| value.is_nil());
     if build_files_unset && let Some(names) = crate::lisp::primitives::gnu_build_files() {
-        interp.set_variable(
-            "build-files",
+        interp.set_variable_key(
+            cached_symbol!("build-files"),
             Value::list(names.iter().map(|name| Value::String((*name).into()))),
             env,
         );
@@ -2076,12 +2076,12 @@ fn snarf_documentation(
         )
     })?;
     let entries = parse_doc_file_entries(&bytes)?;
-    interp.set_variable("internal-doc-file-name", *filename, env);
+    interp.set_variable_key(cached_symbol!("internal-doc-file-name"), *filename, env);
     if build_files_unset && crate::lisp::primitives::gnu_build_files().is_none() {
         // No oracle's buildobj.h is recorded for this platform: DOC's S
         // records, which name every file make-docfile read, stand in.
-        interp.set_variable(
-            "build-files",
+        interp.set_variable_key(
+            cached_symbol!("build-files"),
             Value::list(
                 entries
                     .iter()
@@ -2240,7 +2240,7 @@ fn documentation(
     // The native reading below serves only the bootstrap window before
     // simple.el defines the generic.
     let generic_available = interp
-        .lookup_function("function-documentation", env)
+        .lookup_function_key(cached_symbol!("function-documentation"), env)
         .is_ok();
     let module_function = matches!(function.kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::ModuleFunction));
     let mut doc = if generic_available

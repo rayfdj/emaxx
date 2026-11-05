@@ -404,7 +404,8 @@ impl Planner<'_, '_, '_> {
                 crate::lisp::primitives::string_text(&spec).is_ok()
                     || super::margin_display_spec(&spec).is_some()
                     || spec.cons_values().is_some_and(|(head, _)| {
-                        matches!(head.symbol_str(), Some("space" | "image"))
+                        head.is_key(crate::lisp::cached_symbol!("space"))
+                            || head.is_key(crate::lisp::cached_symbol!("image"))
                     })
             })
     }

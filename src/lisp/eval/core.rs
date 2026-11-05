@@ -1670,7 +1670,11 @@ impl Interpreter {
         let events = self
             .lookup_var_key(cached_symbol!("num-nonmacro-input-events"), env)
             .unwrap_or(Value::Integer(0));
-        self.set_variable("internal-when-entered-debugger", events, env);
+        self.set_variable_key(
+            cached_symbol!("internal-when-entered-debugger"),
+            events,
+            env,
+        );
         let mut restores = Vec::with_capacity(4);
         for (name, value) in [
             ("debugger-may-continue", Value::T),
@@ -2669,7 +2673,11 @@ mod eval_value_buffer_tests {
 
         let first_buffer = interpreter.current_buffer_id();
         let (second_buffer, _) = interpreter.create_buffer(" *load-path forwarding*");
-        interpreter.set_buffer_local_value(first_buffer, "load-path", temporary);
+        interpreter.set_buffer_local_value_key(
+            first_buffer,
+            cached_symbol!("load-path"),
+            temporary,
+        );
         assert!(primitives::values_eq_in_env(
             &interpreter,
             &interpreter.load_path,
@@ -2872,8 +2880,8 @@ mod eval_value_buffer_tests {
         let source = root.join("seq.el");
         assert!(source.is_file(), "unchanged GNU fixture must exist");
         interpreter.set_load_path(vec![root]);
-        interpreter.set_variable(
-            "load-suffixes",
+        interpreter.set_variable_key(
+            cached_symbol!("load-suffixes"),
             Value::list([Value::string(".el")]),
             &mut env,
         );
@@ -3009,9 +3017,9 @@ mod eval_value_buffer_tests {
         let original_buffer = interpreter.current_buffer_id();
         let (other_buffer, _) = interpreter.create_buffer(" *forwarded-cell-test*");
 
-        interpreter.set_buffer_local_value(
+        interpreter.set_buffer_local_value_key(
             original_buffer,
-            "debug-on-next-call",
+            cached_symbol!("debug-on-next-call"),
             Value::symbol("non-nil"),
         );
         assert!(interpreter.debug_on_next_call());
@@ -3092,7 +3100,11 @@ mod eval_value_buffer_tests {
             .set_current_buffer_id(other)
             .expect("select the buffer using the default cell");
         assert!(!relocated_value(), "the other buffer selects the default");
-        interpreter.set_buffer_local_value(original, "symbols-with-pos-enabled", Value::Nil);
+        interpreter.set_buffer_local_value_key(
+            original,
+            cached_symbol!("symbols-with-pos-enabled"),
+            Value::Nil,
+        );
         assert!(
             !relocated_value(),
             "an inactive local cell is not the C cell"

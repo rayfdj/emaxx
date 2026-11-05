@@ -1609,7 +1609,10 @@ pub(crate) fn tty_defined_color(
     if color.is_empty() {
         return Ok(Some([0, 0, 0]));
     }
-    let looked_up = if interp.lookup_function("tty-color-desc", env).is_ok() {
+    let looked_up = if interp
+        .lookup_function_key(cached_symbol!("tty-color-desc"), env)
+        .is_ok()
+    {
         let desc = interp.call_function_value(
             Value::Symbol("tty-color-desc".into()),
             Some("tty-color-desc"),

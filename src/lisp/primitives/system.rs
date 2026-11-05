@@ -2116,9 +2116,12 @@ pub(crate) fn validate_file_name(path: &str) -> Result<(), LispError> {
 /// (coding.c:encode_file_name_1 and decode_file_name), checked as
 /// code_convert_string checks it.
 fn file_name_coding(interp: &Interpreter, env: &Env) -> Result<Option<String>, LispError> {
-    for variable in ["file-name-coding-system", "default-file-name-coding-system"] {
+    for variable in [
+        cached_symbol!("file-name-coding-system"),
+        cached_symbol!("default-file-name-coding-system"),
+    ] {
         if let Some(coding) = interp
-            .lookup_var(variable, env)
+            .lookup_var_key(variable, env)
             .filter(|value| !value.is_nil())
         {
             return super::checked_coding_name(interp, &coding);
@@ -2752,7 +2755,7 @@ fn file_primitive_preamble(
             args[2] = expand_file_name_nil(interp, env, args[2])?;
             let mut native_args = args.clone();
             let mustbenew = args[6];
-            if mustbenew.is_truthy() && mustbenew.symbol_str() != Some("excl") {
+            if mustbenew.is_truthy() && !mustbenew.is_key(cached_symbol!("excl")) {
                 let filename = string_text(&args[2])?;
                 super::file_io::barf_or_query_if_file_exists(
                     interp,

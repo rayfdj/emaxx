@@ -215,8 +215,8 @@ pub(crate) fn call_interactively_impl(
         "last-command",
     ]
     .map(|name| (name, interp.lookup_var(name, env).unwrap_or(Value::Nil)));
-    let mut minibuffer_command = Some(interp.bind_special_variable(
-        "current-minibuffer-command",
+    let mut minibuffer_command = Some(interp.bind_special_key(
+        cached_symbol!("current-minibuffer-command"),
         saved_command_state[0].1,
         env,
     )?);
@@ -251,7 +251,9 @@ fn call_interactively_bound(
     // `command-execute' hands a special event to its `special-event-map'
     // binding.
     let keys_binding = match args.get(2).filter(|keys| !keys.is_nil()) {
-        Some(keys) => Some(interp.bind_special_variable("this-command-keys-vector", *keys, env)?),
+        Some(keys) => {
+            Some(interp.bind_special_key(cached_symbol!("this-command-keys-vector"), *keys, env)?)
+        }
         None => None,
     };
     // A command whose `enable-recursive-minibuffers' property is set reads
@@ -263,7 +265,11 @@ fn call_interactively_bound(
                     .get_property_of_symbol_value(args[0], "enable-recursive-minibuffers")
                     .is_some_and(|value| value.is_truthy()) =>
         {
-            Some(interp.bind_special_variable("enable-recursive-minibuffers", Value::T, env)?)
+            Some(interp.bind_special_key(
+                cached_symbol!("enable-recursive-minibuffers"),
+                Value::T,
+                env,
+            )?)
         }
         _ => None,
     };
@@ -295,7 +301,7 @@ fn call_interactively_bound(
     // A string spec's command runs with `command-debug-status' bound to
     // nil.
     let debug_status = if string_spec {
-        Some(interp.bind_special_variable("command-debug-status", Value::Nil, env)?)
+        Some(interp.bind_special_key(cached_symbol!("command-debug-status"), Value::Nil, env)?)
     } else {
         None
     };
@@ -433,12 +439,13 @@ pub(crate) fn eval_buffer_impl(
     let eval_buffer_list = interp
         .lookup_var_key(cached_symbol!("eval-buffer-list"), env)
         .unwrap_or(Value::Nil);
-    let previous_eval_buffer_list = interp.bind_special_variable(
-        "eval-buffer-list",
+    let previous_eval_buffer_list = interp.bind_special_key(
+        cached_symbol!("eval-buffer-list"),
         Value::cons(readcharfun, eval_buffer_list),
         env,
     )?;
-    let previous_output = interp.bind_special_variable("standard-output", output, env)?;
+    let previous_output =
+        interp.bind_special_key(cached_symbol!("standard-output"), output, env)?;
     let excursion = interp.save_excursion_state();
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
         let begv = buffer.point_min();
@@ -456,21 +463,26 @@ pub(crate) fn eval_buffer_impl(
         .map(|buffer| buffer.buffer_string())
         .and_then(|text| lisp_file_lexical_cookie(&text))
         .unwrap_or(false);
-    let previous_lexical_binding = interp.bind_special_variable(
-        "lexical-binding",
+    let previous_lexical_binding = interp.bind_special_key(
+        cached_symbol!("lexical-binding"),
         if cookie_lexical { Value::T } else { Value::Nil },
         env,
     )?;
     // readevalloop reads from `standard-input', bound to the buffer, binds
     // `macroexp--dynvars' to its value, so that the forms' declarations go
     // with the loop, and then `current-load-list' (loadhist_initialize).
-    let previous_input = interp.bind_special_variable("standard-input", readcharfun, env)?;
+    let previous_input =
+        interp.bind_special_key(cached_symbol!("standard-input"), readcharfun, env)?;
     let dynvars = interp
         .lookup_var_key(cached_symbol!("macroexp--dynvars"), env)
         .unwrap_or(Value::Nil);
-    let previous_dynvars = interp.bind_special_variable("macroexp--dynvars", dynvars, env)?;
-    let previous_load_list =
-        interp.bind_special_variable("current-load-list", Value::list([source_file]), env)?;
+    let previous_dynvars =
+        interp.bind_special_key(cached_symbol!("macroexp--dynvars"), dynvars, env)?;
+    let previous_load_list = interp.bind_special_key(
+        cached_symbol!("current-load-list"),
+        Value::list([source_file]),
+        env,
+    )?;
     // Feval_buffer returns nil whatever the last form evaluated to.
     let mut result = eval_buffer_forms(
         interp,
@@ -553,25 +565,29 @@ pub(crate) fn eval_region_impl(
     } else {
         print_flag
     };
-    restores.push(interp.bind_special_variable("standard-output", standard_output, env)?);
+    restores.push(interp.bind_special_key(
+        cached_symbol!("standard-output"),
+        standard_output,
+        env,
+    )?);
     let eval_buffer_list = interp
         .lookup_var_key(cached_symbol!("eval-buffer-list"), env)
         .unwrap_or(Value::Nil);
-    restores.push(interp.bind_special_variable(
-        "eval-buffer-list",
+    restores.push(interp.bind_special_key(
+        cached_symbol!("eval-buffer-list"),
         Value::cons(readcharfun, eval_buffer_list),
         env,
     )?);
     // readevalloop reads from `standard-input', bound to the buffer, binds
     // `macroexp--dynvars' to its value and `current-load-list' to a list
     // of the buffer's file name (loadhist_initialize), nil if it has none.
-    restores.push(interp.bind_special_variable("standard-input", readcharfun, env)?);
+    restores.push(interp.bind_special_key(cached_symbol!("standard-input"), readcharfun, env)?);
     let dynvars = interp
         .lookup_var_key(cached_symbol!("macroexp--dynvars"), env)
         .unwrap_or(Value::Nil);
-    restores.push(interp.bind_special_variable("macroexp--dynvars", dynvars, env)?);
-    restores.push(interp.bind_special_variable(
-        "current-load-list",
+    restores.push(interp.bind_special_key(cached_symbol!("macroexp--dynvars"), dynvars, env)?);
+    restores.push(interp.bind_special_key(
+        cached_symbol!("current-load-list"),
         Value::list([source_file.map_or(Value::Nil, |file| Value::String(file.into()))]),
         env,
     )?);
@@ -630,7 +646,7 @@ fn readevalloop_print(
     let values = interp
         .lookup_var_key(cached_symbol!("values"), env)
         .unwrap_or(Value::Nil);
-    interp.set_variable("values", Value::cons(value, values), env);
+    interp.set_variable_key(cached_symbol!("values"), Value::cons(value, values), env);
     let printer = match interp
         .lookup_var_key(cached_symbol!("standard-output"), env)
         .map(|v| v.kind())
@@ -1156,7 +1172,7 @@ fn call_internal_macroexpand_for_load(
     full: Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let owner = interp.lookup_function("internal-macroexpand-for-load", env)?;
+    let owner = interp.lookup_function_key(cached_symbol!("internal-macroexpand-for-load"), env)?;
     if std::env::var_os("EMAXX_DEBUG_EAGER_MACROEXPAND").is_some() {
         let head = match form.kind() {
             Kind::Cons(cell) => format!("{}", cell.car.get().clone()),

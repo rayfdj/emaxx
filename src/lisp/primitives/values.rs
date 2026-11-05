@@ -2079,12 +2079,15 @@ pub(crate) fn describe_buffer_bindings(
     description[7] = Value::Nil;
     for (variable, title) in [
         (
-            "local-function-key-map",
+            cached_symbol!("local-function-key-map"),
             "\x0c\nFunction key map translations",
         ),
-        ("input-decode-map", "\x0c\nInput decoding map translations"),
+        (
+            cached_symbol!("input-decode-map"),
+            "\x0c\nInput decoding map translations",
+        ),
     ] {
-        let map = interp.lookup_var(variable, env).unwrap_or(Value::Nil);
+        let map = interp.lookup_var_key(variable, env).unwrap_or(Value::Nil);
         if !map.is_nil() {
             insert_keymap_description(interp, &mut description, map, title.into(), env)?;
         }
@@ -2141,7 +2144,7 @@ pub(crate) fn help_describe_vector(
         }
     };
     let output_buffer = Value::Buffer(interp.buffer);
-    let restore = interp.bind_special_variable("standard-output", output_buffer, env)?;
+    let restore = interp.bind_special_key(cached_symbol!("standard-output"), output_buffer, env)?;
     let mut result = describe_vector(interp, vector, table, args, env);
     if let Err(error) = interp.restore_special_binding(restore, env)
         && result.is_ok()

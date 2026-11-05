@@ -2541,7 +2541,10 @@ impl<'a> CharacterDisplayContext<'a> {
             let control = char::from_u32((code ^ 0o100) as u32).unwrap_or('?');
             return Some((vec![caret, control], face));
         }
-        let highlight = self.nobreak_char_display.symbol_str() == Some("t");
+        let highlight = matches!(
+            self.nobreak_char_display.kind(),
+            crate::lisp::types::Kind::T
+        );
         if nonascii_space && highlight {
             let shown = if self.nobreak_char_ascii_display {
                 ' '
@@ -4263,7 +4266,7 @@ fn run_fontification_functions(
         };
         if matches!(function.kind(), Kind::T) {
             let mut globals = interpreter
-                .default_value("fontification-functions")
+                .default_value_key(cached_symbol!("fontification-functions"))
                 .unwrap_or(Value::Nil);
             while let Kind::Cons(_) = globals.kind() {
                 let Ok(global_fn) = globals.car() else {
@@ -4638,12 +4641,12 @@ fn redraw_with_echo_policy(
             info.width
         };
         let has_header_line = interpreter
-            .buffer_local_value(info.buffer_id, "header-line-format")
-            .or_else(|| interpreter.default_value("header-line-format"))
+            .buffer_local_value_key(info.buffer_id, cached_symbol!("header-line-format"))
+            .or_else(|| interpreter.default_value_key(cached_symbol!("header-line-format")))
             .is_some_and(|format| format.is_truthy());
         let has_tab_line = interpreter
-            .buffer_local_value(info.buffer_id, "tab-line-format")
-            .or_else(|| interpreter.default_value("tab-line-format"))
+            .buffer_local_value_key(info.buffer_id, cached_symbol!("tab-line-format"))
+            .or_else(|| interpreter.default_value_key(cached_symbol!("tab-line-format")))
             .is_some_and(|format| format.is_truthy());
         let tab_rows = usize::from(has_tab_line && info.height > 2);
         let header_rows = usize::from(has_header_line && info.height > 2 + tab_rows);
@@ -7013,7 +7016,7 @@ mod tests {
             // calls window.el's owners.
             let mut interpreter = crate::test_support::initialized_gnu_window_lisp_interpreter();
             let mut env = Env::new();
-            interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+            interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
             interpreter.set_tty_frame_size(80, 24);
             let queue = SharedEventQueue::default();
             queue.0.borrow_mut().extend([
@@ -7569,7 +7572,11 @@ mod tests {
         interp
             .eval(&form, &mut env)
             .expect("evaluate true-overlay invisibility probe");
-        interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        interp.set_variable_key(
+            cached_symbol!("buffer-invisibility-spec"),
+            Value::T,
+            &mut env,
+        );
         let spec = resolve_buffer_invisibility(
             &interp,
             &interp.buffer.borrow(),
@@ -7601,7 +7608,11 @@ mod tests {
         interp
             .eval(&form, &mut env)
             .expect("evaluate window overlay-string probe");
-        interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        interp.set_variable_key(
+            cached_symbol!("buffer-invisibility-spec"),
+            Value::T,
+            &mut env,
+        );
         let spec = resolve_buffer_invisibility(
             &interp,
             &interp.buffer.borrow(),
@@ -7732,7 +7743,11 @@ mod tests {
         interp
             .eval(&form, &mut env)
             .expect("evaluate invisible overlay-string probe");
-        interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        interp.set_variable_key(
+            cached_symbol!("buffer-invisibility-spec"),
+            Value::T,
+            &mut env,
+        );
         let spec = resolve_buffer_invisibility(
             &interp,
             &interp.buffer.borrow(),
@@ -7867,7 +7882,7 @@ mod tests {
     fn interactive_startup_initializes_scratch_and_messages_buffers() {
         let mut interp = initialized_interactive_runtime();
         let mut env: Env = crate::lisp::types::Env::new();
-        interp.set_variable("noninteractive", Value::Nil, &mut env);
+        interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         // This fixture now reaches the end of GNU startup, not the former
         // handwritten midpoint before its startup message. A separate GNU
         // -nw -Q session confirms this line in *Messages*. Check the text
@@ -8199,7 +8214,7 @@ mod tests {
     fn active_minibuffer_only_owns_cursor_while_its_window_is_selected() {
         let mut interpreter = initialized_interactive_runtime();
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         let ordinary_window = interpreter.selected_window_id();
         let active = crate::lisp::primitives::activate_minibuffer(
             &mut interpreter,
@@ -8223,7 +8238,7 @@ mod tests {
     fn transient_printed_value_takes_precedence_over_an_active_minibuffer() {
         let mut interpreter = initialized_interactive_runtime();
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         let active = crate::lisp::primitives::activate_minibuffer(
             &mut interpreter,
             &Value::String("Outer: ".into()),
@@ -8254,7 +8269,7 @@ mod tests {
     fn minibuffer_before_string_inherits_its_prompt_anchor_face() {
         let mut interpreter = initialized_interactive_runtime();
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         let active = crate::lisp::primitives::activate_minibuffer(
             &mut interpreter,
             &Value::String("Prompt: ".into()),
@@ -8418,7 +8433,11 @@ mod tests {
         interpreter
             .eval(&form, &mut env)
             .expect("evaluate invisible-tail window probe");
-        interpreter.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        interpreter.set_variable_key(
+            cached_symbol!("buffer-invisibility-spec"),
+            Value::T,
+            &mut env,
+        );
         let spec = resolve_buffer_invisibility(
             &interpreter,
             &interpreter.buffer.borrow(),
@@ -9011,7 +9030,7 @@ mod tests {
         let mut interpreter =
             crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         crate::test_support::eval_lisp(
             &mut interpreter,
             &mut env,
@@ -9085,7 +9104,7 @@ mod tests {
         let mut interpreter =
             crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         interpreter
             .load_target("isearch")
             .expect("isearch.el loads");
@@ -9168,7 +9187,7 @@ gamma word three
         let mut interpreter =
             crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
         let mut env: Env = crate::lisp::types::Env::new();
-        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
         interpreter.buffer.borrow_mut().insert("abcdefghijklmnop\n");
         interpreter.buffer.borrow_mut().goto_char(1);
 

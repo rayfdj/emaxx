@@ -203,8 +203,10 @@ fn popup_place(interp: &mut Interpreter, position: &Value) -> PopupPlace {
         };
     }
     let bar = *position == Value::T
-        || matches!(head.symbol_str(), Some("menu-bar" | "tab-bar" | "tool-bar"))
-        || second.symbol_str() == Some("tab-bar");
+        || (head.is_key(cached_symbol!("menu-bar"))
+            || head.is_key(cached_symbol!("tab-bar"))
+            || head.is_key(cached_symbol!("tool-bar")))
+        || second.is_key(cached_symbol!("tab-bar"));
     let (mut x, mut y) = popup_position_xy(position).unwrap_or((0, 0));
     if bar {
         return PopupPlace {
@@ -241,7 +243,7 @@ fn popup_place(interp: &mut Interpreter, position: &Value) -> PopupPlace {
         && matches!(area.kind(), Kind::Cons(_))
         && area
             .car()
-            .is_ok_and(|head| head.symbol_str() == Some("menu-bar"));
+            .is_ok_and(|head| head.is_key(cached_symbol!("menu-bar")));
     PopupPlace {
         x,
         y,
@@ -653,7 +655,9 @@ define_dispatch!(
                 // names, the selected window for t or a bar position.
                 let head = position.car().unwrap_or(Value::Nil);
                 let window = if position == Value::T
-                    || matches!(head.symbol_str(), Some("menu-bar" | "tab-bar" | "tool-bar"))
+                    || (head.is_key(cached_symbol!("menu-bar"))
+                        || head.is_key(cached_symbol!("tab-bar"))
+                        || head.is_key(cached_symbol!("tool-bar")))
                 {
                     interp.selected_window_value()
                 } else if let Kind::Cons(_) = position.kind() {

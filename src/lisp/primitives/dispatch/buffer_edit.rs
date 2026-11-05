@@ -80,7 +80,7 @@ fn self_insert_command(
     };
     let c = match args.get(1).filter(|value| !value.is_nil()) {
         Some(c) => {
-            interp.set_variable("last-command-event", *c, env);
+            interp.set_variable_key(cached_symbol!("last-command-event"), *c, env);
             *c
         }
         None => interp
@@ -102,7 +102,11 @@ fn self_insert_command(
                 .unwrap_or(Value::Nil);
             let character = translate_char(interp, &table, code as u32);
             if internal_self_insert(interp, character, n, env)? == 2 {
-                interp.set_variable("undo-auto--this-command-amalgamating", Value::Nil, env);
+                interp.set_variable_key(
+                    cached_symbol!("undo-auto--this-command-amalgamating"),
+                    Value::Nil,
+                    env,
+                );
             }
         }
         _ => super::display::bitch_at_user(interp, env)?,
@@ -121,17 +125,17 @@ fn internal_self_insert(
     env: &mut Env,
 ) -> Result<i32, LispError> {
     const MOST_POSITIVE_FIXNUM: i64 = (1 << 61) - 1;
-    let truthy = |interp: &Interpreter, env: &Env, name: &str| {
+    let truthy = |interp: &Interpreter, env: &Env, name: crate::lisp::types::symbols::SymbolKey| {
         interp
-            .lookup_var(name, env)
+            .lookup_var_key(name, env)
             .is_some_and(|value| value.is_truthy())
     };
     let mut hairy = 0;
     let overwrite = interp
         .lookup_var_key(cached_symbol!("overwrite-mode"), env)
         .unwrap_or(Value::Nil);
-    if truthy(interp, env, "before-change-functions")
-        || truthy(interp, env, "after-change-functions")
+    if truthy(interp, env, cached_symbol!("before-change-functions"))
+        || truthy(interp, env, cached_symbol!("after-change-functions"))
     {
         hairy = 1;
     }
@@ -148,7 +152,7 @@ fn internal_self_insert(
         // deleted for a wider one, so that the rest of the line keeps
         // its columns.
         let c2 = public_buffer_char_code_at(interp, pt).unwrap_or(0);
-        if overwrite.symbol_str() == Some("overwrite-mode-binary") {
+        if overwrite.is_key(cached_symbol!("overwrite-mode-binary")) {
             chars_to_delete = n;
         } else if c != u32::from(b'\n') && c2 != i64::from(b'\n') {
             let cwidth = super::call(interp, "char-width", &[Value::Integer(c.into())], env)?
@@ -186,9 +190,9 @@ fn internal_self_insert(
         syntax::syntax_entry_for_code(interp, interp.current_syntax_table_id(), code).class
     };
     let point = interp.buffer.borrow().point();
-    if truthy(interp, env, "abbrev-mode")
+    if truthy(interp, env, cached_symbol!("abbrev-mode"))
         && syntax_class(interp, c) != syntax::SyntaxClass::Word
-        && !truthy(interp, env, "buffer-read-only")
+        && !truthy(interp, env, cached_symbol!("buffer-read-only"))
         && point > interp.buffer.borrow().point_min()
         && syntax_class(interp, {
             // Fprevious_char, a unibyte buffer's byte as UNIBYTE_TO_CHAR.
@@ -264,7 +268,7 @@ fn internal_self_insert(
             .is_some_and(|value| value.is_truthy()),
         _ => c == u32::from(b' ') || c == u32::from(b'\n'),
     };
-    if auto_fill_character && truthy(interp, env, "auto-fill-function") {
+    if auto_fill_character && truthy(interp, env, cached_symbol!("auto-fill-function")) {
         // After a newline, fill the line it ends, with the newline in
         // place already.
         if c == u32::from(b'\n') {
@@ -1698,7 +1702,7 @@ pub(crate) fn visual_char_widths(
 fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize {
     let buffer_id = interp.current_buffer_id();
     let enabled = interp
-        .buffer_local_value(buffer_id, "display-line-numbers")
+        .buffer_local_value_key(buffer_id, cached_symbol!("display-line-numbers"))
         .or_else(|| {
             interp.lookup_var_key(
                 cached_symbol!("display-line-numbers"),

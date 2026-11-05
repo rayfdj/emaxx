@@ -386,7 +386,6 @@ const KEY_NAMES: &[&str] = &[
     "ctl-arrow",
     "selective-display",
     "buffer-display-table",
-    "standard-display-table",
     "permanent-local",
     "frame-windows-min-size",
     "mode-line-format",
@@ -673,6 +672,118 @@ const KEY_NAMES: &[&str] = &[
     "x-resource-class",
     "x-resource-name",
     "yes-or-no-prompt",
+    "auto-save-coding",
+    "dedicated",
+    "delete",
+    "disable-eval",
+    "down",
+    "excl",
+    "if-regular",
+    "image",
+    "lambda-fixup",
+    "many",
+    "margin",
+    "menu-bar",
+    "not",
+    "or",
+    "overwrite-mode-binary",
+    "read-char",
+    "space",
+    "syntax-ppss-flush-cache",
+    "tab-bar",
+    "tool-bar",
+    "eol-mnemonic-undecided",
+    "eol-mnemonic-unix",
+    "global-mode-string",
+    "line-number-display-limit",
+    "line-number-display-limit-width",
+    "mode-line-compact",
+    "unix",
+    "dos",
+    "mac",
+    "coding-category-list",
+    "file-coding-system-alist",
+    "force-load-messages",
+    "inhibit-eval-during-redisplay",
+    "internal-when-entered-debugger",
+    "last-event-frame",
+    "load-file-rep-suffixes",
+    "load-prefer-newer",
+    "load-source-file-function",
+    "load-suffixes",
+    "minibuffer--require-match",
+    "minibuffer-default",
+    "minibuffer-history-position",
+    "minibuffer-history-variable",
+    "second",
+    "this-command-keys-shift-translated",
+    "this-original-command",
+    "undo-auto--this-command-amalgamating",
+    "window-configuration-change-hook",
+    "window-point-insertion-type",
+    "abbrev-mode",
+    "auto-fill-function",
+    "composition-function-table",
+    "display-line-numbers-current-absolute",
+    "display-line-numbers-major-tick",
+    "display-line-numbers-minor-tick",
+    "display-line-numbers-offset",
+    "display-line-numbers-widen",
+    "inhibit-iso-escape-detection",
+    "inhibit-null-byte-detection",
+    "undo-limit",
+    "undo-strong-limit",
+    "minibuffer-local-must-match-map",
+    "minibuffer-local-completion-map",
+    "network-coding-system-alist",
+    "process-coding-system-alist",
+    "charset-list",
+    "cl-old-struct-compat-mode",
+    "command-debug-status",
+    "command-line-args",
+    "current-minibuffer-command",
+    "exec-directory",
+    "fontset-alias-alist",
+    "glyphless-char-display",
+    "installation-directory",
+    "libgnutls-version",
+    "load--bin-dest-dir",
+    "load--eln-dest-dir",
+    "most-negative-fixnum",
+    "most-positive-fixnum",
+    "system-name",
+    "top-level",
+    "track-mouse",
+    "translation-hash-table-vector",
+    "add-to-history",
+    "after-insert-file-set-coding",
+    "byte-run--unescaped-character-literals-warning",
+    "command-execute",
+    "comp-subr-trampoline-install",
+    "completing-read-default",
+    "completion-try-completion",
+    "do-after-load-evaluation",
+    "exit-minibuffer",
+    "format-decode",
+    "format-message",
+    "get-scratch-buffer-create",
+    "help--append-keystrokes-help",
+    "internal-macroexpand-for-load",
+    "internal-timer-start-idle",
+    "key-valid-p",
+    "minibuffer-inactive-mode",
+    "normal-top-level-add-to-load-path",
+    "prefix-command-update",
+    "push-window-buffer-onto-prev",
+    "read-key",
+    "record-window-buffer",
+    "set-buffer-redisplay",
+    "timer-event-handler",
+    "tty-color-desc",
+    "tty-set-up-initial-frame-faces",
+    "undo-auto--add-boundary",
+    "uniquify--rename-buffer-advice",
+    "when",
 ];
 
 struct Symbols {
@@ -980,20 +1091,42 @@ pub(crate) fn with_hash_tests<R>(body: impl FnOnce(&mut DescriptorPool) -> R) ->
 #[derive(Clone, Copy)]
 pub(crate) struct SymbolKey(usize);
 
+/// Whether two names are the same bytes, at compile time.
+const fn same_name(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut byte = 0;
+    while byte < left.len() && left[byte] == right[byte] {
+        byte += 1;
+    }
+    byte == left.len()
+}
+
+// Each name has one slot: a second would be interned for nothing and
+// never be the slot a key finds.
+const _: () = {
+    let mut index = 0;
+    while index < KEY_NAMES.len() {
+        let mut other = index + 1;
+        while other < KEY_NAMES.len() {
+            assert!(
+                !same_name(KEY_NAMES[index], KEY_NAMES[other]),
+                "a cached symbol key's name is listed twice"
+            );
+            other += 1;
+        }
+        index += 1;
+    }
+};
+
 impl SymbolKey {
     pub(crate) const fn new(name: &str) -> Self {
-        let wanted = name.as_bytes();
         let mut index = 0;
         while index < KEY_NAMES.len() {
-            let candidate = KEY_NAMES[index].as_bytes();
-            if candidate.len() == wanted.len() {
-                let mut byte = 0;
-                while byte < wanted.len() && candidate[byte] == wanted[byte] {
-                    byte += 1;
-                }
-                if byte == wanted.len() {
-                    return Self(index);
-                }
+            if same_name(KEY_NAMES[index], name) {
+                return Self(index);
             }
             index += 1;
         }

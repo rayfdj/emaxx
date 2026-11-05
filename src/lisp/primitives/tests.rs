@@ -8183,7 +8183,7 @@ fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_global_binding("executing-kbd-macro", Value::T);
+    interp.set_global_binding_key(cached_symbol!("executing-kbd-macro"), Value::T);
     for (events, default, expected) in [
         (
             vec![b'u', b't', b'f', b'-', b'8', 13],
@@ -8197,8 +8197,8 @@ fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
         ),
         (vec![13], Value::Nil, Value::Nil),
     ] {
-        interp.set_global_binding(
-            "unread-command-events",
+        interp.set_global_binding_key(
+            cached_symbol!("unread-command-events"),
             Value::list(events.into_iter().map(|event| Value::Integer(event.into()))),
         );
         assert_eq!(
@@ -8216,7 +8216,7 @@ fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
     // No keyboard macro is executing when the command loop reports an
     // error (cmd_error clears it first): with one, the reporter's
     // bitch_at_user would end it with a `user-error', as GNU's does.
-    interp.set_global_binding("executing-kbd-macro", Value::Nil);
+    interp.set_global_binding_key(cached_symbol!("executing-kbd-macro"), Value::Nil);
     assert_eq!(
         call(
             &mut interp,
@@ -10828,8 +10828,8 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
         ])
     );
 
-    interp.set_variable(
-        "default-directory",
+    interp.set_variable_key(
+        cached_symbol!("default-directory"),
         Value::String(format!("{}/", directory.display()).into()),
         &mut env,
     );
@@ -12284,8 +12284,8 @@ fn process_lines_uses_default_directory_as_subprocess_cwd() {
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable(
-        "default-directory",
+    interp.set_variable_key(
+        cached_symbol!("default-directory"),
         Value::String(cwd.display().to_string().into()),
         &mut env,
     );
@@ -12509,7 +12509,11 @@ fn process_connection_probe_with_default(
     // GNU-Lisp runtime rather than the file-less host.
     let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("process-connection-type", default_connection_type, &mut env);
+    interp.set_variable_key(
+        cached_symbol!("process-connection-type"),
+        default_connection_type,
+        &mut env,
+    );
     let (buffer_id, _) = interp.create_buffer(&format!("*{name}*"));
     let mut process_args =
         vec![
@@ -13794,8 +13798,8 @@ fn inhibit_read_only_allows_buffer_read_only_edits() {
         .buffer
         .replace_state(crate::buffer::Buffer::from_text("*test*", "abc"));
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("buffer-read-only", Value::T, &mut env);
-    interp.set_variable("inhibit-read-only", Value::T, &mut env);
+    interp.set_variable_key(cached_symbol!("buffer-read-only"), Value::T, &mut env);
+    interp.set_variable_key(cached_symbol!("inhibit-read-only"), Value::T, &mut env);
     interp.buffer.borrow_mut().goto_char(1);
 
     call(&mut interp, "delete-char", &[Value::Integer(1)], &mut env)
@@ -13821,7 +13825,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
         .buffer
         .replace_state(crate::buffer::Buffer::from_text("*test*", ""));
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("buffer-read-only", Value::T, &mut env);
+    interp.set_variable_key(cached_symbol!("buffer-read-only"), Value::T, &mut env);
 
     assert!(matches!(
         call(&mut interp, "insert", &[Value::String("x".into())], &mut env).map_err(LispError::into_kind),
@@ -13832,7 +13836,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
             ]) if name.is_named("buffer-read-only"))
     ));
 
-    interp.set_variable("inhibit-read-only", Value::T, &mut env);
+    interp.set_variable_key(cached_symbol!("inhibit-read-only"), Value::T, &mut env);
     call(
         &mut interp,
         "insert",
@@ -14235,7 +14239,7 @@ fn native_file_lock_primitives_share_the_buffer_lock_state_machine() {
         &mut env,
     )
     .expect("inspect unlocked fixture");
-    interp.set_global_binding("create-lockfiles", Value::Nil);
+    interp.set_global_binding_key(cached_symbol!("create-lockfiles"), Value::Nil);
     call(
         &mut interp,
         "lock-file",
@@ -22220,7 +22224,7 @@ fn set_buffer_redisplay_is_a_callable_variable_watcher() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let watcher = interp
-        .lookup_function("set-buffer-redisplay", &env)
+        .lookup_function_key(cached_symbol!("set-buffer-redisplay"), &env)
         .expect("xdisp watcher primitive should be prebound");
     // data.c:Fadd_variable_watcher returns nil.
     assert_eq!(
@@ -25348,7 +25352,7 @@ fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() 
 fn native_keyboard_macro_family_publishes_gnu_status_messages() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     crate::lisp::primitives::set_echo_area_message(None);
 
     call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
@@ -25422,8 +25426,8 @@ fn keyboard_macro_records_input_read_inside_a_command() {
     interp
         .eval(&definition, &mut env)
         .expect("define nested-input command");
-    interp.set_variable(
-        "unread-command-events",
+    interp.set_variable_key(
+        cached_symbol!("unread-command-events"),
         Value::list([Value::Integer(97)]),
         &mut env,
     );
@@ -27820,7 +27824,7 @@ fn native_process_window_and_foreground_queries_follow_pty_ownership() {
 fn tty_event_reader_feeds_interactive_event_reads() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(121)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
@@ -27834,7 +27838,7 @@ fn tty_event_reader_feeds_interactive_event_reads() {
 fn tty_event_reader_quit_signals_gnu_quit() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     set_tty_event_reader(Some(Box::new(|_| None)));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
@@ -27861,9 +27865,9 @@ fn tty_event_reader_quit_signals_gnu_quit() {
 fn tty_event_reader_does_not_preempt_queued_events() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
-    interp.set_variable(
-        "unread-command-events",
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_variable_key(
+        cached_symbol!("unread-command-events"),
         Value::list([Value::Integer(97)]),
         &mut env,
     );
@@ -27880,7 +27884,7 @@ fn tty_event_reader_does_not_preempt_queued_events() {
 fn blocking_tty_event_read_redraws_after_a_due_timer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -27925,7 +27929,7 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 fn blocking_tty_event_read_redraws_after_process_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     let process = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -28062,7 +28066,7 @@ fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
     crate::test_support::mark_process_test();
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     set_tty_event_poller(Some(Box::new(|_| Some(None))));
     let result = crate::test_support::eval_lisp(
         &mut interp,
@@ -28100,7 +28104,7 @@ fn live_minibuffer_leaves_its_last_command_and_call_interactively_restores() {
     // the minibuffer read through `executing-kbd-macro').
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     let outer = |interp: &mut Interpreter, env: &mut crate::lisp::types::Env| {
         for (name, value) in [
             ("this-command", "outer-command"),
@@ -28175,7 +28179,7 @@ fn write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events()
     // invalid. Preserve both the declining error and unchanged file bytes.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     let directory = std::env::temp_dir().join(format!(
         "emaxx-write-region-mustbenew-{}-{}",
         std::process::id(),
@@ -28230,7 +28234,7 @@ fn write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events()
 fn tty_events_answer_interactive_minibuffer_prompts() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     // The terminal feeds "answer.txt" then RET into the minibuffer loop.
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
         std::rc::Rc::new(std::cell::RefCell::new(
@@ -28259,7 +28263,7 @@ fn tty_events_answer_interactive_minibuffer_prompts() {
 fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -28338,9 +28342,9 @@ fn live_read_string_records_an_accepted_default_in_history() {
 fn tty_minibuffer_edits_complete_and_recall_history() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
-    interp.set_variable(
-        "minibuffer-history",
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_variable_key(
+        cached_symbol!("minibuffer-history"),
         Value::list([Value::String("older-entry".into())]),
         &mut env,
     );
@@ -28390,9 +28394,9 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
 fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
-    interp.set_variable(
-        "minibuffer-history",
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_variable_key(
+        cached_symbol!("minibuffer-history"),
         Value::list([Value::String("recalled".into())]),
         &mut env,
     );
@@ -28429,7 +28433,7 @@ fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
 fn tty_minibuffer_quit_signals_gnu_quit() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     // The frontend's reader answers None for C-g; the loop signals quit.
     set_tty_event_reader(Some(Box::new(|_| None)));
     let result = call(
@@ -28449,7 +28453,7 @@ fn tty_minibuffer_quit_signals_gnu_quit() {
 fn tty_completing_read_completes_with_tab() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
         std::rc::Rc::new(std::cell::RefCell::new(
             "forw\t\r"
@@ -28483,7 +28487,7 @@ fn tty_completing_read_completes_with_tab() {
 fn tty_read_buffer_formats_a_buffer_default_into_the_prompt() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     let current = Value::Buffer(interp.buffer);
     set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(13)))));
     let prompts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -28530,7 +28534,7 @@ fn upstream_interactive_interpreter() -> (Interpreter, Env) {
     let mut interp =
         crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     interp
         .load_target("minibuffer")
         .expect("minibuffer.el loads");
@@ -29204,7 +29208,7 @@ fn recenter_counts_the_window_body_for_negative_lines() {
     // as well: (recenter -3) puts point 3 rows above the window's last.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::T, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::T, &mut env);
     for n in 0..60 {
         call(
             &mut interp,
@@ -29240,7 +29244,7 @@ fn recenter_counts_the_window_body_for_negative_lines() {
 fn interactive_recenter_uses_the_live_shrunken_window_height() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     for n in 0..30 {
         call(
             &mut interp,
@@ -29344,7 +29348,7 @@ fn interactive_vertical_motion_and_recenter_reseat_past_what_a_line_start_hides(
     // reseat.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     insert_prefixed_lines(
         &mut interp,
         &mut env,
@@ -29434,7 +29438,7 @@ fn interactive_vertical_motion_walks_a_display_string_spanning_two_lines() {
     // string's first.  GNU 30.2's values.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     insert_prefixed_lines(
         &mut interp,
         &mut env,
@@ -29513,7 +29517,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     // Batch ignores the goal column, GNU's --batch behavior.  `noninteractive'
     // is emacs.c's DEFVAR: nil in the dumped default, flipped to t by a
     // batch startup, so state the batch session explicitly here.
-    interp.set_variable("noninteractive", Value::T, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::T, &mut env);
     call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
     call(
         &mut interp,
@@ -29531,7 +29535,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     // An interactive session moves to the goal column within the row,
     // line-move-visual's contract; a float goal (posn pixels divided by
     // the frame char width) works the same way.
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
     call(&mut interp, "vertical-motion", &[goal], &mut env).expect("vertical-motion");
     assert_eq!(
@@ -29554,7 +29558,7 @@ fn format_mode_line_follows_display_mode_element() {
     // Each expected value is GNU 30's on a terminal frame (tmux probe).
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     let setup = Reader::new(
         "(progn (switch-to-buffer (get-buffer-create \"probe-buf\"))
                 (insert \"line1\\nline2\\nline3\\n\")
@@ -29684,7 +29688,7 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     call(
         &mut interp,
         "insert",
@@ -29733,7 +29737,7 @@ fn mode_line_line_number_is_relative_to_the_accessible_region() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     call(
         &mut interp,
         "insert",
@@ -29874,7 +29878,7 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     for n in 0..60 {
         call(
             &mut interp,
@@ -29918,7 +29922,7 @@ fn glass_mode_line_honors_font_lock_face_string_properties() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     let form = Reader::new(
         "(setq mode-line-format
                (list (propertize \" git failed\"
@@ -30044,7 +30048,7 @@ fn interactive_undo_restores_the_unmodified_state() {
     let mut interp = crate::batch::initialize_batch_interpreter(&options)
         .expect("initialize GNU-compatible batch interpreter");
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     let directory = std::env::temp_dir().join(format!("emaxx-undo-clean-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test dir");
     let path = directory.join("clean.txt");
@@ -30751,7 +30755,7 @@ fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
 fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() {
     let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     interp.set_tty_frame_size(80, 24);
     interp.buffer.borrow_mut().insert("alpha\nbeta\ngamma\n");
     interp.buffer.borrow_mut().goto_char(7); // line 2
@@ -32622,7 +32626,7 @@ fn assert_purecopy_callback_contract(program: &str, expected: &str) {
     // message_with_string's interactive callbacks require live window metrics.
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Env::new();
-    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
     // Read as `load' reads: through the same symbols as the loaded Lisp
     // runtime, with its literals built.
     let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
@@ -32705,7 +32709,7 @@ fn text_conversion_c_store_does_not_localize_or_duplicate_the_field() {
     let current = interp.current_buffer_id();
     let (other, _) = interp.create_buffer("text-style-other-359");
     let default = Value::list([Value::Integer(367)]);
-    interp.set_global_binding("text-conversion-style", default);
+    interp.set_global_binding_key(cached_symbol!("text-conversion-style"), default);
     let written = Value::vector([Value::Integer(373)]);
     interp.buffer.borrow_mut().text_conversion_style = written;
     assert_eq!(
@@ -32721,7 +32725,10 @@ fn text_conversion_c_store_does_not_localize_or_duplicate_the_field() {
             .iter()
             .all(|(name, _)| !name.is_named("text-conversion-style"))
     );
-    assert_eq!(interp.default_value("text-conversion-style"), Some(default));
+    assert_eq!(
+        interp.default_value_key(cached_symbol!("text-conversion-style")),
+        Some(default)
+    );
     assert_eq!(
         interp
             .get_buffer_by_id(other)
@@ -32743,7 +32750,10 @@ fn text_conversion_c_store_does_not_localize_or_duplicate_the_field() {
     interp
         .restore_special_dynamic(restore, &mut env)
         .expect("restore C value as default");
-    assert_eq!(interp.default_value("text-conversion-style"), Some(written));
+    assert_eq!(
+        interp.default_value_key(cached_symbol!("text-conversion-style")),
+        Some(written)
+    );
     assert_eq!(
         interp
             .get_buffer_by_id(other)
@@ -32762,7 +32772,11 @@ fn text_conversion_c_store_does_not_localize_or_duplicate_the_field() {
     assert!(interp.symbol_value_cell("text-conversion-style").is_err());
     let replacement = Value::cons(Value::Integer(383), Value::Nil);
     interp.buffer.borrow_mut().text_conversion_style = replacement;
-    interp.set_variable("text-conversion-style", Value::Integer(389), &mut env);
+    interp.set_variable_key(
+        cached_symbol!("text-conversion-style"),
+        Value::Integer(389),
+        &mut env,
+    );
     assert_eq!(
         interp.forwarded_c_value("text-conversion-style", &env),
         Some(replacement)

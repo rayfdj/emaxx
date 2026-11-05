@@ -2092,6 +2092,46 @@ fn coding_systems_are_found_by_their_symbols() {
 }
 
 #[test]
+fn symbols_are_read_by_name_or_identity_as_gnu_reads_them() {
+    // keyboard.c's parse_solitary_modifier and parse_modifiers read a
+    // symbol's SYMBOL_NAME, so an uninterned `control' is a modifier;
+    // Fget_buffer_create's CHECK_STRING names what make-process and
+    // call-process were given; the variables read through cached
+    // symbols are the ones GNU reads.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(dolist (f (list
+  (lambda () (event-convert-list (list (make-symbol "control") 'a)))
+  (lambda () (event-convert-list (list (make-symbol "meta") (make-symbol "shift") ?x)))
+  (lambda () (event-convert-list (list 'control (make-symbol "a"))))
+  (lambda () (internal-event-symbol-parse-modifiers (make-symbol "s-H-x")))
+  (lambda () (event-modifiers (make-symbol "C-M-down-mouse-1")))
+  (lambda () (event-basic-type (make-symbol "C-f1")))
+  (lambda () (let ((where-is-preferred-modifier (make-symbol "meta"))) (where-is-internal 'forward-char nil t)))
+  (lambda () (make-process :name "x" :command '("true") :buffer 'foo))
+  (lambda () (make-process :name "x" :command '("true") :stderr 'foo))
+  (lambda () (make-process :name "x" :command '("true") :stderr 5))
+  (lambda () (make-pipe-process :name "p" :buffer 5))
+  (lambda () (call-process "true" nil 'foo))
+  (lambda () (with-temp-buffer (setq-local display-line-numbers t) (list display-line-numbers (buffer-local-value 'display-line-numbers (current-buffer)))))
+  (lambda () (let ((undo-limit 10) (undo-strong-limit 20)) (with-temp-buffer (buffer-enable-undo) (insert "abc") (undo-boundary) (length buffer-undo-list))))
+  (lambda () (format-mode-line "%Z" nil nil (current-buffer)))
+  (lambda () (let ((eol-mnemonic-unix "U")) (format-mode-line "%Z")))
+  (lambda () (coding-system-eol-type 'utf-8-dos))
+  (lambda () (coding-system-eol-type 'latin-1-mac))
+  ))
+  (prin1 (condition-case e (funcall f) (error (list 'ERR e)))) (terpri)))"#,
+        ],
+    );
+}
+
+#[test]
 fn cached_symbol_keys_name_symbols_gnu_has_interned() {
     // Every cached key's symbol is interned when an editor is constructed,
     // as lisp.h's lispsym are: each must name a symbol GNU's own startup

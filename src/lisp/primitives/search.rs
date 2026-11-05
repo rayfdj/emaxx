@@ -2268,7 +2268,11 @@ mod c_string_match_tests {
     #[test]
     fn c_string_match_folds_only_ascii_and_preserves_match_data() {
         let mut interp = Interpreter::new();
-        interp.set_variable("case-fold-search", Value::Nil, &mut Env::new());
+        interp.set_variable_key(
+            cached_symbol!("case-fold-search"),
+            Value::Nil,
+            &mut Env::new(),
+        );
         let saved = Some(vec![Some((3, 7)), None]);
         interp.last_match_data = saved.clone();
         let saved_buffer = interp.buffer_object(interp.current_buffer_id());

@@ -624,8 +624,8 @@ pub(crate) fn new_fontset(
             let aliases = interp
                 .symbol_value_symbol(&SymbolName::intern_str("fontset-alias-alist"))
                 .unwrap_or(Value::Nil);
-            interp.set_global_binding(
-                "fontset-alias-alist",
+            interp.set_global_binding_key(
+                cached_symbol!("fontset-alias-alist"),
                 Value::cons(Value::cons(name, short_name), aliases),
             );
             font::aset(

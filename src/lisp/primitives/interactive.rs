@@ -532,11 +532,15 @@ pub(crate) fn run_pending_user_signal_events(
         let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![event, keymap]);
         let binding = keymap_access_event(interp, keymap, event, false, env)?.unwrap_or(Value::Nil);
         roots.push(binding);
-        interp.set_variable("last-input-event", event, env);
+        interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
         if binding.is_nil() {
             let mut unread = unread_command_events(interp, env)?;
             unread.push(event);
-            interp.set_variable("unread-command-events", Value::list(unread), env);
+            interp.set_variable_key(
+                cached_symbol!("unread-command-events"),
+                Value::list(unread),
+                env,
+            );
             // Keep later signals behind this unread event, matching the main
             // keyboard queue's ordering.
             break;
@@ -1176,7 +1180,11 @@ pub(crate) fn parse_interactive_string(
                         Value::symbol("minibuffer-prompt"),
                     ],
                 )?;
-                let cursor = interp.bind_special_variable("cursor-in-echo-area", Value::T, env)?;
+                let cursor = interp.bind_special_key(
+                    cached_symbol!("cursor-in-echo-area"),
+                    Value::T,
+                    env,
+                )?;
                 let events = read_key_sequence_events(interp, message, code == 'K', env);
                 interp.restore_special_binding(cursor, env)?;
                 let events = events?;
@@ -1197,7 +1205,7 @@ pub(crate) fn parse_interactive_string(
                         .is_some_and(|modifiers| {
                             modifiers
                                 .iter()
-                                .any(|modifier| modifier.symbol_str() == Some("down"))
+                                .any(|modifier| modifier.is_key(cached_symbol!("down")))
                         })
                 {
                     up_event = call1(interp, env, "read-event", &[])?;
@@ -1488,7 +1496,7 @@ pub(crate) fn pending_keystroke_echo(
         .is_none_or(|value| value.is_truthy());
     if help_wanted
         && interp
-            .lookup_function("help--append-keystrokes-help", env)
+            .lookup_function_key(cached_symbol!("help--append-keystrokes-help"), env)
             .is_ok()
     {
         // The Lisp side reads this-single-command-keys, exactly what
@@ -1639,7 +1647,7 @@ pub(crate) fn add_command_undo_boundary(
     env: &mut Env,
 ) -> Result<(), LispError> {
     if interp
-        .lookup_function("undo-auto--add-boundary", env)
+        .lookup_function_key(cached_symbol!("undo-auto--add-boundary"), env)
         .is_ok()
     {
         interp.call_function_value(
@@ -1673,23 +1681,23 @@ fn execute_command_binding_inner(
     // blocks with redisplay frozen (the F10 menu) keeps the old message
     // visible until an explicit `message' repaints the row.
     crate::lisp::primitives::expire_echo_area_message();
-    interp.set_variable("last-command-event", last_event, env);
-    interp.set_variable("last-input-event", last_event, env);
+    interp.set_variable_key(cached_symbol!("last-command-event"), last_event, env);
+    interp.set_variable_key(cached_symbol!("last-input-event"), last_event, env);
     if !mouse_event_on_menu_bar(&last_event) {
-        interp.set_variable("last-nonmenu-event", last_event, env);
+        interp.set_variable_key(cached_symbol!("last-nonmenu-event"), last_event, env);
     }
     // The reader has published translated command keys and the original
     // raw input separately. Commands and hooks must observe both unchanged.
-    interp.set_variable(
-        "this-command-keys-vector",
+    interp.set_variable_key(
+        cached_symbol!("this-command-keys-vector"),
         Value::vector(keys.iter().cloned()),
         env,
     );
     // command_loop_1: Vthis_original_command is the binding before
     // remapping; Vthis_command = cmd; Vreal_this_command = cmd.
-    interp.set_variable("this-original-command", original, env);
-    interp.set_variable("this-command", binding, env);
-    interp.set_variable("real-this-command", binding, env);
+    interp.set_variable_key(cached_symbol!("this-original-command"), original, env);
+    interp.set_variable_key(cached_symbol!("this-command"), binding, env);
+    interp.set_variable_key(cached_symbol!("real-this-command"), binding, env);
     record_command_lossage(interp, binding);
     // read_char records terminal events as they arrive while a keyboard
     // macro is being defined.  The command's end keys are deliberately
@@ -1733,7 +1741,10 @@ fn execute_command_binding_inner(
         interp
             .call_function_value(Value::symbol("undefined"), Some("undefined"), &[], env)
             .map(|_| ())
-    } else if interp.lookup_function("command-execute", env).is_ok() {
+    } else if interp
+        .lookup_function_key(cached_symbol!("command-execute"), env)
+        .is_ok()
+    {
         command_loop_call(
             interp,
             env,
@@ -1745,8 +1756,8 @@ fn execute_command_binding_inner(
         let prefix = interp
             .lookup_var_key(cached_symbol!("prefix-arg"), env)
             .unwrap_or(Value::Nil);
-        interp.set_variable("current-prefix-arg", prefix, env);
-        interp.set_variable("prefix-arg", Value::Nil, env);
+        interp.set_variable_key(cached_symbol!("current-prefix-arg"), prefix, env);
+        interp.set_variable_key(cached_symbol!("prefix-arg"), Value::Nil, env);
         command_loop_call(
             interp,
             env,
@@ -1803,7 +1814,7 @@ fn execute_command_binding_inner(
     // sees it.  (Changes made by idle timers between commands are the
     // disclosed gap of this granularity.)
     if interp
-        .lookup_function("undo-auto--undoable-change", env)
+        .lookup_function_key(cached_symbol!("undo-auto--undoable-change"), env)
         .is_ok()
     {
         let current_changed = interp.current_buffer_id() == modified_before.0
@@ -1846,7 +1857,7 @@ fn execute_command_binding_inner(
         .lookup_var_key(cached_symbol!("this-command"), env)
         .filter(|command| !command.is_nil())
         .unwrap_or(dispatched);
-    interp.set_variable("last-command", last_command, env);
+    interp.set_variable_key(cached_symbol!("last-command"), last_command, env);
     // keyboard.c:1585: real-last-command takes real-this-command after
     // the command ran (execute-extended-command sets real-this-command
     // to the invoked function, and its suggestion timer compares
@@ -1854,13 +1865,13 @@ fn execute_command_binding_inner(
     let real_last = interp
         .lookup_var_key(cached_symbol!("real-this-command"), env)
         .unwrap_or(Value::Nil);
-    interp.set_variable("real-last-command", real_last, env);
+    interp.set_variable_key(cached_symbol!("real-last-command"), real_last, env);
     // keyboard.c takes last-prefix-arg from current-prefix-arg after the
     // command ran (command-execute moved prefix-arg there).
     let last_prefix = interp
         .lookup_var_key(cached_symbol!("current-prefix-arg"), env)
         .unwrap_or(Value::Nil);
-    interp.set_variable("last-prefix-arg", last_prefix, env);
+    interp.set_variable_key(cached_symbol!("last-prefix-arg"), last_prefix, env);
     if interp
         .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
         .is_some_and(|value| value.is_truthy())
@@ -1871,9 +1882,9 @@ fn execute_command_binding_inner(
     // sequence, `this-command' and its shadows go nil -- Lisp that runs
     // between commands (idle timers; eldoc's `(not this-command)' guard)
     // must see no command executing.
-    interp.set_variable("this-command", Value::Nil, env);
-    interp.set_variable("real-this-command", Value::Nil, env);
-    interp.set_variable("this-original-command", Value::Nil, env);
+    interp.set_variable_key(cached_symbol!("this-command"), Value::Nil, env);
+    interp.set_variable_key(cached_symbol!("real-this-command"), Value::Nil, env);
+    interp.set_variable_key(cached_symbol!("this-original-command"), Value::Nil, env);
     Ok(())
 }
 
@@ -1898,7 +1909,7 @@ pub(crate) fn tty_note_idle_start(interp: &mut Interpreter, env: &mut Env) {
     }
     TTY_IDLE_START.with(|cell| cell.set(Some(std::time::Instant::now())));
     if interp
-        .lookup_function("internal-timer-start-idle", env)
+        .lookup_function_key(cached_symbol!("internal-timer-start-idle"), env)
         .is_ok()
     {
         let _ = interp.call_function_value(
@@ -1975,7 +1986,10 @@ fn timer_check(
     idle_seconds: f64,
     ran: &mut bool,
 ) -> Result<Option<std::time::Duration>, LispError> {
-    if interp.lookup_function("timer-event-handler", env).is_err() {
+    if interp
+        .lookup_function_key(cached_symbol!("timer-event-handler"), env)
+        .is_err()
+    {
         return Ok(None);
     }
     // keyboard.c:timer_check keeps its copied lists reachable across
@@ -2044,7 +2058,8 @@ fn timer_check(
         let old_deactivate_mark = interp
             .lookup_var_key(cached_symbol!("deactivate-mark"), env)
             .unwrap_or(Value::Nil);
-        let inhibit_quit = interp.bind_special_variable("inhibit-quit", Value::T, env)?;
+        let inhibit_quit =
+            interp.bind_special_key(cached_symbol!("inhibit-quit"), Value::T, env)?;
         interp.begin_timer_callback();
         let outcome = interp.call_function_value(
             Value::Symbol("timer-event-handler".into()),
@@ -2131,7 +2146,7 @@ fn pop_unread_event_cell(interp: &mut Interpreter, env: &mut Env) -> Option<Valu
         .lookup_var_key(cached_symbol!("unread-command-events"), env)?
         .cons_values()?;
     interp.with_lisp_stack_roots(&event, |interp| {
-        interp.set_variable("unread-command-events", tail, env);
+        interp.set_variable_key(cached_symbol!("unread-command-events"), tail, env);
     });
     Some(event)
 }
@@ -2986,13 +3001,17 @@ pub(crate) fn command_loop_entry(interp: &mut Interpreter, env: &mut Env) -> Res
     let real_this_command = interp
         .lookup_var_key(cached_symbol!("real-this-command"), env)
         .unwrap_or(Value::Nil);
-    interp.set_variable("last-command", this_command, env);
-    interp.set_variable("real-last-command", real_this_command, env);
+    interp.set_variable_key(cached_symbol!("last-command"), this_command, env);
+    interp.set_variable_key(cached_symbol!("real-last-command"), real_this_command, env);
     let last_event_is_cons = interp
         .lookup_var_key(cached_symbol!("last-command-event"), env)
         .is_some_and(|event| event.cons_values().is_some());
     if !last_event_is_cons {
-        interp.set_variable("last-repeatable-command", real_this_command, env);
+        interp.set_variable_key(
+            cached_symbol!("last-repeatable-command"),
+            real_this_command,
+            env,
+        );
     }
     Ok(())
 }
@@ -3040,7 +3059,7 @@ pub(crate) fn cmd_error(
         String::new()
     };
     if !error_data_has_condition(interp, &data, "minibuffer-quit") {
-        interp.set_variable("executing-kbd-macro", Value::Nil, env);
+        interp.set_variable_key(cached_symbol!("executing-kbd-macro"), Value::Nil, env);
         interp.executing_kbd_macro = false;
     } else if interp
         .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
@@ -3058,8 +3077,8 @@ pub(crate) fn cmd_error(
             return Err(error);
         }
     };
-    interp.set_variable("prefix-arg", Value::Nil, env);
-    interp.set_variable("last-prefix-arg", Value::Nil, env);
+    interp.set_variable_key(cached_symbol!("prefix-arg"), Value::Nil, env);
+    interp.set_variable_key(cached_symbol!("last-prefix-arg"), Value::Nil, env);
     // Avoid unquittable loop if data contains a circular list.
     let reported = interp.with_lisp_stack_roots(&data, |interp| {
         crate::lisp::primitives::with_cmd_error_print_limits(interp, |interp| {

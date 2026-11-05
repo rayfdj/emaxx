@@ -379,7 +379,7 @@ fn describe_vector_value(
         .cloned()
         .unwrap_or_else(|| Value::Symbol("princ".into()));
     let output_buffer = Value::Buffer(interp.buffer);
-    let restore = interp.bind_special_variable("standard-output", output_buffer, env)?;
+    let restore = interp.bind_special_key(cached_symbol!("standard-output"), output_buffer, env)?;
     let mut result = (|| -> Result<Value, LispError> {
         let mut first = true;
         for (start, end, value) in ranges {

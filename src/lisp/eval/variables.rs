@@ -326,6 +326,15 @@ impl Interpreter {
 
     /// The bound value of a native field or local alist cell.
     /// Callers that need the locality flag use `buffer_local_binding'.
+    /// `buffer_local_value' of the cached key's symbol.
+    pub(crate) fn buffer_local_value_key(
+        &self,
+        buffer_id: u64,
+        key: crate::lisp::types::symbols::SymbolKey,
+    ) -> Option<Value> {
+        key.with(|symbol| self.buffer_local_value_symbol(buffer_id, symbol))
+    }
+
     pub fn buffer_local_value(&self, buffer_id: u64, name: &str) -> Option<Value> {
         SymbolName::find(name).and_then(|symbol| self.buffer_local_value_symbol(buffer_id, &symbol))
     }
@@ -418,6 +427,16 @@ impl Interpreter {
     ) -> bool {
         self.buffer_local_binding_symbol(buffer_id, symbol)
             .is_some()
+    }
+
+    /// `set_buffer_local_value' of the cached key's symbol.
+    pub(crate) fn set_buffer_local_value_key(
+        &mut self,
+        buffer_id: u64,
+        key: crate::lisp::types::symbols::SymbolKey,
+        value: Value,
+    ) {
+        self.set_buffer_local_value_symbol(buffer_id, &key.symbol(), value);
     }
 
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
@@ -1480,6 +1499,14 @@ impl Interpreter {
         self.global_binding_value(name)
     }
 
+    /// `default_value' of the cached key's symbol.
+    pub(crate) fn default_value_key(
+        &self,
+        key: crate::lisp::types::symbols::SymbolKey,
+    ) -> Option<Value> {
+        key.with(|symbol| self.default_value_symbol(symbol).ok().flatten())
+    }
+
     pub fn default_value(&self, name: &str) -> Option<Value> {
         self.default_value_symbol(&SymbolName::intern_str(name))
             .ok()
@@ -1760,6 +1787,18 @@ impl Interpreter {
         } else {
             self.set_global_binding(name, value);
         }
+    }
+
+    /// `set_global_binding' of the cached key's symbol, its alias chain
+    /// resolved as there.
+    pub(crate) fn set_global_binding_key(
+        &mut self,
+        key: crate::lisp::types::symbols::SymbolKey,
+        value: Value,
+    ) {
+        let symbol = key.symbol();
+        let resolved = self.resolve_variable_symbol(&symbol).unwrap_or(symbol);
+        self.set_global_binding_resolved(&resolved, value);
     }
 
     pub fn set_global_binding(&mut self, name: &str, value: Value) {
@@ -2190,6 +2229,17 @@ impl Interpreter {
             }
         }
         Err(error)
+    }
+
+    /// `bind_special_variable' of the cached key's symbol (specbind of
+    /// Qname from C).
+    pub(crate) fn bind_special_key(
+        &mut self,
+        key: crate::lisp::types::symbols::SymbolKey,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<SpecpdlRef, LispError> {
+        self.bind_special_symbol(&key.symbol(), value, env)
     }
 
     pub(crate) fn bind_special_variable(

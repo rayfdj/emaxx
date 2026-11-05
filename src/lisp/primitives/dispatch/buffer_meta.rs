@@ -529,7 +529,10 @@ define_dispatch!(
                 // that boundary to replace a generated `<N>' suffix with
                 // directory-derived policy; keep that policy in uniquify.el.
                 if interp.is_fbound("uniquify--rename-buffer-advice") {
-                    let callback = interp.lookup_function("uniquify--rename-buffer-advice", env)?;
+                    let callback = interp.lookup_function_key(
+                        cached_symbol!("uniquify--rename-buffer-advice"),
+                        env,
+                    )?;
                     interp.call_function_value(
                         callback,
                         Some("uniquify--rename-buffer-advice"),
@@ -1551,10 +1554,12 @@ define_dispatch!(
                 };
                 Ok(match spec.eol_type.kind() {
                     Kind::Vector(subsidiaries) => Value::vector(subsidiaries.slots()),
-                    _ => Value::Integer(match spec.eol_type.symbol_str() {
-                        Some("unix") => 0,
-                        Some("dos") => 1,
-                        _ => 2,
+                    _ => Value::Integer(if spec.eol_type.is_key(cached_symbol!("unix")) {
+                        0
+                    } else if spec.eol_type.is_key(cached_symbol!("dos")) {
+                        1
+                    } else {
+                        2
                     }),
                 })
             }

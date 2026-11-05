@@ -38,11 +38,11 @@ impl KeySequenceReader {
     ) -> Result<Self, LispError> {
         let mut roots = RootedVec::with_capacity(10);
         for name in [
-            "input-decode-map",
-            "local-function-key-map",
-            "key-translation-map",
+            cached_symbol!("input-decode-map"),
+            cached_symbol!("local-function-key-map"),
+            cached_symbol!("key-translation-map"),
         ] {
-            let map = interp.lookup_var(name, env).unwrap_or(Value::Nil);
+            let map = interp.lookup_var_key(name, env).unwrap_or(Value::Nil);
             roots.push(map);
             roots.push(map);
         }
@@ -343,7 +343,11 @@ impl KeySequenceReader {
             self.shift_translated = false;
         }
         if self.shift_translated {
-            interp.set_variable("this-command-keys-shift-translated", Value::T, env);
+            interp.set_variable_key(
+                cached_symbol!("this-command-keys-shift-translated"),
+                Value::T,
+                env,
+            );
         }
         self.keys.to_vec()
     }
@@ -393,7 +397,7 @@ impl KeySequenceReader {
         } else {
             event
         });
-        interp.set_variable("last-input-event", event, env);
+        interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
         let mut expanded = false;
         if mouse_event_head(interp, &event).is_none()
             && let Some(position_tail) = event

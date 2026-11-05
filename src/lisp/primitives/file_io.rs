@@ -592,7 +592,7 @@ impl InsertFileSource {
         let regular = metadata.is_file() || metadata.is_dir();
         let mut seekable = true;
         if !regular {
-            if replace.is_some_and(|replace| replace.symbol_str() != Some("if-regular")) {
+            if replace.is_some_and(|replace| !replace.is_key(cached_symbol!("if-regular"))) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::symbol("file-error"),
                     Value::String("not a regular file".into()),
@@ -874,7 +874,7 @@ fn choose_write_coding(
     }
     if !using_default {
         let default = interp
-            .default_value("buffer-file-coding-system")
+            .default_value_key(cached_symbol!("buffer-file-coding-system"))
             .unwrap_or(Value::Nil);
         if !default.is_nil() {
             coding = inherit_write_coding_eol(interp, coding, default)?;
@@ -951,7 +951,7 @@ pub(crate) fn write_region_value_with_logical_path(
     // FILENAME, as the preamble expanded it.
     let path = string_text(&args[2])?;
     let existed_before_write = fs::symlink_metadata(host_file_name(interp, env, &path)?).is_ok();
-    if normalized[6].is_truthy() && normalized[6].symbol_str() != Some("excl") {
+    if normalized[6].is_truthy() && !normalized[6].is_key(cached_symbol!("excl")) {
         barf_or_query_if_file_exists(interp, env, logical_path, false, "overwrite", true, true)?;
     }
     // write_region saves restriction state even for explicit/string input;
@@ -1193,7 +1193,7 @@ fn write_region_with_coding(
             return emacs_write_quit(interp, env, file, &bytes)?
                 .map_err(|error| file_operation_error("Write error", &error, path));
         }
-        let exclusive = args[6].symbol_str() == Some("excl");
+        let exclusive = args[6].is_key(cached_symbol!("excl"));
         // An auto-save file is made with auto_save_mode_bits.
         let mode = if auto_saving {
             AUTO_SAVE_MODE_BITS.get()
@@ -2008,10 +2008,22 @@ fn auto_coding_in_work_buffer(
     interp.set_current_buffer_id(work_id)?;
     let mut work_env = env.clone();
     let result = (|| {
-        interp.set_variable("default-directory", directory, &mut work_env);
-        interp.set_variable("buffer-read-only", Value::Nil, &mut work_env);
-        interp.set_variable("buffer-file-name", Value::Nil, &mut work_env);
-        interp.set_variable("buffer-undo-list", Value::T, &mut work_env);
+        interp.set_variable_key(
+            cached_symbol!("default-directory"),
+            directory,
+            &mut work_env,
+        );
+        interp.set_variable_key(
+            cached_symbol!("buffer-read-only"),
+            Value::Nil,
+            &mut work_env,
+        );
+        interp.set_variable_key(
+            cached_symbol!("buffer-file-name"),
+            Value::Nil,
+            &mut work_env,
+        );
+        interp.set_variable_key(cached_symbol!("buffer-undo-list"), Value::T, &mut work_env);
         call(interp, "erase-buffer", &[], &mut work_env)?;
         interp.buffer.borrow_mut().set_multibyte(false);
         interp.insert_current_buffer(&decode_raw_text_bytes(sample));
@@ -2065,7 +2077,11 @@ fn auto_coding_in_empty_buffer(
         )
     };
     interp.buffer.borrow_mut().set_multibyte(false);
-    interp.set_variable("buffer-undo-list", Value::T, &mut decide_env);
+    interp.set_variable_key(
+        cached_symbol!("buffer-undo-list"),
+        Value::T,
+        &mut decide_env,
+    );
     interp.insert_current_buffer_raw_bytes(bytes);
     let inserted_tick = {
         let mut buffer = interp.buffer.borrow_mut();
@@ -2107,7 +2123,11 @@ fn auto_coding_in_empty_buffer(
         buffer.set_modified_tick(modiff);
         buffer.set_chars_modified_tick(chars_modiff);
         drop(buffer);
-        interp.set_variable("buffer-undo-list", undo_list, &mut decide_env);
+        interp.set_variable_key(
+            cached_symbol!("buffer-undo-list"),
+            undo_list,
+            &mut decide_env,
+        );
     }
     result
 }
@@ -2176,7 +2196,7 @@ pub(crate) fn decide_file_coding(
         Some("no-conversion".to_string())
     } else if request
         .as_ref()
-        .is_some_and(|value| value.symbol_str() == Some("auto-save-coding"))
+        .is_some_and(|value| value.is_key(cached_symbol!("auto-save-coding")))
     {
         Some("utf-8-emacs-unix".to_string())
     } else {
@@ -2418,7 +2438,7 @@ pub(crate) fn insert_file_contents(
                 .lookup_var_key(cached_symbol!("coding-system-for-read"), env)
                 .filter(|coding| !coding.is_nil())
             {
-                interp.set_variable("buffer-file-coding-system", coding, env);
+                interp.set_variable_key(cached_symbol!("buffer-file-coding-system"), coding, env);
             }
             let (coding, _) =
                 decide_file_coding(interp, env, &[], literal, &path, &operation_args)?;
@@ -2641,9 +2661,9 @@ fn insert_file_bytes(
             {
                 super::call(interp, "unlock-file", &[truename], env)?;
             }
-            interp.set_variable("deactivate-mark", old_deactivate_mark, env);
+            interp.set_variable_key(cached_symbol!("deactivate-mark"), old_deactivate_mark, env);
         } else {
-            interp.set_variable("deactivate-mark", Value::T, env);
+            interp.set_variable_key(cached_symbol!("deactivate-mark"), Value::T, env);
         }
         if let Some(error) = read.error {
             return Err(file_operation_error("Read error", &error, path));
@@ -2708,14 +2728,14 @@ fn insert_file_bytes(
             let undo_list = interp
                 .lookup_var_key(cached_symbol!("buffer-undo-list"), env)
                 .unwrap_or(Value::Nil);
-            interp.set_variable("buffer-undo-list", Value::T, env);
+            interp.set_variable_key(cached_symbol!("buffer-undo-list"), Value::T, env);
             let result = interp.call_function_value(
                 function,
                 None,
                 &[Value::Integer(inserted_chars as i64)],
                 env,
             );
-            interp.set_variable("buffer-undo-list", undo_list, env);
+            interp.set_variable_key(cached_symbol!("buffer-undo-list"), undo_list, env);
             let value = result?;
             if value.integer_value().is_none_or(|count| count < 0) {
                 return Err(LispError::WrongTypeArgument("wholenump".into(), value));
@@ -2959,7 +2979,9 @@ pub(crate) fn finish_insert_file_contents(
     let visit = trailing_args.first().copied().unwrap_or(Value::Nil);
     let replace = trailing_args.get(3).is_some_and(Value::is_truthy);
 
-    if let Ok(function) = interp.lookup_function("after-insert-file-set-coding", env) {
+    if let Ok(function) =
+        interp.lookup_function_key(cached_symbol!("after-insert-file-set-coding"), env)
+    {
         let insval = interp.call_function_value(
             function,
             Some("after-insert-file-set-coding"),
@@ -2974,7 +2996,7 @@ pub(crate) fn finish_insert_file_contents(
     if inserted == 0 {
         return Ok(inserted);
     }
-    let Ok(format_decode) = interp.lookup_function("format-decode", env) else {
+    let Ok(format_decode) = interp.lookup_function_key(cached_symbol!("format-decode"), env) else {
         return Ok(inserted);
     };
     let old_inserted = inserted;
@@ -3083,7 +3105,7 @@ fn auto_saving_into_visited_file(interp: &Interpreter) -> bool {
         let id = interp.current_buffer_id();
         let file = interp.buffer.borrow().file.clone();
         let auto_save = interp
-            .buffer_local_value(id, "buffer-auto-save-file-name")
+            .buffer_local_value_key(id, cached_symbol!("buffer-auto-save-file-name"))
             .and_then(|name| string_like(&name).map(|name| name.text));
         file.is_some() && file == auto_save
     }
@@ -3120,7 +3142,7 @@ fn auto_save_1(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispErr
     AUTO_SAVE_MODE_BITS.set(bits);
     let id = interp.current_buffer_id();
     let name = interp
-        .buffer_local_value(id, "buffer-auto-save-file-name")
+        .buffer_local_value_key(id, cached_symbol!("buffer-auto-save-file-name"))
         .unwrap_or(Value::Nil);
     let visit = if interp
         .lookup_var_key(cached_symbol!("auto-save-visited-file-name"), env)
@@ -3200,7 +3222,7 @@ pub(crate) fn do_auto_save(
     let oquit = interp
         .lookup_var_key(cached_symbol!("quit-flag"), env)
         .unwrap_or(Value::Nil);
-    interp.set_variable("quit-flag", Value::Nil, env);
+    interp.set_variable_key(cached_symbol!("quit-flag"), Value::Nil, env);
     crate::lisp::primitives::safe_run_hooks(
         interp,
         &cached_symbol!("auto-save-hook").symbol(),
@@ -3240,7 +3262,7 @@ pub(crate) fn do_auto_save(
     let auto_raise = interp
         .lookup_var_key(cached_symbol!("minibuffer-auto-raise"), env)
         .unwrap_or(Value::Nil);
-    interp.set_variable("minibuffer-auto-raise", Value::Nil, env);
+    interp.set_variable_key(cached_symbol!("minibuffer-auto-raise"), Value::Nil, env);
     AUTO_SAVING.set(true);
     AUTO_SAVE_ERROR_OCCURRED.set(false);
     let result = (|| -> Result<bool, LispError> {
@@ -3256,7 +3278,7 @@ pub(crate) fn do_auto_save(
                     continue;
                 };
                 let auto_save_name = interp
-                    .buffer_local_value(id, "buffer-auto-save-file-name")
+                    .buffer_local_value_key(id, cached_symbol!("buffer-auto-save-file-name"))
                     .filter(Value::is_string);
                 // The buffers that auto-save, by visited and auto-save
                 // file names, in the special file that lists them.
@@ -3278,7 +3300,8 @@ pub(crate) fn do_auto_save(
                 let Some(auto_save_name) = auto_save_name else {
                     continue;
                 };
-                let save_length = interp.buffer_local_value(id, "buffer-saved-size");
+                let save_length =
+                    interp.buffer_local_value_key(id, cached_symbol!("buffer-saved-size"));
                 let (changed, failure_time) = {
                     let state = buffer.borrow();
                     (state.changed_since_saves(), state.auto_save_failure_time)
@@ -3318,7 +3341,11 @@ pub(crate) fn do_auto_save(
                     && !no_message
                 {
                     // It has shrunk too much; turn off auto-saving here.
-                    interp.set_variable("minibuffer-auto-raise", auto_raise, env);
+                    interp.set_variable_key(
+                        cached_symbol!("minibuffer-auto-raise"),
+                        auto_raise,
+                        env,
+                    );
                     let name = Value::string(&buffer.borrow().name);
                     super::dispatch::display::message_with_string(
                         interp,
@@ -3326,7 +3353,11 @@ pub(crate) fn do_auto_save(
                         name,
                         env,
                     )?;
-                    interp.set_variable("minibuffer-auto-raise", Value::Nil, env);
+                    interp.set_variable_key(
+                        cached_symbol!("minibuffer-auto-raise"),
+                        Value::Nil,
+                        env,
+                    );
                     interp.set_buffer_local_value_symbol(
                         id,
                         &cached_symbol!("buffer-saved-size").with(Clone::clone),
@@ -3376,7 +3407,7 @@ pub(crate) fn do_auto_save(
         Ok(auto_saved)
     })();
     // do_auto_save_unwind.
-    interp.set_variable("minibuffer-auto-raise", auto_raise, env);
+    interp.set_variable_key(cached_symbol!("minibuffer-auto-raise"), auto_raise, env);
     AUTO_SAVING.set(false);
     drop(stream);
     let auto_saved = result?;
@@ -3391,6 +3422,6 @@ pub(crate) fn do_auto_save(
             super::dispatch::display::message1(interp, "Auto-saving...done", env)?;
         }
     }
-    interp.set_variable("quit-flag", oquit, env);
+    interp.set_variable_key(cached_symbol!("quit-flag"), oquit, env);
     Ok(Value::Nil)
 }

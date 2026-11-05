@@ -138,11 +138,11 @@ impl Interpreter {
         // emacs.c:main calls macros.c:init_macros in the new process.
         // A saved Lisp array remains in the image, but execution does not
         // resume merely because it was the active macro at dump time.
-        self.set_global_binding("executing-kbd-macro", Value::Nil);
+        self.set_global_binding_key(cached_symbol!("executing-kbd-macro"), Value::Nil);
         // emacs.c:main computes this after load_pdump, from this process's
         // locale rather than the locale under which the image was built.
-        self.set_global_binding(
-            "internal--text-quoting-flag",
+        self.set_global_binding_key(
+            cached_symbol!("internal--text-quoting-flag"),
             if primitives::values::locale_uses_utf8() {
                 Value::T
             } else {
@@ -152,15 +152,24 @@ impl Interpreter {
         // callproc.c:set_initial_environment fills both lists from
         // environ (Fdump_emacs_portable dumped `process-environment' as
         // nil for exactly this).
-        self.set_global_binding("initial-environment", initial_environment_list());
-        self.set_global_binding("process-environment", initial_environment_list());
+        self.set_global_binding_key(
+            cached_symbol!("initial-environment"),
+            initial_environment_list(),
+        );
+        self.set_global_binding_key(
+            cached_symbol!("process-environment"),
+            initial_environment_list(),
+        );
         // xfaces.c:init_xfaces: lface_id_to_name from the loaded
         // face--new-frame-defaults.
         self.rebuild_lface_id_to_name();
         // window.c:init_window_once_for_pdumper, which pdumper runs after
         // the load: the image's frames are nilled, and the initial frame
         // this process made is Vterminal_frame.
-        self.set_global_binding("terminal-frame", Value::Frame(self.selected_frame_id));
+        self.set_global_binding_key(
+            cached_symbol!("terminal-frame"),
+            Value::Frame(self.selected_frame_id),
+        );
         // editfns.c:init_editfns, which emacs.c:main runs in every process
         // after load_pdump: the user names are this process's.
         self.init_editfns();
@@ -188,11 +197,14 @@ impl Interpreter {
                 &mut crate::lisp::types::Env::new(),
             )?;
         }
-        self.set_buffer_local_value(scratch, "default-directory", directory);
+        self.set_buffer_local_value_key(scratch, cached_symbol!("default-directory"), directory);
         let minibuffer = primitives::get_minibuffer(self, 0);
-        self.set_buffer_local_value(minibuffer, "default-directory", directory);
+        self.set_buffer_local_value_key(minibuffer, cached_symbol!("default-directory"), directory);
         // emacs.c:init_cmdargs.
-        self.set_global_binding("command-line-args", primitives::command_line_args_value());
+        self.set_global_binding_key(
+            cached_symbol!("command-line-args"),
+            primitives::command_line_args_value(),
+        );
         for name in [
             "invocation-name",
             "invocation-directory",
@@ -208,8 +220,8 @@ impl Interpreter {
                 self.set_global_binding(name, value);
             }
         }
-        self.set_global_binding(
-            "exec-directory",
+        self.set_global_binding_key(
+            cached_symbol!("exec-directory"),
             Value::string(
                 &primitives::current_invocation_directory()
                     .unwrap_or_else(primitives::default_directory),
@@ -218,7 +230,7 @@ impl Interpreter {
         crate::startup::initialize_exec_path(self)?;
         // charset.c:init_charset.
         let charset_map_path = self.charset_map_path()?;
-        self.set_global_binding("charset-map-path", charset_map_path);
+        self.set_global_binding_key(cached_symbol!("charset-map-path"), charset_map_path);
         // timefns.c:init_timefns takes the new process's TZ.
         self.local_time_zone_rule = std::env::var("TZ")
             .map(|value| Value::String(value.into()))
@@ -367,8 +379,8 @@ mod tests {
         let utf8 = primitives::values::locale_uses_utf8();
         // Simulate a dump from the opposite locale. The ordinary process
         // control also loads a real C-locale image under C and en_US.UTF-8.
-        interpreter.set_global_binding(
-            "internal--text-quoting-flag",
+        interpreter.set_global_binding_key(
+            cached_symbol!("internal--text-quoting-flag"),
             if utf8 { Value::Nil } else { Value::T },
         );
         interpreter
@@ -410,7 +422,11 @@ mod tests {
             interpreter.set_global_binding(name, Value::string("/dump-builder/"));
         }
         let other = interpreter.create_buffer("saved-other-buffer").0;
-        interpreter.set_buffer_local_value(other, "default-directory", Value::string("/saved/"));
+        interpreter.set_buffer_local_value_key(
+            other,
+            cached_symbol!("default-directory"),
+            Value::string("/saved/"),
+        );
         interpreter
             .set_current_buffer_id(other)
             .expect("select saved buffer");

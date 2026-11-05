@@ -6191,8 +6191,8 @@ fn gnu_batch_runtime_macroexp_file_name_does_not_leak_ert_source() {
     crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let test_file = "/tmp/emaxx-batch-runtime-resource-tests.el";
     interp.set_current_load_file(Some(test_file.into()));
-    interp.set_variable(
-        "current-load-list",
+    interp.set_variable_key(
+        cached_symbol!("current-load-list"),
         Value::list([Value::String(test_file.into())]),
         &mut crate::lisp::types::Env::new(),
     );
@@ -6201,8 +6201,8 @@ fn gnu_batch_runtime_macroexp_file_name_does_not_leak_ert_source() {
         "(ert-deftest batch-runtime-does-not-leak-ert-source ()
            (should-not (macroexp-file-name)))",
     );
-    interp.set_variable(
-        "current-load-list",
+    interp.set_variable_key(
+        cached_symbol!("current-load-list"),
         Value::Nil,
         &mut crate::lisp::types::Env::new(),
     );
@@ -6559,8 +6559,8 @@ fn batch_startup_preloads_the_gnu_european_coding_owner() {
     };
     let mut interp =
         crate::batch::initialize_batch_interpreter(&options).expect("initialize batch interpreter");
-    interp.set_variable(
-        "data-directory",
+    interp.set_variable_key(
+        cached_symbol!("data-directory"),
         Value::String(
             crate::lisp::primitives::path_to_directory_string(&upstream_emacs_repo().join("etc"))
                 .into(),
@@ -6772,19 +6772,19 @@ fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
     // Source-aware upstream tests must not accidentally inspect the Emaxx
     // workspace just because this faster in-process harness started there.
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable(
-        "source-directory",
+    interp.set_variable_key(
+        cached_symbol!("source-directory"),
         Value::String(crate::lisp::primitives::path_to_directory_string(&emacs_repo).into()),
         &mut env,
     );
     let data_directory = crate::lisp::primitives::path_to_directory_string(&emacs_repo.join("etc"));
-    interp.set_variable(
-        "data-directory",
+    interp.set_variable_key(
+        cached_symbol!("data-directory"),
         Value::String(data_directory.clone().into()),
         &mut env,
     );
-    interp.set_variable(
-        "doc-directory",
+    interp.set_variable_key(
+        cached_symbol!("doc-directory"),
         Value::String(data_directory.into()),
         &mut env,
     );
@@ -6803,8 +6803,8 @@ fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
             .as_nanos()
     ));
     std::fs::create_dir_all(&scratch_directory).expect("create upstream test scratch directory");
-    interp.set_variable(
-        "default-directory",
+    interp.set_variable_key(
+        cached_symbol!("default-directory"),
         Value::String(crate::lisp::primitives::path_to_directory_string(&scratch_directory).into()),
         &mut env,
     );
@@ -7730,8 +7730,8 @@ fn gv_child_process_diagnostics_decode_as_multibyte_text() {
         // GNU oracle without mutating the process environment shared by
         // parallel Rust tests.
         let oracle = upstream_emacs_repo().join("src/emacs");
-        interp.set_global_binding(
-            "invocation-name",
+        interp.set_global_binding_key(
+            cached_symbol!("invocation-name"),
             Value::String(
                 oracle
                     .file_name()
@@ -7741,8 +7741,8 @@ fn gv_child_process_diagnostics_decode_as_multibyte_text() {
                     .into(),
             ),
         );
-        interp.set_global_binding(
-            "invocation-directory",
+        interp.set_global_binding_key(
+            cached_symbol!("invocation-directory"),
             Value::String(
                 format!(
                     "{}/",
@@ -8087,8 +8087,8 @@ fn todo_month_edits_observe_dynamic_prefix_argument() {
     // GNU's real `macroexp-file-name' reads the final file entry from
     // `current-load-list'.  Keep this direct (non-ERT-runner) probe in the
     // same macro-expansion context as the loaded upstream test body.
-    interp.set_variable(
-        "current-load-list",
+    interp.set_variable_key(
+        cached_symbol!("current-load-list"),
         Value::list([Value::String(test_file.into())]),
         &mut crate::lisp::types::Env::new(),
     );

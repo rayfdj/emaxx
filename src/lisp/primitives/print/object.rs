@@ -201,7 +201,7 @@ pub(crate) fn print_preprocess(
         if circle_candidate(interp, &obj, options) {
             if number_table(interp).is_none() {
                 let table = json::make_hash_table(interp, "eq", Vec::new());
-                interp.set_variable("print-number-table", table, env);
+                interp.set_variable_key(cached_symbol!("print-number-table"), table, env);
             }
             let num = number_table_get(interp, env, &obj)?;
             // byte-compile-output-docform's gensyms always get a number.
