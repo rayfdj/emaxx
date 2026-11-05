@@ -15316,6 +15316,26 @@ setup_process_coding_systems's check now refuses). A 13-form
   and file-mode checks. Local validation: the grouped gate's 3,501
   library tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 326: the describe functions insert as insert_string does.**
+  syntax.c's internal-describe-syntax-value and keymap.c's
+  describe-vector and describe-map insert with insert, insert_char,
+  insert_string and insert1, each through prepare_to_modify_buffer and
+  signal_after_change. Emaxx built the text and wrote it into the buffer
+  without either, so a read-only buffer took the text (GNU's signals
+  `buffer-read-only' first), and the change hooks heard one change or
+  none where GNU's hear one for each piece (four for a punctuation
+  entry). Each piece is now an insertion of its own through the path
+  `insert' takes, the prefix flag's text an insertion of what
+  `substitute-command-keys' answers, and describe-vector's column is
+  Findent_to (16, 1) under the buffer's `indent-tabs-mode' and
+  `tab-width' (Emaxx counted characters and inserted tabs of eight). The
+  narrowing sweep run in a read-only buffer found the first, and in a
+  unibyte buffer of raw bytes answers as GNU's does but for the known
+  cases. A command-line comparison runs the describe functions in plain
+  and read-only buffers with change hooks, under both indentation
+  settings. Local validation: the grouped gate's 3,501 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17947,6 +17967,19 @@ ert-tests as a whole 26,307 ms against 27,211.
   (3,539 against 2,484), mule-tests (2,795 against 1,754) and
   icalendar-tests (1,075 against 396), and
   `ert-test-run-tests-batch-expensive' runs in 1.05 of GNU's time.
+
+**On `5a106e2`** (round 325): the full Rust gate (run 42123613067)
+  passed; the frozen run (run 42123617362) passed at its first attempt,
+  7,928 of 7,928 outcomes matching. Setup 64.5 s against 54.0 s (1.195),
+  test bodies 262.9 s against 240.3 s (1.094), in all 1.125, with a
+  per-file setup median of 98 ms against 84. The widest body gaps are
+  ert-tests (36,913 ms against 33,246), tramp-tests (18,929 against
+  15,690), comp-tests (14,885 against 12,499), semantic-utest-ia (3,266
+  against 2,143) and mule-tests (2,399 against 1,527), and
+  `ert-test-run-tests-batch-expensive' runs in 1.10 of GNU's time.
+  icalendar-tests' import tests, 390 and 292 ms against 86 and 28 in
+  round 324's run, take 111 and 41 against 73 and 33 here, as in round
+  323's: a pause of that runner, not the code.
 
 **Findings recorded, not fixed:**
 - **Windows as generic records (round 321).** A window is a record whose

@@ -2682,6 +2682,17 @@ pub(crate) fn visual_vertical_motion(
     Ok(pos.vpos)
 }
 
+/// insdel.c:insert_string: TEXT at point as Finsert inserts a string:
+/// prepare_to_modify_buffer's read-only checks and change hooks, the
+/// undo record and signal_after_change.
+pub(crate) fn insert_string(
+    interp: &mut Interpreter,
+    text: &str,
+    env: &mut crate::lisp::types::Env,
+) -> Result<(), LispError> {
+    direct_insert(interp, &[Value::string(text)], env).map(drop)
+}
+
 /// The `goto-char' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_goto_char(
     interp: &mut Interpreter,
@@ -3165,7 +3176,7 @@ fn remember_current_column(interp: &mut Interpreter, column: usize) {
     interp.last_known_column = known;
 }
 
-fn indent_to(
+pub(super) fn indent_to(
     interp: &mut Interpreter,
     column: i64,
     minimum: i64,

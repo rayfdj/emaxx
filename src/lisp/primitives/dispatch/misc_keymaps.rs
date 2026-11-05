@@ -312,18 +312,6 @@ fn vector_index_description(index: u32) -> Result<String, LispError> {
     key_sequence_binding_text(&Value::vector([Value::Integer(i64::from(index))]))
 }
 
-fn insert_description_indent(interp: &mut Interpreter, column: usize) {
-    if column >= 16 {
-        interp.insert_current_buffer(" ");
-        return;
-    }
-    let mut current = column;
-    while current < 16 {
-        interp.insert_current_buffer("\t");
-        current = (current / 8 + 1) * 8;
-    }
-}
-
 fn describe_vector_value(
     interp: &mut Interpreter,
     args: &[Value],
@@ -388,14 +376,17 @@ fn describe_vector_value(
                 key.push_str(" .. ");
                 key.push_str(&vector_index_description(end)?);
             }
+            // keymap.c:describe_vector's insert and insert1, then
+            // describe_vector_princ's Findent_to (16, 1), the describer
+            // and Fterpri.
             if first {
-                interp.insert_current_buffer("\n");
+                super::buffer_edit::insert_string(interp, "\n", env)?;
                 first = false;
             }
-            interp.insert_current_buffer(&key);
-            insert_description_indent(interp, key.chars().count());
+            super::buffer_edit::insert_string(interp, &key, env)?;
+            super::buffer_edit::indent_to(interp, 16, 1, env)?;
             interp.call_function_value(describer, None, &[value], env)?;
-            interp.insert_current_buffer("\n");
+            super::buffer_edit::insert_string(interp, "\n", env)?;
         }
         Ok(Value::Nil)
     })();

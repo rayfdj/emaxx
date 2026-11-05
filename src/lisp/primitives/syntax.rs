@@ -230,30 +230,33 @@ pub(super) fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
     Some(entry)
 }
 
-pub(super) fn describe_syntax_value(value: &Value) -> (String, bool) {
+/// syntax.c:Finternal_describe_syntax_value's text, as the pieces it
+/// inserts one by one (each an insertion of its own, with its own change
+/// hooks), and whether the prefix flag's text follows.
+pub(super) fn describe_syntax_value(value: &Value) -> (Vec<String>, bool) {
     if value.is_nil() {
-        return ("default".into(), false);
+        return (vec!["default".into()], false);
     }
     if matches!(value.kind(), Kind::CharTable(_)) {
-        return ("deeper char-table ...".into(), false);
+        return (vec!["deeper char-table ...".into()], false);
     }
     let Some((car, cdr)) = (value).cons_cells() else {
-        return ("invalid".into(), false);
+        return (vec!["invalid".into()], false);
     };
     let Kind::Integer(raw_code) = car.get().kind() else {
-        return ("invalid".into(), false);
+        return (vec!["invalid".into()], false);
     };
     let matching = match cdr.get().kind() {
         Kind::Nil => None,
         Kind::Integer(code) => u32::try_from(code).ok().and_then(char::from_u32),
-        _ => return ("invalid".into(), false),
+        _ => return (vec!["invalid".into()], false),
     };
     if !cdr.get().is_nil() && matching.is_none() {
-        return ("invalid".into(), false);
+        return (vec!["invalid".into()], false);
     }
     let syntax_code = raw_code & i64::from(i32::MAX);
     let Some(class) = syntax_class_from_code(syntax_code & 0xff) else {
-        return ("invalid".into(), false);
+        return (vec!["invalid".into()], false);
     };
     let entry = SyntaxEntry {
         class,
@@ -267,32 +270,32 @@ pub(super) fn describe_syntax_value(value: &Value) -> (String, bool) {
         nested: syntax_code & (1 << 22) != 0,
         style_c: syntax_code & (1 << 23) != 0,
     };
-    let mut description = String::new();
-    description.push(syntax_class_char(class));
-    description.push(entry.matching.unwrap_or(' '));
+    let mut description: Vec<String> = Vec::new();
+    description.push(String::from(syntax_class_char(class)));
+    description.push(String::from(entry.matching.unwrap_or(' ')));
     if entry.start_first {
-        description.push('1');
+        description.push(String::from('1'));
     }
     if entry.start_second {
-        description.push('2');
+        description.push(String::from('2'));
     }
     if entry.end_first {
-        description.push('3');
+        description.push(String::from('3'));
     }
     if entry.end_second {
-        description.push('4');
+        description.push(String::from('4'));
     }
     if entry.prefix {
-        description.push('p');
+        description.push(String::from('p'));
     }
     if entry.style_b {
-        description.push('b');
+        description.push(String::from('b'));
     }
     if entry.style_c {
-        description.push('c');
+        description.push(String::from('c'));
     }
     if entry.nested {
-        description.push('n');
+        description.push(String::from('n'));
     }
     let meaning = match class {
         SyntaxClass::Whitespace => "whitespace",
@@ -312,32 +315,32 @@ pub(super) fn describe_syntax_value(value: &Value) -> (String, bool) {
         SyntaxClass::GenericCommentDelimiter => "comment fence",
         SyntaxClass::GenericStringDelimiter => "string fence",
     };
-    description.push_str("\twhich means: ");
-    description.push_str(meaning);
+    description.push("\twhich means: ".into());
+    description.push(meaning.into());
     if let Some(matching) = entry.matching {
-        description.push_str(", matches ");
-        description.push(matching);
+        description.push(", matches ".into());
+        description.push(String::from(matching));
     }
     if entry.start_first {
-        description.push_str(",\n\t  is the first character of a comment-start sequence");
+        description.push(",\n\t  is the first character of a comment-start sequence".into());
     }
     if entry.start_second {
-        description.push_str(",\n\t  is the second character of a comment-start sequence");
+        description.push(",\n\t  is the second character of a comment-start sequence".into());
     }
     if entry.end_first {
-        description.push_str(",\n\t  is the first character of a comment-end sequence");
+        description.push(",\n\t  is the first character of a comment-end sequence".into());
     }
     if entry.end_second {
-        description.push_str(",\n\t  is the second character of a comment-end sequence");
+        description.push(",\n\t  is the second character of a comment-end sequence".into());
     }
     if entry.style_b {
-        description.push_str(" (comment style b)");
+        description.push(" (comment style b)".into());
     }
     if entry.style_c {
-        description.push_str(" (comment style c)");
+        description.push(" (comment style c)".into());
     }
     if entry.nested {
-        description.push_str(" (nestable)");
+        description.push(" (nestable)".into());
     }
     (description, entry.prefix)
 }

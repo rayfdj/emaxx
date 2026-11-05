@@ -2742,6 +2742,47 @@ fn labeled_restrictions_and_stream_modes_answer_as_editfns_c_does() {
 }
 
 #[test]
+fn describe_insertions_are_insert_string_s() {
+    // syntax.c's internal-describe-syntax-value and keymap.c's
+    // describe-vector and describe-map insert with insert_string and its
+    // relatives, a piece at a time: a read-only buffer signals before
+    // anything is inserted, each piece runs the change hooks, and
+    // describe_vector_princ indents with Findent_to (16, 1), as
+    // indent-tabs-mode and tab-width have it.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            &format!(
+                "(progn {})",
+                r##"(defun dv-run (ro thunk)
+  (with-temp-buffer
+    (insert "x")
+    (setq buffer-read-only ro)
+    (let ((after nil) (before nil))
+      (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) after)) nil t)
+      (add-hook 'before-change-functions (lambda (b e) (push (list b e) before)) nil t)
+      (let ((r (condition-case e (funcall thunk) (error (list 'ERR (car e))))))
+        (list r (buffer-string) (length after) (length before) (car after) (car (last before)))))))
+(dolist (ro '(nil t))
+  (prin1 (list ro
+               (dv-run ro (lambda () (internal-describe-syntax-value '(1))))
+               (dv-run ro (lambda () (internal-describe-syntax-value nil))) (dv-run ro (lambda () (internal-describe-syntax-value (cons (logior 4 (ash 1 20) (ash 1 16)) ?\)))))
+               (dv-run ro (lambda () (let ((standard-output (current-buffer))) (describe-vector [a nil c] 'princ))))
+               (dv-run ro (lambda () (let ((indent-tabs-mode nil) (standard-output (current-buffer))) (describe-vector [aa bb] 'princ))))
+               (dv-run ro (lambda () (let ((tab-width 4) (standard-output (current-buffer))) (describe-vector [aa bb] 'princ))))
+               (dv-run ro (lambda () (let ((m (make-sparse-keymap))) (define-key m "a" 'forward-char) (define-key m [?b] 'backward-char) (describe-map-tree m) nil)))))
+  (terpri))
+"##
+            ),
+        ],
+    );
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical
