@@ -2383,6 +2383,105 @@ fn identity_and_symbol_value_answer_as_gnu_does() {
 }
 
 #[test]
+fn window_configurations_save_and_restore_gnu_s_fields() {
+    // window.c:save_window_save saves the frame's window tree (the
+    // minibuffer window the root's next) with the fields of struct
+    // saved_window alone, the persistent parameters among them; and
+    // Fset_window_configuration revives the saved windows from
+    // delete_all_child_windows and writes those fields back, leaving a
+    // window's previous and next buffers, cursor type, other parameters
+    // and a window split after the save (deleted, its parameters kept)
+    // as they are.
+    let corpus = Corpus::new();
+    for script in [
+        r##"(defvar wc-r nil)
+(defun wc-push (&rest xs) (setq wc-r (append wc-r xs)))
+(let ((w (selected-window)) (m (get-buffer-create "*wc-other*")) (c nil))
+  (set-window-prev-buffers w nil)
+  (set-window-next-buffers w nil)
+  (set-window-parameter w 'wc-p 1)
+  (set-window-parameter w 'wc-q 1)
+  (set-window-dedicated-p w nil)
+  (setq c (current-window-configuration))
+  (set-window-prev-buffers w (list (list m 1 1)))
+  (set-window-next-buffers w (list m))
+  (set-window-parameter w 'wc-p 2)
+  (set-window-parameter w 'wc-new 3)
+  (set-window-display-table w (make-display-table))
+  (set-window-dedicated-p w t)
+  (set-window-hscroll w 4)
+  (set-window-cursor-type w 'hbar)
+  (set-window-configuration c)
+  (wc-push (length (window-prev-buffers w)) (length (window-next-buffers w))
+           (window-parameter w 'wc-p) (window-parameter w 'wc-q) (window-parameter w 'wc-new)
+           (char-table-p (window-display-table w)) (window-dedicated-p w)
+           (window-hscroll w) (window-cursor-type w))
+  (let ((w2 (split-window)))
+    (set-window-parameter w2 'kept 7)
+    (set-window-configuration c)
+    (wc-push (window-live-p w2) (window-valid-p w2) (window-parameter w2 'kept)
+             (window-buffer w2) (length (window-list))))
+  (let ((w3 (split-window)))
+    (set-window-parameter w3 'kept 8)
+    (delete-window w3)
+    (setq c (current-window-configuration))
+    (set-window-configuration c)
+    (wc-push (window-live-p w3) (window-valid-p w3) (window-parameter w3 'kept) (length (window-list)))))
+(prin1 wc-r) (terpri)
+"##,
+        r##"(defvar wc-r nil)
+(defun wc-push (&rest xs) (setq wc-r (append wc-r (list xs))))
+(defun wc-tree () (let ((tr (window-tree))) (car tr)))
+(defun wc-shape (w)
+  (if (windowp w) (list (buffer-name (window-buffer w)) (window-total-height w) (window-total-width w))
+    (cons (if (car w) 'h 'v) (mapcar #'wc-shape (cddr w)))))
+(let* ((a (get-buffer-create "wa")) (b (get-buffer-create "wb")) (c (get-buffer-create "wc"))
+       (w0 (selected-window)) conf conf2)
+  (switch-to-buffer a) (insert "aaaa\nbbbb\ncccc\n") (goto-char 3)
+  (let ((w1 (split-window w0 nil 'right)))
+    (set-window-buffer w1 b)
+    (let ((w2 (split-window w1 nil 'below)))
+      (set-window-buffer w2 c)
+      (set-window-parameter w2 'clone-of 'x)
+      (set-window-parameter w2 'other 'y)
+      (set-window-dedicated-p w2 t)
+      (setq conf (current-window-configuration))
+      (wc-push 'saved (wc-shape (wc-tree)) (window-configuration-equal-p conf (current-window-configuration)))
+      (delete-other-windows w0)
+      (wc-push 'after-delete (wc-shape (wc-tree)) (window-live-p w1) (window-live-p w2) (window-configuration-equal-p conf (current-window-configuration)))
+      (set-window-configuration conf)
+      (wc-push 'restored (wc-shape (wc-tree)) (window-live-p w1) (window-live-p w2)
+               (window-parameter w2 'clone-of) (window-parameter w2 'other) (window-dedicated-p w2)
+               (eq (selected-window) w0) (point) (window-point w0)
+               (window-configuration-equal-p conf (current-window-configuration))
+               (eq (window-configuration-frame conf) (selected-frame)))
+      ;; kill a shown buffer, then restore
+      (setq conf2 (current-window-configuration))
+      (kill-buffer b)
+      (wc-push 'killed (wc-shape (wc-tree)))
+      (set-window-configuration conf2)
+      (wc-push 'restored-killed (wc-shape (wc-tree)) (window-live-p w1) (window-live-p w2))
+      ;; save-window-excursion keeps point of the current buffer
+      (goto-char 5)
+      (save-window-excursion (delete-other-windows) (goto-char 9) (switch-to-buffer c))
+      (wc-push 'swe (wc-shape (wc-tree)) (buffer-name) (point))
+      ;; restoring twice, and a configuration across a resplit
+      (let ((conf3 (current-window-configuration)))
+        (split-window (selected-window) nil 'below)
+        (set-window-configuration conf3)
+        (set-window-configuration conf3)
+        (wc-push 'twice (wc-shape (wc-tree)) (length (window-list)))))))
+(dolist (x wc-r) (prin1 x) (terpri))
+"##,
+    ] {
+        assert_same(
+            &corpus,
+            &["--batch", "-Q", "--eval", &format!("(progn {script})")],
+        );
+    }
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

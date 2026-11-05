@@ -2853,16 +2853,16 @@ pub(crate) struct WindowConfigurationSnapshot {
     frame_id: crate::lisp::types::FrameRef,
     selected_frame_id: crate::lisp::types::FrameRef,
     current_buffer_id: u64,
+    /// data->current_window: FRAME_SELECTED_WINDOW of the frame.
     selected_window_id: u64,
-    /// The windows' saved slots, scanned by the collector while the
-    /// snapshot lives (the configuration's own markers and the objects
-    /// only it holds), whoever holds it: window.c keeps a configuration
-    /// as a Lisp object.
-    selected_window_slots: crate::lisp::alloc::RootedVec<Value>,
-    window_records: Vec<(u64, crate::lisp::alloc::RootedVec<Value>)>,
     root_window_id: u64,
     frame_width: i64,
     frame_height: i64,
+    /// window.c's saved_windows: one vector of `SAVED_WINDOW_SIZE' slots
+    /// a window, in save_window_save's order, scanned by the collector
+    /// while the snapshot lives (window.c keeps a configuration as a Lisp
+    /// object, and the saved markers and buffers are held by it alone).
+    saved_windows: crate::lisp::alloc::RootedVec<Value>,
 }
 
 struct FileNotifyWatch {

@@ -15156,6 +15156,46 @@ setup_process_coding_systems's check now refuses). A 13-form
   equal, unibyte and multibyte names. Local validation: the grouped
   gate's 3,501 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 322: window configurations are window.c's, and native code's
+  `setq' of a plain special variable is set_internal's store.**
+  Fcurrent_window_configuration's save_window_save walks the frame's
+  window tree, each window, then an internal window's subwindows, then
+  its `next' (the root's is the minibuffer window), and keeps for each
+  the fields of struct saved_window in their order (38,
+  make_nil_vector's size, so the allocation counters read GNU's), its
+  parent's and previous sibling's indices among them and only the
+  persistent parameters, `window-persistent-parameters' set to nil when
+  its tail is circular. Emaxx copied every window record of the frame,
+  the deleted ones too, with all their slots. Fset_window_configuration
+  now revives the saved windows after delete_all_child_windows empties
+  the windows of the current tree (a leaf's buffer unshown, its markers
+  unchained and its buffer squirreled away, an internal window's
+  contents nil; their other fields kept), rebuilds their links from the
+  saved indices, makes each the leaf, minibuffer window or horizontal or
+  vertical combination GNU's contents and flags make it (an internal
+  window combines horizontally when its first child's total_cols differ
+  from its own), and writes back only the saved fields: a window's
+  previous and next buffers, its cursor type, the parameters not saved
+  and those added since stay as they are, where Emaxx restored every
+  slot and cut short the slots of a frame window it had not saved.
+  compare_window_configurations compares the saved fields by EQ (they
+  were compared by `equal'). Native code's set_internal of a symbol
+  whose value its cell holds and whose stores are plain is the store
+  alone, as the verified byte-code loop's Bvarset is (an empty native
+  `dotimes' loop setting a special variable takes 84 instructions an
+  iteration, GNU 98, from 147). Undo runs 1,281,184 instructions an
+  iteration against GNU's 1,222,673 (1.048, from 1.072): ERT saves and
+  restores the configuration around each test, capturing it cost 38,750
+  instructions an iteration against GNU's 16,764. Word-level paths for
+  the window accessors native code calls (`window-buffer',
+  `window-top-child' and ten more) were measured and left out: the
+  record's decode, not the call, is their cost (the finding below). A
+  command-line comparison saves and restores configurations across
+  splits, deletions, a killed buffer, dedicated windows, persistent and
+  other parameters, `save-window-excursion' and a repeated restore.
+  Local validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17735,18 +17775,23 @@ ert-tests as a whole 26,307 ms against 27,211.
   release build and 0.96 s in GNU, and semantic-utest-ia's file 3.7 s,
   2.6 s and 5.1 s, so those two files' gaps are the checked build's.
 
+**On `4ddb6b3`** (round 321): the full Rust gate (run 42082394576)
+  passed; the frozen run (run 42082400395) passed at its second attempt.
+  The first matched 7,927 of 7,928 outcomes, the one other eglot-tests'
+  where the oracle itself failed unexpectedly (GNU 48 failures against
+  Emaxx's 47), with 1.116 in all. The second matched 7,928 of 7,928:
+  setup 74.2 s against 57.9 s (1.282), test bodies 288.0 s against 255.7
+  s (1.126), in all 1.155, with a per-file setup median of 111 ms
+  against 89. The widest body gaps are ert-tests (43,596 ms against
+  35,655), tramp-tests (19,829 against 16,278), comp-tests (16,191
+  against 12,905), semantic-utest-ia (4,128 against 2,562) and
+  mule-tests (3,415 against 1,904), and
+  `ert-test-run-tests-batch-expensive' runs in 1.21 of GNU's time. The
+  frozen run times the gate profile, whose debug assertions and overflow
+  checks account for the mule-tests and semantic-utest-ia gaps (round
+  320's record).
+
 **Findings recorded, not fixed:**
-- **Window configurations (round 321).** Fcurrent_window_configuration's
-  save_window_save walks the frame's window tree, the root's subwindows
-  and then its `next', the minibuffer window; Emaxx saves every window
-  record of the frame, the deleted ones too, and its restore marks each
-  frame window the configuration did not save deleted with its slots
-  past the frame's cut off, where delete_all_child_windows unshows the
-  current tree's windows and keeps each one's other fields (its buffer
-  in `combination_limit'). In undo's loop, where ERT saves and restores
-  the configuration around each test, capturing costs 38,750
-  instructions an iteration against GNU's 16,764 and restoring 180,174
-  against 140,489.
 - **Windows as generic records (round 321).** A window is a record whose
   slots are a vector apart from it, so each window primitive decodes the
   record's kind and reads a slot through that vector; called from native
@@ -17764,10 +17809,7 @@ ert-tests as a whole 26,307 ms against 27,211.
   and handler check, the argument slice and the Result through the
   subr's body, against GNU's call through the freloc table with the
   arguments in registers and a signal by longjmp. Undo's iteration makes
-  722 such calls. A `setq' of a special variable from native code takes
-  92 instructions (runtime_set_internal, then the symbol check and
-  set_internal_symbol) where GNU's set_internal stores a plain symbol's
-  value at once.
+  722 such calls.
 - **A window start that points nowhere (round 320).** Fset_window_start
   runs set_marker_restricted, so a nil POS leaves the start marker
   pointing nowhere: `(set-window-start nil nil)' returns nil and

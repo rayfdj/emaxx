@@ -796,6 +796,10 @@ const KEY_NAMES: &[&str] = &[
     "bottom",
     "center",
     "latin",
+    // window.c's configurations.
+    "window-persistent-parameters",
+    "window-restore-killed-buffer-windows",
+    "configuration",
     // data.c:Ftype_of's and Fcl_type_of's answers.
     "symbol-with-pos",
     "vector",
