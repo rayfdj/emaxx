@@ -1603,8 +1603,9 @@ fn decode_mode_spec_coding(
 ) {
     let multibyte = interp.buffer.borrow().is_multibyte();
     let spec = coding
-        .symbol_str()
-        .and_then(|name| interp.coding_spec(name))
+        .symbol_cell()
+        .and_then(|symbol| interp.coding_spec_index_symbol(&symbol))
+        .map(|spec| &interp.coding_specs[spec])
         .map(|spec| {
             (
                 interp.coding_attrs[spec.attrs].mnemonic,

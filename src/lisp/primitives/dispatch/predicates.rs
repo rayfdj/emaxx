@@ -365,10 +365,11 @@ define_dispatch!(
             }
             "local-variable-p" => {
                 need_arg_range(name, args, 1, 2)?;
+                // data.c:Flocal_variable_p: decode_buffer, then CHECK_SYMBOL.
+                // A killed buffer keeps no alist.
+                let buffer_id = interp.decode_buffer(args.get(1))?.id;
                 let symbol = interp
                     .resolve_variable_symbol(&checked_symbol_identity(interp, &args[0], env)?)?;
-                // buffer.c:decode_buffer: a killed buffer keeps no alist.
-                let buffer_id = interp.decode_buffer(args.get(1))?.id;
                 // data.c:Flocal_variable_p: an alist cell, bound or void,
                 // or a per-buffer slot that is local in every buffer.
                 Ok(

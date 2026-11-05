@@ -844,6 +844,8 @@ define_dispatch!(
             }
             "get-variable-watchers" => {
                 need_args(name, args, 1)?;
+                // data.c reads SYMBOL_TRAPPED_WRITE_P without CHECK_SYMBOL,
+                // undefined for what is no symbol; it is checked here.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
                 interp.variable_watchers(&symbol)
             }
@@ -1526,7 +1528,7 @@ define_dispatch!(
                 Ok(match name {
                     "coding-system-aliases" => interp.coding_specs[spec].aliases,
                     "coding-system-plist" => interp.coding_attrs[attrs].plist,
-                    _ => Value::symbol(&interp.coding_attrs[attrs].base),
+                    _ => Value::Symbol(interp.coding_attrs[attrs].base),
                 })
             }
             "coding-system-put" => {
@@ -1537,12 +1539,14 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // nil is `no-conversion', and what CODING_SYSTEM_P rejects
                 // has no eol type.
-                let coding = if args[0].is_nil() {
-                    "no-conversion"
+                let spec = if args[0].is_nil() {
+                    interp.coding_spec_index("no-conversion")
                 } else {
-                    args[0].symbol_str().unwrap_or_default()
+                    args[0]
+                        .symbol_cell()
+                        .and_then(|symbol| interp.coding_spec_index_symbol(&symbol))
                 };
-                let Some(spec) = interp.coding_spec(coding) else {
+                let Some(spec) = spec.map(|spec| &interp.coding_specs[spec]) else {
                     return Ok(Value::Nil);
                 };
                 Ok(match spec.eol_type.kind() {
@@ -1759,12 +1763,15 @@ define_dispatch!(
             }
             "find-operation-coding-system" => find_operation_coding_system_value(interp, args, env),
             "set-coding-system-priority" => {
-                let mut names = Vec::with_capacity(args.len());
+                let mut codings = Vec::with_capacity(args.len());
                 for coding in args {
                     super::coding_systems::checked_coding_spec(interp, coding, env)?;
-                    names.push(coding.symbol_str().unwrap_or_default().to_string());
+                    codings.push(match coding.kind() {
+                        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+                        _ => coding.symbol_cell().expect("a coding system is a symbol"),
+                    });
                 }
-                interp.set_coding_system_categories_priority(&names, env)?;
+                interp.set_coding_system_categories_priority(&codings, env)?;
                 Ok(Value::Nil)
             }
             "define-coding-system-internal" => {

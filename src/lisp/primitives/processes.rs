@@ -434,20 +434,21 @@ pub(crate) fn complement_process_encoding_system(
     let mut eol_base = Value::Nil;
     let mut complete_at = candidates.len();
     for (index, candidate) in candidates.iter().enumerate() {
-        let Some(name) = candidate.symbol_str().filter(|_| !candidate.is_nil()) else {
+        if candidate.is_nil() {
             continue;
-        };
-        let Some(canonical) = interp.coding_system_canonical_name(name) else {
+        }
+        // By EQ: an alias shares its target's spec and attributes.
+        let Some(canonical) = interp.coding_system_canonical_name_value(candidate) else {
             continue;
         };
         if coding_base.is_nil()
             && interp.coding_system_kind_name(&canonical).as_deref() != Some("undecided")
         {
             coding_base = interp
-                .coding_system_base_name(name)
+                .coding_system_base_name(&canonical)
                 .map_or(Value::Nil, |base| Value::symbol(&base));
         }
-        if eol_base.is_nil() && interp.coding_system_eol_type_value(name).is_some() {
+        if eol_base.is_nil() && interp.coding_system_eol_type_value(&canonical).is_some() {
             eol_base = *candidate;
         }
         if !coding_base.is_nil() && !eol_base.is_nil() {
@@ -527,7 +528,7 @@ fn encode_process_input_with(
         }
         encoder.coding = Some(coding);
     } else if coding_requires_encoding(interp, &coding, env) {
-        let symbol = coding.as_symbol()?.to_string();
+        let symbol = super::coding::coding_text_of(interp, &coding)?;
         if coding_requires_flushing(interp, &symbol) {
             // The flush, send_process (proc, "", 0, Qt): its object is
             // neither a buffer nor a string, so nothing is encoded or
@@ -538,7 +539,8 @@ fn encode_process_input_with(
                 last_used = complemented;
             }
         }
-        let raw_text = raw_text_coding_system(interp, last_used.as_symbol()?);
+        let raw_text =
+            raw_text_coding_system(interp, &super::coding::coding_text_of(interp, &last_used)?);
         *encoder = EncoderSpec::default();
         encoder.coding = Some(Value::symbol(&raw_text));
     }
@@ -556,7 +558,7 @@ fn send_process_bytes(
 ) -> Result<Vec<u8>, LispError> {
     let coding = encoder.coding.unwrap_or(Value::Nil);
     if super::coding::coding_requires_encoding(interp, &coding, env) {
-        let symbol = coding.as_symbol()?.to_string();
+        let symbol = super::coding::coding_text_of(interp, &coding)?;
         super::coding::encode_process_block(interp, text, &symbol, encoder, env)
     } else {
         let string = string_like(text)

@@ -433,6 +433,8 @@ define_dispatch!(
             "menu-bar-menu-at-x-y" => {
                 need_arg_range(name, args, 2, 3)?;
                 require_any_frame(args.get(2))?;
+                // menu.c reads X and Y with XFIXNUM unchecked, which crashes
+                // GNU on what is no fixnum; they are checked here instead.
                 require_fixnum(&args[0])?;
                 require_fixnum(&args[1])?;
                 let x = args[0].as_integer()?;

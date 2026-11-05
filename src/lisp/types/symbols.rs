@@ -180,6 +180,12 @@ impl std::hash::Hash for NameEntry {
 
 const KEY_NAMES: &[&str] = &[
     "keymap",
+    "inhibit-eol-conversion",
+    "enable-character-translation",
+    "standard-translation-table-for-encode",
+    "standard-translation-table-for-decode",
+    "last-coding-system-used",
+    "disable-ascii-optimization",
     "parse-sexp-lookup-properties",
     "syntax-table",
     "syntax-propertize--done",

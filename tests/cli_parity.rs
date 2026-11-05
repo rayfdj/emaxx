@@ -2044,6 +2044,54 @@ fn primitives_check_and_name_their_arguments_as_gnu_does() {
 }
 
 #[test]
+fn coding_systems_are_found_by_their_symbols() {
+    // Vcoding_system_hash_table is an `eq' table: an uninterned alias is
+    // a coding system, the interned symbol of its name is none, and the
+    // alias's subsidiaries are interned from its name.  Then the argument
+    // checks of primitives a fuzz of uninterned arguments found apart.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+(let ((u (make-symbol "zutf")))
+  (define-coding-system-alias u 'utf-8)
+  (prin1 (list (coding-system-p u) (coding-system-p 'zutf) (encode-coding-string "é" u) (decode-coding-string "\303\251" u)
+               (check-coding-system u) (coding-system-base u) (coding-system-eol-type u) (coding-system-type u)
+               (coding-system-get u :mime-charset) (memq u (coding-system-aliases 'utf-8)) (car (coding-system-aliases u))
+               (coding-system-p 'zutf-unix) (coding-system-base 'zutf-unix) (and (memq u coding-system-list) t) (assoc "zutf" coding-system-alist)
+               (coding-system-change-eol-conversion u 'dos) (with-temp-buffer (set-buffer-file-coding-system u) buffer-file-coding-system)))
+  (terpri))
+(let ((u (make-symbol "zlat")))
+  (define-coding-system-alias u 'latin-1-unix)
+  (prin1 (list (encode-coding-string "é" u) (coding-system-eol-type u) (coding-system-get u :charset-list))) (terpri))
+(let ((u (make-symbol "utf-8")))
+  (prin1 (list (coding-system-p u) (condition-case e (check-coding-system u) (error e)) (condition-case e (encode-coding-string "a" u) (error e)))) (terpri))
+(prin1 (list (condition-case e (describe-vector 'x) (error e))
+             (condition-case e (local-variable-p [x] 'not-a-buffer) (error e))
+             (condition-case e (menu-bar-menu-at-x-y 0 0 'not-a-frame) (error e))
+             (condition-case e (set-input-meta-mode t 'not-a-terminal) (error e))
+             (condition-case e (set-output-flow-control t 'not-a-terminal) (error e))
+             (condition-case e (tab-bar-height 'x) (error e))
+             (condition-case e (tool-bar-height 5) (error e))
+             (condition-case e (lcms-cie-de2000 'a '(1 2 3)) (error e))
+             (condition-case e (lcms-cie-de2000 '(1 2 3) 'b) (error e))
+             (condition-case e (lcms-cam02-ucs '(1 2 3) 'b) (error e))
+             (condition-case e (lcms-xyz->jch '(1 . 2)) (error e))
+             (condition-case e (lcms-temp->white-point 'x) (error e))
+             (condition-case e (lcms-temp->white-point 100) (error e))
+             (let ((f (make-symbol "zauto")))
+               (autoload f "zz-nonexistent-file")
+               (list (autoloadp (symbol-function f)) (condition-case e (funcall f) (error (car e)))))))
+(terpri))"#,
+        ],
+    );
+}
+
+#[test]
 fn generated_uninterned_symbol_programs_run_as_gnu_runs_them() {
     // 150 generated programs that give a fresh uninterned symbol one of 26
     // roles (function, variable, local variable, property owner, hash

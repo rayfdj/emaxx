@@ -5197,8 +5197,14 @@ define_dispatch!(
             }
             "set-output-flow-control" | "set-input-meta-mode" => {
                 need_arg_range(name, args, 1, 2)?;
-                // GNU's batch frame has no decoded tty terminal, so these
-                // terminal-local setters are successful no-ops.
+                // keyboard.c: decode_tty_terminal's decode_live_terminal,
+                // then nothing for a terminal that is no tty: GNU's batch
+                // frame has none, so these terminal-local setters are
+                // successful no-ops.
+                let terminal = args.get(1).copied().unwrap_or(Value::Nil);
+                if interp.decode_terminal(&terminal).is_none() {
+                    return Err(wrong_type_argument("terminal-live-p", terminal));
+                }
                 Ok(Value::Nil)
             }
             "set-input-mode" => {
@@ -6325,7 +6331,12 @@ define_dispatch!(
             }
             "tab-bar-height" | "tool-bar-height" => {
                 need_arg_range(name, args, 0, 2)?;
-                decode_live_frame(interp, args.first(), true)?;
+                // xdisp.c: decode_any_frame, a dead frame among them.
+                if let Some(frame) = args.first().filter(|frame| !frame.is_nil())
+                    && !matches!(frame.kind(), Kind::Frame(_))
+                {
+                    return Err(wrong_type_argument("framep", *frame));
+                }
                 // The bootstrap terminal frame has no tab/tool-bar window.
                 Ok(Value::Integer(0))
             }

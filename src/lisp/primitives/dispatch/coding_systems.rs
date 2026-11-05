@@ -47,6 +47,17 @@ fn symbol_name(value: &Value) -> Option<String> {
     }
 }
 
+/// XSYMBOL of a value CHECK_SYMBOL passed: the symbol itself, nil and t
+/// as theirs.
+fn symbol_object(value: &Value) -> Option<crate::lisp::types::SymbolName> {
+    match value.kind() {
+        Kind::Nil => Some(crate::lisp::types::symbols::builtin_boolean(false)),
+        Kind::T => Some(crate::lisp::types::symbols::builtin_boolean(true)),
+        Kind::Symbol(symbol) => Some(symbol),
+        _ => None,
+    }
+}
+
 /// CHECK_SYMBOL.
 fn check_symbol(value: &Value) -> Result<(), LispError> {
     symbol_name(value)
@@ -113,8 +124,7 @@ pub(crate) fn checked_coding_spec(
     env: &mut Env,
 ) -> Result<usize, LispError> {
     let lookup = |interp: &Interpreter| {
-        x.symbol_str()
-            .and_then(|name| interp.coding_spec_index(name))
+        symbol_object(x).and_then(|symbol| interp.coding_spec_index_symbol(&symbol))
     };
     if let Some(spec) = lookup(interp) {
         return Ok(spec);
@@ -129,9 +139,7 @@ fn check_coding_system_macro(
     x: &Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if x.symbol_str()
-        .is_some_and(|name| interp.has_coding_system(name))
-    {
+    if symbol_object(x).is_some_and(|symbol| interp.has_coding_system_symbol(&symbol)) {
         return Ok(());
     }
     if check_coding_system(interp, x, env)?.is_nil() {
@@ -208,8 +216,8 @@ pub(crate) fn define_coding_system_internal(
         return Err(short_args());
     }
     let name_value = args[ARG_NAME];
-    let name =
-        symbol_name(&name_value).ok_or_else(|| wrong_type_argument("symbolp", name_value))?;
+    let name_symbol =
+        symbol_object(&name_value).ok_or_else(|| wrong_type_argument("symbolp", name_value))?;
     let mnemonic = check_mnemonic(&args[ARG_MNEMONIC])?;
     let coding_type_value = args[ARG_CODING_TYPE];
     let coding_type = symbol_name(&coding_type_value)
@@ -475,9 +483,9 @@ pub(crate) fn define_coding_system_internal(
         return Err(LispError::Signal("Invalid eol-type".into()));
     }
     interp.define_coding_system(
-        &name,
+        name_symbol,
         CodingSystemState {
-            base: name.clone(),
+            base: name_symbol,
             mnemonic,
             kind: coding_type,
             ascii_compatible,
@@ -596,8 +604,8 @@ pub(crate) fn define_coding_system_alias(
     coding_system: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let alias = symbol_name(alias).ok_or_else(|| wrong_type_argument("symbolp", *alias))?;
+    let alias = symbol_object(alias).ok_or_else(|| wrong_type_argument("symbolp", *alias))?;
     let spec = checked_coding_spec(interp, coding_system, env)?;
-    interp.define_coding_system_alias(&alias, spec)?;
+    interp.define_coding_system_alias(alias, spec)?;
     Ok(Value::Nil)
 }

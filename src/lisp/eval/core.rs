@@ -2263,12 +2263,13 @@ impl Interpreter {
         let func = match func.kind() {
             Kind::Cons(_) => {
                 if crate::lisp::primitives::autoload_parts(&func).is_some() {
-                    let Some(name) = original_name.map(CallName::as_str) else {
+                    let Some(call_name) = original_name else {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("invalid-function".into()),
                             func,
                         ])));
                     };
+                    let name = call_name.as_str();
                     // The arguments are held here, in no Lisp object, while
                     // the file loads and runs: a collection inside the
                     // load must reach them (GNU's conservative stack scan
@@ -2276,10 +2277,20 @@ impl Interpreter {
                     // bound through an autoload, and the marker was
                     // unchained by the load's collection).
                     let loaded = self.with_lisp_stack_roots(&args, |interp| {
-                        interp.autoload_do_load(func, Value::symbol(name), Value::Nil, env)
+                        interp.autoload_do_load(
+                            func,
+                            call_name.original_symbol_value(),
+                            Value::Nil,
+                            env,
+                        )
                     });
                     match loaded {
-                        Ok(_) => self.lookup_function(name, env)?,
+                        // The symbol called, not its name: an uninterned
+                        // one's new definition is its own.
+                        Ok(_) => match call_name {
+                            CallName::Symbol(symbol) => self.lookup_function_symbol(symbol, env)?,
+                            CallName::Text(name) => self.lookup_function(name, env)?,
+                        },
                         // Only a genuinely file-less environment (unit tests
                         // with no resolvable Lisp tree) may fall back to a
                         // native arm.  An error raised while EVALUATING a

@@ -71,6 +71,91 @@ pub(crate) const ISO_FLAG_USE_OLDJIS: u32 = 0x10000;
 pub(crate) const ISO_FLAG_LEVEL_4: u32 = 0x20000;
 pub(crate) const ISO_FLAG_FULL_SUPPORT: u32 = 0x100000;
 
+/// What a conversion names a coding system by: its name, looked up in
+/// Vcoding_system_hash_table through the interned symbol of that name (the
+/// callers that still keep a coding system by its name), or the coding id
+/// already found.
+pub(crate) trait CodingRef {
+    /// CODING_SYSTEM_SPEC, by index.
+    fn coding_spec_index_in(&self, interp: &Interpreter) -> Option<usize>;
+    /// The coding id this names (`Interpreter::coding_id').
+    fn coding_id_in(&self, interp: &Interpreter) -> Option<CodingId>;
+    /// The name this is, as text: a coding id's canonical name.
+    fn coding_text(&self) -> &str;
+}
+
+impl CodingRef for str {
+    #[inline]
+    fn coding_spec_index_in(&self, interp: &Interpreter) -> Option<usize> {
+        interp.coding_spec_index(self)
+    }
+
+    fn coding_id_in(&self, interp: &Interpreter) -> Option<CodingId> {
+        interp.coding_id_symbol(&SymbolName::find_by_host_text(self)?)
+    }
+
+    #[inline]
+    fn coding_text(&self) -> &str {
+        self
+    }
+}
+
+impl CodingRef for String {
+    #[inline]
+    fn coding_spec_index_in(&self, interp: &Interpreter) -> Option<usize> {
+        interp.coding_spec_index(self)
+    }
+
+    fn coding_id_in(&self, interp: &Interpreter) -> Option<CodingId> {
+        self.as_str().coding_id_in(interp)
+    }
+
+    #[inline]
+    fn coding_text(&self) -> &str {
+        self
+    }
+}
+
+/// coding.c's coding id, as setup_coding_system finds it once: the spec
+/// the hash table holds for a coding system symbol, and the symbol whose
+/// name the conversion reads, the first name of that spec
+/// (`coding_system_canonical_name_symbol').
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CodingId {
+    pub(crate) spec: usize,
+    pub(crate) name: SymbolName,
+}
+
+impl CodingId {
+    /// The canonical name's text.
+    pub(crate) fn as_str(&self) -> &str {
+        self.name.as_str()
+    }
+}
+
+impl CodingRef for CodingId {
+    #[inline]
+    fn coding_spec_index_in(&self, _interp: &Interpreter) -> Option<usize> {
+        Some(self.spec)
+    }
+
+    #[inline]
+    fn coding_id_in(&self, _interp: &Interpreter) -> Option<CodingId> {
+        Some(*self)
+    }
+
+    #[inline]
+    fn coding_text(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for CodingId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl CodingSystemState {
     /// The Lisp objects the attribute vector holds, for the collector.
     pub(crate) fn values(&self) -> impl Iterator<Item = &Value> {
@@ -545,50 +630,110 @@ impl Interpreter {
     /// CODING_SYSTEM_SPEC: the spec Vcoding_system_hash_table holds for
     /// NAME, by index.
     pub(crate) fn coding_spec_index(&self, name: &str) -> Option<usize> {
-        self.coding_system_hash.get(name).copied()
+        self.coding_spec_index_symbol(&SymbolName::find_by_host_text(name)?)
     }
 
-    pub(crate) fn coding_spec(&self, name: &str) -> Option<&CodingSpec> {
-        self.coding_specs.get(self.coding_spec_index(name)?)
+    /// CODING_SYSTEM_SPEC of the symbol CODING_SYSTEM itself:
+    /// Vcoding_system_hash_table's entry, by EQ.
+    pub(crate) fn coding_spec_index_symbol(&self, coding_system: &SymbolName) -> Option<usize> {
+        self.coding_system_hash.get(coding_system).copied()
+    }
+
+    /// `coding_system_canonical_name_symbol' of a Lisp value: the symbol
+    /// it is (t among them); None for nil or any other object.
+    pub(crate) fn coding_system_canonical_name_value(&self, value: &Value) -> Option<String> {
+        let symbol = match value.kind() {
+            Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
+            _ => value.symbol_cell()?,
+        };
+        self.coding_system_canonical_name_symbol(&symbol)
+    }
+
+    /// CODING_SYSTEM_P's table test for the symbol CODING_SYSTEM.
+    pub(crate) fn has_coding_system_symbol(&self, coding_system: &SymbolName) -> bool {
+        self.coding_system_hash.contains_key(coding_system)
+    }
+
+    pub(crate) fn coding_spec(&self, coding: &(impl CodingRef + ?Sized)) -> Option<&CodingSpec> {
+        self.coding_specs.get(coding.coding_spec_index_in(self)?)
+    }
+
+    /// The coding id CODING stands for: its spec, found once, and the
+    /// name `coding_system_canonical_name' reads for it.
+    #[inline]
+    pub(crate) fn coding_id(&self, coding: &(impl CodingRef + ?Sized)) -> Option<CodingId> {
+        coding.coding_id_in(self)
+    }
+
+    /// `coding_id' of the symbol CODING_SYSTEM: the first name of its
+    /// spec while that name still has the spec, else the symbol itself.
+    pub(crate) fn coding_id_symbol(&self, coding_system: &SymbolName) -> Option<CodingId> {
+        let spec = self.coding_spec_index_symbol(coding_system)?;
+        let name = self.coding_specs[spec]
+            .aliases
+            .cons_values()
+            .and_then(|(first, _)| first.symbol_cell())
+            .filter(|first| self.coding_spec_index_symbol(first) == Some(spec))
+            .unwrap_or(*coding_system);
+        Some(CodingId { spec, name })
     }
 
     /// The name NAME stands for: the first of its spec's names, the one
     /// the spec was defined as, while that name still has the spec (an
     /// alias made before its target's redefinition keeps the old spec,
     /// and stands for itself).
-    pub fn coding_system_canonical_name(&self, name: &str) -> Option<String> {
-        let index = self.coding_spec_index(name)?;
-        let first = self.coding_specs[index]
-            .aliases
-            .cons_values()
-            .and_then(|(first, _)| first.symbol_str().map(str::to_string));
-        Some(match first {
-            Some(first) if self.coding_spec_index(&first) == Some(index) => first,
-            _ => name.to_string(),
-        })
+    pub(crate) fn coding_system_canonical_name(
+        &self,
+        coding: &(impl CodingRef + ?Sized),
+    ) -> Option<String> {
+        self.coding_id(coding).map(|id| id.as_str().to_owned())
+    }
+
+    /// `coding_system_canonical_name' of the symbol CODING_SYSTEM, looked
+    /// up by EQ.
+    pub fn coding_system_canonical_name_symbol(
+        &self,
+        coding_system: &SymbolName,
+    ) -> Option<String> {
+        self.coding_id_symbol(coding_system)
+            .map(|id| id.as_str().to_owned())
     }
 
     pub fn has_coding_system(&self, name: &str) -> bool {
-        self.coding_system_hash.contains_key(name)
+        SymbolName::find_by_host_text(name)
+            .is_some_and(|symbol| self.has_coding_system_symbol(&symbol))
     }
 
-    /// CODING_ID_ATTRS: the attribute vector of NAME's spec.
-    pub fn coding_system(&self, name: &str) -> Option<&CodingSystemState> {
-        self.coding_attrs.get(self.coding_spec(name)?.attrs)
+    /// CODING_ID_ATTRS: the attribute vector of CODING's spec.
+    pub(crate) fn coding_system(
+        &self,
+        coding: &(impl CodingRef + ?Sized),
+    ) -> Option<&CodingSystemState> {
+        self.coding_attrs.get(self.coding_spec(coding)?.attrs)
     }
 
-    pub fn coding_system_base_name(&self, name: &str) -> Option<String> {
-        self.coding_system(name).map(|coding| coding.base.clone())
+    pub(crate) fn coding_system_base_name(
+        &self,
+        coding: &(impl CodingRef + ?Sized),
+    ) -> Option<String> {
+        self.coding_system(coding)
+            .map(|coding| coding.base.as_str().to_owned())
     }
 
-    pub fn coding_system_kind_name(&self, name: &str) -> Option<String> {
-        self.coding_system(name).map(|coding| coding.kind.clone())
+    pub(crate) fn coding_system_kind_name(
+        &self,
+        coding: &(impl CodingRef + ?Sized),
+    ) -> Option<String> {
+        self.coding_system(coding).map(|coding| coding.kind.clone())
     }
 
-    /// The eol type of NAME's spec as Fcoding_system_eol_type numbers it,
-    /// None when it is the vector of subsidiaries.
-    pub fn coding_system_eol_type_value(&self, name: &str) -> Option<i64> {
-        match self.coding_spec(name)?.eol_type.symbol_str()? {
+    /// The eol type of CODING's spec as Fcoding_system_eol_type numbers
+    /// it, None when it is the vector of subsidiaries.
+    pub(crate) fn coding_system_eol_type_value(
+        &self,
+        coding: &(impl CodingRef + ?Sized),
+    ) -> Option<i64> {
+        match self.coding_spec(coding)?.eol_type.symbol_str()? {
             "unix" => Some(0),
             "dos" => Some(1),
             "mac" => Some(2),
@@ -597,12 +742,8 @@ impl Interpreter {
     }
 
     /// Fputhash (NAME, SPEC, Vcoding_system_hash_table).
-    fn puthash_coding_system(&mut self, name: &str, spec: usize) {
-        if self
-            .coding_system_hash
-            .insert(name.to_string(), spec)
-            .is_none()
-        {
+    fn puthash_coding_system(&mut self, name: SymbolName, spec: usize) {
+        if self.coding_system_hash.insert(name, spec).is_none() {
             self.coding_table_books.insert();
         }
     }
@@ -614,12 +755,11 @@ impl Interpreter {
 
     /// coding.c make_subsidiaries: NAME-unix, NAME-dos and NAME-mac,
     /// interned.
-    fn make_subsidiaries(&mut self, name: &str) -> [String; 3] {
-        ["unix", "dos", "mac"].map(|suffix| {
-            let subsidiary = format!("{name}-{suffix}");
-            self.intern_symbol_name(&subsidiary);
-            subsidiary
-        })
+    /// coding.c:make_subsidiaries: the symbols interned from BASE's name
+    /// (SYMBOL_NAME, the same for an uninterned BASE) and each suffix.
+    fn make_subsidiaries(&mut self, base: SymbolName) -> [SymbolName; 3] {
+        let name = base.name_text();
+        ["unix", "dos", "mac"].map(|suffix| SymbolName::intern_str(&format!("{name}-{suffix}")))
     }
 
     /// The end of Fdefine_coding_system_internal: ATTRS, its arguments
@@ -628,49 +768,46 @@ impl Interpreter {
     /// gets NAME as its system when it has none or had NAME itself.
     pub(crate) fn define_coding_system(
         &mut self,
-        name: &str,
+        name: SymbolName,
         attrs: CodingSystemState,
         eol_type: Value,
     ) {
         let category = attrs.category;
         if attrs.kind == "shift-jis" {
-            self.sjis_coding_system = name.to_string();
+            self.sjis_coding_system = name.as_str().to_owned();
         } else if attrs.kind == "big5" {
-            self.big5_coding_system = name.to_string();
+            self.big5_coding_system = name.as_str().to_owned();
         }
         self.coding_attrs.push(attrs);
         let attrs = self.coding_attrs.len() - 1;
         let eol_type = if eol_type.is_nil() {
             let subsidiaries = self.make_subsidiaries(name);
-            for (subsidiary, this_eol_type) in subsidiaries.iter().zip(["unix", "dos", "mac"]) {
+            for (subsidiary, this_eol_type) in subsidiaries.into_iter().zip(["unix", "dos", "mac"])
+            {
                 let spec = self.push_coding_spec(CodingSpec {
                     attrs,
-                    aliases: Value::list([Value::symbol(subsidiary)]),
+                    aliases: Value::list([Value::Symbol(subsidiary)]),
                     eol_type: Value::symbol(this_eol_type),
                 });
                 self.puthash_coding_system(subsidiary, spec);
                 self.record_coding_system_name(subsidiary);
             }
-            Value::vector(
-                subsidiaries
-                    .iter()
-                    .map(|subsidiary| Value::symbol(subsidiary)),
-            )
+            Value::vector(subsidiaries.into_iter().map(Value::Symbol))
         } else {
             eol_type
         };
         let spec = self.push_coding_spec(CodingSpec {
             attrs,
-            aliases: Value::list([Value::symbol(name)]),
+            aliases: Value::list([Value::Symbol(name)]),
             eol_type,
         });
         self.puthash_coding_system(name, spec);
         self.record_coding_system_name(name);
         if self.coding_category_representatives[category]
             .as_deref()
-            .is_none_or(|representative| representative == name)
+            .is_none_or(|representative| representative == name.as_str())
         {
-            self.coding_category_representatives[category] = Some(name.to_string());
+            self.coding_category_representatives[category] = Some(name.as_str().to_owned());
         }
     }
 
@@ -681,7 +818,7 @@ impl Interpreter {
     /// ALIAS's hash entry is the spec itself.
     pub(crate) fn define_coding_system_alias(
         &mut self,
-        alias: &str,
+        alias: SymbolName,
         spec: usize,
     ) -> Result<(), LispError> {
         let mut aliases = self.coding_specs[spec].aliases;
@@ -691,14 +828,14 @@ impl Interpreter {
             }
             aliases = rest;
         }
-        aliases.set_cdr(Value::list([Value::symbol(alias)]))?;
+        aliases.set_cdr(Value::list([Value::Symbol(alias)]))?;
         let eol_type = self.coding_specs[spec].eol_type;
         if let Kind::Vector(targets) = eol_type.kind() {
             let subsidiaries = self.make_subsidiaries(alias);
-            for (subsidiary, target) in subsidiaries.iter().zip(targets.slots()) {
+            for (subsidiary, target) in subsidiaries.into_iter().zip(targets.slots()) {
                 let target_spec = target
-                    .symbol_str()
-                    .and_then(|target| self.coding_spec_index(target))
+                    .symbol_cell()
+                    .and_then(|target| self.coding_spec_index_symbol(&target))
                     .ok_or_else(|| {
                         LispError::WrongTypeArgument("coding-system-p".into(), target)
                     })?;
@@ -810,31 +947,29 @@ impl Interpreter {
     /// follows.
     pub fn set_coding_system_categories_priority(
         &mut self,
-        names: &[String],
+        codings: &[SymbolName],
         env: &mut Env,
     ) -> Result<(), LispError> {
         let mut changed = [false; CODING_CATEGORY_COUNT];
         let mut priorities = Vec::with_capacity(CODING_CATEGORY_COUNT);
-        for name in names {
-            let category = self
-                .coding_system(name)
-                .map(|coding| coding.category)
-                .ok_or_else(|| {
-                    LispError::WrongTypeArgument("coding-system-p".into(), Value::symbol(name))
-                })?;
+        for coding in codings {
+            // CHECK_CODING_SYSTEM_GET_SPEC, by EQ.
+            let spec = self.coding_spec_index_symbol(coding).ok_or_else(|| {
+                LispError::WrongTypeArgument("coding-system-p".into(), Value::Symbol(*coding))
+            })?;
+            let category = self.coding_attrs[self.coding_specs[spec].attrs].category;
             if changed[category] {
                 continue;
             }
             changed[category] = true;
             priorities.push(category);
             if self.coding_category_representatives[category].is_some() {
-                self.coding_category_representatives[category] = Some(name.clone());
+                // setup_coding_system of the spec, which the category's
+                // representative names.
+                self.coding_category_representatives[category] =
+                    self.coding_system_canonical_name_symbol(coding);
             }
-            self.set_variable(
-                CODING_CATEGORY_NAMES[category],
-                Value::Symbol(name.clone().into()),
-                env,
-            );
+            self.set_variable(CODING_CATEGORY_NAMES[category], Value::Symbol(*coding), env);
         }
         for category in self.coding_category_priorities.clone() {
             if !changed[category] {
@@ -855,34 +990,38 @@ impl Interpreter {
     /// record of a name they define: pushed onto `coding-system-list'
     /// every time, and onto `coding-system-alist' as a list of the
     /// symbol's name unless an element already holds that name.
-    pub(super) fn record_coding_system_name(&mut self, name: &str) {
+    /// The end of Fdefine_coding_system_internal and
+    /// Fdefine_coding_system_alias: NAME consed onto `coding-system-list',
+    /// and (SYMBOL-NAME) onto `coding-system-alist' unless a string of
+    /// that name is a key there already (Fassoc).
+    pub(crate) fn record_coding_system_name(&mut self, name: SymbolName) {
         let mut env = Env::new();
-        let symbol = Value::Symbol(name.into());
         let list = self
             .lookup_var("coding-system-list", &env)
             .unwrap_or(Value::Nil);
-        self.set_variable("coding-system-list", Value::cons(symbol, list), &mut env);
+        self.set_variable(
+            "coding-system-list",
+            Value::cons(Value::Symbol(name), list),
+            &mut env,
+        );
         let alist = self
             .lookup_var("coding-system-alist", &env)
             .unwrap_or(Value::Nil);
+        let text = name.name_text();
         let mut tail = alist;
         while let Some((element, rest)) = tail.cons_values() {
             if element
                 .cons_values()
                 .and_then(|(key, _)| crate::lisp::primitives::string_like(&key))
-                .is_some_and(|key| key.text == name)
+                .is_some_and(|key| key.text == text)
             {
                 return;
             }
             tail = rest;
         }
-        let symbol_name = match symbol.kind() {
-            Kind::Symbol(symbol) => symbol.lisp_name(),
-            _ => Value::string(name),
-        };
         self.set_variable(
             "coding-system-alist",
-            Value::cons(Value::list([symbol_name]), alist),
+            Value::cons(Value::list([name.lisp_name()]), alist),
             &mut env,
         );
     }

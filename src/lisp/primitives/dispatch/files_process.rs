@@ -1780,18 +1780,9 @@ define_dispatch!(
                 } else {
                     vec![args[1]]
                 };
-                let flags = aspects
-                    .iter()
-                    .map(|aspect| {
-                        aspect.as_symbol().map(str::to_string).map_err(|_| {
-                            crate::lisp::primitives::file_notify_error_with_errno(
-                                "Unknown aspect",
-                                &std::io::Error::from_raw_os_error(libc::EINVAL),
-                                *aspect,
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                // Each aspect as the object it is: a non-symbol is unknown
+                // to symbol_to_inotifymask.
+                let flags = aspects;
                 interp.validate_inotify_aspects(&flags)?;
                 let path = string_text(&args[0])?;
                 let encoded = encode_file_name(interp, env, &path)?;

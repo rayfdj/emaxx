@@ -748,7 +748,7 @@ pub(crate) fn inherit_write_coding_eol(
         checked_coding_symbol(interp, &coding)?;
         coding
     };
-    let name = coding.as_symbol()?;
+    let name = &crate::lisp::primitives::coding::coding_text_of(interp, &coding)?;
     if interp.coding_system_eol_type_value(name).is_some() {
         return Ok(coding);
     }
@@ -1028,8 +1028,8 @@ fn encode_region_for_write(
         args[1] = Value::Integer(interp.buffer.borrow().point_max() as i64);
     }
     let coding = choose_write_coding(interp, &args, env)?;
-    let coding_name = coding.as_symbol()?;
-    set_last_coding_system_used(interp, coding_name, env);
+    let coding_name = &crate::lisp::primitives::coding::coding_text_of(interp, &coding)?;
+    crate::lisp::primitives::coding::set_last_coding_system_used_value(interp, coding, env);
     let selective_display = !args[0].is_string()
         && interp
             .lookup_var("selective-display", env)
@@ -1110,8 +1110,8 @@ fn write_region_with_coding(
         };
     }
     let coding = choose_write_coding(interp, &selected_args, env)?;
-    let coding_name = coding.as_symbol()?;
-    set_last_coding_system_used(interp, coding_name, env);
+    let coding_name = &crate::lisp::primitives::coding::coding_text_of(interp, &coding)?;
+    crate::lisp::primitives::coding::set_last_coding_system_used_value(interp, coding, env);
     // Selection calls Lisp, which may mutate the supplied string or buffer.
     // Read its actual current contents after the callback has returned.
     // choose_write_coding: CODING_MODE_SELECTIVE_DISPLAY for a buffer
@@ -1377,14 +1377,11 @@ pub(crate) fn printchar_to_stderr(
             continue;
         };
         let string = one.into_value(interp, env)?;
-        let encoded = encode_coding_value_recording(
-            interp,
-            &string,
-            Some(coding.as_symbol()?),
-            true,
-            false,
-            env,
-        )?;
+        // The coding as given, or the one an alias no name names stands
+        // for (`checked_coding_given').
+        let given = crate::lisp::primitives::coding::checked_coding_given(interp, coding)?;
+        let encoded =
+            encode_coding_value_recording(interp, &string, given.as_deref(), true, false, env)?;
         bytes.extend(crate::lisp::primitives::text::internal_string_bytes(
             &string_like(&encoded).expect("an encoded string"),
         )?);

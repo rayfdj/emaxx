@@ -14701,6 +14701,62 @@ setup_process_coding_systems's check now refuses). A 13-form
   gate's 3,501 library tests, the integration targets and clippy
   with `--all-targets --all-features -D warnings' pass.
 
+- **Round 312: coding systems are found by their symbols, as
+  Vcoding_system_hash_table, an `eq' table, finds them, and more
+  primitives check their arguments as GNU does.** Emaxx kept the table
+  by name, which round 311's role table showed apart from GNU only
+  through the marked text of an uninterned symbol:
+  `define-coding-system-alias' of one interned that text (a checked
+  build stops on it). The table is keyed by the symbol: its keys are
+  collection roots, copied with an interpreter and written to the image
+  as symbols; Fdefine_coding_system_internal and
+  Fdefine_coding_system_alias take the symbol, intern an alias's
+  subsidiaries from its name (make_subsidiaries' SYMBOL_NAME) and push
+  it onto `coding-system-list' with its name in `coding-system-alist';
+  CODING_ATTR_BASE_NAME is the symbol; and `coding-system-p',
+  `check-coding-system', CHECK_CODING_SYSTEM and its _GET_SPEC, the name
+  a coding system stands for, `set-coding-system-priority' (the category
+  variable set to the symbol given), `coding-system-eol-type', the mode
+  line's mnemonic and the font check look the symbol up by EQ. An
+  uninterned alias is a coding system, with its target's attributes,
+  encodes and decodes, and the interned symbol of its name is none. The
+  conversions find the coding id once, as setup_coding_system does: the
+  spec and the symbol of its first name (`CodingId'), which the
+  attribute readers take as well as a name (`CodingRef'), and the
+  variables they read (`inhibit-eol-conversion', the translation tables)
+  and `last-coding-system-used' are read and stored by their symbols;
+  with the table keyed by symbols, `encode-coding-string' took 6,131
+  instructions a call, finding the same names again eight times, and
+  takes 3,930 now (GNU 3,776), `decode-coding-string' 15,259 (GNU
+  17,353). The callers that still keep a coding system by its name keep
+  such an alias as the coding system it stands for, so
+  `last-coding-system-used' names the target where GNU names the alias,
+  and a coding system defined under an uninterned symbol signals
+  `coding-system-error' where it would convert; both are recorded as
+  remaining. A call through an autoload loads the file for the symbol
+  called and calls that symbol's new definition, not its name's, and
+  `autoload' reads the symbol's own function cell (Fautoload's XSYMBOL);
+  `inotify-add-watch' reads its aspects by EQ, an unknown one the datum
+  of its error. A second fuzz pass over 581 of GNU's C primitives, with
+  a deny list of only what could leave the process, found these apart
+  from GNU, now as it does: `describe-vector' names the object it
+  rejects; `local-variable-p' decodes its buffer first;
+  `set-input-meta-mode' and `set-output-flow-control' decode their
+  terminal; `tab-bar-height' and `tool-bar-height' take any frame; the
+  lcms functions signal_error with the color (`lcms-cie-de2000' naming
+  COLOR1 for either, as GNU does) and `lcms-temp->white-point' checks a
+  number (`menu-bar-menu-at-x-y' and `get-variable-watchers' differed
+  too, but GNU reads what is no fixnum or symbol unchecked there, and
+  segfaulted on the first; Emaxx keeps checking them). The checked build
+  runs the role tables of rounds 311 and 312 through without stopping,
+  and a command-line comparison runs these cases. The fuzzes of
+  variables, function cells, fields, loading, errors, coding, buffers,
+  case, numbers, strings, printing, syntax and hooks, the uninterned
+  roles and the command-line cases of rounds 303 to 311 print GNU's
+  results as before. Local validation: the grouped gate's 3,501
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17156,6 +17212,17 @@ tramp-tests (22,498 against 18,836), comp-tests (17,038 against 14,240),
 semantic-utest-ia (3,871 against 2,535) and mule-tests (3,234 against
 1,998), and `ert-test-run-tests-batch-expensive' is 1.21 of GNU's time.
 
+**On `c1c6504`** (round 311): the full Rust gate (run 41972087654)
+passed; the frozen run (run 41972090854) passed at its first attempt,
+7,928 of 7,928 outcomes matching, on a slow runner again (the oracle's
+bodies 268.0 s against round 310's 267.2). Setup 79.8 s against 65.4 s
+(1.222), test bodies 299.9 s against 268.0 s (1.119), in all 1.117, with
+a per-file setup median of 120 ms against 101. The widest body gaps are
+ert-tests (46,146 ms against 38,109), tramp-tests (22,732 against
+19,120), comp-tests (17,148 against 14,545), semantic-utest-ia (3,965
+against 2,611) and mule-tests (3,246 against 2,004), and
+`ert-test-run-tests-batch-expensive' is 1.20 of GNU's time.
+
 **Findings recorded, not fixed:**
 - **Hot functions first at link time (round 305).** LLD's
   `--symbol-ordering-file' with the 3,046 functions four test files'
@@ -17983,10 +18050,12 @@ and failures are still recorded.
    C variables' initial values and per-buffer predicates, the `as_symbol'
    and `symbol_str' readings of a symbol argument), which GNU makes from the
    symbol's own name and forwarding descriptor; the registries still keyed
-   by name, where GNU's are keyed by the symbol (coding.c's
-   Vcoding_system_hash_table first: round 311's checked build stops on
-   `define-coding-system-alias' of an uninterned alias, and its role table
-   is the check); text-property intervals
+   by name, where GNU's are keyed by the symbol (since round 312 the
+   coding system table is the symbol's, but the conversions still carry a
+   coding system by its name: GNU's coding id, the spec, is what they
+   should carry, so that `last-coding-system-used' names an uninterned
+   alias and a coding system defined under one converts; the charsets,
+   fontsets and fringe bitmaps next); text-property intervals
    (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor

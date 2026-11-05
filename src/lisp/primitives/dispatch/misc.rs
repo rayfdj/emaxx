@@ -871,7 +871,7 @@ define_dispatch!(
                 }
                 // eval.c:Fautoload: CHECK_SYMBOL, CHECK_STRING, then
                 // Fdefalias of the stub, which holds FILE itself.
-                let function = checked_symbol_name(interp, &args[0], env)?;
+                let function = checked_symbol_identity(interp, &args[0], env)?;
                 if !matches!(args[1].kind(), Kind::StringObject(_)) {
                     return Err(wrong_type_argument("stringp", args[1]));
                 }
@@ -882,7 +882,8 @@ define_dispatch!(
                 // (non-autoload) definition; subrs count as definitions, so the
                 // cl-loaddefs autoloads must not shadow emaxx's native cl-*
                 // primitives either.
-                let old_definition = interp.logical_function_binding(&function, &Env::new());
+                // XSYMBOL (function)->u.s.function, the symbol's own cell.
+                let old_definition = interp.raw_function_binding_symbol(&function, &Env::new());
                 if old_definition
                     .as_ref()
                     .is_some_and(|existing| autoload_parts(existing).is_none())

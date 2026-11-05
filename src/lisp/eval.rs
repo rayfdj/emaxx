@@ -1514,9 +1514,9 @@ pub(crate) struct TreeSitterNodeState {
 /// system, its eol subsidiaries' specs and through them every alias.
 #[derive(Clone, Debug)]
 pub struct CodingSystemState {
-    /// CODING_ATTR_BASE_NAME: the name Fdefine_coding_system_internal
+    /// CODING_ATTR_BASE_NAME: the symbol Fdefine_coding_system_internal
     /// made this attribute vector for.
-    pub base: String,
+    pub base: SymbolName,
     /// CODING_ATTR_MNEMONIC: the mode line's character.
     pub mnemonic: i64,
     /// CODING_ATTR_TYPE: the :coding-type symbol.
@@ -3119,6 +3119,11 @@ fn tty_default_lisp_face_vector() -> Value {
 }
 
 type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::types::IdentityBuildHasher>;
+
+/// coding.c's Vcoding_system_hash_table, an `eq' table: each coding
+/// system symbol's spec, by index in `coding_specs'.
+pub(crate) type CodingSystemHash =
+    HashMap<SymbolName, usize, crate::lisp::types::IdentityBuildHasher>;
 
 /// A snapshot for callbacks that may intern further symbols while enumerating.
 /// Membership comes only from the owning obarray; field stores cannot invalidate it.
@@ -4800,6 +4805,7 @@ impl Interpreter {
         mark(&Value::Frame(self.selected_frame_id));
         mark(&Value::Frame(self.old_selected_frame_id));
         for coding in &self.coding_attrs {
+            mark(&Value::Symbol(coding.base));
             for value in coding.values() {
                 mark(value);
             }
@@ -4807,6 +4813,9 @@ impl Interpreter {
         for spec in &self.coding_specs {
             mark(&spec.aliases);
             mark(&spec.eol_type);
+        }
+        for name in self.coding_system_hash.keys() {
+            mark(&Value::Symbol(*name));
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
@@ -5268,6 +5277,7 @@ impl Interpreter {
                 clone.keyboard_input.internal_last_event_frame = Some(c.copy(frame));
             }
             for coding in &mut clone.coding_attrs {
+                coding.base = c.copy_symbol(coding.base);
                 for value in [
                     &mut coding.ascii_compatible,
                     &mut coding.decode_table,
@@ -5287,6 +5297,10 @@ impl Interpreter {
                 spec.aliases = c.copy(&spec.aliases);
                 spec.eol_type = c.copy(&spec.eol_type);
             }
+            clone.coding_system_hash = std::mem::take(&mut clone.coding_system_hash)
+                .into_iter()
+                .map(|(name, spec)| (c.copy_symbol(name), spec))
+                .collect();
             clone.alternative_font_family_alist =
                 c.copy(&clone.alternative_font_family_alist.clone());
             clone.alternative_font_registry_alist =
@@ -5876,7 +5890,7 @@ pub struct InterpreterState {
     pub(crate) coding_specs: Vec<CodingSpec>,
     /// coding.c's Vcoding_system_hash_table: each coding system name's
     /// spec, by index in `coding_specs'.
-    pub(crate) coding_system_hash: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
+    pub(crate) coding_system_hash: CodingSystemHash,
     /// Vcoding_system_hash_table's books: a key for each coding system
     /// and alias.
     pub(crate) coding_table_books: crate::lisp::alloc::vectors::hash_tables::HostTableBooks,
@@ -7274,7 +7288,7 @@ impl Interpreter {
             "undecided-mac",
             "undecided",
         ] {
-            interp.record_coding_system_name(name);
+            interp.record_coding_system_name(SymbolName::intern_str(name));
         }
 
         for name in crate::lisp::eval::bindings::C_OWNED_DEFVAR_NAMES {

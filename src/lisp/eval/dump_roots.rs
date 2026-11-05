@@ -639,12 +639,12 @@ impl Interpreter {
         // each with its names in the table, and the attribute vectors
         // they share; what no name reaches any more is left out.
         {
-            let mut keys: Vec<(&String, usize)> = self
+            let mut keys: Vec<(SymbolName, usize)> = self
                 .coding_system_hash
                 .iter()
-                .map(|(name, spec)| (name, *spec))
+                .map(|(name, spec)| (*name, *spec))
                 .collect();
-            keys.sort();
+            keys.sort_by(|left, right| (left.0.as_str(), left.1).cmp(&(right.0.as_str(), right.1)));
             let mut specs: Vec<usize> = keys.iter().map(|(_, spec)| *spec).collect();
             specs.sort_unstable();
             specs.dedup();
@@ -659,7 +659,7 @@ impl Interpreter {
                 Value::list(attrs.iter().map(|attrs| {
                     let coding = &self.coding_attrs[*attrs];
                     Value::vector([
-                        Value::symbol(&coding.base),
+                        Value::Symbol(coding.base),
                         Value::Integer(coding.mnemonic),
                         Value::symbol(&coding.kind),
                         coding.ascii_compatible,
@@ -694,7 +694,7 @@ impl Interpreter {
                         Value::list(
                             keys.iter()
                                 .filter(|(_, spec)| spec == index)
-                                .map(|(name, _)| Value::symbol(name)),
+                                .map(|(name, _)| Value::Symbol(*name)),
                         ),
                     ])
                 })),
@@ -1124,7 +1124,9 @@ mod install {
                             return Err("coding system: fourteen fields expected".into());
                         }
                         self.coding_attrs.push(CodingSystemState {
-                            base: expect_symbol(&fields[0], "coding system base")?,
+                            base: fields[0].symbol_cell().ok_or_else(|| {
+                                "coding system base: a symbol expected".to_owned()
+                            })?,
                             mnemonic: expect_int(&fields[1], "mnemonic")?,
                             kind: expect_symbol(&fields[2], "coding system type")?,
                             ascii_compatible: fields[3],
@@ -1160,7 +1162,10 @@ mod install {
                             aliases: fields[1],
                             eol_type: fields[2],
                         });
-                        for name in symbol_names(&fields[3], "spec names")? {
+                        for name in expect_list(&fields[3], "spec names")? {
+                            let name = name
+                                .symbol_cell()
+                                .ok_or_else(|| "spec names: a symbol expected".to_owned())?;
                             self.coding_system_hash.insert(name, index);
                         }
                     }

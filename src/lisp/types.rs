@@ -646,6 +646,14 @@ impl SymbolName {
         Self::find(text)
     }
 
+    /// The interned symbol of a name a registry still keys by host text
+    /// (the remaining name-keyed callers of a symbol-keyed table): None
+    /// for an uninterned or private symbol's marked text, which names no
+    /// interned symbol.  Not C: GNU's callers hold the symbol.
+    pub(crate) fn find_by_host_text(text: &str) -> Option<Self> {
+        Self::find_interned(text)
+    }
+
     pub(crate) fn make_uninterned(name: Value, visible: &str, id: u64) -> Self {
         Self::new_uninterned(name, make_uninterned_symbol_name(visible, id))
     }

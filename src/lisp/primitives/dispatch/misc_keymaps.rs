@@ -368,10 +368,8 @@ fn describe_vector_value(
             }
         }
         other => {
-            return Err(LispError::TypeError(
-                "vector-or-char-table-p".into(),
-                other.value().type_name(),
-            ));
+            // CHECK_VECTOR_OR_CHAR_TABLE: the object is the datum.
+            return Err(wrong_type_argument("vector-or-char-table-p", other.value()));
         }
     }
 

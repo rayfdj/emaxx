@@ -1,6 +1,5 @@
 use super::{CodingSpec, CodingSystemState};
 use crate::lisp::types::{CharTableRef, Kind, Value};
-use std::collections::HashMap;
 
 fn symbol(name: &str) -> Value {
     Value::Symbol(name.into())
@@ -129,11 +128,11 @@ pub(super) fn initial_syntax_table(codes: Value) -> CharTableRef {
 pub(super) fn builtin_coding_systems() -> (
     Vec<CodingSystemState>,
     Vec<CodingSpec>,
-    HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
+    super::CodingSystemHash,
 ) {
     let attrs = vec![
         CodingSystemState {
-            base: "no-conversion".into(),
+            base: crate::lisp::types::SymbolName::intern_str("no-conversion"),
             mnemonic: i64::from(b'='),
             kind: "raw-text".into(),
             ascii_compatible: Value::T,
@@ -150,7 +149,7 @@ pub(super) fn builtin_coding_systems() -> (
             derived: Default::default(),
         },
         CodingSystemState {
-            base: "undecided".into(),
+            base: crate::lisp::types::SymbolName::intern_str("undecided"),
             mnemonic: i64::from(b'-'),
             kind: "undecided".into(),
             ascii_compatible: Value::T,
@@ -197,7 +196,7 @@ pub(super) fn builtin_coding_systems() -> (
             let name = spec
                 .aliases
                 .cons_values()
-                .and_then(|(name, _)| name.symbol_str().map(str::to_string));
+                .and_then(|(name, _)| name.symbol_cell());
             (name.expect("a spec's name"), index)
         })
         .collect();
