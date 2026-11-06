@@ -13726,16 +13726,15 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let child = interp
-        .create_process(
-            None,
-            Some("sh".into()),
-            vec!["-c".into(), "printf child".into()],
-            None,
-            Value::string("child"),
-        )
+        .create_process(true, Value::string("child"))
         .expect("create child process record");
+    let child_id = interp.resolve_process_id(&child).expect("child id");
+    interp.set_process_command(
+        child_id,
+        Value::list(["sh", "-c", "printf child"].map(Value::string)),
+    );
     let connection = interp
-        .create_process(None, None, Vec::new(), None, Value::string("pipe"))
+        .create_process(false, Value::string("pipe"))
         .expect("create connection process record");
 
     assert_eq!(

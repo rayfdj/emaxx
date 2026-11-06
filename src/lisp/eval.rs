@@ -2715,8 +2715,7 @@ impl Clone for ProcessState {
             inherit_coding_system_flag: self.inherit_coding_system_flag,
             decoding: self.decoding,
             encoding: self.encoding,
-            program: self.program.clone(),
-            argv: self.argv.clone(),
+            command: self.command,
             stderr_process_id: self.stderr_process_id,
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
@@ -2744,6 +2743,9 @@ impl Clone for ProcessState {
             stderr_eof: self.stderr_eof,
             encoder: Default::default(),
             output_to_null: self.output_to_null,
+            in_alist: self.in_alist,
+            childless_pid: self.childless_pid,
+            outfd_stale: self.outfd_stale,
         }
     }
 }
@@ -2778,8 +2780,10 @@ struct ProcessState {
     inherit_coding_system_flag: bool,
     decoding: Value,
     encoding: Value,
-    program: Option<String>,
-    argv: Vec<String>,
+    /// p->command: Fmake_process's copy of its `:command' list (nil for
+    /// create_pty's and the connections'), which `process-command' answers
+    /// but t while a connection is stopped.
+    command: Value,
     /// Optional pipe process receiving this child's standard error.
     stderr_process_id: Option<u64>,
     /// Child exit code, or fatal signal number for signaled termination.
@@ -2802,7 +2806,9 @@ struct ProcessState {
     /// closes once the process is another's standard error.  That
     /// child is given SUBPROCESS_STDOUT, and the parent's copy closed.
     module_pipe: Option<(fs::File, Option<fs::File>)>,
-    pipe_input: Option<(fs::File, fs::File)>,
+    /// A pipe process's SUBPROCESS_STDIN and WRITE_TO_SUBPROCESS, or a
+    /// childless pty's slave, when create_pty opens it, and its master.
+    pipe_input: Option<(Option<fs::File>, fs::File)>,
     /// Network :host/:service as given at creation (process-contact).
     contact_host: Option<String>,
     contact_service: Option<i64>,
@@ -2846,6 +2852,14 @@ struct ProcessState {
     /// Fprocess_send_eof reopened the output channel on the null device
     /// (p->outfd): what is sent after the EOF goes nowhere.
     output_to_null: bool,
+    /// The process is on Vprocess_alist: remove_process, the unwind of a
+    /// make-process or make-pipe-process that signaled, takes it off.
+    in_alist: bool,
+    /// p->pid of a process without a child: -2 for create_pty's.
+    childless_pid: Option<i32>,
+    /// create_process closed this `:stderr' pipe process's input but its
+    /// p->outfd still names the descriptor: a send is EBADF.
+    outfd_stale: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -4960,6 +4974,7 @@ impl Interpreter {
                 &process.encoding,
                 &process.plist,
                 &process.contact,
+                &process.command,
                 &process.gnutls.boot_parameters,
             ] {
                 mark(value);
@@ -5463,6 +5478,7 @@ impl Interpreter {
                 process.encoding = c.copy(&process.encoding.clone());
                 process.plist = c.copy(&process.plist.clone());
                 process.contact = c.copy(&process.contact.clone());
+                process.command = c.copy(&process.command);
                 process.gnutls.boot_parameters = c.copy(&process.gnutls.boot_parameters);
             }
         }

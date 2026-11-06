@@ -15732,6 +15732,100 @@ setup_process_coding_systems's check now refuses). A 13-form
   331's build, 14 of 80 on this round's first and 10 of 80 on its final;
   the integration targets (cli_parity's 67 included) and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 333: make-process and make-pipe-process as process.c's two
+  DEFUNs.** Emaxx served both with one function keyed on `:command';
+  each is now its own, in GNU's order of steps. Fmake_process: nil for
+  no arguments, a `:file-handler' that `default-directory' has,
+  `:buffer' through Fget_buffer_create, get_current_directory ("Setting
+  current directory"), the required string `:name', the program's
+  CHECK_STRING, `:stderr' (a pipe process, PIPECONN_P, else "Process is
+  not a pipe process"; a buffer or name, for which the program is
+  CHECK_STRING'd and Fmake_pipe_process makes "NAME stderr"),
+  make_process, which start_process_unwind's remove_process undoes when
+  a later step signals, the process typed `real' with its buffer,
+  sentinel, filter, a copy of the command, its query flag, `:stop'
+  (CHECK_TYPE null), `:connection-type' (is_pty_from_symbol), then the
+  coding systems (`:coding', `coding-system-for-read' and `-write',
+  find-operation-coding-system for `start-process' only with a program,
+  and `default-process-coding-system' read after it, each fallback
+  taking list_length of the command first, so a command that is no list
+  is `listp''s error even with no program), and the inherit flag from a
+  non-nil buffer, live or killed. With a program: its search ("Searching
+  for program"), each argument's CHECK_STRING and encoding, and
+  create_process: allocate_pty (posix_openpt, grantpt, unlockpt,
+  ptsname, faccessat; none to be had gives pipes, no error), the tty
+  ("Opening pty"), the pipes, the `:stderr' pipe process's input closed,
+  FD_SETSIZE, setup_process_coding_systems, the spawn, and the stderr
+  pipe's SUBPROCESS_STDOUT closed after it. With none, create_pty: a
+  real process with no child, pid -2, status run, on a pty unless the
+  connection type is a pipe (FD_SETSIZE refusing it as "Opening pty"),
+  its tty not opened in Emacs where USG is defined and USG_SUBTTY_WORKS
+  is not, as on GNU/Linux, its coding systems set up only when it has
+  one, so an unknown `:coding' with a pipe connection type is kept as
+  given. Its master reads EIO once whoever else opened the tty (a serial
+  process, `stty', a shell's redirection) closes it, and
+  wait_reading_process_output then stops reading it and makes the
+  process `failed', which its sentinel hears as "failed with code 0";
+  `delete-process' then gives it (signal 9) and a "killed" event, as
+  Fdelete_process does for any status but exit and signal. Emaxx held
+  the tty open, so its childless ptys never failed. Fmake_pipe_process
+  reads no `:command', `:stderr' or `:file-handler': nil for no
+  arguments, `:name', make_process typed `pipe', the pipes ("Creating
+  pipe"), `:buffer' else the name through Fget_buffer_create, the
+  arguments as its contact, a copy of `:plist', `:sentinel', `:filter',
+  `:noquery', `:stop' leaving it stopped, then its coding systems. Both
+  read an odd plist as plist_get does. make_process gives a new process
+  no buffer, command or coding systems, as allocate_process does, where
+  Emaxx's took `default-process-coding-system' and a command list made
+  from its arguments; `process-command' answers the command as given (t
+  while a connection is stopped), and `process-buffer' a killed buffer
+  given as `:buffer' (Fget_buffer_create returns a buffer object as it
+  is; an empty name signals and a new buffer runs
+  `buffer-list-update-hook', for make-network-process and
+  make-serial-process too). create_process sets the channel Emacs writes
+  non-blocking, as fcntl (outchannel, F_SETFL, O_NONBLOCK) does, so a
+  child that does not read its input no longer blocks a send in the
+  kernel, and `process-send-eof' sends a pty child's C-d through
+  send_process as it does a childless pty's. The childless process:
+  send_process writes to its master; on EAGAIN it waits as
+  wait_reading_process_output (0, 20 ms) does, through
+  `accept-process-output', so timers run and a signal ends Emacs, where
+  Emaxx's send loop spun without either for pipe processes and real
+  children alike; a closed output descriptor is "Output file descriptor
+  of %s is closed", a stale one EBADF's "Writing to process", EPIPE exit
+  256 and "process %s no longer connected to pipe; closed it";
+  `process-send-eof' on a pty sends C-d through send_process;
+  process_send_signal sends VINTR, VQUIT or VSUSP through the pty when
+  CURRENT-GROUP asks and the pty has one, and SIGCONT to a childless
+  process makes it run with a "run" event; `delete-process' of one with
+  no channel leaves it running and out of the process list, with no
+  sentinel; `process-running-child-p' asks the master's foreground
+  group; `set-process-window-size' sets the size on p->infd (a child's
+  pty master or its output pipe, a childless pty's master, a serial
+  port, a pipe process's pipe; nil for a network process, a closed
+  channel or a failed ioctl, which a pipe gives), where Emaxx used a
+  child's input pty and nothing else. remove_process closes the channels
+  and signals nothing, as deactivate_process does; child_setup_tty's
+  tcsetattr failure is ignored. A command-line comparison runs this
+  round's probes against GNU's. **Audit:** `tools/round_audit.py'
+  against round 332 reports no hard findings. The independent review of
+  the round found two P1, five P2 and six P3 findings: a send past a
+  pipe's capacity hung Emaxx with no timers and SIGTERM ignored;
+  `process-send-eof' on a childless pty sent later input to /dev/null;
+  an invalid `:coding' signaled with a pipe-type create_pty; a childless
+  pty's signal characters and SIGCONT's event were missing;
+  `set-process-window-size' answered nil on a childless pty; the
+  `:stderr' pipe's input closed after the coding setup and sends to it
+  gave the wrong error; the buffer argument was not Fget_buffer_create;
+  remove_process killed the child; create_process kept parameters only
+  tests used; two comments misdescribed GNU; a failed pty allocation
+  signaled; and `default-process-coding-system' was read before
+  find-operation-coding-system ran. All are fixed above, and verifying
+  them found the blocking write channel, the childless pty's tty and its
+  EIO, fixed too; that a pty child's tty is likewise held open by Emacs
+  is recorded below. Local validation: the grouped gate's 3,501 library
+  tests, the integration targets (cli_parity's 69 included) and clippy
+  with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -18455,7 +18549,31 @@ ert-tests as a whole 26,307 ms against 27,211.
   against 2,495) and mule-tests (2,390 against 1,572), and
   `ert-test-run-tests-batch-expensive' runs in 1.07 of GNU's time.
 
+**On `9a110aa`** (round 332): the full Rust gate (run 42223556714)
+  passed; the frozen run (run 42223561534) passed at its first attempt,
+  7,928 of 7,928 outcomes matching. Setup 54.8 s against 48.3 s (1.135),
+  test bodies 236.0 s against 225.8 s (1.045), in all 1.057, with a
+  per-file setup median of 85 ms against 77. The widest body gaps are
+  tramp-tests (16,694 ms against 14,789), comp-tests (12,867 against
+  11,807), semantic-utest-ia (2,575 against 1,788), mule-tests (1,849
+  against 1,161) and esh-cmd-tests (5,551 against 5,059), and
+  `ert-test-run-tests-batch-expensive' runs in 0.96 of GNU's time.
+
 **Findings recorded, not fixed:**
+- **A pty child's tty held by Emacs (round 333).** On GNU/Linux, which
+  defines USG and not USG_SUBTTY_WORKS, create_process does not open the
+  pty's tty in Emacs: emacs_spawn's child opens it by name, so Emacs
+  holds the master only, and the master reads EIO once the child and
+  everything it left on the tty have closed it. Emaxx opens the tty in
+  Emacs, hands it to the child as its standard streams, and keeps one
+  copy (`pty_slave_guard', which Darwin needs so that unread output
+  survives the last close) until the child's output is drained, so a pty
+  child costs Emacs three descriptors where GNU's costs one, and no EIO
+  reaches a pty child's master while it lives. The exit is still learned
+  from SIGCHLD in both, and no probe has shown a status or output
+  difference; the descriptor counts differ (two more per pty child). To
+  be made: the spawn opens the tty in the child, as emacs_spawn does,
+  with the guard kept only where the parent opens it.
 - **window_list_1's `inhibit-quit' (round 332).** GNU's window_list_1
   specbinds `inhibit-quit' to t around its walk of the window list, so
   `window-list', `next-window', `get-buffer-window', window.el's
@@ -18516,22 +18634,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   backend (threads.rs) still names its directory reads and open and
   registration failures with text paths. It cannot be compiled or probed
   on this host; it is to be converted with a macOS check.
-- **make-process's argument checks (rounds 329, 332).** Fmake_process
-  runs get_current_directory before it reads :name, searches for the
-  program before it checks each argument with CHECK_STRING, and so
-  reports a bad `default-directory' or a missing program first; Emaxx
-  parses :name and every argument before the search and checks the
-  directory at the spawn, so `(make-process :command '("zz-no-such" 5))'
-  is `stringp 5' where GNU's is "Searching for program". Round 332 found
-  more: Emaxx serves make-process and make-pipe-process with one
-  function keyed on `:command', so make-process with a nil `:command'
-  errors where process.c's create_pty makes a pty process with no
-  program (pid -2, status run, a tty name unless the connection type is
-  a pipe), make-pipe-process honors `:command', `:stderr' and
-  `:file-handler', which Fmake_pipe_process does not read, both reject
-  an odd plist, which plist_get reads, and a real process given as
-  `:stderr' is taken where GNU signals "Process is not a pipe process".
-  Converting it means building the two DEFUNs in GNU's order of steps.
 - **Name-resolution failures (round 329).** connect_network_socket's
   getaddrinfo failure is `(error "HOST/SERVICE gai_strerror")'; Emaxx
   resolves through Rust's ToSocketAddrs and reports a file-error

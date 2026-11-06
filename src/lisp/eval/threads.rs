@@ -235,7 +235,96 @@ impl Interpreter {
     /// point, so an exited-but-unnotified process is still listed, and a
     /// filter or hook running on its final output can still find it.
     fn in_process_alist(process: &ProcessState) -> bool {
-        process.status.is_live() || !process.sentinel_notified
+        process.in_alist && (process.status.is_live() || !process.sentinel_notified)
+    }
+
+    /// process.c:remove_process: the process leaves Vprocess_alist and its
+    /// channels close (deactivate_process), its status and sentinel left
+    /// as they are.  The unwind of a make-process or make-pipe-process
+    /// that signaled once the process was made, which start_process_unwind
+    /// does only for a process with no child; deactivate_process signals
+    /// none.
+    pub(crate) fn remove_process(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.in_alist = false;
+            process.module_pipe = None;
+            process.pipe_input = None;
+            if let Some(runtime) = process.runtime.as_mut() {
+                runtime.child.stdin = None;
+                runtime.child.stdout = None;
+                runtime.child.stderr = None;
+                runtime.pty_input = None;
+                runtime.pty_output = None;
+            }
+        }
+    }
+
+    /// process.c:create_pty: a `real' process with no child, p->pid -2.
+    /// With PTY (a pseudo-terminal's master, the slave when create_pty
+    /// opens it, and its name), the master is both the channel read and
+    /// the one written, and the slave stays open as WRITE_TO_SUBPROCESS.
+    pub(crate) fn make_childless_pty_process(
+        &mut self,
+        record_id: u64,
+        pty: Option<(fs::File, Option<fs::File>, Option<String>)>,
+    ) -> Result<(), LispError> {
+        let channels = match pty {
+            Some((master, slave, name)) => {
+                let reader = master
+                    .try_clone()
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                Some((reader, master, slave, name))
+            }
+            None => None,
+        };
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return Ok(());
+        };
+        process.kind = ProcessKind::Real;
+        process.childless_pid = Some(-2);
+        if let Some((reader, master, slave, name)) = channels {
+            process.module_pipe = Some((reader, None));
+            process.pipe_input = Some((slave, master));
+            process.tty = name.map(|name| (name, true, true));
+        }
+        Ok(())
+    }
+
+    /// pset_command (p, Fcopy_sequence (command)).
+    pub(crate) fn set_process_command(&mut self, record_id: u64, command: Value) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.command = command;
+        }
+    }
+
+    /// create_process's child for RECORD_ID once it is forked: its pid,
+    /// its pty's name and the channels RUNTIME holds.
+    pub(crate) fn attach_process_runtime(&mut self, record_id: u64, runtime: RunningProcess) {
+        let os_pid = runtime.child.id();
+        let tty = runtime.pty_slave_name.clone().map(|name| {
+            (
+                name,
+                runtime.pty_input.is_some(),
+                runtime.pty_output.is_some(),
+            )
+        });
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.os_pid = Some(os_pid);
+            process.tty = tty;
+            process.runtime = Some(runtime);
+        }
+    }
+
+    /// Fprocess_id: the child's pid, a childless pty process's -2, else nil.
+    pub(crate) fn process_id_value(&self, record_id: u64) -> Value {
+        match self.find_process_state(record_id) {
+            Some(process) => match (process.os_pid, process.childless_pid) {
+                (Some(pid), _) => Value::Integer(i64::from(pid)),
+                (None, Some(pid)) => Value::Integer(i64::from(pid)),
+                (None, None) => Value::Nil,
+            },
+            None => Value::Nil,
+        }
     }
 
     pub fn process_list_value(&self) -> Value {
@@ -495,7 +584,8 @@ impl Interpreter {
         if let Some(process) = self.find_process_state_mut(record_id) {
             let (reader, writer) = channels.output;
             process.module_pipe = Some((reader, Some(writer)));
-            process.pipe_input = Some(channels.input);
+            let (input, writer) = channels.input;
+            process.pipe_input = Some((Some(input), writer));
         }
     }
 
@@ -551,7 +641,11 @@ impl Interpreter {
     /// process's standard error.
     pub(crate) fn close_pipe_process_input(&mut self, record_id: u64) {
         if let Some(process) = self.find_process_state_mut(record_id) {
-            process.pipe_input = None;
+            // close_process_fd of WRITE_TO_SUBPROCESS and SUBPROCESS_STDIN,
+            // p->outfd left naming the closed descriptor.
+            if process.pipe_input.take().is_some() {
+                process.outfd_stale = true;
+            }
         }
     }
 
@@ -624,21 +718,11 @@ impl Interpreter {
         }
     }
 
-    pub(crate) fn create_process(
-        &mut self,
-        buffer_id: Option<u64>,
-        program: Option<String>,
-        argv: Vec<String>,
-        runtime: Option<RunningProcess>,
-        name: Value,
-    ) -> Result<Value, LispError> {
-        // GNU names the process after the NAME argument (uniquified with
-        // <N> on collision, make_process), not the program.
-        let name = if name.is_nil() {
-            Value::string(program.as_deref().unwrap_or_default())
-        } else {
-            name
-        };
+    /// process.c:make_process: a process named NAME, made unique, with
+    /// status `run', a marker that points nowhere, no buffer, command or
+    /// coding systems, in Vprocess_alist; Fmake_process's pset_type
+    /// `real' (REAL) or Fmake_pipe_process's `pipe'.
+    pub(crate) fn create_process(&mut self, real: bool, name: Value) -> Result<Value, LispError> {
         let name = self.make_process_name(name)?;
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
         let Kind::Record(record_id) = process.kind() else {
@@ -648,38 +732,18 @@ impl Interpreter {
         let Kind::Marker(mark_marker_id) = marker.kind() else {
             unreachable!("make_marker returns a marker")
         };
-        let initial_position =
-            buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|buffer| buffer.point_max()));
-        self.set_marker(mark_marker_id, initial_position, buffer_id)?;
-        let (decoding, encoding) = self
-            .lookup_var_key(cached_symbol!("default-process-coding-system"), &Env::new())
-            .and_then(|value| value.cons_values())
-            .unwrap_or((Value::Nil, Value::Nil));
-        let os_pid = runtime.as_ref().map(|runtime| runtime.child.id());
-        let tty = runtime.as_ref().and_then(|runtime| {
-            runtime.pty_slave_name.clone().map(|name| {
-                (
-                    name,
-                    runtime.pty_input.is_some(),
-                    runtime.pty_output.is_some(),
-                )
-            })
-        });
-        let kind = if program.is_some() {
+        let kind = if real {
             ProcessKind::Real
         } else {
             ProcessKind::Pipe
         };
         let thread_id = Some(self.active_thread_id);
         let readmax = self.process_readmax();
-        let buffer = buffer_id
-            .and_then(|id| self.buffer_value(id))
-            .unwrap_or(Value::Nil);
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind,
-            buffer_id,
-            buffer,
+            buffer_id: None,
+            buffer: Value::Nil,
             mark_marker_id,
             status: ProcessStatus::Run,
             filter: None,
@@ -691,16 +755,15 @@ impl Interpreter {
             query_on_exit_flag: true,
             traffic_stopped: false,
             inherit_coding_system_flag: false,
-            decoding,
-            encoding,
-            program,
-            argv,
+            decoding: Value::Nil,
+            encoding: Value::Nil,
+            command: Value::Nil,
             stderr_process_id: None,
             exit_code: None,
             exit_signal: None,
-            os_pid,
-            tty,
-            runtime,
+            os_pid: None,
+            tty: None,
+            runtime: None,
             network: None,
             serial: None,
             module_pipe: None,
@@ -721,6 +784,9 @@ impl Interpreter {
             stderr_eof: false,
             encoder: Default::default(),
             output_to_null: false,
+            in_alist: true,
+            childless_pid: None,
+            outfd_stale: false,
         });
         Ok(process)
     }
@@ -792,8 +858,7 @@ impl Interpreter {
             inherit_coding_system_flag,
             decoding,
             encoding,
-            program: None,
-            argv: Vec::new(),
+            command: Value::Nil,
             stderr_process_id: None,
             exit_code: None,
             exit_signal: None,
@@ -820,6 +885,9 @@ impl Interpreter {
             stderr_eof: false,
             encoder: Default::default(),
             output_to_null: false,
+            in_alist: true,
+            childless_pid: None,
+            outfd_stale: false,
         });
         self.setup_process_coding_systems(decoding, encoding)?;
         Ok(process)
@@ -830,7 +898,7 @@ impl Interpreter {
     pub(crate) fn create_serial_process(
         &mut self,
         name: Value,
-        buffer_id: u64,
+        (buffer_id, buffer): (Option<u64>, Value),
         filter: Option<Value>,
         sentinel: Option<Value>,
         plist: Value,
@@ -850,17 +918,15 @@ impl Interpreter {
         let Kind::Marker(mark_marker_id) = marker.kind() else {
             unreachable!("make_marker returns a marker")
         };
-        let initial_position = self
-            .get_buffer_by_id(buffer_id)
-            .map(|buffer| buffer.point_max());
-        self.set_marker(mark_marker_id, initial_position, Some(buffer_id))?;
+        let initial_position =
+            buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|buffer| buffer.point_max()));
+        self.set_marker(mark_marker_id, initial_position, buffer_id)?;
         let thread_id = Some(self.active_thread_id);
         let readmax = self.process_readmax();
-        let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind: ProcessKind::Serial,
-            buffer_id: Some(buffer_id),
+            buffer_id,
             buffer,
             mark_marker_id,
             status: ProcessStatus::Open,
@@ -875,8 +941,7 @@ impl Interpreter {
             inherit_coding_system_flag: false,
             decoding,
             encoding,
-            program: None,
-            argv: Vec::new(),
+            command: Value::Nil,
             stderr_process_id: None,
             exit_code: None,
             exit_signal: None,
@@ -903,6 +968,9 @@ impl Interpreter {
             stderr_eof: false,
             encoder: Default::default(),
             output_to_null: false,
+            in_alist: true,
+            childless_pid: None,
+            outfd_stale: false,
         });
         self.setup_process_coding_systems(decoding, encoding)?;
         Ok(process)
@@ -975,19 +1043,11 @@ impl Interpreter {
     /// its argument vector; pipe and network process records have no command.
     pub fn process_command_value(&self, record_id: u64) -> Option<Value> {
         self.find_process_state(record_id).map(|process| {
-            let Some(program) = process.program.as_ref() else {
-                return if process.traffic_stopped {
-                    Value::T
-                } else {
-                    Value::Nil
-                };
-            };
-            Value::list(
-                std::iter::once(program)
-                    .chain(process.argv.iter())
-                    .cloned()
-                    .map(|value| Value::String(value.into())),
-            )
+            if process.traffic_stopped {
+                Value::T
+            } else {
+                process.command
+            }
         })
     }
 
@@ -1070,7 +1130,10 @@ impl Interpreter {
     pub(crate) fn any_process_exit_awaits_notification(&self) -> bool {
         self.process_states.iter().any(|process| {
             matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
-                && matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
+                && matches!(
+                    process.status,
+                    ProcessStatus::Exit | ProcessStatus::Signal | ProcessStatus::Failed
+                )
                 && !process.sentinel_notified
                 && process
                     .thread_id
@@ -1081,7 +1144,10 @@ impl Interpreter {
     pub fn process_exit_awaits_notification(&self, record_id: u64) -> bool {
         self.find_process_state(record_id).is_some_and(|process| {
             matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
-                && matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
+                && matches!(
+                    process.status,
+                    ProcessStatus::Exit | ProcessStatus::Signal | ProcessStatus::Failed
+                )
                 && !process.sentinel_notified
         })
     }
@@ -1099,7 +1165,10 @@ impl Interpreter {
         // mirrors GNU's newest-first `Vprocess_alist' status traversal.
         for process in self.process_states.iter_mut().rev() {
             if !matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
-                || !matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
+                || !matches!(
+                    process.status,
+                    ProcessStatus::Exit | ProcessStatus::Signal | ProcessStatus::Failed
+                )
                 || process.sentinel_notified
                 || process
                     .thread_id
@@ -1110,6 +1179,10 @@ impl Interpreter {
             }
             process.sentinel_notified = true;
             let event = match process.exit_code {
+                // A childless pty's EIO: status_message of `failed'.
+                code if matches!(process.status, ProcessStatus::Failed) => {
+                    format!("failed with code {}\n", code.unwrap_or(0))
+                }
                 _ if process.exit_signal.is_some() => {
                     signal_event_message(process.exit_signal.expect("checked signal"))
                 }
@@ -2020,32 +2093,59 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-        if process.kind != ProcessKind::Real {
-            return Ok(false);
-        }
-        let Some(runtime) = process.runtime.as_ref() else {
-            return Ok(false);
-        };
-        let Some(pty) = runtime.pty_input.as_ref() else {
-            return Ok(false);
-        };
+        // process.c:Fset_process_window_size: nil for NETCONN_P, else
+        // set_window_size of p->infd, the descriptor the process is read
+        // from: a child's pty master or its stdout pipe, a childless
+        // pty's master, a serial port, a pipe process's pipe; nil once it
+        // is closed (infd < 0) or when the ioctl fails, as it does for a
+        // pipe.
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
 
+            let infd = match process.kind {
+                ProcessKind::Network => None,
+                ProcessKind::Serial => process
+                    .serial
+                    .as_ref()
+                    .map(|serial| serial.port.as_raw_fd()),
+                ProcessKind::Real if process.childless_pid.is_none() => {
+                    process.runtime.as_ref().and_then(|runtime| {
+                        runtime
+                            .pty_output
+                            .as_ref()
+                            .map(AsRawFd::as_raw_fd)
+                            .or_else(|| runtime.child.stdout.as_ref().map(AsRawFd::as_raw_fd))
+                    })
+                }
+                // A childless pty's master, which stays open, unread,
+                // once it has read EIO (delete_read_fd).
+                ProcessKind::Real => process
+                    .pipe_input
+                    .as_ref()
+                    .map(|(_, master)| master.as_raw_fd()),
+                ProcessKind::Pipe => process
+                    .module_pipe
+                    .as_ref()
+                    .map(|(reader, _)| reader.as_raw_fd()),
+            };
+            let Some(infd) = infd else {
+                return Ok(false);
+            };
             let size = libc::winsize {
                 ws_row: height,
                 ws_col: width,
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             };
-            // SAFETY: the PTY descriptor stays live through this call, and
-            // TIOCSWINSZ only reads the supplied initialized structure.
-            Ok(unsafe { libc::ioctl(pty.as_raw_fd(), libc::TIOCSWINSZ, &size) } == 0)
+            // SAFETY: INFD is owned by the process record borrowed above,
+            // which stays live through this call, and TIOCSWINSZ only reads
+            // the supplied initialized structure.
+            Ok(unsafe { libc::ioctl(infd, libc::TIOCSWINSZ, &size) } == 0)
         }
         #[cfg(not(unix))]
         {
-            let _ = (pty, height, width);
+            let _ = (process, height, width);
             Ok(false)
         }
     }
@@ -2060,6 +2160,32 @@ impl Interpreter {
                 "Process {} is not a subprocess",
                 &[process.name],
             ));
+        }
+        if process.runtime.is_none()
+            && process.childless_pid.is_some()
+            && let Some((_, master)) = process.pipe_input.as_ref()
+        {
+            // create_pty's process: emacs_get_tty_pgrp of its pty, which
+            // no child's session has (its pid, -2, is never the group).
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                let mut foreground_group: libc::pid_t = -1;
+                // SAFETY: master is a live pty descriptor and the ioctl
+                // writes one pid_t into initialized caller-owned storage.
+                if unsafe {
+                    libc::ioctl(
+                        master.as_raw_fd(),
+                        libc::TIOCGPGRP,
+                        &mut foreground_group as *mut libc::pid_t,
+                    )
+                } == 0
+                    && foreground_group != -1
+                {
+                    return Ok(Value::Integer(i64::from(foreground_group)));
+                }
+            }
+            return Ok(Value::T);
         }
         let Some(runtime) = process.runtime.as_ref() else {
             return Err(crate::lisp::primitives::values::doprnt_error_sdata(
@@ -2129,13 +2255,81 @@ impl Interpreter {
         Ok(true)
     }
 
+    /// process_send_signal's checks: a `real' process ("Process %s is not
+    /// a subprocess") whose channel is open ("Process %s is not active").
+    pub(crate) fn process_signal_check(&self, record_id: u64) -> Result<(), LispError> {
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
+        if process.kind != ProcessKind::Real {
+            return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                None,
+                "Process {} is not a subprocess",
+                &[process.name],
+            ));
+        }
+        if process.runtime.is_none() && process.pipe_input.is_none() {
+            return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                None,
+                "Process {} is not active",
+                &[process.name],
+            ));
+        }
+        Ok(())
+    }
+
+    /// p->pty_in: the process's input is a pty.
+    pub(crate) fn process_pty_in(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .and_then(|process| process.tty.as_ref())
+            .is_some_and(|(_, pty_in, _)| *pty_in)
+    }
+
+    /// SIGNALS_VIA_CHARACTERS: tcgetattr of the pty and the character that
+    /// raises SIGNAL in its foreground group (VINTR, VQUIT, VSUSP), unless
+    /// it is disabled or the pty's modes cannot be read.
+    #[cfg(unix)]
+    pub(crate) fn pty_signal_character(&self, record_id: u64, signal: i32) -> Option<u8> {
+        use std::os::fd::AsRawFd;
+        let process = self.find_process_state(record_id)?;
+        let fd = match process.runtime.as_ref() {
+            Some(runtime) => runtime
+                .pty_output
+                .as_ref()
+                .or(runtime.pty_input.as_ref())?
+                .as_raw_fd(),
+            None => process.pipe_input.as_ref()?.1.as_raw_fd(),
+        };
+        let index = match signal {
+            libc::SIGINT => libc::VINTR,
+            libc::SIGQUIT => libc::VQUIT,
+            libc::SIGTSTP => libc::VSUSP,
+            _ => return None,
+        };
+        let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+        // SAFETY: fd is a live pty descriptor and tcgetattr initializes the
+        // termios value on success.
+        if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        // SAFETY: the successful tcgetattr initialized `attributes'.
+        let character = unsafe { attributes.assume_init() }.c_cc[index];
+        // CDISABLE, _POSIX_VDISABLE.
+        (character != 0).then_some(character)
+    }
+
+    /// process_send_signal from its process group on: SIGNAL to the
+    /// child's group, or the pty's foreground group when CURRENT_GROUP is
+    /// non-nil (nothing when it is `lambda' and the child owns the
+    /// terminal, which returns false); SIGCONT makes the status `run'.  A
+    /// childless pty process is never alive, so nothing is killed.
     #[cfg(unix)]
     pub fn signal_process_group(
         &mut self,
         record_id: u64,
         signal: i32,
         current_group: &Value,
-    ) -> Result<(), LispError> {
+    ) -> Result<bool, LispError> {
         use std::os::fd::AsRawFd;
 
         let process = self
@@ -2147,6 +2341,18 @@ impl Interpreter {
                 "Process {} is not a subprocess",
                 &[process.name],
             ));
+        }
+        if process.runtime.is_none()
+            && process.childless_pid.is_some()
+            && process.pipe_input.is_some()
+        {
+            // create_pty's process: active (its pty is open), never alive.
+            if signal == libc::SIGCONT
+                && let Some(process) = self.find_process_state_mut(record_id)
+            {
+                process.status = ProcessStatus::Run;
+            }
+            return Ok(true);
         }
         let Some(runtime) = process.runtime.as_ref() else {
             return Err(crate::lisp::primitives::values::doprnt_error_sdata(
@@ -2182,7 +2388,7 @@ impl Interpreter {
                 }
             }
             if crate::lisp::types::eq_symbol_named(current_group, "lambda") && group == pid {
-                return Ok(());
+                return Ok(false);
             }
         }
         // SAFETY: negative GROUP addresses the child-owned process group;
@@ -2196,7 +2402,7 @@ impl Interpreter {
             // GNU publishes `run' before the kernel's WCONTINUED event.
             process.status = ProcessStatus::Run;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// process.c:Fdelete_process: a connection's status becomes (exit 0),
@@ -2215,12 +2421,22 @@ impl Interpreter {
         // `delete-process' on itself; GNU removes the process from the
         // notification registry first, so that nested deletion must not
         // invoke the same sentinel recursively.
-        let notify_sentinel = !process.sentinel_notified;
+        // A childless pty that went `failed' had that change reported;
+        // the (signal 9) below is a new one, which status_notify reports
+        // again.
+        let notify_sentinel = !process.sentinel_notified
+            || (kind == ProcessKind::Real && matches!(process.status, ProcessStatus::Failed));
         // GNU clears the connection flow-control marker while closing the
         // descriptor, so a stopped connection reports `closed' afterwards.
         process.traffic_stopped = false;
         process.gnutls.session = None;
         process.gnutls.active = false;
+        // p->infd >= 0: a channel still open.
+        let has_channel = process.runtime.is_some()
+            || process.module_pipe.is_some()
+            || process.pipe_input.is_some()
+            || process.network.is_some()
+            || process.serial.is_some();
         if let Some(runtime) = process.runtime.take() {
             terminate_child_without_blocking(runtime);
         }
@@ -2248,6 +2464,12 @@ impl Interpreter {
             process.status = ProcessStatus::Closed;
             process.exit_code = Some(0);
             process.exit_signal = None;
+        } else if process.childless_pid.is_some() && !has_channel {
+            // create_pty's process without a pty (p->infd < 0): no status
+            // change and no sentinel, only remove_process.
+            process.in_alist = false;
+            process.sentinel_notified = true;
+            return Ok((Self::process_status_message(process), false));
         } else if !matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal) {
             process.status = ProcessStatus::Signal;
             #[cfg(unix)]
@@ -2265,106 +2487,140 @@ impl Interpreter {
         Ok((Self::process_status_message(process), notify_sentinel))
     }
 
-    pub fn process_send_string(
-        &mut self,
-        record_id: u64,
-        input: &[u8],
-    ) -> Result<(Vec<u8>, Vec<u8>), LispError> {
+    /// send_process's checks before its loop: the process must be running
+    /// (process_send_check); a channel whose output went to the null
+    /// device after Fprocess_send_eof takes the bytes and drops them, and a
+    /// connection sends them whole.  True when the caller is to write them
+    /// with process_write_some.
+    pub fn process_send_begin(&mut self, record_id: u64, input: &[u8]) -> Result<bool, LispError> {
         self.refresh_process_id(record_id)?;
         let record_id_value = self.record_value(record_id);
-        let process = self
-            .find_process_state_mut(record_id)
+        self.find_process_state(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-        let _ = process;
         self.process_send_check(record_id)?;
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         if process.output_to_null {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(false);
         }
         if matches!(process.kind, ProcessKind::Network | ProcessKind::Serial) {
             self.connection_send(record_id, input)?;
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(false);
         }
-        // GNU's send_process blocks until the pty or pipe accepts the bytes,
-        // accepting pending process output while it waits so a full write
-        // buffer cannot deadlock against an unread child.  A nonblocking fd
-        // therefore retries on EAGAIN instead of surfacing "Resource
-        // temporarily unavailable" to Lisp.
-        let mut pumped_stdout = Vec::new();
-        let mut pumped_stderr = Vec::new();
-        let mut offset = 0usize;
-        while offset < input.len() {
-            let write_result = {
-                let record_id_value = self.record_value(record_id);
+        Ok(true)
+    }
+
+    /// One emacs_write_sig of send_process's loop on p->outfd: the bytes
+    /// written, or None when the channel would block (the caller waits,
+    /// accepting output, and tries again).  p->outfd < 0 is "Output file
+    /// descriptor of %s is closed"; the stale descriptor create_process
+    /// left a `:stderr' pipe process is EBADF; EPIPE makes the status
+    /// (exit 256) and closes the process; any other error is
+    /// report_file_error ("Writing to process", PROC).
+    pub(crate) fn process_write_some(
+        &mut self,
+        record_id: u64,
+        input: &[u8],
+    ) -> Result<Option<usize>, LispError> {
+        let record_id_value = self.record_value(record_id);
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
+        let name = process.name;
+        let written = if let Some(runtime) = process.runtime.as_mut() {
+            let stdin: &mut dyn Write = if let Some(pty) = runtime.pty_input.as_mut() {
+                pty
+            } else if let Some(stdin) = runtime.child.stdin.as_mut() {
+                stdin
+            } else {
+                return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                    None,
+                    "Output file descriptor of {} is closed",
+                    &[name],
+                ));
+            };
+            stdin.write(input)
+        } else if let Some((_, writer)) = process.pipe_input.as_mut() {
+            // A pipe process's WRITE_TO_SUBPROCESS, which nothing reads, or
+            // a childless pty's master.
+            writer.write(input)
+        } else if process.outfd_stale {
+            Err(std::io::Error::from_raw_os_error(libc::EBADF))
+        } else {
+            return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                None,
+                "Output file descriptor of {} is closed",
+                &[name],
+            ));
+        };
+        match written {
+            Ok(0) if !input.is_empty() => Ok(None),
+            Ok(written) => {
+                if std::env::var_os("EMAXX_DEBUG_PROCESS_IO").is_some() {
+                    eprintln!(
+                        "PROC-IO send#{record_id} wrote {written} of {}: {:?}",
+                        input.len(),
+                        String::from_utf8_lossy(&input[..written.min(120)])
+                    );
+                }
+                Ok(Some(written))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(Some(0)),
+            Err(error) if error.raw_os_error() == Some(libc::EPIPE) => {
                 let process = self
                     .find_process_state_mut(record_id)
                     .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-                let Some(runtime) = process.runtime.as_mut() else {
-                    return Ok((input[offset..].to_vec(), Vec::new()));
-                };
-                let stdin: &mut dyn Write = if let Some(pty) = runtime.pty_input.as_mut() {
-                    pty
-                } else if let Some(stdin) = runtime.child.stdin.as_mut() {
-                    stdin
-                } else {
-                    return Err(LispError::Signal("Process stdin is closed".into()));
-                };
-                stdin.write(&input[offset..])
+                process.status = ProcessStatus::Exit;
+                process.exit_code = Some(256);
+                process.exit_signal = None;
+                process.module_pipe = None;
+                process.pipe_input = None;
+                if let Some(runtime) = process.runtime.as_mut() {
+                    drop(runtime.child.stdin.take());
+                    runtime.pty_input = None;
+                }
+                Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                    None,
+                    "process {} no longer connected to pipe; closed it",
+                    &[name],
+                ))
+            }
+            Err(error) => Err(crate::lisp::primitives::report_file_errno(
+                self,
+                "Writing to process",
+                record_id_value,
+                &error,
+            )),
+        }
+    }
+
+    /// The bytes written down a child's input flushed.
+    pub(crate) fn process_send_flush(&mut self, record_id: u64) -> Result<(), LispError> {
+        let record_id_value = self.record_value(record_id);
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
+        if let Some(runtime) = process.runtime.as_mut() {
+            let stdin: Option<&mut dyn Write> = if let Some(pty) = runtime.pty_input.as_mut() {
+                Some(pty)
+            } else if let Some(stdin) = runtime.child.stdin.as_mut() {
+                Some(stdin)
+            } else {
+                None
             };
-            match write_result {
-                Ok(0) => return Err(LispError::Signal("Process stdin is closed".into())),
-                Ok(written) => {
-                    if std::env::var_os("EMAXX_DEBUG_PROCESS_IO").is_some() {
-                        eprintln!(
-                            "PROC-IO send#{record_id} wrote {written} of {}: {:?}",
-                            input.len(),
-                            String::from_utf8_lossy(
-                                &input[offset..(offset + written).min(offset + 120)]
-                            )
-                        );
-                    }
-                    offset += written;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    let (out, err) = self.poll_process_output(record_id)?;
-                    pumped_stdout.extend_from_slice(&out);
-                    pumped_stderr.extend_from_slice(&err);
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(LispError::Signal(error.to_string())),
+            if let Some(stdin) = stdin
+                && let Err(error) = stdin.flush()
+                && !matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                )
+            {
+                return Err(LispError::Signal(error.to_string()));
             }
         }
-        {
-            let record_id_value = self.record_value(record_id);
-            let process = self
-                .find_process_state_mut(record_id)
-                .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-            if let Some(runtime) = process.runtime.as_mut() {
-                let stdin: Option<&mut dyn Write> = if let Some(pty) = runtime.pty_input.as_mut() {
-                    Some(pty)
-                } else if let Some(stdin) = runtime.child.stdin.as_mut() {
-                    Some(stdin)
-                } else {
-                    None
-                };
-                if let Some(stdin) = stdin
-                    && let Err(error) = stdin.flush()
-                    && !matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                    )
-                {
-                    return Err(LispError::Signal(error.to_string()));
-                }
-            }
-        }
-        // GNU queues the bytes and returns; filters run when the event loop
-        // later accepts process output.  Only output drained while waiting
-        // for a full pipe is handed back for delivery here.
-        Ok((pumped_stdout, pumped_stderr))
+        Ok(())
     }
 
     /// process.c Fprocess_tty_name: the pty device name, nil for pipes.
@@ -2434,19 +2690,10 @@ impl Interpreter {
             process.output_to_null = true;
             return Ok((Vec::new(), Vec::new()));
         };
-        // A PTY uses canonical Ctrl-D for EOF (as GNU's child_setup_tty
-        // configures it).  Keep the master alive until the child consumes
-        // the queued input: closing an input-only PTY here can deliver SIGHUP
-        // before the pipeline head has forwarded its final output.
-        if let Some(pty) = runtime.pty_input.as_mut() {
-            pty.write_all(&[4])
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            pty.flush()
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-        }
-        if runtime.pty_input.is_none() {
-            process.output_to_null = true;
-        }
+        // A child on a pty takes its EOF character through send_process
+        // (process-send-eof's `p->pty_in' branch); one on a pipe has its
+        // input closed and the null device as its output channel.
+        process.output_to_null = true;
         drop(runtime.child.stdin.take());
         // GNU only makes EOF visible after already queued input and returns.
         // Output remains owned by the normal event pump, which preserves
@@ -2647,8 +2894,19 @@ impl Interpreter {
         let readmax = Some(process.readmax);
         if let Some((reader, _)) = process.module_pipe.as_mut() {
             let mut output = std::mem::take(&mut process.pending_stdout);
-            if read_nonblocking_pipe(reader, &mut output, readmax)? {
-                process.stdout_eof = true;
+            match read_nonblocking_channel(reader, &mut output, readmax)? {
+                ChannelRead::End => process.stdout_eof = true,
+                ChannelRead::Eio if process.childless_pid.is_some() => {
+                    // wait_reading_process_output's EIO on a pty:
+                    // delete_read_fd, and for a process with pid -2, which
+                    // no SIGCHLD reports, pset_status (p, Qfailed).  The
+                    // last other opener of the pty's tty closed it.
+                    process.module_pipe = None;
+                    process.status = ProcessStatus::Failed;
+                    process.exit_code = None;
+                    process.exit_signal = None;
+                }
+                ChannelRead::Eio | ChannelRead::More => {}
             }
             return Ok((output, std::mem::take(&mut process.pending_stderr)));
         }
@@ -4968,20 +5226,45 @@ fn read_nonblocking_pipe<T: Read>(
     output: &mut Vec<u8>,
     limit: Option<usize>,
 ) -> Result<bool, LispError> {
+    Ok(matches!(
+        read_nonblocking_channel(pipe, output, limit)?,
+        ChannelRead::End
+    ))
+}
+
+/// What a non-blocking read of a process channel ended on.
+enum ChannelRead {
+    /// Nothing more for now (EAGAIN, or the read limit reached).
+    More,
+    /// A zero read: the channel's end.
+    End,
+    /// EIO, which a pty's master reads once no one has its tty open.
+    Eio,
+}
+
+fn read_nonblocking_channel<T: Read>(
+    pipe: &mut T,
+    output: &mut Vec<u8>,
+    limit: Option<usize>,
+) -> Result<ChannelRead, LispError> {
     with_read_buffer(limit.unwrap_or(4096), |buffer| {
         loop {
             match pipe.read(buffer) {
-                Ok(0) => return Ok(true),
+                Ok(0) => return Ok(ChannelRead::End),
                 Ok(read) => {
                     output.extend_from_slice(&buffer[..read]);
                     if limit.is_some() {
-                        return Ok(false);
+                        return Ok(ChannelRead::More);
                     }
                 }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(false),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    return Ok(ChannelRead::More);
+                }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 #[cfg(unix)]
-                Err(error) if error.raw_os_error() == Some(libc::EIO) => return Ok(false),
+                Err(error) if error.raw_os_error() == Some(libc::EIO) => {
+                    return Ok(ChannelRead::Eio);
+                }
                 Err(error) => return Err(LispError::Signal(error.to_string())),
             }
         }

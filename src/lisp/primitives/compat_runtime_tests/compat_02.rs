@@ -1390,7 +1390,7 @@ fn value_less_vectors_break_ties_after_equal_prefix_values() {
         .set_marker(marker_id, Some(12), Some(buffer_id))
         .expect("set marker");
     let process = interp
-        .create_process(None, None, vec![], None, Value::Nil)
+        .create_process(false, Value::string(""))
         .expect("create process");
     let cases = vec![
         ("number", Value::Integer(1)),
@@ -1491,10 +1491,10 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
         .expect("set mark4");
 
     let proc1 = interp
-        .create_process(None, None, vec![], None, Value::Nil)
+        .create_process(false, Value::string(""))
         .expect("create proc1");
     let proc2 = interp
-        .create_process(None, None, vec![], None, Value::Nil)
+        .create_process(false, Value::string(""))
         .expect("create proc2");
     let uninterned_a = call(
         &mut interp,

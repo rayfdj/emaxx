@@ -1191,14 +1191,14 @@ fn spawn_call_process(
 /// A child's environment block and the directory it starts in.
 pub(crate) type ChildEnvironment = (Vec<Vec<u8>>, Vec<u8>);
 
-/// The child's environment and directory, the directory also set on
-/// COMMAND.
+/// The child's environment and DIRECTORY, get_current_directory (true)'s
+/// encoded name, the directory also set on COMMAND.
 pub(crate) fn configure_external_command(
     interp: &mut Interpreter,
     env: &mut Env,
     command: &mut Command,
+    directory: Value,
 ) -> Result<ChildEnvironment, LispError> {
-    let directory = process_current_directory(interp, env, true)?;
     let environment = child_environment(interp, env, directory)?;
     set_command_environment(command, &environment);
     Ok(environment)
@@ -1286,16 +1286,34 @@ fn set_command_environment(command: &mut Command, environment: &ChildEnvironment
     let _ = block;
 }
 
+/// What Fmake_process has decided of a child's channels when it calls
+/// create_process: p->pty_in and p->pty_out, and p->stderrproc, the
+/// `:stderr' pipe process whose SUBPROCESS_STDOUT is create_process's
+/// forkerr, the child's standard error.
+#[derive(Clone, Copy)]
+pub(crate) struct ProcessChannels {
+    pub(crate) pty_modes: (bool, bool),
+    pub(crate) stderr_process_id: Option<u64>,
+}
+
+/// create_process: PROGRAM forked in DIRECTORY (get_current_directory
+/// (true)'s name, which Fmake_process takes first) with ARGV, its input
+/// and output a pty or pipes as PTY_MODES (p->pty_in, p->pty_out) say.
 pub(crate) fn spawn_persistent_process(
     interp: &mut Interpreter,
+    env: &mut Env,
     program: &std::ffi::OsStr,
     argv: &[Vec<u8>],
-    env: &mut Env,
-    connection_type: Option<&Value>,
-    // create_process's forkerr: the `:stderr' pipe process's
-    // SUBPROCESS_STDOUT, which the child gets as its standard error.
-    stderr: Option<&fs::File>,
+    directory: Value,
+    channels: ProcessChannels,
+    // setup_process_coding_systems, which may signal, once the channels
+    // are made and before the spawn.
+    setup_coding: &mut dyn FnMut(&mut Interpreter, &mut Env) -> Result<(), LispError>,
 ) -> Result<RunningProcess, LispError> {
+    let ProcessChannels {
+        pty_modes,
+        stderr_process_id,
+    } = channels;
     #[cfg(test)]
     crate::test_support::mark_process_test();
 
@@ -1303,26 +1321,27 @@ pub(crate) fn spawn_persistent_process(
     child_signal_init(interp)?;
     let mut command = Command::new(program);
     add_command_arguments(&mut command, argv);
-    let child_environment = configure_external_command(interp, env, &mut command)?;
-
-    let default_pty = interp
-        .lookup_var_key(cached_symbol!("process-connection-type"), env)
-        .is_some_and(|value| value.is_truthy());
-    let (input_pty, output_pty) =
-        process_connection_pty_modes(interp, connection_type, default_pty)?;
+    let child_environment = configure_external_command(interp, env, &mut command, directory)?;
+    let (input_pty, output_pty) = pty_modes;
+    let stderr_writer = match stderr_process_id {
+        Some(stderr_id) => interp.pipe_process_stderr_writer(stderr_id)?,
+        None => None,
+    };
+    let stderr = stderr_writer.as_ref();
     #[cfg(target_os = "linux")]
     if let Some(runtime) = posix_spawn_process(
         interp,
-        program,
-        argv,
-        &child_environment,
-        input_pty,
-        output_pty,
+        env,
+        (program, argv, &child_environment),
+        channels,
         stderr.map(|file| {
             use std::os::fd::AsRawFd;
             file.as_raw_fd()
         }),
+        setup_coding,
     )? {
+        drop(stderr_writer);
+        close_stderr_process_output(interp, stderr_process_id);
         return finish_spawned_runtime(runtime);
     }
     let mut pty_input = None;
@@ -1363,56 +1382,31 @@ pub(crate) fn spawn_persistent_process(
             }
             Ok(read)
         };
-        if input_pty && output_pty {
-            let (master, slave, slave_name) = open_emacs_pty(interp)?;
-            pty_slave_name = slave_name;
-            pty_slave_guard = Some(
-                slave
-                    .try_clone()
-                    .map_err(|error| LispError::Signal(error.to_string()))?,
-            );
-            command.stdin(Stdio::from(
-                slave
-                    .try_clone()
-                    .map_err(|error| LispError::Signal(error.to_string()))?,
-            ));
-            command.stdout(Stdio::from(
-                slave
-                    .try_clone()
-                    .map_err(|error| LispError::Signal(error.to_string()))?,
-            ));
-            if let Some(file) = stderr {
-                given_stderr(&mut command, file)?;
-            } else {
-                command.stderr(Stdio::from(slave));
-            }
-            pty_input = Some(
-                master
-                    .try_clone()
-                    .map_err(|error| LispError::Signal(error.to_string()))?,
-            );
-            pty_output = Some(master);
-        } else if input_pty {
-            let (master, slave, slave_name) = open_emacs_pty(interp)?;
-            pty_slave_name = slave_name;
-            command.stdin(Stdio::from(slave));
-            stdout_read = Some(piped_output(&mut command, false)?);
-            if let Some(file) = stderr {
-                given_stderr(&mut command, file)?;
-            } else {
-                stderr_read = Some(piped_output(&mut command, true)?);
-            }
-            pty_input = Some(master);
+        // create_process: allocate_pty when a stream is to be on a pty, then
+        // its tty; when no pty is to be had, both streams are pipes.
+        let pty = if input_pty || output_pty {
+            open_emacs_pty(interp, true)?
         } else {
-            piped_stdin(&mut command)?;
-            if output_pty {
-                let (master, slave, slave_name) = open_emacs_pty(interp)?;
+            None
+        };
+        let (input_pty, output_pty) = if pty.is_some() {
+            (input_pty, output_pty)
+        } else {
+            (false, false)
+        };
+        match (pty, input_pty) {
+            (Some((master, slave, slave_name)), true) if output_pty => {
                 pty_slave_name = slave_name;
                 pty_slave_guard = Some(
                     slave
                         .try_clone()
                         .map_err(|error| LispError::Signal(error.to_string()))?,
                 );
+                command.stdin(Stdio::from(
+                    slave
+                        .try_clone()
+                        .map_err(|error| LispError::Signal(error.to_string()))?,
+                ));
                 command.stdout(Stdio::from(
                     slave
                         .try_clone()
@@ -1423,16 +1417,55 @@ pub(crate) fn spawn_persistent_process(
                 } else {
                     command.stderr(Stdio::from(slave));
                 }
+                pty_input = Some(
+                    master
+                        .try_clone()
+                        .map_err(|error| LispError::Signal(error.to_string()))?,
+                );
                 pty_output = Some(master);
-            } else {
+            }
+            (Some((master, slave, slave_name)), true) => {
+                pty_slave_name = slave_name;
+                command.stdin(Stdio::from(slave));
                 stdout_read = Some(piped_output(&mut command, false)?);
                 if let Some(file) = stderr {
                     given_stderr(&mut command, file)?;
                 } else {
                     stderr_read = Some(piped_output(&mut command, true)?);
                 }
+                pty_input = Some(master);
+            }
+            (pty, _) => {
+                piped_stdin(&mut command)?;
+                if let Some((master, slave, slave_name)) = pty {
+                    pty_slave_name = slave_name;
+                    pty_slave_guard = Some(
+                        slave
+                            .try_clone()
+                            .map_err(|error| LispError::Signal(error.to_string()))?,
+                    );
+                    command.stdout(Stdio::from(
+                        slave
+                            .try_clone()
+                            .map_err(|error| LispError::Signal(error.to_string()))?,
+                    ));
+                    if let Some(file) = stderr {
+                        given_stderr(&mut command, file)?;
+                    } else {
+                        command.stderr(Stdio::from(slave));
+                    }
+                    pty_output = Some(master);
+                } else {
+                    stdout_read = Some(piped_output(&mut command, false)?);
+                    if let Some(file) = stderr {
+                        given_stderr(&mut command, file)?;
+                    } else {
+                        stderr_read = Some(piped_output(&mut command, true)?);
+                    }
+                }
             }
         }
+        close_stderr_process_input(interp, stderr_process_id);
         // create_process: the channel Emacs reads and the one it writes
         // must fit an fd_set; none is spawned otherwise.
         use std::os::fd::AsRawFd;
@@ -1451,6 +1484,7 @@ pub(crate) fn spawn_persistent_process(
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
     }
+    setup_coding(interp, env)?;
 
     #[cfg(unix)]
     configure_emacs_spawn(&mut command, input_pty);
@@ -1468,6 +1502,8 @@ pub(crate) fn spawn_persistent_process(
         .map_err(|error| vfork_error(interp, &error))?;
     // Only the child keeps the ends it was given.
     drop(command);
+    drop(stderr_writer);
+    close_stderr_process_output(interp, stderr_process_id);
     #[cfg(unix)]
     let child = SpawnedChild::new(child.id(), stdin_write, stdout_read, stderr_read);
     // Put the child under RunningProcess's terminate-and-reap Drop guard
@@ -1486,11 +1522,37 @@ pub(crate) fn spawn_persistent_process(
     finish_spawned_runtime(runtime)
 }
 
-/// create_process's fcntl (inchannel, F_SETFL, O_NONBLOCK) on the channels
-/// Emacs reads.
+/// create_process's close_process_fd of the stderr pipe process's
+/// WRITE_TO_SUBPROCESS and SUBPROCESS_STDIN once the child's channels are
+/// made: what is sent to it then finds its output closed.
+fn close_stderr_process_input(interp: &mut Interpreter, stderr_process_id: Option<u64>) {
+    if let Some(stderr_id) = stderr_process_id {
+        interp.close_pipe_process_input(stderr_id);
+    }
+}
+
+/// create_process's close_process_fd of the stderr pipe process's
+/// SUBPROCESS_STDOUT once the child is made: the pipe process reads the
+/// child's errors on its own channel and ends at their end.
+fn close_stderr_process_output(interp: &mut Interpreter, stderr_process_id: Option<u64>) {
+    if let Some(stderr_id) = stderr_process_id {
+        interp.close_pipe_process_output_writer(stderr_id);
+    }
+}
+
+/// create_process's fcntl (inchannel, F_SETFL, O_NONBLOCK) and fcntl
+/// (outchannel, F_SETFL, O_NONBLOCK): the channels Emacs reads, and the
+/// one it writes, whose send then waits in send_process rather than in
+/// the kernel when the child does not read.
 fn finish_spawned_runtime(runtime: RunningProcess) -> Result<RunningProcess, LispError> {
     #[cfg(unix)]
     {
+        if let Some(stdin) = runtime.child.stdin.as_ref() {
+            set_nonblocking(stdin)?;
+        }
+        if let Some(input) = runtime.pty_input.as_ref() {
+            set_nonblocking(input)?;
+        }
         if let Some(stdout) = runtime.child.stdout.as_ref() {
             set_nonblocking(stdout)?;
         }
@@ -1782,13 +1844,15 @@ fn emacs_posix_spawn(
 /// fails, whose report the vfork path's child makes.
 #[cfg(target_os = "linux")]
 fn posix_spawn_process(
-    interp: &Interpreter,
-    program: &std::ffi::OsStr,
-    argv: &[Vec<u8>],
-    (environment, directory): &ChildEnvironment,
-    input_pty: bool,
-    output_pty: bool,
+    interp: &mut Interpreter,
+    env: &mut Env,
+    (program, argv, (environment, directory)): (&std::ffi::OsStr, &[Vec<u8>], &ChildEnvironment),
+    ProcessChannels {
+        pty_modes: (input_pty, output_pty),
+        stderr_process_id,
+    }: ProcessChannels,
     stderr: Option<std::os::fd::RawFd>,
+    setup_coding: &mut dyn FnMut(&mut Interpreter, &mut Env) -> Result<(), LispError>,
 ) -> Result<Option<RunningProcess>, LispError> {
     use std::os::fd::AsRawFd;
     let Some(image) = ExecImage::new(program, argv, environment.clone()) else {
@@ -1806,14 +1870,26 @@ fn posix_spawn_process(
     if (input_pty || output_pty) && nofile_limit_to_restore().is_some() {
         return Ok(None);
     }
-    let (pty_master, pty_slave, pty_name) = if input_pty || output_pty {
-        let (master, slave, name) = open_emacs_pty(interp)?;
-        let Some(name) = name.and_then(|name| std::ffi::CString::new(name).ok()) else {
-            return Ok(None);
-        };
-        (Some(master), Some(slave), Some(name))
+    // create_process: allocate_pty when a stream is to be on a pty, then
+    // its tty; when no pty is to be had, both streams are pipes.
+    let pty = if input_pty || output_pty {
+        open_emacs_pty(interp, true)?
     } else {
-        (None, None, None)
+        None
+    };
+    let (input_pty, output_pty) = if pty.is_some() {
+        (input_pty, output_pty)
+    } else {
+        (false, false)
+    };
+    let (pty_master, pty_slave, pty_name) = match pty {
+        Some((master, slave, name)) => {
+            let Some(name) = name.and_then(|name| std::ffi::CString::new(name).ok()) else {
+                return Ok(None);
+            };
+            (Some(master), Some(slave), Some(name))
+        }
+        None => (None, None, None),
     };
     let input = (!input_pty)
         .then(emacs_pipe)
@@ -1823,6 +1899,7 @@ fn posix_spawn_process(
         .then(emacs_pipe)
         .transpose()
         .map_err(pipe_error)?;
+    close_stderr_process_input(interp, stderr_process_id);
     // create_process: the channel Emacs reads and the one it writes, each
     // a pipe or the pty, must fit an fd_set; none is spawned otherwise.
     let master = pty_master.as_ref().map(|master| master.as_raw_fd());
@@ -1834,6 +1911,7 @@ fn posix_spawn_process(
     if beyond_fd_setsize(&[inchannel, outchannel].map(|fd| fd.unwrap_or(-1))) {
         return Err(fd_setsize_error(interp, "Creating pipe"));
     }
+    setup_coding(interp, env)?;
     let stdio = [
         input
             .as_ref()
@@ -1880,7 +1958,10 @@ fn posix_spawn_process(
     }))
 }
 
-fn process_connection_pty_modes(
+/// Fmake_process's p->pty_in and p->pty_out: CONNECTION_TYPE's car and
+/// cdr, or it for both, through is_pty_from_symbol, `process-connection-
+/// type' answering for nil.
+pub(crate) fn process_connection_pty_modes(
     interp: &Interpreter,
     connection_type: Option<&Value>,
     default_pty: bool,
@@ -1920,47 +2001,125 @@ fn is_pty_from_symbol(
 }
 
 #[cfg(unix)]
-fn open_emacs_pty(interp: &Interpreter) -> Result<(fs::File, fs::File, Option<String>), LispError> {
-    let mut master = -1;
-    let mut slave = -1;
-    // SAFETY: `openpty' initializes both file descriptors; the optional
-    // name/termios/winsize pointers are allowed to be null.
-    if unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+/// process.c:allocate_pty with GNU/Linux's PTY_OPEN and
+/// PTY_TTY_NAME_SPRINTF: posix_openpt (again without O_CLOEXEC on
+/// EINVAL), grantpt and unlockpt with SIGCHLD blocked, ptsname, the
+/// close-on-exec flag, faccessat of the slave for reading and writing,
+/// then setup_pty's FIONBIO.  None, with nothing signaled, when a step
+/// fails: create_process then uses pipes, and create_pty makes no pty.
+pub(crate) fn allocate_pty() -> Option<(fs::File, std::ffi::CString)> {
+    let flags = libc::O_RDWR | libc::O_NOCTTY;
+    // SAFETY: posix_openpt returns a fresh descriptor or -1.
+    let mut fd = unsafe { libc::posix_openpt(flags | libc::O_CLOEXEC) };
+    if fd < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+        // SAFETY: as above.
+        fd = unsafe { libc::posix_openpt(flags) };
+    }
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: ownership of the fresh descriptor is transferred exactly once;
+    // an early return below closes it, as emacs_close does.
+    let master = unsafe { fs::File::from_raw_fd(fd) };
+    // SAFETY: the signal set is initialized by sigemptyset before use;
+    // grantpt, unlockpt and ptsname act on the live master, and ptsname's
+    // static string is copied before anything can reuse it.
+    let name = unsafe {
+        let mut blocked = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+        libc::sigemptyset(blocked.as_mut_ptr());
+        libc::sigaddset(blocked.as_mut_ptr(), libc::SIGCHLD);
+        let blocked = blocked.assume_init();
+        libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut());
+        let name = if libc::grantpt(fd) != -1 && libc::unlockpt(fd) != -1 {
+            libc::ptsname(fd)
+        } else {
+            std::ptr::null_mut()
+        };
+        let name = (!name.is_null()).then(|| std::ffi::CStr::from_ptr(name).to_owned());
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, std::ptr::null_mut());
+        name
+    }?;
+    // SAFETY: fcntl, faccessat and ioctl act on the live master and on a
+    // NUL-terminated name.
+    unsafe {
+        libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        if libc::faccessat(
+            libc::AT_FDCWD,
+            name.as_ptr(),
+            libc::R_OK | libc::W_OK,
+            libc::AT_EACCESS,
+        ) != 0
+        {
+            return None;
+        }
+        let on: libc::c_int = 1;
+        libc::ioctl(fd, libc::FIONBIO, &on);
+    }
+    Some((master, name))
+}
+
+/// process.c's `#if ! defined (USG) || defined (USG_SUBTTY_WORKS)': where
+/// create_pty opens the pty's tty in Emacs, holding it as
+/// WRITE_TO_SUBPROCESS.  GNU/Linux defines USG and not USG_SUBTTY_WORKS,
+/// so there the tty is opened only by the child, or by whoever else opens
+/// it, and a childless pty's master reads EIO once the last such opener
+/// closes it; macOS defines neither.
+pub(crate) const PARENT_OPENS_PTY_TTY: bool =
+    !cfg!(any(target_os = "linux", target_os = "android"));
+
+#[cfg(unix)]
+/// allocate_pty, then the pty's tty, emacs_open (PTY_NAME, O_RDWR |
+/// O_NOCTTY) ("Opening pty"), with, for a child (CHILD_SETUP_TTY),
+/// child_setup_tty's modes; create_pty, which forks nothing, leaves the
+/// pty's modes as the system gives them (DONT_REOPEN_PTY is not defined).
+/// None when allocate_pty finds no pty.
+pub(crate) fn open_emacs_pty(
+    interp: &Interpreter,
+    child_setup_tty: bool,
+) -> Result<Option<(fs::File, fs::File, Option<String>)>, LispError> {
+    let Some((master, name)) = allocate_pty() else {
+        return Ok(None);
+    };
+    let slave = open_pty_tty(interp, &name, child_setup_tty)?;
+    Ok(Some((
+        master,
+        slave,
+        Some(name.to_string_lossy().into_owned()),
+    )))
+}
+
+#[cfg(unix)]
+/// create_process's and create_pty's emacs_open (PTY_NAME, O_RDWR |
+/// O_NOCTTY, 0) of the pty's tty, report_file_error ("Opening pty", Qnil)
+/// when it fails, and for a child (CHILD_SETUP_TTY) child_setup_tty's
+/// modes on it.
+pub(crate) fn open_pty_tty(
+    interp: &Interpreter,
+    name: &std::ffi::CStr,
+    child_setup_tty: bool,
+) -> Result<fs::File, LispError> {
+    // SAFETY: NAME is NUL-terminated; open returns a fresh descriptor or -1.
+    let fd = unsafe {
+        libc::open(
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
         )
-    } != 0
-    {
-        return Err(LispError::Signal(
-            std::io::Error::last_os_error().to_string(),
+    };
+    if fd < 0 {
+        return Err(file_operation_error_value_without_file(
+            interp,
+            "Opening pty",
+            &std::io::Error::last_os_error(),
         ));
     }
-    // SAFETY: ownership of the fresh descriptors is transferred exactly once.
-    let master = unsafe { fs::File::from_raw_fd(master) };
     // SAFETY: ownership of the fresh descriptor is transferred exactly once.
-    let slave = unsafe { fs::File::from_raw_fd(slave) };
-    // create_pty: a pty `pselect' could not watch is refused.
-    if beyond_fd_setsize(&[master.as_raw_fd()]) {
-        return Err(fd_setsize_error(interp, "Opening pty"));
-    }
-    for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
-        // SAFETY: both descriptors are live and owned by the File values.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-            return Err(LispError::Signal(
-                std::io::Error::last_os_error().to_string(),
-            ));
-        }
-    }
-
+    let slave = unsafe { fs::File::from_raw_fd(fd) };
     let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
     // SAFETY: `slave' is a live terminal fd and `tcgetattr' initializes the
     // termios value on success.
-    if unsafe { libc::tcgetattr(slave.as_raw_fd(), attributes.as_mut_ptr()) } == 0 {
+    if child_setup_tty
+        && unsafe { libc::tcgetattr(slave.as_raw_fd(), attributes.as_mut_ptr()) } == 0
+    {
         // SAFETY: the successful `tcgetattr' initialized `attributes'.
         let mut attributes = unsafe { attributes.assume_init() };
         // GNU leaves canonical input and EOF processing enabled, while
@@ -1975,30 +2134,11 @@ fn open_emacs_pty(interp: &Interpreter) -> Result<(fs::File, fs::File, Option<St
         attributes.c_cflag = (attributes.c_cflag & !libc::CSIZE) | libc::CS8;
         attributes.c_cc[libc::VEOF] = 4;
         // SAFETY: `tcsetattr' operates on initialized termios storage and
-        // the same live terminal fd.
-        if unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &attributes) } < 0 {
-            return Err(LispError::Signal(
-                std::io::Error::last_os_error().to_string(),
-            ));
-        }
+        // the same live terminal fd.  emacs_set_tty's failure is ignored,
+        // as child_setup_tty ignores it.
+        unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &attributes) };
     }
-    // ttyname on the slave names the pty device; GNU stores the same
-    // string in the process's tty_name.
-    let slave_name = {
-        // SAFETY: `slave' is a live terminal descriptor.
-        let name = unsafe { libc::ttyname(slave.as_raw_fd()) };
-        if name.is_null() {
-            None
-        } else {
-            // SAFETY: ttyname returned a valid NUL-terminated string.
-            Some(
-                unsafe { std::ffi::CStr::from_ptr(name) }
-                    .to_string_lossy()
-                    .into_owned(),
-            )
-        }
-    };
-    Ok((master, slave, slave_name))
+    Ok(slave)
 }
 
 #[cfg(unix)]
@@ -2021,41 +2161,26 @@ pub(crate) fn set_nonblocking<T: AsRawFd>(stream: &T) -> Result<(), LispError> {
     Ok(())
 }
 
+/// The process connection makers' `buffer = Fget_buffer_create (buffer,
+/// Qnil)' of a non-nil buffer argument: a buffer object as it is, live or
+/// killed, else the buffer of that name, made when there is none (an
+/// empty name refused, `buffer-list-update-hook' run), CHECK_STRING of
+/// anything else.  Nil stays nil.  With the buffer, its id while it is
+/// live, which update_process_mark's marker needs.
 pub(crate) fn process_buffer_target(
     interp: &mut Interpreter,
+    env: &mut Env,
     value: &Value,
-) -> Result<Option<u64>, LispError> {
+) -> Result<(Option<u64>, Value), LispError> {
     if value.is_nil() {
-        return Ok(None);
+        return Ok((None, Value::Nil));
     }
-    if matches!(value.kind(), Kind::StringObject(_)) {
-        // Fget_buffer_create.
-        return Ok(Some(
-            interp
-                .find_buffer_named(value)
-                .unwrap_or_else(|| interp.create_buffer_named(*value)),
-        ));
-    }
-    if matches!(value.kind(), Kind::Buffer(_)) {
-        return Ok(Some(interp.resolve_buffer_id(value)?));
-    }
-    // Fget_buffer_create's CHECK_STRING of what is no buffer.
-    Err(wrong_type_argument("stringp", *value))
-}
-
-pub(crate) fn process_command_parts(value: &Value) -> Result<(String, Vec<String>), LispError> {
-    let items = value.to_vec()?;
-    let Some((program, argv)) = items.split_first() else {
-        return Err(LispError::Signal(
-            "Process command must not be empty".into(),
-        ));
+    let buffer = call(interp, "get-buffer-create", &[*value], env)?;
+    let buffer_id = match buffer.kind() {
+        Kind::Buffer(buffer) => interp.live_buffer_id(buffer),
+        _ => None,
     };
-    Ok((
-        string_text(program)?,
-        argv.iter()
-            .map(string_text)
-            .collect::<Result<Vec<_>, _>>()?,
-    ))
+    Ok((buffer_id, buffer))
 }
 
 /// Which of process.c's connection makers chooses the codings, and what
@@ -2101,9 +2226,13 @@ pub(crate) fn connection_coding_systems(
             .is_some_and(|buffer| !buffer.is_multibyte()),
     };
     let current_unibyte = !interp.buffer.borrow().is_multibyte();
-    let default = interp
-        .lookup_var_key(cached_symbol!("default-process-coding-system"), env)
-        .and_then(|value| value.cons_values());
+    // Vdefault_process_coding_system as each fallback reads it, after
+    // the find-operation-coding-system call before it.
+    let default = |interp: &Interpreter, env: &Env| {
+        interp
+            .lookup_var_key(cached_symbol!("default-process-coding-system"), env)
+            .and_then(|value| value.cons_values())
+    };
     let mut coding_systems = None;
     let mut operation_coding = |interp: &mut Interpreter, env: &mut Env| {
         if let Some(found) = coding_systems {
@@ -2145,7 +2274,7 @@ pub(crate) fn connection_coding_systems(
     } else {
         match operation_coding(interp, env)?.cons_values() {
             Some((found, _)) => found,
-            None => default.map_or(Value::Nil, |(decoding, _)| decoding),
+            None => default(interp, env).map_or(Value::Nil, |(decoding, _)| decoding),
         }
     };
     let encoding = if !coding.is_nil() {
@@ -2162,138 +2291,21 @@ pub(crate) fn connection_coding_systems(
     } else {
         match operation_coding(interp, env)?.cons_values() {
             Some((_, found)) => found,
-            None => default.map_or(Value::Nil, |(_, encoding)| encoding),
+            None => default(interp, env).map_or(Value::Nil, |(_, encoding)| encoding),
         }
     };
     Ok((decoding, encoding))
 }
 
-pub(crate) struct MakeProcessArgs {
-    pub(crate) buffer_id: Option<u64>,
-    pub(crate) program: Option<String>,
-    pub(crate) argv: Vec<String>,
-    pub(crate) filter: Option<Value>,
-    pub(crate) sentinel: Option<Value>,
-    pub(crate) stderr_process_id: Option<u64>,
-    pub(crate) stderr_buffer_id: Option<u64>,
-    pub(crate) query_on_exit_flag: bool,
-    pub(crate) connection_type: Option<Value>,
-    /// The `:coding', `:name' and `:command' values as given.
-    pub(crate) coding_value: Value,
-    pub(crate) name_value: Value,
-    pub(crate) command: Value,
-}
-
-pub(crate) fn parse_make_process_args(
-    interp: &mut Interpreter,
-    args: &[Value],
-) -> Result<MakeProcessArgs, LispError> {
-    if !args.len().is_multiple_of(2) {
-        return Err(LispError::WrongNumberOfArgs(
-            "make-process".into(),
-            args.len(),
-        ));
-    }
-    let mut buffer_id = None;
-    let mut program = None;
-    let mut argv = Vec::new();
-    let mut filter = None;
-    let mut sentinel = None;
-    let mut stderr_process_id = None;
-    let mut stderr_buffer_id = None;
-    let mut query_on_exit_flag = true;
-    let mut connection_type = None;
-    let mut coding_value = Value::Nil;
-    let mut command = Value::Nil;
-    // Fmake_process reads each keyword with plist_get: its first value.
-    let mut seen: Vec<&str> = Vec::new();
-    let first = |keyword: &str| {
-        args.as_chunks::<2>()
-            .0
-            .iter()
-            .find(|pair| matches!(pair[0].kind(), Kind::Symbol(key) if key.is_named(keyword)))
-            .map(|pair| pair[1])
-    };
-    // process.c:get_required_string_keyword_param for :name, after the
-    // process's buffer is made (Fmake_process) or first (Fmake_pipe_process,
-    // which has no :command).
-    let required_name = |value: Option<Value>| -> Result<Value, LispError> {
-        let value =
-            value.ok_or_else(|| LispError::Signal("Missing :name keyword parameter".into()))?;
-        match value.kind() {
-            Kind::StringObject(_) => Ok(value),
-            _ => Err(LispError::Signal(":name value not a string".into())),
-        }
-    };
-    let has_command = first(":command").is_some();
-    if has_command && let Some(buffer) = first(":buffer") {
-        buffer_id = process_buffer_target(interp, &buffer)?;
-    }
-    let name_value = required_name(first(":name"))?;
-
-    for pair in args.as_chunks::<2>().0 {
-        let key = pair[0].as_symbol()?;
-        let value = &pair[1];
-        if seen.contains(&key) {
-            continue;
-        }
-        seen.push(key);
-        match key {
-            ":name" => {}
-            ":buffer" if has_command => {}
-            ":buffer" => buffer_id = process_buffer_target(interp, value)?,
-            ":command" => {
-                let (parsed_program, parsed_argv) = process_command_parts(value)?;
-                program = Some(parsed_program);
-                argv = parsed_argv;
-                command = *value;
-            }
-            ":filter" => filter = (!value.is_nil()).then_some(*value),
-            ":sentinel" => sentinel = (!value.is_nil()).then_some(*value),
-            ":coding" => coding_value = *value,
-            ":stderr" if !value.is_nil() => {
-                if let Ok(process_id) = interp.resolve_process_id(value) {
-                    stderr_process_id = Some(process_id);
-                } else {
-                    stderr_buffer_id = process_buffer_target(interp, value)?;
-                }
-            }
-            ":noquery" => query_on_exit_flag = !value.is_truthy(),
-            // Normal asynchronous subprocesses cannot start stopped.  GNU's
-            // CHECK_TYPE accepts this compatibility keyword only when its
-            // value is nil.
-            ":stop" if value.is_truthy() => {
-                return Err(wrong_type_argument("null", *value));
-            }
-            ":stop" => {}
-            ":file-handler" => {}
-            ":connection-type" => connection_type = Some(*value),
-            _ => {}
-        }
-    }
-
-    Ok(MakeProcessArgs {
-        buffer_id,
-        program,
-        argv,
-        filter,
-        sentinel,
-        stderr_process_id,
-        stderr_buffer_id,
-        query_on_exit_flag,
-        connection_type,
-        coding_value,
-        name_value,
-        command,
-    })
-}
-
 /// process.c Fmake_process's codings for a new process: CODING's (its car
 /// to decode and cdr to encode when a cons), else `coding-system-for-read'
-/// and `coding-system-for-write', else, for a process with a program, what
-/// find-operation-coding-system answers for `start-process' with NAME,
-/// BUFFER and the COMMAND's elements, else `default-process-coding-
-/// system's -- left for the first output or input to complete.
+/// and `coding-system-for-write', else, for a process with a program
+/// (PROGRAM_GIVEN), what find-operation-coding-system answers for
+/// `start-process' with NAME, BUFFER and the COMMAND's elements, else
+/// `default-process-coding-system's -- left for the first output or input
+/// to complete.  Each fallback takes list_length (COMMAND) first, a
+/// program or none, so a COMMAND that is no list is CHECK_LIST_END's
+/// error there.
 pub(crate) fn make_process_coding_systems(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -2301,24 +2313,33 @@ pub(crate) fn make_process_coding_systems(
     name: Value,
     buffer: Value,
     command: Value,
+    program_given: bool,
 ) -> Result<(Value, Value), LispError> {
-    let default = interp
-        .lookup_var_key(cached_symbol!("default-process-coding-system"), env)
-        .and_then(|value| value.cons_values());
+    // Vdefault_process_coding_system as each fallback reads it, after
+    // the find-operation-coding-system call before it.
+    let default = |interp: &Interpreter, env: &Env| {
+        interp
+            .lookup_var_key(cached_symbol!("default-process-coding-system"), env)
+            .and_then(|value| value.cons_values())
+    };
     let mut coding_systems = None;
     let mut operation_coding = |interp: &mut Interpreter, env: &mut Env| {
         if let Some(found) = coding_systems {
             return Ok(found);
         }
-        let found = if command.is_nil() {
-            Value::Nil
-        } else {
-            let lookup = [Value::symbol("start-process"), name, buffer]
-                .into_iter()
-                .chain(command.to_vec()?)
-                .collect::<Vec<_>>();
-            find_operation_coding_system_value(interp, &lookup, env)?
-        };
+        // list_length (command): CHECK_LIST_END of a proper list.
+        let elements = command
+            .to_vec()
+            .map_err(|_| LispError::WrongTypeArgument("listp".into(), command))?;
+        if !program_given {
+            // coding_systems stays Qt; the next fallback counts again.
+            return Ok(Value::Nil);
+        }
+        let lookup = [Value::symbol("start-process"), name, buffer]
+            .into_iter()
+            .chain(elements)
+            .collect::<Vec<_>>();
+        let found = find_operation_coding_system_value(interp, &lookup, env)?;
         coding_systems = Some(found);
         Ok::<Value, LispError>(found)
     };
@@ -2334,7 +2355,7 @@ pub(crate) fn make_process_coding_systems(
     if decoding.is_nil() {
         decoding = match operation_coding(interp, env)?.cons_values() {
             Some((found, _)) => found,
-            None => default.map_or(Value::Nil, |(decoding, _)| decoding),
+            None => default(interp, env).map_or(Value::Nil, |(decoding, _)| decoding),
         };
     }
     let mut encoding = if coding.is_nil() {
@@ -2349,7 +2370,7 @@ pub(crate) fn make_process_coding_systems(
     if encoding.is_nil() {
         encoding = match operation_coding(interp, env)?.cons_values() {
             Some((_, found)) => found,
-            None => default.map_or(Value::Nil, |(_, encoding)| encoding),
+            None => default(interp, env).map_or(Value::Nil, |(_, encoding)| encoding),
         };
     }
     Ok((decoding, encoding))
@@ -3755,6 +3776,7 @@ pub(crate) fn make_network_process(
         ));
     }
     let mut buffer_id = None;
+    let mut buffer = Value::Nil;
     let mut filter = None;
     let mut sentinel = None;
     let mut log = None;
@@ -3835,7 +3857,7 @@ pub(crate) fn make_network_process(
         };
         let value = &pair[1];
         match key {
-            ":buffer" => buffer_id = process_buffer_target(interp, value)?,
+            ":buffer" => (buffer_id, buffer) = process_buffer_target(interp, env, value)?,
             ":filter" => filter = (!value.is_nil()).then_some(*value),
             ":sentinel" => sentinel = (!value.is_nil()).then_some(*value),
             ":log" => log = (!value.is_nil()).then_some(*value),
@@ -3877,7 +3899,8 @@ pub(crate) fn make_network_process(
         }
     }
 
-    let inherit_coding_system = buffer_id.is_some()
+    // !(NILP (buffer) || !inherit_process_coding_system).
+    let inherit_coding_system = !buffer.is_nil()
         && interp
             .lookup_var_key(cached_symbol!("inherit-process-coding-system"), env)
             .is_some_and(|value| value.is_truthy());
@@ -3932,9 +3955,6 @@ pub(crate) fn make_network_process(
             return Err(wrong_type_argument("symbolp", pair[0]));
         }
     }
-    let buffer = buffer_id
-        .and_then(|id| interp.buffer_value(id))
-        .unwrap_or(Value::Nil);
     let (decoding, encoding) = connection_coding_systems(
         interp,
         env,
@@ -4598,13 +4618,11 @@ pub(crate) fn make_serial_process(
     let buffer = plist_member_value(interp, args, ":buffer")
         .filter(Value::is_truthy)
         .unwrap_or(name);
-    let buffer_id =
-        process_buffer_target(interp, &buffer)?.expect("a serial process always has a buffer");
+    let (buffer_id, buffer_value) = process_buffer_target(interp, env, &buffer)?;
     let filter = plist_member_value(interp, args, ":filter").filter(Value::is_truthy);
     let sentinel = plist_member_value(interp, args, ":sentinel").filter(Value::is_truthy);
     let plist = plist_member_value(interp, args, ":plist").unwrap_or(Value::Nil);
     let coding = plist_member_value(interp, args, ":coding").unwrap_or(Value::Nil);
-    let buffer_value = interp.buffer_value(buffer_id).unwrap_or(Value::Nil);
     let (decoding, encoding) =
         connection_coding_systems(interp, env, ConnectionCoding::Serial, coding, buffer_value)?;
     let noquery =
@@ -4612,7 +4630,7 @@ pub(crate) fn make_serial_process(
     let stopped = plist_member_value(interp, args, ":stop").is_some_and(|value| value.is_truthy());
     let process = interp.create_serial_process(
         name,
-        buffer_id,
+        (buffer_id, buffer_value),
         filter,
         sentinel,
         plist,
@@ -4634,7 +4652,7 @@ pub(crate) fn make_serial_process(
 
 /// exec_sentinel: the process's sentinel (or the default one) called with
 /// EVENT in run_asynch_code's frame.
-fn run_process_sentinel(
+pub(crate) fn run_process_sentinel(
     interp: &mut Interpreter,
     process_id: u64,
     event: &str,
