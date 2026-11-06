@@ -545,7 +545,7 @@ impl Interpreter {
     pub(crate) fn new_terminal_frame(
         &mut self,
         object: TerminalRef,
-    ) -> crate::lisp::types::FrameRef {
+    ) -> Result<crate::lisp::types::FrameRef, LispError> {
         use crate::lisp::primitives as p;
         let terminal = object.borrow();
         let (width, height) = terminal
@@ -555,9 +555,17 @@ impl Interpreter {
                 (device.width, device.height)
             });
         drop(terminal);
+        // frame.c:make_frame: the root window shows the current buffer, or
+        // other_buffer_safely's when it is hidden (BUFFER_HIDDEN_P).
+        let mut buffer_id = self.current_buffer_id;
+        if self
+            .get_buffer_by_id(buffer_id)
+            .is_some_and(|buffer| p::string_starts_with_byte(&buffer.name(), b' '))
+        {
+            buffer_id = self.other_buffer_safely(buffer_id)?;
+        }
         let id = self.next_frame_id;
         self.next_frame_id += 1;
-        let buffer_id = self.selected_window_buffer_id();
         let point = self
             .get_buffer_by_id(buffer_id)
             .map_or(1, |buffer| buffer.point());
@@ -607,9 +615,6 @@ impl Interpreter {
             p::WindowKind::Minibuffer.value(),
             (width, 1, 0, height - 1),
         );
-        // Each through set_window_buffer, which stamps the buffer's display.
-        self.stamp_buffer_display(buffer_id);
-        self.stamp_buffer_display(mini_buffer_id);
         // make_terminal_frame's F<num>, from ++tty_frame_count.
         self.tty_frame_count += 1;
         let frame = crate::lisp::types::FrameRef::new(
@@ -653,12 +658,18 @@ impl Interpreter {
                 .expect("allocated window has state")
                 .slots[p::WINDOW_FRAME_SLOT] = Value::Frame(frame);
         }
+        // make_frame's set_window_buffer (root_window, buf, 0, 0), then the
+        // minibuffer window's: the buffer's last window start, its point,
+        // its margins and its display stamp, no hooks run.
+        let mut env = crate::lisp::types::Env::new();
+        p::set_window_buffer(self, root.id, buffer_id, false, false, &mut env)?;
+        p::set_window_buffer(self, mini.id, mini_buffer_id, false, false, &mut env)?;
         self.copy_frame_faces(self.selected_frame_id, frame);
         object.borrow_mut().top_frame = Some(frame);
         if object.id == 0 && TTY_ROUTE_ACTIVE.get() {
             PRIMARY_TOP_FRAME.set(Some(frame));
         }
-        frame
+        Ok(frame)
     }
 
     pub(crate) fn note_selected_frame(&mut self, id: crate::lisp::types::FrameRef) {

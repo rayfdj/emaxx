@@ -288,13 +288,30 @@ fn report_file_errno_list(
     name: Value,
     error: &std::io::Error,
 ) -> LispError {
-    let errstring = match errno_string(interp, error) {
-        Ok(errstring) => errstring,
-        Err(error) => return error,
+    match get_file_errno_data_sharing(interp, message, name, error) {
+        Ok(data) => LispError::SignalValue(data),
+        Err(error) => error,
+    }
+}
+
+/// fileio.c:get_file_errno_data (MESSAGE, NAME, errno) as GNU makes it:
+/// a cons or nil NAME the data's own tail (a connection's contact, which
+/// the data then shares), any other `list1 (name)'.
+pub(crate) fn get_file_errno_data_sharing(
+    interp: &Interpreter,
+    message: &str,
+    name: Value,
+    error: &std::io::Error,
+) -> Result<Value, LispError> {
+    let data = if name.is_cons() || name.is_nil() {
+        name
+    } else {
+        Value::list([name])
     };
+    let errstring = errno_string(interp, error)?;
     let condition = file_error_condition(error);
-    let errdata = Value::cons(errstring, name);
-    LispError::SignalValue(if condition == "file-already-exists" {
+    let errdata = Value::cons(errstring, data);
+    Ok(if condition == "file-already-exists" {
         Value::cons(Value::symbol(condition), errdata)
     } else {
         Value::cons(
@@ -316,7 +333,16 @@ pub(crate) fn errno_string(
     interp: &Interpreter,
     error: &std::io::Error,
 ) -> Result<Value, LispError> {
-    let text = errno_text(error);
+    locale_message_string(interp, errno_text(error))
+}
+
+/// A C library's message TEXT (strerror's, gai_strerror's) as
+/// code_convert_string_norecord with `locale-coding-system' makes it, as
+/// errno_string describes.
+pub(crate) fn locale_message_string(
+    interp: &Interpreter,
+    text: String,
+) -> Result<Value, LispError> {
     let locale = interp
         .forwarded_c_value_key(cached_symbol!("locale-coding-system"))
         .unwrap_or(Value::Nil);
@@ -364,12 +390,25 @@ pub(crate) fn report_file_errno_files(
     files: &[Value],
     error: &std::io::Error,
 ) -> LispError {
+    match get_file_errno_data(interp, message, files, error) {
+        Ok(data) => LispError::SignalValue(data),
+        Err(error) => error,
+    }
+}
+
+/// fileio.c:get_file_errno_data (MESSAGE, FILES, errno): the error's
+/// condition, MESSAGE (but for `file-already-exists'), its errno text and
+/// FILES, the data report_file_errno signals and a failed non-blocking
+/// connection keeps as its status.
+pub(crate) fn get_file_errno_data(
+    interp: &Interpreter,
+    message: &str,
+    files: &[Value],
+    error: &std::io::Error,
+) -> Result<Value, LispError> {
     // ERRSTRING first, as get_file_errno_data makes it before the data
     // around it: nothing it allocates is held only by a Rust vector.
-    let errstring = match errno_string(interp, error) {
-        Ok(errstring) => errstring,
-        Err(error) => return error,
-    };
+    let errstring = errno_string(interp, error)?;
     let condition = file_error_condition(error);
     let mut data = vec![Value::symbol(condition)];
     if condition != "file-already-exists" {
@@ -377,7 +416,7 @@ pub(crate) fn report_file_errno_files(
     }
     data.push(errstring);
     data.extend_from_slice(files);
-    LispError::SignalValue(Value::list(data))
+    Ok(Value::list(data))
 }
 
 /// fileio.c:report_file_errno (SSDATA (STRING), FILE, errno): STRING's

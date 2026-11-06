@@ -3776,7 +3776,12 @@ fn killing_a_buffer_retires_its_persistent_mark_mapping() {
     );
     assert!(buffer.markers().any(|marker| marker == marker_id));
 
-    interp.kill_buffer_id(buffer_id);
+    // Fkill_buffer makes another buffer current before the teardown.
+    let (other, _) = interp.create_buffer("other");
+    interp
+        .set_current_buffer_id(other)
+        .expect("select another buffer");
+    interp.kill_buffer_id(buffer_id).expect("kill the buffer");
 
     assert!(interp.buffer_mark_marker_id(buffer_id).is_none());
     assert!(buffer.mark_object().is_none());

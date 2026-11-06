@@ -1275,9 +1275,13 @@ fn settle_command_error(
     }
 }
 
+/// keyboard.c:command_loop_1's `set_buffer_internal (XBUFFER (XWINDOW
+/// (selected_window)->contents))'.  A deleted selected window's nil
+/// contents have no XBUFFER (GNU's checking build aborts there); the
+/// current buffer stays.
 fn select_command_loop_buffer(interpreter: &mut Interpreter) -> Result<(), LispError> {
-    let selected_buffer = interpreter.selected_window_buffer_id();
-    if selected_buffer != interpreter.current_buffer_id()
+    if let Some(selected_buffer) = interpreter.selected_window_contents_buffer_id()
+        && selected_buffer != interpreter.current_buffer_id()
         && interpreter.has_buffer_id(selected_buffer)
     {
         interpreter.set_current_buffer_id(selected_buffer)?;
@@ -7867,9 +7871,14 @@ mod tests {
         let mut interp = Interpreter::new();
         let original = interp.current_buffer_id();
         let (displayed, _) = interp.create_buffer("*command-cycle-displayed*");
-        interp
-            .set_selected_window_buffer_id(displayed)
-            .expect("show the displayed buffer");
+        let shown = interp.buffer_value(displayed).expect("displayed buffer");
+        crate::lisp::primitives::call(
+            &mut interp,
+            "set-window-buffer",
+            &[Value::Nil, shown],
+            &mut crate::lisp::types::Env::new(),
+        )
+        .expect("show the displayed buffer");
         assert_eq!(
             interp.current_buffer_id(),
             original,
@@ -7877,7 +7886,7 @@ mod tests {
         );
         select_command_loop_buffer(&mut interp).expect("command-cycle buffer selection succeeds");
         assert_eq!(interp.current_buffer_id(), displayed);
-        assert_eq!(interp.selected_window_buffer_id(), displayed);
+        assert_eq!(interp.selected_window_contents_buffer_id(), Some(displayed));
     }
 
     #[test]

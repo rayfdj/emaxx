@@ -3161,13 +3161,7 @@ fn cl_generic_dispatch_recognizes_record_backed_builtin_types() {
     eval_str_with(&mut interp, "(require 'cl-macs)");
     eval_str_with(&mut interp, "(require 'cl-generic)");
     let process = interp
-        .create_process(
-            None,
-            None,
-            Vec::new(),
-            None,
-            Value::string("sample-process"),
-        )
+        .create_process(false, Value::string("sample-process"))
         .expect("create process");
     interp.set_global_binding("sample-process", process);
 

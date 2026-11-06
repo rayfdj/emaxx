@@ -80,9 +80,14 @@ fn execute_kbd_macro(
     ];
     interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
         // Fexecute_kbd_macro starts each iteration in the selected window's
-        // buffer.  This is observable when Lisp deliberately makes another
-        // buffer current without changing the selected window.
-        interp.set_current_buffer_id(interp.selected_window_buffer_id())?;
+        // buffer (command_loop_1's set_buffer_internal (XBUFFER (XWINDOW
+        // (selected_window)->contents))).  This is observable when Lisp
+        // deliberately makes another buffer current without changing the
+        // selected window.  A deleted selected window's nil contents have
+        // no XBUFFER; the current buffer stays.
+        if let Some(selected_buffer) = interp.selected_window_contents_buffer_id() {
+            interp.set_current_buffer_id(selected_buffer)?;
+        }
 
         let mut result = Ok(());
         let mut success_count = 0;
@@ -1014,11 +1019,14 @@ fn finish_kbd_macro_command(
         );
     }
     // The command loop re-establishes the selected window's buffer after
-    // every command.  Lisp commands commonly use `save-current-buffer', so
-    // selecting another window inside them can otherwise leave the command
-    // loop's current buffer pointing at the window that was just quit.
-    let selected_buffer = interp.selected_window_buffer_id();
-    if interp.has_buffer_id(selected_buffer) {
+    // every command (command_loop_1's set_buffer_internal).  Lisp commands
+    // commonly use `save-current-buffer', so selecting another window
+    // inside them can otherwise leave the command loop's current buffer
+    // pointing at the window that was just quit.  A deleted selected
+    // window's nil contents have no XBUFFER; the current buffer stays.
+    if let Some(selected_buffer) = interp.selected_window_contents_buffer_id()
+        && interp.has_buffer_id(selected_buffer)
+    {
         let _ = interp.set_current_buffer_id(selected_buffer);
     }
 }

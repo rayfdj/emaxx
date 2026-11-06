@@ -1779,38 +1779,101 @@ pub(super) fn format_mode_line(
     if no_props {
         face = Value::Nil;
     }
-    // unwind_format_mode_line: the selected window (before the buffer),
-    // the point of the window's buffer it left selected, then the buffer.
+    // format_mode_line_unwind_data (XFRAME (WINDOW_FRAME (w)), old_buffer,
+    // selected_window, true), recorded before the window is selected: the
+    // selected window, the buffer, the window frame's selected window, its
+    // tty's top frame, and that window's buffer's point in a marker.
+    // (XBUFFER of a deleted frame-selected window's nil contents has no
+    // answer; no point is kept for it.)
+    let window_buffer = |interp: &Interpreter, id: u64| {
+        window_slot_buffer_id(
+            interp
+                .find_record(id)
+                .and_then(|window| window.slots.get(WINDOW_BUFFER_SLOT)),
+        )
+    };
     let old_window = interp.selected_window_value();
+    let old_window_id = interp.selected_window_id();
     let old_buffer = interp.current_buffer_id();
-    let old_window_buffer = interp.selected_window_buffer_id();
-    let old_window_point = interp
-        .get_buffer_by_id(old_window_buffer)
-        .map(|buffer| buffer.point())
-        .unwrap_or_else(|| interp.buffer.borrow().point());
-    select_window_value(interp, &window, true)?;
-    let switched = interp.set_current_buffer_id(buffer_id);
-    let result = switched.and_then(|_| {
-        let mut ml = ModeLine::new(
-            if no_props {
-                Target::NoProp
-            } else {
-                Target::String
-            },
-            window_id,
-        );
-        ml.string_face = face;
-        ml.string_face_prop = if face.is_nil() {
-            Value::Nil
-        } else {
-            Value::list([Value::symbol("face"), face])
+    let target_frame = interp
+        .window_frame_id(window_id)
+        .expect("window stores its owning frame");
+    let target_frame_window = target_frame.borrow().selected_window_id();
+    let old_top_frame = target_frame
+        .borrow()
+        .terminal
+        .and_then(|terminal| terminal.borrow().top_frame);
+    let target_point = window_buffer(interp, target_frame_window).map(|buffer| {
+        let Kind::Marker(marker) = interp.make_marker().kind() else {
+            unreachable!("make_marker returns a marker")
         };
-        ml.display_mode_element(interp, env, 0, 0, 0, format, Value::Nil, false)?;
-        ml.result(interp, env)
+        let point = interp.buffer_point_by_id(buffer);
+        let _ = interp.set_marker(marker, Some(point), Some(buffer));
+        (buffer, marker)
     });
-    let restored = select_window_value(interp, &old_window, true).map(|_| ());
-    if let Some(mut buffer) = interp.get_buffer_by_id_mut(old_window_buffer) {
-        buffer.goto_char(old_window_point);
+    let result = select_window_value(interp, &window, true)
+        .and_then(|_| interp.set_current_buffer_id(buffer_id))
+        .and_then(|_| {
+            let mut ml = ModeLine::new(
+                if no_props {
+                    Target::NoProp
+                } else {
+                    Target::String
+                },
+                window_id,
+            );
+            ml.string_face = face;
+            ml.string_face_prop = if face.is_nil() {
+                Value::Nil
+            } else {
+                Value::list([Value::symbol("face"), face])
+            };
+            ml.display_mode_element(interp, env, 0, 0, 0, format, Value::Nil, false)?;
+            ml.result(interp, env)
+        });
+    // unwind_format_mode_line: the window before the buffer, since it may
+    // change the buffer.  A frame-selected window on another frame than
+    // the old window's is reselected first, and its tty's top frame when
+    // the formatting changed it; then the old window; then the point of
+    // the frame window's buffer from its marker.
+    let mut restored = Ok(());
+    if window_buffer(interp, old_window_id).is_some() {
+        let target_live = window_buffer(interp, target_frame_window).is_some();
+        if target_live {
+            let frame = interp.window_frame_id(target_frame_window);
+            if frame != interp.window_frame_id(old_window_id) {
+                let target = interp.record_value(target_frame_window);
+                restored = select_window_value(interp, &target, true).map(drop);
+            }
+            if let Some(old_top_frame) = old_top_frame
+                && Some(old_top_frame) != frame
+                && old_top_frame.is_live()
+            {
+                restored = restored.and(
+                    primitive(
+                        interp,
+                        env,
+                        "select-frame",
+                        &[Value::Frame(old_top_frame), Value::T],
+                    )
+                    .map(drop),
+                );
+            }
+        }
+        restored = restored.and(select_window_value(interp, &old_window, true).map(drop));
+        if target_live
+            && let Some((buffer, marker)) = target_point
+            && interp.has_buffer_id(buffer)
+            && let Some(position) = marker.position()
+            && let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer)
+        {
+            // set_point_from_marker: clipped to the accessible portion.
+            let position = position.clamp(buffer.point_min(), buffer.point_max());
+            buffer.goto_char(position);
+        }
+    }
+    if let Some((_, marker)) = target_point {
+        let _ = interp.set_marker(marker, None, None);
     }
     let reset = interp.set_current_buffer_id(old_buffer).map(|_| ());
     let value = result?;

@@ -205,7 +205,6 @@ pub(crate) use color_lcms::*;
 pub(crate) use completion::*;
 pub(crate) use dispatch::display::log_message_text;
 pub(crate) use dispatch::display::prin1_to_string;
-pub(crate) use dispatch::gnutls::{AsyncGnuTlsProgress, progress_async_gnutls};
 pub(crate) use dispatch::realize_basic_faces;
 pub(crate) use dispatch::{
     CHECK_ALL, CHECK_BORDER, CHECK_HEAD, StringCompositions, update_compositions,
@@ -309,6 +308,8 @@ pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::native_elisp_load;
 #[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
+pub(crate) use dispatch::replace_buffer_in_windows_safely;
+pub(crate) use dispatch::set_window_buffer;
 pub(crate) use dispatch::unibyte_doc_string;
 pub(crate) use dispatch::{
     EchoSpans, echo_area_message_tick, echo_area_print_logged, echo_display_message,

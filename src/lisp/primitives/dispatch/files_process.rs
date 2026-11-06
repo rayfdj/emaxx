@@ -2255,16 +2255,7 @@ define_dispatch!(
                 call_process(interp, env, args, filefd, None)
             }
             "make-process" => make_process_value(interp, env, args),
-            "make-pipe-process" => {
-                // Fmake_pipe_process keeps its arguments as the process's
-                // childp, which `process-contact' with KEY t returns.
-                let process = make_process_value(interp, env, args)?;
-                if let Ok(process_id) = interp.resolve_process_id(&process) {
-                    interp
-                        .set_process_contact_plist(process_id, Value::list(args.iter().copied()))?;
-                }
-                Ok(process)
-            }
+            "make-pipe-process" => make_pipe_process_value(interp, env, args),
             "get-buffer-process" => {
                 need_arg_range(name, args, 1, 1)?;
                 // process.c:Fget_buffer_process: nil names no buffer, and
@@ -2319,10 +2310,7 @@ define_dispatch!(
             "process-id" => {
                 need_args(name, args, 1)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                Ok(interp
-                    .process_os_id(process_id)
-                    .map(|pid| Value::Integer(i64::from(pid)))
-                    .unwrap_or(Value::Nil))
+                Ok(interp.process_id_value(process_id))
             }
             "process-list" => {
                 need_args(name, args, 0)?;
@@ -2410,11 +2398,20 @@ define_dispatch!(
                     Some(args[1])
                 };
                 interp.set_process_filter(process_id, filter)?;
-                Ok(if args[1].is_nil() {
+                let filter = if args[1].is_nil() {
                     Value::symbol("internal-default-process-filter")
                 } else {
                     args[1]
-                })
+                };
+                // A connection's contact keeps its :filter.
+                if interp.is_connection_process(process_id) {
+                    interp.process_contact_plist_put(
+                        process_id,
+                        Value::symbol(":filter"),
+                        filter,
+                    )?;
+                }
+                Ok(filter)
             }
             "internal-default-process-sentinel" => {
                 need_args(name, args, 2)?;
@@ -2427,11 +2424,20 @@ define_dispatch!(
                 let process_id = interp.resolve_process_id(&args[0])?;
                 let sentinel = (!args[1].is_nil()).then(|| args[1]);
                 interp.set_process_sentinel(process_id, sentinel);
-                Ok(if args[1].is_nil() {
+                let sentinel = if args[1].is_nil() {
                     Value::symbol("internal-default-process-sentinel")
                 } else {
                     args[1]
-                })
+                };
+                // A connection's contact keeps its :sentinel.
+                if interp.is_connection_process(process_id) {
+                    interp.process_contact_plist_put(
+                        process_id,
+                        Value::symbol(":sentinel"),
+                        sentinel,
+                    )?;
+                }
+                Ok(sentinel)
             }
             "set-process-buffer" => {
                 need_args(name, args, 2)?;
@@ -2443,7 +2449,20 @@ define_dispatch!(
                     Kind::Buffer(buffer) => interp.live_buffer_id(buffer),
                     _ => return Err(LispError::WrongTypeArgument("bufferp".into(), args[1])),
                 };
-                interp.set_process_buffer_id(process_id, buffer_id, args[1]);
+                // pset_buffer and update_process_mark only for a buffer
+                // that is not EQ to the process's.
+                if !crate::lisp::types::eq(interp.process_buffer_value(process_id), args[1]) {
+                    interp.set_process_buffer_only(process_id, buffer_id, args[1]);
+                    interp.update_process_mark(process_id);
+                }
+                // A connection's contact keeps its :buffer.
+                if interp.is_connection_process(process_id) {
+                    interp.process_contact_plist_put(
+                        process_id,
+                        Value::symbol(":buffer"),
+                        args[1],
+                    )?;
+                }
                 Ok(args[1])
             }
             "process-sentinel" => {
@@ -2472,24 +2491,64 @@ define_dispatch!(
             "process-datagram-address" => {
                 need_args(name, args, 1)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                Ok(interp
+                // conv_sockaddr_to_lisp of datagram_address[channel].
+                crate::lisp::primitives::processes::wait_for_socket_fds(
+                    interp,
+                    env,
+                    process_id,
+                    "process-datagram-address",
+                )?;
+                #[cfg(unix)]
+                return Ok(interp
                     .process_datagram_address(process_id)?
-                    .map(sockaddr_vector)
-                    .unwrap_or(Value::Nil))
+                    .map(|address| {
+                        crate::lisp::primitives::processes::conv_sockaddr_to_lisp(&address)
+                    })
+                    .unwrap_or(Value::Nil));
+                #[cfg(not(unix))]
+                {
+                    let _ = process_id;
+                    Ok(Value::Nil)
+                }
             }
             "set-process-datagram-address" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let Some(address) = socket_addr_from_value(&args[1]) else {
-                    return Ok(Value::Nil);
-                };
-                Ok(
-                    if interp.set_process_datagram_address(process_id, address)? {
-                        args[1]
-                    } else {
-                        Value::Nil
-                    },
-                )
+                // wait_for_socket_fds; nil for no datagram process; then
+                // get_lisp_to_sockaddr_size: nil for an address object of
+                // no family, or of a length the datagram address has not.
+                #[cfg(unix)]
+                {
+                    crate::lisp::primitives::processes::wait_for_socket_fds(
+                        interp,
+                        env,
+                        process_id,
+                        "set-process-datagram-address",
+                    )?;
+                    if interp.process_datagram_address(process_id)?.is_none() {
+                        return Ok(Value::Nil);
+                    }
+                    let Some((family, len)) =
+                        crate::lisp::primitives::processes::lisp_to_sockaddr_size(&args[1])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    let address = crate::lisp::primitives::processes::conv_lisp_to_sockaddr(
+                        family, &args[1], len,
+                    );
+                    return Ok(
+                        if interp.set_process_datagram_address(process_id, address)? {
+                            args[1]
+                        } else {
+                            Value::Nil
+                        },
+                    );
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = process_id;
+                    Ok(Value::Nil)
+                }
             }
             "process-type" => {
                 need_args(name, args, 1)?;
@@ -2591,10 +2650,35 @@ define_dispatch!(
                 // KEY nil the (HOST SERVICE) pair, any other KEY a plist_get.
                 need_arg_range(name, args, 1, 3)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                if matches!(args.get(1).map(|v| v.kind()), Some(Kind::Symbol(key)) if key.is_named(":remote"))
+                // A connection with no socket yet waits for it, unless
+                // NO-BLOCK.
+                if interp.is_network_process(process_id)
+                    && interp.network_socket_fd(process_id).is_none()
+                {
+                    if args.get(2).is_some_and(|no_block| !no_block.is_nil()) {
+                        return Ok(Value::Nil);
+                    }
+                    crate::lisp::primitives::processes::wait_for_socket_fds(
+                        interp,
+                        env,
+                        process_id,
+                        "process-contact",
+                    )?;
+                }
+                // DATAGRAM_CONN_P with KEY t or :remote: plist_put of the
+                // datagram address into the contact.
+                #[cfg(unix)]
+                if (matches!(args.get(1).map(|v| v.kind()), Some(Kind::T))
+                    || matches!(args.get(1).map(|v| v.kind()), Some(Kind::Symbol(key)) if key.is_named(":remote")))
                     && let Some(address) = interp.process_datagram_address(process_id)?
                 {
-                    return Ok(sockaddr_vector(address));
+                    let address =
+                        crate::lisp::primitives::processes::conv_sockaddr_to_lisp(&address);
+                    interp.process_contact_plist_put(
+                        process_id,
+                        Value::symbol(":remote"),
+                        address,
+                    )?;
                 }
                 let contact = interp
                     .process_contact_plist(process_id)
@@ -2636,7 +2720,14 @@ define_dispatch!(
                 if !interp.is_network_process(process_id) {
                     return Err(LispError::Signal("Process is not a network process".into()));
                 }
-                // process.c:2984-2986: a closed socket is "not running".
+                // wait_for_socket_fds, then process.c:2984-2986: a closed
+                // socket is "not running".
+                crate::lisp::primitives::processes::wait_for_socket_fds(
+                    interp,
+                    env,
+                    process_id,
+                    "set-network-process-option",
+                )?;
                 let Some(fd) = interp.network_socket_fd(process_id) else {
                     return Err(LispError::Signal("Process is not running".into()));
                 };
@@ -2653,7 +2744,7 @@ define_dispatch!(
                 if set_socket_option(interp, fd, &option, &args[1], &args[2])? {
                     // process.c:2990 records the accepted option on the
                     // process's contact plist, which `process-contact' reads.
-                    interp.put_process_contact_option(process_id, &args[1], args[2]);
+                    interp.process_contact_plist_put(process_id, args[1], args[2])?;
                     return Ok(Value::T);
                 }
                 // process.c:2994-2997.
@@ -2743,7 +2834,9 @@ define_dispatch!(
                 let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
                 #[cfg(unix)]
-                interp.signal_process_group(
+                process_send_signal(
+                    interp,
+                    env,
                     process_id,
                     libc::SIGINT,
                     args.get(1).unwrap_or(&Value::Nil),
@@ -2773,7 +2866,9 @@ define_dispatch!(
                 let process_value = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process_value)?;
                 #[cfg(unix)]
-                interp.signal_process_group(
+                process_send_signal(
+                    interp,
+                    env,
                     process_id,
                     libc::SIGKILL,
                     args.get(1).unwrap_or(&Value::Nil),
@@ -2790,7 +2885,9 @@ define_dispatch!(
                 let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
                 #[cfg(unix)]
-                interp.signal_process_group(
+                process_send_signal(
+                    interp,
+                    env,
                     process_id,
                     libc::SIGQUIT,
                     args.get(1).unwrap_or(&Value::Nil),
@@ -2809,7 +2906,9 @@ define_dispatch!(
                 let stop = name == "stop-process";
                 if !interp.set_process_traffic_stopped(process_id, stop)? {
                     #[cfg(unix)]
-                    interp.signal_process_group(
+                    process_send_signal(
+                        interp,
+                        env,
                         process_id,
                         if stop { libc::SIGTSTP } else { libc::SIGCONT },
                         args.get(1).unwrap_or(&Value::Nil),
@@ -2898,6 +2997,14 @@ define_dispatch!(
                 // Fprocess_send_eof: a coding that requires flushing is
                 // flushed first.
                 crate::lisp::primitives::processes::flush_process_encoder(interp, process_id, env)?;
+                if interp.process_pty_in(process_id) {
+                    // `if (p->pty_in) send_process (proc, "\004", 1, Qnil)':
+                    // the pty's EOF character, its channel kept, for a
+                    // child on a pty and a childless pty alike.
+                    interp.process_send_check(process_id)?;
+                    send_process(interp, env, process_id, b"\x04")?;
+                    return Ok(process);
+                }
                 let (stdout, stderr) = interp.process_send_eof(process_id)?;
                 deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
                 Ok(process)
@@ -2911,8 +3018,12 @@ define_dispatch!(
                 };
                 let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
-                // send_process: wait_while_connecting.
+                // send_process: wait_while_connecting and
+                // wait_for_tls_negotiation.
                 crate::lisp::primitives::processes::wait_while_connecting(interp, env, process_id)?;
+                crate::lisp::primitives::processes::wait_for_tls_negotiation(
+                    interp, env, process_id,
+                )?;
                 let encoded = crate::lisp::primitives::processes::encode_process_input(
                     interp,
                     process_id,
@@ -2920,8 +3031,7 @@ define_dispatch!(
                     string.multibyte,
                     env,
                 )?;
-                let (stdout, stderr) = interp.process_send_string(process_id, &encoded)?;
-                deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
+                send_process(interp, env, process_id, &encoded)?;
                 Ok(Value::Nil)
             }
             "process-send-region" => {
@@ -2930,9 +3040,13 @@ define_dispatch!(
                 // buffer as the object, encoded as its multibyteness says.
                 let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
-                crate::lisp::primitives::processes::wait_while_connecting(interp, env, process_id)?;
-                // validate_region, then the region's text.
+                // validate_region, then wait_while_connecting, and
+                // send_process's wait_for_tls_negotiation.
                 validate_region(interp, &args[1], &args[2])?;
+                crate::lisp::primitives::processes::wait_while_connecting(interp, env, process_id)?;
+                crate::lisp::primitives::processes::wait_for_tls_negotiation(
+                    interp, env, process_id,
+                )?;
                 let text = super::buffer_edit::direct_buffer_substring_no_properties(
                     interp,
                     &[args[1], args[2]],
@@ -2942,8 +3056,7 @@ define_dispatch!(
                 let encoded = crate::lisp::primitives::processes::encode_process_input(
                     interp, process_id, &text, multibyte, env,
                 )?;
-                let (stdout, stderr) = interp.process_send_string(process_id, &encoded)?;
-                deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
+                send_process(interp, env, process_id, &encoded)?;
                 Ok(Value::Nil)
             }
             "zlib-decompress-region" => {
@@ -3143,12 +3256,17 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let inhibit_hooks = interp.buffer_hooks_inhibited(id);
-                let saved = interp.current_buffer_id();
-                let switched = saved != id;
-                if switched {
-                    interp.set_current_buffer_id(id)?;
+                // Run hooks with the buffer to be killed as the current
+                // buffer, in record_unwind_protect_excursion: the buffer
+                // that was current, and its point, come back after.
+                let excursion = interp.save_excursion_state();
+                if let Err(error) = interp.set_current_buffer_id(id) {
+                    interp.restore_excursion_state(excursion);
+                    return Err(error);
                 }
-                let consultation = (|| -> Result<bool, LispError> {
+                // Some(answer) returns ANSWER (unbind_to (count, ...)),
+                // None goes on to the teardown.
+                let consultation = (|| -> Result<Option<Value>, LispError> {
                     // CALLN (Frun_hook_with_args_until_failure,
                     // Qkill_buffer_query_functions).
                     if !inhibit_hooks {
@@ -3166,7 +3284,7 @@ define_dispatch!(
                             },
                         )?;
                         if failed.is_truthy() {
-                            return Ok(false);
+                            return Ok(Some(Value::Nil));
                         }
                     }
                     let mut modified = interp
@@ -3181,7 +3299,7 @@ define_dispatch!(
                             env,
                         )?;
                         if answer.is_nil() {
-                            return Ok(false);
+                            return Ok(Some(Value::Nil));
                         }
                         // The interactive helper can save the buffer.  GNU
                         // rechecks BUF_MODIFF after it returns before deciding
@@ -3191,64 +3309,71 @@ define_dispatch!(
                             .map(|buffer| buffer.is_modified() && buffer.visits_file())
                             .unwrap_or(false);
                     }
-                    if modified {
-                        let auto_save_path = interp
-                            .buffer_local_value_key(
-                                id,
-                                cached_symbol!("buffer-auto-save-file-name"),
-                            )
-                            .as_ref()
-                            .and_then(|value| string_text(value).ok());
-                        let visited_path = interp
+                    // Delete the autosave file, if requested: the C
+                    // variables, Frecent_auto_save_p, a string name that
+                    // Ffile_exists_p finds and that is not the visited
+                    // file's, then do_yes_or_no_p and the Lisp function.
+                    let auto_save_name = interp
+                        .buffer_local_value_key(id, cached_symbol!("buffer-auto-save-file-name"))
+                        .unwrap_or(Value::Nil);
+                    let wanted =
+                        |interp: &Interpreter,
+                         env: &Env,
+                         name: crate::lisp::types::symbols::SymbolKey| {
+                            interp
+                                .lookup_var_key(name, env)
+                                .is_some_and(|value| value.is_truthy())
+                        };
+                    if modified
+                        && wanted(
+                            interp,
+                            env,
+                            cached_symbol!("kill-buffer-delete-auto-save-files"),
+                        )
+                        && wanted(interp, env, cached_symbol!("delete-auto-save-files"))
+                        && interp
                             .get_buffer_by_id(id)
-                            .and_then(|buffer| buffer.file_name_text());
-                        if let Some(path) = auto_save_path.as_ref()
-                            && let Ok(host) = host_file_name(interp, env, path)
-                            && fs::metadata(&host).is_ok()
-                            && visited_path.as_ref() != Some(path)
-                            && interp
-                                .lookup_var_key(
-                                    cached_symbol!("kill-buffer-delete-auto-save-files"),
-                                    env,
-                                )
-                                .is_some_and(|value| value.is_truthy())
-                            && interp
-                                .lookup_var_key(cached_symbol!("delete-auto-save-files"), env)
-                                .is_some_and(|value| value.is_truthy())
-                            && interp
+                            .is_some_and(|buffer| buffer.recent_auto_save_p())
+                        && matches!(auto_save_name.kind(), Kind::StringObject(_))
+                        && super::call(interp, "file-exists-p", &[auto_save_name], env)?.is_truthy()
+                        && {
+                            let file_name = interp
                                 .get_buffer_by_id(id)
-                                .is_some_and(|buffer| buffer.is_autosaved())
-                        {
-                            let delete = call_named_function(
+                                .map(|buffer| buffer.file_name())
+                                .unwrap_or(Value::Nil);
+                            super::call(interp, "string-equal", &[auto_save_name, file_name], env)?
+                                .is_nil()
+                        }
+                    {
+                        let delete = call_named_function(
+                            interp,
+                            "yes-or-no-p",
+                            &[Value::String("Delete auto-save file? ".into())],
+                            env,
+                        )?;
+                        if delete.is_truthy() {
+                            call_named_function(
                                 interp,
-                                "yes-or-no-p",
-                                &[Value::String("Delete auto-save file? ".into())],
+                                "delete-auto-save-file-if-necessary",
+                                &[],
                                 env,
                             )?;
-                            if delete.is_truthy() {
-                                let _ = fs::remove_file(host);
-                            }
                         }
+                    }
+                    // If the hooks have killed the buffer, exit now.
+                    if !interp.has_buffer_id(id) {
+                        return Ok(Some(Value::T));
                     }
                     if !inhibit_hooks {
                         // The kill hooks run with the dying buffer current, as
                         // in GNU (auto-revert's rm-watch reads its locals).
                         run_hook(interp, &cached_symbol!("kill-buffer-hook").symbol(), env)?;
                     }
-                    Ok(true)
+                    Ok(None)
                 })();
-                let restore = if switched && interp.has_buffer_id(saved) {
-                    interp.set_current_buffer_id(saved)
-                } else {
-                    Ok(())
-                };
-                let proceed = match (consultation, restore) {
-                    (Err(error), _) => return Err(error),
-                    (Ok(_), Err(error)) => return Err(error),
-                    (Ok(proceed), Ok(())) => proceed,
-                };
-                if !proceed {
-                    return Ok(Value::Nil);
+                interp.restore_excursion_state(excursion);
+                if let Some(answer) = consultation? {
+                    return Ok(answer);
                 }
                 // buffer.c:Fkill_buffer once nothing more is asked: a buffer
                 // the hooks killed is reported killed, and the minibuffer
@@ -3350,7 +3475,7 @@ define_dispatch!(
                 if !interp.has_buffer_id(id) {
                     return Ok(Value::T);
                 }
-                interp.kill_buffer_id(id);
+                interp.kill_buffer_id(id)?;
                 if !inhibit_hooks {
                     run_hook(
                         interp,
@@ -3514,25 +3639,226 @@ pub(crate) fn get_process(
     })
 }
 
+/// process.c:process_send_signal with NOMSG false: a `real' process with
+/// its channel open; with CURRENT_GROUP non-nil and a pty input, the pty's
+/// character for SIGNAL (SIGNALS_VIA_CHARACTERS) sent down it, else the
+/// signal to the process group; SIGCONT's `run' then reaches the sentinel
+/// through status_notify.
+#[cfg(unix)]
+fn process_send_signal(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    process_id: u64,
+    signal: i32,
+    current_group: &Value,
+) -> Result<(), LispError> {
+    interp.process_signal_check(process_id)?;
+    let current_group = if interp.process_pty_in(process_id) {
+        *current_group
+    } else {
+        Value::Nil
+    };
+    if !current_group.is_nil()
+        && let Some(character) = interp.pty_signal_character(process_id, signal)
+    {
+        return send_process(interp, env, process_id, &[character]);
+    }
+    if interp.signal_process_group(process_id, signal, &current_group)? && signal == libc::SIGCONT {
+        crate::lisp::primitives::processes::run_process_sentinel(interp, process_id, "run", env)?;
+    }
+    Ok(())
+}
+
+/// process.c:send_process's loop over BYTES once its checks pass: BYTES
+/// put at the back of the write queue when it holds anything; then,
+/// until the queue is empty, its front (else BYTES) written as much as
+/// the channel takes, and while it would block the rest put back at the
+/// queue's front and wait_reading_process_output (0, 20 ms) accepting
+/// output and running timers (whose sends queue behind it, and which
+/// may delete the process: the next write's channel check then
+/// signals), then the queue read again.
+pub(crate) fn send_process(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    process_id: u64,
+    bytes: &[u8],
+) -> Result<(), LispError> {
+    if !interp.process_send_begin(process_id)? {
+        return Ok(());
+    }
+    let mut given = Some(bytes.to_vec());
+    if interp.write_queue_pending(process_id) {
+        interp.write_queue_push(process_id, given.take().unwrap_or_default(), false);
+    }
+    // do ... while (!NILP (p->write_queue)): the queue's front, else what
+    // was given when the queue was empty.
+    loop {
+        let batch = interp
+            .write_queue_pop(process_id)
+            .or_else(|| given.take())
+            .unwrap_or_default();
+        let mut offset = 0;
+        while offset < batch.len() {
+            match interp.process_write_some(process_id, &batch[offset..])? {
+                Some(written) => offset += written,
+                None => {
+                    interp.write_queue_push(process_id, batch[offset..].to_vec(), true);
+                    super::call(
+                        interp,
+                        "accept-process-output",
+                        &[Value::Nil, Value::Integer(0), Value::Integer(20)],
+                        env,
+                    )?;
+                    break;
+                }
+            }
+        }
+        if !interp.write_queue_pending(process_id) {
+            break;
+        }
+    }
+    interp.process_send_flush(process_id)
+}
+
+/// fns.c:plist_get over the arguments, which Flist (nargs, args) makes a
+/// plist: the value after the first key EQ to KEY at an even position,
+/// nil when there is none, an odd list's last key having no value.
+fn plist_argument(args: &[Value], key: &str) -> Value {
+    args.as_chunks::<2>()
+        .0
+        .iter()
+        .find(|[k, _]| crate::lisp::types::eq_symbol_named(*k, key))
+        .map_or(Value::Nil, |[_, value]| *value)
+}
+
+/// process.c:get_required_string_keyword_param: plist_member's KEY, which
+/// must have a value after it ("Missing %s keyword parameter"), a string
+/// ("%s value not a string").
+fn required_string_argument(args: &[Value], key: &str) -> Result<Value, LispError> {
+    let position = args
+        .iter()
+        .step_by(2)
+        .position(|candidate| crate::lisp::types::eq_symbol_named(*candidate, key));
+    match position.and_then(|index| args.get(2 * index + 1)) {
+        None => Err(LispError::Signal(format!(
+            "Missing {key} keyword parameter"
+        ))),
+        Some(value) if matches!(value.kind(), Kind::StringObject(_)) => Ok(*value),
+        Some(_) => Err(LispError::Signal(format!("{key} value not a string"))),
+    }
+}
+
+/// Fget_buffer_create (VALUE, Qnil) of a non-nil process buffer argument,
+/// with the buffer's id while it is live.
+fn process_buffer_argument(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    value: &Value,
+) -> Result<(Option<u64>, Value), LispError> {
+    crate::lisp::primitives::processes::process_buffer_target(interp, env, value)
+}
+
+/// setup_process_coding_systems' checks of DECODING and ENCODING, which
+/// may signal, then pset_decode_coding_system and its sibling.
+fn setup_process_coding_systems(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    process_id: u64,
+    decoding: Value,
+    encoding: Value,
+) -> Result<(), LispError> {
+    load_coding_system(interp, &decoding, env)?;
+    checked_coding_given(interp, &decoding)?;
+    load_coding_system(interp, &encoding, env)?;
+    checked_coding_given(interp, &encoding)?;
+    interp.set_process_coding_system(process_id, decoding, encoding)?;
+    Ok(())
+}
+
+/// process.c:Fmake_pipe_process, in its order: nil for no arguments; the
+/// required string `:name'; make_process, which remove_process undoes if
+/// what follows signals; the two pipes ("Creating pipe"); `:buffer', else
+/// the name, through Fget_buffer_create; the arguments as the process's
+/// contact, a copy of `:plist' as its plist, `:sentinel', `:filter',
+/// `:noquery', and `:stop' leaving it stopped; then its coding systems,
+/// whose setup may signal.  It reads no `:command', `:stderr' or
+/// `:file-handler'.
+pub(crate) fn make_pipe_process_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    if args.is_empty() {
+        return Ok(Value::Nil);
+    }
+    let contact = Value::list(args.iter().copied());
+    let name = required_string_argument(args, ":name")?;
+    let process = interp.create_process(false, name)?;
+    let process_id = interp.resolve_process_id(&process)?;
+    let made = (|| -> Result<(), LispError> {
+        let channels = open_pipe_process_channels(interp)?;
+        interp.install_pipe_process_channels(process_id, channels);
+        let buffer = match plist_argument(args, ":buffer") {
+            buffer if buffer.is_nil() => name,
+            buffer => buffer,
+        };
+        let (buffer_id, buffer) = process_buffer_argument(interp, env, &buffer)?;
+        interp.set_process_buffer_id(process_id, buffer_id, buffer);
+        interp.set_process_contact_plist(process_id, contact)?;
+        let plist = super::call(
+            interp,
+            "copy-sequence",
+            &[plist_argument(args, ":plist")],
+            env,
+        )?;
+        interp.set_process_plist_value(process_id, plist);
+        let present = |value: Value| (!value.is_nil()).then_some(value);
+        interp.set_process_sentinel(process_id, present(plist_argument(args, ":sentinel")));
+        interp.set_process_filter(process_id, present(plist_argument(args, ":filter")))?;
+        if plist_argument(args, ":noquery").is_truthy() {
+            interp.set_process_query_on_exit_flag(process_id, false)?;
+        }
+        if plist_argument(args, ":stop").is_truthy() {
+            interp.set_process_traffic_stopped(process_id, true)?;
+        }
+        let (decoding, encoding) = connection_coding_systems(
+            interp,
+            env,
+            ConnectionCoding::Pipe,
+            plist_argument(args, ":coding"),
+            buffer,
+        )?;
+        setup_process_coding_systems(interp, env, process_id, decoding, encoding)
+    })();
+    if let Err(error) = made {
+        interp.remove_process(process_id);
+        return Err(error);
+    }
+    Ok(process)
+}
+
+/// process.c:Fmake_process, in its order: nil for no arguments; a
+/// `:file-handler' that the current buffer's directory has; `:buffer'
+/// through Fget_buffer_create; get_current_directory (true) ("Setting
+/// current directory"); the required string `:name'; `:command''s car
+/// as the program, CHECK_STRING'd; `:stderr', a pipe process or a buffer
+/// for which Fmake_pipe_process makes one; make_process, which
+/// remove_process undoes if what follows signals; `:stop', which must be
+/// nil; `:connection-type'; the coding systems; then, with a program,
+/// its search ("Searching for program"), each argument's CHECK_STRING and
+/// encoding, the coding systems' setup and the fork (create_process), and
+/// without one create_pty: a `real' process with no child, pid -2, on a
+/// pty unless the connection type is a pipe.
 fn make_process_value(
     interp: &mut Interpreter,
     env: &mut Env,
     args: &[Value],
 ) -> Result<Value, LispError> {
-    // process.c:Fmake_process returns nil before parsing an empty plist.
-    // For nonempty plists it performs :file-handler dispatch before
-    // validating any other keyword value, so a remote handler owns even
-    // contracts such as `:command nil'.
+    use crate::lisp::primitives::processes as procs;
     if args.is_empty() {
         return Ok(Value::Nil);
     }
-    let file_handler = args
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .find(|pair| crate::lisp::types::eq_symbol_named(pair[0], ":file-handler"))
-        .is_some_and(|pair| pair[1].is_truthy());
-    if file_handler {
+    if plist_argument(args, ":file-handler").is_truthy() {
         let default_directory = interp
             .lookup_var_key(cached_symbol!("default-directory"), env)
             .and_then(|value| string_like(&value).map(|string| string.text))
@@ -3549,164 +3875,151 @@ fn make_process_value(
             return interp.call_function_value(handler, None, &handler_args, env);
         }
     }
-    let mut parsed = parse_make_process_args(interp, args)?;
-    // Fmake_pipe_process opens its pipes once it has its name, and fails
-    // when a channel lies beyond FD_SETSIZE.
-    let pipe_channels = parsed
-        .program
-        .is_none()
-        .then(|| open_pipe_process_channels(interp))
-        .transpose()?;
-    let inherit_coding_system = parsed.buffer_id.is_some()
-        && interp
-            .lookup_var_key(cached_symbol!("inherit-process-coding-system"), env)
-            .is_some_and(|value| value.is_truthy());
-    // Fmake_pipe_process always has a buffer: `:buffer', else the one
-    // its name names, created when missing.
-    if parsed.program.is_none() && parsed.buffer_id.is_none() {
-        parsed.buffer_id = process_buffer_target(interp, &parsed.name_value)?;
+    let (buffer_id, buffer) =
+        process_buffer_argument(interp, env, &plist_argument(args, ":buffer"))?;
+    let current_dir = procs::process_current_directory(interp, env, true)?;
+    let name = required_string_argument(args, ":name")?;
+    let command = plist_argument(args, ":command");
+    let program = command
+        .cons_values()
+        .map_or(Value::Nil, |(program, _)| program);
+    if !program.is_nil() && !matches!(program.kind(), Kind::StringObject(_)) {
+        return Err(LispError::WrongTypeArgument("stringp".into(), program));
     }
-    let buffer = parsed
-        .buffer_id
-        .and_then(|id| interp.buffer_value(id))
-        .unwrap_or(Value::Nil);
-    let (decoding, encoding) = if parsed.program.is_some() {
-        make_process_coding_systems(
-            interp,
-            env,
-            parsed.coding_value,
-            parsed.name_value,
-            buffer,
-            parsed.command,
-        )?
-    } else {
-        connection_coding_systems(
-            interp,
-            env,
-            ConnectionCoding::Pipe,
-            parsed.coding_value,
-            buffer,
-        )?
-    };
-    // create_process's setup_process_coding_systems sets both up.
-    load_coding_system(interp, &decoding, env)?;
-    checked_coding_given(interp, &decoding)?;
-    load_coding_system(interp, &encoding, env)?;
-    checked_coding_given(interp, &encoding)?;
-    // process.c finds the executable before forking; `process-command'
-    // keeps the name the caller gave.
-    let executable = match parsed.program.as_deref() {
-        Some(_) => {
-            // process.c: XCAR (command).
-            let (program, _) = parsed
-                .command
-                .cons_values()
-                .expect("a :command naming a program is a cons");
-            let program = locate_program_for_exec(interp, env, program, true)?;
-            Some(host_file_name(interp, env, &program)?.into_os_string())
+    let query_on_exit = plist_argument(args, ":noquery").is_nil();
+    let xstderr = plist_argument(args, ":stderr");
+    let stderr_process_id = if let Ok(stderr_id) = interp.resolve_process_id(&xstderr) {
+        if !interp.is_pipe_process(stderr_id) {
+            return Err(LispError::Signal("Process is not a pipe process".into()));
         }
-        None => None,
-    };
-    let arguments = if executable.is_some() {
-        let command = parsed.command.to_vec()?;
-        make_process_arguments(interp, env, command.get(1..).unwrap_or(&[]), encoding)?
+        Some(stderr_id)
+    } else if xstderr.is_nil() {
+        None
     } else {
-        Vec::new()
-    };
-    // Fmake_process makes a `:stderr' buffer's pipe process before
-    // create_process forks.
-    let stderr_channels = parsed
-        .stderr_buffer_id
-        .map(|_| open_pipe_process_channels(interp))
-        .transpose()?;
-    // create_process's forkerr: the standard error pipe process's
-    // SUBPROCESS_STDOUT, or the child's standard output once an earlier
-    // child was given it.
-    let stderr_writer = match (&stderr_channels, parsed.stderr_process_id) {
-        (Some(channels), _) => Some(
-            channels
-                .output
-                .1
-                .try_clone()
-                .map_err(|error| LispError::Signal(error.to_string()))?,
-        ),
-        (None, Some(stderr_process_id)) => interp.pipe_process_stderr_writer(stderr_process_id)?,
-        (None, None) => None,
-    };
-    let runtime = executable.as_ref().map(|command| {
-        spawn_persistent_process(
-            interp,
-            command,
-            &arguments,
-            env,
-            parsed.connection_type.as_ref(),
-            stderr_writer.as_ref(),
-        )
-    });
-    drop(stderr_writer);
-    let runtime = runtime.transpose()?;
-    if let Some(stderr_buffer_id) = parsed.stderr_buffer_id {
-        // Fmake_pipe_process's :name, concat2 (name, " stderr").
-        let stderr_name = super::call(
-            interp,
-            "concat",
-            &[parsed.name_value, Value::string(" stderr")],
-            env,
-        )?;
-        let stderr =
-            interp.create_process(Some(stderr_buffer_id), None, Vec::new(), None, stderr_name)?;
-        let stderr_process_id = interp.resolve_process_id(&stderr)?;
-        if let Some(channels) = stderr_channels {
-            interp.install_pipe_process_channels(stderr_process_id, channels);
+        // CHECK_STRING (program), then Fmake_pipe_process with :name
+        // NAME " stderr", :buffer Fget_buffer_create (xstderr) and
+        // :noquery.
+        if !matches!(program.kind(), Kind::StringObject(_)) {
+            return Err(LispError::WrongTypeArgument("stringp".into(), program));
         }
-        // Fmake_process makes it with Fmake_pipe_process's :name, :buffer
-        // and :noquery, which are its contact.
-        let stderr_buffer = interp.buffer_value(stderr_buffer_id).unwrap_or(Value::Nil);
-        interp.set_process_contact_plist(
-            stderr_process_id,
-            Value::list([
+        let stderr_name = super::call(interp, "concat", &[name, Value::string(" stderr")], env)?;
+        let (_, stderr_buffer) = process_buffer_argument(interp, env, &xstderr)?;
+        let stderr = make_pipe_process_value(
+            interp,
+            env,
+            &[
                 Value::symbol(":name"),
                 stderr_name,
                 Value::symbol(":buffer"),
                 stderr_buffer,
                 Value::symbol(":noquery"),
-                if parsed.query_on_exit_flag {
-                    Value::Nil
-                } else {
-                    Value::T
-                },
-            ]),
+                if query_on_exit { Value::Nil } else { Value::T },
+            ],
         )?;
-        interp.set_process_query_on_exit_flag(stderr_process_id, parsed.query_on_exit_flag)?;
-        parsed.stderr_process_id = Some(stderr_process_id);
-    }
-    let process = interp.create_process(
-        parsed.buffer_id,
-        parsed.program,
-        parsed.argv,
-        runtime,
-        parsed.name_value,
-    )?;
+        Some(interp.resolve_process_id(&stderr)?)
+    };
+    let process = interp.create_process(true, name)?;
     let process_id = interp.resolve_process_id(&process)?;
-    if let Some(channels) = pipe_channels {
-        interp.install_pipe_process_channels(process_id, channels);
+    let made = (|| -> Result<(), LispError> {
+        // pset_buffer, and update_process_mark's marker at its end.
+        interp.set_process_buffer_id(process_id, buffer_id, buffer);
+        let present = |value: Value| (!value.is_nil()).then_some(value);
+        interp.set_process_sentinel(process_id, present(plist_argument(args, ":sentinel")));
+        interp.set_process_filter(process_id, present(plist_argument(args, ":filter")))?;
+        let command_copy = super::call(interp, "copy-sequence", &[command], env)?;
+        interp.set_process_command(process_id, command_copy);
+        interp.set_process_query_on_exit_flag(process_id, query_on_exit)?;
+        // CHECK_TYPE (NILP (tem), Qnull, tem).
+        let stop = plist_argument(args, ":stop");
+        if !stop.is_nil() {
+            return Err(LispError::WrongTypeArgument("null".into(), stop));
+        }
+        let default_pty = interp
+            .lookup_var_key(cached_symbol!("process-connection-type"), env)
+            .is_some_and(|value| value.is_truthy());
+        let connection_type = plist_argument(args, ":connection-type");
+        let pty_modes = procs::process_connection_pty_modes(
+            interp,
+            (!connection_type.is_nil()).then_some(&connection_type),
+            default_pty,
+        )?;
+        interp.set_process_stderr(process_id, stderr_process_id);
+        let (decoding, encoding) = make_process_coding_systems(
+            interp,
+            env,
+            plist_argument(args, ":coding"),
+            name,
+            buffer,
+            command,
+            !program.is_nil(),
+        )?;
+        interp.set_process_coding_system(process_id, decoding, encoding)?;
+        // !(NILP (buffer) || !inherit_process_coding_system).
+        let inherit_coding_system = !buffer.is_nil()
+            && interp
+                .lookup_var_key(cached_symbol!("inherit-process-coding-system"), env)
+                .is_some_and(|value| value.is_truthy());
+        interp.set_process_inherit_coding_system_flag(process_id, inherit_coding_system)?;
+        if program.is_nil() {
+            // create_pty: allocate_pty when the connection type asks for a
+            // pty, which FD_SETSIZE refuses ("Opening pty"), then, where
+            // `! defined (USG) || defined (USG_SUBTTY_WORKS)', its tty; no
+            // pty when none is to be had.  Only a pty's coding systems are
+            // set up.
+            let pty = if pty_modes.0 || pty_modes.1 {
+                procs::allocate_pty()
+            } else {
+                None
+            };
+            let Some((master, pty_name)) = pty else {
+                return interp.make_childless_pty_process(process_id, None);
+            };
+            use std::os::fd::AsRawFd;
+            if procs::beyond_fd_setsize(&[master.as_raw_fd()]) {
+                return Err(procs::fd_setsize_error(interp, "Opening pty"));
+            }
+            let slave = if procs::PARENT_OPENS_PTY_TTY {
+                Some(procs::open_pty_tty(interp, &pty_name, false)?)
+            } else {
+                None
+            };
+            // fcntl (pty_fd, F_SETFL, O_NONBLOCK).
+            // SAFETY: the master is an open descriptor this owns.
+            unsafe {
+                let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
+                libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+            let pty_name = pty_name.to_string_lossy().into_owned();
+            interp.make_childless_pty_process(process_id, Some((master, slave, Some(pty_name))))?;
+            return setup_process_coding_systems(interp, env, process_id, decoding, encoding);
+        }
+        let executable = locate_program_for_exec(interp, env, program, true)?;
+        let executable = host_file_name(interp, env, &executable)?.into_os_string();
+        let arguments = command.to_vec()?;
+        let arguments =
+            make_process_arguments(interp, env, arguments.get(1..).unwrap_or(&[]), encoding)?;
+        let mut setup_coding = |interp: &mut Interpreter, env: &mut Env| {
+            setup_process_coding_systems(interp, env, process_id, decoding, encoding)
+        };
+        let runtime = spawn_persistent_process(
+            interp,
+            env,
+            &executable,
+            &arguments,
+            current_dir,
+            procs::ProcessChannels {
+                pty_modes,
+                stderr_process_id,
+            },
+            &mut setup_coding,
+        )?;
+        interp.attach_process_runtime(process_id, runtime);
+        Ok(())
+    })();
+    if let Err(error) = made {
+        interp.remove_process(process_id);
+        return Err(error);
     }
-    // create_process closes its standard error pipe process's input, and
-    // once the child is made the parent's copy of the end the child
-    // writes its errors to: the pipe process reads them on its own
-    // channel and ends at their end.
-    if executable.is_some()
-        && let Some(stderr_process_id) = parsed.stderr_process_id
-    {
-        interp.close_pipe_process_input(stderr_process_id);
-        interp.close_pipe_process_output_writer(stderr_process_id);
-    }
-    interp.set_process_query_on_exit_flag(process_id, parsed.query_on_exit_flag)?;
-    interp.set_process_inherit_coding_system_flag(process_id, inherit_coding_system)?;
-    interp.set_process_filter(process_id, parsed.filter)?;
-    interp.set_process_sentinel(process_id, parsed.sentinel);
-    interp.set_process_stderr(process_id, parsed.stderr_process_id);
-    interp.set_process_coding_system(process_id, decoding, encoding)?;
     Ok(process)
 }
 
@@ -4048,7 +4361,7 @@ fn file_mode_string_for_metadata(metadata: &fs::Metadata) -> String {
 /// it, so omitting it would be a regression -- verified against the
 /// oracle, which returns t and records the loopback name on the contact
 /// plist.
-fn set_socket_option(
+pub(crate) fn set_socket_option(
     interp: &Interpreter,
     fd: std::os::fd::RawFd,
     option: &str,

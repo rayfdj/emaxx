@@ -1390,7 +1390,7 @@ fn value_less_vectors_break_ties_after_equal_prefix_values() {
         .set_marker(marker_id, Some(12), Some(buffer_id))
         .expect("set marker");
     let process = interp
-        .create_process(None, None, vec![], None, Value::Nil)
+        .create_process(false, Value::string(""))
         .expect("create process");
     let cases = vec![
         ("number", Value::Integer(1)),
@@ -1448,7 +1448,7 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
     let buf3 = interp
         .buffer_value(buf3_id)
         .expect("existing buffer object");
-    interp.kill_buffer_id(buf3_id);
+    interp.kill_buffer_id(buf3_id).expect("kill the buffer");
     // fns-tests.el:fns-value<-ordered inserts twenty characters before
     // positioning markers. Empty buffers would clamp both markers to 1.
     for (id, text) in [
@@ -1491,10 +1491,10 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
         .expect("set mark4");
 
     let proc1 = interp
-        .create_process(None, None, vec![], None, Value::Nil)
+        .create_process(false, Value::string(""))
         .expect("create proc1");
     let proc2 = interp
-        .create_process(None, None, vec![], None, Value::Nil)
+        .create_process(false, Value::string(""))
         .expect("create proc2");
     let uninterned_a = call(
         &mut interp,
@@ -1848,13 +1848,13 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
     let dead_buf1 = {
         let (id, _) = interp.create_buffer(" *dead-one*");
         let buffer = interp.buffer_value(id).expect("existing buffer object");
-        interp.kill_buffer_id(id);
+        interp.kill_buffer_id(id).expect("kill the buffer");
         buffer
     };
     let dead_buf2 = {
         let (id, _) = interp.create_buffer(" *dead-two*");
         let buffer = interp.buffer_value(id).expect("existing buffer object");
-        interp.kill_buffer_id(id);
+        interp.kill_buffer_id(id).expect("kill the buffer");
         buffer
     };
     let hash1 = call(&mut interp, "make-hash-table", &[], &mut env).expect("hash1");

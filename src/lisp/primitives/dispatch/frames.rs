@@ -1336,7 +1336,7 @@ fn make_terminal_frame(
             .ok_or_else(|| LispError::Signal("Unknown terminal type".into()))?;
         interp.open_tty_terminal(&tty, &kind)?
     };
-    let id = interp.new_terminal_frame(terminal);
+    let id = interp.new_terminal_frame(terminal)?;
     let terminal = terminal.borrow();
     let tty = Value::string(&terminal.name);
     let kind = terminal

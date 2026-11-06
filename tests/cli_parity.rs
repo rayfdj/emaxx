@@ -4017,3 +4017,1019 @@ fn generated_uninterned_symbol_programs_run_as_gnu_runs_them() {
         ],
     );
 }
+
+#[test]
+fn kill_buffer_and_the_selected_windows_buffer_as_gnu_answers() {
+    // window_loop's REPLACE_BUFFER_IN_WINDOWS_SAFELY when
+    // `replace-buffer-in-windows' is not fbound: other_buffer_safely's
+    // buffer, undedicated, with its start, point, hscroll and margins; the
+    // readers of the selected window's buffer with a live window (the
+    // line-number width's variable, the scroll commands' excursion) and
+    // with a deleted one, GNU's answer where its C has one.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+;; kill-buffer when replace-buffer-in-windows is not fboundp: window_loop's
+;; REPLACE_BUFFER_IN_WINDOWS_SAFELY replaces the dying buffer in windows.
+(defun show (tag form)
+  (message "%s %S" tag (condition-case err (funcall form) (error (list 'ERR err)))))
+
+(fmakunbound 'replace-buffer-in-windows)
+
+;; 1. the selected window shows a dedicated buffer that is not current;
+;; the replacement is other_buffer_safely's, not the current buffer.
+(show "k1"
+ (lambda ()
+   (let ((b (get-buffer-create "kb1"))
+         (h (get-buffer-create " hidden")))
+     (with-current-buffer b (insert "hello world\nsecond line\n") (goto-char 5))
+     (set-window-buffer nil b)
+     (set-window-dedicated-p nil t)
+     (set-window-hscroll nil 3)
+     (set-buffer h)
+     (let ((r (kill-buffer b)))
+       (list r (buffer-name (window-buffer)) (window-dedicated-p)
+             (window-start) (window-point) (window-hscroll)
+             (markerp (window-start)) (buffer-name (current-buffer))
+             (buffer-live-p b))))))
+
+;; 2. the dying buffer is current and shown: Fother_buffer becomes
+;; current first, then the window shows other_buffer_safely's buffer.
+(show "k2"
+ (lambda ()
+   (let ((b (get-buffer-create "kb2")))
+     (with-current-buffer "*scratch*" (erase-buffer) (insert "abc\ndef\n") (goto-char 3))
+     (set-window-buffer nil b)
+     (set-buffer b)
+     (let ((r (kill-buffer b)))
+       (list r (buffer-name (window-buffer)) (buffer-name (current-buffer))
+             (window-point) (window-start))))))
+
+;; 3. the minibuffer window shows the dying buffer.
+(show "k3"
+ (lambda ()
+   (let ((b (get-buffer-create "kb3"))
+         (old (window-buffer (minibuffer-window))))
+     (set-window-buffer (minibuffer-window) b)
+     (let ((r (kill-buffer b)))
+       (prog1 (list r (buffer-name (window-buffer (minibuffer-window))))
+         (when (buffer-live-p old) (set-window-buffer (minibuffer-window) old)))))))
+
+;; 4. the replacement window's start is the new buffer's last window start
+;; and `inhibit-quit' is restored after the kill.
+(show "k4"
+ (lambda ()
+   (let ((b (get-buffer-create "kb4")) (seen nil))
+     (set-window-buffer nil b)
+     (set-buffer "*scratch*")
+     (list (kill-buffer b) inhibit-quit (buffer-name (window-buffer))
+           (window-start) (window-margins)))))
+
+;; 5. a window showing a buffer whose margins are set gets the new
+;; buffer's margins.
+(show "k5"
+ (lambda ()
+   (let ((b (get-buffer-create "kb5")))
+     (with-current-buffer "*scratch*" (setq left-margin-width 2))
+     (set-window-buffer nil b)
+     (set-window-margins nil 5 1)
+     (set-buffer "*Messages*")
+     (prog1 (list (kill-buffer b) (buffer-name (window-buffer)) (window-margins))
+       (with-current-buffer "*scratch*" (setq left-margin-width 0))))))
+
+;; 6. buffer-list-update-hook and kill-buffer-hook see the window state.
+(show "k6"
+ (lambda ()
+   (let* ((b (get-buffer-create "kb6")) (log nil))
+     (set-window-buffer nil b)
+     (with-current-buffer b
+       (add-hook 'kill-buffer-hook
+                 (lambda () (push (list 'kbh (buffer-name (window-buffer))) log)) nil t))
+     (set-buffer "*scratch*")
+     (kill-buffer b)
+     (list (reverse log) (buffer-name (window-buffer)))))))"##,
+        r##"(progn
+;; Selected-window buffer readers with a live selected window.
+(defun show (tag form)
+  (message "%s %S" tag (condition-case err (funcall form) (error (list 'ERR err)))))
+(defun fill-buf (name n)
+  (with-current-buffer (get-buffer-create name)
+    (erase-buffer)
+    (dotimes (i n) (insert (format "line %d\n" i)))
+    (goto-char (point-min))
+    (current-buffer)))
+;; line-number-display-width reads display-line-numbers in the current buffer.
+(show "ln1" (lambda ()
+  (let ((a (fill-buf "lnA" 50)) (b (fill-buf "lnB" 5)))
+    (set-window-buffer nil a)
+    (with-current-buffer a (setq display-line-numbers t))
+    (with-current-buffer b (setq display-line-numbers nil))
+    (list (with-current-buffer b (line-number-display-width))
+          (with-current-buffer a (line-number-display-width))
+          (with-current-buffer b (line-number-display-width 'columns))))))
+(show "ln2" (lambda ()
+  (let ((a (fill-buf "lnA" 50)) (b (fill-buf "lnB" 5)))
+    (with-current-buffer a (setq display-line-numbers nil))
+    (with-current-buffer b (setq display-line-numbers t))
+    (list (with-current-buffer b (line-number-display-width))
+          (with-current-buffer a (line-number-display-width))))))
+;; scroll-up scrolls the selected window's buffer, in an excursion.
+(show "sc1" (lambda ()
+  (let ((a (fill-buf "scA" 200)) (b (fill-buf "scB" 200)))
+    (set-window-buffer nil a)
+    (set-window-start nil 1)
+    (set-buffer b)
+    (goto-char 30)
+    (let ((r (condition-case e (scroll-up 3) (error (list 'ERR e)))))
+      (list r (current-buffer) (point) (window-start)
+            (with-current-buffer a (point)) (window-point))))))
+(show "sc2" (lambda ()
+  (let ((a (fill-buf "scA" 200)) (b (fill-buf "scB" 200)))
+    (set-window-buffer nil a)
+    (set-window-start nil 1)
+    (set-buffer b)
+    (let ((r (condition-case e (scroll-down 2) (error (list 'ERR e)))))
+      (list r (current-buffer) (point) (window-start) (window-point))))))
+(show "sc3" (lambda ()
+  (let ((a (fill-buf "scA" 200)) (b (fill-buf "scB" 200)))
+    (set-window-buffer nil a)
+    (set-window-start nil 1)
+    (set-buffer b)
+    (condition-case e (scroll-up 'x) (error (list 'ERR e)))))))"##,
+        r##"(progn
+(defun ws-push (&rest xs) (prin1 xs) (terpri))
+(defmacro ws-try (tag form) `(ws-push ,tag (condition-case e (progn ,form 'ok) (error (car e)))))
+(defvar ws-objs nil)
+(defun ws-setup (n)
+  (ws-try (list n 'sel) (select-window (frame-first-window)))
+  (ws-try (list n 'dow) (delete-other-windows))
+  (ws-try (list n 'stb) (switch-to-buffer (get-buffer-create "wsA")))
+  (erase-buffer) (insert "line one\nline two\nline three\n") (goto-char 5)
+  (ws-try (list n 'split)
+          (let* ((sel (selected-window))
+                 (right (split-window sel nil 'right))
+                 (below (split-window right nil 'below))
+                 (dead (split-window below nil 'below)))
+            (set-window-buffer below (get-buffer-create "wsB"))
+            (delete-window dead)
+            (setq ws-objs (list (cons 'selected sel) (cons 'right right) (cons 'below below) (cons 'dead dead))))))
+(ws-setup 0)
+(ws-push 'swp (condition-case e (set-window-point (cdr (assq 'below ws-objs)) nil) (error e)))
+(ws-setup 1)
+(ws-setup 2)
+(ignore-errors (select-window (frame-first-window)))
+(ignore-errors (select-window (frame-first-window)))
+(ignore-errors (delete-other-windows))
+(ws-push 'dead-selected (window-live-p (selected-window)) (buffer-name) (window-buffer (selected-window)))
+
+(defun show (tag form)
+  (message "%s %S" tag (condition-case err (funcall form) (error (list 'ERR err)))))
+(set-buffer "wsA")
+(show "d-start" (lambda () (window-start)))
+(show "d-end" (lambda () (window-end)))
+(show "d-body" (lambda () (list (window-body-height) (window-text-height) (window-mode-line-height) (window-header-line-height) (window-tab-line-height))))
+(show "d-recenter" (lambda () (recenter 0)))
+(show "d-mtwl" (lambda () (move-to-window-line 0)))
+(show "d-scroll" (lambda () (scroll-up 1)))
+(show "d-scroll-x" (lambda () (scroll-up 'x)))
+(show "d-lndw" (lambda () (line-number-display-width)))
+(show "d-pos" (lambda () (pos-visible-in-window-p)))
+(show "d-fml" (lambda () (format-mode-line "%b")))
+(show "d-wcch" (lambda () (let ((window-configuration-change-hook (list (lambda () (princ "HOOK\n")))))
+                            (run-window-configuration-change-hook))))
+(show "d-cur" (lambda () (list (buffer-name) (window-live-p (selected-window)))))
+)"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn the_review_of_round_332_is_answered_as_gnu_answers() {
+    // The probes of round 332's review, each in its own session: a
+    // sentinel, a buffer predicate or an unlock handler making the dying
+    // buffer current again, `save-current-buffer' and a second
+    // `kill-buffer' while the windows are replaced, an error there,
+    // kill-buffer's excursion, move-point-visually's buffer, the scratch
+    // buffer's creation and its log, and the replacement's window state.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+;; A pipe process's sentinel, run by kill_buffer_processes's Fdelete_process,
+;; kills the buffer now current; its Fkill_buffer makes the dying buffer
+;; current.  GNU goes on to kill the dying buffer while it is current.
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(show "s1"
+ (lambda ()
+   (let* ((b1 (get-buffer-create "dying"))
+          (b2 (get-buffer-create "other"))
+          (p (make-pipe-process :name "pp" :buffer b1 :noquery t
+                                :sentinel (lambda (proc ev)
+                                            (princ (format "sentinel cur=%s\n" (buffer-name)))
+                                            (when (buffer-live-p b2) (kill-buffer b2))
+                                            (princ (format "after kill cur=%s\n" (buffer-name)))))))
+     ;; buffer-list order: dying first, so other-buffer of b2 is b1.
+     (switch-to-buffer "*scratch*")
+     (bury-buffer "*scratch*") (bury-buffer "*Messages*")
+     (set-buffer b2)
+     (princ (format "list=%S\n" (mapcar #'buffer-name (buffer-list))))
+     (let ((r (kill-buffer b1)))
+       (list r (buffer-live-p b1) (buffer-live-p b2) (buffer-name (current-buffer))
+             (buffer-live-p (current-buffer)))))))
+(princ "survived\n"))"##,
+        r##"(progn
+;; The frame's buffer-predicate, called by Fkill_buffer's second Fother_buffer
+;; (the minibuffer-buffer check), makes the dying buffer current.
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar dying (get-buffer-create "dying"))
+(show "p1"
+ (lambda ()
+   (set-frame-parameter nil 'buffer-predicate
+                        (lambda (b) (when (buffer-live-p dying) (set-buffer dying)) t))
+   (let ((r (with-current-buffer (window-buffer (minibuffer-window))
+              (prog1 (kill-buffer dying)
+                (princ (format "inner cur=%S\n" (current-buffer)))))))
+     (set-frame-parameter nil 'buffer-predicate nil)
+     (list r (buffer-live-p dying) (buffer-name)))))
+(princ "survived\n"))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar dying (get-buffer-create "dying"))
+(defun zz-handler (op &rest args)
+  (if (eq op 'unlock-file)
+      (progn (princ (format "handler %S\n" op)) (set-buffer dying) nil)
+    (let ((inhibit-file-name-handlers (cons 'zz-handler inhibit-file-name-handlers))
+          (inhibit-file-name-operation op))
+      (apply op args))))
+(push '("\\`/zz:" . zz-handler) file-name-handler-alist)
+(show "u1"
+ (lambda ()
+   (with-current-buffer dying
+     (setq buffer-file-name "/zz:/tmp/nofile.txt")
+     (setq buffer-file-truename "/zz:/tmp/nofile.txt")
+     (insert "modified"))
+   (set-buffer "*scratch*")
+   (let ((r (kill-buffer dying)))
+     (list r (buffer-live-p dying) (buffer-name)))))
+(princ "survived\n"))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar dying nil)
+(defvar log nil)
+(advice-add 'get-scratch-buffer-create :before
+            (lambda (&rest _) (push (condition-case e (progn (set-buffer dying) (list 'ok (eq (current-buffer) dying))) (error e)) log)))
+(advice-add 'get-scratch-buffer-create :after
+            (lambda (&rest _) (push (list 'after (eq (current-buffer) dying) (buffer-live-p (current-buffer))) log)))
+(show "m3"
+ (lambda ()
+   (fmakunbound 'replace-buffer-in-windows)
+   (kill-buffer "*Messages*")
+   (setq dying (get-buffer "*scratch*"))
+   (set-window-buffer nil dying)
+   (set-buffer " *load*")
+   (let ((r (kill-buffer dying)))
+     (list r (reverse log) (eq (current-buffer) dying) (buffer-live-p (current-buffer))))))
+(set-buffer " *load*")
+(show "msgs" (lambda () (and (get-buffer "*Messages*") (with-current-buffer "*Messages*" (buffer-string))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(fmakunbound 'replace-buffer-in-windows)
+(defvar b (get-buffer-create "dying"))
+(defvar o (get-buffer-create "repl"))
+(dolist (n (list "*scratch*" "*Messages*")) (bury-buffer n))
+(with-current-buffer o (setq-local left-margin-width -2))
+(with-current-buffer b (insert "text in dying") (setq-local foo-local 7))
+(defvar m (with-current-buffer b (copy-marker 3)))
+(set-window-buffer nil b)
+(set-buffer o)
+(show "e1" (lambda () (kill-buffer b)))
+(setq inhibit-quit nil)
+(show "e1b" (lambda () (list (buffer-live-p b) (marker-buffer m) (buffer-local-value 'foo-local b)
+                             (buffer-name (window-buffer)) (eq (window-buffer) b)
+                             (window-start) (window-point)
+                             (with-current-buffer b (list (buffer-string) (point)))
+                             (get-buffer-window b)
+                             (length (buffer-list)))))
+(with-current-buffer o (setq-local left-margin-width 1))
+(show "e1c" (lambda () (list (kill-buffer b) (buffer-live-p b) (marker-buffer m)
+                             (buffer-name (window-buffer)) (window-margins))))
+(show "e1d" (lambda () (list (set-buffer b))))
+(show "e1e" (lambda () (with-current-buffer b (rename-buffer "zz")))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar a (get-buffer-create "A"))
+(with-current-buffer a (insert "0123456789abcdef") (goto-char 10))
+(show "x1"
+ (lambda ()
+   (let ((b (get-buffer-create "B")))
+     (with-current-buffer b
+       (add-hook 'kill-buffer-hook (lambda () (with-current-buffer a (goto-char 3))) nil t))
+     (set-buffer a)
+     (list (kill-buffer b) (buffer-name) (point)))))
+(show "x2"
+ (lambda ()
+   (let ((b (get-buffer-create "B2")))
+     (with-current-buffer b
+       (add-hook 'kill-buffer-query-functions (lambda () (with-current-buffer a (goto-char 5)) t) nil t))
+     (set-buffer a) (goto-char 12)
+     (list (kill-buffer b) (buffer-name) (point))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar a (get-buffer-create "A"))
+(defvar b (get-buffer-create "B"))
+(with-current-buffer a (insert "aaaaaaaaaa\nbbbbbbbbbb\n") (goto-char 3))
+(with-current-buffer b (insert "xxxxxxxxxxxxxxxxxxxx\nyyyy\n") (goto-char 8))
+(set-window-buffer nil a)
+(set-buffer b)
+(show "mpv" (lambda () (list (move-point-visually 1) (buffer-name) (point) (with-current-buffer a (point)))))
+(show "mpv-1" (lambda () (list (move-point-visually -1) (buffer-name) (point) (with-current-buffer a (point)))))
+(show "cont" (lambda () (list (display--line-is-continued-p) (buffer-name) (point) (with-current-buffer a (point))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(advice-add 'get-scratch-buffer-create :override
+            (lambda (&rest _) (error "no scratch for you")))
+(show "l2"
+ (lambda ()
+   (fmakunbound 'replace-buffer-in-windows)
+   (kill-buffer "*Messages*")
+   (set-window-buffer nil "*scratch*")
+   (set-buffer " *load*")
+   (let* ((old (get-buffer "*scratch*"))
+          (r (kill-buffer old)))
+     (list r (buffer-live-p old) (buffer-name (window-buffer))
+           (buffer-name) inhibit-quit
+           (mapcar #'buffer-name (buffer-list))
+           (with-current-buffer (window-buffer) major-mode)
+           (and (get-buffer "*Messages*") (with-current-buffer "*Messages*" (buffer-string))))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(fmakunbound (quote get-scratch-buffer-create)) (ignore
+            (lambda (&rest _) (error "no scratch for you")))
+(show "l3"
+ (lambda ()
+   (fmakunbound 'replace-buffer-in-windows)
+   (kill-buffer "*Messages*")
+   (set-window-buffer nil "*scratch*")
+   (set-buffer " *load*")
+   (let* ((old (get-buffer "*scratch*"))
+          (r (kill-buffer old)))
+     (list r (buffer-live-p old) (buffer-name (window-buffer))
+           (buffer-name) inhibit-quit
+           (mapcar #'buffer-name (buffer-list))
+           (with-current-buffer (window-buffer) major-mode)
+           (and (get-buffer "*Messages*") (with-current-buffer "*Messages*" (buffer-string))))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(fmakunbound 'replace-buffer-in-windows)
+(setq frame-resize-pixelwise nil)
+;; non-selected windows, display counts, prev-buffers, fringes, scroll bars,
+;; vscroll, point insertion type.
+(show "r1"
+ (lambda ()
+   (let* ((b (get-buffer-create "kbx"))
+          (o (get-buffer-create "repl"))
+          (w1 (selected-window))
+          (w2 (split-window)))
+     (with-current-buffer b (insert (make-string 300 ?x)) (goto-char 50))
+     (with-current-buffer o (insert "repl text\nmore\n") (goto-char 4)
+                          (setq buffer-display-count 7)
+                          (setq-local window-point-insertion-type t)
+                          (setq-local left-fringe-width 3)
+                          (setq-local scroll-bar-width 5)
+                          (setq-local left-margin-width 1))
+     (set-window-buffer w1 b)
+     (set-window-buffer w2 b)
+     (set-window-dedicated-p w2 t)
+     (set-window-hscroll w2 2)
+     (set-window-start w2 20)
+     ;; o first in the buffer list
+     (dolist (n (list "*scratch*" "*Messages*")) (bury-buffer n))
+     (switch-to-buffer o t t) (set-window-buffer w1 b)
+     (set-buffer o)
+     (princ (format "list=%S\n" (mapcar #'buffer-name (buffer-list))))
+     (let ((before (buffer-local-value 'buffer-display-count o))
+           (r (kill-buffer b)))
+       (list r before
+             (buffer-local-value 'buffer-display-count o)
+             (buffer-name (window-buffer w1)) (buffer-name (window-buffer w2))
+             (window-dedicated-p w2) (window-start w2) (window-point w2)
+             (window-hscroll w2) (window-margins w2) (window-fringes w2)
+             (window-scroll-bars w2)
+             (window-vscroll w2)
+             (let ((p (window-point w2))) (with-current-buffer o (save-excursion (goto-char p) (insert "Z"))) (list p (window-point w2)))
+             (mapcar (lambda (e) (buffer-name (car e))) (window-prev-buffers w2))
+             (window-next-buffers w2)
+             (eq (get-buffer-window o) w1)
+             (buffer-name (current-buffer)) (point))))))
+(princ "done\n"))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn make_process_and_make_pipe_process_as_process_c_makes_them() {
+    // Fmake_process's order of checks (the current directory before
+    // `:name', the program search before each argument's CHECK_STRING,
+    // `:stop' and `:connection-type' before the coding systems, whose
+    // setup comes last), `:stderr''s pipe-process test, create_pty for a
+    // nil `:command', the command list kept as given, and
+    // Fmake_pipe_process as its own DEFUN (`:stop', `:plist', no
+    // `:command'), each probe in its own session.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+;; directory before :name
+(show "m1" (lambda () (let ((default-directory "/nonexistent-dir-xyz/")) (make-process :name 7 :command '("true")))))
+;; :name before :command program
+(show "m2" (lambda () (make-process :name 7 :command '(8))))
+;; program CHECK_STRING
+(show "m3" (lambda () (make-process :name "p" :command '(8))))
+;; program search before args check
+(show "m4" (lambda () (make-process :name "p" :command '("no-such-program-xyz" 9))))
+(show "m5" (lambda () (make-process :name "p" :command '("true" 9))))
+;; odd args
+(show "m6" (lambda () (make-process :name "p" :command)))
+;; stderr not a pipe process
+(show "m7" (lambda () (make-process :name "p" :command '("true") :stderr (make-process :name "q" :command '("true")))))
+;; stderr string with nil program
+(show "m8" (lambda () (make-process :name "p" :command nil :stderr "x")))
+(show "m9" (lambda () (make-process :name "p" :command '("true") :buffer 5)))
+(show "m10" (lambda () (make-process :name "p" :command '("true") :coding 'no-such-coding)))
+(show "m11" (lambda () (make-process :name "p" :command "true")))
+(show "m12" (lambda () (let ((default-directory 5)) (make-process :name "p" :command '("true")))))
+(show "procs" (lambda () (mapcar #'process-name (process-list)))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(show "n1" (lambda () (let ((p (make-process :name "p0" :command nil)))
+  (list (process-status p) (process-type p) (stringp (process-tty-name p)) (process-id p) (process-command p)
+        (process-buffer p) (process-contact p) (process-coding-system p) (process-live-p p)
+        (condition-case e (process-send-string p "hi\n") (error e))
+        (progn (delete-process p) (process-status p))))))
+(show "n2" (lambda () (let ((p (make-process :name "p1" :command nil :buffer "pb" :connection-type 'pipe)))
+  (list (process-status p) (process-type p) (process-tty-name p) (process-buffer p)))))
+(show "n3" (lambda () (make-pipe-process :name "pp" :command))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun pinfo (p) (list (process-name p) (process-status p) (process-type p) (process-command p)
+                       (and (process-buffer p) (buffer-name (process-buffer p)))
+                       (process-plist p) (process-contact p) (process-query-on-exit-flag p)
+                       (process-filter p) (process-sentinel p) (process-id p)))
+(show "q1" (lambda () (pinfo (make-pipe-process :name "q1"))))
+(show "q2" (lambda () (pinfo (make-pipe-process :name "q2" :buffer "qb" :noquery t :stop t :plist '(a 1)))))
+(show "q3" (lambda () (pinfo (make-pipe-process :name "q3" :command '("true") :stderr "x" :file-handler t))))
+(show "q4" (lambda () (pinfo (make-pipe-process :name "q4" :plist 5))))
+(show "q5" (lambda () (make-pipe-process :buffer "x")))
+(show "q6" (lambda () (make-pipe-process :name 'x)))
+(show "q7" (lambda () (make-pipe-process)))
+(show "q8" (lambda () (pinfo (make-pipe-process :name "q8" :buffer 7))))
+(show "q9" (lambda () (pinfo (make-pipe-process :name "q9" :coding 'no-such-cs))))
+(show "q10" (lambda () (let ((p (make-pipe-process :name "q10" :filter t))) (list (process-status p) (process-filter p)))))
+(show "q11" (lambda () (let ((p (make-pipe-process :name "q11" :stop t))) (list (process-status p) (progn (continue-process p) (process-status p))))))
+(show "q12" (lambda () (let* ((out nil) (p (make-pipe-process :name "q12" :noquery t :filter (lambda (_ s) (push s out))))) (process-send-string p "hi\n") (accept-process-output p 0.2) (list out (process-status p)))))
+(show "m1" (lambda () (make-process :name "m1" :command '("no-such-program-xyz") :coding 'no-such-cs)))
+(show "m2" (lambda () (make-process :name "m2" :command '("true") :connection-type 'bogus :coding 'no-such-cs)))
+(show "m3" (lambda () (make-process :name "m3" :command '("true") :stop t :connection-type 'bogus)))
+(show "m4" (lambda () (pinfo (make-process :name "m4" :command nil :connection-type 'pipe :buffer "m4b"))))
+(show "m5" (lambda () (let ((p (make-process :name "m5"))) (list (process-status p) (process-type p) (stringp (process-tty-name p)) (process-id p) (process-contact p)))))
+(show "m6" (lambda () (make-process :name "m6" :command '("true") :stderr 5)))
+(show "procs" (lambda () (mapcar #'process-name (process-list)))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(show "c1" (lambda () (let* ((s (propertize "true" 'face 'bold)) (c (list s "a")) (p (make-process :name "c1" :command c :noquery t)))
+   (list (eq (car (process-command p)) s) (eq (process-command p) c) (process-command p)))))
+(show "c2" (lambda () (let* ((p (make-process :name "c2" :command '("sh" "-c" "echo out; echo err >&2") :stderr "c2err" :buffer "c2out" :noquery t)))
+   (while (accept-process-output p 0.2))
+   (sleep-for 0.2)
+   (list (mapcar #'process-name (process-list))
+         (with-current-buffer "c2out" (buffer-string))
+         (with-current-buffer "c2err" (buffer-string))
+         (process-status (get-process "c2 stderr"))
+         (condition-case e (process-send-string (get-process "c2 stderr") "x") (error e))))))
+(show "c3" (lambda () (let ((inherit-process-coding-system t)) (list (process-inherit-coding-system-flag (make-pipe-process :name "c3" :noquery t))
+   (process-inherit-coding-system-flag (make-process :name "c3b" :command '("true") :buffer "c3b" :noquery t))))))
+(show "c4" (lambda () (let ((p (make-process :name "c4" :command '("cat") :noquery t :connection-type 'pipe)) (out nil))
+   (set-process-filter p (lambda (_ s) (push s out)))
+   (process-send-string p "hello\n") (process-send-eof p)
+   (while (accept-process-output p 0.2))
+   (list out (process-status p) (process-exit-status p)))))
+(show "c5" (lambda () (let ((p (make-process :name "c5" :command nil :noquery t)) (out nil))
+   (set-process-filter p (lambda (_ s) (push s out)))
+   (process-send-string p "abc\n")
+   (accept-process-output p 0.3)
+   (list out (process-status p)))))
+(show "c6" (lambda () (let ((default-directory "/nonexistent-zz/")) (make-pipe-process :name "c6" :noquery t))))
+(show "procs" (lambda () (mapcar #'process-name (process-list)))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(show "k1" (lambda () (let ((p (make-process :name "k1" :command nil :buffer "k1b" :noquery t))) (list (kill-buffer "k1b") (process-status p) (process-live-p p)))))
+(show "k2" (lambda () (let ((p (make-process :name "k2" :command nil :noquery t))) (list (condition-case e (process-send-eof p) (error e)) (process-status p)))))
+(show "k3" (lambda () (let ((p (make-process :name "k3" :command nil :noquery t))) (list (condition-case e (signal-process p 'TERM) (error e)) (condition-case e (interrupt-process p) (error e)) (process-status p)))))
+(show "k4" (lambda () (let ((p (make-process :name "k4" :command nil :noquery t :connection-type 'pipe))) (list (condition-case e (process-send-string p "x") (error e)) (process-tty-name p) (delete-process p) (process-status p)))))
+(show "k5" (lambda () (let ((p (make-pipe-process :name "k5" :noquery t))) (list (condition-case e (process-send-eof p) (error e)) (process-status p) (condition-case e (process-send-string p "x") (error e))))))
+(show "k6" (lambda () (let ((p (make-process :name "k6" :command nil :noquery t))) (list (process-contact p) (process-contact p t) (process-type p) (process-running-child-p p))))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn the_review_of_round_333_is_answered_as_gnu_answers() {
+    // The probes of round 333's review and of its fixes, each in its own
+    // session: create_pty's coding setup only with a pty, the `:stderr'
+    // pipe's input closed before the coding setup, a childless pty's
+    // signals, send-eof and window size, set-process-window-size through
+    // p->infd, process buffers through Fget_buffer_create,
+    // `default-process-coding-system' read after find-operation, a send
+    // that blocks while timers run, and a childless pty's EIO once
+    // another opener of its tty closes it.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(show "e1" (lambda () (let* ((ev nil) (p (make-process :name "e1" :noquery t :sentinel (lambda (_ s) (push s ev)))))
+  (list (process-running-child-p p) (progn (dotimes (_ 3) (accept-process-output nil 0.05)) (process-status p)) (reverse ev)
+        (condition-case e (process-send-string p "x\n") (error e))))))
+(show "e2" (lambda () (let* ((ev nil) (p (make-process :name "e2" :noquery t :sentinel (lambda (_ s) (push s ev)))))
+  (let ((s (make-serial-process :port (process-tty-name p) :speed nil :noquery t)))
+    (delete-process s))
+  (list (progn (dotimes (_ 3) (accept-process-output nil 0.05)) (process-status p)) (reverse ev) (process-exit-status p)))))
+(show "e3" (lambda () (let* ((ev nil) (p (make-process :name "e3" :noquery t :sentinel (lambda (_ s) (push s ev)))))
+  (call-process "sh" nil nil nil "-c" (format "echo hi > %s" (process-tty-name p)))
+  (list (progn (dotimes (_ 3) (accept-process-output nil 0.05)) (process-status p)) (reverse ev)))))
+(show "e4" (lambda () (let* ((out nil) (p (make-process :name "e4" :noquery t :filter (lambda (_ s) (push s out)))))
+  (process-send-string p "abc\n")
+  (dotimes (_ 3) (accept-process-output nil 0.05))
+  (list (process-status p) (reverse out)))))
+(show "e6" (lambda () (let* ((ev nil) (p (make-process :name "e6" :noquery t :sentinel (lambda (_ s) (push s ev)))))
+  (call-process "sh" nil nil nil "-c" (format "true < %s" (process-tty-name p)))
+  (dotimes (_ 3) (accept-process-output nil 0.05))
+  (list (process-status p) (condition-case e (process-send-string p "x") (error e))
+        (progn (delete-process p) (accept-process-output nil 0.05) (process-status p)) (process-exit-status p) (reverse ev) (memq p (process-list))))))
+(show "e7" (lambda () (let* ((ev nil) (p (make-process :name "e7" :noquery t :connection-type 'pipe :sentinel (lambda (_ s) (push s ev)))))
+  (list (process-status p) (process-tty-name p)))))
+(show "e8" (lambda () (let* ((out nil) (p (make-process :name "e8" :noquery t :filter (lambda (_ s) (push s out)))))
+  (with-temp-buffer (call-process "stty" nil t nil "-F" (process-tty-name p) "size"))
+  (dotimes (_ 3) (accept-process-output nil 0.05))
+  (list (process-status p) (set-process-window-size p 5 6))))))"##,
+        r##"(progn
+;; create_pty sets up coding systems only with a pty.
+(condition-case e
+    (let ((p (make-process :name "q1" :connection-type 'pipe :coding 'no-such-coding)))
+      (message "q1 ok %S %S %S" (process-status p) (process-coding-system p) (process-tty-name p))
+      (delete-process p))
+  (error (message "q1 err %S" e)))
+(condition-case e
+    (let ((p (make-process :name "q1b" :connection-type 'pty :coding 'no-such-coding)))
+      (message "q1b ok %S" (process-status p)))
+  (error (message "q1b err %S %S" e (mapcar #'process-name (process-list))))))"##,
+        r##"(progn
+;; set-process-window-size through p->infd.
+(let ((p (make-process :name "q2a" :command '("sleep" "3") :connection-type 'pty)))
+  (message "pty child %S" (set-process-window-size p 10 20)) (delete-process p))
+(let ((p (make-process :name "q2b" :command '("sleep" "3") :connection-type 'pipe)))
+  (message "pipe child %S" (set-process-window-size p 10 20)) (delete-process p))
+(let ((p (make-process :name "q2c" :command '("sleep" "3") :connection-type '(pty . pipe))))
+  (message "pty-in child %S" (set-process-window-size p 10 20)) (delete-process p))
+(let ((p (make-process :name "q2d" :command '("sleep" "3") :connection-type '(pipe . pty))))
+  (message "pty-out child %S" (set-process-window-size p 10 20)) (delete-process p))
+(let ((p (make-process :name "q2e" :connection-type 'pty)))
+  (message "childless pty %S" (set-process-window-size p 10 20)) (delete-process p))
+(let ((p (make-process :name "q2e2" :connection-type 'pipe)))
+  (message "childless no pty %S" (set-process-window-size p 10 20)) (delete-process p))
+(let ((p (make-pipe-process :name "q2f")))
+  (message "pipe proc %S" (set-process-window-size p 10 20)) (delete-process p))
+(let ((p (make-network-process :name "q2g" :server t :service t :host 'local)))
+  (message "server %S" (set-process-window-size p 10 20)) (delete-process p))
+(let ((p (make-process :name "q2h" :command '("true") :connection-type 'pty)))
+  (while (process-live-p p) (accept-process-output p 0.05))
+  (message "exited pty child %S" (set-process-window-size p 10 20)))
+(let ((p (make-process :name "q2i" :command '("sleep" "3") :connection-type 'pty)))
+  (delete-process p)
+  (message "deleted pty child %S" (set-process-window-size p 10 20))))"##,
+        r##"(progn
+;; The :stderr pipe's input is closed before the coding systems' setup.
+(let* ((errp (make-pipe-process :name "q3err")))
+  (condition-case e
+      (make-process :name "q3" :command '("true") :stderr errp :coding 'no-such-coding)
+    (error (message "q3 err %S" e)))
+  (message "procs %S" (mapcar #'process-name (process-list)))
+  (message "stderr status %S" (process-status errp))
+  (condition-case e (progn (process-send-string errp "x") (message "send ok"))
+    (error (message "send err %S" e)))))"##,
+        r##"(progn
+;; Process buffers through Fget_buffer_create.
+(setq inherit-process-coding-system t)
+(let ((b (generate-new-buffer "q4dead")))
+  (kill-buffer b)
+  (let ((p (make-pipe-process :name "q4a" :buffer b)))
+    (message "pipe dead buffer %S %S %S" (process-buffer p) (marker-buffer (process-mark p))
+             (process-inherit-coding-system-flag p))
+    (delete-process p))
+  (let ((p (make-process :name "q4b" :command '("true") :buffer b)))
+    (message "proc dead buffer %S %S %S" (process-buffer p) (marker-buffer (process-mark p))
+             (process-inherit-coding-system-flag p))
+    (delete-process p))
+  (let ((p (make-process :name "q4b2" :buffer b)))
+    (message "childless dead buffer %S %S" (process-buffer p) (process-inherit-coding-system-flag p))
+    (delete-process p)))
+(condition-case e (make-pipe-process :name "q4c" :buffer "") (error (message "empty %S" e)))
+(condition-case e (make-process :name "q4d" :command '("true") :buffer "") (error (message "empty2 %S" e)))
+(condition-case e (make-process :name "q4d2" :command '("true") :stderr "") (error (message "empty3 %S" e)))
+(defvar q4-n 0)
+(add-hook 'buffer-list-update-hook (lambda () (setq q4-n (1+ q4-n))))
+(let ((p (make-pipe-process :name "q4e" :buffer "q4-new-buffer")))
+  (message "hook ran %d %S" q4-n (buffer-live-p (process-buffer p)))
+  (delete-process p))
+(setq q4-n 0)
+(let ((p (make-process :name "q4e2" :command '("true") :buffer "q4-new-buffer2")))
+  (message "hook ran2 %d" q4-n)
+  (delete-process p))
+(condition-case e (make-pipe-process :name "q4f" :buffer 42) (error (message "num %S" e)))
+(condition-case e (make-process :name "q4g" :command '("true") :buffer 'sym) (error (message "sym %S" e))))"##,
+        r##"(progn
+;; Vdefault_process_coding_system read after find-operation-coding-system.
+(setq default-process-coding-system '(utf-8 . utf-8))
+(defun q5-fn (&rest _) (setq default-process-coding-system '(latin-1 . latin-1)) 0)
+(let ((process-coding-system-alist (list (cons "true" 'q5-fn))))
+  (let ((p (make-process :name "q5" :command '("true"))))
+    (message "q5 %S" (process-coding-system p))))
+(setq default-process-coding-system '(utf-8 . utf-8))
+(defun q5-net (&rest _) (setq default-process-coding-system '(latin-1 . latin-1)) 0)
+(let* ((server (make-network-process :name "q5s" :server t :service t :host 'local))
+       (port (process-contact server :service))
+       (network-coding-system-alist (list (cons port 'q5-net))))
+  (let ((c (make-network-process :name "q5c" :host 'local :service port)))
+    (message "q5 net %S" (process-coding-system c))
+    (delete-process c))
+  (delete-process server)))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+;; childless pipe connection with a bad coding: create_pty sets nothing up
+(show "a1" (lambda () (let ((p (make-process :name "a1" :command nil :connection-type 'pipe :coding 'no-such-cs :noquery t)))
+   (list (process-status p) (process-coding-system p)))))
+;; childless pty with a bad coding: setup_process_coding_systems signals, process removed
+(show "a2" (lambda () (make-process :name "a2" :command nil :coding 'no-such-cs :noquery t)))
+;; :stderr given as a string naming an existing process
+(show "a3" (lambda () (let ((q (make-process :name "a3q" :command '("sleep" "3") :noquery t)))
+   (let ((p (make-process :name "a3" :command '("true") :stderr "a3q" :noquery t)))
+     (list (process-name p) (mapcar #'process-name (process-list)))))))
+;; :stderr given as a buffer that has a process
+(show "a4" (lambda () (let ((q (make-process :name "a4q" :command '("sleep" "3") :buffer "a4b" :noquery t)))
+   (let ((p (make-process :name "a4" :command '("true") :stderr (get-buffer "a4b") :noquery t)))
+     (list (process-name p) (mapcar #'process-name (process-list)))))))
+;; :stderr pipe left behind when make-process fails later
+(show "a5" (lambda () (list (condition-case e (make-process :name "a5" :command '("true") :stderr "a5err" :stop t) (error e))
+   (mapcar #'process-name (process-list)))))
+(show "a6" (lambda () (list (condition-case e (make-process :name "a6" :command '("no-such-prog-zz") :stderr "a6err") (error e))
+   (mapcar #'process-name (process-list)))))
+(show "procs" (lambda () (mapcar (lambda (p) (list (process-name p) (process-status p))) (process-list)))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+;; send to a :stderr pipe process whose input create_process closed, child alive
+(show "b1" (lambda () (let* ((pp (make-pipe-process :name "b1e" :noquery t))
+                             (p (make-process :name "b1" :command '("sleep" "2") :stderr pp :noquery t)))
+   (list (process-status pp) (condition-case e (process-send-string pp "x") (error e))))))
+;; same with the buffer form of :stderr
+(show "b2" (lambda () (let* ((p (make-process :name "b2" :command '("sleep" "2") :stderr "b2e" :noquery t)))
+   (list (process-status (get-process "b2 stderr")) (condition-case e (process-send-string (get-process "b2 stderr") "x") (error e))))))
+;; a make-process with :stderr pipe that fails in setup_process_coding_systems (create_process
+;; closes the pipe's input before it)
+(show "b3" (lambda () (let* ((pp (make-pipe-process :name "b3e" :noquery t)))
+   (list (condition-case e (make-process :name "b3" :command '("true") :stderr pp :coding 'no-such-cs) (error e))
+         (process-status pp) (condition-case e (process-send-string pp "x") (error e))))))
+;; ...and that fails at the program search (before create_process): pipe still writable
+(show "b4" (lambda () (let* ((pp (make-pipe-process :name "b4e" :noquery t)))
+   (list (condition-case e (make-process :name "b4" :command '("no-such-prog-zz") :stderr pp) (error e))
+         (process-status pp) (condition-case e (process-send-string pp "x") (error e))))))
+;; reuse of a :stderr pipe process for a second child
+(show "b5" (lambda () (let* ((pp (make-pipe-process :name "b5e" :noquery t)) (out nil))
+   (set-process-filter pp (lambda (_ s) (push s out)))
+   (make-process :name "b5a" :command '("sh" "-c" "echo one >&2") :stderr pp :noquery t)
+   (make-process :name "b5b" :command '("sh" "-c" "echo two >&2; echo two-out") :stderr pp :noquery t :buffer "b5bout")
+   (let ((n 0)) (while (and (< n 20) (accept-process-output nil 0.1)) (setq n (1+ n))))
+   (sleep-for 0.3) (accept-process-output nil 0.1)
+   (list (sort out #'string<) (process-status pp) (with-current-buffer "b5bout" (buffer-string)))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun mk (name &rest more) (let ((out nil)) (list (apply #'make-process :name name :command nil :noquery t
+   :filter (lambda (_ s) (push s (car (process-get _ 'outbox)))) more))))
+(defun outs (p) (accept-process-output p 0.2) (reverse (car (process-get p 'outbox))))
+(defun fresh (name &rest more)
+  (let ((p (apply #'make-process :name name :command nil :noquery t more)))
+    (process-put p 'outbox (list nil))
+    (set-process-filter p (lambda (pr s) (push s (car (process-get pr 'outbox)))))
+    p))
+(show "d1" (lambda () (let ((p (fresh "d1"))) (list (interrupt-process p t) (outs p) (process-status p)))))
+(show "d2" (lambda () (let ((p (fresh "d2"))) (list (quit-process p t) (outs p) (process-status p)))))
+(show "d3" (lambda () (let ((p (fresh "d3"))) (list (stop-process p t) (outs p) (process-status p) (continue-process p t) (process-status p)))))
+(show "d4" (lambda () (let ((p (fresh "d4"))) (list (stop-process p) (process-status p) (continue-process p) (process-status p)))))
+(show "d5" (lambda () (let ((p (fresh "d5"))) (list (kill-process p) (outs p) (process-status p)))))
+(show "d6" (lambda () (let ((p (fresh "d6" :connection-type 'pipe))) (list (condition-case e (interrupt-process p) (error e)) (condition-case e (stop-process p) (error e)) (condition-case e (process-running-child-p p) (error e)) (process-status p)))))
+(show "d7" (lambda () (let ((p (fresh "d7"))) (list (interrupt-process p 'lambda) (outs p)))))
+(show "d8" (lambda () (let ((p (fresh "d8"))) (process-send-string p "abc") (list (interrupt-process p t) (outs p)))))
+(show "d9" (lambda () (let ((p (fresh "d9"))) (list (process-send-eof p) (outs p) (process-send-string p "q\n") (outs p))))))"##,
+        r##"(progn
+;; Sending more than a pipe's capacity to a pipe process nobody reads:
+;; GNU's send_process waits in wait_reading_process_output, which runs timers.
+(let ((p (make-pipe-process :name "h1" :noquery t)))
+  (run-at-time 0.5 nil (lambda () (princ "timer ran\n") (kill-emacs 3)))
+  (princ "sending\n")
+  (condition-case e (process-send-string p (make-string 200000 ?x)) (error (princ (format "err %S\n" e))))
+  (princ "sent\n")))"##,
+        r##"(progn
+;; A real child that never reads its input: same send loop.
+(let ((p (make-process :name "h4" :command '("sleep" "30") :connection-type 'pipe :noquery t)))
+  (run-at-time 0.5 nil (lambda () (message "timer ran") (kill-emacs 3)))
+  (message "sending")
+  (condition-case e (process-send-string p (make-string 200000 ?x)) (error (message "err %S" e)))
+  (message "sent")))"##,
+        r##"(progn
+;; Same for a childless pty: the slave's input queue fills.
+(let ((p (make-process :name "h2" :command nil :noquery t)))
+  (run-at-time 0.5 nil (lambda () (princ "timer ran\n") (kill-emacs 3)))
+  (princ "sending\n")
+  (condition-case e (process-send-string p (make-string 200000 ?x)) (error (princ (format "err %S\n" e))))
+  (princ "sent\n")))"##,
+        r##"(progn
+;; A timer that deletes the pipe process while send_process waits.
+(let ((p (make-pipe-process :name "h3" :noquery t)))
+  (run-at-time 0.5 nil (lambda () (princ "timer deletes\n") (delete-process p)))
+  (princ "sending\n")
+  (princ (format "result %S\n" (condition-case e (process-send-string p (make-string 200000 ?x)) (error e))))
+  (princ "after\n")))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(show "t1" (lambda () (let ((p (make-pipe-process :name "t1" :stop t :noquery t))) (list (process-send-string p "abc") (process-status p)))))
+(show "t2" (lambda () (let ((p (make-pipe-process :name "t2" :noquery t))) (delete-process p) (condition-case e (process-send-string p "abc") (error e)))))
+(show "t3" (lambda () (let ((p (make-process :name "t3" :command nil :noquery t))) (delete-process p) (condition-case e (process-send-string p "abc") (error e)))))
+(show "t4" (lambda () (let ((p (make-process :name "t4" :command nil :noquery t :connection-type 'pipe))) (delete-process p) (list (condition-case e (process-send-string p "abc") (error e)) (process-status p) (process-live-p p) (memq p (process-list))))))
+(show "t5" (lambda () (with-temp-buffer (insert "héllo\n") (let ((p (make-process :name "t5" :command nil :noquery t)) (out nil))
+   (set-process-filter p (lambda (_ s) (push s out)))
+   (process-send-region p (point-min) (point-max)) (accept-process-output p 0.2) (list out (process-coding-system p))))))
+(show "t6" (lambda () (let ((p (make-process :name "t6" :command nil :noquery t :connection-type 'pipe))) (list (condition-case e (process-send-eof p) (error e)) (condition-case e (process-send-string p "x") (error e))))))
+(show "t7" (lambda () (let ((p (make-pipe-process :name "t7" :noquery t))) (list (process-send-string p (make-string 1000 ?a)) (process-send-eof p) (process-send-string p (make-string 100000 ?a)))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(show "u1" (lambda () (let* ((ev nil) (p (make-process :name "u1" :command nil :noquery t :sentinel (lambda (_ s) (push s ev)))))
+   (continue-process p) (accept-process-output nil 0.1) (list (reverse ev) (process-status p)))))
+(show "u2" (lambda () (let* ((ev nil) (p (make-process :name "u2" :command nil :noquery t :connection-type 'pipe :sentinel (lambda (_ s) (push s ev)))))
+   (list (condition-case e (continue-process p) (error e)) (reverse ev)))))
+(show "u3" (lambda () (let* ((ev nil) (p (make-process :name "u3" :command '("sleep" "5") :noquery t :sentinel (lambda (_ s) (push s ev)))))
+   (stop-process p) (accept-process-output nil 0.2) (continue-process p) (accept-process-output nil 0.2)
+   (prog1 (list (reverse ev) (process-status p)) (delete-process p)))))
+(show "u4" (lambda () (let* ((ev nil) (p (make-process :name "u4" :command nil :noquery t :sentinel (lambda (_ s) (push s ev)))))
+   (continue-process p t) (accept-process-output nil 0.1) (list (reverse ev) (process-status p))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(show "w1" (lambda () (let ((p (make-process :name "w1" :command nil :noquery t)))
+   (list (set-process-window-size p 33 77)
+         (with-temp-buffer (call-process "stty" nil t nil "-F" (process-tty-name p) "size") (buffer-string))))))
+(show "w2" (lambda () (let ((p (make-process :name "w2" :command nil :noquery t :connection-type 'pipe))) (set-process-window-size p 33 77))))
+(show "w3" (lambda () (let ((p (make-pipe-process :name "w3" :noquery t))) (set-process-window-size p 33 77))))
+(show "w4" (lambda () (let ((p (make-process :name "w4" :command nil :noquery t :connection-type 'pipe))) (set-process-coding-system p 'utf-8 'utf-8))))
+(show "w5" (lambda () (let ((p (make-process :name "w5" :command nil :noquery t))) (list (set-process-coding-system p 'latin-1 'latin-1) (process-coding-system p)))))
+(show "w6" (lambda () (let ((p (make-process :name "w6" :command nil :noquery t :connection-type 'pipe))) (list (set-process-filter p t) (set-process-filter p nil) (process-filter p)))))
+(show "w7" (lambda () (let ((p (make-process :name "w7" :command '("sleep" "3") :noquery t))) (prog1 (set-process-window-size p 20 50) (delete-process p))))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn make_network_process_as_process_c_makes_it() {
+    // Fmake_network_process's order of steps and connect_network_socket,
+    // each probe in its own session: getaddrinfo's errors as
+    // "HOST/SERVICE gai_strerror" for clients, servers and datagram
+    // sockets, a family the address has not, the port string, a non-ASCII
+    // host; `:nowait''s name lookup answered later, its failure "Name
+    // lookup of HOST failed", a datagram client left connecting;
+    // `:remote' and `:local' address objects, a malformed one, (FAMILY .
+    // VECTOR); a local socket's name and its ignored host; servers'
+    // options, backlog, `:stop', `:noquery' and `:plist'; the datagram
+    // address of a client and a server; and the errors after
+    // make_process, which remove the process.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun noport (v) (if (and (vectorp v) (memq (length v) '(5 9))) (vconcat (butlast (append v nil)) '(0)) v))
+(show "a1" (lambda () (make-network-process :name "a1" :host "no-such-host.invalid" :service 80)))
+(show "a2" (lambda () (make-network-process :name "a2" :host "no-such-host.invalid" :service t :server t)))
+(show "a3" (lambda () (make-network-process :name "a3" :host "no-such-host.invalid" :service 80 :type 'datagram)))
+(show "a4" (lambda () (make-network-process :name "a4" :host "no-such-host.invalid" :service 80 :type 'datagram :server t)))
+(show "a5" (lambda () (make-network-process :name "a5" :host "127.0.0.1" :service 80 :family 'ipv6)))
+(show "a6" (lambda () (make-network-process :name "a6" :host "::1" :service 80 :family 'ipv4)))
+(show "a7" (lambda () (make-network-process :name "a7" :host "127.0.0.1" :service t :server t :family 'ipv6)))
+(show "a8" (lambda () (make-network-process :name "a8" :host "" :service 80)))
+(show "a9" (lambda () (make-network-process :name "a9" :host "no-such-host.invalid" :service 70000)))
+(show "a10" (lambda () (make-network-process :name "a10" :host "no-such-host.invalid" :service -1)))
+(show "a11" (lambda () (let* ((ev nil) (p (make-network-process :name "a11" :host "no-such-host.invalid" :service 80 :nowait t
+                         :sentinel (lambda (_ s) (push s ev)))))
+   (list (process-status p) (progn (dotimes (_ 40) (accept-process-output nil 0.05)) (process-status p)) (reverse ev)
+         (process-exit-status p) (process-contact p :remote)))))
+(show "a12" (lambda () (make-network-process :name "a12" :host "localhost" :service 1 :family 'ipv4)))
+(show "a13" (lambda () (open-network-stream "a13" nil "no-such-host.invalid" 80)))
+(show "a14" (lambda () (make-network-process :name "a14" :host 'local :service t :server t :family 'ipv6)))
+(show "a15" (lambda () (let ((s (make-network-process :name "a15" :host "localhost" :service t :server t)))
+   (prog1 (list (noport (process-contact s :local)) (process-contact s :host)) (delete-process s)))))
+(show "a16" (lambda () (let ((s (make-network-process :name "a16" :host "127.0.0.1" :service t :server t)))
+   (prog1 (let ((c (make-network-process :name "a16c" :host "localhost" :service (process-contact s :service) :family 'ipv4)))
+            (prog1 (list (process-status c) (noport (process-contact c :remote))) (delete-process c))) (delete-process s))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun noport (v) (if (and (vectorp v) (memq (length v) '(5 9))) (vconcat (butlast (append v nil)) '(0)) v))
+(show "w1" (lambda () (let ((p (make-network-process :name "w1" :host "127.0.0.1" :service t :server t :nowait t))) (list (process-status p) (process-contact p :service)))))
+(show "w2" (lambda () (let ((p (make-network-process :name "w2" :host "127.0.0.1" :service 9 :type 'datagram :nowait t)))
+  (list (process-status p) (progn (dotimes (_ 10) (accept-process-output nil 0.05)) (process-status p)) (process-contact p :remote) (process-contact p :local)))))
+(show "w3" (lambda () (let ((p (make-network-process :name "w3" :host "127.0.0.1" :service 9 :type 'datagram)))
+  (list (process-status p) (process-contact p :remote) (process-contact p :local)))))
+(show "w4" (lambda () (let ((p (make-network-process :name "w4" :host "127.0.0.1" :service t :type 'datagram :server t)))
+  (list (process-status p) (numberp (process-contact p :service)) (process-contact p :remote) (length (process-contact p :local))))))
+(show "w5" (lambda () (let ((s (make-network-process :name "w5" :host "127.0.0.1" :service t :server t :keepalive t :reuseaddr nil)))
+  (list (process-status s) (process-contact s :reuseaddr)))))
+(show "w6" (lambda () (make-network-process :name "w6" :host "127.0.0.1" :service t :server t :bogus-option 5)))
+(show "w7" (lambda () (make-network-process :name "w7" :host "127.0.0.1" :service t :server t :linger 'x)))
+(show "w8" (lambda () (let ((s (make-network-process :name "w8" :host "127.0.0.1" :service t :server t)))
+  (make-network-process :name "w8b" :host "127.0.0.1" :service (process-contact s :service) :server t :reuseaddr nil))))
+(show "w9" (lambda () (let* ((ev nil) (p (make-network-process :name "w9" :host "127.0.0.1" :service 1 :nowait t :sentinel (lambda (_ s) (push s ev)))))
+  (list (process-status p) (progn (dotimes (_ 20) (accept-process-output nil 0.05)) (process-status p)) (reverse ev)))))
+(show "w10" (lambda () (make-network-process :name "w10" :host "127.0.0.1" :service "80x")))
+(show "w11" (lambda () (make-network-process :name "w11" :host 5 :service 80)))
+(show "w12" (lambda () (make-network-process :name "w12" :host "127.0.0.1" :service 'foo)))
+(show "w13" (lambda () (make-network-process :name "w13" :host "héllo" :service 80))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun noport (v) (if (and (vectorp v) (memq (length v) '(5 9))) (vconcat (butlast (append v nil)) '(0)) v))
+(show "c1" (lambda () (let ((p (make-network-process :name "c1" :host "127.0.0.1" :service t :server t :noquery t :stop t :plist '(a 1))))
+  (prog1 (list (process-status p) (process-query-on-exit-flag p) (process-plist p) (process-command p) (process-type p)) (delete-process p)))))
+(show "c2" (lambda () (let* ((s (make-network-process :name "c2s" :host "127.0.0.1" :service t :server t))
+                             (port (process-contact s :service))
+                             (c (make-network-process :name "c2c" :remote (vector 127 0 0 1 port))))
+  (prog1 (list (process-status c) (noport (process-contact c :remote)) (process-contact c :host) (equal (process-contact c :service) nil)) (delete-process c) (delete-process s)))))
+(show "c3" (lambda () (make-network-process :name "c3" :remote [1 2 3])))
+(show "c4" (lambda () (make-network-process :name "c4" :remote "/nonexistent/sock")))
+(show "c5" (lambda () (let ((s (make-network-process :name "c5" :server t :local (vector 127 0 0 1 0))))
+  (prog1 (list (process-status s) (numberp (process-contact s :service)) (aref (process-contact s :local) 0)) (delete-process s)))))
+(show "c6" (lambda () (let* ((s (make-network-process :name "c6s" :host "127.0.0.1" :service t :server t :type 'datagram))
+                             (port (process-contact s :service))
+                             (got nil)
+                             (c (make-network-process :name "c6c" :host "127.0.0.1" :service port :type 'datagram)))
+   (set-process-filter s (lambda (_ str) (push str got)))
+   (process-send-string c "hello")
+   (dotimes (_ 10) (accept-process-output nil 0.02))
+   (list got (equal (process-datagram-address s) (process-contact c :local)) (vectorp (process-contact s :remote))
+         (set-process-datagram-address s [127 0 0 1 9]) (process-datagram-address s)
+         (set-process-datagram-address s [0 0 0 0 0 0 0 0 9]) (noport (process-contact c :remote))))))
+(show "c7" (lambda () (let* ((f (make-temp-name "/tmp/emx-sock-")) (s (make-network-process :name "c7s" :family 'local :service f :server t)))
+   (prog1 (let ((c (make-network-process :name "c7c" :family 'local :service f)))
+      (list (process-status s) (equal (process-contact s :local) f) (equal (process-contact c :remote) f) (process-contact c :local) (process-status c)))
+     (delete-file f)))))
+(show "c8" (lambda () (make-network-process :name "c8" :family 'local :host "x" :service "/tmp/emx-no-such-sock")))
+(show "c9" (lambda () (make-network-process :name "c9" :family 'local :service (make-string 200 ?a))))
+(show "c10" (lambda () (make-network-process :name "c10" :family 'local :service 5)))
+(show "c11" (lambda () (make-network-process :name "c11" :host "127.0.0.1" :service t :server t :plist 5)))
+(show "c12" (lambda () (list (make-network-process :name "c12" :host "127.0.0.1" :service t :server t :tls-parameters 5) (mapcar #'process-name (process-list)))))
+(show "c13" (lambda () (make-network-process :name "c13" :host "127.0.0.1" :service t :server t :coding 'no-such)))
+(show "c14" (lambda () (mapcar #'process-name (process-list))))
+(show "c15" (lambda () (make-network-process :name "c15" :host "127.0.0.1" :service t :server 'x :type 'foo)))
+(show "c16" (lambda () (make-network-process :name "c16" :host "127.0.0.1" :service 1)))
+(show "c17" (lambda () (let ((s (make-network-process :name "c17" :host "127.0.0.1" :service t :server 2)))
+   (prog1 (process-status s) (delete-process s)))))
+(show "c18" (lambda () (make-network-process :name "c18" :remote '(2 . [0 80 127 0 0 1]))))
+(show "c19" (lambda () (let ((s (make-network-process :name "c19" :host "127.0.0.1" :service "0" :server t)))
+   (prog1 (numberp (process-contact s :service)) (delete-process s))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun noport (v) (if (and (vectorp v) (memq (length v) '(5 9))) (vconcat (butlast (append v nil)) '(0)) v))
+(show "d1" (lambda () (let* ((s (make-network-process :name "d1s" :host "127.0.0.1" :service t :server t))
+                             (port (process-contact s :service)) (ev nil)
+                             (c (make-network-process :name "d1c" :host "127.0.0.1" :service port :nowait t
+                                  :sentinel (lambda (_ e) (push e ev)))))
+  (list (process-status c) (progn (dotimes (_ 10) (accept-process-output nil 0.02)) (process-status c)) (reverse ev)
+        (prog1 (vectorp (process-contact c :local)) (delete-process c) (delete-process s))))))
+(show "d2" (lambda () (let* ((s (make-network-process :name "d2s" :host "localhost" :service t :server t :family 'ipv4))
+                             (port (process-contact s :service)) (ev nil)
+                             (c (make-network-process :name "d2c" :host "localhost" :service port :nowait t :family 'ipv4
+                                  :sentinel (lambda (_ e) (push e ev)))))
+  (list (process-status c) (noport (process-contact c :remote)) (progn (dotimes (_ 10) (accept-process-output nil 0.02)) (process-status c)) (reverse ev)
+        (prog1 (noport (process-contact c :remote)) (delete-process c) (delete-process s))))))
+(show "d3" (lambda () (let* ((c (make-network-process :name "d3c" :host "localhost" :service 1 :nowait t :family 'ipv4)))
+  (list (process-status c) (process-contact c t t) (progn (dotimes (_ 10) (accept-process-output nil 0.02)) (process-status c)) (process-exit-status c)))))
+(show "d4" (lambda () (let* ((f (make-temp-name "/tmp/emx-dg-")) (s (make-network-process :name "d4s" :family 'local :service f :server t :type 'datagram)) (got nil))
+  (set-process-filter s (lambda (_ str) (push str got)))
+  (prog1 (let ((c (make-network-process :name "d4c" :family 'local :service f :type 'datagram)))
+     (process-send-string c "dg")
+     (dotimes (_ 10) (accept-process-output nil 0.02))
+     (list (process-status s) got (equal (process-contact s :local) f) (equal (process-datagram-address c) f) (equal (process-contact c :remote) f)))
+   (delete-file f))))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn the_review_of_round_334_is_answered_as_gnu_answers() {
+    // The review of round 334, each probe in its own session: names made
+    // unique as make_process makes them; a failed status's data and its
+    // message; the mark placed by connect_network_socket's
+    // update_process_mark, not at creation; the *Messages* lines of the
+    // socket and connection waits; the inherit flag a `:coding' clears;
+    // the contact changed in place by plist_put (`:remote' of a datagram
+    // process, `:filter', `:sentinel'); a (FAMILY . VECTOR) longer than a
+    // sockaddr_storage; a unibyte host's raw byte in the lookup's error;
+    // set-process-datagram-address of a process that has no datagram
+    // address.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar srv (make-network-process :name "srv" :host "127.0.0.1" :service t :server t))
+(defvar port (process-contact srv :service))
+(defvar b (get-buffer-create "pb"))
+(with-current-buffer b (insert "abc"))
+(show "n1" (lambda () (let ((x (make-network-process :name "srv" :host "127.0.0.1" :service t :server t)))
+   (prog1 (process-name x) (delete-process x)))))
+(show "k1" (lambda () (let* ((c (make-network-process :name "k1" :host "127.0.0.1" :service port :nowait t :buffer b)))
+   (let ((m0 (marker-position (process-mark c))))
+     (with-current-buffer b (insert "defgh"))
+     (dotimes (_ 5) (accept-process-output nil 0.02))
+     (prog1 (list m0 (marker-position (process-mark c)) (marker-buffer (process-mark c))) (delete-process c))))))
+(show "k2" (lambda () (let* ((c (make-network-process :name "k2" :remote '(99 . [0 0]) :nowait t :buffer b)))
+   (list (process-status c) (marker-position (process-mark c)) (marker-buffer (process-mark c))))))
+(show "k3" (lambda () (let* ((c (make-network-process :name "k3" :host "127.0.0.1" :service port :buffer b)))
+   (prog1 (list (marker-position (process-mark c))) (delete-process c)))))
+(show "k4" (lambda () (let* ((c (make-network-process :name "k4" :host "no-such-host.invalid" :service port :nowait t :buffer b)))
+   (dotimes (_ 20) (accept-process-output nil 0.05))
+   (list (process-status c) (process-exit-status c) (marker-position (process-mark c)) (marker-buffer (process-mark c))))))
+(show "k5" (lambda () (let* ((s (make-network-process :name "k5" :host "127.0.0.1" :service t :server t :buffer b)))
+   (prog1 (list (marker-position (process-mark s))) (delete-process s))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun noport (v) (if (and (vectorp v) (memq (length v) '(5 9))) (vconcat (butlast (append v nil)) '(0)) v))
+(defvar srv (make-network-process :name "srv" :host "127.0.0.1" :service t :server t))
+(defvar port (process-contact srv :service))
+(defun msgs () (with-current-buffer (messages-buffer) (prog1 (buffer-string) (let ((inhibit-read-only t)) (erase-buffer)))))
+(msgs)
+(show "m5" (lambda () (let* ((a (make-network-process :name "a5" :remote (vector 127 0 0 1 port) :nowait t)))
+   (list (process-send-string a "x") (msgs)))))
+(show "m6" (lambda () (let* ((a (make-network-process :name "a6" :remote (vector 127 0 0 1 port) :nowait t)))
+   (list (set-process-datagram-address a [1 2 3]) (process-datagram-address a) (msgs))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(setq inherit-process-coding-system t)
+(show "h1" (lambda () (let ((s (make-network-process :name "h1" :host "127.0.0.1" :service t :server t :buffer "hb" :coding 'utf-8)))
+   (prog1 (process-inherit-coding-system-flag s) (delete-process s)))))
+(show "h3" (lambda () (let ((s (make-network-process :name "h3" :host "127.0.0.1" :service t :server t :buffer "hb")))
+   (prog1 (process-inherit-coding-system-flag s) (delete-process s)))))
+(show "v1" (lambda () (let ((p (make-network-process :name "v1" :remote (cons 2 (make-vector 200 0)))))
+   (list (process-status p) (let ((r (process-contact p :remote))) (if (consp r) (list (car r) (length (cdr r))) r))))))
+(show "s11" (lambda () (make-network-process :name "s11" :host (string-to-unibyte "h\377x") :service 1)))
+(show "e1" (lambda () (let* ((ev nil) (c (make-network-process :name "e1" :host "127.0.0.1" :service 1 :nowait t
+                                        :sentinel (lambda (_ e) (push e ev)))))
+   (dotimes (_ 10) (accept-process-output nil 0.02))
+   (list (process-status c) (process-exit-status c) (reverse ev)))))
+(show "i3" (lambda () (let* ((d (make-network-process :name "d" :host "127.0.0.1" :service 9 :type 'datagram))
+                             (held (process-contact d t)))
+   (set-process-datagram-address d [127 0 0 1 7])
+   (let ((now (process-contact d t)))
+     (list (eq held now) (plist-get now :remote))))))
+(show "f1" (lambda () (let* ((s (make-network-process :name "f1" :host "127.0.0.1" :service t :server t)))
+   (set-process-filter s #'ignore)
+   (set-process-sentinel s #'ignore)
+   (prog1 (list (plist-get (process-contact s t) :filter) (plist-get (process-contact s t) :sentinel))
+     (delete-process s))))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}

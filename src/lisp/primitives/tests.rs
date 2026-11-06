@@ -13628,7 +13628,7 @@ fn localhost_family_fallback_opens_without_polluting_the_process_buffer() {
 }
 
 #[test]
-fn make_network_process_nowait_opens_on_the_next_event_pump() {
+fn make_network_process_nowait_opens_through_the_event_pump() {
     let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let server = call(
@@ -13698,13 +13698,29 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
     );
     assert_eq!(interp.lookup_var("nowait-event", &env), None);
 
-    call(
-        &mut interp,
-        "accept-process-output",
-        &[Value::Nil, Value::float(0.05)],
-        &mut env,
-    )
-    .expect("event pump should report the connection");
+    // The lookup is getaddrinfo_a's, which wait_reading_process_output
+    // looks at only at the top of an iteration of its loop: a wait may end
+    // with the client still connecting, as GNU's 0.05 s waits often do, so
+    // the pump runs until the status leaves `connect'.
+    for _ in 0..40 {
+        let status = call(
+            &mut interp,
+            "process-status",
+            std::slice::from_ref(&client),
+            &mut env,
+        )
+        .expect("process status");
+        if status != Value::Symbol("connect".into()) {
+            break;
+        }
+        call(
+            &mut interp,
+            "accept-process-output",
+            &[Value::Nil, Value::float(0.05)],
+            &mut env,
+        )
+        .expect("event pump should report the connection");
+    }
     assert_eq!(
         call(
             &mut interp,
@@ -13726,16 +13742,15 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let child = interp
-        .create_process(
-            None,
-            Some("sh".into()),
-            vec!["-c".into(), "printf child".into()],
-            None,
-            Value::string("child"),
-        )
+        .create_process(true, Value::string("child"))
         .expect("create child process record");
+    let child_id = interp.resolve_process_id(&child).expect("child id");
+    interp.set_process_command(
+        child_id,
+        Value::list(["sh", "-c", "printf child"].map(Value::string)),
+    );
     let connection = interp
-        .create_process(None, None, Vec::new(), None, Value::string("pipe"))
+        .create_process(false, Value::string("pipe"))
         .expect("create connection process record");
 
     assert_eq!(
@@ -24857,7 +24872,7 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
         .div_ceil(std::mem::size_of::<Value>())
             + 6 // configured GNU Lisp_Marker: header plus five payload words
     );
-    interp.kill_buffer_id(id);
+    interp.kill_buffer_id(id).expect("kill the buffer");
     let killed = interp.live_object_census();
     // alloc.c:sweep_buffers counts the live buffers of Vbuffer_alist; the
     // killed one stays a vector of its size.
@@ -27178,10 +27193,15 @@ fn native_datagram_addresses_track_udp_peer_state_and_contact_metadata() {
 #[test]
 fn native_network_socket_errors_preserve_gnu_file_conditions() {
     let interp = Interpreter::new();
-    let server = crate::lisp::eval::error_condition_value(&processes::network_server_error(
-        &interp,
-        &std::io::Error::from_raw_os_error(libc::EPERM),
-    ))
+    // connect_network_socket's report_file_error ("Cannot bind server
+    // socket", Qnil).
+    let server = crate::lisp::eval::error_condition_value(
+        &crate::lisp::primitives::file_operation_error_value_without_file(
+            &interp,
+            "Cannot bind server socket",
+            &std::io::Error::from_raw_os_error(libc::EPERM),
+        ),
+    )
     .to_vec()
     .expect("server error should be a condition list");
     assert_eq!(server[0], Value::symbol("file-error"));
@@ -27193,11 +27213,15 @@ fn native_network_socket_errors_preserve_gnu_file_conditions() {
     );
 
     let args = [Value::symbol(":name"), Value::string("probe")];
-    let client = crate::lisp::eval::error_condition_value(&processes::network_client_error(
-        &interp,
-        &std::io::Error::from_raw_os_error(libc::ENOENT),
-        &args,
-    ))
+    // report_file_errno ("make client process failed", contact, xerrno).
+    let client = crate::lisp::eval::error_condition_value(
+        &crate::lisp::primitives::report_file_errno_files(
+            &interp,
+            "make client process failed",
+            &args,
+            &std::io::Error::from_raw_os_error(libc::ENOENT),
+        ),
+    )
     .to_vec()
     .expect("client error should be a condition list");
     assert_eq!(client[0], Value::symbol("file-missing"));

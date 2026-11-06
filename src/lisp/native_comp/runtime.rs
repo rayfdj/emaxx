@@ -11397,7 +11397,7 @@ mod tests {
         #[inline(never)]
         fn kill_and_check_storage(interpreter: &mut Interpreter, id: u64) {
             let buffer = interpreter.buffer_object(id).expect("live buffer");
-            interpreter.kill_buffer_id(id);
+            interpreter.kill_buffer_id(id).expect("kill the buffer");
             let state = buffer.borrow();
             assert!(state.full_buffer_string().is_empty());
             assert!(state.undo_list().is_nil());
@@ -15620,8 +15620,12 @@ mod tests {
             crate::lisp::eval::terminal::TerminalState::initial(),
         );
         interpreter.terminals.insert(0, terminal);
-        let first = interpreter.new_terminal_frame(terminal);
-        let second = interpreter.new_terminal_frame(terminal);
+        let first = interpreter
+            .new_terminal_frame(terminal)
+            .expect("make a terminal frame");
+        let second = interpreter
+            .new_terminal_frame(terminal)
+            .expect("make a terminal frame");
         let window = first.borrow().root_window.expect("frame window");
         // terminal.c:delete_terminal closes the device before calling
         // delete_frame. FRAME_LIVE_P tests the frame's terminal pointer,

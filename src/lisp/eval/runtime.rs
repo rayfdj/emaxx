@@ -57,19 +57,14 @@ impl Interpreter {
         id
     }
 
-    /// buffer.c:BUFFER_LIVE_P of the buffer ID names: a buffer of
-    /// Vbuffer_alist, or print.c's hidden prin1 buffer, the one live
-    /// buffer on no list, while it is held.
+    /// buffer.c:BUFFER_LIVE_P of the buffer ID names: its name is not nil.
+    /// That is a buffer of Vbuffer_alist, print.c's hidden prin1 buffer
+    /// while it is held, or a buffer Fkill_buffer has taken out of the
+    /// list but not yet named nil (its windows are being replaced, or an
+    /// error there left it half killed).
     pub fn has_buffer_id(&self, id: u64) -> bool {
-        self.buffer_list
-            .iter()
-            .any(|(buffer_id, _)| *buffer_id == id)
-            || (self.prin1_to_string_buffer == Some(id)
-                && (id == self.current_buffer_id
-                    || self
-                        .inactive_buffers
-                        .iter()
-                        .any(|(buffer_id, _)| *buffer_id == id)))
+        self.buffer_object(id)
+            .is_some_and(|buffer| buffer.is_live())
     }
 
     /// The live buffer named NAME, text the host names (a buffer it made,
@@ -671,7 +666,12 @@ impl Interpreter {
         let current_id = self.current_buffer_id;
         let (_, next_buffer) = self.inactive_buffers.swap_remove(pos);
         let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
-        self.inactive_buffers.push((current_id, current_buffer));
+        // A buffer killed while current (Fkill_buffer's teardown, when a
+        // buffer predicate, an unlock handler or a sentinel made it current
+        // again) is no longer kept once another is current.
+        if current_buffer.is_live() {
+            self.inactive_buffers.push((current_id, current_buffer));
+        }
         self.current_buffer_id = id;
         if !self.indirect_buffers.is_empty() {
             self.share_undo_list_with_base(current_id, id);
@@ -886,34 +886,35 @@ impl Interpreter {
         )
     }
 
-    pub fn selected_window_buffer_id(&self) -> u64 {
-        primitives::window_slot_buffer_id(
-            self.find_record(self.selected_window_id)
-                .and_then(|record| record.slots.get(primitives::WINDOW_BUFFER_SLOT)),
-        )
-        .unwrap_or(self.current_buffer_id)
-    }
-
     pub fn buffer_bounds_by_id(&self, id: u64) -> Option<(usize, usize)> {
         self.get_buffer_by_id(id)
             .map(|buffer| (buffer.point_min(), buffer.point_max()))
     }
 
-    /// The selected window's start marker position: Fwindow_start reads
-    /// the marker as is, so a start outside a later narrowing stays there
-    /// until redisplay moves it.
+    /// The start of a live selected window, as the display code reads
+    /// w->start: the marker's position as is, so a start outside a later
+    /// narrowing stays there until redisplay moves it.  A deleted window's
+    /// start points nowhere, where GNU's marker_position signals; the
+    /// readers that can meet one call `selected_window_start_checked'.
     pub fn selected_window_start(&self) -> usize {
-        let buffer_id = self.selected_window_buffer_id();
-        let point_min = self.buffer_bounds_by_id(buffer_id).map_or_else(
-            || self.buffer.borrow().point_min(),
-            |(point_min, _)| point_min,
-        );
-        primitives::window_marker_position(
+        self.selected_window_start_checked()
+            .unwrap_or_else(|_| self.buffer.borrow().point_min())
+    }
+
+    /// SET_TEXT_POS_FROM_MARKER (pos, w->start) of the selected window:
+    /// marker_position's "Marker does not point anywhere" for the
+    /// unchained start of a deleted one.
+    pub(crate) fn selected_window_start_checked(&self) -> Result<usize, LispError> {
+        match primitives::window_marker(
             self,
             self.selected_window_id,
             primitives::WINDOW_START_SLOT,
-        )
-        .unwrap_or(point_min)
+        ) {
+            Some(marker) => marker
+                .position()
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
+            None => Ok(self.buffer.borrow().point_min()),
+        }
     }
 
     /// xdisp.c redisplay_other_windows: the next redisplay considers
@@ -938,28 +939,17 @@ impl Interpreter {
         }
     }
 
+    /// set_marker_both (w->start, w->contents, ...) of the selected window
+    /// in `recenter' and `move-to-window-line', which have signaled unless
+    /// the window shows the current buffer.
     pub fn set_selected_window_start(&mut self, start: usize) {
-        let buffer_id = self.selected_window_buffer_id();
         primitives::set_window_marker_restricted(
             self,
             self.selected_window_id,
             primitives::WINDOW_START_SLOT,
-            buffer_id,
+            self.current_buffer_id,
             start,
         );
-    }
-
-    /// Show BUFFER_ID in the selected window (set-window-buffer without
-    /// its Lisp bookkeeping); showing the buffer it already shows changes
-    /// nothing.
-    pub fn set_selected_window_buffer_id(&mut self, buffer_id: u64) -> Result<(), LispError> {
-        let window_id = self.selected_window_id;
-        if self.window_record_buffer_id(window_id) == Some(buffer_id) {
-            return Ok(());
-        }
-        self.unshow_window_buffer(window_id)?;
-        self.show_buffer_in_window(window_id, buffer_id, false);
-        Ok(())
     }
 
     fn window_record_buffer_id(&self, window_id: u64) -> Option<u64> {
@@ -2246,7 +2236,7 @@ impl Interpreter {
     /// buffer.c:other_buffer_safely: the first live buffer that is not
     /// BUFFER and not hidden, else `get-scratch-buffer-create''s, else a
     /// *scratch* made in its major mode.
-    fn other_buffer_safely(&mut self, buffer: u64) -> Result<u64, LispError> {
+    pub(crate) fn other_buffer_safely(&mut self, buffer: u64) -> Result<u64, LispError> {
         if let Some((id, _)) = self
             .buffer_list
             .iter()
@@ -2255,15 +2245,14 @@ impl Interpreter {
             return Ok(*id);
         }
         let mut env = crate::lisp::types::Env::new();
-        if let Ok(create) =
-            self.lookup_function_key(cached_symbol!("get-scratch-buffer-create"), &env)
+        // safe_calln (Qget_scratch_buffer_create): the symbol called, and
+        // an error (an unbound function's included) logged as that form's.
+        let create = Value::Symbol(cached_symbol!("get-scratch-buffer-create").symbol());
+        let scratch = self.safe_funcall(create, &[], &mut env)?;
+        if let Kind::Buffer(scratch) = scratch.kind()
+            && let Some(id) = self.live_buffer_id(scratch)
         {
-            let scratch = self.safe_funcall(create, &[], &mut env)?;
-            if let Kind::Buffer(scratch) = scratch.kind()
-                && let Some(id) = self.live_buffer_id(scratch)
-            {
-                return Ok(id);
-            }
+            return Ok(id);
         }
         let scratch = primitives::call(
             self,
@@ -2292,24 +2281,36 @@ impl Interpreter {
             .map(|pos| self.inactive_buffers.swap_remove(pos).1)
     }
 
-    /// Kill a buffer by ID, switching away if it is current.
-    pub fn kill_buffer_id(&mut self, id: u64) {
-        // bset_name (b, Qnil): the object answers BUFFER_LIVE_P no more.
-        if let Some(object) = self.buffer_object(id) {
-            object.live.set(false);
-        }
+    /// buffer.c:Fkill_buffer from frames_discard_buffer on, once every
+    /// query and hook has accepted the kill: the buffer leaves the frames'
+    /// buffer lists, its undo list is nil and it leaves Vbuffer_alist;
+    /// replace_buffer_in_windows_safely shows another buffer in each
+    /// window still showing it, with `inhibit-quit' t (an error there
+    /// leaves it t, as GNU's plain assignment does, and the buffer half
+    /// killed but live); then its markers, overlays and local variables
+    /// go, its name is nil and its text is freed.  Fkill_buffer has made
+    /// another buffer current, but a buffer predicate, an unlock handler
+    /// or a sentinel run since may have made this one current again; GNU
+    /// then kills it as the current buffer, which stays current, dead.
+    pub fn kill_buffer_id(&mut self, id: u64) -> Result<(), LispError> {
         self.frames_discard_buffer(id);
-        self.delete_buffer_overlays(id);
-        let selected_window_showed_buffer = self.selected_window_contents_buffer_id() == Some(id);
+        let inhibit_quit = cached_symbol!("inhibit-quit").with(|symbol| *symbol);
+        let tem = self
+            .symbol_value_symbol(&inhibit_quit)
+            .unwrap_or(Value::Nil);
+        self.set_symbol_value_cell_resolved(&inhibit_quit, Value::T);
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
+            buffer.set_undo_list(Value::Nil);
+        }
+        self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
+        primitives::replace_buffer_in_windows_safely(self, id)?;
+        self.set_symbol_value_cell_resolved(&inhibit_quit, tem);
         self.detach_markers_for_buffer(id);
         // An indirect buffer stops sharing its base's text (and chain).
         if let Some(object) = self.buffer_object(id) {
             object.leave_marker_chain();
         }
-        // A *scratch* made to replace the last buffer inherits its directory.
-        let directory = self
-            .buffer_local_value_key(id, cached_symbol!("default-directory"))
-            .unwrap_or(Value::Nil);
+        self.delete_buffer_overlays(id);
         // The always-local slots the bindings hold, and the mark's state,
         // as Fkill_buffer leaves them for a killed buffer's readers.
         let fixed = self
@@ -2323,6 +2324,7 @@ impl Interpreter {
             slots[super::FIXED_SLOTS] = Some(buffer.mark_active_value());
             buffer.killed_locals = Some(slots);
         }
+        // reset_buffer_local_variables (b, 1).
         self.remove_buffer_locals(id);
         self.buffer_case_tables.remove(id);
         self.reset_buffer_syntax_table(id);
@@ -2332,82 +2334,20 @@ impl Interpreter {
         self.indirect_buffers
             .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
         if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
-            // reset_buffer_local_variables (b, 1): bset_keymap (b, Qnil).
             buffer.set_keymap(Value::Nil);
+        }
+        // bset_name (b, Qnil): the object answers BUFFER_LIVE_P no more.
+        if let Some(object) = self.buffer_object(id) {
+            object.live.set(false);
+        }
+        // free_buffer_text.
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
             buffer.release_killed_storage();
         }
-        if id == self.current_buffer_id {
-            // GNU replaces a killed current buffer from the visible buffer
-            // list (`other-buffer' policy), never from the interpreter's
-            // storage stack.  A recently used internal minibuffer is often
-            // last in that stack after an interactive prompt, but must not
-            // become the ordinary selected window's buffer.
-            let replacement_id = self
-                .buffer_list
-                .iter()
-                .find(|(buffer_id, name)| {
-                    *buffer_id != id && !primitives::string_starts_with_byte(name, b' ')
-                })
-                .map(|(buffer_id, _)| *buffer_id);
-            self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
-            if let Some((position, next_id)) = replacement_id.and_then(|next_id| {
-                self.inactive_buffers
-                    .iter()
-                    .position(|(buffer_id, _)| *buffer_id == next_id)
-                    .map(|position| (position, next_id))
-            }) {
-                let (_, next_buffer) = self.inactive_buffers.swap_remove(position);
-                self.buffer = next_buffer;
-                self.current_buffer_id = next_id;
-                self.buffer.borrow_mut().enter_position_markers();
-            } else {
-                let scratch_id = self.alloc_buffer_id();
-                self.buffer = crate::lisp::types::BufferRef::new(
-                    scratch_id,
-                    crate::buffer::Buffer::new("*scratch*"),
-                );
-                self.current_buffer_id = scratch_id;
-                let scratch_name = self.buffer.borrow().name();
-                self.buffer_list.push((scratch_id, scratch_name));
-                self.reset_always_local_slots(scratch_id, directory);
-            }
-        } else {
-            let _ = self.remove_buffer_id(id);
-        }
-        // GNU's kill-buffer path replaces the dying buffer in every window
-        // before tearing the buffer down.  Keep that invariant here as the
-        // low-level backstop too: Emaxx's temporary-buffer and ERT cleanup
-        // paths call kill_buffer_id directly, so updating only the selected
-        // window leaves non-selected windows looking live while their buffer
-        // slot names a dead ID.
-        let replacement_id = self.current_buffer_id;
-        let replacement = self.buffer_value(replacement_id).unwrap_or(Value::Nil);
-        let replacement_start = self
-            .buffer_bounds_by_id(replacement_id)
-            .map(|(point_min, _)| point_min)
-            .unwrap_or(1);
-        let window_ids = self.record_ids_by_type("window");
-        for window_id in window_ids {
-            let showed_killed_buffer = primitives::window_slot_buffer_id(
-                self.find_record(window_id)
-                    .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT)),
-            ) == Some(id);
-            if !showed_killed_buffer {
-                continue;
-            }
-            if let Some(window) = self.find_record_mut(window_id) {
-                window.slots[primitives::WINDOW_BUFFER_SLOT] = replacement;
-                window.slots[primitives::WINDOW_START_SLOT] =
-                    Value::Integer(replacement_start as i64);
-            }
-        }
-        if selected_window_showed_buffer
-            && self.set_selected_window_buffer_id(replacement_id).is_err()
-        {
-            // unshow_buffer's error for a start or point that points
-            // nowhere: the window still stops showing the dying buffer.
-            self.show_buffer_in_window(self.selected_window_id, replacement_id, false);
-        }
+        // A current buffer stays current, killed, until another is made
+        // current; set_current_buffer_id then lets it go.
+        let _ = self.remove_buffer_id(id);
+        Ok(())
     }
 
     pub fn alloc_record_id(&mut self) -> u64 {

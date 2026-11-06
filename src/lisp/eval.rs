@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[cfg(not(unix))]
 use std::process::Child;
 use std::rc::Rc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use super::primitives;
 use super::sqlite::SqliteHandleState;
@@ -2144,6 +2144,166 @@ pub(crate) enum RuntimeHashTest {
     Equal,
 }
 
+/// A sockaddr as connect_network_socket gives it to socket, bind and
+/// connect: conv_lisp_to_sockaddr's bytes and their length, which may
+/// pass a sockaddr_storage's for a (FAMILY . VECTOR) address (up to
+/// MAX_ALLOCA), in a buffer aligned as sockaddr_storage is.
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct RawSockaddr {
+    words: Vec<libc::sockaddr_storage>,
+    pub(crate) length: libc::socklen_t,
+}
+
+#[cfg(unix)]
+impl RawSockaddr {
+    /// A zeroed address of LENGTH bytes.
+    pub(crate) fn zeroed(length: usize) -> Self {
+        let unit = std::mem::size_of::<libc::sockaddr_storage>();
+        // SAFETY: an all-zero sockaddr_storage is an empty address.
+        let zero: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+        Self {
+            words: vec![zero; length.div_ceil(unit).max(1)],
+            length: length as libc::socklen_t,
+        }
+    }
+
+    /// The bytes at RAW, LENGTH of them.
+    pub(crate) fn copied(raw: *const libc::sockaddr, length: usize) -> Self {
+        let mut address = Self::zeroed(length);
+        // SAFETY: RAW holds LENGTH bytes, and the zeroed buffer at least as
+        // many; the two do not overlap.
+        unsafe {
+            std::ptr::copy_nonoverlapping(raw.cast::<u8>(), address.as_mut_ptr().cast(), length);
+        }
+        address
+    }
+
+    pub(crate) fn as_ptr(&self) -> *const libc::sockaddr {
+        self.words.as_ptr().cast()
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut libc::sockaddr {
+        self.words.as_mut_ptr().cast()
+    }
+
+    /// The bytes the buffer holds, LENGTH or more.
+    pub(crate) fn capacity(&self) -> usize {
+        self.words.len() * std::mem::size_of::<libc::sockaddr_storage>()
+    }
+
+    /// SA's sa_family.
+    pub(crate) fn family(&self) -> libc::c_int {
+        libc::c_int::from(self.words[0].ss_family)
+    }
+
+    pub(crate) fn set_family(&mut self, family: libc::sa_family_t) {
+        self.words[0].ss_family = family;
+    }
+
+    /// The first sockaddr_storage of the buffer, as a sockaddr of type T
+    /// (sockaddr_in, sockaddr_in6, sockaddr_un), which it holds and aligns.
+    pub(crate) fn view_mut<T>(&mut self) -> &mut T {
+        assert!(std::mem::size_of::<T>() <= std::mem::size_of::<libc::sockaddr_storage>());
+        // SAFETY: the first word is a sockaddr_storage, which holds and
+        // aligns any sockaddr type that fits it, as checked.
+        unsafe { &mut *self.words.as_mut_ptr().cast::<T>() }
+    }
+
+    pub(crate) fn view<T>(&self) -> &T {
+        assert!(std::mem::size_of::<T>() <= std::mem::size_of::<libc::sockaddr_storage>());
+        // SAFETY: as for view_mut.
+        unsafe { &*self.words.as_ptr().cast::<T>() }
+    }
+
+    /// The bytes of the address, LENGTH of them.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        // SAFETY: the buffer is plain bytes, and LENGTH never exceeds it.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.as_ptr().cast::<u8>(),
+                (self.length as usize).min(self.capacity()),
+            )
+        }
+    }
+
+    /// The whole buffer's bytes, for writing.
+    pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
+        let capacity = self.capacity();
+        // SAFETY: the buffer is plain bytes of CAPACITY.
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr().cast::<u8>(), capacity) }
+    }
+}
+
+#[cfg(unix)]
+impl PartialEq for RawSockaddr {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes() == other.bytes()
+    }
+}
+
+#[cfg(unix)]
+impl Eq for RawSockaddr {}
+
+#[cfg(unix)]
+impl std::fmt::Debug for RawSockaddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawSockaddr")
+            .field("family", &self.family())
+            .field("length", &self.length)
+            .finish()
+    }
+}
+
+/// One of Fmake_network_process's ADDRINFOS, (PROTOCOL . ADDRESS): the
+/// family get_lisp_to_sockaddr_size reads of the address's Lisp form,
+/// which the socket is made with, and the sockaddr conv_lisp_to_sockaddr
+/// makes of it (whose own sa_family a (FAMILY . VECTOR) form leaves 0).
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NetworkAddrinfo {
+    pub(crate) protocol: libc::c_int,
+    pub(crate) family: libc::c_int,
+    pub(crate) address: RawSockaddr,
+}
+
+#[cfg(not(unix))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NetworkAddrinfo;
+
+/// What Fmake_network_process records of a connection for
+/// connect_network_socket: p->socktype, p->is_server,
+/// p->is_non_blocking_client and p->backlog.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NetworkSetup {
+    pub(crate) socktype: i32,
+    pub(crate) is_server: bool,
+    pub(crate) non_blocking_client: bool,
+    pub(crate) backlog: i32,
+}
+
+#[cfg(not(unix))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RawSockaddr;
+
+/// getaddrinfo's answer to a name lookup: its addresses, or its error.
+pub(crate) type DnsAnswer = Result<Vec<NetworkAddrinfo>, i32>;
+
+/// p->dns_request: getaddrinfo_a's request for HOST, whose answer the
+/// resolving thread leaves in SLOT (getaddrinfo's addresses, or its
+/// error); check_for_dns takes it.
+#[derive(Clone)]
+pub(crate) struct DnsRequest {
+    pub(crate) host: Vec<u8>,
+    pub(crate) slot: std::sync::Arc<std::sync::Mutex<Option<DnsAnswer>>>,
+}
+
+impl std::fmt::Debug for DnsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DnsRequest").finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ProcessStatus {
     Run,
@@ -2152,8 +2312,9 @@ enum ProcessStatus {
     /// Subprocess terminated by an operating-system signal.
     Signal,
     /// process.c's (connect . ADDRINFOS): a non-blocking connect under
-    /// way, and the addresses to try after it.
-    Connect(Vec<std::net::SocketAddr>),
+    /// way, or an asynchronous name lookup, and the addresses to try
+    /// after it.
+    Connect(Vec<NetworkAddrinfo>),
     /// Network connection established (client or accepted server child).
     Open,
     /// Network connection closed.
@@ -2199,9 +2360,11 @@ impl ProcessStatus {
 pub(crate) enum NetworkRuntime {
     Listener(std::net::TcpListener),
     Stream(std::net::TcpStream),
+    /// A datagram socket, and process.c's datagram_address for its
+    /// channel: where its sends go and where recvfrom leaves the sender.
     Datagram {
         socket: std::net::UdpSocket,
-        remote: Option<std::net::SocketAddr>,
+        address: RawSockaddr,
     },
     /// `:family local' — unix domain sockets (erc-d's direct tests).
     UnixListener(std::os::unix::net::UnixListener),
@@ -2468,7 +2631,21 @@ impl std::fmt::Debug for RunningProcess {
     }
 }
 
-const GNUTLS_STAGE_INIT: i64 = 4;
+/// gnutls.h's gnutls_initstage_t stages.
+pub(crate) const GNUTLS_STAGE_INIT: i64 = 4;
+pub(crate) const GNUTLS_STAGE_CRED_SET: i64 = 6;
+pub(crate) const GNUTLS_STAGE_TRANSPORT_POINTERS_SET: i64 = 7;
+pub(crate) const GNUTLS_STAGE_HANDSHAKE_TRIED: i64 = 8;
+pub(crate) const GNUTLS_STAGE_READY: i64 = 9;
+/// gnutls.h's error codes the transport tells apart.
+const GNUTLS_E_AGAIN: std::ffi::c_int = -28;
+const GNUTLS_E_LARGE_PACKET: std::ffi::c_int = -7;
+const GNUTLS_E_PUSH_ERROR: std::ffi::c_int = -53;
+const GNUTLS_E_PREMATURE_TERMINATION: std::ffi::c_int = -110;
+/// GNUTLS_E_INTERRUPTED and GNUTLS_E_UNEXPECTED_PACKET_LENGTH as
+/// gnutls_record_recv and gnutls_record_send return them (ssize_t).
+const GNUTLS_E_INTERRUPTED_LEN: isize = -52;
+const GNUTLS_E_UNEXPECTED_PACKET_LENGTH_LEN: isize = -9;
 
 pub(crate) type GnuTlsDeinit = unsafe extern "C" fn(*mut std::ffi::c_void);
 pub(crate) type GnuTlsRecordRecv =
@@ -2479,8 +2656,6 @@ pub(crate) type GnuTlsRecordCheckPending = unsafe extern "C" fn(*mut std::ffi::c
 pub(crate) type GnuTlsHandshake = unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_int;
 pub(crate) type GnuTlsBye =
     unsafe extern "C" fn(*mut std::ffi::c_void, std::ffi::c_int) -> std::ffi::c_int;
-pub(crate) type GnuTlsErrorString =
-    unsafe extern "C" fn(std::ffi::c_int) -> *const std::ffi::c_char;
 pub(crate) type GnuTlsErrorIsFatal = unsafe extern "C" fn(std::ffi::c_int) -> std::ffi::c_int;
 
 pub(crate) struct GnuTlsSessionApi {
@@ -2491,7 +2666,6 @@ pub(crate) struct GnuTlsSessionApi {
     pub(crate) record_check_pending: GnuTlsRecordCheckPending,
     pub(crate) handshake: GnuTlsHandshake,
     pub(crate) bye: GnuTlsBye,
-    pub(crate) error_string: GnuTlsErrorString,
     pub(crate) error_is_fatal: GnuTlsErrorIsFatal,
 }
 
@@ -2522,20 +2696,6 @@ impl ProcessGnuTlsSession {
         }
     }
 
-    fn error(&self, operation: &str, code: std::ffi::c_int) -> LispError {
-        // SAFETY: GnuTLS accepts every error code and returns a static C string.
-        let description = unsafe {
-            let pointer = (self.api.error_string)(code);
-            (!pointer.is_null()).then(|| {
-                std::ffi::CStr::from_ptr(pointer)
-                    .to_string_lossy()
-                    .into_owned()
-            })
-        }
-        .unwrap_or_else(|| code.to_string());
-        LispError::Signal(format!("GnuTLS {operation} failed: {description}"))
-    }
-
     /// gnutls.c:emacs_gnutls_record_check_pending: decrypted bytes GnuTLS
     /// holds that no select on the socket would report.
     pub(crate) fn has_pending_records(&self) -> bool {
@@ -2543,23 +2703,36 @@ impl ProcessGnuTlsSession {
         self.ready && unsafe { (self.api.record_check_pending)(self.state) } > 0
     }
 
-    pub(crate) fn handshake(&mut self, complete: bool) -> Result<std::ffi::c_int, LispError> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            // SAFETY: STATE is live until this owner is dropped.
-            let result = unsafe { (self.api.handshake)(self.state) };
-            match result {
-                0 => {
-                    self.ready = true;
-                    return Ok(0);
-                }
-                -28 if !complete => return Ok(result),
-                -28 | -52 if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                -28 | -52 => return Err(LispError::Signal("GnuTLS handshake timed out".into())),
-                error => return Ok(error),
-            }
+    /// One gnutls_handshake: 0 once the negotiation is done, which makes
+    /// the session READY, else GnuTLS's error.
+    pub(crate) fn handshake_step(&mut self) -> std::ffi::c_int {
+        // SAFETY: STATE is live until this owner is dropped.
+        let result = unsafe { (self.api.handshake)(self.state) };
+        if result == 0 {
+            self.ready = true;
+        }
+        result
+    }
+
+    /// gnutls_error_is_fatal.
+    pub(crate) fn error_is_fatal(&self, code: std::ffi::c_int) -> bool {
+        // SAFETY: Every C integer is accepted by this classifier.
+        unsafe { (self.api.error_is_fatal)(code) != 0 }
+    }
+
+    /// gnutls.c emacs_gnutls_handle_error's errno for CODE: EAGAIN for
+    /// GNUTLS_E_AGAIN, EMSGSIZE for a large packet or a push error,
+    /// ECONNRESET for a premature termination (each when not fatal), else
+    /// EINVAL.
+    fn handle_error_errno(&self, code: std::ffi::c_int) -> i32 {
+        if self.error_is_fatal(code) {
+            return libc::EINVAL;
+        }
+        match code {
+            GNUTLS_E_AGAIN => libc::EAGAIN,
+            GNUTLS_E_LARGE_PACKET | GNUTLS_E_PUSH_ERROR => libc::EMSGSIZE,
+            GNUTLS_E_PREMATURE_TERMINATION => libc::ECONNRESET,
+            _ => libc::EINVAL,
         }
     }
 
@@ -2585,46 +2758,54 @@ impl ProcessGnuTlsSession {
                     chunk.truncate(length as usize);
                     return Ok((chunk, false));
                 }
-                -52 => continue,
-                -28 => return Ok((Vec::new(), false)),
-                -9 => return Ok((Vec::new(), true)),
+                GNUTLS_E_INTERRUPTED_LEN => continue,
+                // GNUTLS_E_UNEXPECTED_PACKET_LENGTH: the peer closed the
+                // connection, read as 0.
+                GNUTLS_E_UNEXPECTED_PACKET_LENGTH_LEN => return Ok((Vec::new(), true)),
                 error => {
-                    // GNU turns fatal record-layer failures into EOF and
-                    // leaves other repairable conditions for the next poll.
-                    // SAFETY: Every C integer is accepted by this classifier.
+                    // emacs_gnutls_handle_error: 0 (the end) for a fatal
+                    // error, else -1 with its errno, which only EAGAIN
+                    // leaves to the next read; wait_reading_process_output
+                    // takes any other as the connection's end.
+                    let code = error as std::ffi::c_int;
                     let closed =
-                        unsafe { (self.api.error_is_fatal)(error as std::ffi::c_int) } != 0;
+                        self.error_is_fatal(code) || self.handle_error_errno(code) != libc::EAGAIN;
                     return Ok((Vec::new(), closed));
                 }
             }
         }
     }
 
-    pub(crate) fn send_all(&mut self, input: &[u8]) -> Result<(), LispError> {
+    /// gnutls.c emacs_gnutls_write: nothing, with EAGAIN, before the
+    /// session is READY; else gnutls_record_send (repeated while
+    /// interrupted) until INPUT is sent or one fails, whose
+    /// emacs_gnutls_handle_error errno comes back with the bytes sent.
+    pub(crate) fn send(&mut self, input: &[u8]) -> (usize, i32) {
         if !self.ready {
-            let result = self.handshake(true)?;
-            if result < 0 {
-                return Err(self.error("handshake", result));
-            }
+            return (0, libc::EAGAIN);
         }
         let mut written = 0;
         while written < input.len() {
-            // SAFETY: STATE is live and the remaining input is borrowed for
-            // this call only.
-            let result = unsafe {
-                (self.api.record_send)(
-                    self.state,
-                    input[written..].as_ptr().cast(),
-                    input.len() - written,
-                )
+            let result = loop {
+                // SAFETY: STATE is live and the remaining input is borrowed
+                // for this call only.
+                let result = unsafe {
+                    (self.api.record_send)(
+                        self.state,
+                        input[written..].as_ptr().cast(),
+                        input.len() - written,
+                    )
+                };
+                if result != GNUTLS_E_INTERRUPTED_LEN {
+                    break result;
+                }
             };
-            match result {
-                length if length > 0 => written += length as usize,
-                -28 | -52 => std::thread::sleep(std::time::Duration::from_millis(1)),
-                error => return Err(self.error("send", error as std::ffi::c_int)),
+            if result < 0 {
+                return (written, self.handle_error_errno(result as std::ffi::c_int));
             }
+            written += result as usize;
         }
-        Ok(())
+        (written, 0)
     }
 
     pub(crate) fn bye(&mut self, continue_transport: bool) -> std::ffi::c_int {
@@ -2658,10 +2839,12 @@ impl Clone for ProcessGnuTlsState {
         Self {
             boot_parameters: self.boot_parameters,
             initstage: self.initstage,
-            active: self.active,
             session: None,
             peer_verification: self.peer_verification,
             peer_is_x509: self.peer_is_x509,
+            gnutls_p: self.gnutls_p,
+            complete_negotiation_p: self.complete_negotiation_p,
+            handshakes_tried: self.handshakes_tried,
         }
     }
 }
@@ -2669,10 +2852,17 @@ impl Clone for ProcessGnuTlsState {
 struct ProcessGnuTlsState {
     boot_parameters: Value,
     initstage: i64,
-    active: bool,
     session: Option<ProcessGnuTlsSession>,
     peer_verification: u32,
     peer_is_x509: bool,
+    /// p->gnutls_p: reads and sends go through the session, set by a
+    /// non-blocking gnutls_try_handshake or a gnutls_verify_boot that
+    /// passed, cleared by emacs_gnutls_deinit.
+    gnutls_p: bool,
+    /// p->gnutls_complete_negotiation_p: `:complete-negotiation'.
+    complete_negotiation_p: bool,
+    /// p->gnutls_handshakes_tried: wait_reading_process_output's tries.
+    handshakes_tried: u32,
 }
 
 impl Default for ProcessGnuTlsState {
@@ -2680,10 +2870,12 @@ impl Default for ProcessGnuTlsState {
         Self {
             boot_parameters: Value::Nil,
             initstage: 0,
-            active: false,
             session: None,
             peer_verification: 0,
             peer_is_x509: false,
+            gnutls_p: false,
+            complete_negotiation_p: false,
+            handshakes_tried: 0,
         }
     }
 }
@@ -2715,8 +2907,13 @@ impl Clone for ProcessState {
             inherit_coding_system_flag: self.inherit_coding_system_flag,
             decoding: self.decoding,
             encoding: self.encoding,
-            program: self.program.clone(),
-            argv: self.argv.clone(),
+            command: self.command,
+            status_data: self.status_data,
+            failed_message: self.failed_message.clone(),
+            dns_request: None,
+            network_setup: self.network_setup,
+            non_blocking_connect_fd: self.non_blocking_connect_fd,
+            write_queue: self.write_queue.clone(),
             stderr_process_id: self.stderr_process_id,
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
@@ -2744,6 +2941,9 @@ impl Clone for ProcessState {
             stderr_eof: self.stderr_eof,
             encoder: Default::default(),
             output_to_null: self.output_to_null,
+            in_alist: self.in_alist,
+            childless_pid: self.childless_pid,
+            outfd_stale: self.outfd_stale,
         }
     }
 }
@@ -2778,8 +2978,29 @@ struct ProcessState {
     inherit_coding_system_flag: bool,
     decoding: Value,
     encoding: Value,
-    program: Option<String>,
-    argv: Vec<String>,
+    /// p->command: Fmake_process's copy of its `:command' list (nil for
+    /// create_pty's and the connections'), which `process-command' answers
+    /// but t while a connection is stopped.
+    command: Value,
+    /// The data of a (failed DATA) status: an errno, get_file_errno_data's
+    /// list, or "Name lookup of HOST failed"; nil for any other status.
+    /// `process-exit-status' answers it.
+    status_data: Value,
+    /// status_message's "failed with code %s\n" of a (failed DATA) status
+    /// whose DATA is no fixnum, Fformat'd when the status was set.
+    failed_message: Option<String>,
+    /// p->dns_request: a `:nowait' connection's name lookup still pending.
+    dns_request: Option<DnsRequest>,
+    /// connect_network_socket's settings for a connection.
+    network_setup: NetworkSetup,
+    /// NON_BLOCKING_CONNECT_FD of the connection's channel: its connect
+    /// under way, which wait_reading_process_output's write mask checks
+    /// (add_non_blocking_write_fd), until delete_write_fd or
+    /// deactivate_process clears it.  Only a live socket has it.
+    non_blocking_connect_fd: bool,
+    /// p->write_queue: what send_process has yet to write, each entry
+    /// the bytes of one batch, the front written first.
+    write_queue: std::collections::VecDeque<Vec<u8>>,
     /// Optional pipe process receiving this child's standard error.
     stderr_process_id: Option<u64>,
     /// Child exit code, or fatal signal number for signaled termination.
@@ -2802,7 +3023,9 @@ struct ProcessState {
     /// closes once the process is another's standard error.  That
     /// child is given SUBPROCESS_STDOUT, and the parent's copy closed.
     module_pipe: Option<(fs::File, Option<fs::File>)>,
-    pipe_input: Option<(fs::File, fs::File)>,
+    /// A pipe process's SUBPROCESS_STDIN and WRITE_TO_SUBPROCESS, or a
+    /// childless pty's slave, when create_pty opens it, and its master.
+    pipe_input: Option<(Option<fs::File>, fs::File)>,
     /// Network :host/:service as given at creation (process-contact).
     contact_host: Option<String>,
     contact_service: Option<i64>,
@@ -2846,6 +3069,14 @@ struct ProcessState {
     /// Fprocess_send_eof reopened the output channel on the null device
     /// (p->outfd): what is sent after the EOF goes nowhere.
     output_to_null: bool,
+    /// The process is on Vprocess_alist: remove_process, the unwind of a
+    /// make-process or make-pipe-process that signaled, takes it off.
+    in_alist: bool,
+    /// p->pid of a process without a child: -2 for create_pty's.
+    childless_pid: Option<i32>,
+    /// create_process closed this `:stderr' pipe process's input but its
+    /// p->outfd still names the descriptor: a send is EBADF.
+    outfd_stale: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -4960,6 +5191,8 @@ impl Interpreter {
                 &process.encoding,
                 &process.plist,
                 &process.contact,
+                &process.command,
+                &process.status_data,
                 &process.gnutls.boot_parameters,
             ] {
                 mark(value);
@@ -5463,6 +5696,8 @@ impl Interpreter {
                 process.encoding = c.copy(&process.encoding.clone());
                 process.plist = c.copy(&process.plist.clone());
                 process.contact = c.copy(&process.contact.clone());
+                process.command = c.copy(&process.command);
+                process.status_data = c.copy(&process.status_data);
                 process.gnutls.boot_parameters = c.copy(&process.gnutls.boot_parameters);
             }
         }
