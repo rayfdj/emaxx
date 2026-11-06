@@ -1,6 +1,7 @@
 use super::*;
 
 mod buffer_edit;
+pub(crate) use buffer_edit::insert_string;
 mod buffer_meta;
 mod coding_systems;
 mod collections;

@@ -595,11 +595,17 @@ define_dispatch!(
             }
             "internal-describe-syntax-value" => {
                 need_args(name, args, 1)?;
-                let (mut description, prefix) = syntax::describe_syntax_value(&args[0]);
+                // syntax.c:Finternal_describe_syntax_value inserts its text
+                // a piece at a time (insert, insert_char and insert_string,
+                // each prepare_to_modify_buffer's and signal_after_change's),
+                // the prefix flag's text last as insert1 of what
+                // `substitute-command-keys' answers, through the symbol's
+                // function cell.
+                let (pieces, prefix) = syntax::describe_syntax_value(&args[0]);
+                for piece in &pieces {
+                    super::buffer_edit::insert_string(interp, piece, env)?;
+                }
                 if prefix {
-                    // GNU syntax.c: insert1 (call1 (Qsubstitute_command_keys,
-                    // prefixdoc)) — a funcall through the symbol's cell, which
-                    // reaches help.el's Lisp owner.
                     let suffix = interp.call_function_value(
                         Value::symbol("substitute-command-keys"),
                         Some("substitute-command-keys"),
@@ -608,9 +614,8 @@ define_dispatch!(
                         )],
                         env,
                     )?;
-                    description.push_str(&string_text(&suffix)?);
+                    super::buffer_edit::direct_insert(interp, &[suffix], env)?;
                 }
-                interp.insert_current_buffer(&description);
                 Ok(args[0])
             }
             "syntax-class-to-char" => {

@@ -657,7 +657,7 @@ impl CompositionIterator {
         } else if charpos < endpos
             && *self.windowed.get_or_insert_with(|| {
                 super::display::buffer_window(interp, interp.current_buffer_id(), &Value::Nil)
-                    .is_some()
+                    .is_ok_and(|window| window.is_some())
             })
             && let Some(c) = char::from_u32(self.ch as u32)
         {

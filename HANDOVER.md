@@ -15196,6 +15196,213 @@ setup_process_coding_systems's check now refuses). A 13-form
   Local validation: the grouped gate's 3,501 library tests, the
   integration targets and clippy with `--all-targets --all-features -D
   warnings' pass.
+- **Round 323: window points and starts are window.c's markers,
+  unshow_buffer is window.c's, and the buffer keeps the window it was
+  last selected in.** `set-window-start' and `set-window-point' of a
+  non-selected window run set_marker_restricted, so nil or a marker
+  pointing nowhere leaves the window's marker pointing nowhere:
+  `window-start' then answers nil (Fmarker_position) and `window-point'
+  the charpos the marker kept (window_point), where Emaxx kept the
+  selected window's start as a position beside its marker and signalled
+  `integer-or-marker-p'. The selected window's `set-window-point' moves
+  its buffer's point, in that buffer made current for the move when
+  another is current, POS then coerced by fix_position and returned.
+  unshow_buffer records the window's start as the buffer's
+  last_window_start and gives the buffer the window's point unless the
+  selected window shows it or the window the buffer was last selected in
+  is another still showing it, then forgets the window as that one; a
+  start or point marker pointing nowhere is marker_position's error
+  before anything changes, so `delete-window', `delete-other-windows',
+  `set-window-buffer' and `set-window-configuration' signal it and leave
+  the tree as GNU leaves it, and `select-window' signals
+  set_point_from_marker's error once the window is selected and its
+  buffer current. last_window_start and last_selected_window are the
+  buffer's fields (the interpreter's table of last window starts is
+  gone), which select_window, set_window_buffer of the selected window
+  and Fset_window_configuration set and reset_buffer clears.
+  `run-window-configuration-change-hook' is
+  run_window_configuration_change_hook: each buffer-local value runs
+  with its window selected as `(select-window WINDOW t)' selects it, the
+  window's point its buffer's, over the frame's windows from its
+  selected one without the minibuffer window, as run_funs runs a list (a
+  lone function is not called), then the default value, with the
+  selected window's buffer current and the frame selected, all undone
+  after an error; Emaxx set the selected window without the point swap
+  and ran a lone function. Code conversion into a destination buffer,
+  the combined after-change call and a file notification's callback make
+  their buffer current as set_buffer_internal does, where Emaxx showed
+  it in the selected window for the while (unshowing the window's
+  buffer, and resetting its start and point when it switched back), and
+  `bury-buffer-internal' only moves the buffer in the lists, as
+  buffer.c's does. wset_combination empties the one contents field a
+  leaf's buffer lives in too, and the selected window with no buffer
+  shows none (it answered the current buffer). The mode, header and tab
+  lines a window has are window_wants_mode_line's and the others' (a
+  minibuffer or internal window has none, so `window-body-height' of the
+  minibuffer window is its total height), `window-text-width' leaves out
+  only the margins, `select-window' and `resize-mini-window-internal'
+  refuse nil as CHECK_LIVE_WINDOW does, and `next-window' and
+  `previous-window' from a window that is no candidate (an inactive
+  minibuffer window) answer the first and the last window. A sweep of
+  148 window and frame primitives with each kind of window argument, a
+  process for each primitive, answers as GNU's does but where GNU's own
+  setup failed. Undo runs 1,280,171 instructions an iteration (1.047). A
+  command-line comparison covers detached starts and points, the
+  selected window's point from another buffer, the last selected
+  window's point, the hook's selection, the minibuffer window's sizes
+  and cycle, and the errors of unshowing a detached window. Local
+  validation: the grouped gate's 3,501 library tests, the
+  integration targets and clippy with `--all-targets --all-features -D
+  warnings' pass.
+- **Round 324: nil decodes to the selected window unchecked, a window
+  walk checks the window it starts from, and delete-other-windows reads
+  the kept window's start first.** window.c's decode_live_window,
+  decode_valid_window and decode_any_window answer the selected window
+  for nil without a check; Emaxx checked it, so once a failed
+  unshow_buffer had left the selected window deleted (round 323),
+  `window-minibuffer-p', `window-parameters', `window-dedicated-p',
+  `window-prev-buffers' and the other accessors of nil signalled where
+  GNU's answer the deleted window's fields, and `set-window-buffer' of
+  nil now signals Fset_window_buffer's "Window is deleted". window_loop
+  starts its walk from the frame's selected window through
+  window_list_1's decode_live_window, so `get-buffer-window', and
+  `other-buffer' through it, signal `window-live-p' with a deleted
+  selected window, as GNU's do. Fdelete_other_windows_internal reads the
+  kept window's start with marker_position before it changes anything,
+  so a start set to point nowhere makes it signal at once, where Emaxx
+  went on with the buffer's beginning. With these, a sweep of 148 window
+  and frame primitives with each kind of window argument, a process for
+  each primitive, answers line for line as GNU's does, through the
+  states GNU's own setup failures leave. A command-line comparison
+  reaches the deleted selected window through a detached point and calls
+  nineteen accessors of nil, `set-window-buffer', `get-buffer-window',
+  `other-buffer' and `get-buffer-window-list', and replays the sweep's
+  detached starts. Local validation: the grouped gate's 3,501
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 325: labeled restrictions are editfns.c's, and a sweep in a
+  narrowed buffer.** editfns.c keeps a buffer's labeled restrictions
+  innermost first, the last one labeled with the uninterned
+  outermost-restriction symbol and holding the bounds current when the
+  first was entered, and every caller reads the innermost one alone:
+  narrow-to-region keeps its bounds within the innermost restriction's,
+  widen goes back to the innermost restriction's bounds and drops the
+  outermost one once it reaches it, and a nil label is no labeled
+  restriction to them. Emaxx intersected the bounds of all of a buffer's
+  restrictions, so `(internal--labeled-narrow-to-region 1 6 'l)' inside
+  a narrowing of 6 to 20 widened to 6-6 where GNU's goes back to 1-6,
+  kept the outermost restriction after widening to it, and clamped
+  internal--labeled-narrow-to-region's bounds itself where GNU's runs
+  Fnarrow_to_region. narrow-to-region takes its bounds by fix_position
+  (a bignum is out of range, a marker pointing nowhere signals) and
+  checks them against the whole buffer, args-out-of-range naming them as
+  given. set-binary-mode checks a symbol and the three streams by EQ,
+  signals "unsupported stream" for another, flushes the output stream
+  and answers t, as Fset_binary_mode does on a Posix system (Emaxx
+  answered nil and signalled "Invalid stream" for a number);
+  set-default-file-modes takes a fixnum. The sweep calls each of 579
+  subrs taking one to three arguments with positions inside and outside
+  a narrowing of a buffer with a text property, a process for each subr,
+  and prints the result, point, bounds and text: it answers as GNU's
+  does but for the current time, three subrs GNU crashes on
+  (`get-variable-watchers', `internal--define-uninitialized-variable'
+  and `re--describe-compiled' of a number), `symbol-plist' of nil, whose
+  modifier caches GNU's X build makes at startup, and
+  `move-point-visually' with the selected window showing another buffer
+  than the current one, which GNU's display iterator answers with
+  args-out-of-range. A command-line comparison runs nested, unlabeled
+  and nil-labeled restrictions through widen, narrow-to-region,
+  save-restriction, without-restriction and an insertion, and the stream
+  and file-mode checks. Local validation: the grouped gate's 3,501
+  library tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 326: the describe functions insert as insert_string does.**
+  syntax.c's internal-describe-syntax-value and keymap.c's
+  describe-vector and describe-map insert with insert, insert_char,
+  insert_string and insert1, each through prepare_to_modify_buffer and
+  signal_after_change. Emaxx built the text and wrote it into the buffer
+  without either, so a read-only buffer took the text (GNU's signals
+  `buffer-read-only' first), and the change hooks heard one change or
+  none where GNU's hear one for each piece (four for a punctuation
+  entry). Each piece is now an insertion of its own through the path
+  `insert' takes, the prefix flag's text an insertion of what
+  `substitute-command-keys' answers, and describe-vector's column is
+  Findent_to (16, 1) under the buffer's `indent-tabs-mode' and
+  `tab-width' (Emaxx counted characters and inserted tabs of eight). The
+  narrowing sweep run in a read-only buffer found the first, and in a
+  unibyte buffer of raw bytes answers as GNU's does but for the known
+  cases. A command-line comparison runs the describe functions in plain
+  and read-only buffers with change hooks, under both indentation
+  settings. Local validation: the grouped gate's 3,501 library
+  tests, the integration targets and clippy with `--all-targets
+  --all-features -D warnings' pass.
+- **Round 327: symbols with position as lisp.h's SYMBOLP, XSYMBOL and
+  EQ.** While `symbols-with-pos-enabled' is set, GNU's CHECK_SYMBOL
+  takes a symbol with position and XSYMBOL reaches its bare symbol, EQ
+  compares bare symbols, and NILP stays BASE_EQ, so a positioned nil is
+  no nil. A sweep of the 579 subrs of one to three arguments, called
+  with positioned symbols with the flag off and on, found two dozen that
+  refused or mistook them: the fringe functions (their `fringe' property
+  is the bare symbol's, the list and the answer keep the argument),
+  `internal-make-var-non-special',
+  `internal-event-symbol-parse-modifiers', `make-char-table' (whose
+  table keeps the purpose as given), `register-ccl-program' and
+  `register-code-conversion-map' (which find a name by EQ),
+  `single-key-description', `string-collate-lessp' and
+  `string-collate-equalp', the signal name of
+  `internal-default-signal-process', `set-binary-mode', the coding
+  system decoder of `check-coding-system' and its kin and
+  `coding-system-eol-type' (a positioned nil is no coding system there,
+  as GNU's coding-system-error says), the face decoders, json's `true'
+  and where-is-internal's EQ of each binding with the definition.
+  `fmakunbound' refuses a positioned t; `fset' and `defalias' walk
+  Ffset's non-circularity loop through positioned symbols in the
+  definition, signalling with the argument as given; and
+  `indirect-function' is data.c's indirect_function, every symbol but
+  nil stepping to its cell, so a positioned t or nil answers nil as t
+  does (Emaxx answered t). The sweep now answers as GNU's does but where
+  GNU's crashes, in the address hashes of the sxhash functions and in
+  the known move-point-visually case. One `lisp_symbol' and
+  `check_symbol' pair and one EQ carry the rule. A command-line
+  comparison runs each with the flag off and on. Local validation: the
+  grouped gate's 3,501 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 328: file names as the Lisp strings GNU keeps.** BVAR (b,
+  filename) and BVAR (b, file_truename) are Lisp objects:
+  `buffer-file-name' is the string it was set to, the same object each
+  time it is read (`eq'), with its text properties and raw bytes. Emaxx
+  kept the visited name and truename as host text and made a new string
+  at every read, so `(eq buffer-file-name buffer-file-name)' was nil, a
+  propertized name lost its properties and a multibyte name holding a
+  raw byte came back unibyte. The buffer now holds both as Lisp values,
+  traced by the collector and dumped as they are, and
+  insert-file-contents' visit, write-region's VISIT (Fexpand_file_name
+  of a string VISIT, else FILENAME), the handler path and the readers of
+  the slots use them; the code that needs a host path reads their text.
+  fileio.c's report_file_error is given the Lisp names too, the expanded
+  names of insert-file-contents, write-region, copy-file, rename-file,
+  add-name-to-file, make-symbolic-link, make-directory,
+  delete-directory, delete-file, set-file-modes, set-file-times and the
+  ACL functions and call-process's input file, and the names as given
+  for access-file (whose message is build_string of its STRING's SSDATA)
+  and load; Emaxx rebuilt each from text, which turned a raw byte into
+  the byte 255 and dropped properties. insert-file-contents answers its
+  FILENAME object. A C string from SSDATA carries the string's own
+  bytes: network-lookup-address-info checks the family and hint first,
+  refuses only a multibyte name with a non-ASCII character (Emaxx
+  refused a unibyte one too) with the message error makes of its bytes,
+  passes them to getaddrinfo and reports a failure through vmessage
+  (standard error in batch, not logged); module-load opens the file's
+  bytes and signals with dlerror's; Snarf-documentation names its file
+  by the bytes of `doc-directory' and FILENAME. A sweep of the 579 subrs
+  with propertized, unibyte and multibyte raw-byte string arguments
+  answers as GNU's does but where GNU crashes, for the address hashes,
+  random temporary names and file times, the X build's resource lookups,
+  and Snarf-documentation of an empty name, where GNU reads past its
+  buffer. A command-line comparison runs the file errors and the visited
+  names in the UTF-8 and C locales. Local validation: the grouped gate's
+  3,501 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17791,7 +17998,104 @@ ert-tests as a whole 26,307 ms against 27,211.
   checks account for the mule-tests and semantic-utest-ia gaps (round
   320's record).
 
+**On `decb77e`** (round 322): the full Rust gate (run 42095132802)
+  passed; the frozen run (run 42095139413) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a faster runner than round 321's
+  (the oracle's bodies 232.0 s against 255.7). Setup 57.6 s against 49.4
+  s (1.167), test bodies 243.6 s against 232.0 s (1.050), in all 1.073,
+  with a per-file setup median of 90 ms against 79. ert-tests' body
+  falls to 30,513 ms against 29,931 (1.019, from 1.223), and
+  `ert-test-run-tests-batch-expensive' runs in 1.01 of GNU's time (from
+  1.21): ERT saves and restores the window configuration around each
+  test. The widest body gaps are now tramp-tests (15,781 ms against
+  13,836), comp-tests (14,047 against 12,426), semantic-utest-ia (2,806
+  against 1,890), mule-tests (1,987 against 1,281) and epg-tests (2,320
+  against 1,794).
+
+**On `4e49c32`** (round 323): the full Rust gate (run 42107474528)
+  passed; the frozen run (run 42107479113) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a slower runner than round 322's
+  (the oracle's bodies 244.3 s against 232.0). Setup 63.3 s against 53.4
+  s (1.187), test bodies 261.3 s against 244.3 s (1.070), in all 1.107,
+  with a per-file setup median of 94 ms against 82. The widest body gaps
+  are tramp-tests (18,704 ms against 15,763), ert-tests (35,938 against
+  33,143), comp-tests (14,377 against 12,150), semantic-utest-ia (2,962
+  against 2,044) and mule-tests (2,387 against 1,516), and
+  `ert-test-run-tests-batch-expensive' runs in 1.07 of GNU's time.
+
+**On `12d80a7`** (round 324): the full Rust gate (run 42115919476)
+  passed; the frozen run (run 42115924081) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a slower runner than round 323's
+  (the oracle's bodies 253.2 s against 244.3). Setup 69.3 s against 58.6
+  s (1.184), test bodies 272.9 s against 253.2 s (1.078), in all 1.106,
+  with a per-file setup median of 104 ms against 90. The widest body
+  gaps are tramp-tests (19,247 ms against 16,521), comp-tests (15,513
+  against 13,233), ert-tests (37,834 against 35,614), semantic-utest-ia
+  (3,539 against 2,484), mule-tests (2,795 against 1,754) and
+  icalendar-tests (1,075 against 396), and
+  `ert-test-run-tests-batch-expensive' runs in 1.05 of GNU's time.
+
+**On `5a106e2`** (round 325): the full Rust gate (run 42123613067)
+  passed; the frozen run (run 42123617362) passed at its first attempt,
+  7,928 of 7,928 outcomes matching. Setup 64.5 s against 54.0 s (1.195),
+  test bodies 262.9 s against 240.3 s (1.094), in all 1.125, with a
+  per-file setup median of 98 ms against 84. The widest body gaps are
+  ert-tests (36,913 ms against 33,246), tramp-tests (18,929 against
+  15,690), comp-tests (14,885 against 12,499), semantic-utest-ia (3,266
+  against 2,143) and mule-tests (2,399 against 1,527), and
+  `ert-test-run-tests-batch-expensive' runs in 1.10 of GNU's time.
+  icalendar-tests' import tests, 390 and 292 ms against 86 and 28 in
+  round 324's run, take 111 and 41 against 73 and 33 here, as in round
+  323's: a pause of that runner, not the code.
+
+**On `7b37e9f`** (round 326): the full Rust gate (run 42128657750)
+  passed; the frozen run (run 42128661222) failed at both its attempts
+  on one outcome of the oracle's,
+  `eglot-test-rust-completion-exit-function', whose rust-analyzer
+  request GNU's run gave up on after 11 s ("Timed out") where Emaxx's
+  passed in 4.8 s; the other 7,927 of 7,928 outcomes match at both. The
+  first attempt read setup 78.0 s against 66.3 s (1.177), test bodies
+  297.8 s against 284.3 s (1.047), in all 1.059, with a per-file setup
+  median of 118 ms against 102; its widest body gaps are ert-tests
+  (45,628 ms against 40,033), comp-tests (18,513 against 15,342),
+  tramp-tests (22,107 against 18,983), semantic-utest-ia (3,730 against
+  2,580) and mule-tests (2,958 against 1,924), and
+  `ert-test-run-tests-batch-expensive' runs in 1.13 of GNU's time. The
+  second, on a faster runner, read setup 61.1 s against 47.7 (1.280),
+  bodies 240.9 s against 233.4 (1.032), in all 1.066, the expensive test
+  in 1.00 of GNU's time. mule-tests' gap is the gate profile's: its two
+  ucs-names tests take 1.2 s with the gate build here, 0.75 s with the
+  release build and 0.76 s with GNU's.
+
+**On `de6119f`** (round 327): the full Rust gate (run 42137177294)
+  passed; the frozen run (run 42137180505) passed at its first attempt,
+  7,928 of 7,928 outcomes matching. Setup 57.2 s against 48.5 s (1.179),
+  test bodies 240.6 s against 229.0 s (1.051), in all 1.071, with a
+  per-file setup median of 89 ms against 77. The widest body gaps are
+  tramp-tests (15,858 ms against 13,818), comp-tests (13,450 against
+  12,567), semantic-utest-ia (2,917 against 2,075), ert-tests (29,801
+  against 29,204) and mule-tests (1,886 against 1,304), and
+  `ert-test-run-tests-batch-expensive' runs in 1.01 of GNU's time.
+
 **Findings recorded, not fixed:**
+- **The errno text of file errors (round 328).** get_file_errno_data
+  decodes strerror's text with `locale-coding-system'
+  (code_convert_string_norecord), so under a UTF-8 locale the second
+  element of a file error is a multibyte string; Emaxx's is the host's
+  text as a unibyte string when it is ASCII. The builders of file-error
+  data take no interpreter to read the coding system with; giving them
+  one, with the remaining builders that take the name as text (directory
+  reading, process output files, the thread and native-unit loaders), is
+  the change that makes the data GNU's.
+- **tramp-tests' body gap is the pty's timing (round 327).**
+  tramp-accept-process-output evaluates (buffer-string) of the
+  connection buffer, which grows to 2 MB, each time
+  accept-process-output returns. Emaxx's reads take less of the pty's
+  output at a time than GNU's, which spend about 0.5 ms each, so its
+  accept-process-output returns 693 times where GNU's returns 228: 2.3
+  times the string consing (733 MB against 321 MB) and 35 collections
+  against 14. The test's own work matches; what differs is when output
+  arrives, not a defect in the reader.
 - **Windows as generic records (round 321).** A window is a record whose
   slots are a vector apart from it, so each window primitive decodes the
   record's kind and reads a slot through that vector; called from native
@@ -17810,14 +18114,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   subr's body, against GNU's call through the freloc table with the
   arguments in registers and a signal by longjmp. Undo's iteration makes
   722 such calls.
-- **A window start that points nowhere (round 320).** Fset_window_start
-  runs set_marker_restricted, so a nil POS leaves the start marker
-  pointing nowhere: `(set-window-start nil nil)' returns nil and
-  `window-start' then answers nil. Emaxx keeps the selected window's
-  start as a position beside the marker and signals
-  `integer-or-marker-p' for a nil POS; the selected window's start needs
-  to be the marker GNU's is, redisplay choosing a start when it points
-  nowhere.
 - **The newline region cache (round 320).** GNU's find_newline keeps a
   region cache of the stretches with no newline (`cache-long-scans', on
   by default), which `newline-cache-check' reports as a pair of vectors;

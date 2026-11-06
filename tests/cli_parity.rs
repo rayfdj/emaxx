@@ -2482,6 +2482,425 @@ fn window_configurations_save_and_restore_gnu_s_fields() {
 }
 
 #[test]
+fn window_points_starts_and_selections_answer_as_window_c_does() {
+    // window.c: set-window-start and set-window-point of nil (or of a
+    // marker pointing nowhere) leave a non-selected window's marker
+    // pointing nowhere, which window-start answers as nil and
+    // window_point as the charpos it kept, and which unshow_buffer
+    // refuses ("Marker does not point anywhere") when the window is
+    // deleted or shows another buffer, as set_point_from_marker does
+    // when it is selected.  The selected window's point is its buffer's,
+    // moved in that buffer when another is current (POS coerced by
+    // fix_position).  unshow_buffer leaves the buffer's point alone while
+    // the window the buffer was last selected in still shows it, and the
+    // buffer-local window-configuration-change-hook runs with its window
+    // selected as Fselect_window does.  select-window and
+    // resize-mini-window-internal take no nil, an inactive minibuffer
+    // window is followed by the first window and preceded by the last,
+    // and it has no mode line.
+    let corpus = Corpus::new();
+    for script in [
+        r##"(defvar ws-r nil)
+(defun ws-push (&rest xs) (setq ws-r (append ws-r (list xs))))
+(defmacro ws-try (form) `(condition-case e ,form (error (list 'ERR (car e) (if (windowp (cadr e)) 'W (cadr e))))))
+(let* ((sel (selected-window)) (mini (minibuffer-window)) (b (get-buffer-create "ws-b")))
+  (switch-to-buffer (get-buffer-create "ws-a"))
+  (insert "line one\nline two\nline three\n") (goto-char 5)
+  (with-current-buffer b (insert "other\ntext\n"))
+  (let* ((right (split-window sel nil 'right)) (below (split-window right nil 'below)))
+    (set-window-buffer below b)
+    (ws-push 'start (ws-try (set-window-start right nil)) (window-start right)
+             (ws-try (set-window-start right 4)) (window-start right))
+    (ws-push 'point (ws-try (set-window-point below nil)) (window-point below)
+             (ws-try (set-window-point below 3)) (window-point below)
+             (ws-try (set-window-point right 7)) (window-point right) (point)
+             (ws-try (set-window-point sel 2)) (point) (window-point sel))
+    (ws-push 'select (ws-try (select-window nil)) (ws-try (resize-mini-window-internal nil))
+             (eq (selected-window) sel))
+    (ws-push 'cycle (eq (next-window mini) (car (window-list nil 'nomini)))
+             (eq (previous-window mini) (car (last (window-list nil 'nomini))))
+             (eq (next-window mini nil) (next-window mini 'nomini)))
+    (ws-push 'sizes (window-body-height mini) (window-text-height mini) (window-total-height mini)
+             (window-margins sel)
+             (window-text-width right) (window-total-width right))
+    (set-window-margins right 2 1)
+    (ws-push 'margins (- (window-total-width right) (window-text-width right)) (window-body-width right))
+    (ws-push 'detached (ws-try (set-window-point below nil)) (ws-try (delete-other-windows sel))
+             (length (window-list)))))
+(dolist (x ws-r) (prin1 x) (terpri))
+"##,
+        r##"(defvar ws-r nil)
+(defun ws-push (&rest xs) (setq ws-r (append ws-r (list xs))))
+(defmacro ws-try (form) `(condition-case e ,form (error (list 'ERR (car e) (if (windowp (cadr e)) 'W (cadr e))))))
+(let* ((x (get-buffer-create "ws-x")) (y (get-buffer-create "ws-y")) (a (selected-window)) b c)
+  (with-current-buffer x (insert "0123456789abcdefghij\n"))
+  (with-current-buffer y (insert "yyyyyyyyyy\n"))
+  (switch-to-buffer x) (goto-char 5)
+  (setq b (split-window a nil 'below))
+  (setq c (split-window b nil 'below))
+  (set-window-buffer c y)
+  (select-window b) (goto-char 9)
+  (select-window a) (goto-char 3)
+  (select-window c)
+  (ws-push 'points (window-point a) (window-point b) (with-current-buffer x (point)))
+  (set-window-point b 15)
+  (delete-window b)
+  (ws-push 'after-delete-b (with-current-buffer x (point)) (length (window-list)))
+  (setq b (split-window a nil 'below))
+  (set-window-buffer b x)
+  (set-window-point b 12)
+  (select-window b) (select-window c)
+  (set-window-point b 17)
+  (delete-window b)
+  (ws-push 'after-delete-b2 (with-current-buffer x (point)))
+  ;; hooks see the window's point
+  (with-current-buffer x
+    (setq-local window-configuration-change-hook
+                (list (lambda () (ws-push 'hook (eq (selected-window) a) (point) (window-point a) (buffer-name))) t)))
+  (set-window-point a 7)
+  (run-window-configuration-change-hook)
+  (ws-push 'after-hook (eq (selected-window) c) (buffer-name) (with-current-buffer x (point)) (window-point a))
+  (with-current-buffer x (kill-local-variable 'window-configuration-change-hook))
+  ;; set-window-point of the selected window from another buffer
+  (select-window a)
+  (with-current-buffer y (ws-push 'swp (set-window-point nil 4) (buffer-name) (point)))
+  (ws-push 'swp-after (point) (window-point a))
+  (with-current-buffer y (ws-push 'swp-err (ws-try (set-window-point nil (make-marker))) (ws-try (set-window-point nil 1.5)) (ws-try (set-window-point nil (1+ most-positive-fixnum)))))
+  ;; a start pointing nowhere
+  (setq b (split-window a nil 'below))
+  (set-window-start b nil)
+  (ws-push 'start-nowhere (window-start b) (ws-try (delete-window b)) (window-live-p b) (length (window-list)))
+  (ws-push 'start-nowhere-2 (ws-try (set-window-buffer b y)) (window-buffer b)))
+(dolist (x ws-r) (prin1 x) (terpri))
+"##,
+    ] {
+        assert_same(
+            &corpus,
+            &["--batch", "-Q", "--eval", &format!("(progn {script})")],
+        );
+    }
+}
+
+#[test]
+fn a_deleted_selected_window_decodes_as_window_c_does() {
+    // A point marker set to point nowhere makes delete-other-windows fail
+    // in unshow_buffer, which can leave the selected window deleted.
+    // decode_live_window, decode_valid_window and decode_any_window then
+    // answer it for nil unchecked: its fields read as they are, and
+    // Fset_window_buffer signals "Window is deleted"; window_loop's walk
+    // from it (get-buffer-window, other-buffer) is window_list_1's
+    // decode_live_window, which signals window-live-p.  The second
+    // script detaches the kept window's start, which
+    // Fdelete_other_windows_internal's marker_position refuses before it
+    // changes anything.
+    let corpus = Corpus::new();
+    for script in [
+        r##"(defvar ws-r nil)
+(defun ws-push (&rest xs) (prin1 xs) (terpri))
+(defun ws-st (tag)
+  (ws-push tag (window-live-p (selected-window)) (window-valid-p (selected-window))
+           (and (window-buffer (selected-window)) (buffer-name (window-buffer (selected-window))))
+           (condition-case e (length (window-list)) (error (list (quote ERR) (car e)))) (condition-case e (mapcar (lambda (w) (buffer-name (window-buffer w))) (window-list)) (error (list (quote ERR) (car e))))
+           (condition-case e (eq (frame-first-window) (car (window-list))) (error (list (quote ERR) (car e)))) (buffer-name)))
+(defmacro ws-try (tag form) `(ws-push ,tag (condition-case e (progn ,form 'ok) (error (list 'ERR (car e) (if (windowp (cadr e)) 'W (cadr e)))))))
+(defvar ws-objs nil)
+(defun ws-setup (n)
+  (ws-try (list n 'sel) (select-window (frame-first-window)))
+  (ws-try (list n 'dow) (delete-other-windows))
+  (ws-st (list n 'after-dow))
+  (ws-try (list n 'stb) (switch-to-buffer (get-buffer-create "wsA")))
+  (erase-buffer) (insert "line one\nline two\nline three\n") (goto-char 5)
+  (ws-try (list n 'split)
+          (let* ((sel (selected-window))
+                 (right (split-window sel nil 'right))
+                 (below (split-window right nil 'below))
+                 (dead (split-window below nil 'below)))
+            (set-window-buffer below (get-buffer-create "wsB"))
+            (delete-window dead)
+            (setq ws-objs (list (cons 'selected sel) (cons 'right right) (cons 'below below) (cons 'dead dead)))))
+  (ws-st (list n 'after-setup)))
+(defun ws-w (w) (list (window-live-p w) (window-valid-p w) (and (window-buffer w) (buffer-name (window-buffer w))) (and (window-parent w) t)))
+(ws-setup 0)
+(ws-push 'swp (condition-case e (set-window-point (cdr (assq 'below ws-objs)) nil) (error e)))
+(ws-setup 1)
+(ws-setup 2)
+(ignore-errors (select-window (frame-first-window)))
+(ignore-errors (delete-other-windows))
+(defmacro ws-t (form) `(condition-case e ,form (error (list 'ERR (car e) (if (windowp (cadr e)) 'W (cadr e))))))
+(ws-push 'dead-selected (window-live-p (selected-window)) (window-valid-p (selected-window))
+         (ws-t (window-minibuffer-p)) (ws-t (window-dedicated-p)) (ws-t (window-buffer))
+         (ws-t (window-prev-buffers)) (ws-t (window-next-buffers)) (ws-t (window-parameters))
+         (ws-t (set-window-buffer nil (get-buffer-create "wsA"))) (ws-t (window-parameter nil 'x))
+         (ws-t (window-hscroll)) (ws-t (window-margins)) (ws-t (window-fringes))
+         (ws-t (window-parent)) (ws-t (window-normal-size)) (ws-t (window-combination-limit nil))
+         (ws-t (window-new-total)) (ws-t (window-old-point)) (framep (window-frame)))
+(let ((w (frame-root-window)))
+  (ws-push 'root (window-live-p w) (window-valid-p w) (ws-t (frame-first-window))))
+(ws-push 'gbw (ws-t (get-buffer-window "wsA")) (ws-t (other-buffer)) (ws-t (get-buffer-window-list "wsA")))
+(kill-emacs 0)
+"##,
+        r##"(defvar ws-objs nil)
+(defun ws-push (&rest xs) (prin1 xs) (terpri))
+(defmacro ws-try (tag form) `(ws-push ,tag (condition-case e (progn ,form 'ok) (error (list 'ERR (car e) (if (windowp (cadr e)) (format "%s" (cadr e)) (cadr e)))))))
+(defun ws-id (w) (and w (string-to-number (replace-regexp-in-string "#<window \\([0-9]+\\).*" "\\1" (format "%s" w)))))
+(defun ws-tree (w) (when w (list (ws-id w) (window-valid-p w) (window-live-p w)
+   'parent (condition-case nil (ws-id (window-parent w)) (error 'E)) 'prev (condition-case nil (ws-id (window-prev-sibling w)) (error 'E)) 'next (condition-case nil (ws-id (window-next-sibling w)) (error 'E))
+   'kids (condition-case nil (let ((c (window-child w)) r) (while c (push (ws-id c) r) (setq c (window-next-sibling c))) (nreverse r)) (error 'E)))))
+(defun ws-setup (n)
+  (ws-try (list n 'sel) (select-window (frame-first-window)))
+  (ws-try (list n 'dow) (delete-other-windows))
+  (ws-push (list n 'state) (ws-id (selected-window)) (ws-id (frame-root-window)) (ws-tree (frame-root-window)) (ws-tree (selected-window)))
+  (switch-to-buffer (get-buffer-create "wsA"))
+  (erase-buffer) (insert "line one\nline two\nline three\n") (goto-char 5)
+  (ws-try (list n 'split)
+   (let* ((sel (selected-window))
+         (right (split-window sel nil 'right))
+         (below (split-window right nil 'below))
+         (dead (split-window below nil 'below)))
+    (set-window-buffer below (get-buffer-create "wsB"))
+    (delete-window dead)
+    (setq ws-objs (list (cons 'selected sel) (cons 'right right) (cons 'below below) (cons 'dead dead))))))
+(dolist (k '(selected right below))
+  (ws-setup k)
+  (ws-push 'sws k (condition-case e (set-window-start (cdr (assq k ws-objs)) nil) (error e))))
+(ws-setup 'last)
+(kill-emacs 0)
+"##,
+    ] {
+        assert_same(
+            &corpus,
+            &["--batch", "-Q", "--eval", &format!("(progn {script})")],
+        );
+    }
+}
+
+#[test]
+fn labeled_restrictions_and_stream_modes_answer_as_editfns_c_does() {
+    // editfns.c keeps a buffer's labeled restrictions innermost first,
+    // the outermost recording the bounds current when the first was
+    // entered: narrow-to-region checks its bounds against the whole
+    // buffer and keeps them within the innermost labeled restriction's,
+    // widen goes back to that restriction's bounds (dropping the
+    // outermost one when it is reached), a nil label counts as none, and
+    // internal--labeled-narrow-to-region narrows as narrow-to-region does
+    // before recording its bounds.  fileio.c's set-binary-mode checks a
+    // symbol and the three streams by EQ and answers t on a Posix
+    // system; set-default-file-modes takes a fixnum.
+    let corpus = Corpus::new();
+    for script in [
+        r##"(defun lr-b () (list (point-min) (point-max) (point)))
+(defmacro lr-try (form) `(condition-case e ,form (error (list 'ERR e))))
+(with-temp-buffer
+  (insert "0123456789abcdefghijklmnopqrstuvwxyz\n")
+  (let (r)
+    (narrow-to-region 6 30)
+    (push (list 'a (lr-b)) r)
+    (with-restriction 10 20 :label 'foo
+      (push (list 'b (lr-b)) r)
+      (widen) (push (list 'c (lr-b)) r)
+      (narrow-to-region 1 38) (push (list 'd (lr-b)) r)
+      (narrow-to-region 12 15) (push (list 'e (lr-b)) r)
+      (save-restriction (widen) (push (list 'f (lr-b)) r))
+      (push (list 'g (lr-b)) r)
+      (without-restriction :label 'foo (push (list 'h (lr-b)) r))
+      (push (list 'i (lr-b)) r)
+      (without-restriction :label 'bar (push (list 'j (lr-b)) r))
+      (with-restriction 14 18 :label 'baz
+        (push (list 'k (lr-b)) r)
+        (widen) (push (list 'l (lr-b)) r)
+        (without-restriction :label 'baz (push (list 'm (lr-b)) r))
+        (push (list 'n (lr-b)) r))
+      (push (list 'o (lr-b)) r)
+      (goto-char 11) (insert "XX") (push (list 'p (lr-b)) r)
+      (widen) (push (list 'q (lr-b)) r))
+    (push (list 'r (lr-b)) r)
+    (widen) (push (list 's (lr-b)) r)
+    (internal--labeled-narrow-to-region 3 9 nil)
+    (push (list 't (lr-b)) r)
+    (widen) (push (list 'u (lr-b)) r)
+    (internal--labeled-widen nil) (push (list 'v (lr-b)) r)
+    (widen) (push (list 'w (lr-b)) r)
+    (push (list 'x (lr-try (narrow-to-region 0 5)) (lr-try (narrow-to-region 5 (1+ most-positive-fixnum))) (lr-try (narrow-to-region (make-marker) 3)) (lr-b)) r)
+    (dolist (x (nreverse r)) (prin1 x) (terpri))))
+"##,
+        r##"(prin1 (list (set-binary-mode 'stdout nil) (set-binary-mode 'stderr t) (set-binary-mode 'stdin nil)
+             (condition-case e (set-binary-mode 1 nil) (error e))
+             (condition-case e (set-binary-mode 'stdfoo nil) (error e))
+             (condition-case e (set-binary-mode (make-symbol "stdout") nil) (error e))
+             (condition-case e (set-default-file-modes nil) (error e))
+             (condition-case e (set-default-file-modes 1.5) (error e))
+             (condition-case e (set-default-file-modes (1+ most-positive-fixnum)) (error e))
+             (let ((m (default-file-modes))) (prog1 (list (set-default-file-modes #o750) (default-file-modes)) (set-default-file-modes m)))))
+(terpri)
+"##,
+    ] {
+        assert_same(
+            &corpus,
+            &["--batch", "-Q", "--eval", &format!("(progn {script})")],
+        );
+    }
+}
+
+#[test]
+fn describe_insertions_are_insert_string_s() {
+    // syntax.c's internal-describe-syntax-value and keymap.c's
+    // describe-vector and describe-map insert with insert_string and its
+    // relatives, a piece at a time: a read-only buffer signals before
+    // anything is inserted, each piece runs the change hooks, and
+    // describe_vector_princ indents with Findent_to (16, 1), as
+    // indent-tabs-mode and tab-width have it.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            &format!(
+                "(progn {})",
+                r##"(defun dv-run (ro thunk)
+  (with-temp-buffer
+    (insert "x")
+    (setq buffer-read-only ro)
+    (let ((after nil) (before nil))
+      (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) after)) nil t)
+      (add-hook 'before-change-functions (lambda (b e) (push (list b e) before)) nil t)
+      (let ((r (condition-case e (funcall thunk) (error (list 'ERR (car e))))))
+        (list r (buffer-string) (length after) (length before) (car after) (car (last before)))))))
+(dolist (ro '(nil t))
+  (prin1 (list ro
+               (dv-run ro (lambda () (internal-describe-syntax-value '(1))))
+               (dv-run ro (lambda () (internal-describe-syntax-value nil))) (dv-run ro (lambda () (internal-describe-syntax-value (cons (logior 4 (ash 1 20) (ash 1 16)) ?\)))))
+               (dv-run ro (lambda () (let ((standard-output (current-buffer))) (describe-vector [a nil c] 'princ))))
+               (dv-run ro (lambda () (let ((indent-tabs-mode nil) (standard-output (current-buffer))) (describe-vector [aa bb] 'princ))))
+               (dv-run ro (lambda () (let ((tab-width 4) (standard-output (current-buffer))) (describe-vector [aa bb] 'princ))))
+               (dv-run ro (lambda () (let ((m (make-sparse-keymap))) (define-key m "a" 'forward-char) (define-key m [?b] 'backward-char) (describe-map-tree m) nil)))))
+  (terpri))
+"##
+            ),
+        ],
+    );
+}
+
+#[test]
+fn symbols_with_position_decode_as_lisp_h_symbolp_xsymbol_and_eq() {
+    // lisp.h: while `symbols-with-pos-enabled' is set, CHECK_SYMBOL takes
+    // a symbol with position and XSYMBOL reaches its bare symbol, EQ
+    // compares the bare symbols, and NILP stays BASE_EQ.  Ffset's cycle
+    // check, indirect_function, the fringe, CCL, char-table, coding
+    // system, face and key decoders, json's `true' and where_is_internal
+    // all read them so; with the flag off each refuses them.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            &format!(
+                "(progn {})",
+                r##"(defmacro ps-try (form) `(condition-case e ,form (error (list 'ERR e))))
+(let ((print-symbols-bare t))
+  (dolist (on '(nil t))
+    (let* ((symbols-with-pos-enabled on)
+           (p (lambda (s) (position-symbol s 5))))
+      (prin1 (list on
+        (ps-try (fset (funcall p 'ps-a) (funcall p 'ps-a)))
+        (ps-try (progn (fset 'ps-b 'car) (fset 'ps-c (funcall p 'ps-b)) (fset 'ps-b (funcall p 'ps-c))))
+        (ps-try (defalias (funcall p 'ps-d) (funcall p 'ps-d)))
+        (ps-try (fmakunbound (funcall p t)))
+        (ps-try (list (indirect-function (funcall p t)) (indirect-function t) (indirect-function (funcall p 'ps-c))))
+        (ps-try (let ((ct (make-char-table (funcall p 'ps-purpose)))) (list (char-table-subtype ct) (eq (char-table-subtype ct) 'ps-purpose))))
+        (ps-try (list (define-fringe-bitmap (funcall p 'ps-bitmap) [1 2]) (integerp (get 'ps-bitmap 'fringe)) (eq (car fringe-bitmaps) 'ps-bitmap)
+                      (set-fringe-bitmap-face (funcall p 'ps-bitmap) 'error) (destroy-fringe-bitmap (funcall p 'ps-bitmap)) (get 'ps-bitmap 'fringe)))
+        (ps-try (progn (defvar ps-special 1) (internal-make-var-non-special (funcall p 'ps-special)) (special-variable-p 'ps-special)))
+        (ps-try (internal-event-symbol-parse-modifiers (funcall p 'C-M-ps-key)))
+        (ps-try (list (register-ccl-program (funcall p 'ps-ccl) nil) (register-ccl-program 'ps-ccl nil) (get 'ps-ccl 'ccl-program-idx)))
+        (ps-try (list (register-code-conversion-map (funcall p 'ps-map) [1]) (register-code-conversion-map 'ps-map [2]) (get 'ps-map 'code-conversion-map)))
+        (ps-try (list (single-key-description (funcall p 'C-home)) (single-key-description (funcall p 'home) t)))
+        (ps-try (list (string-collate-lessp (funcall p 'a) (funcall p 'b)) (string-collate-equalp (funcall p 'a) "a")))
+        (ps-try (internal-default-signal-process (emacs-pid) (funcall p 'ps-nosig)))
+        (ps-try (set-binary-mode (funcall p 'ps-stream) nil))
+        (ps-try (list (json-serialize (vector (funcall p t))) (json-serialize (list (funcall p :k) 1))))
+        (ps-try (check-coding-system (funcall p 'utf-8)))
+        (ps-try (check-coding-system (funcall p nil)))
+        (ps-try (coding-system-base (funcall p 'utf-8-unix)))
+        (ps-try (internal-lisp-face-attribute-values (funcall p :underline)))
+        (ps-try (list (coding-system-eol-type (funcall p 'utf-8-unix)) (consp (where-is-internal (funcall p nil)))))))
+      (terpri))))
+"##
+            ),
+        ],
+    );
+}
+
+#[test]
+fn file_names_reach_errors_and_buffers_as_the_lisp_strings_gnu_keeps() {
+    // fileio.c's report_file_error is given the Lisp file names (expanded,
+    // or as given for access-file and load), so a name's text properties
+    // and raw bytes reach the error data; BVAR (b, filename) and
+    // file_truename hold the string `buffer-file-name' was set to; and a
+    // C string from SSDATA (a hostname, a module file, access-file's
+    // message) carries the string's own bytes.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            &format!(
+                "(progn {})",
+                r##"(let* ((dir (file-name-as-directory (make-temp-file "fe" t)))
+       (default-directory dir)
+       (show (lambda (x) (if (stringp x)
+                             (let ((s (if (string-prefix-p dir x) (substring x (length dir)) x)))
+                               (list s (multibyte-string-p s) (text-properties-at 0 s)))
+                           x)))
+       (err (lambda (thunk) (condition-case e (progn (funcall thunk) 'ok)
+                              ;; The errno text (the third element) as text alone.
+                              (error (append (list (car e) (funcall show (nth 1 e)) (nth 2 e))
+                                             (mapcar show (nthcdr 3 e)))))))
+       (p (propertize "nd/foo" 'face 'bold))
+       (r (string-to-multibyte "nd/\377a")))
+  (unwind-protect
+      (dolist (f (list p r))
+        (prin1 (list (funcall err (lambda () (with-temp-buffer (insert-file-contents f))))
+                     (funcall err (lambda () (with-temp-buffer (insert "x") (write-region nil nil f nil 0))))
+                     (funcall err (lambda () (copy-file f "dst")))
+                     (funcall err (lambda () (rename-file f "dst")))
+                     (funcall err (lambda () (add-name-to-file f "dst")))
+                     (funcall err (lambda () (make-symbolic-link "x" f)))
+                     (funcall err (lambda () (delete-directory f)))
+                     (funcall err (lambda () (make-directory f)))
+                     (funcall err (lambda () (set-file-modes f #o644)))
+                     (funcall err (lambda () (set-file-times f)))
+                     (funcall err (lambda () (access-file f (string-to-multibyte "m\377"))))
+                     (funcall err (lambda () (load f nil t)))))
+        (terpri))
+    (delete-directory dir t)))
+(with-temp-buffer
+  (setq buffer-file-name (propertize "/tmp/x" 'a 1))
+  (setq buffer-file-truename (propertize "/tmp/y" 'b 2))
+  (prin1 (list (eq buffer-file-name buffer-file-name) buffer-file-name (buffer-file-name)
+               (eq buffer-file-truename buffer-file-truename) buffer-file-truename
+               (condition-case e (setq buffer-file-name 5) (error e))
+               (let ((r (string-to-multibyte "/tmp/\377a"))) (setq buffer-file-name r)
+                    (list (eq (buffer-file-name) r) (append buffer-file-name nil)))))
+  (terpri))
+(let ((r (string-to-multibyte "\377a")))
+  (prin1 (list (condition-case e (network-lookup-address-info r) (error (list (multibyte-string-p (cadr e)) (append (cadr e) nil))))
+               (condition-case e (network-lookup-address-info r 'bogus) (error e))
+               (condition-case e (module-load (string-to-multibyte "/nonexistent/\377a"))
+                 (error (list (car e) (multibyte-string-p (nth 2 e)) (append (substring (nth 2 e) 0 16) nil))))))
+  (terpri))
+"##
+            ),
+        ],
+    );
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

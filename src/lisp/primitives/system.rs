@@ -2794,7 +2794,7 @@ fn file_primitive_preamble(
             let buffer = interp.decode_buffer(args.first())?;
             let file = {
                 let buffer = buffer.borrow();
-                buffer.file.clone().filter(|_| {
+                buffer.file_name_text().filter(|_| {
                     buffer.visited_file_modtime().stamp != crate::buffer::ModtimeStamp::Unknown
                 })
             };
@@ -2957,7 +2957,7 @@ pub(crate) fn dispatch_file_name_handler(
             // handler writes the bytes: jka-compr's updates the visited
             // modtime and relies on this boundary to record VISIT_FILE
             // and mark the buffer saved.
-            interp.buffer.borrow_mut().file = Some(string_text(&visit_file)?);
+            interp.buffer.borrow_mut().set_file_name(visit_file);
             super::file_io::record_visit_saved(interp);
         }
         return Ok(FileNameDispatch::Handled(result));
@@ -3001,9 +3001,10 @@ fn file_name_handler_candidates(
         };
         if let Some(file) = interp
             .get_buffer_by_id(buffer_id)
-            .and_then(|buffer| buffer.file.clone())
+            .map(|buffer| buffer.file_name())
+            .filter(|file| !file.is_nil())
         {
-            candidates.push(Value::string(&file));
+            candidates.push(file);
         }
     }
     candidates

@@ -2133,17 +2133,10 @@ impl DumpContext {
         // WEIGHT_STRONG; the marker chain is WEIGHT_NORMAL.
         let mut fields: Vec<(usize, Value, LinkWeight)> = vec![
             (BUFFER_NAME as usize, parts.name, WEIGHT_STRONG),
-            (
-                BUFFER_FILE as usize,
-                parts.file.as_deref().map_or(Value::Nil, Value::string),
-                WEIGHT_STRONG,
-            ),
+            (BUFFER_FILE as usize, parts.file, WEIGHT_STRONG),
             (
                 BUFFER_FILE_TRUENAME as usize,
-                parts
-                    .file_truename
-                    .as_deref()
-                    .map_or(Value::Nil, Value::string),
+                parts.file_truename,
                 WEIGHT_STRONG,
             ),
             (

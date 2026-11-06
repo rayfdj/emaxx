@@ -176,11 +176,13 @@ pub struct Buffer {
     begv: usize,
     zv: usize,
 
-    /// Path to the visited file, if any.
-    pub file: Option<String>,
+    /// BVAR (b, filename): nil or the string `buffer-file-name' holds, the
+    /// object itself.
+    file: Value,
 
-    /// Canonical path to the visited file, if known.
-    pub file_truename: Option<String>,
+    /// BVAR (b, file_truename): nil or the string
+    /// `buffer-file-truename' holds.
+    file_truename: Value,
 
     /// The visited file's time and size as the buffer last read or wrote
     /// it.
@@ -205,6 +207,16 @@ pub struct Buffer {
     /// a C variable each buffer holds as the interpreter last stored it,
     /// which turns record_point off.
     undo_inhibit_record_point: bool,
+
+    /// buffer.h's last_window_start: the start of the last window to stop
+    /// showing the buffer (window.c:unshow_buffer), where set_window_buffer
+    /// starts the next; reset_buffer makes it 1.
+    last_window_start: usize,
+
+    /// BVAR (b, last_selected_window): the window select_window last
+    /// selected showing the buffer, or nil; unshow_buffer keeps that
+    /// window's point in the buffer while it still shows it.
+    last_selected_window: Value,
 
     /// Overlays attached to this buffer.
     pub overlays: crate::overlay::OverlayTree,
@@ -244,13 +256,15 @@ impl Clone for Buffer {
             auto_save_failure_time: self.auto_save_failure_time,
             begv: self.begv,
             zv: self.zv,
-            file: self.file.clone(),
-            file_truename: self.file_truename.clone(),
+            file: self.file,
+            file_truename: self.file_truename,
             visited_file_modtime: self.visited_file_modtime,
             undo_list: self.undo_list,
             keymap: self.keymap,
             point_before_last_command_or_undo: self.point_before_last_command_or_undo,
             undo_inhibit_record_point: self.undo_inhibit_record_point,
+            last_window_start: self.last_window_start,
+            last_selected_window: self.last_selected_window,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: self.inhibit_hooks,
             text_conversion_style: self.text_conversion_style,
@@ -967,8 +981,8 @@ pub(crate) struct BufferImage {
     pub(crate) autosave_modiff: ModCount,
     pub(crate) begv: usize,
     pub(crate) zv: usize,
-    pub(crate) file: Option<String>,
-    pub(crate) file_truename: Option<String>,
+    pub(crate) file: Value,
+    pub(crate) file_truename: Value,
     pub(crate) visited_file_modtime: VisitedModtime,
     pub(crate) undo_list: Value,
     pub(crate) keymap: Value,
@@ -1165,13 +1179,15 @@ impl Buffer {
             auto_save_failure_time: 0,
             begv: 1,
             zv: 1, // empty buffer: zv = 1
-            file: None,
-            file_truename: None,
+            file: Value::Nil,
+            file_truename: Value::Nil,
             visited_file_modtime: VisitedModtime::UNKNOWN,
             undo_list: Value::Nil,
             keymap: Value::Nil,
             point_before_last_command_or_undo: None,
             undo_inhibit_record_point: false,
+            last_window_start: 1,
+            last_selected_window: Value::Nil,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -1245,13 +1261,15 @@ impl Buffer {
             auto_save_failure_time: 0,
             begv: 1,
             zv: len + 1,
-            file: None,
-            file_truename: None,
+            file: Value::Nil,
+            file_truename: Value::Nil,
             visited_file_modtime: VisitedModtime::UNKNOWN,
             undo_list: Value::Nil,
             keymap: Value::Nil,
             point_before_last_command_or_undo: None,
             undo_inhibit_record_point: false,
+            last_window_start: 1,
+            last_selected_window: Value::Nil,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -2278,6 +2296,9 @@ impl Buffer {
         }
         self.undo_list = copy(&self.undo_list);
         self.keymap = copy(&self.keymap);
+        self.last_selected_window = copy(&self.last_selected_window);
+        self.file = copy(&self.file);
+        self.file_truename = copy(&self.file_truename);
     }
 
     /// Visit every Lisp value retained by this buffer.  Garbage collection
@@ -2307,6 +2328,9 @@ impl Buffer {
         }
         visit(&self.undo_list);
         visit(&self.keymap);
+        visit(&self.last_selected_window);
+        visit(&self.file);
+        visit(&self.file_truename);
         for value in self
             .killed_locals
             .iter()
@@ -3844,6 +3868,62 @@ impl Buffer {
 
     // ── Undo (undo.c) ──
 
+    /// buffer.h's last_window_start (window.c reads and sets it).
+    pub(crate) fn last_window_start(&self) -> usize {
+        self.last_window_start
+    }
+
+    pub(crate) fn set_last_window_start(&mut self, start: usize) {
+        self.last_window_start = start;
+    }
+
+    /// BVAR (b, filename): nil or the visited file's name, the string
+    /// stored.
+    pub(crate) fn file_name(&self) -> Value {
+        self.file
+    }
+
+    /// bset_filename.
+    pub(crate) fn set_file_name(&mut self, name: Value) {
+        self.file = name;
+    }
+
+    /// The visited file's name as text, for a host path or a comparison
+    /// by name; None when the buffer visits no file.
+    pub(crate) fn file_name_text(&self) -> Option<String> {
+        crate::lisp::primitives::string_text(&self.file).ok()
+    }
+
+    /// Whether BVAR (b, filename) is non-nil.
+    pub(crate) fn visits_file(&self) -> bool {
+        !self.file.is_nil()
+    }
+
+    /// BVAR (b, file_truename).
+    pub(crate) fn file_truename(&self) -> Value {
+        self.file_truename
+    }
+
+    /// bset_file_truename.
+    pub(crate) fn set_file_truename(&mut self, name: Value) {
+        self.file_truename = name;
+    }
+
+    /// The visited file's truename as text.
+    pub(crate) fn file_truename_text(&self) -> Option<String> {
+        crate::lisp::primitives::string_text(&self.file_truename).ok()
+    }
+
+    /// BVAR (b, last_selected_window).
+    pub(crate) fn last_selected_window(&self) -> Value {
+        self.last_selected_window
+    }
+
+    /// bset_last_selected_window.
+    pub(crate) fn set_last_selected_window(&mut self, window: Value) {
+        self.last_selected_window = window;
+    }
+
     /// BVAR (b, keymap): Fcurrent_local_map's value.
     pub(crate) fn keymap(&self) -> Value {
         self.keymap
@@ -4090,8 +4170,8 @@ impl Buffer {
             autosave_modiff: self.autosave_modiff,
             begv: self.begv,
             zv: self.zv,
-            file: self.file.clone(),
-            file_truename: self.file_truename.clone(),
+            file: self.file,
+            file_truename: self.file_truename,
             visited_file_modtime: self.visited_file_modtime,
             undo_list: self.undo_list,
             keymap: self.keymap,
@@ -4140,6 +4220,8 @@ impl Buffer {
             keymap: parts.keymap,
             point_before_last_command_or_undo: None,
             undo_inhibit_record_point: false,
+            last_window_start: 1,
+            last_selected_window: Value::Nil,
             overlays: crate::overlay::OverlayTree::default(),
             inhibit_hooks: parts.inhibit_hooks,
             text_conversion_style: parts.text_conversion_style,

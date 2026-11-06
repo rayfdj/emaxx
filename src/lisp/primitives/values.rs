@@ -439,11 +439,18 @@ pub(crate) fn values_eq_in_env(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
-    env: &Env,
+    _env: &Env,
 ) -> bool {
+    lisp_eq(interp, left, right)
+}
+
+/// lisp.h:EQ: BASE_EQ, or while `symbols-with-pos-enabled' the bare
+/// symbols' BASE_EQ.
+#[inline]
+pub(crate) fn lisp_eq(interp: &Interpreter, left: &Value, right: &Value) -> bool {
     left.word() == right.word()
         || ((left.is_vectorlike() || right.is_vectorlike())
-            && crate::lisp::primitives::symbols_with_pos_enabled(interp, env)
+            && crate::lisp::primitives::symbols_with_pos_flag(interp)
             && bare_symbols_eq(left, right))
 }
 
@@ -2196,7 +2203,7 @@ fn describe_vector(
             }
         }
         if first {
-            interp.insert_current_buffer("\n");
+            super::dispatch::insert_string(interp, "\n", env)?;
             first = false;
         }
         insert_described_key_of(interp, starting_i, &prefix, env)?;
@@ -2233,7 +2240,7 @@ fn describe_vector(
             }
         }
         if i != starting_i {
-            interp.insert_current_buffer(" .. ");
+            super::dispatch::insert_string(interp, " .. ", env)?;
             insert_described_key_of(interp, i, &prefix, env)?;
         }
         call_function_value(interp, &describer, &[definition], env)?;
@@ -2241,9 +2248,13 @@ fn describe_vector(
             let point = interp.buffer.borrow().point();
             interp.buffer.borrow_mut().goto_char(point - 1);
             if let Kind::Symbol(command) = shadowed_by.kind() {
-                interp.insert_current_buffer(&format!("  (currently shadowed by `{command}')"));
+                super::dispatch::insert_string(
+                    interp,
+                    &format!("  (currently shadowed by `{command}')"),
+                    env,
+                )?;
             } else {
-                interp.insert_current_buffer("  (currently shadowed)");
+                super::dispatch::insert_string(interp, "  (currently shadowed)", env)?;
             }
             let point = interp.buffer.borrow().point();
             interp.buffer.borrow_mut().goto_char(point + 1);
@@ -2253,7 +2264,7 @@ fn describe_vector(
     if let Some(table) = table
         && !table.default().is_nil()
     {
-        interp.insert_current_buffer("default");
+        super::dispatch::insert_string(interp, "default", env)?;
         call_function_value(interp, &describer, &[table.default()], env)?;
     }
     Ok(())

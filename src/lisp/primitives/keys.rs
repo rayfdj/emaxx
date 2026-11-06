@@ -257,8 +257,9 @@ pub(crate) fn parse_event_symbol_modifiers(
     value: &Value,
 ) -> Result<Value, LispError> {
     use crate::lisp::primitives::keymap::{symbol_get, symbol_put};
-    // parse_modifiers reads SYMBOL_NAME, whatever obarray SYMBOL is in.
-    value.as_symbol()?;
+    // parse_modifiers reads SYMBOL_NAME, whatever obarray SYMBOL is in,
+    // and Fget/Fput XSYMBOL's cell: a positioned symbol's while enabled.
+    let value = &crate::lisp::primitives::interactive::check_symbol(interp, *value)?;
     let name = match value.kind() {
         Kind::Symbol(symbol) => symbol.name_text(),
         _ => value.as_symbol()?.to_owned(),

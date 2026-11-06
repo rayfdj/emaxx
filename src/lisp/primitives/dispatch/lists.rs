@@ -1436,14 +1436,16 @@ define_dispatch!(
                         args[0],
                     ])));
                 }
-                interp.fset_function_symbol(&symbol, args[1], env)
+                interp.fset_function_symbol(&symbol, args[0], args[1], env)
             }
             "fmakunbound" => {
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Ffmakunbound uses CHECK_SYMBOL/XSYMBOL and
                 // returns its original symbol argument.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
-                if args[0].is_nil() || args[0] == Value::T {
+                // `NILP (symbol) || EQ (symbol, Qt)': nil as BASE_EQ, t as
+                // EQ, which takes a positioned t while enabled.
+                if args[0].is_nil() || lisp_symbol(interp, args[0]) == Some(Value::T) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("setting-constant"),
                         args[0],

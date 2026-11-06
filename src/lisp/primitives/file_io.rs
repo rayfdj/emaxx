@@ -106,7 +106,7 @@ fn system_time_to_timespec(time: SystemTime) -> libc::timespec {
 }
 
 pub(crate) fn set_file_times_path(
-    path: &str,
+    absname: Value,
     host: &Path,
     modified: SystemTime,
     nofollow: bool,
@@ -132,7 +132,7 @@ pub(crate) fn set_file_times_path(
             Ok(())
         } else {
             let error = std::io::Error::last_os_error();
-            Err(file_operation_error("Setting file times", &error, path))
+            Err(report_file_errno("Setting file times", absname, &error))
         }
     }
     #[cfg(not(unix))]
@@ -140,7 +140,7 @@ pub(crate) fn set_file_times_path(
         let _ = (modified, nofollow);
         fs::metadata(host)
             .map(|_| ())
-            .map_err(|error| file_operation_error("Setting file times", &error, path))
+            .map_err(|error| report_file_errno("Setting file times", absname, &error))
     }
 }
 
@@ -182,15 +182,6 @@ fn file_errno_data(message: &str, error: &std::io::Error, files: &[&str]) -> Val
     data.push(Value::String(errno_text(error).into()));
     data.extend(files.iter().map(|file| Value::String((*file).into())));
     Value::list(data)
-}
-
-/// report_file_errno (MESSAGE, list2 (FILE, NEWNAME), errno) and the like.
-pub(crate) fn file_operation_error_files(
-    message: &str,
-    error: &std::io::Error,
-    files: &[&str],
-) -> LispError {
-    LispError::SignalValue(file_errno_data(message, error, files))
 }
 
 /// fileio.c barf_or_query_if_file_exists.  ABSNAME, unless KNOWN_TO_EXIST
@@ -294,10 +285,50 @@ pub(crate) fn file_operation_error_value_without_file(
 /// get_file_errno_data's `(CONDITION MESSAGE ERRSTRING FILE)', EEXIST's
 /// `file-already-exists' without MESSAGE.
 pub(crate) fn report_file_errno(message: &str, file: Value, error: &std::io::Error) -> LispError {
+    report_file_errno_files(message, &[file], error)
+}
+
+/// fileio.c:report_file_errno with NAME a list of the Lisp file names
+/// FILES as given, as `list2 (file, newname)' for the two-name
+/// primitives.
+pub(crate) fn report_file_errno_files(
+    message: &str,
+    files: &[Value],
+    error: &std::io::Error,
+) -> LispError {
     let condition = file_error_condition(error);
     let mut data = vec![Value::symbol(condition)];
     if condition != "file-already-exists" {
         data.push(Value::string(message));
+    }
+    data.push(Value::String(errno_text(error).into()));
+    data.extend_from_slice(files);
+    LispError::SignalValue(Value::list(data))
+}
+
+/// fileio.c:report_file_errno (SSDATA (STRING), FILE, errno): STRING's
+/// bytes up to the first NUL made a string again by build_string, FILE
+/// as given.
+pub(crate) fn report_file_errno_sdata(
+    string: &Value,
+    file: Value,
+    error: &std::io::Error,
+) -> LispError {
+    let condition = file_error_condition(error);
+    let mut data = vec![Value::symbol(condition)];
+    if condition != "file-already-exists" {
+        let bytes = match string.kind() {
+            Kind::StringObject(state) => state.borrow().bytes().to_vec(),
+            _ => Vec::new(),
+        };
+        let end = bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(bytes.len());
+        data.push(
+            crate::lisp::primitives::strings::make_string(bytes[..end].to_vec())
+                .unwrap_or_else(|_| Value::string("")),
+        );
     }
     data.push(Value::String(errno_text(error).into()));
     data.push(file);
@@ -319,10 +350,6 @@ pub(crate) fn file_metadata_errno(
 
 pub(crate) fn file_operation_error(message: &str, error: &std::io::Error, path: &str) -> LispError {
     LispError::SignalValue(file_operation_error_value(message, error, path))
-}
-
-pub(crate) fn file_input_error_value(error: &std::io::Error, path: &str) -> Value {
-    file_operation_error_value("Opening input file", error, path)
 }
 
 pub(crate) fn make_temp_file_internal(
@@ -580,7 +607,7 @@ pub(crate) struct InsertFileRead {
 impl InsertFileSource {
     pub(crate) fn examine(
         mut file: fs::File,
-        path: &str,
+        filename: Value,
         replace: Option<&Value>,
         beg: Option<i64>,
         end: Option<i64>,
@@ -588,7 +615,7 @@ impl InsertFileSource {
         use std::io::Seek;
         let metadata = file
             .metadata()
-            .map_err(|error| file_operation_error("Input file status", &error, path))?;
+            .map_err(|error| report_file_errno("Input file status", filename, &error))?;
         let regular = metadata.is_file() || metadata.is_dir();
         let mut seekable = true;
         if !regular {
@@ -596,7 +623,7 @@ impl InsertFileSource {
                 return Err(LispError::SignalValue(Value::list([
                     Value::symbol("file-error"),
                     Value::String("not a regular file".into()),
-                    Value::String(path.into()),
+                    filename,
                 ])));
             }
             if beg.is_some() {
@@ -605,7 +632,7 @@ impl InsertFileSource {
                     Value::String(
                         "cannot use a start position in a non-seekable file/device".into(),
                     ),
-                    Value::String(path.into()),
+                    filename,
                 ])));
             }
             seekable = file.stream_position().is_ok();
@@ -665,14 +692,14 @@ impl InsertFileSource {
         mut self,
         interp: &mut Interpreter,
         env: &mut Env,
-        path: &str,
+        filename: Value,
         replace: bool,
     ) -> Result<InsertFileRead, LispError> {
         use std::io::{Seek, SeekFrom};
         if self.beg != 0 || replace {
             self.file
                 .seek(SeekFrom::Start(self.beg as u64))
-                .map_err(|error| file_operation_error("Setting file position", &error, path))?;
+                .map_err(|error| report_file_errno("Setting file position", filename, &error))?;
         }
         let limit = (self.seekable || self.end_given).then(|| self.total.max(0) as u64);
         // Room for what a regular file holds past BEG, each read going
@@ -1096,8 +1123,8 @@ fn write_region_with_coding(
     mut descriptor: Option<&mut fs::File>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    // FILENAME as given: the expanded name whose text is PATH.
     let mut selected_args = *args;
-    selected_args[2] = Value::string(path);
     if args[0].is_nil() {
         selected_args[0] = Value::Integer(interp.buffer.borrow().point_min() as i64);
         selected_args[1] = Value::Integer(interp.buffer.borrow().point_max() as i64);
@@ -1186,12 +1213,14 @@ fn write_region_with_coding(
     // error", and "Write error" for the write or the close (once the
     // file is open, after the lock is given back).
     let mut opened = false;
+    // FILENAME, the Lisp name report_file_errno is given.
+    let filename = args[2];
     let write_result = (|| {
         use std::os::unix::io::IntoRawFd;
         if let Some(file) = descriptor.as_deref_mut() {
             opened = true;
             return emacs_write_quit(interp, env, file, &bytes)?
-                .map_err(|error| file_operation_error("Write error", &error, path));
+                .map_err(|error| report_file_errno("Write error", filename, &error));
         }
         let exclusive = args[6].is_key(cached_symbol!("excl"));
         // An auto-save file is made with auto_save_mode_bits.
@@ -1221,21 +1250,21 @@ fn write_region_with_coding(
             flags |= libc::O_APPEND;
         }
         let mut file = emacs_open(interp, env, &host, flags, mode)?
-            .map_err(|error| file_operation_error("Opening output file", &error, path))?;
+            .map_err(|error| report_file_errno("Opening output file", filename, &error))?;
         opened = true;
         if let Some(offset) = offset {
             file.seek(SeekFrom::Start(offset as u64))
-                .map_err(|error| file_operation_error("Lseek error", &error, path))?;
+                .map_err(|error| report_file_errno("Lseek error", filename, &error))?;
         }
         emacs_write_quit(interp, env, &mut file, &bytes)?
-            .map_err(|error| file_operation_error("Write error", &error, path))?;
+            .map_err(|error| report_file_errno("Write error", filename, &error))?;
         // NFS can report a write failure at the close.
         let fd = file.into_raw_fd();
         // SAFETY: the descriptor was just released by its File.
         if unsafe { libc::close(fd) } < 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() != ErrorKind::Interrupted {
-                return Err(file_operation_error("Write error", &error, path));
+                return Err(report_file_errno("Write error", filename, &error));
             }
         }
         Ok(())
@@ -1280,13 +1309,14 @@ fn write_region_with_coding(
     let into_visited_file = auto_saving_into_visited_file(interp);
     let visit = args.get(4).copied().unwrap_or(Value::Nil);
     if matches!(visit.kind(), Kind::T) || string_like(&visit).is_some() {
-        let visited_name = if matches!(visit.kind(), Kind::T) {
-            logical_path.to_string()
+        // bset_filename (current_buffer, visit_file): FILENAME for a VISIT
+        // of t, else Fexpand_file_name (VISIT, Qnil).
+        let visit_file = if matches!(visit.kind(), Kind::T) {
+            args[2]
         } else {
-            string_text(&visit)?
+            crate::lisp::primitives::fexpand_file_name(interp, env, visit, Value::Nil)?
         };
-        let visited_name = expand_file_name_runtime(interp, env, &visited_name, None)?;
-        interp.buffer.borrow_mut().file = Some(visited_name);
+        interp.buffer.borrow_mut().set_file_name(visit_file);
         // The time and size the written file has, unless its status cannot
         // be read.
         if let Ok(modtime) = stat_visited_modtime(interp, env, path)? {
@@ -2337,13 +2367,13 @@ pub(crate) fn record_insert_visit_saved(interp: &mut Interpreter) {
 fn record_visit(
     interp: &mut Interpreter,
     env: &mut Env,
-    path: &str,
+    filename: Value,
     empty_undo_list_p: bool,
 ) -> Result<(), LispError> {
     if empty_undo_list_p {
         interp.buffer.borrow_mut().set_undo_list(Value::Nil);
     }
-    interp.buffer.borrow_mut().file = Some(path.to_string());
+    interp.buffer.borrow_mut().set_file_name(filename);
     record_insert_visit_saved(interp);
     if let Some(truename) = interp
         .lookup_var_key(cached_symbol!("buffer-file-truename"), env)
@@ -2351,7 +2381,7 @@ fn record_visit(
     {
         super::call(interp, "unlock-file", &[truename], env)?;
     }
-    super::call(interp, "unlock-file", &[Value::String(path.into())], env)?;
+    super::call(interp, "unlock-file", &[filename], env)?;
     Ok(())
 }
 
@@ -2419,9 +2449,7 @@ pub(crate) fn insert_file_contents(
             Ok(file) => Ok(file),
             Err(error) => {
                 open_failure = time_error_value(&error);
-                Err(LispError::SignalValue(file_input_error_value(
-                    &error, &path,
-                )))
+                Err(report_file_errno("Opening input file", args[0], &error))
             }
         },
         Err(error) => Err(error),
@@ -2459,7 +2487,7 @@ pub(crate) fn insert_file_contents(
                     stamp: open_failure,
                     size: -1,
                 });
-            record_visit(interp, env, &path, empty_undo_list_p)?;
+            record_visit(interp, env, args[0], empty_undo_list_p)?;
             set_last_coding_system_used(interp, &coding, env);
             finish_insert_file_contents(interp, env, 0, &args[1..], empty_undo_list_p)?;
             return Err(error);
@@ -2475,13 +2503,7 @@ pub(crate) fn insert_file_contents(
                 size: metadata.len() as i64,
             })
         })
-        .map_err(|error| {
-            LispError::SignalValue(file_operation_error_value(
-                "Input file status",
-                &error,
-                &path,
-            ))
-        })?;
+        .map_err(|error| report_file_errno("Input file status", args[0], &error))?;
     // Replacement preserves point as it preserves markers
     // (get_window_points_and_markers): a marker at point that the change
     // moves and restore_window_points places, and point goes there at the
@@ -2496,7 +2518,7 @@ pub(crate) fn insert_file_contents(
         marker
     });
     let read_file = |interp: &mut Interpreter, env: &mut Env| -> Result<Value, LispError> {
-        let source = InsertFileSource::examine(file, &path, replace_arg.as_ref(), beg, end)?;
+        let source = InsertFileSource::examine(file, args[0], replace_arg.as_ref(), beg, end)?;
         {
             let buffer = interp.buffer.borrow();
             let kept = buffer.size_total()
@@ -2512,9 +2534,9 @@ pub(crate) fn insert_file_contents(
         // Qunbound) by erasing the accessible portion and inserting.
         let replace = replace_arg.is_some() && regular;
         let (coding_used, inserted_chars) = if replace {
-            let read = source.read(interp, env, &path, true)?;
+            let read = source.read(interp, env, args[0], true)?;
             if let Some(error) = read.error {
-                return Err(file_operation_error("Read error", &error, &path));
+                return Err(report_file_errno("Read error", args[0], &error));
             }
             replace_file_contents(
                 interp,
@@ -2544,12 +2566,12 @@ pub(crate) fn insert_file_contents(
                 .buffer
                 .borrow_mut()
                 .set_visited_file_modtime(opened_modtime);
-            record_visit(interp, env, &path, empty_undo_list_p)?;
+            record_visit(interp, env, args[0], empty_undo_list_p)?;
             if !regular {
                 return Err(LispError::SignalValue(Value::list([
                     Value::symbol("file-error"),
                     Value::String("not a regular file".into()),
-                    Value::String(path.into()),
+                    args[0],
                 ])));
             }
         }
@@ -2564,10 +2586,7 @@ pub(crate) fn insert_file_contents(
             &args[1..],
             empty_undo_list_p,
         )?;
-        Ok(Value::list([
-            Value::String(path.into()),
-            Value::Integer(inserted as i64),
-        ]))
+        Ok(Value::list([args[0], Value::Integer(inserted as i64)]))
     };
     let Some(marker) = point_marker else {
         return read_file(interp, env);
@@ -2653,7 +2672,8 @@ fn insert_file_bytes(
             crate::lisp::primitives::delete_region_with_hooks(interp, begv, zv, env)?;
         }
         source.check_gap(interp.buffer.borrow().size_total())?;
-        let read = source.read(interp, env, path, false)?;
+        // FILENAME, insert-file-contents' first argument.
+        let read = source.read(interp, env, operation_args[0], false)?;
         if read.bytes.is_empty() {
             if we_locked_file
                 && let Some(truename) =
@@ -2666,7 +2686,7 @@ fn insert_file_bytes(
             interp.set_variable_key(cached_symbol!("deactivate-mark"), Value::T, env);
         }
         if let Some(error) = read.error {
-            return Err(file_operation_error("Read error", &error, path));
+            return Err(report_file_errno("Read error", operation_args[0], &error));
         }
         let bytes = read.bytes;
         let (coding, decided_bytes) = match decision.take() {
@@ -3103,7 +3123,7 @@ pub(crate) fn auto_saving_dir_umask() -> u32 {
 fn auto_saving_into_visited_file(interp: &Interpreter) -> bool {
     auto_saving() && {
         let id = interp.current_buffer_id();
-        let file = interp.buffer.borrow().file.clone();
+        let file = interp.buffer.borrow().file_name_text();
         let auto_save = interp
             .buffer_local_value_key(id, cached_symbol!("buffer-auto-save-file-name"))
             .and_then(|name| string_like(&name).map(|name| name.text));
@@ -3117,7 +3137,7 @@ fn auto_saving_into_visited_file(interp: &Interpreter) -> bool {
 fn auto_save_1(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
     use std::os::unix::fs::PermissionsExt;
     let mut bits = 0o666;
-    let file = interp.buffer.borrow().file.clone();
+    let file = interp.buffer.borrow().file_name_text();
     if let Some(file) = file {
         match host_file_name(interp, env, &file)
             .ok()
@@ -3285,7 +3305,7 @@ pub(crate) fn do_auto_save(
                 if let (Some(name), Some(stream), false) =
                     (&auto_save_name, stream.as_mut(), do_handled_files)
                 {
-                    let file = buffer.borrow().file.clone().unwrap_or_default();
+                    let file = buffer.borrow().file_name_text().unwrap_or_default();
                     let name = string_text(name)?;
                     let _ = writeln!(stream, "{file}\n{name}");
                 }
@@ -3337,7 +3357,7 @@ pub(crate) fn do_auto_save(
                     .is_none_or(|value| value.is_nil())
                     && save_length > 5000
                     && GROWTH_FACTOR * size < (GROWTH_FACTOR - 1) * save_length
-                    && buffer.borrow().file.is_some()
+                    && buffer.borrow().visits_file()
                     && !no_message
                 {
                     // It has shrunk too much; turn off auto-saving here.

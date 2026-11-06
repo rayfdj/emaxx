@@ -11360,7 +11360,7 @@ mod tests {
                     "retained-dead-buffer",
                     &"large buffer payload\n".repeat(8192),
                 );
-                state.file = Some("/tmp/retained-dead-buffer.el".into());
+                state.set_file_name(Value::string("/tmp/retained-dead-buffer.el"));
                 state.put_text_property(1, 2, "retained-property".into(), property);
                 state.set_undo_list(undo);
                 state.text_conversion_style = style;
@@ -11404,7 +11404,10 @@ mod tests {
             assert!(state.intervals().is_none());
             assert!(state.text_conversion_style.is_nil());
             assert!(!state.text_conversion_style_is_local);
-            assert_eq!(state.file.as_deref(), Some("/tmp/retained-dead-buffer.el"));
+            assert_eq!(
+                state.file_name_text().as_deref(),
+                Some("/tmp/retained-dead-buffer.el")
+            );
         }
 
         let mut interpreter = Interpreter::new();

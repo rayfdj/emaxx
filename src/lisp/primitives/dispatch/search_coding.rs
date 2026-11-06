@@ -1025,45 +1025,33 @@ define_dispatch!(
 
             "internal--labeled-narrow-to-region" => {
                 need_args(name, args, 3)?;
-                let mut start = position_from_value(interp, &args[0])?;
-                let mut end = position_from_value(interp, &args[1])?;
-                let label = args[2];
-                if start > end {
-                    std::mem::swap(&mut start, &mut end);
-                }
+                // editfns.c:Finternal__labeled_narrow_to_region: the bounds
+                // before as the outermost restriction (when none is labeled
+                // yet), Fnarrow_to_region, then the bounds after under
+                // LABEL.
+                let buffer_id = interp.current_buffer_id();
                 let outermost = (
                     interp.buffer.borrow().point_min(),
                     interp.buffer.borrow().point_max(),
                 );
-                if let Some((clamp_start, clamp_end)) =
-                    interp.effective_labeled_restriction(interp.current_buffer_id(), None)
-                {
-                    start = start.clamp(clamp_start, clamp_end);
-                    end = end.clamp(clamp_start, clamp_end);
-                }
-                interp.push_labeled_restriction(
-                    interp.current_buffer_id(),
-                    label,
-                    start,
-                    end,
-                    outermost,
-                )?;
-                interp.buffer.borrow_mut().narrow_to_region(start, end);
-                interp.invalidate_current_column();
+                super::buffer_edit::narrow_current_buffer(interp, &args[0], &args[1])?;
+                let (start, end) = (
+                    interp.buffer.borrow().point_min(),
+                    interp.buffer.borrow().point_max(),
+                );
+                interp.push_labeled_restriction(buffer_id, args[2], start, end, outermost)?;
                 Ok(Value::Nil)
             }
 
             "internal--labeled-widen" => {
                 need_args(name, args, 1)?;
-                let label = &args[0];
-                if let Some((start, end)) =
-                    interp.pop_labeled_restriction(interp.current_buffer_id(), label)
-                {
-                    interp.buffer.borrow_mut().narrow_to_region(start, end);
-                } else {
-                    interp.buffer.borrow_mut().widen();
+                // editfns.c:Finternal__labeled_widen: the innermost
+                // restriction goes when it is LABEL's (EQ), then Fwiden.
+                let buffer_id = interp.current_buffer_id();
+                if interp.labeled_restriction_label_is(buffer_id, args[0]) {
+                    interp.pop_labeled_restriction(buffer_id);
                 }
-                interp.invalidate_current_column();
+                super::buffer_edit::widen_current_buffer(interp);
                 Ok(Value::Nil)
             }
 
@@ -1690,8 +1678,10 @@ fn insert_converted_text(
     // unibyte destination.
     let props = converted.props.clone();
     let layout = decode.and_then(|decode| decode.layout.as_ref());
+    // decode_coding_object's set_buffer_internal of the destination: no
+    // window shows it for the conversion.
     let saved_buffer_id = interp.current_buffer_id();
-    interp.switch_to_buffer_id(buffer_id)?;
+    interp.set_current_buffer_id(buffer_id)?;
     let dst_pos = interp.buffer.borrow().point();
     // A decode inserted a call at a time writes each call's characters
     // into a unibyte buffer itself.
@@ -1700,7 +1690,7 @@ fn insert_converted_text(
             match unibyte_destination_form(&converted) {
                 Ok(converted) => converted,
                 Err(error) => {
-                    let _ = interp.switch_to_buffer_id(saved_buffer_id);
+                    let _ = interp.set_current_buffer_id(saved_buffer_id);
                     return Err(error);
                 }
             }
@@ -1724,6 +1714,6 @@ fn insert_converted_text(
         ),
         None => Ok(produced),
     });
-    let _ = interp.switch_to_buffer_id(saved_buffer_id);
+    let _ = interp.set_current_buffer_id(saved_buffer_id);
     Ok(Value::Integer(produced? as i64))
 }

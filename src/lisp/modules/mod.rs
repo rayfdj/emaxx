@@ -376,24 +376,47 @@ pub(crate) fn load(
     file: &Value,
     environment: &mut Env,
 ) -> Result<Value, LispError> {
-    let path = primitives::string_like(file)
-        .ok_or_else(|| primitives::wrong_type_argument("stringp", *file))?
-        .text;
-    // dynlib.c uses global symbols for modules, unlike native Lisp units.
-    // SAFETY: module-load explicitly loads caller-selected native code.
+    let super::types::Kind::StringObject(state) = file.kind() else {
+        return Err(primitives::wrong_type_argument("stringp", *file));
+    };
+    // dynlib_open (SSDATA (file)): the string's own bytes, up to a NUL.
     #[cfg(unix)]
-    let library = unsafe {
-        libloading::os::unix::Library::open(Some(&path), libc::RTLD_LAZY | libc::RTLD_GLOBAL)
-            .map(Library::from)
+    let library = {
+        let bytes = state.borrow().bytes().to_vec();
+        let end = bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(bytes.len());
+        let name = std::ffi::CString::new(&bytes[..end]).expect("bytes up to the first NUL");
+        // dynlib.c uses global symbols for modules, unlike native Lisp
+        // units.  SAFETY: module-load explicitly loads caller-selected
+        // native code; dlerror's message is read before any other dl call.
+        let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_GLOBAL) };
+        if handle.is_null() {
+            // build_string (dynlib_error ()): the message's bytes.
+            let message = unsafe { libc::dlerror() };
+            let message = if message.is_null() {
+                Vec::new()
+            } else {
+                unsafe { CStr::from_ptr(message) }.to_bytes().to_vec()
+            };
+            let message = primitives::make_string(message).unwrap_or_else(|_| Value::string(""));
+            return Err(condition("module-open-failed", [*file, message]));
+        }
+        // SAFETY: HANDLE is the live handle dlopen just returned.
+        Library::from(unsafe { libloading::os::unix::Library::from_raw(handle) })
     };
     #[cfg(not(unix))]
-    let library = unsafe { Library::new(&path) };
-    let library = Rc::new(library.map_err(|error| {
-        condition(
-            "module-open-failed",
-            [*file, Value::string(&error.to_string())],
-        )
-    })?);
+    let library = {
+        let path = state.borrow().text();
+        unsafe { Library::new(&path) }.map_err(|error| {
+            condition(
+                "module-open-failed",
+                [*file, Value::string(&error.to_string())],
+            )
+        })?
+    };
+    let library = Rc::new(library);
     // Fmodule_load retains every opened library, even when a later GPL,
     // entry-point or initialization check signals. Its symbols stay visible.
     interpreter.modules.libraries.push(Rc::clone(&library));

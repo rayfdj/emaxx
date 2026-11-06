@@ -713,14 +713,18 @@ define_dispatch!(
             }
             "string-collate-equalp" => {
                 need_arg_range(name, args, 2, 4)?;
+                // SYMBOLP, then SYMBOL_NAME: a positioned symbol's while
+                // enabled.
+                let strings =
+                    [0, 1].map(|index| lisp_symbol(interp, args[index]).unwrap_or(args[index]));
                 // GNU/Linux defines __STDC_ISO_10646__, so fns.c collates
                 // through sysdep.c str_collate; Darwin does not, and GNU
                 // itself falls back to the lexicographic comparison there.
                 #[cfg(target_os = "linux")]
                 {
                     let ordering = crate::lisp::primitives::strings::str_collate(
-                        &args[0],
-                        &args[1],
+                        &strings[0],
+                        &strings[1],
                         args.get(2),
                         args.get(3).is_some_and(Value::is_truthy),
                     )?;
@@ -735,8 +739,8 @@ define_dispatch!(
                     validate_collation_locale(args.get(2))?;
                     Ok(
                         if string_compare_ordering(
-                            &args[0],
-                            &args[1],
+                            &strings[0],
+                            &strings[1],
                             args.get(3).is_some_and(Value::is_truthy),
                         )? == Ordering::Equal
                         {
@@ -749,11 +753,15 @@ define_dispatch!(
             }
             "string-collate-lessp" => {
                 need_arg_range(name, args, 2, 4)?;
+                // SYMBOLP, then SYMBOL_NAME: a positioned symbol's while
+                // enabled.
+                let strings =
+                    [0, 1].map(|index| lisp_symbol(interp, args[index]).unwrap_or(args[index]));
                 #[cfg(target_os = "linux")]
                 {
                     let ordering = crate::lisp::primitives::strings::str_collate(
-                        &args[0],
-                        &args[1],
+                        &strings[0],
+                        &strings[1],
                         args.get(2),
                         args.get(3).is_some_and(Value::is_truthy),
                     )?;
@@ -768,8 +776,8 @@ define_dispatch!(
                     validate_collation_locale(args.get(2))?;
                     Ok(
                         if string_compare_ordering(
-                            &args[0],
-                            &args[1],
+                            &strings[0],
+                            &strings[1],
                             args.get(3).is_some_and(Value::is_truthy),
                         )? == Ordering::Less
                         {
