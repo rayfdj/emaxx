@@ -666,12 +666,17 @@ fn unlock_file(interp: &mut Interpreter, env: &mut Env, file: Value) -> Result<(
         },
         LockOwner::Errno(error) => error,
     };
-    Err(report_file_errno("Unlocking file", file, error))
+    Err(report_file_errno(interp, "Unlocking file", file, error))
 }
 
 /// fileio.c:report_file_errno with the file name FILE as given.
-fn report_file_errno(message: &str, file: Value, error: i32) -> LispError {
-    super::file_io::report_file_errno(message, file, &std::io::Error::from_raw_os_error(error))
+fn report_file_errno(interp: &Interpreter, message: &str, file: Value, error: i32) -> LispError {
+    super::file_io::report_file_errno(
+        interp,
+        message,
+        file,
+        &std::io::Error::from_raw_os_error(error),
+    )
 }
 
 /// Flock_file's own body, past CHECK_STRING and the file name handler.
@@ -737,7 +742,7 @@ pub(crate) fn file_locked_p(
         LockOwner::Another(info) => make_string(info.user[..info.at].to_vec())
             .map_err(|error| LispError::Signal(format!("{error:?}"))),
         LockOwner::Free => Ok(Value::Nil),
-        LockOwner::Errno(error) => Err(report_file_errno("Testing file lock", file, error)),
+        LockOwner::Errno(error) => Err(report_file_errno(interp, "Testing file lock", file, error)),
     }
 }
 

@@ -413,7 +413,7 @@ pub(crate) fn vmessage(
         return Ok(());
     }
     let message = crate::lisp::primitives::strings::make_string(bytes)
-        .map_err(|_| LispError::Signal("String overflow".into()))?;
+        .map_err(|error| crate::lisp::primitives::string_storage_error(interp, env, error))?;
     let log = crate::lisp::primitives::string_text(&message)?;
     message3(interp, message, &log, env)
 }

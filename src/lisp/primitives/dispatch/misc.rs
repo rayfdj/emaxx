@@ -2120,6 +2120,7 @@ fn snarf_documentation(
     // report_file_errno ("Opening doc string file", build_string (name)).
     let bytes = std::fs::read(&path).map_err(|error| {
         crate::lisp::primitives::file_io::report_file_errno(
+            interp,
             "Opening doc string file",
             crate::lisp::primitives::strings::make_string(name.clone())
                 .unwrap_or_else(|_| Value::string("")),

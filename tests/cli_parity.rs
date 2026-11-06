@@ -2838,7 +2838,8 @@ fn symbols_with_position_decode_as_lisp_h_symbolp_xsymbol_and_eq() {
 fn file_names_reach_errors_and_buffers_as_the_lisp_strings_gnu_keeps() {
     // fileio.c's report_file_error is given the Lisp file names (expanded,
     // or as given for access-file and load), so a name's text properties
-    // and raw bytes reach the error data; BVAR (b, filename) and
+    // and raw bytes reach the error data, and its errno text is the
+    // string code_convert_string_norecord makes; BVAR (b, filename) and
     // file_truename hold the string `buffer-file-name' was set to; and a
     // C string from SSDATA (a hostname, a module file, access-file's
     // message) carries the string's own bytes.
@@ -2858,9 +2859,7 @@ fn file_names_reach_errors_and_buffers_as_the_lisp_strings_gnu_keeps() {
                                (list s (multibyte-string-p s) (text-properties-at 0 s)))
                            x)))
        (err (lambda (thunk) (condition-case e (progn (funcall thunk) 'ok)
-                              ;; The errno text (the third element) as text alone.
-                              (error (append (list (car e) (funcall show (nth 1 e)) (nth 2 e))
-                                             (mapcar show (nthcdr 3 e)))))))
+                              (error (cons (car e) (mapcar show (cdr e)))))))
        (p (propertize "nd/foo" 'face 'bold))
        (r (string-to-multibyte "nd/\377a")))
   (unwind-protect
@@ -2894,6 +2893,100 @@ fn file_names_reach_errors_and_buffers_as_the_lisp_strings_gnu_keeps() {
                (condition-case e (module-load (string-to-multibyte "/nonexistent/\377a"))
                  (error (list (car e) (multibyte-string-p (nth 2 e)) (append (substring (nth 2 e) 0 16) nil))))))
   (terpri))
+"##
+            ),
+        ],
+    );
+}
+
+#[test]
+fn file_error_data_is_get_file_errno_data_s() {
+    // fileio.c:get_file_errno_data: the condition, the message, the errno
+    // text through code_convert_string_norecord (a multibyte copy of an
+    // ASCII text under an ASCII-compatible `locale-coding-system', nil's
+    // `no-conversion' included), then the Lisp names -- call-process's
+    // output and stderr files, make-temp-file's prefix, write-region's and
+    // load's files among them.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            &format!(
+                "(progn {})",
+                r##"(let ((show (lambda (e) (list (car e) (cadr e) (multibyte-string-p (nth 2 e)) (nthcdr 3 e)))))
+  (prin1 (list (with-temp-buffer (insert "x") (condition-case e (write-region nil nil "/nonexistent-dir/f" nil 0) (error (funcall show e))))
+               (condition-case e (call-process "true" nil '(:file "/nonexistent-dir/out")) (error (funcall show e)))
+               (condition-case e (call-process "true" nil (list t "/nonexistent-dir/err")) (error (funcall show e)))
+               (condition-case e (make-temp-file "/nonexistent-dir/pfx") (error (funcall show e)))
+               (condition-case e (make-temp-file "/nonexistent-dir/pfx" t) (error (funcall show e)))
+               (condition-case e (load "/nonexistent-dir/l" nil t) (error (funcall show e)))))
+  (terpri))
+"##
+            ),
+        ],
+    );
+}
+
+#[test]
+fn file_errors_name_the_lisp_objects_gnu_names() {
+    // The errno text is code_convert_string_norecord's under each
+    // `locale-coding-system': a bad one signals, `utf-16le' decodes the
+    // ASCII bytes.  call-process names DECODE_FILE (ENCODE_FILE) of each
+    // file without its "/:" (the expanded string itself for an ASCII name,
+    // properties and all; a decoded copy of a unibyte one), the program
+    // search names the program given, get_current_directory names
+    // `default-directory' after file_accessible_directory_p, and
+    // redirect-debugging-output, serial_open, make-temp-file-internal's
+    // GT_NOCREATE lstat, create_temp_file's pattern and a network
+    // connection report what GNU's report_file_errno does.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            &format!(
+                "(progn {})",
+                r##"(defmacro show (form) `(condition-case err (prin1 (list ',form '=> ,form)) (error (prin1 (list ',form 'ERR err (mapcar (lambda (x) (if (stringp x) (list (multibyte-string-p x) (text-properties-at 0 x)) x)) (cdr err)))))))
+(dolist (lcs (list nil 'bogus-cs "str" 'utf-16le 'utf-8 'latin-1))
+  (let ((locale-coding-system lcs))
+    (show (rename-file "/nonexistent-dir/a" "/nonexistent-dir/b")) (terpri)))
+(let ((p (propertize "/nonexistent-dir/out" 'face 'bold)))
+  (show (call-process "true" nil (list :file p))) (terpri)
+  (show (call-process "true" nil (list t p))) (terpri)
+  (show (call-process "true" nil (list :file (concat "/:" p)))) (terpri)
+  (show (call-process "true" nil (list :file (string-to-unibyte "/nonexistent-dir/\351")))) (terpri)
+  (show (call-process "true" nil (list t (string-to-unibyte "/nonexistent-dir/\351")))) (terpri)
+  (show (call-process "true" nil (list :file "/nonexistent-dir/\u00e9"))) (terpri)
+  (show (redirect-debugging-output p)) (terpri)
+  (show (call-process (propertize "no-such-program-xyz" 'face 'bold))) (terpri)
+  (show (make-process :name "x" :command (list (propertize "no-such-program-xyz" 'face 'bold)))) (terpri)
+  (show (make-serial-process :port p :speed nil)) (terpri))
+(let ((default-directory nil)) (show (call-process "true"))) (terpri)
+(let ((default-directory "/etc/passwd/")) (show (call-process "true"))) (terpri)
+(let ((default-directory (propertize "/nonexistent-dir/" 'face 'bold))) (show (call-process "true"))) (terpri)
+(show (make-temp-file-internal "/etc/passwd/pfx" 0 "" nil)) (terpri)
+(show (make-temp-file-internal "/etc/passwd/pfx" nil "" nil)) (terpri)
+(show (make-network-process :name "c" :host "127.0.0.1" :service 1)) (terpri)
+(show (with-temp-buffer (insert "abc") (call-process-region (point-min) (point-max) "cat" nil t))) (terpri)
+(let ((temporary-file-directory "/nonexistent-dir/")) (show (with-temp-buffer (insert "abc") (call-process-region (point-min) (point-max) "cat" nil t)))) (terpri)
+(defvar zz-log nil)
+(defun zz-handler (op &rest args)
+  (push op zz-log)
+  (let ((inhibit-file-name-handlers (cons 'zz-handler inhibit-file-name-handlers))
+        (inhibit-file-name-operation op))
+    (if (eq op 'write-region) nil (apply op args))))
+(let ((file-name-handler-alist (list (cons "\\.zzh\\'" 'zz-handler))))
+  (let ((f (make-temp-file-internal "/tmp/zzp" nil ".zzh" "hello")))
+    (prin1 (list (reverse zz-log) (file-attribute-size (file-attributes f))))
+    (delete-file f)))
+(terpri)
+(show (make-serial-process :port "/nonexistent-dir/port" :speed "x")) (terpri)
+(show (make-serial-process :port "/nonexistent-dir/port" :speed nil :name 5)) (terpri)
 "##
             ),
         ],

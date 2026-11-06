@@ -60,7 +60,7 @@ pub(crate) fn child_signal_read_fd() -> Option<std::os::fd::RawFd> {
 /// end within an fd_set, and SIGCHLD's handler writing to it.  "We leave
 /// the file descriptors open until the Emacs process exits."
 #[cfg(unix)]
-pub(crate) fn child_signal_init() -> Result<(), LispError> {
+pub(crate) fn child_signal_init(interp: &Interpreter) -> Result<(), LispError> {
     use std::os::fd::{AsRawFd, IntoRawFd};
     static INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _held = INIT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -68,15 +68,12 @@ pub(crate) fn child_signal_init() -> Result<(), LispError> {
         return Ok(()); // "already done"
     }
     let (reader, writer) = emacs_pipe().map_err(|error| {
-        LispError::SignalValue(file_operation_error_value_without_file(
-            "Creating pipe for child signal",
-            &error,
-        ))
+        file_operation_error_value_without_file(interp, "Creating pipe for child signal", &error)
     })?;
     if FD_SETSIZE <= reader.as_raw_fd() {
         // "Since we need to `pselect' on the read end, it has to fit
         // into an `fd_set'."
-        return Err(fd_setsize_error("Creating pipe for child signal"));
+        return Err(fd_setsize_error(interp, "Creating pipe for child signal"));
     }
     for fd in [reader.as_raw_fd(), writer.as_raw_fd()] {
         // SAFETY: FD is one of the two live descriptors above.
@@ -138,17 +135,18 @@ pub(crate) fn drain_child_signal_pipe(fd: std::os::fd::RawFd) {
 pub(crate) fn locate_program_for_exec(
     interp: &mut Interpreter,
     env: &mut Env,
-    program: &str,
+    program_value: Value,
     make_process: bool,
 ) -> Result<String, LispError> {
+    let program = string_text(&program_value)?;
     if make_process && program.starts_with('/') {
         // Ffile_directory_p, which may have a handler.
-        if call(interp, "file-directory-p", &[Value::string(program)], env)?.is_truthy() {
+        if call(interp, "file-directory-p", &[program_value], env)?.is_truthy() {
             return Err(LispError::Signal(
                 "Specified program for new process is a directory".into(),
             ));
         }
-        return Ok(remove_slash_colon(program));
+        return Ok(remove_slash_colon(&program));
     }
     let exec_path = interp
         .lookup_var_key(cached_symbol!("exec-path"), env)
@@ -158,18 +156,19 @@ pub(crate) fn locate_program_for_exec(
         .unwrap_or(Value::Nil);
     let (found, errno) = locate_file_search(
         interp,
-        &Value::String(program.into()),
+        &program_value,
         &exec_path,
         &exec_suffixes,
         &Value::Integer(i64::from(libc::X_OK)),
         env,
     )?;
     if found.is_nil() {
-        return Err(LispError::SignalValue(file_errno_error_value(
+        return Err(report_file_errno(
+            interp,
             "Searching for program",
-            errno,
-            program,
-        )));
+            program_value,
+            &std::io::Error::from_raw_os_error(errno),
+        ));
     }
     // Fmake_process expands openp's answer (Fexpand_file_name, which may
     // have a handler); both then remove a "/:".
@@ -183,11 +182,8 @@ pub(crate) fn locate_program_for_exec(
 
 /// A spawn failure is what GNU's parent sees from `emacs_spawn' and reports
 /// as "Doing vfork" without naming a file.
-fn vfork_error(error: &std::io::Error) -> LispError {
-    LispError::SignalValue(file_operation_error_value_without_file(
-        "Doing vfork",
-        error,
-    ))
+fn vfork_error(interp: &Interpreter, error: &std::io::Error) -> LispError {
+    file_operation_error_value_without_file(interp, "Doing vfork", error)
 }
 
 /// The child's arguments on COMMAND as the C strings it reads: each one's
@@ -703,69 +699,93 @@ impl Drop for CallProcessTempFile {
     }
 }
 
-/// callproc.c create_temp_file's file, made from "emacsXXXXXX" in
-/// `temporary-file-directory' (else $TMPDIR, else "/tmp/") and opened
-/// close-on-exec, with its name.
+/// callproc.c create_temp_file's file: Vtemp_file_name_pattern
+/// ("emacsXXXXXX") expanded in `temporary-file-directory' (else $TMPDIR,
+/// else "/tmp/"), a copy of its ENCODE_FILE given to mkostemp
+/// (close-on-exec), and that copy, the name mkostemp made.
 pub(crate) fn create_temp_file(
     interp: &mut Interpreter,
     env: &mut Env,
-) -> Result<(fs::File, String, CallProcessTempFile), LispError> {
-    let tmpdir = match interp
+) -> Result<(fs::File, Value, CallProcessTempFile), LispError> {
+    let tmpdir = interp
         .lookup_var_key(cached_symbol!("temporary-file-directory"), env)
-        .and_then(|value| string_like(&value))
-    {
-        Some(directory) => directory.text,
-        None => std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp/".into()),
+        .filter(Value::is_string);
+    let tmpdir = match tmpdir {
+        Some(directory) => directory,
+        None => {
+            #[cfg(unix)]
+            let outf = std::env::var_os("TMPDIR").map(|outf| {
+                use std::os::unix::ffi::OsStringExt;
+                outf.into_vec()
+            });
+            #[cfg(not(unix))]
+            let outf = std::env::var("TMPDIR").ok().map(String::into_bytes);
+            super::make_string(outf.unwrap_or_else(|| b"/tmp/".to_vec()))
+                .map_err(|error| super::string_storage_error(interp, env, error))?
+        }
     };
-    let pattern = expand_file_name_in_env(interp, env, "emacsXXXXXX", Some(&tmpdir));
-    let failed = |error: &std::io::Error| {
-        file_operation_error(
-            "Failed to open temporary file using pattern",
-            error,
-            &pattern,
-        )
-    };
+    let pattern = fexpand_file_name(interp, env, Value::string("emacsXXXXXX"), tmpdir)?;
+    let encoded = encode_file_value(interp, env, pattern)?;
+    let multibyte =
+        matches!(encoded.kind(), Kind::StringObject(state) if state.borrow().is_multibyte());
+    let mut template = sdata_c_string(&encoded);
     #[cfg(unix)]
     {
         use std::os::fd::FromRawFd;
-        let mut template = std::ffi::CString::new(pattern.as_str())
-            .map_err(|_| failed(&std::io::Error::from(ErrorKind::InvalidInput)))?
-            .into_bytes_with_nul();
+        template.push(0);
         // SAFETY: TEMPLATE is a writable NUL-terminated buffer mkostemp
         // fills in place; the descriptor it returns is owned at once.
         let fd = unsafe { libc::mkostemp(template.as_mut_ptr().cast(), libc::O_CLOEXEC) };
         if fd < 0 {
-            return Err(failed(&std::io::Error::last_os_error()));
+            return Err(report_file_errno(
+                interp,
+                "Failed to open temporary file using pattern",
+                pattern,
+                &std::io::Error::last_os_error(),
+            ));
         }
         // SAFETY: a fresh descriptor, owned by this File alone.
         let file = unsafe { fs::File::from_raw_fd(fd) };
         template.pop();
-        let name = String::from_utf8_lossy(&template).into_owned();
-        let guard = CallProcessTempFile(name.clone().into());
+        // Fcopy_sequence of the encoded pattern, which mkostemp filled in.
+        let name = super::make_specified_string(template, multibyte)
+            .map_err(|error| super::string_storage_error(interp, env, error))?;
+        let guard = CallProcessTempFile(encoded_host_path(&name));
         Ok((file, name, guard))
     }
     #[cfg(not(unix))]
     {
         static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let stem = template.len().saturating_sub(6);
         loop {
             let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let suffix = format!(
                 "{:06}",
                 (u64::from(std::process::id()) * 1000 + serial) % 1_000_000
             );
-            let name = format!("{}{suffix}", &pattern[..pattern.len() - 6]);
+            template.truncate(stem);
+            template.extend_from_slice(suffix.as_bytes());
+            let name = super::make_specified_string(template.clone(), multibyte)
+                .map_err(|error| super::string_storage_error(interp, env, error))?;
             match fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
-                .open(&name)
+                .open(encoded_host_path(&name))
             {
                 Ok(file) => {
-                    let guard = CallProcessTempFile(name.clone().into());
+                    let guard = CallProcessTempFile(encoded_host_path(&name));
                     return Ok((file, name, guard));
                 }
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(failed(&error)),
+                Err(error) => {
+                    return Err(report_file_errno(
+                        interp,
+                        "Failed to open temporary file using pattern",
+                        pattern,
+                        &error,
+                    ));
+                }
             }
         }
     }
@@ -802,7 +822,10 @@ pub(crate) fn call_process(
     #[cfg(test)]
     crate::test_support::mark_process_test();
 
-    let program = string_text(&args[0])?;
+    // CHECK_STRING (args[0]).
+    if !args[0].is_string() {
+        return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+    }
     let argv = call_process_arguments(interp, env, args, args.get(4..).unwrap_or(&[]))?;
     let ProcessDestination {
         mut buffer,
@@ -810,15 +833,13 @@ pub(crate) fn call_process(
         error_file,
     } = process_destination(args.get(2).unwrap_or(&Value::Nil));
     // callproc.c: a stderr FILE Fexpand_file_name'd with a nil default,
-    // an output FILE against the buffer's directory, each without a
-    // "/:".
-    let error_path = if error_file.is_nil() || error_file == Value::T {
-        None
+    // an output FILE against the buffer's directory.
+    let error_file = if error_file.is_nil() || error_file == Value::T {
+        error_file
     } else {
-        let file = fexpand_file_name(interp, env, error_file, Value::Nil)?;
-        Some(remove_slash_colon(&string_text(&file)?))
+        fexpand_file_name(interp, env, error_file, Value::Nil)?
     };
-    let output_path = match output_file {
+    let output_file = match output_file {
         Some(file) => {
             let directory = interp
                 .lookup_var_key(cached_symbol!("default-directory"), env)
@@ -827,7 +848,7 @@ pub(crate) fn call_process(
             if !file.is_string() {
                 return Err(LispError::WrongTypeArgument("stringp".into(), file));
             }
-            Some(remove_slash_colon(&string_text(&file)?))
+            Some(file)
         }
         None => None,
     };
@@ -836,46 +857,81 @@ pub(crate) fn call_process(
         buffer = call(interp, "get-buffer-create", &[buffer], env)?;
     }
     let directory = process_current_directory(interp, env, true)?;
-    let program = locate_program_for_exec(interp, env, &program, false)?;
+    // Each name without its "/:", ENCODE_FILE'd before the program is
+    // searched for; an error names DECODE_FILE of what was opened.
+    let error_file = if error_file.is_string() {
+        let file = remove_slash_colon_value(interp, env, error_file)?;
+        encode_file_value(interp, env, file)?
+    } else {
+        error_file
+    };
+    let output_file = match output_file {
+        Some(file) => {
+            let file = remove_slash_colon_value(interp, env, file)?;
+            Some(encode_file_value(interp, env, file)?)
+        }
+        None => None,
+    };
+    let program = locate_program_for_exec(interp, env, args[0], false)?;
     let program = host_file_name(interp, env, &program)?.into_os_string();
-    let discard_output = no_wait || (buffer.is_nil() && output_path.is_none());
+    let discard_output = no_wait || (buffer.is_nil() && output_file.is_none());
     let (output_read, output) = if discard_output {
         let output = fs::OpenOptions::new()
             .write(true)
             .open(NULL_DEVICE)
             .map_err(|error| {
-                LispError::SignalValue(file_operation_error_value_without_file(
-                    "Opening null device",
-                    &error,
-                ))
+                file_operation_error_value_without_file(interp, "Opening null device", &error)
             })?;
         (None, output)
-    } else if let Some(path) = &output_path {
-        let output = open_child_output_file(&host_file_name(interp, env, path)?)
-            .map_err(|error| file_operation_error("Opening process output file", &error, path))?;
-        (None, output)
+    } else if let Some(file) = output_file {
+        match open_child_output_file(&encoded_host_path(&file)) {
+            Ok(output) => (None, output),
+            Err(error) => {
+                let name = decode_file_value(interp, env, file)?;
+                return Err(report_file_errno(
+                    interp,
+                    "Opening process output file",
+                    name,
+                    &error,
+                ));
+            }
+        }
     } else {
         let (read, write) = emacs_pipe().map_err(|error| {
-            LispError::SignalValue(file_operation_error_value_without_file(
-                "Creating process pipe",
-                &error,
-            ))
+            file_operation_error_value_without_file(interp, "Creating process pipe", &error)
         })?;
         (Some(read), write)
     };
-    let error = if error_path.is_some() || (error_file.is_nil() && !discard_output) {
-        let path = error_path.as_deref().unwrap_or(NULL_DEVICE);
-        Some(
-            open_child_output_file(&host_file_name(interp, env, path)?)
-                .map_err(|error| file_operation_error("Cannot redirect stderr", &error, path))?,
-        )
+    let error = if error_file.is_string() || (error_file.is_nil() && !discard_output) {
+        let path = if error_file.is_string() {
+            encoded_host_path(&error_file)
+        } else {
+            std::path::PathBuf::from(NULL_DEVICE)
+        };
+        match open_child_output_file(&path) {
+            Ok(error) => Some(error),
+            Err(error) => {
+                let name = if error_file.is_string() {
+                    decode_file_value(interp, env, error_file)?
+                } else {
+                    Value::string(NULL_DEVICE)
+                };
+                return Err(report_file_errno(
+                    interp,
+                    "Cannot redirect stderr",
+                    name,
+                    &error,
+                ));
+            }
+        }
     } else {
         None
     };
     let environment = child_environment(interp, env, directory)?;
     #[cfg(unix)]
-    child_signal_init()?;
+    child_signal_init(interp)?;
     let mut child = spawn_call_process(
+        interp,
         &program,
         &argv,
         environment,
@@ -1085,6 +1141,7 @@ fn wait_for_termination(
 /// directory and environment, reading STDIN and writing STDOUT and STDERR
 /// (one descriptor when standard error goes with the output).
 fn spawn_call_process(
+    interp: &Interpreter,
     program: &std::ffi::OsStr,
     argv: &[Vec<u8>],
     environment: ChildEnvironment,
@@ -1096,14 +1153,14 @@ fn spawn_call_process(
     {
         use std::os::fd::AsRawFd;
         let (block, directory) = &environment;
-        // An argument or directory holding a NUL takes the fork path.
+        // An argument holding a NUL takes the fork path.
         if let (Some(image), Ok(directory)) = (
             ExecImage::new(program, argv, block.clone()),
-            directory.clone().map(std::ffi::CString::new).transpose(),
+            std::ffi::CString::new(directory.clone()),
         ) {
             let stdio = [stdin, stdout, stderr].map(|file| SpawnFd::Fd(file.as_raw_fd()));
-            let pid = emacs_posix_spawn(&image, directory.as_deref(), stdio, None)
-                .map_err(|error| vfork_error(&error))?;
+            let pid = emacs_posix_spawn(&image, Some(&directory), stdio, None)
+                .map_err(|error| vfork_error(interp, &error))?;
             return Ok(SpawnedChild::new(pid as u32, None, None, None));
         }
     }
@@ -1122,16 +1179,17 @@ fn spawn_call_process(
     command.stdin(duplicate(stdin)?);
     command.stdout(duplicate(stdout)?);
     command.stderr(duplicate(stderr)?);
-    let child = command.spawn().map_err(|error| vfork_error(&error))?;
+    let child = command
+        .spawn()
+        .map_err(|error| vfork_error(interp, &error))?;
     #[cfg(unix)]
     return Ok(SpawnedChild::from_std(child));
     #[cfg(not(unix))]
     Ok(child)
 }
 
-/// A child's environment block and, when `default-directory' names one,
-/// the directory it starts in.
-pub(crate) type ChildEnvironment = (Vec<Vec<u8>>, Option<Vec<u8>>);
+/// A child's environment block and the directory it starts in.
+pub(crate) type ChildEnvironment = (Vec<Vec<u8>>, Vec<u8>);
 
 /// The child's environment and directory, the directory also set on
 /// COMMAND.
@@ -1146,24 +1204,20 @@ pub(crate) fn configure_external_command(
     Ok(environment)
 }
 
-/// callproc.c get_current_directory: the directory `default-directory'
-/// names, as `unhandled-file-name-directory' answers it ("~" for its nil),
-/// through expand_and_dir_to_file and checked, without a "/:", to be one;
-/// that name without its "/:" when ENCODE (the child's directory), else as
-/// expanded.  None when `default-directory' names none, which leaves a
-/// child in this process's directory.
+/// callproc.c get_current_directory: BVAR (current_buffer, directory) as
+/// `unhandled-file-name-directory' answers it ("~" for its nil), through
+/// expand_and_dir_to_file; that name without its "/:" ENCODE_FILE'd,
+/// which file_accessible_directory_p must find an accessible directory
+/// ("Setting current directory", naming `default-directory', with the
+/// errno), when ENCODE (the child's directory), else the expanded name.
 pub(crate) fn process_current_directory(
     interp: &mut Interpreter,
     env: &mut Env,
     encode: bool,
-) -> Result<Option<String>, LispError> {
-    let Some(default_directory) = interp
+) -> Result<Value, LispError> {
+    let curdir = interp
         .lookup_var_key(cached_symbol!("default-directory"), env)
-        .and_then(|value| string_like(&value).map(|string| string.text))
-        .filter(|directory| !directory.is_empty())
-    else {
-        return Ok(None);
-    };
+        .unwrap_or(Value::Nil);
     // GNU's get_current_directory(true) asks a handler for the local
     // directory without delegating the process operation itself.  This
     // is what lets `:file-handler nil' run locally from a remote logical
@@ -1172,63 +1226,38 @@ pub(crate) fn process_current_directory(
     // user redefinition of the Lisp function cell cannot replace the C
     // mechanism.  Native dispatch still performs the legitimate
     // file-name-handler call made inside that primitive.
-    let unhandled = call(
-        interp,
-        "unhandled-file-name-directory",
-        &[Value::String(default_directory.clone().into())],
-        env,
-    )?;
+    let dir = call(interp, "unhandled-file-name-directory", &[curdir], env)?;
     // A handler returns nil when its logical directory cannot be a host
     // cwd; GNU falls back to "~".
-    let unhandled = if unhandled.is_nil() {
+    let dir = if dir.is_nil() {
         Value::string("~")
     } else {
-        unhandled
+        dir
     };
-    let expanded = string_text(&super::system::expand_and_dir_to_file(
-        interp, env, unhandled,
-    )?)?;
-    let directory = remove_slash_colon(&expanded);
-    let metadata = fs::metadata(host_file_name(interp, env, &directory)?).map_err(|error| {
-        LispError::SignalValue(file_operation_error_value(
+    let dir = super::system::expand_and_dir_to_file(interp, env, dir)?;
+    let unquoted = remove_slash_colon_value(interp, env, dir)?;
+    let encoded = encode_file_value(interp, env, unquoted)?;
+    if let Err(error) = super::system::accessible_directory(&sdata_c_string(&encoded)) {
+        return Err(report_file_errno(
+            interp,
             "Setting current directory",
+            curdir,
             &error,
-            &default_directory,
-        ))
-    })?;
-    if !metadata.is_dir() {
-        let error = std::io::Error::from(ErrorKind::NotADirectory);
-        return Err(LispError::SignalValue(file_operation_error_value(
-            "Setting current directory",
-            &error,
-            &default_directory,
-        )));
+        ));
     }
-    Ok(Some(if encode { directory } else { expanded }))
+    Ok(if encode { encoded } else { dir })
 }
 
-/// make_environment_block for a child starting in DIRECTORY (this
-/// process's own when None), with that directory.
+/// make_environment_block for a child starting in DIRECTORY, the
+/// ENCODE_FILE'd name get_current_directory (true) gave, with that
+/// directory (SSDATA, which ENCODE_FILE leaves without a NUL).
 fn child_environment(
     interp: &mut Interpreter,
     env: &mut Env,
-    directory: Option<String>,
+    directory: Value,
 ) -> Result<ChildEnvironment, LispError> {
-    // callproc.c encode_current_directory: ENCODE_FILE.
-    let directory = directory
-        .map(|directory| encode_file_name(interp, env, &directory))
-        .transpose()?;
-    let current_dir = directory.clone().unwrap_or_else(|| {
-        let directory = std::env::current_dir().unwrap_or_default();
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStringExt;
-            directory.into_os_string().into_vec()
-        }
-        #[cfg(not(unix))]
-        directory.to_string_lossy().into_owned().into_bytes()
-    });
-    let block = make_environment_block(interp, env, &current_dir);
+    let directory = sdata_c_string(&directory);
+    let block = make_environment_block(interp, env, &directory);
     Ok((block, directory))
 }
 
@@ -1236,15 +1265,13 @@ fn child_environment(
 /// not take the block itself) its environment.
 fn set_command_environment(command: &mut Command, environment: &ChildEnvironment) {
     let (block, directory) = environment;
-    if let Some(directory) = directory {
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            command.current_dir(std::ffi::OsStr::from_bytes(directory));
-        }
-        #[cfg(not(unix))]
-        command.current_dir(String::from_utf8_lossy(directory).into_owned());
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        command.current_dir(std::ffi::OsStr::from_bytes(directory));
     }
+    #[cfg(not(unix))]
+    command.current_dir(String::from_utf8_lossy(directory).into_owned());
     #[cfg(not(unix))]
     {
         command.env_clear();
@@ -1273,10 +1300,10 @@ pub(crate) fn spawn_persistent_process(
     crate::test_support::mark_process_test();
 
     #[cfg(unix)]
-    child_signal_init()?;
+    child_signal_init(interp)?;
     let mut command = Command::new(program);
     add_command_arguments(&mut command, argv);
-    let (environment, directory) = configure_external_command(interp, env, &mut command)?;
+    let child_environment = configure_external_command(interp, env, &mut command)?;
 
     let default_pty = interp
         .lookup_var_key(cached_symbol!("process-connection-type"), env)
@@ -1284,10 +1311,10 @@ pub(crate) fn spawn_persistent_process(
     let (input_pty, output_pty) = process_connection_pty_modes(connection_type, default_pty)?;
     #[cfg(target_os = "linux")]
     if let Some(runtime) = posix_spawn_process(
+        interp,
         program,
         argv,
-        &environment,
-        directory,
+        &child_environment,
         input_pty,
         output_pty,
         stderr.map(|file| {
@@ -1297,8 +1324,6 @@ pub(crate) fn spawn_persistent_process(
     )? {
         return finish_spawned_runtime(runtime);
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = directory;
     let mut pty_input = None;
     let mut pty_output = None;
     let mut pty_slave_guard = None;
@@ -1312,10 +1337,7 @@ pub(crate) fn spawn_persistent_process(
     {
         let pipe = || {
             emacs_pipe().map_err(|error| {
-                LispError::SignalValue(file_operation_error_value_without_file(
-                    "Creating pipe",
-                    &error,
-                ))
+                file_operation_error_value_without_file(interp, "Creating pipe", &error)
             })
         };
         let mut piped_stdin = |command: &mut Command| -> Result<(), LispError> {
@@ -1341,7 +1363,7 @@ pub(crate) fn spawn_persistent_process(
             Ok(read)
         };
         if input_pty && output_pty {
-            let (master, slave, slave_name) = open_emacs_pty()?;
+            let (master, slave, slave_name) = open_emacs_pty(interp)?;
             pty_slave_name = slave_name;
             pty_slave_guard = Some(
                 slave
@@ -1370,7 +1392,7 @@ pub(crate) fn spawn_persistent_process(
             );
             pty_output = Some(master);
         } else if input_pty {
-            let (master, slave, slave_name) = open_emacs_pty()?;
+            let (master, slave, slave_name) = open_emacs_pty(interp)?;
             pty_slave_name = slave_name;
             command.stdin(Stdio::from(slave));
             stdout_read = Some(piped_output(&mut command, false)?);
@@ -1383,7 +1405,7 @@ pub(crate) fn spawn_persistent_process(
         } else {
             piped_stdin(&mut command)?;
             if output_pty {
-                let (master, slave, slave_name) = open_emacs_pty()?;
+                let (master, slave, slave_name) = open_emacs_pty(interp)?;
                 pty_slave_name = slave_name;
                 pty_slave_guard = Some(
                     slave
@@ -1418,7 +1440,7 @@ pub(crate) fn spawn_persistent_process(
         if beyond_fd_setsize(
             &[inchannel, outchannel].map(|channel| channel.map_or(-1, |file| file.as_raw_fd())),
         ) {
-            return Err(fd_setsize_error("Creating pipe"));
+            return Err(fd_setsize_error(interp, "Creating pipe"));
         }
     }
     #[cfg(not(unix))]
@@ -1436,11 +1458,13 @@ pub(crate) fn spawn_persistent_process(
         &mut command,
         program,
         argv,
-        environment,
+        child_environment.0,
         pty_slave_name.is_some(),
     );
 
-    let child = command.spawn().map_err(|error| vfork_error(&error))?;
+    let child = command
+        .spawn()
+        .map_err(|error| vfork_error(interp, &error))?;
     // Only the child keeps the ends it was given.
     drop(command);
     #[cfg(unix)]
@@ -1530,11 +1554,12 @@ fn nofile_limit_to_restore() -> Option<libc::rlimit> {
 /// report_file_errno (WHAT, Qnil, EMFILE): the error of a channel
 /// FD_SETSIZE refuses.
 #[cfg(unix)]
-pub(crate) fn fd_setsize_error(what: &str) -> LispError {
-    LispError::SignalValue(file_operation_error_value_without_file(
+pub(crate) fn fd_setsize_error(interp: &Interpreter, what: &str) -> LispError {
+    file_operation_error_value_without_file(
+        interp,
         what,
         &std::io::Error::from_raw_os_error(libc::EMFILE),
-    ))
+    )
 }
 
 /// `FD_SETSIZE <= inchannel || FD_SETSIZE <= outchannel'.
@@ -1572,12 +1597,11 @@ pub(crate) struct PipeProcessChannels {
 /// reads or the one it writes lies at or above FD_SETSIZE, and both
 /// channels non-blocking.  The descriptors close when an error drops
 /// them, as remove_process's unwind closes them.
-pub(crate) fn open_pipe_process_channels() -> Result<PipeProcessChannels, LispError> {
+pub(crate) fn open_pipe_process_channels(
+    interp: &Interpreter,
+) -> Result<PipeProcessChannels, LispError> {
     let pipe_error = |error: std::io::Error| {
-        LispError::SignalValue(file_operation_error_value_without_file(
-            "Creating pipe",
-            &error,
-        ))
+        file_operation_error_value_without_file(interp, "Creating pipe", &error)
     };
     let input = emacs_pipe().map_err(pipe_error)?;
     let output = emacs_pipe().map_err(pipe_error)?;
@@ -1585,7 +1609,7 @@ pub(crate) fn open_pipe_process_channels() -> Result<PipeProcessChannels, LispEr
     {
         use std::os::fd::AsRawFd;
         if beyond_fd_setsize(&[output.0.as_raw_fd(), input.1.as_raw_fd()]) {
-            return Err(fd_setsize_error("Creating pipe"));
+            return Err(fd_setsize_error(interp, "Creating pipe"));
         }
         set_nonblocking(&output.0)?;
         set_nonblocking(&input.1)?;
@@ -1757,26 +1781,23 @@ fn emacs_posix_spawn(
 /// fails, whose report the vfork path's child makes.
 #[cfg(target_os = "linux")]
 fn posix_spawn_process(
+    interp: &Interpreter,
     program: &std::ffi::OsStr,
     argv: &[Vec<u8>],
-    environment: &[Vec<u8>],
-    directory: Option<Vec<u8>>,
+    (environment, directory): &ChildEnvironment,
     input_pty: bool,
     output_pty: bool,
     stderr: Option<std::os::fd::RawFd>,
 ) -> Result<Option<RunningProcess>, LispError> {
     use std::os::fd::AsRawFd;
-    let Some(image) = ExecImage::new(program, argv, environment.to_vec()) else {
+    let Some(image) = ExecImage::new(program, argv, environment.clone()) else {
         return Ok(None);
     };
-    let Ok(directory) = directory.map(std::ffi::CString::new).transpose() else {
+    let Ok(directory) = std::ffi::CString::new(directory.clone()) else {
         return Ok(None);
     };
     let pipe_error = |error: std::io::Error| {
-        LispError::SignalValue(file_operation_error_value_without_file(
-            "Creating pipe",
-            &error,
-        ))
+        file_operation_error_value_without_file(interp, "Creating pipe", &error)
     };
     // A pty child takes callproc.c's vfork path, whose child_setup gives
     // it back the open-files limit Emacs started with: no spawn attribute
@@ -1785,7 +1806,7 @@ fn posix_spawn_process(
         return Ok(None);
     }
     let (pty_master, pty_slave, pty_name) = if input_pty || output_pty {
-        let (master, slave, name) = open_emacs_pty()?;
+        let (master, slave, name) = open_emacs_pty(interp)?;
         let Some(name) = name.and_then(|name| std::ffi::CString::new(name).ok()) else {
             return Ok(None);
         };
@@ -1810,7 +1831,7 @@ fn posix_spawn_process(
         .map(|(_, write)| write.as_raw_fd())
         .or(master);
     if beyond_fd_setsize(&[inchannel, outchannel].map(|fd| fd.unwrap_or(-1))) {
-        return Err(fd_setsize_error("Creating pipe"));
+        return Err(fd_setsize_error(interp, "Creating pipe"));
     }
     let stdio = [
         input
@@ -1821,10 +1842,10 @@ fn posix_spawn_process(
             .map_or(SpawnFd::Pty, |(_, write)| SpawnFd::Fd(write.as_raw_fd())),
         stderr.map_or(SpawnFd::Stdout, SpawnFd::Fd),
     ];
-    let pid = match emacs_posix_spawn(&image, directory.as_deref(), stdio, pty_name.as_deref()) {
+    let pid = match emacs_posix_spawn(&image, Some(&directory), stdio, pty_name.as_deref()) {
         Ok(pid) => pid,
         Err(_) if pty_name.is_some() => return Ok(None),
-        Err(error) => return Err(vfork_error(&error)),
+        Err(error) => return Err(vfork_error(interp, &error)),
     };
     // Only the child keeps its ends.
     let child = SpawnedChild::new(
@@ -1890,7 +1911,7 @@ fn process_connection_endpoint_uses_pty(
 }
 
 #[cfg(unix)]
-fn open_emacs_pty() -> Result<(fs::File, fs::File, Option<String>), LispError> {
+fn open_emacs_pty(interp: &Interpreter) -> Result<(fs::File, fs::File, Option<String>), LispError> {
     let mut master = -1;
     let mut slave = -1;
     // SAFETY: `openpty' initializes both file descriptors; the optional
@@ -1915,7 +1936,7 @@ fn open_emacs_pty() -> Result<(fs::File, fs::File, Option<String>), LispError> {
     let slave = unsafe { fs::File::from_raw_fd(slave) };
     // create_pty: a pty `pselect' could not watch is refused.
     if beyond_fd_setsize(&[master.as_raw_fd()]) {
-        return Err(fd_setsize_error("Opening pty"));
+        return Err(fd_setsize_error(interp, "Opening pty"));
     }
     for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
         // SAFETY: both descriptors are live and owned by the File values.
@@ -3331,14 +3352,6 @@ pub(crate) fn delete_process_notifying(
     }
 }
 
-pub(super) fn network_io_error_detail(error: &std::io::Error) -> String {
-    let rendered = error.to_string();
-    match rendered.split_once(" (os error") {
-        Some((detail, _)) => detail.into(),
-        None => rendered,
-    }
-}
-
 /// Resolve HOST and a named SERVICE together, as process.c does when
 /// `:host' is non-nil.  Besides selecting the service's port, this preserves
 /// the host platform's `gai_strerror' diagnostic instead of baking one
@@ -3420,12 +3433,9 @@ fn host_service_database_port(
     })
 }
 
-pub(super) fn network_server_error(error: &std::io::Error) -> LispError {
-    LispError::SignalValue(Value::list([
-        Value::symbol("file-error"),
-        Value::string("Cannot bind server socket"),
-        Value::string(&network_io_error_detail(error)),
-    ]))
+/// process.c: report_file_error ("Cannot bind server socket", Qnil).
+pub(super) fn network_server_error(interp: &Interpreter, error: &std::io::Error) -> LispError {
+    report_file_errno_files(interp, "Cannot bind server socket", &[], error)
 }
 
 /// connect_network_socket's loop for a non-blocking client: the first of
@@ -3580,14 +3590,12 @@ fn socket_address(
 
 /// connect_network_socket's report_file_errno ("make server process
 /// failed", contact, EMFILE) for a server socket beyond FD_SETSIZE.
-fn network_server_fd_setsize_error(error: &std::io::Error, args: &[Value]) -> LispError {
-    let mut data = vec![
-        Value::symbol("file-error"),
-        Value::string("make server process failed"),
-        Value::string(&network_io_error_detail(error)),
-    ];
-    data.extend_from_slice(args);
-    LispError::SignalValue(Value::list(data))
+fn network_server_fd_setsize_error(
+    interp: &Interpreter,
+    error: &std::io::Error,
+    args: &[Value],
+) -> LispError {
+    report_file_errno_files(interp, "make server process failed", args, error)
 }
 
 /// connect_network_socket's loop for a local client: its socket, closed
@@ -3667,19 +3675,15 @@ fn finish_interrupted_connect(fd: std::os::fd::RawFd) -> std::io::Result<()> {
     }
 }
 
-pub(super) fn network_client_error(error: &std::io::Error, args: &[Value]) -> LispError {
-    let condition = if error.kind() == std::io::ErrorKind::NotFound {
-        "file-missing"
-    } else {
-        "file-error"
-    };
-    let mut data = vec![
-        Value::symbol(condition),
-        Value::string("make client process failed"),
-        Value::string(&network_io_error_detail(error)),
-    ];
-    data.extend_from_slice(args);
-    LispError::SignalValue(Value::list(data))
+/// connect_network_socket's report_file_errno ("make client process
+/// failed", contact, xerrno): CONTACT, the arguments as a list, is the
+/// data after the errno text.
+pub(super) fn network_client_error(
+    interp: &Interpreter,
+    error: &std::io::Error,
+    args: &[Value],
+) -> LispError {
+    report_file_errno_files(interp, "make client process failed", args, error)
 }
 
 fn activate_network_client(
@@ -3885,9 +3889,9 @@ pub(crate) fn make_network_process(
             std::net::ToSocketAddrs::to_socket_addrs(&(address_host.as_str(), address_port))
                 .map_err(|error| {
                     if is_server {
-                        network_server_error(&error)
+                        network_server_error(interp, &error)
                     } else {
-                        network_client_error(&error, args)
+                        network_client_error(interp, &error, args)
                     }
                 })?
                 .find(|address| {
@@ -3912,16 +3916,16 @@ pub(crate) fn make_network_process(
         .and_then(socket_within_fd_setsize)
         .map_err(|error| {
             if is_server {
-                network_server_error(&error)
+                network_server_error(interp, &error)
             } else {
-                network_client_error(&error, args)
+                network_client_error(interp, &error, args)
             }
         })?;
         socket.set_nonblocking(true).map_err(|error| {
             if is_server {
-                network_server_error(&error)
+                network_server_error(interp, &error)
             } else {
-                network_client_error(&error, args)
+                network_client_error(interp, &error, args)
             }
         })?;
         let local_addr = socket.local_addr().ok();
@@ -3982,12 +3986,12 @@ pub(crate) fn make_network_process(
         }
         if is_server {
             let listener = std::os::unix::net::UnixListener::bind(&path)
-                .map_err(|error| network_server_error(&error))?;
+                .map_err(|error| network_server_error(interp, &error))?;
             let listener = socket_within_fd_setsize(listener)
-                .map_err(|error| network_server_fd_setsize_error(&error, args))?;
+                .map_err(|error| network_server_fd_setsize_error(interp, &error, args))?;
             listener
                 .set_nonblocking(true)
-                .map_err(|error| network_server_error(&error))?;
+                .map_err(|error| network_server_error(interp, &error))?;
             plist_items_put(
                 &mut contact_items,
                 ":local",
@@ -4011,10 +4015,11 @@ pub(crate) fn make_network_process(
                 encoding,
             );
         }
-        let stream = connect_local(&path).map_err(|error| network_client_error(&error, args))?;
+        let stream =
+            connect_local(&path).map_err(|error| network_client_error(interp, &error, args))?;
         stream
             .set_nonblocking(true)
-            .map_err(|error| network_client_error(&error, args))?;
+            .map_err(|error| network_client_error(interp, &error, args))?;
         plist_items_put(
             &mut contact_items,
             ":remote",
@@ -4053,7 +4058,7 @@ pub(crate) fn make_network_process(
         let listener = if family_ipv4 || family_ipv6 {
             let address =
                 std::net::ToSocketAddrs::to_socket_addrs(&(bind_host.as_str(), bind_port))
-                    .map_err(|error| network_server_error(&error))?
+                    .map_err(|error| network_server_error(interp, &error))?
                     .find(|address| {
                         (!family_ipv4 || address.is_ipv4()) && (!family_ipv6 || address.is_ipv6())
                     })
@@ -4066,12 +4071,12 @@ pub(crate) fn make_network_process(
         } else {
             std::net::TcpListener::bind((bind_host.as_str(), bind_port))
         }
-        .map_err(|error| network_server_error(&error))?;
+        .map_err(|error| network_server_error(interp, &error))?;
         let listener = socket_within_fd_setsize(listener)
-            .map_err(|error| network_server_fd_setsize_error(&error, args))?;
+            .map_err(|error| network_server_fd_setsize_error(interp, &error, args))?;
         listener
             .set_nonblocking(true)
-            .map_err(|error| network_server_error(&error))?;
+            .map_err(|error| network_server_error(interp, &error))?;
         let local_addr = listener.local_addr().ok();
         let bound_port = local_addr.map(|addr| addr.port() as i64).or(service);
         if let Some(port) = bound_port {
@@ -4104,7 +4109,7 @@ pub(crate) fn make_network_process(
         let connect_port = service.unwrap_or(0) as u16;
         let addresses =
             std::net::ToSocketAddrs::to_socket_addrs(&(connect_host.as_str(), connect_port))
-                .map_err(|error| network_client_error(&error, args))?
+                .map_err(|error| network_client_error(interp, &error, args))?
                 .filter(|address| {
                     (!family_ipv4 || address.is_ipv4()) && (!family_ipv6 || address.is_ipv6())
                 })
@@ -4126,11 +4131,11 @@ pub(crate) fn make_network_process(
                 Err(error) => (None, None, Vec::new(), Some(error)),
             }
         } else {
-            let stream =
-                connect_blocking(&addresses).map_err(|error| network_client_error(&error, args))?;
+            let stream = connect_blocking(&addresses)
+                .map_err(|error| network_client_error(interp, &error, args))?;
             stream
                 .set_nonblocking(true)
-                .map_err(|error| network_client_error(&error, args))?;
+                .map_err(|error| network_client_error(interp, &error, args))?;
             let remote = stream.peer_addr().ok();
             (Some(stream), remote, Vec::new(), None)
         };
@@ -4287,26 +4292,30 @@ fn serial_configuration(
     Ok((config, Value::list(contact_items)))
 }
 
-fn open_serial_port(path: &str) -> Result<serialport::TTYPort, LispError> {
+fn open_serial_port(interp: &Interpreter, port: Value) -> Result<serialport::TTYPort, LispError> {
     #[cfg(unix)]
     {
         use std::os::fd::IntoRawFd;
         use std::os::unix::fs::OpenOptionsExt;
 
         use std::os::fd::AsRawFd;
-        // sysdep.c:serial_open's report_file_error, then
+        use std::os::unix::ffi::OsStrExt;
+        // sysdep.c:serial_open: emacs_open of SSDATA (port), not encoded,
+        // and its report_file_error naming PORT; then
         // Fmake_serial_process's refusal of a port beyond FD_SETSIZE.
+        let path = sdata_c_string(&port);
         let file = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
-            .open(path)
-            .map_err(|error| file_operation_error("Opening serial port", &error, path))?;
+            .open(std::ffi::OsStr::from_bytes(&path))
+            .map_err(|error| report_file_errno(interp, "Opening serial port", port, &error))?;
         if beyond_fd_setsize(&[file.as_raw_fd()]) {
-            return Err(file_operation_error(
+            return Err(report_file_errno(
+                interp,
                 "Opening serial port",
+                port,
                 &std::io::Error::from_raw_os_error(libc::EMFILE),
-                path,
             ));
         }
         // SAFETY: ownership of the descriptor is transferred from File to
@@ -4463,19 +4472,31 @@ pub(crate) fn make_serial_process(
     let port_value = plist_member_value(args, ":port")
         .filter(Value::is_truthy)
         .ok_or_else(|| LispError::Signal("No port specified".into()))?;
-    let port_name = string_text(&port_value)?;
+    // CHECK_STRING (port).
+    if !port_value.is_string() {
+        return Err(LispError::WrongTypeArgument("stringp".into(), port_value));
+    }
     let Some(speed_value) = plist_member_value(args, ":speed") else {
         return Err(LispError::Signal(":speed not specified".into()));
     };
     let speed = if speed_value.is_nil() {
         None
     } else {
-        Some(
-            u32::try_from(speed_value.as_integer()?)
-                .map_err(|_| LispError::Signal("Unsupported speed".into()))?,
-        )
+        // CHECK_FIXNUM (plist_get (contact, QCspeed)).
+        let Kind::Integer(speed) = speed_value.kind() else {
+            return Err(wrong_type_argument("fixnump", speed_value));
+        };
+        Some(u32::try_from(speed).map_err(|_| LispError::Signal("Unsupported speed".into()))?)
     };
-    let serial = open_serial_port(&port_name)?;
+    // name = plist_get (contact, QCname), PORT when nil; CHECK_STRING,
+    // before make_process and serial_open.
+    let name = plist_member_value(args, ":name")
+        .filter(Value::is_truthy)
+        .unwrap_or(port_value);
+    if !matches!(name.kind(), Kind::StringObject(_)) {
+        return Err(wrong_type_argument("stringp", name));
+    }
+    let serial = open_serial_port(interp, port_value)?;
     let contact = Value::list(args.iter().cloned());
     let contact = if speed.is_some() {
         let (configuration, contact) = serial_configuration(interp, args, &contact)?;
@@ -4488,13 +4509,6 @@ pub(crate) fn make_serial_process(
     } else {
         contact
     };
-    // name = plist_get (contact, QCname), PORT when nil; CHECK_STRING.
-    let name = plist_member_value(args, ":name")
-        .filter(Value::is_truthy)
-        .unwrap_or(port_value);
-    if !matches!(name.kind(), Kind::StringObject(_)) {
-        return Err(wrong_type_argument("stringp", name));
-    }
     let buffer = plist_member_value(args, ":buffer")
         .filter(Value::is_truthy)
         .unwrap_or(name);

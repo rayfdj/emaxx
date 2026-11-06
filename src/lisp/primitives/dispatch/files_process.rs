@@ -653,11 +653,12 @@ define_dispatch!(
                             return Ok(Value::Nil);
                         }
                         Err(error) => {
-                            return Err(LispError::SignalValue(file_operation_error_value(
+                            return Err(crate::lisp::primitives::file_io::report_file_errno(
+                                interp,
                                 "Getting attributes",
+                                args[1],
                                 &error,
-                                &path,
-                            )));
+                            ));
                         }
                     }
                 };
@@ -1031,7 +1032,7 @@ define_dispatch!(
                     Ok(()) => Ok(Value::Nil),
                     // report_file_error (SSDATA (string), filename).
                     Err(error) => Err(crate::lisp::primitives::file_io::report_file_errno_sdata(
-                        &args[1], args[2], &error,
+                        interp, &args[1], args[2], &error,
                     )),
                 }
             }
@@ -1141,6 +1142,7 @@ define_dispatch!(
                                 return Ok(Value::Nil);
                             }
                             return Err(crate::lisp::primitives::file_io::report_file_errno(
+                                interp,
                                 "Getting ACLs",
                                 args[0],
                                 &std::io::Error::from_raw_os_error(errno),
@@ -1151,6 +1153,7 @@ define_dispatch!(
                             let error = std::io::Error::last_os_error();
                             (libacl.free)(acl);
                             return Err(crate::lisp::primitives::file_io::report_file_errno(
+                                interp,
                                 "Getting ACLs",
                                 args[0],
                                 &error,
@@ -1190,6 +1193,7 @@ define_dispatch!(
                             let error = std::io::Error::last_os_error();
                             if acl_errno_valid(error.raw_os_error().unwrap_or(0)) {
                                 return Err(crate::lisp::primitives::file_io::report_file_errno(
+                                    interp,
                                     "Converting ACL",
                                     args[0],
                                     &error,
@@ -1208,6 +1212,7 @@ define_dispatch!(
                         (libacl.free)(acl);
                         if failed && acl_errno_valid(error.raw_os_error().unwrap_or(0)) {
                             return Err(crate::lisp::primitives::file_io::report_file_errno(
+                                interp,
                                 "Setting ACL",
                                 args[0],
                                 &error,
@@ -1268,6 +1273,7 @@ define_dispatch!(
                     .open(&host_file)
                     .map_err(|error| {
                         crate::lisp::primitives::file_io::report_file_errno(
+                            interp,
                             "Opening input file",
                             file_value,
                             &error,
@@ -1275,6 +1281,7 @@ define_dispatch!(
                     })?;
                 let st = input.metadata().map_err(|error| {
                     crate::lisp::primitives::file_io::report_file_errno(
+                        interp,
                         "Input file status",
                         file_value,
                         &error,
@@ -1283,6 +1290,7 @@ define_dispatch!(
                 // We can copy only regular files.
                 if !st.is_file() {
                     return Err(crate::lisp::primitives::file_io::report_file_errno(
+                        interp,
                         "Non-regular file",
                         file_value,
                         &std::io::Error::from_raw_os_error(if st.is_dir() {
@@ -1319,6 +1327,7 @@ define_dispatch!(
                             .open(&host_newname)
                             .map_err(|error| {
                                 crate::lisp::primitives::file_io::report_file_errno(
+                                    interp,
                                     "Opening output file",
                                     newname_value,
                                     &error,
@@ -1327,6 +1336,7 @@ define_dispatch!(
                     }
                     Err(error) => {
                         return Err(crate::lisp::primitives::file_io::report_file_errno(
+                            interp,
                             "Opening output file",
                             newname_value,
                             &error,
@@ -1337,6 +1347,7 @@ define_dispatch!(
                 if already_exists {
                     let out_st = output.metadata().map_err(|error| {
                         crate::lisp::primitives::file_io::report_file_errno(
+                            interp,
                             "Output file status",
                             newname_value,
                             &error,
@@ -1344,6 +1355,7 @@ define_dispatch!(
                     })?;
                     if st.dev() == out_st.dev() && st.ino() == out_st.ino() {
                         return Err(crate::lisp::primitives::file_io::report_file_errno_files(
+                            interp,
                             "Input and output files are the same",
                             &[file_value, newname_value],
                             &std::io::Error::from_raw_os_error(0),
@@ -1391,6 +1403,7 @@ define_dispatch!(
                             Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                             Err(error) => {
                                 return Err(crate::lisp::primitives::file_io::report_file_errno(
+                                    interp,
                                     "Read error",
                                     file_value,
                                     &error,
@@ -1399,6 +1412,7 @@ define_dispatch!(
                         };
                         output.write_all(&buf[..copied]).map_err(|error| {
                             crate::lisp::primitives::file_io::report_file_errno(
+                                interp,
                                 "Write error",
                                 newname_value,
                                 &error,
@@ -1411,6 +1425,7 @@ define_dispatch!(
                 if newsize < oldsize {
                     output.set_len(newsize).map_err(|error| {
                         crate::lisp::primitives::file_io::report_file_errno(
+                            interp,
                             "Truncating output file",
                             newname_value,
                             &error,
@@ -1457,6 +1472,7 @@ define_dispatch!(
                     ) != 0
                     {
                         return Err(crate::lisp::primitives::file_io::report_file_errno(
+                            interp,
                             "Copying permissions to",
                             newname_value,
                             &std::io::Error::last_os_error(),
@@ -1477,6 +1493,7 @@ define_dispatch!(
                     && unsafe { libc::fchmod(ofd, mode as libc::mode_t) } != 0
                 {
                     return Err(crate::lisp::primitives::file_io::report_file_errno(
+                        interp,
                         "Copying permissions to",
                         newname_value,
                         &std::io::Error::last_os_error(),
@@ -1509,6 +1526,7 @@ define_dispatch!(
                     let error = std::io::Error::last_os_error();
                     if error.kind() != ErrorKind::Interrupted {
                         return Err(crate::lisp::primitives::file_io::report_file_errno(
+                            interp,
                             "Write error",
                             newname_value,
                             &error,
@@ -1591,6 +1609,7 @@ define_dispatch!(
                 }
                 let renaming_error = |errno: i32| {
                     crate::lisp::primitives::file_io::report_file_errno_files(
+                        interp,
                         "Renaming",
                         &[file_value, newname_value],
                         &std::io::Error::from_raw_os_error(errno),
@@ -1687,6 +1706,7 @@ define_dispatch!(
                     Err(error) if error.kind() == ErrorKind::NotFound => false,
                     Err(error) => {
                         return Err(crate::lisp::primitives::file_io::report_file_errno(
+                            interp,
                             "Removing old name",
                             filename,
                             &error,
@@ -1710,6 +1730,7 @@ define_dispatch!(
                 let path = string_text(&directory)?;
                 fs::remove_dir(host_file_name(interp, env, &path)?).map_err(|error| {
                     crate::lisp::primitives::file_io::report_file_errno(
+                        interp,
                         "Removing directory",
                         directory,
                         &error,
@@ -1734,6 +1755,7 @@ define_dispatch!(
                     .create(host_file_name(interp, env, &path)?)
                     .map_err(|error| {
                         crate::lisp::primitives::file_io::report_file_errno(
+                            interp,
                             "Creating directory",
                             directory,
                             &error,
@@ -1779,6 +1801,7 @@ define_dispatch!(
                 }
                 linked.map_err(|error| {
                     crate::lisp::primitives::file_io::report_file_errno_files(
+                        interp,
                         "Adding new name",
                         &[args[0], newname_value],
                         &error,
@@ -1788,14 +1811,13 @@ define_dispatch!(
             }
             "make-temp-file-internal" => {
                 need_args(name, args, 4)?;
-                let prefix = string_text(&args[0])?;
-                let suffix = string_text(&args[2])?;
-                validate_file_name(&prefix)?;
-                validate_file_name(&suffix)?;
-                Ok(Value::String(
-                    make_temp_file_internal(interp, env, &prefix, &args[1], &suffix, args.get(3))?
-                        .into(),
-                ))
+                // CHECK_STRING (prefix); CHECK_STRING (suffix).
+                for value in [args[0], args[2]] {
+                    if !value.is_string() {
+                        return Err(LispError::WrongTypeArgument("stringp".into(), value));
+                    }
+                }
+                make_temp_file_internal(interp, env, args[0], &args[1], args[2], args.get(3))
             }
             "file-locked-p" => {
                 need_args(name, args, 1)?;
@@ -1894,14 +1916,21 @@ define_dispatch!(
                 if !args[0].is_string() {
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
                 }
-                let path = directory_file_name(&string_text(
-                    &crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?,
-                )?);
-                // kqueue.c signals file-missing before registering anything;
-                // Emaxx accepted any path and returned a live descriptor
-                // (finding 13's "never fails" half, per the second audit).
+                let file =
+                    crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
+                let file = super::call(interp, "directory-file-name", &[file], env)?;
+                let path = string_text(&file)?;
+                // kqueue.c signals file-missing, naming FILE, before
+                // registering anything; Emaxx accepted any path and returned
+                // a live descriptor (finding 13's "never fails" half, per the
+                // second audit).
                 if let Err(error) = fs::metadata(host_file_name(interp, env, &path)?) {
-                    return Err(file_operation_error("File does not exist", &error, &path));
+                    return Err(report_file_errno(
+                        interp,
+                        "File does not exist",
+                        file,
+                        &error,
+                    ));
                 }
                 let flags = args[1]
                     .to_vec()?
@@ -2035,6 +2064,7 @@ define_dispatch!(
                 fchmodat_errno(&host, (mode & 0o7777) as libc::mode_t, nofollow).map_err(
                     |error| {
                         crate::lisp::primitives::file_io::report_file_errno(
+                            interp,
                             "Doing chmod",
                             args[0],
                             &error,
@@ -2062,6 +2092,7 @@ define_dispatch!(
                     Some(value) => file_modtime_from_value(interp, &value.value())?.modified,
                 };
                 set_file_times_path(
+                    interp,
                     args[0],
                     &host,
                     modified,
@@ -2163,6 +2194,7 @@ define_dispatch!(
                 }
                 linked.map_err(|error| {
                     crate::lisp::primitives::file_io::report_file_errno_files(
+                        interp,
                         "Making symbolic link",
                         &[args[0], linkname_value],
                         &error,
@@ -2181,8 +2213,7 @@ define_dispatch!(
                     Some(infile) => {
                         // Fexpand_file_name against get_current_directory
                         // (false), then CHECK_STRING.
-                        let directory = process_current_directory(interp, env, false)?
-                            .map_or(Value::Nil, |directory| Value::string(&directory));
+                        let directory = process_current_directory(interp, env, false)?;
                         let infile = fexpand_file_name(interp, env, *infile, directory)?;
                         if !infile.is_string() {
                             return Err(LispError::WrongTypeArgument("stringp".into(), infile));
@@ -2208,6 +2239,7 @@ define_dispatch!(
                 let filefd =
                     fs::File::open(encoded_file_name(interp, env, &infile)?).map_err(|error| {
                         crate::lisp::primitives::file_io::report_file_errno(
+                            interp,
                             "Opening process input file",
                             infile,
                             &error,
@@ -2319,7 +2351,7 @@ define_dispatch!(
             }
             "list-system-processes" => {
                 need_args(name, args, 0)?;
-                list_system_processes_value()
+                list_system_processes_value(interp)
             }
             "process-coding-system" => {
                 need_args(name, args, 1)?;
@@ -2611,7 +2643,7 @@ define_dispatch!(
                     .as_symbol()
                     .map_err(|_| wrong_type_argument("symbolp", args[1]))?;
                 let option = crate::lisp::types::visible_symbol_name(raw).to_string();
-                if set_socket_option(fd, &option, &args[1], &args[2])? {
+                if set_socket_option(interp, fd, &option, &args[1], &args[2])? {
                     // process.c:2990 records the accepted option on the
                     // process's contact plist, which `process-contact' reads.
                     interp.put_process_contact_option(process_id, &args[1], args[2]);
@@ -3018,10 +3050,11 @@ define_dispatch!(
                 };
                 let (filefd, infile, tempfile) = if empty_input {
                     let filefd = fs::File::open(NULL_DEVICE).map_err(|error| {
-                        LispError::SignalValue(file_operation_error_value_without_file(
+                        file_operation_error_value_without_file(
+                            interp,
                             "Opening null device",
                             &error,
-                        ))
+                        )
                     })?;
                     (filefd, Value::Nil, None)
                 } else {
@@ -3046,12 +3079,12 @@ define_dispatch!(
                         interp, start, end, coding, env,
                     )?;
                     filefd.write_all(&contents).map_err(|error| {
-                        file_operation_error("Write error", &error, &tempfile_name)
+                        report_file_errno(interp, "Write error", tempfile_name, &error)
                     })?;
                     std::io::Seek::rewind(&mut filefd).map_err(|error| {
-                        file_operation_error("Setting file position", &error, &tempfile_name)
+                        report_file_errno(interp, "Setting file position", tempfile_name, &error)
                     })?;
-                    (filefd, Value::string(&tempfile_name), Some(tempfile))
+                    (filefd, tempfile_name, Some(tempfile))
                 };
                 if args.get(3).is_some_and(Value::is_truthy) {
                     if start.is_nil() {
@@ -3511,7 +3544,7 @@ fn make_process_value(
     let pipe_channels = parsed
         .program
         .is_none()
-        .then(open_pipe_process_channels)
+        .then(|| open_pipe_process_channels(interp))
         .transpose()?;
     let inherit_coding_system = parsed.buffer_id.is_some()
         && interp
@@ -3552,7 +3585,12 @@ fn make_process_value(
     // process.c finds the executable before forking; `process-command'
     // keeps the name the caller gave.
     let executable = match parsed.program.as_deref() {
-        Some(program) => {
+        Some(_) => {
+            // process.c: XCAR (command).
+            let (program, _) = parsed
+                .command
+                .cons_values()
+                .expect("a :command naming a program is a cons");
             let program = locate_program_for_exec(interp, env, program, true)?;
             Some(host_file_name(interp, env, &program)?.into_os_string())
         }
@@ -3568,7 +3606,7 @@ fn make_process_value(
     // create_process forks.
     let stderr_channels = parsed
         .stderr_buffer_id
-        .map(|_| open_pipe_process_channels())
+        .map(|_| open_pipe_process_channels(interp))
         .transpose()?;
     // create_process's forkerr: the standard error pipe process's
     // SUBPROCESS_STDOUT, or the child's standard output once an earlier
@@ -4000,6 +4038,7 @@ fn file_mode_string_for_metadata(metadata: &fs::Metadata) -> String {
 /// oracle, which returns t and records the loopback name on the contact
 /// plist.
 fn set_socket_option(
+    interp: &Interpreter,
     fd: std::os::fd::RawFd,
     option: &str,
     option_symbol: &Value,
@@ -4154,13 +4193,12 @@ fn set_socket_option(
         // list2 (opt, val) carries the CALLER's symbol, so an `eq' test on
         // the error data succeeds for a foreign-obarray keyword.  Rebuilding
         // the symbol here was the same identity bug fixed on the plist path.
-        return Err(LispError::SignalValue(Value::list([
-            Value::symbol("file-error"),
-            Value::string("Cannot set network option"),
-            Value::string(&super::super::processes::network_io_error_detail(&error)),
-            *option_symbol,
-            *value,
-        ])));
+        return Err(report_file_errno_files(
+            interp,
+            "Cannot set network option",
+            &[*option_symbol, *value],
+            &error,
+        ));
     }
     Ok(true)
 }
@@ -4662,14 +4700,14 @@ pub(crate) fn file_attributes(
 ) -> Result<Value, LispError> {
     let metadata = match fs::symlink_metadata(host) {
         Ok(metadata) => metadata,
-        Err(error) => return file_metadata_errno("Getting attributes", filename, &error),
+        Err(error) => return file_metadata_errno(interp, "Getting attributes", filename, &error),
     };
     let file_type = if metadata.file_type().is_symlink() {
         // fileio.c:check_emacs_readlinkat.
         match fs::read_link(host) {
             Ok(target) => decode_host_file_name(interp, env, &target)?,
             Err(error) if error.raw_os_error() == Some(libc::EINVAL) => Value::Nil,
-            Err(error) => file_metadata_errno("Reading symbolic link", filename, &error)?,
+            Err(error) => file_metadata_errno(interp, "Reading symbolic link", filename, &error)?,
         }
     } else {
         lisp_truth(metadata.is_dir())

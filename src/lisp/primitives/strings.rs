@@ -38,6 +38,26 @@ pub(crate) fn memory_full(interp: &mut Interpreter, env: &Env, nbytes: usize) ->
     )
 }
 
+/// `string_storage_error' where only a shared interpreter is at hand (the
+/// file-error data builders): a condition as it is, a failed allocation
+/// as memory_full's signal data, without the `memory-full' flag and
+/// consing threshold memory_full also sets, which need the interpreter
+/// mutably.
+pub(crate) fn string_storage_error_shared(
+    interp: &Interpreter,
+    error: crate::lisp::types::string_data::StringError,
+) -> LispError {
+    use crate::lisp::types::string_data::StringError;
+    match error {
+        StringError::Condition(error) => error,
+        StringError::AllocationFailed(_) => LispError::SignalValue(
+            interp
+                .symbol_value_key(cached_symbol!("memory-signal-data"))
+                .unwrap_or(Value::Nil),
+        ),
+    }
+}
+
 /// alloc.c:memory_full for a vector allocator's failure.
 pub(crate) fn allocation_error(
     interp: &mut Interpreter,

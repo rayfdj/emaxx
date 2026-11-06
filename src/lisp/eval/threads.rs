@@ -559,48 +559,48 @@ impl Interpreter {
         &mut self,
         value: &Value,
     ) -> Result<std::ffi::c_int, LispError> {
-        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         let id = self.resolve_process_id(value)?;
         let process = self.find_process_state_mut(id).expect("resolved process");
         if process.kind != ProcessKind::Pipe {
             return Err(wrong_type_argument("pipe-process-p", *value));
         }
-        let io_error = || {
-            let error = std::io::Error::last_os_error();
-            let errno = error.raw_os_error().unwrap_or(libc::EBADF);
-            // SAFETY: strerror returns a NUL-terminated message for ERRNO.
-            let message = unsafe { std::ffi::CStr::from_ptr(libc::strerror(errno)) }
-                .to_string_lossy()
-                .into_owned();
-            LispError::SignalValue(Value::list([
-                Value::symbol("file-error"),
-                Value::string("Cannot duplicate file descriptor"),
-                Value::string(&message),
-            ]))
-        };
+        // process.c:open_channel_for_module: report_file_error ("Cannot
+        // duplicate file descriptor", Qnil) with dup's errno.
+        Self::module_channel_fd(process).map_err(|error| {
+            primitives::report_file_errno_files(
+                self,
+                "Cannot duplicate file descriptor",
+                &[],
+                &error,
+            )
+        })
+    }
+
+    /// dup of PROCESS's SUBPROCESS_STDOUT, the pipe made for a module
+    /// channel the first time; a dead process's descriptor is -1, so the
+    /// dup fails with EBADF.
+    fn module_channel_fd(process: &mut ProcessState) -> std::io::Result<std::ffi::c_int> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        let bad_descriptor = || std::io::Error::from_raw_os_error(libc::EBADF);
         if !process.status.is_live() {
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("file-error"),
-                Value::string("Cannot duplicate file descriptor"),
-                Value::string("Bad file descriptor"),
-            ])));
+            return Err(bad_descriptor());
         }
         if process.module_pipe.is_none() {
             let mut fds = [-1; 2];
             // SAFETY: PIPE writes exactly two descriptors to FDS. Each is
             // immediately owned, including on later setup failure.
             if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-                return Err(io_error());
+                return Err(std::io::Error::last_os_error());
             }
             let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
             let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
             for fd in [reader.as_raw_fd(), writer.as_raw_fd()] {
                 if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-                    return Err(io_error());
+                    return Err(std::io::Error::last_os_error());
                 }
             }
             if unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
-                return Err(io_error());
+                return Err(std::io::Error::last_os_error());
             }
             process.module_pipe = Some((fs::File::from(reader), Some(fs::File::from(writer))));
         }
@@ -613,15 +613,15 @@ impl Interpreter {
             .1
             .as_ref()
         else {
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("file-error"),
-                Value::string("Cannot duplicate file descriptor"),
-                Value::string("Bad file descriptor"),
-            ])));
+            return Err(bad_descriptor());
         };
         // SAFETY: the descriptor is live; the caller assumes ownership of DUP.
         let fd = unsafe { libc::dup(writer.as_raw_fd()) };
-        if fd == -1 { Err(io_error()) } else { Ok(fd) }
+        if fd == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(fd)
+        }
     }
 
     pub(crate) fn create_process(
@@ -2902,7 +2902,7 @@ impl Interpreter {
             .as_deref()
             .map(|path| {
                 file_notify_directory_snapshot(path).map_err(|error| {
-                    primitives::file_operation_error("Reading directory", &error, path)
+                    primitives::file_operation_error(self, "Reading directory", &error, path)
                 })
             })
             .transpose()?
@@ -2975,6 +2975,7 @@ impl Interpreter {
             Err(_) => {
                 self.close_empty_kqueue_queue();
                 return Err(primitives::file_operation_error(
+                    self,
                     "File cannot be opened",
                     &std::io::Error::new(ErrorKind::InvalidInput, "file name contains a NUL byte"),
                     &path,
@@ -2992,6 +2993,7 @@ impl Interpreter {
             let error = std::io::Error::last_os_error();
             self.close_empty_kqueue_queue();
             return Err(primitives::file_operation_error(
+                self,
                 "File cannot be opened",
                 &error,
                 &path,
@@ -3038,6 +3040,7 @@ impl Interpreter {
             let error = std::io::Error::last_os_error();
             self.close_empty_kqueue_queue();
             return Err(primitives::file_operation_error(
+                self,
                 "Cannot watch file",
                 &error,
                 &path,
@@ -3050,6 +3053,7 @@ impl Interpreter {
             Err(error) => {
                 self.close_empty_kqueue_queue();
                 return Err(primitives::file_operation_error(
+                    self,
                     "Reading directory",
                     &error,
                     &path,
@@ -3465,7 +3469,7 @@ impl Interpreter {
             if is_directory
                 && host_flags & libc::NOTE_WRITE != 0
                 && let Some(next) = file_notify_directory_snapshot(&path).map_err(|error| {
-                    primitives::file_operation_error("Reading directory", &error, &path)
+                    primitives::file_operation_error(self, "Reading directory", &error, &path)
                 })?
             {
                 for (event_path, action, secondary_path) in file_notify_directory_changes(

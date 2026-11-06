@@ -853,7 +853,12 @@ pub(crate) fn load_file_strict_opened(
     history: &str,
 ) -> Result<(), types::LispError> {
     let bytes = crate::file_system::read_open_file(&mut file).map_err(|error| {
-        primitives::file_operation_error("Reading file", &error, &path.display().to_string())
+        primitives::file_operation_error(
+            interp,
+            "Reading file",
+            &error,
+            &path.display().to_string(),
+        )
     })?;
     let result = read_lisp_file_bytes(interp, path, bytes, Some(history), |_| false, |_| false);
     drop(file);

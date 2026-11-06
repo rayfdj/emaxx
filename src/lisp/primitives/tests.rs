@@ -12606,7 +12606,10 @@ fn make_process_nil_or_omitted_connection_type_uses_the_dynamic_default() {
 #[test]
 fn make_process_accepts_nil_coding_like_emacs() {
     let _permit = crate::test_support::acquire_exclusive_host_test_permit();
-    let program = r#"(let* ((default-directory temporary-file-directory)
+    // The early-Lisp interpreter has no files.el, so its
+    // `temporary-file-directory' is nil, and get_current_directory, as in
+    // GNU, refuses a nil `default-directory' (`stringp nil').
+    let program = r#"(let* ((default-directory (or temporary-file-directory "/tmp/"))
                             (process
                              (make-process
                               :name "nil-coding"
@@ -27166,7 +27169,9 @@ fn native_datagram_addresses_track_udp_peer_state_and_contact_metadata() {
 
 #[test]
 fn native_network_socket_errors_preserve_gnu_file_conditions() {
+    let interp = Interpreter::new();
     let server = crate::lisp::eval::error_condition_value(&processes::network_server_error(
+        &interp,
         &std::io::Error::from_raw_os_error(libc::EPERM),
     ))
     .to_vec()
@@ -27181,6 +27186,7 @@ fn native_network_socket_errors_preserve_gnu_file_conditions() {
 
     let args = [Value::symbol(":name"), Value::string("probe")];
     let client = crate::lisp::eval::error_condition_value(&processes::network_client_error(
+        &interp,
         &std::io::Error::from_raw_os_error(libc::ENOENT),
         &args,
     ))

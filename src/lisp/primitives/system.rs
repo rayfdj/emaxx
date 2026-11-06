@@ -746,14 +746,15 @@ fn process_inventory(processes: sysinfo::ProcessesToUpdate<'_>) -> sysinfo::Syst
 /// inventory below does, made a listing cost as much as asking every
 /// process for its attributes.
 #[cfg(target_os = "linux")]
-pub(crate) fn list_system_processes_value() -> Result<Value, LispError> {
+pub(crate) fn list_system_processes_value(interp: &Interpreter) -> Result<Value, LispError> {
     let directory = "/proc";
     let entries = fs::read_dir(directory)
-        .map_err(|error| file_operation_error("Opening directory", &error, directory))?;
+        .map_err(|error| file_operation_error(interp, "Opening directory", &error, directory))?;
     let mut pids = Vec::new();
     for entry in entries {
-        let entry =
-            entry.map_err(|error| file_operation_error("Reading directory", &error, directory))?;
+        let entry = entry.map_err(|error| {
+            file_operation_error(interp, "Reading directory", &error, directory)
+        })?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name.bytes().any(|byte| byte.is_ascii_digit()) {
@@ -763,8 +764,10 @@ pub(crate) fn list_system_processes_value() -> Result<Value, LispError> {
     Ok(Value::list(pids))
 }
 
+/// sysdep.c:list_system_processes without procfs: the system's process
+/// ids, which name no file and report no file error.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn list_system_processes_value() -> Result<Value, LispError> {
+pub(crate) fn list_system_processes_value(_interp: &Interpreter) -> Result<Value, LispError> {
     #[cfg(target_os = "macos")]
     if !darwin_process_inventory_available() {
         return Ok(Value::Nil);
@@ -2273,6 +2276,110 @@ pub(crate) fn decode_host_file_name(
     decode_file_name(interp, env, path.as_os_str().as_bytes())
 }
 
+/// `file_name_coding' after CHECK_CODING_SYSTEM's Fcheck_coding_system
+/// has evaluated the coding system's pending `coding-system-define-form'
+/// (an autoloaded coding system), as code_convert_string's check does.
+fn loaded_file_name_coding(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Option<String>, LispError> {
+    for variable in [
+        cached_symbol!("file-name-coding-system"),
+        cached_symbol!("default-file-name-coding-system"),
+    ] {
+        if let Some(coding) = interp
+            .lookup_var_key(variable, env)
+            .filter(|value| !value.is_nil())
+        {
+            super::load_coding_system(interp, &coding, env)?;
+            return super::checked_coding_name(interp, &coding);
+        }
+    }
+    Ok(None)
+}
+
+/// coding.c:encode_file_name, ENCODE_FILE of the Lisp string NAME: NAME
+/// itself when it is unibyte or no file-name coding system is set, else
+/// convert_string_nocopy's encoding of it, which code_convert_string's
+/// ASCII fast path leaves NAME itself.  A NUL in the result is
+/// CHECK_STRING_NULL_BYTES's `filenamep' error on the encoded string.
+pub(crate) fn encode_file_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: Value,
+) -> Result<Value, LispError> {
+    let multibyte =
+        matches!(name.kind(), Kind::StringObject(state) if state.borrow().is_multibyte());
+    let coding = if multibyte {
+        loaded_file_name_coding(interp, env)?
+    } else {
+        None
+    };
+    let encoded = match coding {
+        Some(coding) => {
+            super::encode_coding_value_recording(interp, &name, Some(&coding), true, false, env)?
+        }
+        None => name,
+    };
+    if let Kind::StringObject(state) = encoded.kind()
+        && state.borrow().bytes().contains(&0)
+    {
+        return Err(LispError::WrongTypeArgument("filenamep".into(), encoded));
+    }
+    Ok(encoded)
+}
+
+/// coding.c:decode_file_name, DECODE_FILE of the Lisp string NAME: NAME
+/// itself without a file-name coding system, else convert_string_nocopy's
+/// decoding of it (NAME itself again under the ASCII fast path).
+pub(crate) fn decode_file_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: Value,
+) -> Result<Value, LispError> {
+    match loaded_file_name_coding(interp, env)? {
+        Some(coding) => super::decode_coding_text_recording(
+            interp,
+            &name,
+            Some(&coding),
+            true,
+            false,
+            None,
+            false,
+            env,
+        ),
+        None => Ok(name),
+    }
+}
+
+/// process.c:remove_slash_colon of the Lisp string NAME: without the "/:"
+/// that quotes it, a new string of NAME's multibyteness and without its
+/// properties (make_specified_string), else NAME itself.
+pub(crate) fn remove_slash_colon_value(
+    interp: &mut Interpreter,
+    env: &Env,
+    name: Value,
+) -> Result<Value, LispError> {
+    let Kind::StringObject(state) = name.kind() else {
+        return Ok(name);
+    };
+    let (rest, multibyte) = {
+        let state = state.borrow();
+        match state.bytes() {
+            [b'/', b':', rest @ ..] => (rest.to_vec(), state.is_multibyte()),
+            _ => return Ok(name),
+        }
+    };
+    super::make_specified_string(rest, multibyte)
+        .map_err(|error| super::string_storage_error(interp, env, error))
+}
+
+/// SSDATA (NAME), a name ENCODE_FILE gave, as the host path C passes.
+pub(crate) fn encoded_host_path(name: &Value) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    PathBuf::from(std::ffi::OsString::from_vec(super::sdata_c_string(name)))
+}
+
 /// Qexpand_file_name.
 fn expand_file_name_operation() -> Value {
     cached_symbol!("expand-file-name").with(|symbol| Value::Symbol(*symbol))
@@ -3111,7 +3218,7 @@ pub(crate) fn directory_files(
         } else {
             directory
         };
-        super::file_io::report_file_errno(step, file, &error)
+        super::file_io::report_file_errno(interp, step, file, &error)
     })?;
     let prefix = file_name_as_directory(&directory_text);
     let directory_multibyte = prefix
