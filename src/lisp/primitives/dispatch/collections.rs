@@ -481,8 +481,8 @@ fn optimize_sub_char_table(
                 if optimizable {
                     optimizable = if test.is_nil() {
                         values_equal(interp, &value, &first)?
-                    } else if test.eq_value(Value::symbol("eq")) {
-                        value.eq_value(first)
+                    } else if crate::lisp::types::eq(test, Value::symbol("eq")) {
+                        crate::lisp::types::eq(value, first)
                     } else {
                         call_function_value(interp, &test, &[value, first], env)?.is_truthy()
                     };
@@ -583,7 +583,7 @@ fn map_char_table_node(
                 if this.is_nil() {
                     this = top.default();
                 }
-                if !value.eq_value(this) {
+                if !crate::lisp::types::eq(value, this) {
                     interp.with_lisp_stack_roots(&this, |interp| -> Result<(), LispError> {
                         let mut different = true;
                         if value.is_nil()
@@ -605,7 +605,7 @@ fn map_char_table_node(
                                 parent,
                                 env,
                             )?;
-                            if value.eq_value(this) {
+                            if crate::lisp::types::eq(value, this) {
                                 different = false;
                             }
                         }
@@ -752,7 +752,7 @@ define_dispatch!(
                     ])));
                 } else {
                     for &[keyword, value] in args[1..].as_chunks::<2>().0 {
-                        match keyword.kind() {
+                        match crate::lisp::types::eq_dispatch(keyword).kind() {
                             Kind::Symbol(keyword) if keyword.is_named(":key") => key = Some(value),
                             Kind::Symbol(keyword) if keyword.is_named(":lessp") => {
                                 lessp = Some(value)
@@ -1322,7 +1322,7 @@ define_dispatch!(
                 let Kind::CharTable(id) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
                 };
-                if args[1].eq_value(Value::T) {
+                if crate::lisp::types::eq(args[1], Value::T) {
                     id.set_all(args[2]);
                 } else {
                     let range = char_table_range_spec(interp, &args[1], name)?;

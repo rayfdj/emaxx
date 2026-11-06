@@ -793,7 +793,7 @@ fn char_code_property_entry(
 /// five extra slots.
 fn uniprop_table_p(table: CharTableRef) -> bool {
     cached_symbol!("char-code-property-table")
-        .with(|symbol| table.purpose().word() == Value::Symbol(*symbol).word())
+        .with(|symbol| crate::lisp::types::eq(table.purpose(), Value::Symbol(*symbol)))
         && table.extra_count() == 5
 }
 

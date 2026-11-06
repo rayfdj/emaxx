@@ -188,8 +188,11 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 let object = overlay(args[0])?;
                 object.put_prop(args[1], args[2]);
-                if matches!(args[1].kind(), Kind::Symbol(prop) if prop.is_named("evaporate"))
-                    && args[2].is_truthy()
+                // EQ (prop, Qevaporate).
+                if crate::lisp::types::eq(
+                    args[1],
+                    cached_symbol!("evaporate").with(|symbol| Value::Symbol(*symbol)),
+                ) && args[2].is_truthy()
                     && object.beg() == object.end()
                 {
                     object.detach();
@@ -202,10 +205,7 @@ define_dispatch!(
                 Ok(overlay_property_with_category(
                     interp,
                     &object,
-                    crate::lisp::types::PropertyName::eq_with_pos(
-                        args[1],
-                        interp.symbols_with_positions_enabled(),
-                    ),
+                    crate::lisp::types::PropertyName::new(args[1]),
                 )?
                 .unwrap_or(Value::Nil))
             }

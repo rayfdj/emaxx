@@ -288,9 +288,7 @@ impl Interpreter {
         let kind = crate::lisp::primitives::call(self, "nth", &[Value::Integer(4), fundef], env)?;
         let loads_macro = matches!(kind.kind(), Kind::T)
             || matches!(kind.kind(), Kind::Symbol(symbol) if symbol.is_named("t") || symbol.is_named("macro"));
-        if matches!(macro_only.kind(), Kind::Symbol(symbol) if symbol.is_named("macro"))
-            && !loads_macro
-        {
+        if crate::lisp::types::eq_symbol_named(macro_only, "macro") && !loads_macro {
             return Ok(fundef);
         }
         if self.will_dump_without_bootstrap(env) {
@@ -1633,7 +1631,10 @@ impl Interpreter {
             a.0 == b.0
                 && a.2 == b.2
                 && a.3 == b.3
-                && a.1.iter().zip(&b.1).all(|(a, b)| a.word() == b.word())
+                && a.1
+                    .iter()
+                    .zip(&b.1)
+                    .all(|(a, b)| crate::lisp::types::eq(*a, *b))
         };
         Ok(left.0 == right.0
             && left.1.len() == right.1.len()
@@ -1857,7 +1858,7 @@ impl Interpreter {
                         let mut found = None;
                         while let Some(cell) = tail.cons_ref() {
                             if let Some(entry) = cell.car.get().cons_ref()
-                                && entry.car.get().word() == name.word()
+                                && crate::lisp::types::eq(entry.car.get(), name)
                             {
                                 found = Some(entry);
                                 break;
@@ -3280,17 +3281,19 @@ impl Interpreter {
     }
 
     /// Ffeaturep's and Frequire's `Fmemq (feature, Vfeatures)': FEATURE
-    /// by its word, read in place (a circular or dotted list has none).
+    /// by EQ, read in place (a circular or dotted list has none).
     pub(crate) fn has_feature_symbol(&self, feature: SymbolName) -> bool {
         let features = cached_symbol!("features")
             .with(|symbol| self.global_binding_value_symbol(symbol))
             .unwrap_or_else(|| self.features_value());
-        let word = Value::Symbol(feature).word();
+        let feature = Value::Symbol(feature);
         if matches!(features.kind(), Kind::Vector(_)) {
             // A vector reads as `to_vec' gives it, marker first.
-            return features
-                .to_vec()
-                .is_ok_and(|features| features.iter().any(|value| value.word() == word));
+            return features.to_vec().is_ok_and(|features| {
+                features
+                    .iter()
+                    .any(|value| crate::lisp::types::eq(*value, feature))
+            });
         }
         // Fmemq's walk, stopping at the first match.
         let mut tail = features;
@@ -3299,7 +3302,7 @@ impl Interpreter {
             if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
                 return false;
             }
-            if cell.car.get().word() == word {
+            if crate::lisp::types::eq(cell.car.get(), feature) {
                 return true;
             }
             tail = cell.cdr.get();
@@ -3566,7 +3569,7 @@ fn assq_plain(key: Value, alist: Value) -> Option<(Value, Value)> {
     let mut walk = crate::lisp::types::TailWalk::new(tail);
     while let Some(cell) = tail.cons_ref() {
         if let Some(entry) = cell.car.get().cons_ref()
-            && entry.car.get().word() == key.word()
+            && crate::lisp::types::eq(entry.car.get(), key)
         {
             return Some((entry.car.get(), entry.cdr.get()));
         }

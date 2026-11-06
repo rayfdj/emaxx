@@ -636,7 +636,7 @@ fn copy_keymap_1(
     let mut items = Vec::new();
     let mut tail = keymap.cdr()?;
     while let Some((elt, rest)) = tail.cons_values() {
-        if matches!(elt.kind(), Kind::Symbol(head) if head.is_named("keymap")) {
+        if crate::lisp::types::eq_symbol_named(elt, "keymap") {
             break;
         }
         let copied = if matches!(elt.kind(), Kind::CharTable(_)) {
@@ -648,7 +648,7 @@ fn copy_keymap_1(
             }
             Value::vector(copied)
         } else if let Some((car, cdr)) = elt.cons_values() {
-            if matches!(car.kind(), Kind::Symbol(head) if head.is_named("keymap")) {
+            if crate::lisp::types::eq_symbol_named(car, "keymap") {
                 copy_keymap_1(interp, &elt, depth + 1, env)?
             } else {
                 Value::cons(car, copy_keymap_item(interp, &cdr, depth + 1, env)?)
@@ -710,7 +710,7 @@ fn copy_keymap_item(
         }
         result
     };
-    if matches!(car.kind(), Kind::Symbol(head) if head.is_named("menu-item")) {
+    if crate::lisp::types::eq_symbol_named(car, "menu-item") {
         let mut cells = vec![car];
         let mut rest = cdr;
         if let Some((name, after_name)) = rest.cons_values() {
@@ -744,7 +744,7 @@ fn copy_keymap_item(
         };
         return Ok(rebuild(cells, rest));
     }
-    if matches!(car.kind(), Kind::Symbol(head) if head.is_named("keymap")) {
+    if crate::lisp::types::eq_symbol_named(car, "keymap") {
         return copy_keymap_1(interp, elt, depth, env);
     }
     Ok(*elt)

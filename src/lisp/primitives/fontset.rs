@@ -237,7 +237,7 @@ fn fontset_add(fontset: &Value, range: Option<(u32, u32)>, elt: Value, add: &Val
         }
         return;
     }
-    let append = add.eq_value(Value::symbol("append"));
+    let append = crate::lisp::types::eq(*add, Value::symbol("append"));
     let merged = |old: Value| -> Value {
         if old.is_nil() {
             return new;
@@ -388,7 +388,7 @@ fn script_ranges(
     Ok(table
         .effective_ranges()
         .into_iter()
-        .filter(|entry| entry.value.eq_value(*script))
+        .filter(|entry| crate::lisp::types::eq(entry.value, *script))
         .map(|entry| (entry.start, entry.end))
         .collect())
 }
@@ -557,7 +557,7 @@ pub(crate) fn set_fontset_font(
             ));
         }
         let val = char_table(&fontset_obj).get(0);
-        if !val.is_nil() && add.eq_value(Value::symbol("append")) {
+        if !val.is_nil() && crate::lisp::types::eq(add, Value::symbol("append")) {
             // We are going to change just an additional font for ASCII.
             ascii_changed = false;
         }

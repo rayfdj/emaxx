@@ -37,7 +37,7 @@ fn restore_buffer_modified_p(
         interp.buffer.borrow_mut().set_unmodified();
     } else {
         interp.buffer.borrow_mut().set_modified();
-        if matches!(flag.kind(), Kind::Symbol(symbol) if symbol.is_named("autosaved")) {
+        if crate::lisp::types::eq_symbol_named(flag, "autosaved") {
             let modiff = interp.buffer.borrow().modified_tick();
             if let Some(mut buffer) = interp.get_buffer_by_id_mut(base) {
                 buffer.set_autosave_modiff(modiff);
@@ -1391,7 +1391,7 @@ define_dispatch!(
                 get_char_property(
                     interp,
                     &args[0],
-                    PropertyName::eq_with_pos(args[1], interp.symbols_with_positions_enabled()),
+                    PropertyName::new(args[1]),
                     args.get(2).copied().unwrap_or(Value::Nil),
                 )
             }
@@ -1400,7 +1400,7 @@ define_dispatch!(
                 get_pos_property(
                     interp,
                     &args[0],
-                    PropertyName::eq_with_pos(args[1], interp.symbols_with_positions_enabled()),
+                    PropertyName::new(args[1]),
                     args.get(2).copied().unwrap_or(Value::Nil),
                 )
             }
@@ -1409,7 +1409,7 @@ define_dispatch!(
                 let (value, overlay) = get_char_property_and_overlay(
                     interp,
                     &args[0],
-                    PropertyName::eq_with_pos(args[1], interp.symbols_with_positions_enabled()),
+                    PropertyName::new(args[1]),
                     args.get(2).copied().unwrap_or(Value::Nil),
                 )?;
                 Ok(Value::cons(
@@ -1422,7 +1422,7 @@ define_dispatch!(
                 get_text_property(
                     interp,
                     &args[0],
-                    PropertyName::eq_with_pos(args[1], interp.symbols_with_positions_enabled()),
+                    PropertyName::new(args[1]),
                     args.get(2).copied().unwrap_or(Value::Nil),
                 )
             }
@@ -1648,7 +1648,7 @@ fn prefix_property_width(interp: &mut Interpreter, env: &mut Env, prop: Option<V
     {
         let mut cursor = 1;
         while cursor + 1 < items.len() {
-            if matches!(items[cursor].kind(), Kind::Symbol(key) if key.is_named(":width")) {
+            if crate::lisp::types::eq_symbol_named(items[cursor], ":width") {
                 return display_spec_width(interp, env, &items[cursor + 1]).max(0) as usize;
             }
             cursor += 2;

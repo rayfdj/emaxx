@@ -1993,7 +1993,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(
                     if matches!(args[0].kind(), Kind::T)
-                        || matches!(args[0].kind(), Kind::Symbol(symbol) if symbol.is_named("gnutls-e-again"))
+                        || crate::lisp::types::eq_symbol_named(args[0], "gnutls-e-again")
                     {
                         Value::Nil
                     } else {

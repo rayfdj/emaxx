@@ -90,7 +90,11 @@ fn execute_kbd_macro(
         loop {
             interp.set_variable_key(cached_symbol!("executing-kbd-macro"), roots[0], env);
             interp.executing_kbd_macro = true;
-            interp.set_variable_key(cached_symbol!("executing-kbd-macro-index"), Value::Integer(0), env);
+            interp.set_variable_key(
+                cached_symbol!("executing-kbd-macro-index"),
+                Value::Integer(0),
+                env,
+            );
             interp.set_variable_key(cached_symbol!("prefix-arg"), Value::Nil, env);
             interp.set_variable_key(cached_symbol!("last-prefix-arg"), Value::Nil, env);
 
@@ -119,7 +123,9 @@ fn execute_kbd_macro(
             {
                 // GNU's outermost command loop catches `top-level`, terminating
                 // the keyboard macro without propagating an error.
-                Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol.is_named("top-level")) => {
+                Err(LispErrorKind::Throw(tag, _))
+                    if crate::lisp::types::eq_symbol_named(tag, "top-level") =>
+                {
                     Ok(())
                 }
                 other => other,
@@ -153,14 +159,26 @@ fn execute_kbd_macro(
         let (previous_index, previous_real_this_command) =
             tail.cons_values().expect("saved macro index and command");
         interp.set_variable_key(cached_symbol!("executing-kbd-macro"), previous_macro, env);
-        interp.set_variable_key(cached_symbol!("executing-kbd-macro-index"), previous_index, env);
-        interp.set_variable_key(cached_symbol!("real-this-command"), previous_real_this_command, env);
+        interp.set_variable_key(
+            cached_symbol!("executing-kbd-macro-index"),
+            previous_index,
+            env,
+        );
+        interp.set_variable_key(
+            cached_symbol!("real-this-command"),
+            previous_real_this_command,
+            env,
+        );
         interp.set_variable_key(cached_symbol!("this-command"), Value::Nil, env);
         // This is an unwind cleanup in GNU: it runs once for normal completion,
         // loop-function termination, and command errors.
         let mut result = result.map(|()| Value::Nil);
         if let Err(hook_error) = interp.with_lisp_stack_roots(&result, |interp| {
-            run_hook(interp, &cached_symbol!("kbd-macro-termination-hook").symbol(), env)
+            run_hook(
+                interp,
+                &cached_symbol!("kbd-macro-termination-hook").symbol(),
+                env,
+            )
         }) {
             result = Err(hook_error);
         }
@@ -383,7 +401,9 @@ fn read_minibuffer_queued_commands(
         interp.pop_catch_tag();
         match dispatch.map_err(LispError::into_kind) {
             Ok(()) => {}
-            Err(LispErrorKind::Throw(tag, value)) if tag.eq_value(Value::symbol("exit")) => {
+            Err(LispErrorKind::Throw(tag, value))
+                if crate::lisp::types::eq(tag, Value::symbol("exit")) =>
+            {
                 // The submitting command leaves before its post-command
                 // phase; the prompting command resumes that outer cycle.
                 recursive_edit_exit_value(interp, env, value)?;
@@ -801,7 +821,9 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
     });
     interp.pop_handler_bindings(handler_start);
     let outcome = match result.map_err(LispError::into_kind) {
-        Err(LispErrorKind::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol.is_named("exit")) => {
+        Err(LispErrorKind::Throw(tag, value))
+            if crate::lisp::types::eq_symbol_named(tag, "exit") =>
+        {
             recursive_edit_exit_value(interp, env, value)
         }
         Err(error) => Err(LispError::from(error)),
@@ -908,8 +930,7 @@ fn execute_kbd_macro_resolved_command(
     }
     let command_result = if dispatched_command.is_nil() {
         call_function_value(interp, &Value::symbol("undefined"), &[], env)
-    } else if matches!(dispatched_command.kind(), Kind::Symbol(name) if name.is_named("narrow-to-region"))
-    {
+    } else if crate::lisp::types::eq_symbol_named(dispatched_command, "narrow-to-region") {
         prepare_native_kbd_command_body(interp, env)?;
         let mark = interp
             .buffer

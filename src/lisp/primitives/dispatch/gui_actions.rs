@@ -239,7 +239,7 @@ fn popup_place(interp: &mut Interpreter, position: &Value) -> PopupPlace {
             &crate::lisp::types::Env::new(),
         )
         .unwrap_or(Value::Nil);
-    let kbd_navigation = !posn_posn(&last).eq_value(posn_posn(position))
+    let kbd_navigation = !crate::lisp::types::eq(posn_posn(&last), posn_posn(position))
         && matches!(area.kind(), Kind::Cons(_))
         && area
             .car()

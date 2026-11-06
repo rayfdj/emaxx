@@ -12358,7 +12358,7 @@ mod tests {
         assert!(overlay.front_advance());
         assert_eq!(
             overlay
-                .get_symbol_prop("native-overlay-property")
+                .get_prop(&Value::symbol("native-overlay-property"))
                 .expect("written property")
                 .word(),
             aliases.word()
@@ -12433,7 +12433,10 @@ mod tests {
             );
             assert_eq!(overlay.plist().word(), hidden[1] ^ HIDE);
             assert_eq!(
-                overlay.get_symbol_prop("self").expect("live cycle").word(),
+                overlay
+                    .get_prop(&Value::symbol("self"))
+                    .expect("live cycle")
+                    .word(),
                 value.word()
             );
             for word in &hidden[2..] {

@@ -10,7 +10,6 @@ use super::units::{CallEnd, CallRuns, MAX_ANNOTATION_LENGTH, Units, charbuf_size
 use super::*;
 use crate::lisp::eval::coding::CharsetRef;
 use crate::lisp::eval::coding::*;
-use crate::lisp::types::Kind;
 use crate::lisp::types::SymbolName;
 
 const ISO_CODE_SO: u8 = 0x0E;
@@ -148,8 +147,7 @@ fn make_iso_attributes(
             ))
         })
         .collect();
-    let full_support =
-        matches!(state.charset_list.kind(), Kind::Symbol(name) if name.is_named("iso-2022"));
+    let full_support = crate::lisp::types::eq_symbol_named(state.charset_list, "iso-2022");
     let flags = args
         .get(3)
         .and_then(|flags| flags.integer_value())

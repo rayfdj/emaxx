@@ -18,14 +18,19 @@ impl Interpreter {
             let value_form = value_cell.car.get();
             cur = next_cons(&value_cell);
             nargs += 2;
-            // The symbol itself, resolved and assigned by its id.
-            let symbol = match sym.symbol_cell() {
+            // The symbol itself, resolved and assigned by its id: SYMBOLP
+            // and XSYMBOL, a symbol with position its bare symbol while
+            // `symbols-with-pos-enabled' is set.  Anything else is
+            // Fset's CHECK_SYMBOL, after eval_sub of the value.
+            let bare = crate::lisp::types::maybe_remove_pos(sym);
+            let symbol = match bare.symbol_cell() {
                 Some(symbol) => symbol,
-                None if sym.is_nil() => crate::lisp::types::symbols::builtin_boolean(false),
-                None if sym.word() == Value::T.word() => {
+                None if bare.is_nil() => crate::lisp::types::symbols::builtin_boolean(false),
+                None if bare.word() == Value::T.word() => {
                     crate::lisp::types::symbols::builtin_boolean(true)
                 }
                 None => {
+                    self.eval(&value_form, env)?;
                     return Err(LispError::WrongTypeArgument("symbolp".into(), sym));
                 }
             };
@@ -51,7 +56,8 @@ impl Interpreter {
                 continue;
             }
             result = evaluated;
-            if self.check_constant_assignment_symbol(&symbol, evaluated)? {
+            // set_internal's `setting-constant' names the object given.
+            if self.check_constant_assignment_given(&symbol, sym, evaluated)? {
                 continue;
             }
             let resolved = self.resolve_variable_symbol(&symbol)?;
@@ -94,12 +100,12 @@ impl Interpreter {
         } else if self.interpreter_environment_is_lexical(env)
             && !self.is_special_variable_symbol(&symbol)
         {
-            // GNU eval.c prepends the bare symbol, as given, to the current
-            // interpreter environment unless it is declared special.  At
-            // file top level that environment is the per-load `(t)' scope
-            // installed by lread.c; it is never a process-wide
-            // special-variable declaration.
-            self.push_local_special_declaration(&symbol, env);
+            // GNU eval.c prepends the symbol as given (a symbol with
+            // position kept) to the current interpreter environment unless
+            // it is declared special.  At file top level that environment
+            // is the per-load `(t)' scope installed by lread.c; it is never
+            // a process-wide special-variable declaration.
+            self.push_local_special_declaration(name_value, env);
         }
         Ok(name_value)
     }

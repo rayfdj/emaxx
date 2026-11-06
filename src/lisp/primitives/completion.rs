@@ -28,7 +28,7 @@ pub(crate) fn interaction_allowed(interp: &Interpreter, env: &Env) -> bool {
 }
 
 pub(crate) fn is_window_value(interp: &Interpreter, value: &Value) -> bool {
-    matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("window"))
+    crate::lisp::types::eq_symbol_named(value, "window")
         || matches!(value.kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record|
             record.kind == crate::lisp::eval::RecordKind::Window))
 }
@@ -1428,7 +1428,7 @@ pub(crate) fn internal_complete_buffer(
             })
             .collect::<Vec<_>>(),
     );
-    match args[2].kind() {
+    match crate::lisp::types::eq_dispatch(args[2]).kind() {
         Kind::Nil => try_completion(interp, &[args[0], buffer_alist, args[1]], env),
         Kind::T => {
             // Fall_completions checks STRING; only this flag reads it here.
@@ -1750,7 +1750,7 @@ pub(crate) fn activate_minibuffer(
             let Some((value, rest)) = rest.cons_values() else {
                 break;
             };
-            if name.eq_value(Value::symbol("face")) {
+            if crate::lisp::types::eq(name, Value::symbol("face")) {
                 super::call(
                     interp,
                     "add-face-text-property",
@@ -2563,7 +2563,7 @@ fn apply_minibuffer_edit_key(contents: &mut Vec<char>, cursor: &mut usize, ch: c
 /// are SYMBOL, (SYMBOL . STARTPOS), nil (the default
 /// `minibuffer-history'), and t (no recording).
 pub(crate) fn history_variable_name(spec: &Value) -> Option<String> {
-    match spec.kind() {
+    match crate::lisp::types::eq_dispatch(spec).kind() {
         Kind::Nil => Some("minibuffer-history".to_string()),
         Kind::Symbol(name) if name.is_named("t") => None,
         Kind::Symbol(name) => Some(name.to_string()),
@@ -2780,7 +2780,8 @@ pub(crate) fn interactive_minibuffer_command_loop(
                     .map_err(LispError::into_kind)
                     {
                         Ok(()) => {}
-                        Err(LispErrorKind::Throw(tag, value)) if matches!(tag.kind(), Kind::Symbol(name) if name.is_named("exit")) =>
+                        Err(LispErrorKind::Throw(tag, value))
+                            if crate::lisp::types::eq_symbol_named(tag, "exit") =>
                         {
                             return Ok(value);
                         }

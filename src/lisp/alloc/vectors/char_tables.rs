@@ -204,7 +204,7 @@ impl CharTableRef {
     }
 
     pub(crate) fn has_purpose(&self, name: &str) -> bool {
-        self.purpose().eq_value(Value::symbol(name))
+        crate::lisp::types::eq(self.purpose(), Value::symbol(name))
     }
 
     #[inline]
@@ -235,7 +235,7 @@ impl CharTableRef {
     pub(crate) fn is_uniprop(&self) -> bool {
         self.extra_count() == 5
             && cached_symbol!("char-code-property-table")
-                .with(|symbol| self.purpose().word() == Value::Symbol(*symbol).word())
+                .with(|symbol| crate::lisp::types::eq(self.purpose(), Value::Symbol(*symbol)))
     }
 
     /// chartab.c:char_table_ascii. ASCII aliases the actual bottom subtable;
@@ -393,7 +393,7 @@ impl CharTableRef {
             let character = ((left as u32) << SHIFTS[0]) - 1;
             left -= 1;
             let previous = query.value(self.slot(CONTENTS + left), character);
-            if !previous.eq_value(value) {
+            if !crate::lisp::types::eq(previous, value) {
                 query.from = character + 1;
                 break;
             }
@@ -403,7 +403,7 @@ impl CharTableRef {
             right += 1;
             let character = (right as u32) << SHIFTS[0];
             let next = query.value(self.slot(CONTENTS + right), character);
-            if !next.eq_value(value) {
+            if !crate::lisp::types::eq(next, value) {
                 query.to = character - 1;
                 break;
             }
@@ -535,7 +535,7 @@ impl CharTableRef {
             }
             if let Some(previous) = result.last_mut()
                 && previous.end + 1 == start
-                && previous.value.eq_value(value)
+                && crate::lisp::types::eq(previous.value, value)
             {
                 previous.end = end;
             } else {
@@ -714,7 +714,7 @@ impl SubCharTableRef {
             let character = minimum + ((left as u32) << shift) - 1;
             left -= 1;
             let previous = query.value(self.child(left, query.uniprop), character);
-            if !previous.eq_value(value) {
+            if !crate::lisp::types::eq(previous, value) {
                 query.from = character + 1;
                 break;
             }
@@ -724,7 +724,7 @@ impl SubCharTableRef {
             right += 1;
             let character = minimum + ((right as u32) << shift);
             let next = query.value(self.child(right, query.uniprop), character);
-            if !next.eq_value(value) {
+            if !crate::lisp::types::eq(next, value) {
                 query.to = character - 1;
                 break;
             }

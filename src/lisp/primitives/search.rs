@@ -518,7 +518,7 @@ pub(super) fn word_boundary_p_with(
     c2: u32,
 ) -> bool {
     let same_script = match vars.scripts {
-        Some(scripts) => scripts.get(c1).word() == scripts.get(c2).word(),
+        Some(scripts) => crate::lisp::types::eq(scripts.get(c1), scripts.get(c2)),
         None => true,
     };
     let (tail, default_result) = if same_script {

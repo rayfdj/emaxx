@@ -293,7 +293,7 @@ fn report_interval_modification(
         if !behind.is_nil() {
             call_mod_hooks(interp, behind, &args, env)?;
         }
-        if !in_front.is_nil() && in_front.word() != behind.word() {
+        if !in_front.is_nil() && !crate::lisp::types::eq(in_front, behind) {
             call_mod_hooks(interp, in_front, &args, env)?;
         }
         Ok(())
@@ -585,10 +585,7 @@ fn check_modified_intervals(
         let express = !textget(interp, props, cached_symbol!("inhibit-read-only"))?.is_nil()
             || (!read_only.is_nil()
                 && is_cons(&inhibit)
-                && memq(
-                    PropertyName::eq_with_pos(read_only, interp.symbols_with_positions_enabled()),
-                    inhibit,
-                ));
+                && memq(PropertyName::new(read_only), inhibit));
         if !implied && !express {
             return Err(text_read_only(read_only));
         }
@@ -596,7 +593,7 @@ fn check_modified_intervals(
             return Err(buffer_read_only_signal(interp));
         }
         let mod_hooks = textget(interp, props, cached_symbol!("modification-hooks"))?;
-        if !mod_hooks.is_nil() && mod_hooks.word() != previous.word() {
+        if !mod_hooks.is_nil() && !crate::lisp::types::eq(mod_hooks, previous) {
             hooks.push(mod_hooks);
             previous = mod_hooks;
         }
@@ -643,12 +640,7 @@ fn check_insertion_stickiness(
 ) -> Result<(), LispError> {
     let read_only_unless_inhibited = |props: Value| -> Result<Option<Value>, LispError> {
         let value = textget(interp, props, cached_symbol!("read-only"))?;
-        Ok((!value.is_nil()
-            && !memq(
-                PropertyName::eq_with_pos(value, interp.symbols_with_positions_enabled()),
-                inhibit,
-            ))
-        .then_some(value))
+        Ok((!value.is_nil() && !memq(PropertyName::new(value), inhibit)).then_some(value))
     };
     // The read-only property sticks to text inserted after it unless it
     // is rear-nonsticky (directly, or through `category' when the

@@ -1418,37 +1418,47 @@ impl WeakConsSlot {
     }
 }
 
+/// lisp.h's EQ: BASE_EQ, or, while the running editor's
+/// `symbols-with-pos-enabled' is set, BASE_EQ of the bare symbols (a
+/// symbol with position standing for its symbol).  The flag is read only
+/// when the words differ and one of them is vectorlike.
+#[inline(always)]
+pub fn eq(left: Value, right: Value) -> bool {
+    left.word() == right.word()
+        || ((left.is_vectorlike() || right.is_vectorlike()) && eq_with_positions(left, right))
+}
+
+/// EQ's second test: while the flag is set, the bare symbols' BASE_EQ.
+#[inline(never)]
+fn eq_with_positions(left: Value, right: Value) -> bool {
+    symbols::symbols_with_pos_enabled() && bare_symbol_eq(left, right)
+}
+
+/// EQ (VALUE, the symbol whose word is SYMBOL_WORD) once their words
+/// differ: VALUE a symbol with position of that symbol while the flag is
+/// set.  A walk that compares words first calls this for a vectorlike
+/// VALUE only.
+#[inline(never)]
+pub(crate) fn symbol_with_pos_is(value: Value, symbol_word: usize) -> bool {
+    symbols::symbols_with_pos_enabled()
+        && matches!(value.kind(), Kind::SymbolWithPos(symbol) if symbol.symbol().word() == symbol_word)
+}
+
 /// A text property's name: any Lisp object, compared with EQ, as
 /// textprop.c compares an interval plist's names (`EQ (XCAR (tail),
-/// prop)').  lisp.h's EQ counts a symbol with position as its bare
-/// symbol while `symbols-with-pos-enabled'; WITH_POS is that flag as the
-/// lookup starts (no Lisp runs inside one).  A Rust caller's
-/// `name == "face"' asks for the interned symbol `face' itself.
+/// prop)'), a symbol with position standing for its symbol while
+/// `symbols-with-pos-enabled' is set.  A Rust caller's `name == "face"'
+/// asks for the interned symbol `face' itself.
 #[derive(Clone, Copy, Debug)]
 pub struct PropertyName {
     name: Value,
-    with_pos: bool,
 }
 
 impl PropertyName {
-    /// NAME compared with BASE_EQ: a name no symbol with position
-    /// stands for.
+    /// NAME, compared with EQ.
     #[inline]
     pub fn new(name: Value) -> Self {
-        Self {
-            name,
-            with_pos: false,
-        }
-    }
-
-    /// NAME compared with EQ while `symbols-with-pos-enabled' is
-    /// SYMBOLS_WITH_POS_ENABLED.
-    #[inline]
-    pub fn eq_with_pos(name: Value, symbols_with_pos_enabled: bool) -> Self {
-        Self {
-            name,
-            with_pos: symbols_with_pos_enabled,
-        }
+        Self { name }
     }
 
     /// The interned symbol named NAME.
@@ -1469,21 +1479,22 @@ impl PropertyName {
 }
 
 impl PartialEq for PropertyName {
+    /// EQ of the two names.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.name.word() == other.name.word()
+        eq(self.name, other.name)
     }
 }
 
 impl Eq for PropertyName {}
 
 impl PartialEq<str> for PropertyName {
-    /// Whether this is the interned symbol named TEXT: an uninterned or
-    /// private obarray's symbol of that name carries a marker in its own
-    /// name and is not.
+    /// Whether this is EQ to the interned symbol named TEXT: an uninterned
+    /// or private obarray's symbol of that name carries a marker in its
+    /// own name and is not.
     #[inline]
     fn eq(&self, text: &str) -> bool {
-        self.name.symbol_str() == Some(text)
+        PropertyKey::is(text, self.name)
     }
 }
 
@@ -1515,36 +1526,24 @@ pub trait PropertyKey: Copy {
     fn names(self, name: &PropertyName) -> bool {
         self.is(name.name)
     }
-
-    /// The object this key is EQ to, when it is one: a walk of a plist
-    /// then compares each name with it, read once.
-    #[inline]
-    fn object(self) -> Option<Value> {
-        None
-    }
 }
 
 impl PropertyKey for PropertyName {
     #[inline]
     fn is(self, object: Value) -> bool {
-        self.name.word() == object.word() || (self.with_pos && bare_symbol_eq(self.name, object))
+        eq(self.name, object)
     }
 
     #[inline]
     fn is_named(self, text: &str) -> bool {
         self == *text
     }
-
-    #[inline]
-    fn object(self) -> Option<Value> {
-        (!self.with_pos).then_some(self.name)
-    }
 }
 
 /// EQ's second test with the flag set: the bare symbols' BASE_EQ, a
 /// symbol with position standing for its symbol.
 #[inline(never)]
-fn bare_symbol_eq(left: Value, right: Value) -> bool {
+pub(crate) fn bare_symbol_eq(left: Value, right: Value) -> bool {
     let bare = |value: Value| match value.kind() {
         Kind::SymbolWithPos(symbol) => symbol.symbol(),
         _ => value,
@@ -1553,9 +1552,15 @@ fn bare_symbol_eq(left: Value, right: Value) -> bool {
 }
 
 impl PropertyKey for &str {
+    /// EQ to the interned symbol named by the text: its own word, or,
+    /// while `symbols-with-pos-enabled' is set, a symbol with position
+    /// of it.
     #[inline]
     fn is(self, object: Value) -> bool {
         object.symbol_str() == Some(self)
+            || (object.is_vectorlike()
+                && symbols::symbols_with_pos_enabled()
+                && matches!(object.kind(), Kind::SymbolWithPos(symbol) if symbol.symbol().symbol_str() == Some(self)))
     }
 
     #[inline]
@@ -1568,17 +1573,12 @@ impl PropertyKey for symbols::SymbolKey {
     /// The key's symbol, compared with EQ.
     #[inline]
     fn is(self, object: Value) -> bool {
-        self.with(|symbol| Value::Symbol(*symbol).word() == object.word())
+        self.with(|symbol| eq(Value::Symbol(*symbol), object))
     }
 
     #[inline]
     fn is_named(self, text: &str) -> bool {
         self.with(|symbol| symbol.as_str() == text)
-    }
-
-    #[inline]
-    fn object(self) -> Option<Value> {
-        Some(self.with(|symbol| Value::Symbol(*symbol)))
     }
 }
 
@@ -2318,16 +2318,45 @@ pub(crate) fn environment_is_lexical(env: &Env) -> bool {
 /// binding cons whose car is SYMBOL (by identity), entries that are not
 /// conses passed over.  An improper alist signals `listp' and a circular
 /// one `circular-list', as Fassq's FOR_EACH_TAIL does.
-#[inline]
+#[inline(always)]
 pub(crate) fn assq_binding(
     environment: &Value,
     symbol: &SymbolName,
 ) -> Result<Option<SharedCons>, LispError> {
     // Fassq's EQ: the binding's car is the symbol's own word (its cell's
-    // address with the symbol tag). nil and t, whose words are 0 and 48,
-    // are never bound, and their cells' addresses match no word.
+    // address with the symbol tag), or, while `symbols-with-pos-enabled'
+    // is set, a symbol with position of it. nil and t, whose words are 0
+    // and 48, are never bound, and their cells' addresses match no word.
+    // The flag is read once: no Lisp runs in the walk.
+    if symbols::symbols_with_pos_enabled() {
+        return assq_binding_with_pos(environment, symbol);
+    }
+    assq_binding_bare(environment, symbol)
+}
+
+/// `assq_binding' while `symbols-with-pos-enabled' is nil, when EQ is
+/// BASE_EQ: the binding whose car is the symbol's own word.
+#[inline(always)]
+pub(crate) fn assq_binding_bare(
+    environment: &Value,
+    symbol: &SymbolName,
+) -> Result<Option<SharedCons>, LispError> {
     let target = symbol.identity_ptr() | TAG_SYMBOL;
     assq_environment(environment, |bound| bound.word() == target)
+}
+
+/// `assq_binding' while `symbols-with-pos-enabled' is set: a binding's car
+/// may also be a symbol with position of the symbol whose word is TARGET.
+#[cold]
+#[inline(never)]
+pub(crate) fn assq_binding_with_pos(
+    environment: &Value,
+    symbol: &SymbolName,
+) -> Result<Option<SharedCons>, LispError> {
+    let target = symbol.identity_ptr() | TAG_SYMBOL;
+    assq_environment(environment, |bound| {
+        bound.word() == target || (bound.is_vectorlike() && symbol_with_pos_is(bound, target))
+    })
 }
 
 /// `assq_binding' for a name in hand: the binding whose symbol has that
@@ -2399,13 +2428,44 @@ fn improper_environment(environment: &Value, circular: bool) -> LispError {
 /// is an entry of the environment itself, a bare symbol declared locally
 /// special.
 /// Flet's `Fmemq (var, Vinternal_interpreter_environment)': whether SYMBOL
-/// itself (EQ, its word) is declared special in the lexical environment.
+/// itself (EQ: its word, or a symbol with position of it while
+/// `symbols-with-pos-enabled' is set) is declared special in the lexical
+/// environment.
 #[inline]
 pub(crate) fn environment_declares_special(environment: &Value, symbol: &SymbolName) -> bool {
+    environment_declares_special_with(environment, symbol, symbols::symbols_with_pos_enabled())
+}
+
+/// `environment_declares_special' with `symbols-with-pos-enabled' as
+/// WITH_POS, read once by the caller: no Lisp runs in the walk.
+#[inline(always)]
+pub(crate) fn environment_declares_special_with(
+    environment: &Value,
+    symbol: &SymbolName,
+    with_pos: bool,
+) -> bool {
     let target = symbol.identity_ptr() | TAG_SYMBOL;
+    if with_pos {
+        return environment_declares_special_with_pos(*environment, target);
+    }
     let mut tail = *environment;
     while let Some(cell) = tail.cons_ref() {
         if cell.car.get().word() == target {
+            return true;
+        }
+        tail = cell.cdr.get();
+    }
+    false
+}
+
+/// `environment_declares_special' while `symbols-with-pos-enabled' is set.
+#[cold]
+#[inline(never)]
+fn environment_declares_special_with_pos(environment: Value, target: usize) -> bool {
+    let mut tail = environment;
+    while let Some(cell) = tail.cons_ref() {
+        let car = cell.car.get();
+        if car.word() == target || (car.is_vectorlike() && symbol_with_pos_is(car, target)) {
             return true;
         }
         tail = cell.cdr.get();
@@ -3490,7 +3550,7 @@ impl fmt::Display for LispErrorKind {
             LispErrorKind::SignalValue(value) => match value.to_vec() {
                 Ok(items)
                     if items.len() == 2
-                        && matches!(items[0].kind(), Kind::Symbol(kind) if kind.is_named("void-variable")) =>
+                        && crate::lisp::types::eq_symbol_named(items[0], "void-variable") =>
                 {
                     // Preserve the host diagnostic when Fsymbol_value
                     // carries its original Lisp object instead of a name.
@@ -3793,6 +3853,39 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
             brief
         }
     }
+}
+
+/// maybe_remove_pos_from_symbol, as lisp.h's EQ and XSYMBOL see a symbol
+/// with position: its bare symbol while the running editor's
+/// `symbols-with-pos-enabled' is set, any other object itself.  A match
+/// on the result compares as EQ (VALUE, Qfoo) does; an error still names
+/// VALUE.
+#[inline]
+pub fn maybe_remove_pos(value: impl std::borrow::Borrow<Value>) -> Value {
+    let value = *value.borrow();
+    if !value.is_vectorlike() || !symbols::symbols_with_pos_enabled() {
+        return value;
+    }
+    match value.kind() {
+        Kind::SymbolWithPos(symbol) => symbol.symbol(),
+        _ => value,
+    }
+}
+
+/// What a dispatch on a symbol's identity matches VALUE as: EQ's bare
+/// symbol for a symbol with position while `symbols-with-pos-enabled' is
+/// set, except for one of nil, which NILP (BASE_EQ) never takes for nil.
+#[inline]
+pub fn eq_dispatch(value: impl std::borrow::Borrow<Value>) -> Value {
+    let value = *value.borrow();
+    let bare = maybe_remove_pos(value);
+    if bare.is_nil() { value } else { bare }
+}
+
+/// EQ (VALUE, the interned symbol named NAME).
+#[inline]
+pub fn eq_symbol_named(value: impl std::borrow::Borrow<Value>, name: &str) -> bool {
+    PropertyKey::is(name, *value.borrow())
 }
 
 #[cfg(test)]

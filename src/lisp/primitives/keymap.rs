@@ -48,7 +48,7 @@ fn meta_prefix_char(interp: &Interpreter) -> Value {
 fn is_keymap_list(value: Value) -> bool {
     value
         .cons_ref()
-        .is_some_and(|cell| cell.car.get().eq_value(qkeymap()))
+        .is_some_and(|cell| crate::lisp::types::eq(cell.car.get(), qkeymap()))
 }
 
 /// CHARACTERP.
@@ -75,9 +75,11 @@ fn bare_symbol(interp: &Interpreter, value: Value, env: &Env) -> Option<Value> {
 }
 
 /// indirect_function: the end of SYMBOL's chain of function cells, nil when
-/// one is void.  A non-symbol is itself.
+/// one is void.  A non-symbol is itself; SYMBOLP and XSYMBOL take a symbol
+/// with position while `symbols-with-pos-enabled' is set.
 #[inline]
 pub(crate) fn indirect_function(interp: &Interpreter, object: Value, env: &Env) -> Value {
+    let object = crate::lisp::types::maybe_remove_pos(object);
     match object.symbol_cell() {
         Some(symbol) => interp
             .lookup_function_symbol(&symbol, env)
@@ -122,21 +124,26 @@ pub(crate) fn get_keymap(
         if let Some(cell) = object.cons_ref() {
             // A list is its own indirect_function, and only a symbol is
             // autoloaded.
-            if cell.car.get().eq_value(qkeymap()) {
+            if crate::lisp::types::eq(cell.car.get(), qkeymap()) {
                 return Ok(object);
             }
-        } else if object.symbol_cell().is_some() {
+        } else if crate::lisp::types::maybe_remove_pos(object)
+            .symbol_cell()
+            .is_some()
+        {
+            // SYMBOLP, a symbol with position taken while
+            // `symbols-with-pos-enabled' is set.
             let tem = indirect_function(interp, object, env);
             if let Some(cell) = tem.cons_ref() {
                 let head = cell.car.get();
-                if head.eq_value(qkeymap()) {
+                if crate::lisp::types::eq(head, qkeymap()) {
                     return Ok(tem);
                 }
                 // Autoload forms for keymaps have Qkeymap as their fifth
                 // element.
                 if (autoload || !error_if_not_keymap)
-                    && head.eq_value(qautoload())
-                    && autoload_type(tem)?.eq_value(qkeymap())
+                    && crate::lisp::types::eq(head, qautoload())
+                    && crate::lisp::types::eq(autoload_type(tem)?, qkeymap())
                 {
                     if !autoload {
                         return Ok(object);
@@ -159,23 +166,26 @@ pub(crate) fn get_keymap(
 /// except for a malformed autoload form.
 pub(crate) fn get_keymap_noload(interp: &Interpreter, object: Value, env: &Env) -> Value {
     if let Some(cell) = object.cons_ref() {
-        return if cell.car.get().eq_value(qkeymap()) {
+        return if crate::lisp::types::eq(cell.car.get(), qkeymap()) {
             object
         } else {
             Value::Nil
         };
     }
-    if object.symbol_cell().is_none() {
+    if crate::lisp::types::maybe_remove_pos(object)
+        .symbol_cell()
+        .is_none()
+    {
         return Value::Nil;
     }
     let tem = indirect_function(interp, object, env);
     if let Some(cell) = tem.cons_ref() {
         let head = cell.car.get();
-        if head.eq_value(qkeymap()) {
+        if crate::lisp::types::eq(head, qkeymap()) {
             return tem;
         }
-        if head.eq_value(qautoload())
-            && autoload_type(tem).is_ok_and(|kind| kind.eq_value(qkeymap()))
+        if crate::lisp::types::eq(head, qautoload())
+            && autoload_type(tem).is_ok_and(|kind| crate::lisp::types::eq(kind, qkeymap()))
         {
             return object;
         }
@@ -324,7 +334,7 @@ pub(crate) fn get_keyelt(
             return Ok(object);
         };
         let head = cell.car.get();
-        if head.eq_value(qmenu_item()) {
+        if crate::lisp::types::eq(head, qmenu_item()) {
             let rest = cell.cdr.get();
             let Some(rest) = rest.cons_ref() else {
                 // Invalid keymap.
@@ -341,7 +351,7 @@ pub(crate) fn get_keyelt(
                 let Some(next_cell) = next.cons_ref() else {
                     break;
                 };
-                if autoload && cell.car.get().eq_value(qcfilter()) {
+                if autoload && crate::lisp::types::eq(cell.car.get(), qcfilter()) {
                     let filter = next_cell.car.get();
                     let form = Value::list([filter, Value::list([Value::symbol("quote"), object])]);
                     object = interp.menu_item_eval_property(form, env)?;
@@ -428,7 +438,7 @@ pub(crate) fn access_keymap_1(
     const IDX: usize = 5;
     const VAL: usize = 6;
     let tail = match map.cons_ref() {
-        Some(cell) if cell.car.get().eq_value(keymap_symbol) => cell.cdr.get(),
+        Some(cell) if crate::lisp::types::eq(cell.car.get(), keymap_symbol) => cell.cdr.get(),
         _ => map,
     };
     let mut roots = RootedVec::from_vec(vec![
@@ -451,7 +461,7 @@ pub(crate) fn access_keymap_1(
         // get_keymap (binding, 0, autoload): a list is a keymap by its car
         // alone, and only a symbol needs its function looked at.
         let submap = match binding.cons_ref() {
-            Some(cell) if cell.car.get().eq_value(keymap_symbol) => binding,
+            Some(cell) if crate::lisp::types::eq(cell.car.get(), keymap_symbol) => binding,
             Some(_) => Value::Nil,
             None if binding.symbol_cell().is_some() => {
                 get_keymap(interp, binding, false, autoload, env)?
@@ -459,7 +469,7 @@ pub(crate) fn access_keymap_1(
             None => Value::Nil,
         };
         let mut val = Value::Unbound;
-        if binding.eq_value(keymap_symbol) {
+        if crate::lisp::types::eq(binding, keymap_symbol) {
             if noinherit || roots[RETVAL].is_nil() {
                 // If NOINHERIT, stop here, the rest is inherited.
                 break;
@@ -488,9 +498,9 @@ pub(crate) fn access_keymap_1(
             val = access_keymap_1(interp, submap, roots[IDX], t_ok, noinherit, autoload, env)?;
         } else if let Some(cell) = binding.cons_ref() {
             let key = cell.car.get();
-            if key.eq_value(roots[IDX]) {
+            if crate::lisp::types::eq(key, roots[IDX]) {
                 val = cell.cdr.get();
-            } else if t_ok && key.eq_value(Value::T) {
+            } else if t_ok && crate::lisp::types::eq(key, Value::T) {
                 roots[T_BINDING] = cell.cdr.get();
                 t_ok = false;
             }
@@ -516,7 +526,7 @@ pub(crate) fn access_keymap_1(
 
         // If we found a binding, clean it up and return it.
         if !val.eq_value(Value::Unbound) {
-            if val.eq_value(Value::T) {
+            if crate::lisp::types::eq(val, Value::T) {
                 // A t binding is an explicit nil binding: it shadows any
                 // parent binding but not bindings in keymaps of lower
                 // precedence.
@@ -868,7 +878,7 @@ pub(crate) fn store_in_keymap(
     // Flush any reverse-map cache.
     interp.where_is_cache = Value::Nil;
     interp.where_is_cache_keymaps = Value::T;
-    if idx.eq_value(qkeymap()) {
+    if crate::lisp::types::eq(idx, qkeymap()) {
         return Err(crate::lisp::primitives::values::doprnt_error(
             interp,
             "`keymap' is reserved for embedded parent maps",
@@ -945,12 +955,12 @@ pub(crate) fn store_in_keymap(
             }
             Kind::Cons(entry) => {
                 let key = entry.car.get();
-                if key.eq_value(qkeymap()) {
+                if crate::lisp::types::eq(key, qkeymap()) {
                     // A sub keymap: a lookup that found two matching
                     // bindings built a temporary map, so update this one.
                     tail = elt;
                     insertion_point = elt;
-                } else if key.eq_value(idx) {
+                } else if crate::lisp::types::eq(key, idx) {
                     if remove {
                         delq_after(insertion_point, elt)?;
                     } else {
@@ -975,7 +985,7 @@ pub(crate) fn store_in_keymap(
             }
             // A `keymap' symbol in the spine starts a parent keymap used as
             // KEYMAP's tail: the binding goes before it.
-            _ if elt.eq_value(qkeymap()) => break,
+            _ if crate::lisp::types::eq(elt, qkeymap()) => break,
             _ => {}
         }
         tail = tail.cdr()?;
@@ -1150,7 +1160,7 @@ pub(crate) fn define_key(
         roots[4] = cmd;
         roots[0] = get_keymap(interp, cmd, false, true, env)?;
         if !roots[0].is_cons() {
-            let trailing_esc = if c.eq_value(meta_prefix_char(interp)) && metized {
+            let trailing_esc = if crate::lisp::types::eq(c, meta_prefix_char(interp)) && metized {
                 if idx == 0 { "ESC" } else { " ESC" }
             } else {
                 ""
@@ -1265,7 +1275,8 @@ fn accessible_keymaps_1(
         }
         let lim = vector_length(prefix);
         if lim <= thislen
-            && (0..lim).all(|i| vector_ref(prefix, i).eq_value(vector_ref(thisseq, i)))
+            && (0..lim)
+                .all(|i| crate::lisp::types::eq(vector_ref(prefix, i), vector_ref(thisseq, i)))
         {
             // `prefix' is a prefix of `thisseq': a cycle.
             return Ok(());
@@ -1340,8 +1351,8 @@ pub(crate) fn accessible_keymaps(
         let length = vector_length(thisseq);
         // Does the current sequence end in the meta-prefix-char?  The last
         // char of PREFIX is not metized.
-        let is_metized =
-            length > prefixlen && vector_ref(thisseq, length - 1).eq_value(meta_prefix);
+        let is_metized = length > prefixlen
+            && crate::lisp::types::eq(vector_ref(thisseq, length - 1), meta_prefix);
         // An autoloaded map cannot be scanned without running Lisp.
         if thismap.is_cons() {
             map_keymap(
@@ -1491,7 +1502,8 @@ fn where_is_internal(
         let map = entry.cdr()?;
         let length = vector_length(this);
         // [META-PREFIX-CHAR CHAR] folds into [M-CHAR].
-        let last_is_meta = length > 0 && vector_ref(this, length - 1).eq_value(meta_prefix);
+        let last_is_meta =
+            length > 0 && crate::lisp::types::eq(vector_ref(this, length - 1), meta_prefix);
         // Without menu entries, skip the keymaps bound to `menu-bar',
         // `tool-bar' and non-ASCII prefixes like `C-down-mouse-2'.
         if nomenus && length > 0 {
@@ -1584,7 +1596,7 @@ pub(crate) fn where_is_internal_command(
     no_remap: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let non_ascii = firstonly.eq_value(Value::symbol("non-ascii"));
+    let non_ascii = crate::lisp::types::eq(firstonly, Value::symbol("non-ascii"));
     // Ignore all menu bindings entirely.
     let nomenus = !firstonly.is_nil() && !non_ascii;
     let preferred = interp
@@ -1686,7 +1698,7 @@ pub(crate) fn where_is_internal_command(
             && vector.len() == 2
             && vector
                 .get(0)
-                .is_some_and(|head| head.eq_value(Value::symbol("remap")))
+                .is_some_and(|head| crate::lisp::types::eq(head, Value::symbol("remap")))
             && let Some(function) = vector.get(1).filter(Value::is_symbol)
         {
             let seqs = where_is_internal(interp, function, keymaps, noindirect, nomenus, env)?;

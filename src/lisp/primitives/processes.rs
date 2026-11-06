@@ -1308,7 +1308,8 @@ pub(crate) fn spawn_persistent_process(
     let default_pty = interp
         .lookup_var_key(cached_symbol!("process-connection-type"), env)
         .is_some_and(|value| value.is_truthy());
-    let (input_pty, output_pty) = process_connection_pty_modes(connection_type, default_pty)?;
+    let (input_pty, output_pty) =
+        process_connection_pty_modes(interp, connection_type, default_pty)?;
     #[cfg(target_os = "linux")]
     if let Some(runtime) = posix_spawn_process(
         interp,
@@ -1880,6 +1881,7 @@ fn posix_spawn_process(
 }
 
 fn process_connection_pty_modes(
+    interp: &Interpreter,
     connection_type: Option<&Value>,
     default_pty: bool,
 ) -> Result<(bool, bool), LispError> {
@@ -1888,25 +1890,32 @@ fn process_connection_pty_modes(
     };
     if let Some((input, output)) = connection_type.cons_values() {
         return Ok((
-            process_connection_endpoint_uses_pty(&input, default_pty)?,
-            process_connection_endpoint_uses_pty(&output, default_pty)?,
+            is_pty_from_symbol(interp, &input, default_pty)?,
+            is_pty_from_symbol(interp, &output, default_pty)?,
         ));
     }
-    let pty = process_connection_endpoint_uses_pty(connection_type, default_pty)?;
+    let pty = is_pty_from_symbol(interp, connection_type, default_pty)?;
     Ok((pty, pty))
 }
 
-fn process_connection_endpoint_uses_pty(
+/// process.c:is_pty_from_symbol: EQ `pty', EQ `pipe', NILP for the
+/// default, else report_file_error ("Unknown connection type", SYMBOL)
+/// with the errno that holds.
+fn is_pty_from_symbol(
+    interp: &Interpreter,
     value: &Value,
     default_pty: bool,
 ) -> Result<bool, LispError> {
-    match value.kind() {
+    match crate::lisp::types::eq_dispatch(value).kind() {
         Kind::Nil => Ok(default_pty),
         Kind::Symbol(name) if name.is_named("pty") => Ok(true),
         Kind::Symbol(name) if name.is_named("pipe") => Ok(false),
-        _ => Err(LispError::Signal(format!(
-            "Unknown connection type: {value}"
-        ))),
+        _ => Err(crate::lisp::primitives::report_file_errno(
+            interp,
+            "Unknown connection type",
+            *value,
+            &std::io::Error::last_os_error(),
+        )),
     }
 }
 
@@ -4270,7 +4279,7 @@ fn serial_data_bits(value: &Value) -> Result<serialport::DataBits, LispError> {
 }
 
 fn serial_parity(interp: &Interpreter, value: &Value) -> Result<serialport::Parity, LispError> {
-    match value.kind() {
+    match crate::lisp::types::eq_dispatch(value).kind() {
         Kind::Nil => Ok(serialport::Parity::None),
         Kind::Symbol(symbol) if symbol.is_named("even") => Ok(serialport::Parity::Even),
         Kind::Symbol(symbol) if symbol.is_named("odd") => Ok(serialport::Parity::Odd),
@@ -4296,7 +4305,7 @@ fn serial_flow_control(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<serialport::FlowControl, LispError> {
-    match value.kind() {
+    match crate::lisp::types::eq_dispatch(value).kind() {
         Kind::Nil => Ok(serialport::FlowControl::None),
         Kind::Symbol(symbol) if symbol.is_named("hw") => Ok(serialport::FlowControl::Hardware),
         Kind::Symbol(symbol) if symbol.is_named("sw") => Ok(serialport::FlowControl::Software),
@@ -4349,7 +4358,7 @@ fn serial_configuration(
     plist_items_put(&mut contact_items, ":parity", parity);
     plist_items_put(&mut contact_items, ":stopbits", stopbits);
     plist_items_put(&mut contact_items, ":flowcontrol", flowcontrol);
-    let parity_summary = match parity.kind() {
+    let parity_summary = match crate::lisp::types::eq_dispatch(parity).kind() {
         Kind::Symbol(symbol) if symbol.is_named("even") => 'E',
         Kind::Symbol(symbol) if symbol.is_named("odd") => 'O',
         _ => 'N',

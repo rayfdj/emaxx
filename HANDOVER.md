@@ -15566,6 +15566,84 @@ setup_process_coding_systems's check now refuses). A 13-form
   symbol of a positioned or uninterned coding system. Local validation:
   the grouped gate's 3,501 library tests, the integration targets
   and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 331: lisp.h's EQ, wherever C compares with it.** GNU's EQ is
+  BASE_EQ, or, while `symbols-with-pos-enabled' is set, the bare
+  symbols' BASE_EQ, read from one global C variable inside every
+  comparison; Emaxx kept the flag in each interpreter and compared with
+  it only where a primitive had the interpreter in hand, so the
+  text-property writes and removals, the stickiness lists and interval
+  merging (intervals_equal), overlay plists and `evaporate', the frame
+  and window parameter alists and every name Rust supplies compared with
+  BASE_EQ (round 330's review: a positioned name stored as a second key,
+  or missed). The C variable now lives in the editor's symbol table
+  beside its obarray, as GNU's globals are the process's: native code's
+  relocation is its address, the interpreter reads its own table's, and
+  `types::eq', lisp.h's EQ, reads the running editor's through the
+  pointer `ACTIVE_POS_FLAG' that is kept with the selected table's keys;
+  a shallow interpreter copy shares it as it shares the obarray and the
+  symbols' value cells, an image copy has its own. intervals.c's and
+  textprop.c's comparisons, buffer.c's Foverlay_put, frame.c's Fassq of
+  the parameters, window.c's of the window parameters, `EQ (sym, Qface)'
+  and `Qcomposition', and every `PropertyName', `SymbolKey' or text key
+  comparison are that EQ; a lookup no longer carries its own copy of the
+  flag. code_convert_string's fast path stores the coding system as
+  given in `last-coding-system-used' (a symbol with position or an
+  uninterned alias), the slow path its name. A census of the 254 word
+  comparisons left elsewhere found 136 that stand for EQ where a symbol
+  with position can reach them (keymap.c's keymap, autoload and
+  menu-item tests, font.c's keys and styles, the faces' names,
+  char-table purposes, catch tags, Feql and so memql, the features list,
+  the lexical environment among them), now EQ, and 117 that are GNU's
+  BASE_EQ or compare objects no symbol with position can be; of the name
+  tests that stand for EQ, 74 `is_named' matches are EQ and 20 matches
+  take the bare symbol, as XSYMBOL does. setq takes a positioned name
+  under the flag, evaluates the value before Fset's CHECK_SYMBOL of a
+  non-symbol, and names the object given in `setting-constant', as set
+  and set-default now do too, set_internal's keyword test being EQ;
+  default-value and default-toplevel-value name the object given in
+  `void-variable', and funcall's void-function names ORIGINAL_FUN; a
+  matched symbol is its bare symbol except a positioned nil, which NILP
+  does not take; keymaps reach indirect_function through a positioned
+  symbol; font-spec's and font-get's CHECK_SYMBOL, indirect_function,
+  the invisibility spec's comparisons and Feql are GNU's, and so are
+  xfaces.c's UNSPECIFIEDP and `:height' tests and resolve_face_name's
+  SYMBOLP; Fget's plist walk and the category value's SYMBOLP take a
+  positioned symbol; defvar's local declaration conses the symbol as
+  given; an overlay emptied by a deletion evaporates by Foverlay_get,
+  its category and `char-property-alias-alist' included; and
+  is_pty_from_symbol's unknown type is report_file_error with the errno
+  that holds. The lexical lookups read the flag once per walk:
+  interpreted mule-tests takes 20.56G instructions against round 329's
+  20.03G (the walk's test, which GNU's Fassq makes per element), in the
+  same time run alternately. The scroll commands' screen position reads
+  its columns with indent.c's scan and lets its error through, where it
+  took a failed `current-column' for column 0. A command-line comparison
+  runs round 330's review probes and this round's. **Audit:**
+  `tools/round_audit.py' against round 330 reports no hard findings (two
+  `#[allow(clippy::too_many_arguments)]' it found in a draft gave way to
+  `RecordUsed'); its review findings were read: the absent and unbound
+  values read as nil are GNU's C variables' and SDATA's, and
+  ACTIVE_POS_FLAG is the pointer to the flag, not a copy of it. A helper
+  classified the 254 census sites from GNU's sources, each with its GNU
+  line. The independent review of the round found three P1, seven P2 and
+  five P3 findings: keymaps rejected a positioned symbol before
+  indirect_function, matches made a positioned nil NILP, set_internal's
+  keyword test was `equal'; evaporation after a deletion, set and
+  set-default's error data, font-get, the face primitives, Fget's plist
+  and the category value, defvar's declaration and funcall's
+  void-function diverged; and object() was dead, two conversions were EQ
+  where GNU is BASE_EQ, the core.rs test's expectation was inverted
+  unseen by the audit tool, tool-bar-get-system-style compared with
+  `equal'. All P1 and P2 and the first, second and fourth P3 are fixed
+  above; the third is this: a shallow interpreter copy now shares its
+  editor's flag as it shares the obarray and the value cells, so the
+  test asserts that, and an image copy's independence. The fifth, a
+  second editor in one process overwriting a loaded .eln's relocation,
+  predates the round and arises only in tests. Stated deviation:
+  report_file_error's text is the errno the process holds, which differs
+  from GNU's when their system calls before it differ. Local validation:
+  the grouped gate's 3,501 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -18262,7 +18340,42 @@ ert-tests as a whole 26,307 ms against 27,211.
   (3,780 against 2,593) and mule-tests (3,007 against 1,982), and
   `ert-test-run-tests-batch-expensive' runs in 1.06 of GNU's time.
 
+**On `3f81ed8`** (round 330): the full Rust gate (run 42185872816)
+  passed; the frozen run (run 42185876448) passed at its first attempt,
+  7,928 of 7,928 outcomes matching. Setup 76.8 s against 60.2 s (1.274),
+  test bodies 290.8 s against 255.1 s (1.140), in all 1.158, with a
+  per-file setup median of 116 ms against 93, on a runner where GNU took
+  331.0 s in all against round 329's 365.6 while Emaxx took 383.3
+  against 394.5. The widest body gaps are ert-tests (42,963 ms against
+  36,102), tramp-tests (20,044 against 16,511), comp-tests (16,612
+  against 13,521), semantic-utest-ia (4,214 against 2,711) and
+  mule-tests (3,395 against 1,924), and
+  `ert-test-run-tests-batch-expensive' runs in 1.18 of GNU's time. The
+  rise is the runner's, not the round's: locally the round 329 and round
+  331 release builds take the same instructions for mule-tests (20.03G
+  against 20.10G) and the same time when run alternately (medians 1,773
+  and 1,764 ms), and their setups of xml-tests, mule-tests and ert-tests
+  are within noise of each other.
+
 **Findings recorded, not fixed:**
+- **The name tests and SYMBOLP guards left (round 331).** Of the
+  `is_named' tests that stand for EQ against an interned symbol, round
+  331 made 74 `matches!' tests EQ and 20 matches take the bare symbol;
+  187 other uses remain (51 in compound `matches!' guards, 72 in match
+  arms beside other patterns, 64 in plain conditions), each to be read
+  against its GNU caller, many of them names Rust supplies and a symbol
+  with position never reaches. Guards that accept only a bare symbol
+  before an EQ (font.rs's `is_symbol', values.rs's keymap entry checks,
+  key_sequence.rs's event heads) reject a symbol with position that
+  GNU's SYMBOLP takes while `symbols-with-pos-enabled' is set.
+- **`==' on a Lisp value is `equal' (round 331).** Value's PartialEq is
+  values_equal_recursive, `equal', and Rust code compares Lisp objects
+  with it where GNU's C uses EQ (set_internal's keyword test `EQ
+  (newval, Fsymbol_value (symbol))', the `t' and `no-record' heads of an
+  event). For symbols and fixnums the two agree but for a symbol with
+  position under the flag; for strings, conses and vectors `equal'
+  answers t where EQ answers nil. A census of `==' between Lisp values
+  against GNU's EQ is to be made.
 - **kill-buffer's window replacement (round 330).** GNU's Fkill_buffer
   replaces the dying buffer in each window through
   replace_buffer_in_windows and replace_buffer_in_windows_safely
@@ -18280,33 +18393,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   reading against its GNU caller (Fset_buffer of a nil contents signals
   there); set-window-point's, for a deleted selected window, stands
   where GNU's XBUFFER (w->contents) of nil has no defined answer.
-- **EQ under symbols-with-pos-enabled (round 330).** GNU's EQ is
-  BASE_EQ, or, while symbols-with-pos-enabled, a comparison of bare
-  symbols (lisp.h EQ through slow_eq). Emaxx applies it where round 330
-  reached: the text-property, overlay, read-only and field lookups,
-  frame-parameter's CHECK_SYMBOL, and the network families, hints and
-  keywords. It still compares with BASE_EQ in the writes and the alist
-  walks: add_properties, remove_properties and interval_has_*
-  (textprop.c:387, :397, :480, :496), overlay-put and its `evaporate'
-  test (buffer.c:4010, :4026), frame-parameter's Fassq (frame.c:3524),
-  set-frame-parameter, set-window-parameter and window-parameter,
-  intervals_equal, and every name Rust supplies (`display', `field', a
-  `char-property-alias-alist' alternative). So under
-  symbols-with-pos-enabled a positioned name is stored as a second key,
-  or missed (probes s1, s2, o1, fp and wp of the round 330 review). To
-  be one authoritative test: every EQ reads the one flag, with a census
-  of the word comparisons that stand for EQ.
-- **The object last-coding-system-used holds (round 330).**
-  coding.c:9636 stores the coding system the caller gave
-  (`Vlast_coding_system_used = coding_system'), a symbol with position
-  or an uninterned alias included. Emaxx keeps coding systems by name
-  (CodingId) and stores the bare interned symbol, so `(eq
-  last-coding-system-used CS)' is nil for those (probes c1 and c2). To
-  be the caller's object wherever GNU stores it.
-- **A swallowed column in vertical motion (round 330).** window.rs's
-  motion_from_start reads `current-column' through a closure that turns
-  its error into column 0; current-column can now signal as GNU's does
-  (a deleted selected window), and GNU's caller lets the error through.
 - **The errno text's locale (round 329).** emacs_strerror calls
   synchronize_system_messages_locale, so strerror's text follows
   LC_MESSAGES; Emaxx sets only LC_CTYPE, so its text is always the C

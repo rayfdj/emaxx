@@ -417,7 +417,7 @@ pub(crate) fn coding_system_charset_names(
     let Some(attrs) = interp.coding_system(coding) else {
         return Vec::new();
     };
-    match attrs.charset_list.kind() {
+    match crate::lisp::types::eq_dispatch(attrs.charset_list).kind() {
         Kind::Symbol(name) if name.is_named("iso-2022") => interp.iso_2022_charset_list(),
         Kind::Symbol(name) if name.is_named("emacs-mule") => emacs_mule_charset_list(interp),
         _ => attrs
@@ -2943,7 +2943,7 @@ pub(crate) fn coding_attr_charset_list(
     let Some(state) = interp.coding_system(coding) else {
         return Vec::new();
     };
-    match state.charset_list.kind() {
+    match crate::lisp::types::eq_dispatch(state.charset_list).kind() {
         Kind::Symbol(name) if name.is_named("iso-2022") => interp.iso_2022_charset_list(),
         Kind::Symbol(name) if name.is_named("emacs-mule") => emacs_mule_charset_list(interp),
         _ => coding_system_charset_names(interp, coding),
@@ -3384,7 +3384,7 @@ pub(crate) fn find_coding_systems_region_internal_value(
         registered = tail;
         if excluded
             .iter()
-            .any(|candidate| candidate.eq_value(coding_value))
+            .any(|candidate| crate::lisp::types::eq(*candidate, coding_value))
         {
             continue;
         }
@@ -3395,7 +3395,7 @@ pub(crate) fn find_coding_systems_region_internal_value(
         if !state.base.is_named(coding) {
             continue;
         }
-        let charsets = match state.charset_list.kind() {
+        let charsets = match crate::lisp::types::eq_dispatch(state.charset_list).kind() {
             Kind::Symbol(name) if name.is_named("iso-2022") => interp.iso_2022_charset_list(),
             Kind::Symbol(name) if name.is_named("emacs-mule") => emacs_mule_charset_list(interp),
             _ => coding_system_charset_names(interp, coding),
@@ -3635,14 +3635,49 @@ fn charset_preferences(string: &StringLike) -> Vec<Option<SymbolName>> {
     preferred
 }
 
+/// Whether a conversion records its coding system in
+/// `last-coding-system-used': not at all (code_convert_string's
+/// NORECORD), by the coding's name, or, in code_convert_string's fast
+/// path, as the object a Lisp caller gave (`Vlast_coding_system_used =
+/// coding_system'); the full conversion records the name either way.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RecordUsed {
+    No,
+    Name,
+    Given(Value),
+}
+
+impl RecordUsed {
+    /// NORECORD false or true.
+    fn from_flag(record: bool) -> Self {
+        if record { Self::Name } else { Self::No }
+    }
+
+    fn records(self) -> bool {
+        !matches!(self, Self::No)
+    }
+
+    /// What the fast path stores for CODING.
+    fn fast_path_object(self, coding: &str) -> Value {
+        match self {
+            Self::Given(object) => object,
+            _ => Value::symbol(coding),
+        }
+    }
+}
+
+/// code_convert_string's encode of the string VALUE by CODING, recorded;
+/// GIVEN is the coding system object a Lisp caller passed.
 pub(crate) fn encode_coding_value(
     interp: &mut Interpreter,
     value: &Value,
     coding: Option<&str>,
+    given: Option<Value>,
     nocopy: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    encode_coding_value_recording(interp, value, coding, nocopy, true, env)
+    let record = given.map_or(RecordUsed::Name, RecordUsed::Given);
+    encode_coding_converted(interp, value, coding, nocopy, record, true, env)
 }
 
 pub(crate) fn encode_coding_value_recording(
@@ -3653,7 +3688,15 @@ pub(crate) fn encode_coding_value_recording(
     record_used: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    encode_coding_converted(interp, value, coding, nocopy, record_used, true, env)
+    encode_coding_converted(
+        interp,
+        value,
+        coding,
+        nocopy,
+        RecordUsed::from_flag(record_used),
+        true,
+        env,
+    )
 }
 
 /// code_convert_region's encode of the region text VALUE: no fast path,
@@ -3664,22 +3707,23 @@ pub(crate) fn encode_coding_region_value(
     coding: Option<&str>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    encode_coding_converted(interp, value, coding, false, true, false, env)
+    encode_coding_converted(interp, value, coding, false, RecordUsed::Name, false, env)
 }
 
 /// encode_coding_object of VALUE by CODING, with code_convert_string's
 /// ASCII fast path when STRING_CONVERSION; `last-coding-system-used' is
-/// the coding given, set (when RECORD_USED) once the encoding, pre-write
-/// conversion included, is done.
+/// set as RECORD says once the encoding, pre-write conversion included,
+/// is done.
 fn encode_coding_converted(
     interp: &mut Interpreter,
     value: &Value,
     coding: Option<&str>,
     nocopy: bool,
-    record_used: bool,
+    record: RecordUsed,
     string_conversion: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    let record_used = record.records();
     let string =
         string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
     let Some(coding) = coding else {
@@ -3713,7 +3757,7 @@ fn encode_coding_converted(
     // `euc-jp' for (encode-coding-string "a" 'euc-jp)).
     if fast_path {
         if record_used {
-            set_last_coding_system_used(interp, coding, env);
+            set_last_coding_system_used_value(interp, record.fast_path_object(coding), env);
         }
         return Ok(if nocopy {
             *value
@@ -4270,25 +4314,29 @@ fn decode_coding(
 /// Decode VALUE with CODING. code_convert_string's ASCII fast path applies
 /// only to a string result; a source region or a buffer destination goes
 /// straight through decode_coding_object (BUFFER_CONVERSION).
+/// The fast path stores GIVEN, the object a Lisp caller passed, when
+/// there is one.
 pub(crate) fn decode_coding_text(
     interp: &mut Interpreter,
     value: &Value,
     coding: Option<&str>,
+    given: Option<Value>,
     nocopy: bool,
     buffer_conversion: bool,
-    dst_multibyte: Option<bool>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    decode_coding_text_recording(
+    let record = given.map_or(RecordUsed::Name, RecordUsed::Given);
+    decode_coding_parts(
         interp,
         value,
         coding,
         nocopy,
         buffer_conversion,
-        dst_multibyte,
-        true,
+        None,
+        record,
         env,
     )
+    .map(|decoded| decoded.value)
 }
 
 /// `decode_coding_text', `last-coding-system-used' set only when
@@ -4315,7 +4363,7 @@ pub(crate) fn decode_coding_text_recording(
         nocopy,
         buffer_conversion,
         dst_multibyte,
-        record_used,
+        RecordUsed::from_flag(record_used),
         env,
     )
     .map(|decoded| decoded.value)
@@ -4329,9 +4377,10 @@ fn decode_coding_parts(
     nocopy: bool,
     buffer_conversion: bool,
     dst_multibyte: Option<bool>,
-    record_used: bool,
+    record: RecordUsed,
     env: &mut Env,
 ) -> Result<BufferDecode, LispError> {
+    let record_used = record.records();
     // What the decoder reads: a unibyte string's bytes, a multibyte one's
     // characters.
     let unibyte = match value.kind() {
@@ -4388,7 +4437,7 @@ fn decode_coding_parts(
         // A copied result is a fresh, unpropertized multibyte ASCII string;
         // NOCOPY gives back the original object, properties and all.
         if record_used {
-            set_last_coding_system_used(interp, coding, env);
+            set_last_coding_system_used_value(interp, record.fast_path_object(coding), env);
         }
         return Ok(BufferDecode {
             value: if nocopy {
@@ -4518,7 +4567,7 @@ pub(crate) fn decode_coding_text_for_buffer(
         false,
         true,
         Some(dst_multibyte),
-        false,
+        RecordUsed::No,
         env,
     )
 }

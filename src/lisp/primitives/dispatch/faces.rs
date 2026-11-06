@@ -94,11 +94,11 @@ fn special_face_value(value: &Value) -> bool {
 }
 
 /// UNSPECIFIEDP or IGNORE_DEFFACE_P.
+/// UNSPECIFIEDP or IGNORE_DEFFACE_P: EQ to `unspecified' or
+/// `:ignore-defface'.
 fn unspecified_face_value(value: &Value) -> bool {
-    matches!(
-        value.kind(),
-        Kind::Symbol(symbol) if matches!(symbol.as_str(), "unspecified" | ":ignore-defface")
-    )
+    crate::lisp::types::eq_symbol_named(value, "unspecified")
+        || crate::lisp::types::eq_symbol_named(value, ":ignore-defface")
 }
 
 /// xfaces.c:named_merge_point_kind.
@@ -135,7 +135,7 @@ const LFACE_EXTEND_INDEX: usize = 19;
 
 /// UNSPECIFIEDP.
 fn unspecifiedp(value: &Value) -> bool {
-    matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("unspecified"))
+    crate::lisp::types::eq_symbol_named(value, "unspecified")
 }
 
 /// xfaces.c:push_named_merge_point: whether FACE_NAME may be merged as
@@ -148,7 +148,7 @@ fn push_named_merge_point(
     kind: NamedMergePointKind,
 ) -> bool {
     for &(prev, prev_kind) in points.iter().rev() {
-        if prev.eq_value(face_name) {
+        if crate::lisp::types::eq(prev, face_name) {
             if prev_kind == kind {
                 return false;
             } else if prev_kind == NamedMergePointKind::Remap {
@@ -202,7 +202,7 @@ fn get_lface_attributes(
     let mut remapping = None;
     while let Some((element, rest)) = tail.cons_values() {
         if let Some((key, remap)) = element.cons_values()
-            && key.eq_value(face_name)
+            && crate::lisp::types::eq(key, face_name)
         {
             remapping = Some(remap);
             break;
@@ -244,7 +244,7 @@ fn merge_face_vectors(
         if index == LFACE_HEIGHT_INDEX && !matches!(from[index].kind(), Kind::Integer(_)) {
             to[index] = merge_face_heights(interp, from[index], to[index], to[index], env)?;
             font::font_clear_prop(interp, to, font::FONT_SIZE_INDEX, env)?;
-        } else if index != LFACE_FONT_INDEX && !to[index].eq_value(from[index]) {
+        } else if index != LFACE_FONT_INDEX && !crate::lisp::types::eq(to[index], from[index]) {
             to[index] = from[index];
             if (LFACE_FAMILY_INDEX..=LFACE_SLANT_INDEX).contains(&index) {
                 let prop = match index {
@@ -280,7 +280,7 @@ fn merge_named_face(
     let merged = (|| {
         let mut from: LfaceAttrs = std::array::from_fn(|_| Value::symbol("unspecified"));
         let ok = get_lface_attributes(interp, frame, face_name, &mut from, false, points, env)?;
-        if ok && !face_name.eq_value(Value::symbol("default")) {
+        if ok && !crate::lisp::types::eq(face_name, Value::symbol("default")) {
             // FACE_FROM_ID (F, DEFAULT_FACE_ID)->lface.
             let default = Value::symbol("default");
             let deflt = match interp.lisp_face_vector_on(default, Some(frame)) {
@@ -293,7 +293,7 @@ fn merge_named_face(
                 }
             };
             for (index, attr) in from.iter_mut().enumerate().skip(1) {
-                if matches!(attr.kind(), Kind::Symbol(symbol) if symbol.is_named("reset")) {
+                if crate::lisp::types::eq_symbol_named(*attr, "reset") {
                     *attr = vector_slot_value(&deflt, index)?;
                 }
             }
@@ -328,7 +328,7 @@ fn evaluate_face_filter(
         return Ok(true);
     }
     let well_formed = filter.cons_values().and_then(|(head, rest)| {
-        matches!(head.kind(), Kind::Symbol(symbol) if symbol.is_named(":window")).then_some(())?;
+        crate::lisp::types::eq_symbol_named(head, ":window").then_some(())?;
         let (_parameter, rest) = rest.cons_values()?;
         let (_value, rest) = rest.cons_values()?;
         rest.is_nil().then_some(())
@@ -355,7 +355,7 @@ fn filter_face_ref(
     let Some((head, rest)) = face_ref.cons_values() else {
         return Ok(face_ref);
     };
-    if !matches!(head.kind(), Kind::Symbol(symbol) if symbol.is_named(":filtered")) {
+    if !crate::lisp::types::eq_symbol_named(head, ":filtered") {
         return Ok(face_ref);
     }
     let parts = rest.cons_values().and_then(|(filter, rest)| {
@@ -399,7 +399,7 @@ fn merge_face_ref(
     loop {
         face_ref = filtered;
         filtered = filter_face_ref(interp, face_ref, &mut ok, err_msgs, env)?;
-        if !(ok && !face_ref.eq_value(filtered)) {
+        if !(ok && !crate::lisp::types::eq(face_ref, filtered)) {
             break;
         }
     }
@@ -576,9 +576,7 @@ fn merge_face_heights(
         Kind::Float(scale) => match to.kind() {
             Kind::Integer(height) => Value::Integer((scale.get() * height as f64) as i64),
             Kind::Float(height) => Value::float(scale.get() * height.get()),
-            _ if matches!(to.kind(), Kind::Symbol(symbol) if symbol.is_named("unspecified")) => {
-                from
-            }
+            _ if crate::lisp::types::eq_symbol_named(to, "unspecified") => from,
             _ => invalid,
         },
         _ if function_value_p(interp, &from, env) => {
@@ -645,7 +643,7 @@ fn checked_face_attribute(
         }
         ":height" => {
             if !special {
-                if face.eq_value(Value::symbol("default")) {
+                if crate::lisp::types::eq(face, Value::symbol("default")) {
                     // The default face must have an absolute size.
                     if !matches!(value.kind(), Kind::Integer(height) if height > 0) {
                         return Err(signal_error(
@@ -929,9 +927,7 @@ fn set_face_attribute_on(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let mut value = *value;
-    if frame.is_none()
-        && matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("unspecified"))
-    {
+    if frame.is_none() && crate::lisp::types::eq_symbol_named(value, "unspecified") {
         value = Value::symbol(":ignore-defface");
     }
     // EQ (attr, QCfamily) and the rest: the attribute is the interned
@@ -1283,9 +1279,12 @@ define_dispatch!(
             // that is no symbol).
             "internal-lisp-face-p" => {
                 need_arg_range(name, args, 1, 2)?;
-                let named = matches!(args[0].kind(), Kind::Symbol(_) | Kind::StringObject(_));
+                // resolve_face_name: a string or a SYMBOLP, a symbol with
+                // position taken while `symbols-with-pos-enabled' is set.
+                let given = crate::lisp::types::maybe_remove_pos(args[0]);
+                let named = matches!(given.kind(), Kind::Symbol(_) | Kind::StringObject(_));
                 let face = if named {
-                    Some(resolve_face_name(interp, &args[0])?)
+                    Some(resolve_face_name(interp, &given)?)
                 } else {
                     None
                 };
@@ -1378,7 +1377,7 @@ define_dispatch!(
             // xfaces.c: ATTRIBUTE is only compared with :height.
             "face-attribute-relative-p" => {
                 need_args(name, args, 2)?;
-                let height = args[0] == Value::symbol(":height");
+                let height = crate::lisp::types::eq_symbol_named(args[0], ":height");
                 Ok(
                     if unspecified_face_value(&args[1])
                         || (height && !matches!(args[1].kind(), Kind::Integer(_)))
@@ -1393,7 +1392,7 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 if unspecified_face_value(&args[1]) {
                     Ok(args[2])
-                } else if args[0] == Value::symbol(":height") {
+                } else if crate::lisp::types::eq_symbol_named(args[0], ":height") {
                     merge_face_heights(interp, args[1], args[2], args[1], env)
                 } else {
                     Ok(args[1])
@@ -1423,8 +1422,7 @@ define_dispatch!(
                 .ok_or_else(|| face_attribute_error(&attribute))?;
                 let value = vector_slot_value(&vector, index)?;
                 Ok(
-                    if matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named(":ignore-defface"))
-                    {
+                    if crate::lisp::types::eq_symbol_named(value, ":ignore-defface") {
                         Value::symbol("unspecified")
                     } else {
                         value
@@ -1461,11 +1459,9 @@ define_dispatch!(
                 let local = interp.make_lisp_face_on(face, Some(frame), false)?;
                 for index in 1..LFACE_VECTOR_SIZE {
                     let value = vector_slot_value(&global, index)?;
-                    if matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named(":ignore-defface"))
-                    {
+                    if crate::lisp::types::eq_symbol_named(value, ":ignore-defface") {
                         aset_vector_value(&local, index, Value::symbol("unspecified"))?;
-                    } else if !matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("unspecified"))
-                    {
+                    } else if !crate::lisp::types::eq_symbol_named(value, "unspecified") {
                         aset_vector_value(&local, index, value)?;
                     }
                 }
@@ -1489,7 +1485,7 @@ define_dispatch!(
                     while let Some((element, rest)) = tail.cons_values() {
                         if element
                             .cons_values()
-                            .is_some_and(|(key, _)| key.eq_value(face))
+                            .is_some_and(|(key, _)| crate::lisp::types::eq(key, face))
                         {
                             return Ok(Value::Nil);
                         }

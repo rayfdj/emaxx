@@ -162,7 +162,7 @@ fn internal_equal_1(
                     .get_or_insert_with(HashMap::new)
                     .entry(o1.word())
                     .or_default();
-                if o2s.iter().any(|seen| seen.eq_value(o2)) {
+                if o2s.iter().any(|seen| crate::lisp::types::eq(*seen, o2)) {
                     return Ok(true);
                 }
                 o2s.push(o2);
@@ -399,11 +399,11 @@ fn string_intervals_equal(
     }
 }
 
-/// fns.c:Feql with no symbol reckoned its position's: a float is eql to
-/// a float of the same bits (same_float), a bignum to a bignum of the
-/// same value, any other object to itself (BASE_EQ).
+/// fns.c:Feql: a float is eql to a float of the same bits (same_float),
+/// a bignum to a bignum of the same value, any other object to what it
+/// is EQ to.
 pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
-    left.word() == right.word() || eql_numbers(left, right)
+    crate::lisp::types::eq(*left, *right) || eql_numbers(left, right)
 }
 
 /// Feql's FLOATP and BIGNUMP arms for two objects of different words.
@@ -1408,7 +1408,7 @@ pub(crate) fn resolve_callable(
 pub(crate) fn is_lambda_expression(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         items.first().is_some_and(|head| {
-            matches!(head.kind(), Kind::Symbol(name) if name.is_named("lambda"))
+            crate::lisp::types::eq_symbol_named(head, "lambda")
                 || (symbols_with_pos_enabled(interp, env)
                     && matches!(
                         symbol_with_pos_parts(interp, head).map(|(a0, a1)| (a0.kind(), a1)),
@@ -1529,7 +1529,7 @@ fn keymap_symbol() -> Value {
 pub(crate) fn is_keymap_placeholder(value: &Value) -> bool {
     value
         .cons_values()
-        .is_some_and(|(head, _)| head.eq_value(keymap_symbol()))
+        .is_some_and(|(head, _)| crate::lisp::types::eq(head, keymap_symbol()))
 }
 
 pub(crate) fn is_keymap_value(_interp: &Interpreter, value: &Value) -> bool {
@@ -1550,7 +1550,7 @@ pub(crate) fn keymap_char_table_value(_interp: &Interpreter, keymap: &Value) -> 
             break;
         }
         let item = cell.car.get();
-        if matches!(item.kind(), Kind::Symbol(name) if name.is_named("keymap")) {
+        if crate::lisp::types::eq_symbol_named(item, "keymap") {
             break; // The inherited parent's cells are not this map's table.
         }
         if matches!(item.kind(), Kind::CharTable(_)) {
@@ -1597,7 +1597,7 @@ fn keymap_public_view_own_items(view: &Value) -> Result<(Vec<Value>, Value), Lis
             return Ok((items, Value::Nil));
         }
         let item = cell.car.get();
-        if matches!(item.kind(), Kind::Symbol(name) if name.is_named("keymap")) {
+        if crate::lisp::types::eq_symbol_named(item, "keymap") {
             return Ok((items, tail));
         }
         items.push(item);
@@ -1632,7 +1632,10 @@ pub(crate) fn map_keymap_own_entries(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let map = keymap;
-    let mut tail = if map.car().is_ok_and(|head| head.eq_value(keymap_symbol())) {
+    let mut tail = if map
+        .car()
+        .is_ok_and(|head| crate::lisp::types::eq(head, keymap_symbol()))
+    {
         map.cdr()?
     } else {
         map
@@ -1640,7 +1643,7 @@ pub(crate) fn map_keymap_own_entries(
     let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![map, tail, Value::Nil]);
     // GNU walks the cells as they are, with no test for a circular list.
     while let Some((entry, _)) = tail.cons_values() {
-        if entry.eq_value(keymap_symbol()) || is_keymap_value(interp, &entry) {
+        if crate::lisp::types::eq(entry, keymap_symbol()) || is_keymap_value(interp, &entry) {
             break;
         }
         roots[2] = entry;
@@ -2332,7 +2335,7 @@ fn describe_vector(
         let mut shadowed_by = Value::Nil;
         if !shadow.is_nil() {
             shadowed_by = shadow_lookup(interp, &shadow, &key, env)?;
-            if !shadowed_by.is_nil() && !shadowed_by.eq_value(definition) {
+            if !shadowed_by.is_nil() && !crate::lisp::types::eq(shadowed_by, definition) {
                 if mention_shadow {
                     this_shadowed = true;
                 } else {
@@ -2345,7 +2348,7 @@ fn describe_vector(
         if !entire_map.is_nil() {
             let tem =
                 keymap_lookup_sequence_value_with_default(interp, &entire_map, &key, true, env)?;
-            if !tem.eq_value(definition) {
+            if !crate::lisp::types::eq(tem, definition) {
                 i += 1;
                 continue;
             }
@@ -2377,8 +2380,8 @@ fn describe_vector(
         if !check.is_nil()
             && table.is_some()
             && i != starting_i
-            && (!check.eq_value(Value::symbol("ignore-self-insert"))
-                || !definition.eq_value(Value::symbol("self-insert-command")))
+            && (!crate::lisp::types::eq(check, Value::symbol("ignore-self-insert"))
+                || !crate::lisp::types::eq(definition, Value::symbol("self-insert-command")))
         {
             // C's `j <= i' reads the I the body may have lowered.
             let mut j = range_beg + 1;
@@ -2520,7 +2523,7 @@ pub(crate) fn current_minor_maps(
                 while let Some((entry, rest)) = tail.cons_values() {
                     if entry
                         .cons_values()
-                        .is_some_and(|(car, _)| car.eq_value(var))
+                        .is_some_and(|(car, _)| crate::lisp::types::eq(car, var))
                     {
                         overridden = true;
                         break;
@@ -2704,8 +2707,8 @@ fn current_active_maps_1(
                 .cdr_if_list()
                 .and_then(|rest| rest.car_if_list())
                 .unwrap_or(Value::Nil);
-            let line_area = area.eq_value(Value::symbol("mode-line"))
-                || area.eq_value(Value::symbol("header-line"));
+            let line_area = crate::lisp::types::eq(area, Value::symbol("mode-line"))
+                || crate::lisp::types::eq(area, Value::symbol("header-line"));
             let map = super::textprop::get_text_property(
                 interp,
                 &Value::Integer(pos),

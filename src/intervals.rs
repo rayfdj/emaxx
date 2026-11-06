@@ -18,9 +18,11 @@
 
 use crate::lisp::alloc::counters::note_intervals;
 use crate::lisp::types::symbols::SymbolKey;
-use crate::lisp::types::{Kind, LispError, Value};
+use crate::lisp::types::{Kind, LispError, Value, eq};
 
 const CATEGORY: SymbolKey = SymbolKey::new("category");
+const FACE: SymbolKey = SymbolKey::new("face");
+const COMPOSITION: SymbolKey = SymbolKey::new("composition");
 const FRONT_STICKY: SymbolKey = SymbolKey::new("front-sticky");
 const REAR_NONSTICKY: SymbolKey = SymbolKey::new("rear-nonsticky");
 const TEXT_PROPERTY_DEFAULT_NONSTICKY: SymbolKey =
@@ -285,12 +287,6 @@ impl FromIterator<Interval> for Items {
     }
 }
 
-/// EQ.
-#[inline]
-fn eq(left: Value, right: Value) -> bool {
-    left.word() == right.word()
-}
-
 fn listp_error(value: Value) -> LispError {
     LispError::WrongTypeArgument("listp".into(), value)
 }
@@ -487,7 +483,9 @@ pub(crate) fn lookup_char_property(
                 return fcar(xcdr(tail));
             }
             if eq(tem, category) {
-                let tem = fcar(xcdr(tail))?;
+                // SYMBOLP and Fget take a symbol with position while
+                // `symbols-with-pos-enabled' is set.
+                let tem = crate::lisp::types::maybe_remove_pos(fcar(xcdr(tail))?);
                 if symbolp(tem) {
                     fallback = symbol_get(tem, prop);
                 }
@@ -1503,7 +1501,7 @@ fn nconc_one(list: Value, value: Value) -> Result<(), LispError> {
 
 /// EQ (SYM, Qface).
 fn is_face(sym: Value) -> bool {
-    matches!(sym.kind(), Kind::Symbol(name) if name.as_str() == "face")
+    eq(sym, symbol(FACE))
 }
 
 /// Fkeywordp of a face list's car.
@@ -2143,7 +2141,7 @@ pub(crate) fn copy_composition_value(plist: Value) {
         let Some(value_cell) = pair.cdr.get().cons_ref() else {
             break;
         };
-        if matches!(pair.car.get().kind(), Kind::Symbol(name) if name.as_str() == "composition")
+        if eq(pair.car.get(), symbol(COMPOSITION))
             && let Some(value) = value_cell.car.get().cons_ref()
         {
             value_cell

@@ -1240,9 +1240,12 @@ pub(crate) fn property_from_props_with_category(
         }
         // A category symbol gives every property but `category': Fget of
         // the symbol object itself.
-        if tem.word() == category.word() && value.is_symbol() {
+        // SYMBOLP and Fget take a symbol with position while
+        // `symbols-with-pos-enabled' is set.
+        let symbol = crate::lisp::types::maybe_remove_pos(value);
+        if crate::lisp::types::eq(tem, category) && symbol.is_symbol() {
             fallback = interp
-                .get_property_of_symbol_value(value, prop)
+                .get_property_of_symbol_value(symbol, prop)
                 .unwrap_or(Value::Nil);
         }
         let Some(rest) = rest else {
@@ -1422,11 +1425,10 @@ pub(crate) fn overlay_property_with_category(
         }
         // A category symbol gives every property but `category': Fget of
         // the symbol object itself.
-        if matches!(name.kind(), Kind::Symbol(symbol) if symbol.is_named("category"))
-            && value.is_symbol()
-        {
+        let symbol = crate::lisp::types::maybe_remove_pos(value);
+        if crate::lisp::types::eq_symbol_named(name, "category") && symbol.is_symbol() {
             fallback = interp
-                .get_property_of_symbol_value(value, prop)
+                .get_property_of_symbol_value(symbol, prop)
                 .unwrap_or(Value::Nil);
         }
         let Kind::Cons(rest) = rest.kind() else {

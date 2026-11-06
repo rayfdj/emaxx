@@ -159,9 +159,9 @@ const IMAGE_TYPES: &[(&str, &[ImageKeyword])] = &[
 
 /// IMAGEP: a list headed by `image'.
 fn imagep(object: &Value) -> bool {
-    object.cons_values().is_some_and(
-        |(head, _)| matches!(head.kind(), Kind::Symbol(symbol) if symbol.is_named("image")),
-    )
+    object
+        .cons_values()
+        .is_some_and(|(head, _)| crate::lisp::types::eq_symbol_named(head, "image"))
 }
 
 fn symbol_is(value: &Value, name: &str) -> bool {

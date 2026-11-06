@@ -2181,9 +2181,7 @@ impl Interpreter {
                     group = foreground_group;
                 }
             }
-            if matches!(current_group.kind(), Kind::Symbol(symbol) if symbol.is_named("lambda"))
-                && group == pid
-            {
+            if crate::lisp::types::eq_symbol_named(current_group, "lambda") && group == pid {
                 return Ok(());
             }
         }

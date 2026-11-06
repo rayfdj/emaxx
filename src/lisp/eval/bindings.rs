@@ -58,7 +58,13 @@ impl InterpreterState {
         env: &Env,
     ) -> Option<Result<Value, LispError>> {
         if let Some(environment) = current_environment(env) {
-            match assq_binding(environment, name) {
+            // Fassq's EQ, with this editor's flag read once.
+            let found = if self.globals.symbols_with_pos_enabled().get() {
+                crate::lisp::types::assq_binding_with_pos(environment, name)
+            } else {
+                crate::lisp::types::assq_binding_bare(environment, name)
+            };
+            match found {
                 Ok(Some(binding)) => return Some(Ok(binding.cdr.get())),
                 Ok(None) => {}
                 Err(error) => return Some(Err(error)),
@@ -1226,7 +1232,13 @@ impl Interpreter {
         let Some(environment) = current_environment(env) else {
             return Ok(false);
         };
-        let Some(binding) = assq_binding(environment, symbol)? else {
+        // Fsetq's Fassq, with this editor's flag read once.
+        let found = if self.symbols_with_positions_enabled() {
+            crate::lisp::types::assq_binding_with_pos(environment, symbol)?
+        } else {
+            crate::lisp::types::assq_binding_bare(environment, symbol)?
+        };
+        let Some(binding) = found else {
             return Ok(false);
         };
         binding.cdr.set(value);
@@ -1415,7 +1427,7 @@ impl Interpreter {
             || !cached_symbol!("byte-optimizer")
                 .with(|property| self.get_symbol_property_of(symbol, property))
                 .is_some_and(|optimizer| {
-                    matches!(optimizer.kind(), Kind::Symbol(name) if name.is_named("byte-compile-inline-expand"))
+                    crate::lisp::types::eq_symbol_named(optimizer, "byte-compile-inline-expand")
                 })
         {
             return false;

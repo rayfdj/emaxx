@@ -101,7 +101,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
 /// dump_object_self_representing_p: fixnums and the built-in symbols
 /// Emaxx represents specially.
 pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
-    match value.kind() {
+    match crate::lisp::types::eq_dispatch(value).kind() {
         Kind::Nil => Some(WORD_NIL),
         Kind::T => Some(WORD_T),
         Kind::Unbound => Some(WORD_UNBOUND),

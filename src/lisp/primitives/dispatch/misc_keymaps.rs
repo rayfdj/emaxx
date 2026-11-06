@@ -206,7 +206,7 @@ fn key_binding_value(
             && let Kind::Symbol(name) = head.kind()
             && interp
                 .get_symbol_property_of(&name, &cached_symbol!("event-kind").with(Clone::clone))
-                .is_some_and(|kind| kind.eq_value(Value::symbol("mouse-click")))
+                .is_some_and(|kind| crate::lisp::types::eq(kind, Value::symbol("mouse-click")))
         {
             position = start;
         }
@@ -1300,7 +1300,12 @@ define_dispatch!(
                     match prop {
                         // A partially permanent hook variable keeps only the
                         // elements that want to be kept.
-                        Some(prop) if prop.eq_value(Value::symbol("permanent-local-hook")) => {
+                        Some(prop)
+                            if crate::lisp::types::eq(
+                                prop,
+                                Value::symbol("permanent-local-hook"),
+                            ) =>
+                        {
                             let newlist = permanent_hook_elements(interp, *value, env)?;
                             interp.notify_variable_watchers_symbol(
                                 name,

@@ -117,10 +117,7 @@ pub(crate) fn sort_sequence_items(
         return Ok(items);
     }
     let predicate = match lessp.copied().unwrap_or(Value::Nil) {
-        value
-            if value.is_nil()
-                || matches!(value.kind(), Kind::Symbol(name) if name.is_named("value<")) =>
-        {
+        value if value.is_nil() || crate::lisp::types::eq_symbol_named(value, "value<") => {
             Value::Nil
         }
         value => resolve_sort_function(interp, value, env)?,
@@ -131,10 +128,7 @@ pub(crate) fn sort_sequence_items(
         items.reverse();
     }
     let key_function = match key.copied().unwrap_or(Value::Nil) {
-        value
-            if value.is_nil()
-                || matches!(value.kind(), Kind::Symbol(name) if name.is_named("identity")) =>
-        {
+        value if value.is_nil() || crate::lisp::types::eq_symbol_named(value, "identity") => {
             Value::Nil
         }
         value => match resolve_sort_function(interp, value, env) {

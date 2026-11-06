@@ -1034,7 +1034,7 @@ impl Interpreter {
                 {
                     break resolution;
                 }
-                Kind::Cons(cell) => match cell.car.get().kind() {
+                Kind::Cons(cell) => match crate::lisp::types::eq_dispatch(cell.car.get()).kind() {
                     Kind::Symbol(name) if name.is_named("lambda") => break resolution,
                     Kind::Symbol(name) if name.is_named("autoload") => {
                         let result = primitives::call(
@@ -1795,7 +1795,7 @@ impl Interpreter {
         } else {
             self.set_symbol_value_cell("quit-flag", Value::Nil);
         }
-        if matches!(flag.kind(), Kind::Symbol(name) if name.is_named("kill-emacs")) {
+        if crate::lisp::types::eq_symbol_named(flag, "kill-emacs") {
             return primitives::call(self, "kill-emacs", &[Value::Nil, Value::Nil], env).map(drop);
         }
 
@@ -2209,6 +2209,8 @@ impl Interpreter {
         // eval.c/bytecode.c use XBARE_SYMBOL for a positioned callee while
         // the byte compiler's symbol-position mode is active.  This covers
         // explicit `funcall'/`apply' as well as ordinary source dispatch.
+        // funcall_general's errors name ORIGINAL_FUN, the object called.
+        let original_fun = func;
         let func = if func.is_symbol() {
             func
         } else {
@@ -2230,7 +2232,19 @@ impl Interpreter {
             _ => None,
         };
         let func = match symbol {
-            Some(name) => match self.resolve_symbol_call(&name, env)? {
+            Some(name) => match self.resolve_symbol_call(&name, env).map_err(|error| {
+                // `xsignal1 (Qvoid_function, original_fun)'.
+                if original_fun.word() != func.word()
+                    && matches!(
+                        error.kind(),
+                        crate::lisp::types::LispErrorKind::VoidFunction(_)
+                    )
+                {
+                    LispError::VoidFunction(original_fun)
+                } else {
+                    error
+                }
+            })? {
                 FunctionResolution::DirectBuiltin(subr) => {
                     return primitives::call_with_facts(
                         self,
@@ -3137,11 +3151,15 @@ mod eval_value_buffer_tests {
         let original = interpreter.symbols_with_positions_relocation();
         let moved = Box::new(interpreter);
         assert_eq!(original, moved.symbols_with_positions_relocation());
-        let mut cloned = moved.as_ref().clone();
+        // A shallow copy shares its editor's symbol table, and with it the
+        // C flag, as it shares the obarray and the symbols' value cells.
+        let shared = moved.as_ref().clone();
+        assert_eq!(original, shared.symbols_with_positions_relocation());
+        let mut cloned = moved.as_ref().deep_clone_image();
         let copied = cloned.symbols_with_positions_relocation();
         assert_ne!(original, copied);
-        // Both interpreters remain alive; cloning raw state without loaded
-        // libraries must not make their C slots share one allocation.
+        // All three interpreters remain alive; an image copy is an editor
+        // of its own, whose C slot is not the original's.
         assert!(unsafe { original.read() && copied.read() });
         cloned.set_symbol_value_cell("symbols-with-pos-enabled", Value::Nil);
         assert!(unsafe { original.read() });

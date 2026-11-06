@@ -1226,9 +1226,9 @@ define_dispatch!(
                             interp,
                             &region,
                             coding.as_deref(),
+                            None,
                             return_string,
                             true,
-                            None,
                             env,
                         )?,
                     }
@@ -1405,7 +1405,16 @@ define_dispatch!(
                     crate::lisp::primitives::coding::checked_coding_given(interp, &args[1])?;
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
                 let Some(buffer_id) = code_convert_destination(interp, args.get(3))? else {
-                    return encode_coding_value(interp, &args[0], coding.as_deref(), nocopy, env);
+                    // code_convert_string's fast path for a string result
+                    // stores the coding system as given.
+                    return encode_coding_value(
+                        interp,
+                        &args[0],
+                        coding.as_deref(),
+                        Some(args[1]),
+                        nocopy,
+                        env,
+                    );
                 };
                 // A nil coding system with a buffer destination encodes
                 // with no-conversion.
@@ -1413,6 +1422,7 @@ define_dispatch!(
                     interp,
                     &args[0],
                     Some(coding.as_deref().unwrap_or("no-conversion")),
+                    None,
                     false,
                     env,
                 )?;
@@ -1455,9 +1465,9 @@ define_dispatch!(
                         interp,
                         &args[0],
                         coding.as_deref(),
+                        Some(args[1]),
                         nocopy,
                         false,
-                        None,
                         env,
                     ),
                 }
@@ -1636,7 +1646,7 @@ fn code_convert_destination(
 ) -> Result<Option<u64>, LispError> {
     match destination {
         None => Ok(None),
-        Some(value) if value.is_nil() || value.eq_value(Value::T) => Ok(None),
+        Some(value) if value.is_nil() || crate::lisp::types::eq(*value, Value::T) => Ok(None),
         Some(value) if !matches!(value.kind(), Kind::Buffer(_)) => {
             Err(LispError::WrongTypeArgument("bufferp".into(), *value))
         }

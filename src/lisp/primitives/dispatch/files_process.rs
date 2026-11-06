@@ -3530,7 +3530,7 @@ fn make_process_value(
         .as_chunks::<2>()
         .0
         .iter()
-        .find(|pair| matches!(pair[0].kind(), Kind::Symbol(key) if key.is_named(":file-handler")))
+        .find(|pair| crate::lisp::types::eq_symbol_named(pair[0], ":file-handler"))
         .is_some_and(|pair| pair[1].is_truthy());
     if file_handler {
         let default_directory = interp

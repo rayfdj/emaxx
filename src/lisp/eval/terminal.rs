@@ -366,7 +366,7 @@ impl TerminalRef {
         let mut rest = self.param_alist.get();
         while let Kind::Cons(list) = rest.kind() {
             let pair = list.car.get();
-            if pair.car().expect("terminal parameter pair").word() == parameter.word() {
+            if crate::lisp::types::eq(pair.car().expect("terminal parameter pair"), parameter) {
                 return pair.cdr().expect("terminal parameter pair");
             }
             rest = list.cdr.get();
@@ -378,7 +378,7 @@ impl TerminalRef {
         let mut rest = self.param_alist.get();
         while let Kind::Cons(list) = rest.kind() {
             let pair = list.car.get();
-            if pair.car().expect("terminal parameter pair").word() == parameter.word() {
+            if crate::lisp::types::eq(pair.car().expect("terminal parameter pair"), parameter) {
                 let previous = pair.cdr().expect("terminal parameter pair");
                 pair.set_cdr(value).expect("terminal parameter pair");
                 return previous;

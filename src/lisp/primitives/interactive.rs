@@ -1535,8 +1535,8 @@ fn mouse_event_head(interp: &Interpreter, event: &Value) -> Option<Value> {
     let (head, tail) = event.cons_values()?;
     let kind = interp.get_property_of_symbol_value(head, "event-kind")?;
     if tail.car_if_list()?.is_cons()
-        && (kind.eq_value(Value::symbol("mouse-click"))
-            || kind.eq_value(Value::symbol("touchscreen")))
+        && (crate::lisp::types::eq(kind, Value::symbol("mouse-click"))
+            || crate::lisp::types::eq(kind, Value::symbol("touchscreen")))
     {
         Some(head)
     } else {
@@ -2477,10 +2477,12 @@ pub(crate) fn menu_bar_row_items(
                 interp,
                 menu,
                 &mut |interp, key, item, env| {
-                    if matches!(item.kind(), Kind::Symbol(def) if def.is_named("undefined")) {
-                        items.retain(|(existing, _)| !existing.eq_value(key));
+                    if crate::lisp::types::eq_symbol_named(item, "undefined") {
+                        items.retain(|(existing, _)| !crate::lisp::types::eq(*existing, key));
                     } else if let Some(caption) = menu_item_caption(interp, env, &item)
-                        && !items.iter().any(|(existing, _)| existing.eq_value(key))
+                        && !items
+                            .iter()
+                            .any(|(existing, _)| crate::lisp::types::eq(*existing, key))
                     {
                         items.push((key, caption));
                     }
@@ -2495,7 +2497,10 @@ pub(crate) fn menu_bar_row_items(
         .and_then(|value| value.to_vec().ok())
     {
         for name in final_items {
-            if let Some(position) = items.iter().position(|(key, _)| key.eq_value(name)) {
+            if let Some(position) = items
+                .iter()
+                .position(|(key, _)| crate::lisp::types::eq(*key, name))
+            {
                 let item = items.remove(position);
                 items.push(item);
             }
@@ -2574,7 +2579,7 @@ pub(crate) fn menu_item_details_with_button(
         // face; only the menu bar drops definition-less items.
         return Some((name, def, true, None));
     }
-    if !matches!(car.kind(), Kind::Symbol(tag) if tag.is_named("menu-item")) {
+    if !crate::lisp::types::eq_symbol_named(car, "menu-item") {
         return None;
     }
     // New format (menu-item NAME DEF [CACHE] . PROPS).
@@ -3114,7 +3119,7 @@ fn cmd_error_internal(
     // asynchronous (signal_quit_p).
     let quit = data.cons_ref().is_some_and(|cell| {
         let symbol = cell.car.get();
-        matches!(symbol.kind(), Kind::Symbol(name) if name.is_named("quit"))
+        crate::lisp::types::eq_symbol_named(symbol, "quit")
     }) || error_data_has_condition(interp, &data, "quit");
     if quit {
         interp.signaling_function = Value::Nil;

@@ -192,10 +192,7 @@ pub(crate) fn constrain_to_field(
         if inhibit_capture_property.is_nil() {
             return Ok(false);
         }
-        let prop = PropertyName::eq_with_pos(
-            inhibit_capture_property,
-            interp.symbols_with_positions_enabled(),
-        );
+        let prop = PropertyName::new(inhibit_capture_property);
         Ok(
             !(get_pos_property(interp, &Value::Integer(old_pos), prop, Value::Nil)?.is_nil()
                 && (old_pos <= begv

@@ -884,7 +884,7 @@ fn remove_auto_composed(
                 }
                 let mut plist = current.plist;
                 while let Some((name, rest)) = plist.cons_values() {
-                    if name.word() == auto_composed.word() {
+                    if crate::lisp::types::eq(name, auto_composed) {
                         return true;
                     }
                     plist = rest.cons_values().map_or(Value::Nil, |(_, next)| next);

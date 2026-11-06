@@ -405,6 +405,8 @@ const KEY_NAMES: &[&str] = &[
     "last-arrow-position",
     "last-arrow-string",
     "composition",
+    "face",
+    "evaporate",
     "auto-composed",
     "inhibit-point-motion-hooks",
     "minor-mode-overriding-map-alist",
@@ -853,6 +855,10 @@ struct Symbols {
     builtins: [Cell<Option<SymbolName>>; 2],
     keys: [Cell<Option<SymbolName>>; KEY_NAMES.len()],
     hash_tests: RefCell<DescriptorPool>,
+    /// data.c's C variable symbols_with_pos_enabled, the editor's as its
+    /// obarray is: lisp.h's EQ reads it wherever it runs, and native code
+    /// is given its address (comp.c's relocation).
+    symbols_with_pos_enabled: Cell<bool>,
 }
 
 impl Default for Symbols {
@@ -863,6 +869,7 @@ impl Default for Symbols {
             builtins: std::array::from_fn(|_| Cell::new(None)),
             keys: std::array::from_fn(|_| Cell::new(None)),
             hash_tests: RefCell::new(DescriptorPool::default()),
+            symbols_with_pos_enabled: Cell::new(false),
         }
     }
 }
@@ -880,15 +887,41 @@ thread_local! {
     /// this too (`set_active_keys'), and a table being dropped clears it, so
     /// a non-null pointer always names a live table.
     static ACTIVE_KEYS: Cell<*const KeySlots> = const { Cell::new(std::ptr::null()) };
+    /// ACTIVE's symbols_with_pos_enabled, or null when no editor is
+    /// selected, kept as ACTIVE_KEYS is.
+    static ACTIVE_POS_FLAG: Cell<*const Cell<bool>> = const { Cell::new(std::ptr::null()) };
 }
 
-/// Record ACTIVE's key slots after a store into ACTIVE.
+/// Record ACTIVE's key slots and C flag after a store into ACTIVE.
 fn set_active_keys(active: &Option<Rc<Symbols>>) {
     ACTIVE_KEYS.set(
         active
             .as_ref()
             .map_or(std::ptr::null(), |symbols| &symbols.keys),
     );
+    ACTIVE_POS_FLAG.set(active.as_ref().map_or(std::ptr::null(), |symbols| {
+        &symbols.symbols_with_pos_enabled
+    }));
+}
+
+/// The running editor's symbols_with_pos_enabled, as lisp.h's EQ reads
+/// the C variable: the selected editor's, else the host owner's.
+#[inline(always)]
+pub(crate) fn symbols_with_pos_enabled() -> bool {
+    let flag = ACTIVE_POS_FLAG.get();
+    if flag.is_null() {
+        return host_symbols_with_pos_enabled();
+    }
+    // SAFETY: a non-null pointer names the flag of the Symbols in ACTIVE,
+    // which a dropping table clears first (see `Drop for Symbols').
+    unsafe { (*flag).get() }
+}
+
+/// The host owner's symbols_with_pos_enabled, read with no editor selected.
+#[cold]
+#[inline(never)]
+fn host_symbols_with_pos_enabled() -> bool {
+    HOST_SYMBOLS.with_borrow(|symbols| symbols.symbols_with_pos_enabled.get())
 }
 
 impl Drop for Symbols {
@@ -896,6 +929,10 @@ impl Drop for Symbols {
         let keys: *const KeySlots = &self.keys;
         if ACTIVE_KEYS.get() == keys {
             ACTIVE_KEYS.set(std::ptr::null());
+        }
+        let flag: *const Cell<bool> = &self.symbols_with_pos_enabled;
+        if ACTIVE_POS_FLAG.get() == flag {
+            ACTIVE_POS_FLAG.set(std::ptr::null());
         }
     }
 }
@@ -949,6 +986,12 @@ impl SymbolOwner {
             *active = Some(Rc::clone(&self.0));
             set_active_keys(active);
         });
+    }
+
+    /// This editor's C variable symbols_with_pos_enabled.
+    #[inline]
+    pub(crate) fn symbols_with_pos_enabled(&self) -> &Cell<bool> {
+        &self.0.symbols_with_pos_enabled
     }
 
     /// The initial obarray's count.

@@ -1233,7 +1233,7 @@ fn encode_region_for_write(
     let selective_display = !args[0].is_string()
         && interp
             .lookup_var_key(cached_symbol!("selective-display"), env)
-            .is_some_and(|value| value.eq_value(Value::T));
+            .is_some_and(|value| crate::lisp::types::eq(value, Value::T));
     let source = if let Some(string) = string_like(&args[0]) {
         string
     } else {
@@ -1319,7 +1319,7 @@ fn write_region_with_coding(
     let selective_display = !selected_args[0].is_string()
         && interp
             .lookup_var_key(cached_symbol!("selective-display"), env)
-            .is_some_and(|value| value.eq_value(Value::T));
+            .is_some_and(|value| crate::lisp::types::eq(value, Value::T));
     let source = if let Some(string) = string_like(&selected_args[0]) {
         string
     } else {

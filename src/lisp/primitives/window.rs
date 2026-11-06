@@ -853,7 +853,7 @@ fn motion_from_start(
     start: usize,
     pos: usize,
     limit: usize,
-) -> (i64, i64) {
+) -> Result<(i64, i64), LispError> {
     let mut rows = 0i64;
     let mut cursor = start;
     while (rows as usize) < limit && pos >= cursor {
@@ -864,19 +864,15 @@ fn motion_from_start(
         cursor = next;
         rows += 1;
     }
+    // indent.c's current_column_1 of a position from its line's start,
+    // its error let through.
     let column_at = |interp: &mut Interpreter, env: &mut Env, at: usize| {
-        let saved = interp.buffer.borrow().point();
-        interp.buffer.borrow_mut().goto_char(at);
-        let column = super::dispatch::call(interp, "current-column", &[], env)
-            .ok()
-            .and_then(|value| value.integer_value())
-            .unwrap_or(0);
-        interp.buffer.borrow_mut().goto_char(saved);
-        column
+        let line_start = super::buffers::line_beginning_at(interp, at);
+        super::buffers::column_at(interp, env, line_start, at).map(|column| column as i64)
     };
     let row_start = move_screen_lines_in(interp, env, window_id, pos, 0).0;
-    let hpos = column_at(interp, env, pos) - column_at(interp, env, row_start);
-    (rows, hpos.max(0))
+    let hpos = column_at(interp, env, pos)? - column_at(interp, env, row_start)?;
+    Ok((rows, hpos.max(0)))
 }
 
 /// window.c window_scroll_line_based on the selected window, whose
@@ -932,7 +928,7 @@ pub(crate) fn window_scroll(
             .is_ok_and(|value| value.is_truthy());
         original = if vpos <= 0 || !scroll_command {
             let (vpos, hpos) =
-                motion_from_start(interp, env, window_id, startpos, opoint, text_height);
+                motion_from_start(interp, env, window_id, startpos, opoint, text_height)?;
             let saved = (hpos + hscroll, vpos);
             SCROLL_PRESERVE.with(|cell| cell.set(saved));
             saved

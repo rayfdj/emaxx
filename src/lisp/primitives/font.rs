@@ -173,13 +173,18 @@ fn keyword(name: &str) -> Value {
 }
 
 /// get_font_prop_index: KEY's place in font_property_table, or None.
+/// Only a symbol (one with position too, while `symbols-with-pos-enabled'
+/// is set) can be EQ to a key.
 pub(crate) fn get_font_prop_index(key: &Value) -> Option<usize> {
-    if !matches!(key.kind(), Kind::Symbol(_)) {
+    if !matches!(
+        crate::lisp::types::maybe_remove_pos(*key).kind(),
+        Kind::Symbol(_)
+    ) {
         return None;
     }
     FONT_PROPERTY_KEYS
         .iter()
-        .position(|name| key.eq_value(keyword(name)))
+        .position(|name| crate::lisp::types::eq(*key, keyword(name)))
 }
 
 /// assq_no_quit: the first cons of LIST whose car is KEY, elements that
@@ -189,7 +194,7 @@ fn assq_no_quit(key: &Value, list: Value) -> Option<Value> {
     while let Some((entry, rest)) = tail.cons_values() {
         if entry
             .cons_values()
-            .is_some_and(|(car, _)| car.eq_value(*key))
+            .is_some_and(|(car, _)| crate::lisp::types::eq(car, *key))
         {
             return Some(entry);
         }
@@ -255,19 +260,22 @@ pub(crate) fn font_style_to_value(
 ) -> Result<i64, LispError> {
     let table = style_table(interp, prop)?;
     let len = table.len();
-    if is_symbol(val) {
+    // SYMBOLP and SYMBOL_NAME take a symbol with position while
+    // `symbols-with-pos-enabled' is set; the table registers VAL itself.
+    let symbol = crate::lisp::types::maybe_remove_pos(*val);
+    if is_symbol(&symbol) {
         // At first try exact match.
         for (i, entry) in table.iter().enumerate() {
             let names = vector_items(entry)?;
             for (j, name) in names.iter().enumerate().skip(1) {
-                if val.eq_value(*name) {
+                if crate::lisp::types::eq(*val, *name) {
                     let numeric = check_fixnum(&names[0])?;
                     return Ok((numeric << 8) | ((i as i64) << 4) | (j as i64 - 1));
                 }
             }
         }
         // Try also with case-folding match.
-        let s = symbol_name_bytes(val).unwrap_or_default();
+        let s = symbol_name_bytes(&symbol).unwrap_or_default();
         for (i, entry) in table.iter().enumerate() {
             let names = vector_items(entry)?;
             for (j, name) in names.iter().enumerate().skip(1) {
@@ -402,7 +410,7 @@ fn validate_symbol(
     if !is_symbol(&val) {
         return Ok(Validated::Error);
     }
-    if prop.eq_value(keyword(":registry")) {
+    if crate::lisp::types::eq(*prop, keyword(":registry")) {
         let name = super::call(interp, "symbol-name", &[val], env)?;
         let down = super::call(interp, "downcase", &[name], env)?;
         return Ok(Validated::Value(super::call(
@@ -420,9 +428,9 @@ fn validate_style(
     style: &Value,
     val: Value,
 ) -> Result<Validated, LispError> {
-    let prop = if style.eq_value(keyword(":weight")) {
+    let prop = if crate::lisp::types::eq(*style, keyword(":weight")) {
         FONT_WEIGHT_INDEX
-    } else if style.eq_value(keyword(":slant")) {
+    } else if crate::lisp::types::eq(*style, keyword(":slant")) {
         FONT_SLANT_INDEX
     } else {
         FONT_WIDTH_INDEX
@@ -2084,7 +2092,7 @@ pub(crate) fn font_match_p(
     for i in FONT_FOUNDRY_INDEX..=FONT_REGISTRY_INDEX {
         let expected = aref(interp, spec, i);
         let actual = aref(interp, font, i);
-        if !expected.is_nil() && !actual.is_nil() && !expected.eq_value(actual) {
+        if !expected.is_nil() && !actual.is_nil() && !crate::lisp::types::eq(expected, actual) {
             return Ok(false);
         }
     }
@@ -2104,7 +2112,7 @@ pub(crate) fn font_match_p(
     let mut extra = aref(interp, spec, FONT_EXTRA_INDEX);
     while let Some((entry, rest)) = extra.cons_values() {
         let (key, val) = entry.cons_values().unwrap_or((Value::Nil, Value::Nil));
-        if key.eq_value(keyword(":lang")) {
+        if crate::lisp::types::eq(key, keyword(":lang")) {
             let Some(val2) = assq_no_quit(&key, font_extra) else {
                 return Ok(false);
             };
@@ -2115,10 +2123,10 @@ pub(crate) fn font_match_p(
                 if super::call(interp, "memq", &[val, rest], env)?.is_nil() {
                     return Ok(false);
                 }
-            } else if !val.eq_value(val2) {
+            } else if !crate::lisp::types::eq(val, val2) {
                 return Ok(false);
             }
-        } else if key.eq_value(keyword(":script")) {
+        } else if crate::lisp::types::eq(key, keyword(":script")) {
             let chars = interp
                 .symbol_value_symbol(&SymbolName::intern_str("script-representative-chars"))
                 .unwrap_or(Value::Nil);
@@ -2140,7 +2148,7 @@ pub(crate) fn font_match_p(
                     return Ok(false);
                 }
             }
-        } else if key.eq_value(keyword(":otf")) {
+        } else if crate::lisp::types::eq(key, keyword(":otf")) {
             return Ok(false);
         }
         extra = rest;
@@ -2161,7 +2169,9 @@ pub(crate) fn font_spec(
     let mut i = 0;
     while i < args.len() {
         let key = args[i];
-        if !is_symbol(&key) {
+        // CHECK_SYMBOL, a symbol with position passing while
+        // `symbols-with-pos-enabled' is set; KEY itself is what is stored.
+        if !is_symbol(&crate::lisp::types::maybe_remove_pos(key)) {
             return Err(wrong_type_argument("symbolp", key));
         }
         let Some(&val) = args.get(i + 1) else {
@@ -2173,7 +2183,7 @@ pub(crate) fn font_spec(
                 &[name],
             ));
         };
-        if key.eq_value(keyword(":name")) {
+        if crate::lisp::types::eq(key, keyword(":name")) {
             let bytes = string_sdata(&val)?;
             if !font_parse_name(interp, &bytes, &spec, env)? {
                 // error ("Invalid font name: %s", SSDATA (val)).
@@ -2213,7 +2223,9 @@ pub(crate) fn font_get(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     check_font(interp, font)?;
-    if !is_symbol(key) {
+    // CHECK_SYMBOL, a symbol with position passing while
+    // `symbols-with-pos-enabled' is set.
+    if !is_symbol(&crate::lisp::types::maybe_remove_pos(key)) {
         return Err(wrong_type_argument("symbolp", *key));
     }
     let idx = get_font_prop_index(key);
@@ -2247,7 +2259,7 @@ pub(crate) fn font_put(
         _ => {
             if [":name", ":script", ":lang", ":otf"]
                 .iter()
-                .any(|name| prop.eq_value(keyword(name)))
+                .any(|name| crate::lisp::types::eq(prop, keyword(name)))
             {
                 check_font_spec(interp, font)?;
             } else {
@@ -2338,7 +2350,7 @@ pub(crate) fn copy_font_spec(interp: &mut Interpreter, font: &Value) -> Result<V
         let (key, value) = entry
             .cons_values()
             .ok_or_else(|| wrong_type_argument("listp", entry))?;
-        if !key.eq_value(keyword(":font-entity")) {
+        if !crate::lisp::types::eq(key, keyword(":font-entity")) {
             entries.push(Value::cons(key, value));
         }
         tail = rest;
