@@ -2549,6 +2549,7 @@ fn record_visit(
     interp: &mut Interpreter,
     env: &mut Env,
     filename: Value,
+    encoded_filename: Value,
     empty_undo_list_p: bool,
 ) -> Result<(), LispError> {
     if empty_undo_list_p {
@@ -2562,7 +2563,9 @@ fn record_visit(
     {
         super::call(interp, "unlock-file", &[truename], env)?;
     }
-    super::call(interp, "unlock-file", &[filename], env)?;
+    // Funlock_file (filename): the name Finsert_file_contents ENCODE_FILEd
+    // before its open, not orig_filename, nor a new encoding.
+    super::call(interp, "unlock-file", &[encoded_filename], env)?;
     Ok(())
 }
 
@@ -2624,21 +2627,21 @@ pub(crate) fn insert_file_contents(
         args.get(4).copied().unwrap_or(Value::Nil),
     ];
     let mut open_failure = crate::buffer::ModtimeStamp::Unknown;
-    // fileio.c:Finsert_file_contents' emacs_open (O_RDONLY).
-    let opened = match host_file_name(interp, env, &path) {
-        Ok(host) => match emacs_open(interp, env, &host, libc::O_RDONLY, 0)? {
-            Ok(file) => Ok(file),
-            Err(error) => {
-                open_failure = time_error_value(&error);
-                Err(report_file_errno(
-                    interp,
-                    "Opening input file",
-                    args[0],
-                    &error,
-                ))
-            }
-        },
-        Err(error) => Err(error),
+    // orig_filename = filename; filename = ENCODE_FILE (filename), the name
+    // emacs_open (O_RDONLY) opens and Funlock_file later unlocks.
+    let encoded_filename = super::system::encode_file_value(interp, env, args[0])?;
+    let host = super::system::encoded_host_path(&encoded_filename);
+    let opened = match emacs_open(interp, env, &host, libc::O_RDONLY, 0)? {
+        Ok(file) => Ok(file),
+        Err(error) => {
+            open_failure = time_error_value(&error);
+            Err(report_file_errno(
+                interp,
+                "Opening input file",
+                args[0],
+                &error,
+            ))
+        }
     };
     let file = match opened {
         Ok(file) => file,
@@ -2673,7 +2676,7 @@ pub(crate) fn insert_file_contents(
                     stamp: open_failure,
                     size: -1,
                 });
-            record_visit(interp, env, args[0], empty_undo_list_p)?;
+            record_visit(interp, env, args[0], encoded_filename, empty_undo_list_p)?;
             set_last_coding_system_used(interp, &coding, env);
             finish_insert_file_contents(interp, env, 0, &args[1..], empty_undo_list_p)?;
             return Err(error);
@@ -2753,7 +2756,7 @@ pub(crate) fn insert_file_contents(
                 .buffer
                 .borrow_mut()
                 .set_visited_file_modtime(opened_modtime);
-            record_visit(interp, env, args[0], empty_undo_list_p)?;
+            record_visit(interp, env, args[0], encoded_filename, empty_undo_list_p)?;
             if !regular {
                 return Err(LispError::SignalValue(Value::list([
                     Value::symbol("file-error"),

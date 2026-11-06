@@ -852,7 +852,8 @@ pub(crate) fn checked_coding_given(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<Option<String>, LispError> {
-    Ok(checked_coding_name(interp, value)?.map(|canonical| given_coding_text(value, canonical)))
+    Ok(checked_coding_name(interp, value)?
+        .map(|canonical| given_coding_text(interp, value, canonical)))
 }
 
 /// The name a caller that keeps a coding system by its name keeps the
@@ -860,26 +861,33 @@ pub(crate) fn checked_coding_given(
 /// or for an alias that no name names (uninterned, or a private
 /// obarray's) the coding system it stands for.  Not GNU, which keeps the
 /// symbol.
-fn given_coding_text(value: &Value, canonical: String) -> String {
+fn given_coding_text(interp: &Interpreter, value: &Value, canonical: String) -> String {
+    // The check passed VALUE as a symbol: a symbol with position, while
+    // symbols-with-pos-enabled, is its bare symbol (CHECK_SYMBOL).
+    let symbol_value = crate::lisp::primitives::lisp_symbol(interp, *value).unwrap_or(*value);
     // A coding system defined under a name no name names has none for
     // these callers.  Not GNU, which keeps the symbol.
-    match value.symbol_cell() {
+    match symbol_value.symbol_cell() {
         Some(symbol)
             if symbol.cell().is_uninterned()
                 || crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) =>
         {
             canonical
         }
-        _ => value.symbol_str().map(str::to_string).unwrap_or_default(),
+        _ => match symbol_value.symbol_str() {
+            Some(name) => name.to_string(),
+            None => canonical,
+        },
     }
 }
 
 /// `given_coding_text' of a coding system VALUE a check passed already,
 /// its symbol's text for one the table does not hold.
 pub(crate) fn coding_text_of(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
-    let text = value.as_symbol()?.to_owned();
-    Ok(match interp.coding_system_canonical_name_value(value) {
-        Some(canonical) => given_coding_text(value, canonical),
+    let symbol = crate::lisp::primitives::lisp_symbol(interp, *value).unwrap_or(*value);
+    let text = symbol.as_symbol()?.to_owned();
+    Ok(match interp.coding_system_canonical_name_value(&symbol) {
+        Some(canonical) => given_coding_text(interp, &symbol, canonical),
         None => text,
     })
 }

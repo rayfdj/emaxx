@@ -15490,6 +15490,82 @@ setup_process_coding_systems's check now refuses). A 13-form
   gives it a directory, its expectation unchanged. Local validation: the
   grouped gate's 3,501 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 330: the audit of rounds 323 to 328, answered.** An
+  independent review of decb77e..67710f4 found four P1 and eight P2
+  findings, each with a GNU source and a probe; this round fixes all
+  twelve and the P3s it could, and records the rest. `describe-vector'
+  is keymap.c's Fdescribe_vector over the one describe_vector that
+  `help--describe-vector' uses (describe_vector_princ against
+  describe_vector_basic, ELT_PREFIX outside a keymap, keys fontified
+  only for one): it read the vector into a Rust vector the collector
+  does not trace before running the describer and the change hooks, so a
+  hook that dropped an element and collected made it read freed memory
+  (a crash in one probe); its elements are now read afresh on each pass,
+  a range is the three insertions GNU makes, the element is
+  get_keyelt's, a char-table is walked by char_table_ref_and_range with
+  the 8-bit split and its default line, and its parent is not consulted;
+  PARTIAL skips a SYMBOLP definition with `suppress-keymap', `t'
+  included. A coding system given as a symbol with position is its bare
+  symbol (it became the empty-name symbol, so encode-coding-string,
+  decode-coding-string, encode-coding-region and coding-system-for-read
+  signalled `coding-system-error'). unshow_buffer records
+  last_window_start before it reads the point marker, as window.c does.
+  set-window-start and set-window-point are set_marker_restricted: a
+  marker of the window's buffer lends its position unclipped when the
+  window marker is in that buffer, a bignum is `integer-or-marker-p'.
+  run-window-configuration-change-hook walks the list it took first, so
+  a window a hook deleted asks the current buffer and
+  Fbuffer_local_value signals `bufferp nil', and a void local binding
+  signals `void-variable' as Fbuffer_local_value does.
+  internal--labeled-widen compares labels with EQ. The text-property,
+  overlay, read-only and field lookups take a Lisp caller's property
+  with EQ (PropertyName carries symbols-with-pos-enabled as the lookup
+  starts; the writes do not yet, below), frame-parameter takes
+  CHECK_SYMBOL's symbol (its Fassq is not yet EQ, below), and
+  network-lookup-address-info and network-interface-list compare their
+  family and hints with EQ, network-interface-list saying "Unsupported
+  address family" where the lookup says "Unsupported family".
+  make-network-process reads :type, then :name as
+  get_required_string_keyword_param does, then the server and nowait
+  check, as process.c does; :family is nil, `local', `ipv6', `ipv4' or
+  an integer, else "Unknown address family", and an integer it cannot
+  use fails at the lookup with EAI_FAMILY's gai_strerror text; each
+  keyword is read as plist_get reads it, its first occurrence by EQ, and
+  the option keys are checked to be symbols only after those. The
+  hostname failure message stops at a NUL; get-file-buffer is
+  CHECK_STRING, one Fexpand_file_name, the `get-file-buffer' handler and
+  Fstring_equal, and get-truename-buffer compares with Fstring_equal;
+  scan_for_column asks Fget_buffer_window at its start and lets its
+  error through; internal-describe-syntax-value accepts any CHARACTERP
+  matching character and inserts it with insert_char. Of the P3s:
+  copy-file, rename-file, add-name-to-file and make-symbolic-link name
+  the expand_cp_target object the choke point made (their bodies' own
+  second directory-name expansion is gone), insert-file-contents unlocks
+  the name ENCODE_FILE made before the open, and unshow_buffer and
+  kill-buffer test the selected window's contents (nil for a deleted
+  one). A command-line comparison runs every probe of the review.
+  **Audit:** `tools/round_audit.py' against round 329 reports no hard
+  findings; its review findings were read (an absent keyword is nil, as
+  Fplist_get answers; the six assertions on Emaxx's deleted helpers now
+  compare GNU and Emaxx; a quoted window.c comment; the audit's own
+  assertion count, which now counts every `assert_*' helper). An
+  independent review of this round's diff found five P1, four P2 and
+  four P3 findings. Fixed in this round: make-network-process's check
+  order and its families; the void local hook binding; get-file-buffer's
+  second expansion; the name unlocked after a coding switch mid-read;
+  network-interface-list's error text; the replacement tests that ran
+  only GNU (and the audit count that missed them); PARTIAL's SYMBOLP
+  test; and the unreachable second directory-name expansion in copy-file
+  and its siblings. Of the fallbacks it named, set-window-start's
+  current buffer is GNU's own (set_marker_restricted's live_buffer is
+  decode_buffer's, the current buffer for nil contents), and
+  window_marker_for_set has none to give for a window decode_live_window
+  returns. Recorded below: property and overlay writes, frame and window
+  parameters and intervals_equal still compare with BASE_EQ under
+  symbols-with-pos-enabled, and last-coding-system-used holds the bare
+  symbol of a positioned or uninterned coding system. Local validation:
+  the grouped gate's 3,501 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -18175,7 +18251,62 @@ ert-tests as a whole 26,307 ms against 27,211.
   `ert-test-run-tests-batch-expensive' runs in 1.01 of GNU's time.
   Rounds 323 to 328 were merged to main (PR #131, `e456460`).
 
+**On `615acad`** (round 329): the full Rust gate (run 42175563135)
+  passed; the frozen run (run 42175566953) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a slower runner (GNU's own total
+  365.6 s against round 328's 290.4). Setup 78.7 s against 67.3 s
+  (1.169), test bodies 298.7 s against 278.3 s (1.073), in all 1.079,
+  with a per-file setup median of 118 ms against 103. The widest body
+  gaps are tramp-tests (22,700 ms against 19,436), ert-tests (45,388
+  against 42,468), comp-tests (17,928 against 15,321), semantic-utest-ia
+  (3,780 against 2,593) and mule-tests (3,007 against 1,982), and
+  `ert-test-run-tests-batch-expensive' runs in 1.06 of GNU's time.
+
 **Findings recorded, not fixed:**
+- **kill-buffer's window replacement (round 330).** GNU's Fkill_buffer
+  replaces the dying buffer in each window through
+  replace_buffer_in_windows and replace_buffer_in_windows_safely
+  (window_loop's REPLACE_BUFFER_IN_WINDOWS_SAFELY: undedicate,
+  set_window_buffer with other_buffer_safely, Fset_buffer for the
+  selected window); Emaxx's kill_buffer_id writes the replacement into
+  each window's buffer slot and an integer into its start slot, and
+  swallows unshow_buffer's error for the selected window. To be rebuilt
+  as window_loop's case.
+- **The selected window's buffer (round 330).**
+  selected_window_buffer_id answers the current buffer for a deleted
+  selected window, whose contents are nil in GNU; round 330 gives
+  unshow_buffer, the configuration restore and kill-buffer the contents
+  themselves, and sixteen other callers keep the old answer. Each wants
+  reading against its GNU caller (Fset_buffer of a nil contents signals
+  there); set-window-point's, for a deleted selected window, stands
+  where GNU's XBUFFER (w->contents) of nil has no defined answer.
+- **EQ under symbols-with-pos-enabled (round 330).** GNU's EQ is
+  BASE_EQ, or, while symbols-with-pos-enabled, a comparison of bare
+  symbols (lisp.h EQ through slow_eq). Emaxx applies it where round 330
+  reached: the text-property, overlay, read-only and field lookups,
+  frame-parameter's CHECK_SYMBOL, and the network families, hints and
+  keywords. It still compares with BASE_EQ in the writes and the alist
+  walks: add_properties, remove_properties and interval_has_*
+  (textprop.c:387, :397, :480, :496), overlay-put and its `evaporate'
+  test (buffer.c:4010, :4026), frame-parameter's Fassq (frame.c:3524),
+  set-frame-parameter, set-window-parameter and window-parameter,
+  intervals_equal, and every name Rust supplies (`display', `field', a
+  `char-property-alias-alist' alternative). So under
+  symbols-with-pos-enabled a positioned name is stored as a second key,
+  or missed (probes s1, s2, o1, fp and wp of the round 330 review). To
+  be one authoritative test: every EQ reads the one flag, with a census
+  of the word comparisons that stand for EQ.
+- **The object last-coding-system-used holds (round 330).**
+  coding.c:9636 stores the coding system the caller gave
+  (`Vlast_coding_system_used = coding_system'), a symbol with position
+  or an uninterned alias included. Emaxx keeps coding systems by name
+  (CodingId) and stores the bare interned symbol, so `(eq
+  last-coding-system-used CS)' is nil for those (probes c1 and c2). To
+  be the caller's object wherever GNU stores it.
+- **A swallowed column in vertical motion (round 330).** window.rs's
+  motion_from_start reads `current-column' through a closure that turns
+  its error into column 0; current-column can now signal as GNU's does
+  (a deleted selected window), and GNU's caller lets the error through.
 - **The errno text's locale (round 329).** emacs_strerror calls
   synchronize_system_messages_locale, so strerror's text follows
   LC_MESSAGES; Emaxx sets only LC_CTYPE, so its text is always the C
@@ -18212,38 +18343,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   the interpreter shared and running Lisp needs it mutably. Only a
   `locale-coding-system' with a post-read-conversion, or an autoloaded
   one, shows it.
-- **The audit of rounds 323 to 328 (round 329).** An independent review
-  of decb77e..67710f4 found four P1 and eight P2 findings, each with a
-  GNU source and a probe; round 330 fixes them. P1: `describe-vector'
-  holds the vector's elements in a Rust vector the collector does not
-  trace while it calls the describer and the change hooks, so a hook
-  that drops an element and collects makes it read freed memory (a crash
-  in one probe); its range key is one insertion where keymap.c makes
-  three, and it is a second copy of describe_vector beside
-  `help--describe-vector' (no get_keyelt, merged equal char-table
-  ranges, no 8-bit split, no default line, the parent's values); a
-  coding system given as a symbol with position becomes the empty-name
-  symbol in encode-coding-string, decode-coding-string,
-  encode-coding-region and coding-system-for-read; unshow_buffer checks
-  the point marker before recording last_window_start, where window.c
-  records the start first. P2: set-window-start and set-window-point
-  clip a same-buffer marker and clamp a bignum where set_marker_internal
-  copies the position and signals; run-window-configuration-change-hook
-  skips a window deleted during the run, where GNU signals `bufferp
-  nil'; internal--labeled-widen compares labels with BASE_EQ instead of
-  EQ; positioned symbols are still refused or missed by
-  get-text-property, overlay-get, frame-parameter,
-  network-lookup-address-info's family and hints and
-  make-network-process's keywords; the hostname failure message does not
-  stop at a NUL; get-file-buffer compares names as text rather than with
-  Fstring_equal; scan_for_column's window lookup swallows
-  window_list_1's error; internal-describe-syntax-value refuses matching
-  characters char::from_u32 rejects. P3: selected_window_buffer_id and
-  kill_buffer_id fall back where GNU has no fallback; the
-  directory-target names of copy-file, rename-file, add-name-to-file and
-  make-symbolic-link and define-coding-system-internal's checks still
-  use text; insert-file-contents unlocks the unencoded name; the dump
-  records last_window_start as 1 where GNU's records -1.
 - **tramp-tests' body gap is the pty's timing (round 327).**
   tramp-accept-process-output evaluates (buffer-string) of the
   connection buffer, which grows to 2 MB, each time

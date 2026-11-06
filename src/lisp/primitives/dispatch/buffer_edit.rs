@@ -1176,7 +1176,7 @@ define_dispatch!(
                 interp.buffer.borrow_mut().goto_char(new_end);
                 Ok(Value::Nil)
             }
-            "current-column" => Ok(Value::Integer(current_column(interp, env) as i64)),
+            "current-column" => Ok(Value::Integer(current_column(interp, env)? as i64)),
             "current-indentation" => {
                 // indent.c:Fcurrent_indentation: position_indentation from
                 // the line's start.
@@ -1205,7 +1205,7 @@ define_dispatch!(
                 let point = interp.buffer.borrow().point();
                 let start = line_beginning_at(interp, point);
                 let zv = interp.buffer.borrow().point_max();
-                let scan = scan_for_column(interp, env, start, zv, Some(goal));
+                let scan = scan_for_column(interp, env, start, zv, Some(goal))?;
                 let mut col = scan.col;
                 interp.buffer.borrow_mut().goto_char(scan.pos);
                 // If a tab made us overshoot, change it to spaces and scan
@@ -1391,7 +1391,7 @@ define_dispatch!(
                 get_char_property(
                     interp,
                     &args[0],
-                    PropertyName::new(args[1]),
+                    PropertyName::eq_with_pos(args[1], interp.symbols_with_positions_enabled()),
                     args.get(2).copied().unwrap_or(Value::Nil),
                 )
             }
@@ -1400,7 +1400,7 @@ define_dispatch!(
                 get_pos_property(
                     interp,
                     &args[0],
-                    PropertyName::new(args[1]),
+                    PropertyName::eq_with_pos(args[1], interp.symbols_with_positions_enabled()),
                     args.get(2).copied().unwrap_or(Value::Nil),
                 )
             }
@@ -1409,7 +1409,7 @@ define_dispatch!(
                 let (value, overlay) = get_char_property_and_overlay(
                     interp,
                     &args[0],
-                    PropertyName::new(args[1]),
+                    PropertyName::eq_with_pos(args[1], interp.symbols_with_positions_enabled()),
                     args.get(2).copied().unwrap_or(Value::Nil),
                 )?;
                 Ok(Value::cons(
@@ -1422,7 +1422,7 @@ define_dispatch!(
                 get_text_property(
                     interp,
                     &args[0],
-                    PropertyName::new(args[1]),
+                    PropertyName::eq_with_pos(args[1], interp.symbols_with_positions_enabled()),
                     args.get(2).copied().unwrap_or(Value::Nil),
                 )
             }
@@ -3047,22 +3047,25 @@ pub(super) fn direct_char_before(
 /// point nor the buffer's modiff has changed (nor the buffer, its
 /// restriction), else point's column scanned from its line's beginning,
 /// then recorded.
-fn current_column(interp: &mut Interpreter, env: &mut crate::lisp::types::Env) -> usize {
+fn current_column(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+) -> Result<usize, LispError> {
     let (point, modiff) = {
         let buffer = interp.buffer.borrow();
         (buffer.point(), buffer.modified_tick())
     };
     let (column, known_point, known_modiff) = interp.last_known_column;
     if point == known_point && modiff == known_modiff {
-        return column;
+        return Ok(column);
     }
     let bol = line_beginning_at(interp, point);
     let column = match plain_current_column(interp, env, bol, point) {
         Some(column) => column,
-        None => column_at(interp, env, bol, point),
+        None => column_at(interp, env, bol, point)?,
     };
     remember_current_column(interp, column);
-    column
+    Ok(column)
 }
 
 /// indent.c current_column's own scan, back from POINT to the line's
@@ -3180,7 +3183,7 @@ pub(super) fn indent_to(
     minimum: i64,
     env: &mut crate::lisp::types::Env,
 ) -> Result<i64, LispError> {
-    let mut from_col = current_column(interp, env) as i64;
+    let mut from_col = current_column(interp, env)? as i64;
     let min_col = (from_col + minimum).max(column);
     if min_col == from_col {
         return Ok(min_col);

@@ -2994,6 +2994,195 @@ fn file_errors_name_the_lisp_objects_gnu_names() {
 }
 
 #[test]
+fn the_audit_of_rounds_323_to_328_is_answered_as_gnu_answers() {
+    // The probes of the independent review of rounds 323 to 328, each in
+    // its own session: describe-vector as keymap.c's describe_vector (its
+    // elements read afresh, a change hook that drops one and collects
+    // included; a range as three insertions; get_keyelt; a char-table's
+    // runs, 8-bit split, default and no parent), coding systems and labels
+    // and properties given as symbols with position, unshow_buffer's start
+    // recorded before its point is read, set_marker_restricted on window
+    // markers, the configuration-change hook over a window deleted under
+    // it, get-file-buffer's Fstring_equal, scan_for_column's window
+    // lookup, a syntax description's matching character, and the
+    // hostname failure message cut at its NUL.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defvar v nil)
+(setq v (vector (list 'a) (list (make-string 3 ?b) 'bb) (list (make-string 3 ?c) 'cc)))
+(with-temp-buffer
+  (add-hook 'after-change-functions (lambda (&rest _) (aset v 2 (list 'hooked)) (garbage-collect)) nil t)
+  (describe-vector v)
+  (message "%S" (buffer-string))))"##,
+        r##"(progn
+(defmacro try (f) `(condition-case e ,f (error (list 'ERR e))))
+(defvar log nil)
+(with-temp-buffer
+  (add-hook 'after-change-functions (lambda (b e l) (push (buffer-substring-no-properties b e) log)) nil t)
+  (describe-vector [a a a nil b])
+  (message "range hooks: %S" (reverse log))
+  (message "text: %S" (buffer-string)))
+(with-temp-buffer
+  (describe-vector [("label" . forward-char) nil (menu-item "x" backward-char)])
+  (message "keyelt: %S" (buffer-string)))
+(with-temp-buffer
+  (let ((ct (make-char-table nil)))
+    (set-char-table-range ct '(?a . ?b) (list 1))
+    (set-char-table-range ct ?c (list 1))
+    (describe-vector ct)
+    (message "ct equal: %S" (buffer-string))))
+(with-temp-buffer
+  (let ((ct (make-char-table nil)))
+    (set-char-table-range ct '(#x3FFF70 . #x3FFF90) 'z)
+    (describe-vector ct)
+    (message "ct 8bit: %S" (buffer-string))))
+(with-temp-buffer
+  (let ((ct (make-char-table nil 'dflt)))
+    (set-char-table-range ct '(?a . ?b) 'q)
+    (describe-vector ct)
+    (message "ct default: %S" (substring (buffer-string) 0 (min 200 (length (buffer-string)))))))
+(with-temp-buffer
+  (let* ((p (make-char-table nil)) (ct (make-char-table nil)))
+    (set-char-table-range p '(?a . ?c) 'par)
+    (set-char-table-parent ct p)
+    (set-char-table-range ct ?b 'own)
+    (describe-vector ct)
+    (message "ct parent: %S" (buffer-string)))))"##,
+        r##"(progn
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (message "a %S" (condition-case e (encode-coding-string "a" (p 'utf-8)) (error (list (car e) (cdr e) (type-of (cadr e)) (bare-symbol (cadr e)) (eq (cadr e) 'utf-8))))))
+(message "b %S" (condition-case e (let ((symbols-with-pos-enabled t)) (encode-coding-string "a" (p 'utf-8))) (error (list (car e) (cdr e) (type-of (cadr e))))))
+(message "c %S" (condition-case e (encode-coding-string "a" (p 'utf-8)) (error e)))
+(message "d %S" (condition-case e (let ((symbols-with-pos-enabled t)) (decode-coding-string "a" (p 'utf-8))) (error e)))
+(message "e %S" (condition-case e (let ((symbols-with-pos-enabled t)) (check-coding-system (p 'utf-8))) (error e)))
+(message "f %S" (condition-case e (let ((symbols-with-pos-enabled t)) (with-temp-buffer (insert "a") (encode-coding-region 1 2 (p 'utf-8)))) (error e)))
+(message "g %S" (condition-case e (let ((symbols-with-pos-enabled t)) (let ((coding-system-for-read (p 'utf-8))) (with-temp-buffer (insert-file-contents "/etc/passwd") (buffer-size)))) (error e))))"##,
+        r##"(progn
+(defun show (tag form) (message "%s: %S" tag (condition-case e (funcall form) (error (list 'ERR e)))))
+(let* ((b (get-buffer-create "B"))
+       (w1 (selected-window))
+       w2)
+  (with-current-buffer b (insert (make-string 200 ?x)))
+  (setq w2 (split-window w1))
+  (set-window-buffer w2 b)
+  (set-window-start w2 50)
+  (set-window-point w2 nil)
+  (show "wp" (lambda () (window-point w2)))
+  (show "ws" (lambda () (window-start w2)))
+  (show "del" (lambda () (delete-window w2)))
+  (show "live" (lambda () (list (window-live-p w2) (window-buffer w2) (length (window-list)))))
+  (show "set-wb" (lambda () (set-window-buffer w1 b)))
+  (show "ws1" (lambda () (window-start w1)))))"##,
+        r##"(progn
+(defmacro try (f) `(condition-case e ,f (error (list 'ERR e))))
+(let* ((b (get-buffer-create "B")) (c (get-buffer-create "C"))
+       (w1 (selected-window)) (w2 (split-window w1)))
+  (with-current-buffer b (insert (make-string 100 ?x)))
+  (with-current-buffer c (insert (make-string 300 ?y)))
+  (set-window-buffer w2 b)
+  (with-current-buffer b (narrow-to-region 10 50))
+  (let ((m (with-current-buffer b (copy-marker 80)))
+        (mc (with-current-buffer c (copy-marker 250))))
+    (message "1 %S" (try (list (set-window-start w2 m) (window-start w2))))
+    (message "2 %S" (try (list (set-window-start w2 mc) (window-start w2))))
+    (message "3 %S" (try (list (set-window-point w2 m) (window-point w2))))
+    (message "4 %S" (try (list (set-window-point w2 mc) (window-point w2))))
+    (message "5 %S" (try (list (set-window-start w2 200) (window-start w2))))
+    (message "6 %S" (try (list (set-window-start w2 1.5) (window-start w2))))
+    (message "7 %S" (try (list (set-window-start w2 (1+ most-positive-fixnum)) (window-start w2))))
+    (message "8 %S" (try (list (set-window-point w2 (1+ most-positive-fixnum)) (window-point w2))))
+    (message "9 %S" (try (list (set-window-point w2 -5) (window-point w2))))
+    (with-current-buffer b (widen))
+    (message "10 %S" (try (list (set-window-start w2 m) (window-start w2) (set-window-start w2 3) (window-start w2))))
+    (with-current-buffer b (narrow-to-region 10 50))
+    (message "11 %S" (try (list (set-window-start w2 m) (window-start w2))))
+    (message "12 %S" (try (list (set-window-point w2 m) (window-point w2))))
+    ;; selected window, other buffer current
+    (select-window w2)
+    (message "13 %S" (try (with-current-buffer c (list (set-window-point nil m) (point) (window-point w2)))))
+    (message "14 %S" (try (with-current-buffer c (list (set-window-point nil mc) (window-point w2)))))
+    (message "15 %S" (try (with-current-buffer b (list (set-window-point nil mc) (window-point w2)))))
+    )))"##,
+        r##"(progn
+(defvar log nil)
+(let* ((a (get-buffer-create "A")) (b (get-buffer-create "B")) (c (get-buffer-create "C"))
+       (w1 (selected-window)) (w2 (split-window w1)) (w3 (split-window w2)))
+  (set-window-buffer w1 a) (set-window-buffer w2 b) (set-window-buffer w3 c)
+  (with-current-buffer a (setq-local window-configuration-change-hook
+     (list (lambda () (push (list 'a (buffer-name) (eq (selected-window) w1)) log) (delete-window w3) (garbage-collect)))))
+  (with-current-buffer b (setq-local window-configuration-change-hook
+     (list (lambda () (push (list 'b (buffer-name)) log)))))
+  (with-current-buffer c (setq-local window-configuration-change-hook
+     (list (lambda () (push (list 'c (buffer-name) (window-live-p (selected-window))) log)))))
+  (setq-default window-configuration-change-hook (list (lambda () (push (list 'g (buffer-name)) log))))
+  (message "r %S" (condition-case e (run-window-configuration-change-hook) (error e)))
+  (message "%S" (reverse log))))"##,
+        r##"(progn
+(defmacro try (f) `(condition-case e ,f (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (message "8 %S" (try (with-temp-buffer (insert (propertize "x" 'face 'bold)) (list (get-text-property 1 (p 'face)) (get-char-property 1 (p 'face)) (text-property-any 1 2 (p 'face) 'bold) (next-single-property-change 1 (p 'face)) (next-single-char-property-change 1 (p 'face))))))
+  (message "19 %S" (try (with-temp-buffer (insert "abc") (narrow-to-region 2 3) (internal--labeled-narrow-to-region 2 3 'L) (internal--labeled-widen (p 'L)) (widen) (list (point-min) (point-max)))))
+  (message "22 %S" (try (with-temp-buffer (insert "x") (overlay-get (let ((o (make-overlay 1 1))) (overlay-put o 'q 9) o) (p 'q)))))
+  (message "24 %S" (try (frame-parameter nil (p 'name))))
+  (message "24b %S" (try (frame-parameter nil (p 'nonexistent-param))))
+  (message "31 %S" (try (network-lookup-address-info "127.0.0.1" (p 'ipv4) (p 'numeric))))
+  (message "32 %S" (try (network-lookup-address-info "127.0.0.1" nil (p 'numeric))))
+  (message "33 %S" (try (length (network-interface-list nil (p 'ipv4)))))
+  (message "34 %S" (try (let ((proc (make-network-process (p :name) "e" (p :server) t :family (p 'ipv4) :service 0 :host "127.0.0.1" :noquery t))) (prog1 (list (process-name proc) (process-contact proc :family)) (delete-process proc))))))
+(message "35 %S" (try (let ((proc (make-network-process :name "a" :name "b" :server t :service 0 :host "127.0.0.1" :noquery t))) (prog1 (process-name proc) (delete-process proc)))))
+(message "36 %S" (try (with-temp-buffer (setq buffer-file-name "/tmp/xyz-q") (list (eq (get-file-buffer "/tmp/xyz-q") (current-buffer)) (get-file-buffer 5)))))
+(message "37 %S" (try (get-truename-buffer 5))))"##,
+        r##"(progn
+(defmacro try (f) `(condition-case e ,f (error (list 'ERR e))))
+(let ((b (get-buffer-create "rb")))
+  (with-current-buffer b (setq buffer-file-name (string-to-unibyte "/tmp/x\377")))
+  (message "1 %S" (try (list (get-file-buffer (string-to-unibyte "/tmp/x\377")) (get-file-buffer (string-to-multibyte "/tmp/x\377")) (get-file-buffer "/tmp/xÿ"))))
+  (with-current-buffer b (setq buffer-file-name "/tmp/xÿ"))
+  (message "2 %S" (try (list (get-file-buffer (string-to-unibyte "/tmp/x\377")) (get-file-buffer (string-to-multibyte "/tmp/x\377")) (get-file-buffer "/tmp/xÿ"))))))"##,
+        r##"(progn
+(defun ws-push (&rest xs) (prin1 xs) (terpri))
+(defmacro ws-try (tag form) `(ws-push ,tag (condition-case e (progn ,form 'ok) (error (list 'ERR (car e) (if (windowp (cadr e)) 'W (cadr e)))))))
+(defvar ws-objs nil)
+(defun ws-setup (n)
+  (ws-try (list n 'sel) (select-window (frame-first-window)))
+  (ws-try (list n 'dow) (delete-other-windows))
+  (ws-try (list n 'stb) (switch-to-buffer (get-buffer-create "wsA")))
+  (erase-buffer) (insert "line one\nline two\nline three\n") (goto-char 5)
+  (ws-try (list n 'split)
+          (let* ((sel (selected-window))
+                 (right (split-window sel nil 'right))
+                 (below (split-window right nil 'below))
+                 (dead (split-window below nil 'below)))
+            (set-window-buffer below (get-buffer-create "wsB"))
+            (delete-window dead)
+            (setq ws-objs (list (cons 'selected sel) (cons 'right right) (cons 'below below) (cons 'dead dead))))))
+(ws-setup 0)
+(ws-push 'swp (condition-case e (set-window-point (cdr (assq 'below ws-objs)) nil) (error e)))
+(ws-setup 1)
+(ws-setup 2)
+(ignore-errors (select-window (frame-first-window)))
+(ignore-errors (delete-other-windows))
+(ws-push 'dead-selected (window-live-p (selected-window)) (buffer-name))
+(ws-try 'cc (current-column))
+(ws-try 'cc2 (progn (insert "\t\tx") (current-column)))
+(ws-try 'mtc (move-to-column 3))
+(ws-try 'gbw (get-buffer-window))
+(kill-emacs 0))"##,
+        r##"(progn
+(dolist (m (list #xD800 #x3FFF80 #x110000))
+  (with-temp-buffer (internal-describe-syntax-value (cons 4 m)) (message "%x %S" m (buffer-string))))
+(with-temp-buffer (internal-describe-syntax-value (cons 4 ?\))) (set-buffer-multibyte nil) (message "%S" (buffer-string))))"##,
+        r##"(progn
+(network-lookup-address-info "a\0b" nil (quote numeric)))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

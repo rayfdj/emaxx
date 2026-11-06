@@ -92,7 +92,7 @@ ALLOW = re.compile(r"#!?\[\s*(allow|expect)\s*\(|cfg_attr\s*\(.*\b(allow|expect)
 CARGO_ALLOW = re.compile(r"(=\s*[\"']allow[\"']|level\s*=\s*[\"']allow|[\"']-A\b|\s-A\s|--cap-lints)")
 TEST_FN = re.compile(r"#\[\s*test\s*\]")
 ASSERT = re.compile(
-    r"\b(assert(_eq|_ne)?!|debug_assert(_eq|_ne)?!|assert_matches!|assert_same\(|assert_[a-z_]*contract\(|\(should\b)"
+    r"\b(assert(_eq|_ne)?!|debug_assert(_eq|_ne)?!|assert_matches!|assert_[a-z_]+\(|\(should\b)"
 )
 TRIVIAL_ASSERT = re.compile(r"\bassert!\s*\(\s*true\s*[,)]|\bassert_eq!\s*\(\s*([^,()]+?)\s*,\s*\1\s*[,)]")
 SPAWN = re.compile(

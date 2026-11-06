@@ -585,7 +585,10 @@ fn check_modified_intervals(
         let express = !textget(interp, props, cached_symbol!("inhibit-read-only"))?.is_nil()
             || (!read_only.is_nil()
                 && is_cons(&inhibit)
-                && memq(PropertyName::new(read_only), inhibit));
+                && memq(
+                    PropertyName::eq_with_pos(read_only, interp.symbols_with_positions_enabled()),
+                    inhibit,
+                ));
         if !implied && !express {
             return Err(text_read_only(read_only));
         }
@@ -640,7 +643,12 @@ fn check_insertion_stickiness(
 ) -> Result<(), LispError> {
     let read_only_unless_inhibited = |props: Value| -> Result<Option<Value>, LispError> {
         let value = textget(interp, props, cached_symbol!("read-only"))?;
-        Ok((!value.is_nil() && !memq(PropertyName::new(value), inhibit)).then_some(value))
+        Ok((!value.is_nil()
+            && !memq(
+                PropertyName::eq_with_pos(value, interp.symbols_with_positions_enabled()),
+                inhibit,
+            ))
+        .then_some(value))
     };
     // The read-only property sticks to text inserted after it unless it
     // is rear-nonsticky (directly, or through `category' when the

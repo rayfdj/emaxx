@@ -111,13 +111,24 @@ fn move_to_system_trash(path: &str) -> Result<(), trash::Error> {
     }
 }
 
-fn buffer_visiting_exact_file_name(interp: &Interpreter, expanded_file_name: &str) -> Option<u64> {
-    interp.buffer_list.iter().find_map(|(id, _)| {
-        interp
-            .get_buffer_by_id(*id)
-            .is_some_and(|buffer| buffer.file_name_text().as_deref() == Some(expanded_file_name))
-            .then_some(*id)
-    })
+/// FOR_EACH_LIVE_BUFFER's first buffer whose NAME (its file name or
+/// truename) is a string Fstring_equal to FILENAME, or nil.
+fn buffer_visiting_file_name(
+    interp: &Interpreter,
+    name: impl Fn(&crate::buffer::Buffer) -> Value,
+    filename: &Value,
+) -> Value {
+    interp
+        .buffer_list
+        .iter()
+        .find_map(|(id, _)| {
+            let buffer = interp.get_buffer_by_id(*id)?;
+            let file = name(&buffer);
+            (file.is_string() && crate::lisp::primitives::strings_equal(&file, filename))
+                .then(|| interp.buffer_value(*id))
+                .flatten()
+        })
+        .unwrap_or(Value::Nil)
 }
 
 fn bury_buffer_in_lists(
@@ -154,12 +165,21 @@ enum AddressFamily {
 }
 
 impl AddressFamily {
-    fn parse(value: Option<&Value>) -> Result<Self, LispError> {
-        match value.map(|v| v.kind()) {
-            None | Some(Kind::Nil) => Ok(Self::Both),
+    /// process.c's NILP (family), then EQ (family, Qipv4) and EQ (family,
+    /// Qipv6): a symbol with position is its symbol while
+    /// symbols-with-pos-enabled, a positioned nil not nil.
+    fn parse(
+        interp: &Interpreter,
+        value: Option<&Value>,
+        unsupported: &str,
+    ) -> Result<Self, LispError> {
+        let Some(value) = value.copied().filter(|value| !value.is_nil()) else {
+            return Ok(Self::Both);
+        };
+        match crate::lisp::primitives::lisp_symbol(interp, value).map(|symbol| symbol.kind()) {
             Some(Kind::Symbol(family)) if family.is_named("ipv4") => Ok(Self::Ipv4),
             Some(Kind::Symbol(family)) if family.is_named("ipv6") => Ok(Self::Ipv6),
-            _ => Err(LispError::Signal("Unsupported family".into())),
+            _ => Err(LispError::Signal(unsupported.into())),
         }
     }
 
@@ -490,10 +510,11 @@ fn link_layer_address(name: &str) -> Value {
     result
 }
 
-fn network_interface_list(args: &[Value]) -> Result<Value, LispError> {
+fn network_interface_list(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
     need_arg_range("network-interface-list", args, 0, 2)?;
     let full = args.first().is_some_and(Value::is_truthy);
-    let family = AddressFamily::parse(args.get(1))?;
+    // Fnetwork_interface_list's error ("Unsupported address family").
+    let family = AddressFamily::parse(interp, args.get(1), "Unsupported address family")?;
     let Ok(interfaces) = if_addrs::get_if_addrs() else {
         return Ok(Value::Nil);
     };
@@ -718,11 +739,15 @@ define_dispatch!(
             }
             "get-file-buffer" => {
                 need_args(name, args, 1)?;
-                let expanded =
-                    string_text(&super::call(interp, "expand-file-name", &[args[0]], env)?)?;
-                Ok(buffer_visiting_exact_file_name(interp, &expanded)
-                    .map(|id| interp.buffer_value(id).expect("live buffer object"))
-                    .unwrap_or(Value::Nil))
+                // buffer.c:Fget_file_buffer past the preamble's CHECK_STRING,
+                // Fexpand_file_name and `get-file-buffer' handler: the first
+                // live buffer whose string file name is Fstring_equal to the
+                // expanded FILENAME.
+                Ok(buffer_visiting_file_name(
+                    interp,
+                    |buffer| buffer.file_name(),
+                    &args[0],
+                ))
             }
             "get-truename-buffer" => {
                 need_args(name, args, 1)?;
@@ -733,20 +758,19 @@ define_dispatch!(
                     .buffer_list
                     .iter()
                     .filter_map(|(id, _)| {
-                        let truename = interp.get_buffer_by_id(*id)?.file_truename_text()?;
-                        Some((*id, truename))
+                        let truename = interp.get_buffer_by_id(*id)?.file_truename();
+                        truename.is_string().then_some((*id, truename))
                     })
                     .collect::<Vec<_>>();
                 if truenames.is_empty() {
                     return Ok(Value::Nil);
                 }
-                let file = match args[0].symbol_str() {
-                    Some(symbol) => symbol.to_string(),
-                    None => string_text(&args[0])?,
-                };
+                let file = Value::StringObject(crate::lisp::primitives::string_comparison_object(
+                    interp, &args[0], env,
+                )?);
                 Ok(truenames
                     .into_iter()
-                    .find(|(_, truename)| *truename == file)
+                    .find(|(_, truename)| crate::lisp::primitives::strings_equal(truename, &file))
                     .map(|(id, _)| interp.buffer_value(id).expect("live buffer object"))
                     .unwrap_or(Value::Nil))
             }
@@ -1250,16 +1274,12 @@ define_dispatch!(
                 use std::os::unix::io::{AsRawFd, IntoRawFd};
                 let file = string_text(&args[0])?;
                 validate_file_name(&file)?;
-                let mut newname = string_text(&args[1])?;
+                let newname = string_text(&args[1])?;
                 validate_file_name(&newname)?;
                 // The Lisp names report_file_error is given: FILE and the
                 // expand_cp_target NEWNAME the preamble made.
                 let file_value = args[0];
-                let mut newname_value = args[1];
-                if directory_name_p(&newname) {
-                    newname = file_name_concat(&[newname, file_name_nondirectory(&file)]);
-                    newname_value = Value::String(newname.as_str().into());
-                }
+                let newname_value = args[1];
                 let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
                 let keep_time = args.get(3).is_some_and(Value::is_truthy);
@@ -1547,19 +1567,12 @@ define_dispatch!(
                 // name when NEWNAME is a directory name).
                 let file = string_text(&args[0])?;
                 validate_file_name(&file)?;
-                let mut newname = string_text(&args[1])?;
+                let newname = string_text(&args[1])?;
                 validate_file_name(&newname)?;
                 // The Lisp names Frename_file reports and passes on: FILE
                 // and the expand_cp_target NEWNAME the preamble made.
                 let file_value = args[0];
-                let mut newname_value = args[1];
-                if directory_name_p(&newname) {
-                    newname = file_name_concat(&[
-                        newname,
-                        file_name_nondirectory(&directory_file_name(&file)),
-                    ]);
-                    newname_value = Value::String(newname.as_str().into());
-                }
+                let newname_value = args[1];
                 let mut ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
                 let host_file = host_file_name(interp, env, &file)?;
@@ -1769,13 +1782,10 @@ define_dispatch!(
                 // fileio.c:Fadd_name_to_file, past the handler lookups that
                 // expanded FILE and NEWNAME.
                 let file = string_text(&args[0])?;
-                let mut newname = string_text(&args[1])?;
-                // The Lisp names report_file_error is given.
-                let mut newname_value = args[1];
-                if directory_name_p(&newname) {
-                    newname = file_name_concat(&[newname, file_name_nondirectory(&file)]);
-                    newname_value = Value::String(newname.as_str().into());
-                }
+                let newname = string_text(&args[1])?;
+                // The Lisp names report_file_error is given: FILE and the
+                // expand_cp_target NEWNAME the preamble made.
+                let newname_value = args[1];
                 let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
                 let host_file = host_file_name(interp, env, &file)?;
@@ -2157,13 +2167,10 @@ define_dispatch!(
                 // that expanded LINKNAME (and, for an integer
                 // OK-IF-ALREADY-EXISTS, a `~' or `/:' TARGET).
                 let target = string_text(&args[0])?;
-                let mut linkname = string_text(&args[1])?;
-                // The Lisp names report_file_error is given.
-                let mut linkname_value = args[1];
-                if directory_name_p(&linkname) {
-                    linkname = file_name_concat(&[linkname, file_name_nondirectory(&target)]);
-                    linkname_value = Value::String(linkname.as_str().into());
-                }
+                let linkname = string_text(&args[1])?;
+                // The Lisp names report_file_error is given: TARGET and the
+                // expand_cp_target LINKNAME the preamble made.
+                let linkname_value = args[1];
                 let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
                 let host_target = host_file_name(interp, env, &target)?;
@@ -2655,7 +2662,7 @@ define_dispatch!(
                     _ => Err(LispError::Signal("Unknown or unsupported option".into())),
                 }
             }
-            "network-interface-list" => network_interface_list(args),
+            "network-interface-list" => network_interface_list(interp, args),
             "network-interface-info" => network_interface_info(args),
             "network-lookup-address-info" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -2666,11 +2673,17 @@ define_dispatch!(
                 let Kind::StringObject(state) = args[0].kind() else {
                     return Err(wrong_type_argument("stringp", args[0]));
                 };
-                let family = AddressFamily::parse(args.get(1))?;
-                let numeric = match args.get(2).map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => false,
-                    Some(Kind::Symbol(hint)) if hint.is_named("numeric") => true,
-                    _ => return Err(LispError::Signal("Unsupported hints value".into())),
+                // Fnetwork_lookup_address_info's ("Unsupported family").
+                let family = AddressFamily::parse(interp, args.get(1), "Unsupported family")?;
+                // NILP (hint), then EQ (hint, Qnumeric).
+                let numeric = match args.get(2).copied().filter(|hint| !hint.is_nil()) {
+                    None => false,
+                    Some(hint) => match crate::lisp::primitives::lisp_symbol(interp, hint)
+                        .map(|symbol| symbol.kind())
+                    {
+                        Some(Kind::Symbol(hint)) if hint.is_named("numeric") => true,
+                        _ => return Err(LispError::Signal("Unsupported hints value".into())),
+                    },
                 };
                 let (host, non_ascii) = {
                     let state = state.borrow();
@@ -2702,10 +2715,8 @@ define_dispatch!(
                             ],
                             env,
                         )?;
-                        let bytes = match msg.kind() {
-                            Kind::StringObject(state) => state.borrow().bytes().to_vec(),
-                            _ => Vec::new(),
-                        };
+                        // "%s" of SSDATA: the bytes before the first NUL.
+                        let bytes = crate::lisp::primitives::sdata_c_string(&msg);
                         super::display::vmessage(interp, bytes, env)?;
                         return Ok(Value::Nil);
                     }

@@ -878,6 +878,16 @@ impl Interpreter {
         Some(bumped)
     }
 
+    /// XWINDOW (selected_window)->contents as a buffer: None for a
+    /// deleted selected window (a state a failed deletion can leave),
+    /// whose contents are nil.
+    pub(crate) fn selected_window_contents_buffer_id(&self) -> Option<u64> {
+        primitives::window_slot_buffer_id(
+            self.find_record(self.selected_window_id)
+                .and_then(|record| record.slots.get(primitives::WINDOW_BUFFER_SLOT)),
+        )
+    }
+
     pub fn selected_window_buffer_id(&self) -> u64 {
         primitives::window_slot_buffer_id(
             self.find_record(self.selected_window_id)
@@ -967,7 +977,8 @@ impl Interpreter {
     /// point is the buffer's own) or the window it was last selected in
     /// is another still showing it; and it forgets WINDOW_ID as that
     /// window.  A start or point marker that points nowhere is
-    /// marker_position's error, before any of this changes.
+    /// marker_position's error where unshow_buffer reads it: the start
+    /// first, so a point marker's error leaves the start recorded.
     pub(crate) fn unshow_window_buffer(&mut self, window_id: u64) -> Result<(), LispError> {
         let Some(buffer_id) = self.window_record_buffer_id(window_id) else {
             return Ok(());
@@ -984,13 +995,19 @@ impl Interpreter {
                 None => Ok(None),
             }
         };
-        let start = marker_position(self, primitives::WINDOW_START_SLOT)?;
+        // b->last_window_start = marker_position (w->start).
+        if let Some(start) = marker_position(self, primitives::WINDOW_START_SLOT)?
+            && let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id)
+        {
+            buffer.set_last_window_start(start);
+        }
         let last_selected = self
             .get_buffer_by_id(buffer_id)
             .map(|buffer| buffer.last_selected_window())
             .unwrap_or(Value::Nil);
         let last_selected_id = primitives::window_record_id_from_value(self, &last_selected);
-        let point = if buffer_id != self.selected_window_buffer_id()
+        // ! EQ (buf, XWINDOW (selected_window)->contents).
+        let point = if Some(buffer_id) != self.selected_window_contents_buffer_id()
             && !last_selected_id.is_some_and(|id| {
                 id != window_id && self.window_record_buffer_id(id) == Some(buffer_id)
             }) {
@@ -999,9 +1016,6 @@ impl Interpreter {
             None
         };
         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-            if let Some(start) = start {
-                buffer.set_last_window_start(start);
-            }
             if let Some(point) = point {
                 let point = point.clamp(buffer.point_min(), buffer.point_max());
                 buffer.goto_char(point);
@@ -2102,7 +2116,7 @@ impl Interpreter {
             self.set_current_buffer_id(buffer)?;
             // A new current buffer the selected window does not show goes
             // to its old point (Bug#12208).
-            if self.selected_window_buffer_id() != buffer
+            if self.selected_window_contents_buffer_id() != Some(buffer)
                 && let Some(point) = old_point
             {
                 let mut state = self.buffer.borrow_mut();
@@ -2285,7 +2299,7 @@ impl Interpreter {
         }
         self.frames_discard_buffer(id);
         self.delete_buffer_overlays(id);
-        let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
+        let selected_window_showed_buffer = self.selected_window_contents_buffer_id() == Some(id);
         self.detach_markers_for_buffer(id);
         // An indirect buffer stops sharing its base's text (and chain).
         if let Some(object) = self.buffer_object(id) {
@@ -2710,13 +2724,6 @@ impl Interpreter {
     #[inline]
     pub fn char_table_get(&self, table: CharTableRef, key: u32) -> Option<Value> {
         Some(table.get(key))
-    }
-
-    pub(crate) fn char_table_effective_ranges(
-        &self,
-        table: CharTableRef,
-    ) -> Option<Vec<CharTableEntry>> {
-        Some(table.effective_ranges())
     }
 
     pub fn char_table_explicit_get(&self, mut table: CharTableRef, key: u32) -> Option<Value> {

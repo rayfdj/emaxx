@@ -1420,38 +1420,58 @@ impl WeakConsSlot {
 
 /// A text property's name: any Lisp object, compared with EQ, as
 /// textprop.c compares an interval plist's names (`EQ (XCAR (tail),
-/// prop)').  A Rust caller's `name == "face"' asks for the interned
-/// symbol `face' itself.
+/// prop)').  lisp.h's EQ counts a symbol with position as its bare
+/// symbol while `symbols-with-pos-enabled'; WITH_POS is that flag as the
+/// lookup starts (no Lisp runs inside one).  A Rust caller's
+/// `name == "face"' asks for the interned symbol `face' itself.
 #[derive(Clone, Copy, Debug)]
-pub struct PropertyName(Value);
+pub struct PropertyName {
+    name: Value,
+    with_pos: bool,
+}
 
 impl PropertyName {
+    /// NAME compared with BASE_EQ: a name no symbol with position
+    /// stands for.
     #[inline]
     pub fn new(name: Value) -> Self {
-        Self(name)
+        Self {
+            name,
+            with_pos: false,
+        }
+    }
+
+    /// NAME compared with EQ while `symbols-with-pos-enabled' is
+    /// SYMBOLS_WITH_POS_ENABLED.
+    #[inline]
+    pub fn eq_with_pos(name: Value, symbols_with_pos_enabled: bool) -> Self {
+        Self {
+            name,
+            with_pos: symbols_with_pos_enabled,
+        }
     }
 
     /// The interned symbol named NAME.
     pub fn symbol(name: &str) -> Self {
-        Self(Value::symbol(name))
+        Self::new(Value::symbol(name))
     }
 
     #[inline]
     pub fn value(self) -> Value {
-        self.0
+        self.name
     }
 
     /// The name's symbol name, for a symbol (internal markers and all).
     #[inline]
     pub fn symbol_str(&self) -> Option<&str> {
-        self.0.symbol_str()
+        self.name.symbol_str()
     }
 }
 
 impl PartialEq for PropertyName {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.0.word() == other.0.word()
+        self.name.word() == other.name.word()
     }
 }
 
@@ -1463,7 +1483,7 @@ impl PartialEq<str> for PropertyName {
     /// name and is not.
     #[inline]
     fn eq(&self, text: &str) -> bool {
-        self.0.symbol_str() == Some(text)
+        self.name.symbol_str() == Some(text)
     }
 }
 
@@ -1493,7 +1513,7 @@ pub trait PropertyKey: Copy {
 
     #[inline]
     fn names(self, name: &PropertyName) -> bool {
-        self.is(name.0)
+        self.is(name.name)
     }
 
     /// The object this key is EQ to, when it is one: a walk of a plist
@@ -1507,7 +1527,7 @@ pub trait PropertyKey: Copy {
 impl PropertyKey for PropertyName {
     #[inline]
     fn is(self, object: Value) -> bool {
-        self.0.word() == object.word()
+        self.name.word() == object.word() || (self.with_pos && bare_symbol_eq(self.name, object))
     }
 
     #[inline]
@@ -1517,8 +1537,19 @@ impl PropertyKey for PropertyName {
 
     #[inline]
     fn object(self) -> Option<Value> {
-        Some(self.0)
+        (!self.with_pos).then_some(self.name)
     }
+}
+
+/// EQ's second test with the flag set: the bare symbols' BASE_EQ, a
+/// symbol with position standing for its symbol.
+#[inline(never)]
+fn bare_symbol_eq(left: Value, right: Value) -> bool {
+    let bare = |value: Value| match value.kind() {
+        Kind::SymbolWithPos(symbol) => symbol.symbol(),
+        _ => value,
+    };
+    bare(left).word() == bare(right).word()
 }
 
 impl PropertyKey for &str {

@@ -603,7 +603,17 @@ define_dispatch!(
                 // function cell.
                 let (pieces, prefix) = syntax::describe_syntax_value(&args[0]);
                 for piece in &pieces {
-                    super::buffer_edit::insert_string(interp, piece, env)?;
+                    match piece {
+                        syntax::DescribePiece::Text(text) => {
+                            super::buffer_edit::insert_string(interp, text, env)?;
+                        }
+                        // insert_char: CHAR_STRING in a multibyte buffer,
+                        // CHAR_TO_BYTE8 in a unibyte one, as Finsert_char
+                        // of one character inserts it.
+                        syntax::DescribePiece::Char(code) => {
+                            super::call(interp, "insert-char", &[Value::Integer(*code)], env)?;
+                        }
+                    }
                 }
                 if prefix {
                     let suffix = interp.call_function_value(

@@ -900,11 +900,11 @@ define_dispatch!(
             "frame-parameter" => {
                 need_args(name, args, 2)?;
                 let id = decode_frame(interp, args.first(), true, false)?;
-                if !matches!(args[1].kind(), Kind::Symbol(_) | Kind::Nil | Kind::T) {
-                    return Err(wrong_type_argument("symbolp", args[1]));
-                }
+                // CHECK_SYMBOL; the EQ tests and Fassq below then see a
+                // symbol with position as its symbol.
+                let parameter = crate::lisp::primitives::check_symbol(interp, args[1])?;
                 if interp.frame_is_live(id) {
-                    frame_parameter_of(interp, id, args[1])
+                    frame_parameter_of(interp, id, parameter)
                 } else {
                     Ok(Value::Nil)
                 }

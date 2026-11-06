@@ -308,27 +308,6 @@ pub(crate) fn symbolic_kbd_event(modifiers: i64, name: &str) -> String {
     symbol
 }
 
-pub(crate) fn key_sequence_binding_text(value: &Value) -> Result<String, LispError> {
-    Ok(key_sequence_binding_parts(value)?.join(" "))
-}
-
-pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, LispError> {
-    if let Ok(events) = vector_items(value)
-        && let [event] = events.as_slice()
-    {
-        match event.kind() {
-            Kind::Symbol(symbol) => return Ok(vec![symbol.to_string()]),
-            // GNU renders the [t] default binding as "<t>", which also keeps
-            // it distinct from a binding on the letter t.
-            Kind::T => return Ok(vec!["<t>".into()]),
-            _ => {}
-        }
-    }
-    let mut parts = Vec::new();
-    append_key_description_parts(value, &mut parts)?;
-    Ok(parts)
-}
-
 /// keyboard.c's lucid_event_type_list_p: a proper list of fixnums and
 /// symbols whose head is not one of the posn-bearing pseudo-event kinds.
 pub(crate) fn lucid_event_type_list_p(event: &Value) -> bool {
@@ -351,102 +330,6 @@ pub(crate) fn lucid_event_type_list_p(event: &Value) -> bool {
     items
         .iter()
         .all(|item| matches!(item.kind(), Kind::Integer(_) | Kind::Symbol(_)))
-}
-
-pub(crate) fn append_key_description_parts(
-    sequence: &Value,
-    output: &mut Vec<String>,
-) -> Result<(), LispError> {
-    let events = key_description_events(sequence)?;
-    let mut add_meta = false;
-    for event in events {
-        if add_meta {
-            match event.kind() {
-                Kind::Integer(code) if code == KEY_DESCRIPTION_META_PREFIX => {
-                    output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
-                    add_meta = true;
-                }
-                Kind::Integer(code)
-                    if code != KEY_DESCRIPTION_META_PREFIX
-                        && code & KEY_DESCRIPTION_META_BIT == 0 =>
-                {
-                    output.push(describe_key_code(code | KEY_DESCRIPTION_META_BIT));
-                    add_meta = false;
-                }
-                other => {
-                    output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
-                    output.push(single_key_description_text(&other.value(), false)?);
-                    add_meta = false;
-                }
-            }
-            continue;
-        }
-
-        if matches!(event.kind(), Kind::Integer(code) if code == KEY_DESCRIPTION_META_PREFIX) {
-            add_meta = true;
-            continue;
-        }
-
-        output.push(single_key_description_text(&event, false)?);
-    }
-
-    if add_meta {
-        output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
-    }
-
-    Ok(())
-}
-
-pub(crate) fn key_description_events(sequence: &Value) -> Result<Vec<Value>, LispError> {
-    if let Some(string) = string_like(sequence) {
-        let mut events = Vec::new();
-        for ch in string.text.chars() {
-            if !string.multibyte {
-                if let Some(byte) = raw_byte_from_regex_char(ch) {
-                    let code = if byte & 0x80 != 0 {
-                        ((byte ^ 0x80) as i64) | KEY_DESCRIPTION_META_BIT
-                    } else {
-                        byte as i64
-                    };
-                    events.push(Value::Integer(code));
-                    continue;
-                }
-                let code = ch as u32;
-                if code <= 0xFF {
-                    let byte = code as u8;
-                    let normalized = if byte & 0x80 != 0 {
-                        ((byte ^ 0x80) as i64) | KEY_DESCRIPTION_META_BIT
-                    } else {
-                        byte as i64
-                    };
-                    events.push(Value::Integer(normalized));
-                    continue;
-                }
-            }
-            events.push(Value::Integer(ch as i64));
-        }
-        return Ok(events);
-    }
-
-    match sequence.kind() {
-        Kind::Nil => Ok(Vec::new()),
-        value if is_vector_value(&value.value()) => Ok(vector_items(sequence)?
-            .into_iter()
-            .map(normalize_key_description_event)
-            .collect()),
-        Kind::Integer(_) | Kind::Symbol(_) => Ok(vec![normalize_key_description_event(*sequence)]),
-        _ => Err(LispError::WrongTypeArgument("arrayp".into(), *sequence)),
-    }
-}
-
-pub(crate) fn normalize_key_description_event(event: Value) -> Value {
-    let Some((start, end)) = event.cons_values() else {
-        return event;
-    };
-    match (start.kind(), end.kind()) {
-        (Kind::Integer(start), Kind::Integer(end)) if start == end => Value::Integer(start),
-        _ => event,
-    }
 }
 
 pub(crate) fn sequence_values(sequence: &Value) -> Result<Vec<Value>, LispError> {

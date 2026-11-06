@@ -202,7 +202,10 @@ define_dispatch!(
                 Ok(overlay_property_with_category(
                     interp,
                     &object,
-                    crate::lisp::types::PropertyName::new(args[1]),
+                    crate::lisp::types::PropertyName::eq_with_pos(
+                        args[1],
+                        interp.symbols_with_positions_enabled(),
+                    ),
                 )?
                 .unwrap_or(Value::Nil))
             }

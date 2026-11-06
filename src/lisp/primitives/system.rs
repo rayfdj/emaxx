@@ -2082,25 +2082,6 @@ pub(crate) fn file_name_absolute_p(path: &str) -> bool {
     false
 }
 
-pub(crate) fn file_name_concat(parts: &[String]) -> String {
-    let mut iter = parts.iter().filter(|part| !part.is_empty());
-    let Some(first) = iter.next() else {
-        return String::new();
-    };
-    let mut result = first.clone();
-    for part in iter {
-        if result.is_empty() {
-            result = part.clone();
-        } else if result.ends_with('/') {
-            result.push_str(part.trim_start_matches('/'));
-        } else {
-            result.push('/');
-            result.push_str(part.trim_start_matches('/'));
-        }
-    }
-    result
-}
-
 /// lisp.h:CHECK_STRING_NULL_BYTES on a file name: no system takes a NUL
 /// in one.
 pub(crate) fn validate_file_name(path: &str) -> Result<(), LispError> {

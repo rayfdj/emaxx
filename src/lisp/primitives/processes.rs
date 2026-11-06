@@ -3745,7 +3745,6 @@ pub(crate) fn make_network_process(
             args.len(),
         ));
     }
-    let mut name = None;
     let mut buffer_id = None;
     let mut filter = None;
     let mut sentinel = None;
@@ -3764,28 +3763,75 @@ pub(crate) fn make_network_process(
     let mut service: Option<i64> = None;
     let mut service_path: Option<String> = None;
 
+    // Fmake_network_process's keywords in its order, each read as
+    // plist_get (contact, KEY) reads it: the first occurrence, its name
+    // compared with EQ.  :type first.
+    match plist_member_value(interp, args, ":type") {
+        None => {}
+        Some(kind) if kind.is_nil() => {}
+        Some(kind) if eq_named(interp, &kind, "datagram") => datagram = true,
+        Some(_) => return Err(LispError::Signal("Unsupported connection type".into())),
+    }
+    // get_required_string_keyword_param (contact, QCname).
+    let name = match plist_member_value(interp, args, ":name") {
+        None => return Err(LispError::Signal("Missing :name keyword parameter".into())),
+        Some(value) if value.is_string() => value,
+        Some(_) => return Err(LispError::Signal(":name value not a string".into())),
+    };
+    if plist_member_value(interp, args, ":server").is_some_and(|server| !server.is_nil())
+        && plist_member_value(interp, args, ":nowait").is_some_and(|nowait| !nowait.is_nil())
+    {
+        return Err(LispError::Signal(
+            "`:server' is incompatible with `:nowait'".into(),
+        ));
+    }
+    // :family -- nil, local, ipv6, ipv4 or an int; anything else is an
+    // unknown family.  An int other than those families reaches
+    // getaddrinfo, which refuses it (EAI_FAMILY).
+    let mut unsupported_family = false;
+    match plist_member_value(interp, args, ":family") {
+        None => {}
+        Some(family) if family.is_nil() => {}
+        Some(family) if eq_named(interp, &family, "local") => family_local = true,
+        Some(family) if eq_named(interp, &family, "ipv6") => family_ipv6 = true,
+        Some(family) if eq_named(interp, &family, "ipv4") => family_ipv4 = true,
+        Some(family) => match family.kind() {
+            Kind::Integer(number) if i32::try_from(number).is_ok() => match number as i32 {
+                libc::AF_UNIX => family_local = true,
+                libc::AF_INET6 => family_ipv6 = true,
+                libc::AF_INET => family_ipv4 = true,
+                libc::AF_UNSPEC => {}
+                _ => unsupported_family = true,
+            },
+            _ => return Err(LispError::Signal("Unknown address family".into())),
+        },
+    }
+    // The rest, each by its first occurrence; a name that is not a symbol
+    // is no keyword here (set_socket_option's CHECK_SYMBOL refuses it
+    // later, below).
+    let mut seen: Vec<Value> = Vec::new();
     for pair in args.as_chunks::<2>().0 {
-        let key = pair[0].as_symbol()?;
+        let Some(key_symbol) = crate::lisp::primitives::lisp_symbol(interp, pair[0]) else {
+            continue;
+        };
+        if seen
+            .iter()
+            .any(|earlier| earlier.word() == key_symbol.word())
+        {
+            continue;
+        }
+        seen.push(key_symbol);
+        let Some(key) = key_symbol.symbol_str() else {
+            continue;
+        };
         let value = &pair[1];
         match key {
-            ":name" => {
-                // get_required_string_keyword_param: the string itself.
-                if !matches!(value.kind(), Kind::StringObject(_)) {
-                    return Err(LispError::Signal(":name value not a string".into()));
-                }
-                name = Some(*value);
-            }
             ":buffer" => buffer_id = process_buffer_target(interp, value)?,
             ":filter" => filter = (!value.is_nil()).then_some(*value),
             ":sentinel" => sentinel = (!value.is_nil()).then_some(*value),
             ":log" => log = (!value.is_nil()).then_some(*value),
             ":plist" => plist = *value,
             ":server" => is_server = value.is_truthy(),
-            ":type" => match value.kind() {
-                Kind::Nil => datagram = false,
-                Kind::Symbol(kind) if kind.is_named("datagram") => datagram = true,
-                _ => return Err(LispError::Signal("Unsupported connection type".into())),
-            },
             ":nowait" => nowait = value.is_truthy(),
             ":coding" => coding = *value,
             ":tls-parameters" => {
@@ -3794,18 +3840,10 @@ pub(crate) fn make_network_process(
                     .map_err(|_| wrong_type_argument("listp", *value))?;
                 tls_parameters = *value;
             }
-            ":family" => {
-                family_local =
-                    matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("local"));
-                family_ipv4 =
-                    matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("ipv4"));
-                family_ipv6 =
-                    matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("ipv6"));
-            }
             ":host" => {
                 host = match value.kind() {
                     Kind::Nil => None,
-                    Kind::Symbol(symbol) if symbol.is_named("local") => {
+                    _ if eq_named(interp, value, "local") => {
                         host_local = true;
                         None
                     }
@@ -3829,8 +3867,6 @@ pub(crate) fn make_network_process(
             _ => {}
         }
     }
-
-    let name = name.ok_or_else(|| LispError::Signal("Missing :name keyword parameter".into()))?;
 
     let inherit_coding_system = buffer_id.is_some()
         && interp
@@ -3856,6 +3892,37 @@ pub(crate) fn make_network_process(
             family_ipv6,
         )?);
     }
+    // An int family getaddrinfo does not know: its EAI_FAMILY, reported as
+    // "HOST/SERVICE gai_strerror" (HOST defaulting to the loopback).
+    if unsupported_family && !family_local {
+        let port = match plist_member_value(interp, args, ":service")
+            .unwrap_or(Value::Nil)
+            .kind()
+        {
+            Kind::T => "0".to_string(),
+            Kind::Integer(port) => port.to_string(),
+            _ => {
+                let service = plist_member_value(interp, args, ":service").unwrap_or(Value::Nil);
+                if !service.is_string() {
+                    return Err(wrong_type_argument("stringp", service));
+                }
+                string_text(&service)?
+            }
+        };
+        // SAFETY: gai_strerror returns a static NUL-terminated message.
+        let reason = unsafe { std::ffi::CStr::from_ptr(libc::gai_strerror(libc::EAI_FAMILY)) }
+            .to_string_lossy()
+            .into_owned();
+        let host = host.as_deref().unwrap_or("127.0.0.1");
+        return Err(LispError::Signal(format!("{host}/{port} {reason}")));
+    }
+    // connect_network_socket's set_socket_option over every pair of the
+    // contact: CHECK_SYMBOL of each name, whose error removes the process.
+    for pair in args.as_chunks::<2>().0 {
+        if crate::lisp::primitives::lisp_symbol(interp, pair[0]).is_none() {
+            return Err(wrong_type_argument("symbolp", pair[0]));
+        }
+    }
     let buffer = buffer_id
         .and_then(|id| interp.buffer_value(id))
         .unwrap_or(Value::Nil);
@@ -3864,8 +3931,8 @@ pub(crate) fn make_network_process(
         env,
         ConnectionCoding::Network {
             name,
-            host: plist_member_value(args, ":host").unwrap_or(Value::Nil),
-            service: plist_member_value(args, ":service").unwrap_or(Value::Nil),
+            host: plist_member_value(interp, args, ":host").unwrap_or(Value::Nil),
+            service: plist_member_value(interp, args, ":service").unwrap_or(Value::Nil),
         },
         coding,
         buffer,
@@ -4173,13 +4240,23 @@ pub(crate) fn make_network_process(
     }
 }
 
-fn plist_member_value(items: &[Value], key: &str) -> Option<Value> {
-    items.as_chunks::<2>().0.iter().find_map(|pair| {
-        pair[0]
-            .as_symbol()
-            .is_ok_and(|candidate| candidate == key)
-            .then(|| pair[1])
-    })
+/// plist_get (contact, KEY) over the arguments: the value after the first
+/// name EQ to the interned keyword KEY (a symbol with position standing for
+/// its symbol while symbols-with-pos-enabled).
+fn plist_member_value(interp: &Interpreter, items: &[Value], key: &str) -> Option<Value> {
+    items
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .find_map(|pair| eq_named(interp, &pair[0], key).then(|| pair[1]))
+}
+
+/// EQ (VALUE, the interned symbol NAME): a symbol with position is its
+/// symbol while symbols-with-pos-enabled.
+fn eq_named(interp: &Interpreter, value: &Value, name: &str) -> bool {
+    crate::lisp::primitives::lisp_symbol(interp, *value).is_some_and(
+        |symbol| matches!(symbol.kind(), Kind::Symbol(symbol) if symbol.is_named(name)),
+    )
 }
 
 fn serial_data_bits(value: &Value) -> Result<serialport::DataBits, LispError> {
@@ -4246,19 +4323,19 @@ fn serial_configuration(
 ) -> Result<(SerialConfiguration, Value), LispError> {
     let mut contact_items = stored_contact.to_vec()?;
     let setting = |key: &str, default: Value| {
-        let value = plist_member_value(updates, key)
+        let value = plist_member_value(interp, updates, key)
             .unwrap_or_else(|| contact_plist_get(stored_contact, key));
         if value.is_nil() { default } else { value }
     };
-    let speed_value = plist_member_value(updates, ":speed")
+    let speed_value = plist_member_value(interp, updates, ":speed")
         .unwrap_or_else(|| contact_plist_get(stored_contact, ":speed"));
     let speed = u32::try_from(speed_value.as_integer()?)
         .map_err(|_| LispError::Signal("Unsupported speed".into()))?;
     let bytesize = setting(":bytesize", Value::Integer(8));
-    let parity = plist_member_value(updates, ":parity")
+    let parity = plist_member_value(interp, updates, ":parity")
         .unwrap_or_else(|| contact_plist_get(stored_contact, ":parity"));
     let stopbits = setting(":stopbits", Value::Integer(1));
-    let flowcontrol = plist_member_value(updates, ":flowcontrol")
+    let flowcontrol = plist_member_value(interp, updates, ":flowcontrol")
         .unwrap_or_else(|| contact_plist_get(stored_contact, ":flowcontrol"));
     let config = SerialConfiguration {
         speed,
@@ -4434,7 +4511,7 @@ fn configure_serial_descriptor(
 fn serial_process_designator(interp: &mut Interpreter, args: &[Value]) -> Result<u64, LispError> {
     let requested = [":process", ":name", ":buffer", ":port"]
         .into_iter()
-        .find_map(|key| plist_member_value(args, key).filter(Value::is_truthy));
+        .find_map(|key| plist_member_value(interp, args, key).filter(Value::is_truthy));
     let process = super::dispatch::files_process::get_process(interp, requested.as_ref())?;
     let process_id = interp.resolve_process_id(&process)?;
     if !interp.is_serial_process(process_id) {
@@ -4469,14 +4546,14 @@ pub(crate) fn make_serial_process(
     if args.is_empty() {
         return Ok(Value::Nil);
     }
-    let port_value = plist_member_value(args, ":port")
+    let port_value = plist_member_value(interp, args, ":port")
         .filter(Value::is_truthy)
         .ok_or_else(|| LispError::Signal("No port specified".into()))?;
     // CHECK_STRING (port).
     if !port_value.is_string() {
         return Err(LispError::WrongTypeArgument("stringp".into(), port_value));
     }
-    let Some(speed_value) = plist_member_value(args, ":speed") else {
+    let Some(speed_value) = plist_member_value(interp, args, ":speed") else {
         return Err(LispError::Signal(":speed not specified".into()));
     };
     let speed = if speed_value.is_nil() {
@@ -4490,7 +4567,7 @@ pub(crate) fn make_serial_process(
     };
     // name = plist_get (contact, QCname), PORT when nil; CHECK_STRING,
     // before make_process and serial_open.
-    let name = plist_member_value(args, ":name")
+    let name = plist_member_value(interp, args, ":name")
         .filter(Value::is_truthy)
         .unwrap_or(port_value);
     if !matches!(name.kind(), Kind::StringObject(_)) {
@@ -4509,20 +4586,21 @@ pub(crate) fn make_serial_process(
     } else {
         contact
     };
-    let buffer = plist_member_value(args, ":buffer")
+    let buffer = plist_member_value(interp, args, ":buffer")
         .filter(Value::is_truthy)
         .unwrap_or(name);
     let buffer_id =
         process_buffer_target(interp, &buffer)?.expect("a serial process always has a buffer");
-    let filter = plist_member_value(args, ":filter").filter(Value::is_truthy);
-    let sentinel = plist_member_value(args, ":sentinel").filter(Value::is_truthy);
-    let plist = plist_member_value(args, ":plist").unwrap_or(Value::Nil);
-    let coding = plist_member_value(args, ":coding").unwrap_or(Value::Nil);
+    let filter = plist_member_value(interp, args, ":filter").filter(Value::is_truthy);
+    let sentinel = plist_member_value(interp, args, ":sentinel").filter(Value::is_truthy);
+    let plist = plist_member_value(interp, args, ":plist").unwrap_or(Value::Nil);
+    let coding = plist_member_value(interp, args, ":coding").unwrap_or(Value::Nil);
     let buffer_value = interp.buffer_value(buffer_id).unwrap_or(Value::Nil);
     let (decoding, encoding) =
         connection_coding_systems(interp, env, ConnectionCoding::Serial, coding, buffer_value)?;
-    let noquery = plist_member_value(args, ":noquery").is_some_and(|value| value.is_truthy());
-    let stopped = plist_member_value(args, ":stop").is_some_and(|value| value.is_truthy());
+    let noquery =
+        plist_member_value(interp, args, ":noquery").is_some_and(|value| value.is_truthy());
+    let stopped = plist_member_value(interp, args, ":stop").is_some_and(|value| value.is_truthy());
     let process = interp.create_serial_process(
         name,
         buffer_id,

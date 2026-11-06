@@ -317,7 +317,10 @@ pub(crate) fn text_property_any(
     let object = search_object(interp, args.get(4).copied().unwrap_or(Value::Nil))?;
     let start = fixnum_coerce_marker(interp, &args[0])?;
     let end = fixnum_coerce_marker(interp, &args[1])?;
-    let (prop, value) = (PropertyName::new(args[2]), args[3]);
+    let (prop, value) = (
+        PropertyName::eq_with_pos(args[2], interp.symbols_with_positions_enabled()),
+        args[3],
+    );
     let found = with_search_text(interp, object, |text| {
         let (start, end) = (start.min(end), start.max(end));
         // A range of one point has no interval to search, nor bounds to
@@ -373,7 +376,7 @@ pub(crate) fn next_single_property_change(
 ) -> Result<Value, LispError> {
     let limit = scan_limit(interp, args.get(3))?;
     let object = search_object(interp, args.get(2).copied().unwrap_or(Value::Nil))?;
-    let prop = PropertyName::new(args[1]);
+    let prop = PropertyName::eq_with_pos(args[1], interp.symbols_with_positions_enabled());
     with_search_text(interp, object, |text| {
         let pos = scan_position(interp, text, &args[0])?;
         Ok(text
@@ -390,7 +393,7 @@ pub(crate) fn previous_single_property_change(
 ) -> Result<Value, LispError> {
     let limit = scan_limit(interp, args.get(3))?;
     let object = search_object(interp, args.get(2).copied().unwrap_or(Value::Nil))?;
-    let prop = PropertyName::new(args[1]);
+    let prop = PropertyName::eq_with_pos(args[1], interp.symbols_with_positions_enabled());
     with_search_text(interp, object, |text| {
         let pos = scan_position(interp, text, &args[0])?;
         Ok(text
@@ -969,7 +972,7 @@ pub(crate) fn next_single_char_property_change(
     if !object.is_nil() && !matches!(object.kind(), Kind::Buffer(_)) {
         return Err(wrong_type_argument("bufferp", object));
     }
-    let name = PropertyName::new(prop);
+    let name = PropertyName::eq_with_pos(prop, interp.symbols_with_positions_enabled());
     with_set_buffer(interp, &object, |interp| {
         let mut position = fixnum_coerce_marker(interp, position)?;
         let initial = get_char_property(interp, &Value::Integer(position), name, object)?;
@@ -1018,7 +1021,7 @@ pub(crate) fn previous_single_char_property_change(
     if !object.is_nil() && !matches!(object.kind(), Kind::Buffer(_)) {
         return Err(wrong_type_argument("bufferp", object));
     }
-    let name = PropertyName::new(prop);
+    let name = PropertyName::eq_with_pos(prop, interp.symbols_with_positions_enabled());
     with_set_buffer(interp, &object, |interp| {
         let mut position = fixnum_coerce_marker(interp, position)?;
         let begv = interp.buffer.borrow().point_min() as i64;

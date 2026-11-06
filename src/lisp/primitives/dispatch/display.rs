@@ -2946,19 +2946,32 @@ fn run_window_configuration_change_hook(
                 &frames,
             );
             for window in windows {
-                let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(window)) else {
+                // Fwindow_buffer: nil for a window a hook deleted after the
+                // list was made, and Flocal_variable_p of nil asks the
+                // current buffer.
+                let buffer_id = window_buffer_id(interp, &interp.record_value(window));
+                let hook = cached_symbol!("window-configuration-change-hook").symbol();
+                if !interp.has_buffer_local_binding_symbol(
+                    buffer_id.unwrap_or(interp.current_buffer_id()),
+                    &hook,
+                ) {
                     continue;
-                };
-                let Some(local) = interp.buffer_local_value_key(
-                    buffer_id,
-                    cached_symbol!("window-configuration-change-hook"),
-                ) else {
-                    continue;
-                };
+                }
                 let saved_window = interp.selected_window_id();
                 let mut inner = select_window_norecord(interp, window);
                 if inner.is_ok() {
-                    inner = run_window_funs(interp, local, env);
+                    // Fbuffer_local_value (..., buffer): CHECK_BUFFER, and a
+                    // void local binding's `void-variable'.
+                    inner = match buffer_id {
+                        Some(id) => match interp.buffer_local_value_symbol(id, &hook) {
+                            Some(local) => run_window_funs(interp, local, env),
+                            None => Err(LispError::SignalValue(Value::list([
+                                Value::symbol("void-variable"),
+                                Value::Symbol(hook),
+                            ]))),
+                        },
+                        None => Err(LispError::WrongTypeArgument("bufferp".into(), Value::Nil)),
+                    };
                 }
                 let unwound = select_window_norecord(interp, saved_window);
                 inner?;
@@ -7628,27 +7641,7 @@ define_dispatch!(
                 let window_id =
                     live_window_id_or_selected(interp, args.first().filter(|w| !w.is_nil()))?;
                 let noforce = args.get(2).is_some_and(Value::is_truthy);
-                // set_marker_restricted (w->start, pos, w->contents): nil, or
-                // a marker that points nowhere, leaves the start pointing
-                // nowhere; the flags are set as for any start.
-                let nowhere = match args[1].kind() {
-                    Kind::Nil => true,
-                    Kind::Marker(marker) => marker.buffer().is_none(),
-                    _ => false,
-                };
-                if nowhere {
-                    if let Some(marker) = window_marker(interp, window_id, WINDOW_START_SLOT) {
-                        marker.detach();
-                    }
-                    set_window_flag(interp, window_id, WINDOW_START_AT_LINE_BEG_SLOT, false);
-                    if !noforce {
-                        set_window_flag(interp, window_id, WINDOW_FORCE_START_SLOT, true);
-                    }
-                    interp.wset_redisplay(window_id);
-                    return Ok(args[1]);
-                }
-                let start = position_from_value(interp, &args[1])?;
-                set_window_start_value(interp, &args[0], start, noforce)?;
+                set_window_start_value(interp, window_id, &args[1], noforce)?;
                 Ok(args[1])
             }
             "set-window-point" => {
@@ -7680,25 +7673,13 @@ define_dispatch!(
                         return Ok(pos);
                     }
                 } else {
-                    let nowhere = match args[1].kind() {
-                        Kind::Nil => true,
-                        Kind::Marker(marker) => marker.buffer().is_none(),
-                        _ => false,
-                    };
-                    if nowhere {
-                        if let Some(marker) = window_marker(interp, window_id, WINDOW_POINT_SLOT) {
-                            marker.detach();
-                        }
-                    } else {
-                        let pos = position_from_value(interp, &args[1])?;
-                        set_window_marker_restricted(
-                            interp,
-                            window_id,
-                            WINDOW_POINT_SLOT,
-                            buffer_id,
-                            pos,
-                        );
-                    }
+                    set_window_marker_restricted_value(
+                        interp,
+                        window_id,
+                        WINDOW_POINT_SLOT,
+                        buffer_id,
+                        &args[1],
+                    )?;
                     interp.wset_redisplay(window_id);
                 }
                 Ok(args[1])

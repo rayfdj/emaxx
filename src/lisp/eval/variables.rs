@@ -4109,12 +4109,15 @@ impl Interpreter {
             .map(|restriction| restriction.label)
     }
 
-    /// EQ (labeled_restrictions_peek_label (BUFFER_ID), LABEL).
+    /// EQ (labeled_restrictions_peek_label (BUFFER_ID), LABEL): lisp.h's EQ,
+    /// under which a symbol with position is its symbol while
+    /// symbols-with-pos-enabled.  The outermost restriction's label is the
+    /// uninterned Qoutermost_restriction, which no LABEL is.
     pub(crate) fn labeled_restriction_label_is(&self, buffer_id: u64, label: Value) -> bool {
         match self.labeled_restrictions_peek(buffer_id) {
-            None => label.is_nil(),
+            None => crate::lisp::primitives::lisp_eq(self, &Value::Nil, &label),
             Some(None) => false,
-            Some(Some(innermost)) => innermost.word() == label.word(),
+            Some(Some(innermost)) => crate::lisp::primitives::lisp_eq(self, &innermost, &label),
         }
     }
 

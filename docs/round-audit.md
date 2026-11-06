@@ -56,7 +56,7 @@ together they make each round's changes answer to the rules below.
    runtime code; an ignored, should_panic or compiled-out test; a lint
    suppression (allow or expect, cfg_attr forms, crate-level forms, and
    allowances in Cargo.toml or .cargo); more tests or assertions removed
-   than added (the comparison helpers such as `assert_same` counted); a
+   than added (every `assert_*` helper counted, `assert_same` among them); a
    trivially true assertion. Review findings list process spawning (exec
    and posix_spawn included), dropped results, fallback wording, new
    process- or interpreter-wide state, oracle mentions, embedded file
