@@ -986,8 +986,7 @@ impl Interpreter {
                 }
             }
             "iso-2022" => {
-                let full_support =
-                    matches!(charset_list.kind(), Kind::Symbol(name) if name.is_named("iso-2022"));
+                let full_support = crate::lisp::types::eq_symbol_named(charset_list, "iso-2022");
                 let flags = type_args
                     .get(3)
                     .and_then(|flags| flags.integer_value())

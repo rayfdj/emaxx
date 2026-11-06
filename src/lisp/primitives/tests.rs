@@ -9487,11 +9487,20 @@ fn file_name_path_helpers_match_core_unix_cases() {
     assert_eq!(directory_file_name("///"), "/");
     assert_eq!(directory_file_name("/abc/"), "/abc");
 
-    assert_eq!(file_name_concat(&["foo".into(), "bar".into()]), "foo/bar");
-    assert_eq!(file_name_concat(&["foo/".into(), "bar".into()]), "foo/bar");
-    assert_eq!(
-        file_name_concat(&["foo//".into(), "bar".into()]),
-        "foo//bar"
+    assert_oracle_contract_matches_interpreter(
+        r#"(file-name-concat "foo" "bar")"#,
+        r#""foo/bar""#,
+        "file-name-concat",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(file-name-concat "foo/" "bar")"#,
+        r#""foo/bar""#,
+        "file-name-concat after a slash",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(file-name-concat "foo//" "bar")"#,
+        r#""foo//bar""#,
+        "file-name-concat after two slashes",
     );
     assert_eq!(expand_file_name("/abc/", None), "/abc/");
     assert_eq!(expand_file_name("abc/", Some("/tmp/")), "/tmp/abc/");
@@ -12606,7 +12615,10 @@ fn make_process_nil_or_omitted_connection_type_uses_the_dynamic_default() {
 #[test]
 fn make_process_accepts_nil_coding_like_emacs() {
     let _permit = crate::test_support::acquire_exclusive_host_test_permit();
-    let program = r#"(let* ((default-directory temporary-file-directory)
+    // The early-Lisp interpreter has no files.el, so its
+    // `temporary-file-directory' is nil, and get_current_directory, as in
+    // GNU, refuses a nil `default-directory' (`stringp nil').
+    let program = r#"(let* ((default-directory (or temporary-file-directory "/tmp/"))
                             (process
                              (make-process
                               :name "nil-coding"
@@ -22443,24 +22455,23 @@ fn key_description_matches_upstream_string_and_vector_cases() {
 }
 
 #[test]
-fn key_sequence_binding_parts_preserve_control_prefixes() {
-    assert_eq!(
-        key_sequence_binding_parts(&Value::String("\x03,\x17".into()))
-            .expect("raw control-byte key sequence should parse"),
-        vec!["C-c".to_string(), ",".to_string(), "C-w".to_string()]
+fn key_description_preserves_control_prefixes() {
+    // Fkey_description, the one key-description text (describe-vector's
+    // keys included): Emaxx's answer and GNU's.
+    assert_oracle_contract_matches_interpreter(
+        r#"(key-description "\x03,\x17")"#,
+        r#""C-c , C-w""#,
+        "control bytes in a string key",
     );
-    assert_eq!(
-        key_sequence_binding_parts(&Value::String("C-c g".into()))
-            .expect("raw strings should remain raw key sequences"),
-        vec!["C", "-", "c", "SPC", "g"]
+    assert_oracle_contract_matches_interpreter(
+        r#"(key-description "C-c g")"#,
+        r#""C - c SPC g""#,
+        "a string's characters as keys",
     );
-    assert_eq!(
-        key_sequence_binding_parts(&Value::vector([
-            Value::Integer(3),
-            Value::Integer('g' as i64),
-        ]))
-        .expect("vector control-prefixed key should parse"),
-        vec!["C-c".to_string(), "g".to_string()]
+    assert_oracle_contract_matches_interpreter(
+        r#"(key-description [3 ?g])"#,
+        r#""C-c g""#,
+        "a vector key",
     );
 }
 
@@ -27166,7 +27177,9 @@ fn native_datagram_addresses_track_udp_peer_state_and_contact_metadata() {
 
 #[test]
 fn native_network_socket_errors_preserve_gnu_file_conditions() {
+    let interp = Interpreter::new();
     let server = crate::lisp::eval::error_condition_value(&processes::network_server_error(
+        &interp,
         &std::io::Error::from_raw_os_error(libc::EPERM),
     ))
     .to_vec()
@@ -27181,6 +27194,7 @@ fn native_network_socket_errors_preserve_gnu_file_conditions() {
 
     let args = [Value::symbol(":name"), Value::string("probe")];
     let client = crate::lisp::eval::error_condition_value(&processes::network_client_error(
+        &interp,
         &std::io::Error::from_raw_os_error(libc::ENOENT),
         &args,
     ))

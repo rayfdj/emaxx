@@ -106,6 +106,7 @@ fn system_time_to_timespec(time: SystemTime) -> libc::timespec {
 }
 
 pub(crate) fn set_file_times_path(
+    interp: &Interpreter,
     absname: Value,
     host: &Path,
     modified: SystemTime,
@@ -132,7 +133,12 @@ pub(crate) fn set_file_times_path(
             Ok(())
         } else {
             let error = std::io::Error::last_os_error();
-            Err(report_file_errno("Setting file times", absname, &error))
+            Err(report_file_errno(
+                interp,
+                "Setting file times",
+                absname,
+                &error,
+            ))
         }
     }
     #[cfg(not(unix))]
@@ -140,7 +146,7 @@ pub(crate) fn set_file_times_path(
         let _ = (modified, nofollow);
         fs::metadata(host)
             .map(|_| ())
-            .map_err(|error| report_file_errno("Setting file times", absname, &error))
+            .map_err(|error| report_file_errno(interp, "Setting file times", absname, &error))
     }
 }
 
@@ -159,29 +165,6 @@ pub(crate) fn file_error_with_detail_value(message: &str, detail: &str, path: &s
         Value::String(detail.into()),
         Value::String(path.into()),
     ])
-}
-
-/// fileio.c get_file_errno_data: `(CONDITION MESSAGE ERRSTRING FILE)',
-/// except that EEXIST's `file-already-exists' drops MESSAGE.
-pub(crate) fn file_operation_error_value(
-    message: &str,
-    error: &std::io::Error,
-    path: &str,
-) -> Value {
-    file_errno_data(message, error, &[path])
-}
-
-/// get_file_errno_data with FILES as the data's list of names (list2
-/// (FILE, NEWNAME) for the two-name primitives).
-fn file_errno_data(message: &str, error: &std::io::Error, files: &[&str]) -> Value {
-    let condition = file_error_condition(error);
-    let mut data = vec![Value::Symbol(condition.into())];
-    if condition != "file-already-exists" {
-        data.push(Value::String(message.into()));
-    }
-    data.push(Value::String(errno_text(error).into()));
-    data.extend(files.iter().map(|file| Value::String((*file).into())));
-    Value::list(data)
 }
 
 /// fileio.c barf_or_query_if_file_exists.  ABSNAME, unless KNOWN_TO_EXIST
@@ -237,8 +220,9 @@ pub(crate) fn barf_or_query_if_file_exists(
         Value::string(absname),
     ])))
 }
-/// fileio.c report_file_errno: EEXIST, ENOENT/ENOTDIR and EACCES have their
-/// own conditions; every other errno is a plain `file-error'.
+/// fileio.c get_file_errno_data: EEXIST, ENOENT and EACCES have their own
+/// conditions; every other errno (ENOTDIR included) is a plain
+/// `file-error'.
 pub(crate) fn file_error_condition(error: &std::io::Error) -> &'static str {
     match error.kind() {
         ErrorKind::NotFound => "file-missing",
@@ -257,51 +241,141 @@ pub(crate) fn errno_text(error: &std::io::Error) -> String {
         .to_string()
 }
 
-/// `report_file_errno' with an explicit errno, for callers such as openp
-/// that carry the number rather than an `io::Error'.
-pub(crate) fn file_errno_error_value(message: &str, errno: i32, path: &str) -> Value {
-    file_operation_error_value(message, &std::io::Error::from_raw_os_error(errno), path)
-}
-
 /// `report_file_errno (MESSAGE, Qnil, errno)': the data names no file, so it
 /// is just the message and the errno text.
 pub(crate) fn file_operation_error_value_without_file(
+    interp: &Interpreter,
     message: &str,
     error: &std::io::Error,
-) -> Value {
-    let condition = file_error_condition(error);
-    let errstring = Value::String(errno_text(error).into());
-    if condition == "file-already-exists" {
-        return Value::list([Value::Symbol(condition.into()), errstring]);
-    }
-    Value::list([
-        Value::Symbol(condition.into()),
-        Value::String(message.into()),
-        errstring,
-    ])
+) -> LispError {
+    report_file_errno_files(interp, message, &[], error)
 }
 
 /// fileio.c:report_file_errno with the Lisp file name FILE as given:
 /// get_file_errno_data's `(CONDITION MESSAGE ERRSTRING FILE)', EEXIST's
 /// `file-already-exists' without MESSAGE.
-pub(crate) fn report_file_errno(message: &str, file: Value, error: &std::io::Error) -> LispError {
-    report_file_errno_files(message, &[file], error)
+pub(crate) fn report_file_errno(
+    interp: &Interpreter,
+    message: &str,
+    file: Value,
+    error: &std::io::Error,
+) -> LispError {
+    // get_file_errno_data: CONSP (name) || NILP (name) ? name : list1 (name).
+    if file.is_nil() {
+        return report_file_errno_files(interp, message, &[], error);
+    }
+    if file.is_cons() {
+        let mut files = Vec::new();
+        let mut tail = file;
+        while let Some((name, rest)) = tail.cons_values() {
+            files.push(name);
+            tail = rest;
+        }
+        // A dotted tail stays the list's.
+        if !tail.is_nil() {
+            return report_file_errno_list(interp, message, file, error);
+        }
+        return report_file_errno_files(interp, message, &files, error);
+    }
+    report_file_errno_files(interp, message, &[file], error)
+}
+
+/// get_file_errno_data with NAME a cons other than a proper list: the
+/// list itself is the tail of the data.
+fn report_file_errno_list(
+    interp: &Interpreter,
+    message: &str,
+    name: Value,
+    error: &std::io::Error,
+) -> LispError {
+    let errstring = match errno_string(interp, error) {
+        Ok(errstring) => errstring,
+        Err(error) => return error,
+    };
+    let condition = file_error_condition(error);
+    let errdata = Value::cons(errstring, name);
+    LispError::SignalValue(if condition == "file-already-exists" {
+        Value::cons(Value::symbol(condition), errdata)
+    } else {
+        Value::cons(
+            Value::symbol(condition),
+            Value::cons(Value::string(message), errdata),
+        )
+    })
+}
+
+/// get_file_errno_data's ERRSTRING: emacs_strerror's text through
+/// code_convert_string_norecord with `locale-coding-system' and a string
+/// destination.  There a nil coding system is `no-conversion' and another
+/// passes CHECK_CODING_SYSTEM, which signals; an ASCII text whose coding
+/// system is ASCII-compatible (and has no CR to convert) is copied as a
+/// multibyte string, and any other text is decoded, `no-conversion'
+/// making it unibyte.  The error of a bad coding system is the error
+/// report_file_errno signals.
+pub(crate) fn errno_string(
+    interp: &Interpreter,
+    error: &std::io::Error,
+) -> Result<Value, LispError> {
+    let text = errno_text(error);
+    let locale = interp
+        .forwarded_c_value_key(cached_symbol!("locale-coding-system"))
+        .unwrap_or(Value::Nil);
+    let coding = if locale.is_nil() {
+        "no-conversion".to_string()
+    } else {
+        crate::lisp::primitives::coding::checked_coding_name(interp, &locale)?
+            .unwrap_or_else(|| "no-conversion".to_string())
+    };
+    let ascii_compatible =
+        coding_attr(interp, coding.as_str(), ":ascii-compatible-p").is_some_and(|v| v.is_truthy());
+    if ascii_compatible && text.is_ascii() && !text.contains('\r') {
+        return crate::lisp::primitives::strings::make_specified_string(text.into_bytes(), true)
+            .map_err(|error| {
+                crate::lisp::primitives::strings::string_storage_error_shared(interp, error)
+            });
+    }
+    let mut decoded = crate::lisp::primitives::coding::decode_text_bytes_annotated(
+        interp,
+        text.as_bytes(),
+        &coding,
+    )?;
+    let for_unibyte =
+        coding_attr(interp, coding.as_str(), ":for-unibyte").is_some_and(|v| v.is_truthy());
+    // strerror's text holds no line end or composition, so it is one
+    // decoder insertion with no layout to rebuild in the work buffer.
+    let _layout = decoded.take_layout();
+    let props = crate::lisp::primitives::coding::decoded_annotation_props(&mut decoded);
+    Ok(
+        crate::lisp::primitives::strings::make_shared_string_value_with_extended_chars(
+            decoded.text,
+            props,
+            !for_unibyte,
+            decoded.extended,
+        ),
+    )
 }
 
 /// fileio.c:report_file_errno with NAME a list of the Lisp file names
 /// FILES as given, as `list2 (file, newname)' for the two-name
 /// primitives.
 pub(crate) fn report_file_errno_files(
+    interp: &Interpreter,
     message: &str,
     files: &[Value],
     error: &std::io::Error,
 ) -> LispError {
+    // ERRSTRING first, as get_file_errno_data makes it before the data
+    // around it: nothing it allocates is held only by a Rust vector.
+    let errstring = match errno_string(interp, error) {
+        Ok(errstring) => errstring,
+        Err(error) => return error,
+    };
     let condition = file_error_condition(error);
     let mut data = vec![Value::symbol(condition)];
     if condition != "file-already-exists" {
         data.push(Value::string(message));
     }
-    data.push(Value::String(errno_text(error).into()));
+    data.push(errstring);
     data.extend_from_slice(files);
     LispError::SignalValue(Value::list(data))
 }
@@ -310,10 +384,15 @@ pub(crate) fn report_file_errno_files(
 /// bytes up to the first NUL made a string again by build_string, FILE
 /// as given.
 pub(crate) fn report_file_errno_sdata(
+    interp: &Interpreter,
     string: &Value,
     file: Value,
     error: &std::io::Error,
 ) -> LispError {
+    let errstring = match errno_string(interp, error) {
+        Ok(errstring) => errstring,
+        Err(error) => return error,
+    };
     let condition = file_error_condition(error);
     let mut data = vec![Value::symbol(condition)];
     if condition != "file-already-exists" {
@@ -326,133 +405,224 @@ pub(crate) fn report_file_errno_sdata(
             .position(|&byte| byte == 0)
             .unwrap_or(bytes.len());
         data.push(
-            crate::lisp::primitives::strings::make_string(bytes[..end].to_vec())
-                .unwrap_or_else(|_| Value::string("")),
+            match crate::lisp::primitives::strings::make_string(bytes[..end].to_vec()) {
+                Ok(message) => message,
+                Err(error) => {
+                    return crate::lisp::primitives::strings::string_storage_error_shared(
+                        interp, error,
+                    );
+                }
+            },
         );
     }
-    data.push(Value::String(errno_text(error).into()));
-    data.push(file);
+    data.push(errstring);
+    // A nil FILE names no file (get_file_errno_data).
+    if !file.is_nil() {
+        data.push(file);
+    }
     LispError::SignalValue(Value::list(data))
 }
 
 /// fileio.c:file_metadata_errno: nil for ENOENT, ENOTDIR (and no error),
 /// otherwise report_file_errno (ACTION, FILE, ERR).
 pub(crate) fn file_metadata_errno(
+    interp: &Interpreter,
     action: &str,
     file: Value,
     error: &std::io::Error,
 ) -> Result<Value, LispError> {
     match error.raw_os_error() {
         Some(0 | libc::ENOENT | libc::ENOTDIR) => Ok(Value::Nil),
-        _ => Err(report_file_errno(action, file, error)),
+        _ => Err(report_file_errno(interp, action, file, error)),
     }
 }
 
-pub(crate) fn file_operation_error(message: &str, error: &std::io::Error, path: &str) -> LispError {
-    LispError::SignalValue(file_operation_error_value(message, error, path))
+pub(crate) fn file_operation_error(
+    interp: &Interpreter,
+    message: &str,
+    error: &std::io::Error,
+    path: &str,
+) -> LispError {
+    report_file_errno(interp, message, Value::string(path), error)
 }
 
+/// fileio.c Fmake_temp_file_internal past its CHECK_STRINGs: the
+/// ENCODE_FILE'd PREFIX, "XXXXXX" and the ENCODE_FILE'd SUFFIX in a new
+/// unibyte string, which gen_tempname fills in, creating the file (DIR-FLAG
+/// nil), the directory (DIR-FLAG otherwise) or nothing (DIR-FLAG 0); its
+/// DECODE_FILE, into which a nonempty TEXT is written.  A failure is
+/// report_file_error with the kind's message, naming PREFIX.
 pub(crate) fn make_temp_file_internal(
     interp: &mut Interpreter,
     env: &mut Env,
-    prefix: &str,
+    prefix: Value,
     dir_flag: &Value,
-    suffix: &str,
+    suffix: Value,
     text: Option<&Value>,
-) -> Result<String, LispError> {
-    // fileio.c Fmake_temp_file_internal -> gen_tempname: PREFIX plus the
-    // six-character [a-zA-Z0-9] segment plus SUFFIX, retried on collision;
-    // the entry is created atomically (O_EXCL file / mkdir) unless
-    // DIR-FLAG is 0, which only names it.
-    let mut last = String::new();
-    for _ in 0..62 * 62 {
-        let path = format!(
-            "{prefix}{}{suffix}",
-            crate::lisp::primitives::coding::random_temp_suffix()
-        );
-        let candidate = host_file_name(interp, env, &path)?;
-        last = path;
-        if matches!(dir_flag.kind(), Kind::Integer(0)) {
-            if candidate.exists() {
-                continue;
-            }
-            return Ok(last);
-        }
-        if dir_flag.is_nil() {
-            // gen_tempname opens with S_IRUSR | S_IWUSR (the umask still
-            // applies), and makes a directory with 0700.
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            match options.open(&candidate) {
-                Ok(mut file) => {
-                    // write_region of a nonempty TEXT into the descriptor
-                    // made, under the file's name: its coding chosen and
-                    // recorded as for any write, no lock taken.
-                    if let Some(text) = text.copied()
-                        && string_like(&text).is_some_and(|string| !string.text.is_empty())
-                    {
-                        let args = [
-                            text,
-                            Value::Nil,
-                            Value::string(&last),
-                            Value::Nil,
-                            Value::Nil,
-                            Value::Nil,
-                            Value::Nil,
-                        ];
-                        let saved = interp.save_restriction_state();
-                        interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
-                        let written = write_region_with_coding(
-                            interp,
-                            &args,
-                            &last,
-                            false,
-                            &last,
-                            None,
-                            Some(&mut file),
-                            env,
-                        );
-                        interp.restore_restriction_state(saved);
-                        written?;
-                    }
-                    return Ok(last);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                // Fmake_temp_file_internal: report_file_error with the
-                // kind's message and PREFIX as the file.
-                Err(error) => {
-                    return Err(LispError::SignalValue(file_operation_error_value(
-                        "Creating file with prefix",
-                        &error,
-                        prefix,
-                    )));
-                }
-            }
-        }
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
+) -> Result<Value, LispError> {
+    let encoded_prefix = super::system::encode_file_value(interp, env, prefix)?;
+    let encoded_suffix = super::system::encode_file_value(interp, env, suffix)?;
+    let kind = if dir_flag.is_nil() {
+        TempKind::File
+    } else if matches!(dir_flag.kind(), Kind::Integer(0)) {
+        TempKind::NoCreate
+    } else {
+        TempKind::Dir
+    };
+    let mut template = sdata_c_string(&encoded_prefix);
+    let start = template.len();
+    template.extend_from_slice(b"XXXXXX");
+    template.extend_from_slice(&sdata_c_string(&encoded_suffix));
+    let message = match kind {
+        TempKind::File => "Creating file with prefix",
+        TempKind::Dir => "Creating directory with prefix",
+        TempKind::NoCreate => "Creating file name with prefix",
+    };
+    let file = gen_tempname(&mut template, start, kind)
+        .map_err(|error| report_file_errno(interp, message, prefix, &error))?;
+    let val = super::make_specified_string(template, false)
+        .map_err(|error| super::string_storage_error(interp, env, error))?;
+    let val = super::system::decode_file_value(interp, env, val)?;
+    // gen_tempname's descriptor is 0 for GT_DIR and GT_NOCREATE, and
+    // GNU's write_region of a TEXT then writes to the standard input (a
+    // "Write error" when it is read-only).  Emaxx does not write a TEXT
+    // given with a non-nil DIR-FLAG: writing into the process's standard
+    // input is a GNU defect, not a behavior a caller relies on.
+    let Some(mut file) = file else {
+        return Ok(val);
+    };
+    // write_region (text, Qnil, val, Qnil, Qnil, Qnil, Qnil, fd) of a
+    // nonempty TEXT: FILENAME Fexpand_file_name'd; its `write-region'
+    // handler, if any, writes it by name (call8, LOCKNAME the file);
+    // otherwise the descriptor made takes it, the coding chosen and
+    // recorded as for any write, no lock taken.
+    if let Some(text) = text.copied()
+        && string_like(&text).is_some_and(|string| !string.text.is_empty())
+    {
+        let filename = super::system::fexpand_file_name(interp, env, val, Value::Nil)?;
+        let name = string_text(&filename)?;
+        let operation = Value::symbol("write-region");
+        if let Some(handler) = super::system::find_file_name_handler(interp, env, &name, operation)?
         {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        match builder.create(&candidate) {
-            Ok(()) => return Ok(last),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(LispError::SignalValue(file_operation_error_value(
-                    "Creating directory with prefix",
-                    &error,
-                    prefix,
-                )));
-            }
+            interp.call_function_value(
+                handler,
+                None,
+                &[
+                    operation,
+                    text,
+                    Value::Nil,
+                    filename,
+                    Value::Nil,
+                    Value::Nil,
+                    filename,
+                    Value::Nil,
+                ],
+                env,
+            )?;
+        } else {
+            let args = [
+                text,
+                Value::Nil,
+                filename,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ];
+            let saved = interp.save_restriction_state();
+            interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
+            let written = write_region_with_coding(
+                interp,
+                &args,
+                &name,
+                false,
+                &name,
+                None,
+                Some(&mut file),
+                env,
+            );
+            interp.restore_restriction_state(saved);
+            written?;
         }
     }
-    Ok(last)
+    // failed = NILP (dir_flag) && emacs_close (fd) != 0.
+    #[cfg(unix)]
+    {
+        use std::os::fd::IntoRawFd;
+        // SAFETY: the descriptor was just released from FILE and is closed
+        // exactly once.
+        if unsafe { libc::close(file.into_raw_fd()) } != 0 {
+            return Err(report_file_errno(
+                interp,
+                message,
+                prefix,
+                &std::io::Error::last_os_error(),
+            ));
+        }
+    }
+    Ok(val)
+}
+
+/// gen_tempname's KIND.
+#[derive(Clone, Copy)]
+enum TempKind {
+    File,
+    Dir,
+    NoCreate,
+}
+
+/// tempname.c gen_tempname_len with six X's at START in TEMPLATE: up to
+/// 62**3 names tried (ATTEMPTS_MIN, glibc's TMP_MAX), each made by the
+/// kind's try function -- try_file's O_RDWR | O_CREAT | O_EXCL open with
+/// S_IRUSR | S_IWUSR (close-on-exec), try_dir's mkdir with 0700,
+/// try_nocreate's lstat, where an existing name (or EOVERFLOW) is EEXIST
+/// and only ENOENT is success.  A failure other than EEXIST is final;
+/// running out of names is EEXIST.  The file made, for GT_FILE.
+fn gen_tempname(
+    template: &mut [u8],
+    start: usize,
+    kind: TempKind,
+) -> std::io::Result<Option<fs::File>> {
+    for _ in 0..62 * 62 * 62 {
+        let letters = crate::lisp::primitives::coding::random_temp_suffix();
+        template[start..start + 6].copy_from_slice(letters.as_bytes());
+        let path = {
+            use std::os::unix::ffi::OsStrExt;
+            Path::new(std::ffi::OsStr::from_bytes(template))
+        };
+        let attempt = match kind {
+            TempKind::File => {
+                use std::os::unix::fs::OpenOptionsExt;
+                fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(path)
+                    .map(Some)
+            }
+            TempKind::Dir => {
+                use std::os::unix::fs::DirBuilderExt;
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(path)
+                    .map(|()| None)
+            }
+            TempKind::NoCreate => match fs::symlink_metadata(path) {
+                Ok(_) => Err(std::io::Error::from_raw_os_error(libc::EEXIST)),
+                Err(error) => match error.raw_os_error() {
+                    Some(libc::ENOENT) => Ok(None),
+                    Some(libc::EOVERFLOW) => Err(std::io::Error::from_raw_os_error(libc::EEXIST)),
+                    _ => Err(error),
+                },
+            },
+        };
+        match attempt {
+            Err(error) if error.raw_os_error() == Some(libc::EEXIST) => continue,
+            result => return result,
+        }
+    }
+    Err(std::io::Error::from_raw_os_error(libc::EEXIST))
 }
 
 /// buffer.h BUF_BYTES_MAX: the most bytes a buffer holds.
@@ -606,6 +776,7 @@ pub(crate) struct InsertFileRead {
 
 impl InsertFileSource {
     pub(crate) fn examine(
+        interp: &Interpreter,
         mut file: fs::File,
         filename: Value,
         replace: Option<&Value>,
@@ -615,7 +786,7 @@ impl InsertFileSource {
         use std::io::Seek;
         let metadata = file
             .metadata()
-            .map_err(|error| report_file_errno("Input file status", filename, &error))?;
+            .map_err(|error| report_file_errno(interp, "Input file status", filename, &error))?;
         let regular = metadata.is_file() || metadata.is_dir();
         let mut seekable = true;
         if !regular {
@@ -699,7 +870,9 @@ impl InsertFileSource {
         if self.beg != 0 || replace {
             self.file
                 .seek(SeekFrom::Start(self.beg as u64))
-                .map_err(|error| report_file_errno("Setting file position", filename, &error))?;
+                .map_err(|error| {
+                    report_file_errno(interp, "Setting file position", filename, &error)
+                })?;
         }
         let limit = (self.seekable || self.end_given).then(|| self.total.max(0) as u64);
         // Room for what a regular file holds past BEG, each read going
@@ -1060,7 +1233,7 @@ fn encode_region_for_write(
     let selective_display = !args[0].is_string()
         && interp
             .lookup_var_key(cached_symbol!("selective-display"), env)
-            .is_some_and(|value| value.eq_value(Value::T));
+            .is_some_and(|value| crate::lisp::types::eq(value, Value::T));
     let source = if let Some(string) = string_like(&args[0]) {
         string
     } else {
@@ -1146,7 +1319,7 @@ fn write_region_with_coding(
     let selective_display = !selected_args[0].is_string()
         && interp
             .lookup_var_key(cached_symbol!("selective-display"), env)
-            .is_some_and(|value| value.eq_value(Value::T));
+            .is_some_and(|value| crate::lisp::types::eq(value, Value::T));
     let source = if let Some(string) = string_like(&selected_args[0]) {
         string
     } else {
@@ -1220,7 +1393,7 @@ fn write_region_with_coding(
         if let Some(file) = descriptor.as_deref_mut() {
             opened = true;
             return emacs_write_quit(interp, env, file, &bytes)?
-                .map_err(|error| report_file_errno("Write error", filename, &error));
+                .map_err(|error| report_file_errno(interp, "Write error", filename, &error));
         }
         let exclusive = args[6].is_key(cached_symbol!("excl"));
         // An auto-save file is made with auto_save_mode_bits.
@@ -1250,21 +1423,21 @@ fn write_region_with_coding(
             flags |= libc::O_APPEND;
         }
         let mut file = emacs_open(interp, env, &host, flags, mode)?
-            .map_err(|error| report_file_errno("Opening output file", filename, &error))?;
+            .map_err(|error| report_file_errno(interp, "Opening output file", filename, &error))?;
         opened = true;
         if let Some(offset) = offset {
             file.seek(SeekFrom::Start(offset as u64))
-                .map_err(|error| report_file_errno("Lseek error", filename, &error))?;
+                .map_err(|error| report_file_errno(interp, "Lseek error", filename, &error))?;
         }
         emacs_write_quit(interp, env, &mut file, &bytes)?
-            .map_err(|error| report_file_errno("Write error", filename, &error))?;
+            .map_err(|error| report_file_errno(interp, "Write error", filename, &error))?;
         // NFS can report a write failure at the close.
         let fd = file.into_raw_fd();
         // SAFETY: the descriptor was just released by its File.
         if unsafe { libc::close(fd) } < 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() != ErrorKind::Interrupted {
-                return Err(report_file_errno("Write error", filename, &error));
+                return Err(report_file_errno(interp, "Write error", filename, &error));
             }
         }
         Ok(())
@@ -1441,21 +1614,18 @@ pub(crate) fn redirect_debugging_output(
     use std::sync::atomic::Ordering;
     // fileio.c report_file_error: the errno's condition and text, then
     // the file when there is one.
-    let report = |operation: &str, file: Value| {
+    let report = |interp: &Interpreter, operation: &str, file: Value| {
         let error = std::io::Error::last_os_error();
-        LispError::SignalValue(match string_like(&file) {
-            Some(name) => file_operation_error_value(operation, &error, &name.text),
-            None => file_operation_error_value_without_file(operation, &error),
-        })
+        if file.is_string() {
+            report_file_errno(interp, operation, file, &error)
+        } else {
+            report_file_errno_files(interp, operation, &[], &error)
+        }
     };
     let mut fd = STDERR_DUP.load(Ordering::Relaxed);
     let mut file = *file;
     if !file.is_nil() {
-        let name = string_like(&file)
-            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), file))?
-            .text;
-        let expanded = super::system::expand_file_name_runtime(interp, env, &name, None)?;
-        file = Value::string(&expanded);
+        file = super::system::fexpand_file_name(interp, env, file, Value::Nil)?;
         if fd == libc::STDERR_FILENO {
             // SAFETY: fcntl on the process's own stderr descriptor.
             let n = unsafe {
@@ -1466,12 +1636,14 @@ pub(crate) fn redirect_debugging_output(
                 )
             };
             if n < 0 {
-                return Err(report("dup", file));
+                return Err(report(interp, "dup", file));
             }
             STDERR_DUP.store(n, Ordering::Relaxed);
         }
-        let path = std::ffi::CString::new(expanded.as_bytes())
-            .map_err(|_| LispError::WrongTypeArgument("filenamep".into(), file))?;
+        // SSDATA (ENCODE_FILE (file)): ENCODE_FILE rejects a NUL.
+        let encoded = super::system::encode_file_value(interp, env, file)?;
+        let path = std::ffi::CString::new(super::sdata_c_string(&encoded))
+            .expect("ENCODE_FILE leaves no NUL");
         let flags = libc::O_WRONLY
             | libc::O_CREAT
             | if append {
@@ -1482,13 +1654,13 @@ pub(crate) fn redirect_debugging_output(
         // SAFETY: PATH is a NUL-terminated name.
         fd = unsafe { libc::open(path.as_ptr(), flags | libc::O_CLOEXEC, 0o666) };
         if fd < 0 {
-            return Err(report("Cannot open debugging output stream", file));
+            return Err(report(interp, "Cannot open debugging output stream", file));
         }
     }
     let _ = std::io::stderr().lock().flush();
     // SAFETY: FD is open; dup2 replaces the stderr descriptor.
     if unsafe { libc::dup2(fd, libc::STDERR_FILENO) } < 0 {
-        return Err(report("dup2", file));
+        return Err(report(interp, "dup2", file));
     }
     if fd != STDERR_DUP.load(Ordering::Relaxed) {
         // SAFETY: FD was opened above and is no longer needed.
@@ -1947,6 +2119,7 @@ fn auto_coding_for_file(
     env: &Env,
     bytes: &[u8],
     filename: &str,
+    filename_value: Value,
     decided_bytes: &mut Option<Vec<u8>>,
 ) -> Result<Option<String>, LispError> {
     let Some(function) = interp
@@ -1962,7 +2135,7 @@ fn auto_coding_for_file(
         auto_coding_in_empty_buffer(interp, env, function, bytes, filename, decided_bytes)?
     } else {
         let host = host_file_name(interp, env, filename)?;
-        let Some(head_and_tail) = auto_coding_file_sample(filename, &host)? else {
+        let Some(head_and_tail) = auto_coding_file_sample(interp, filename_value, &host)? else {
             return Ok(None);
         };
         auto_coding_in_work_buffer(interp, env, function, &head_and_tail, filename)?
@@ -1974,11 +2147,14 @@ fn auto_coding_for_file(
 /// buffer holding text: none for a file that is not regular, all of one
 /// of 4K or less, else its first 1K and what a read of 3K after
 /// `lseek (fd, st_size - 3K, SEEK_CUR)' finds.
-fn auto_coding_file_sample(path: &str, host: &Path) -> Result<Option<Vec<u8>>, LispError> {
+fn auto_coding_file_sample(
+    interp: &Interpreter,
+    filename: Value,
+    host: &Path,
+) -> Result<Option<Vec<u8>>, LispError> {
     use std::io::{Seek, SeekFrom};
-    let read_error = |error: std::io::Error| {
-        LispError::SignalValue(file_operation_error_value("Read error", &error, path))
-    };
+    let read_error =
+        |error: std::io::Error| report_file_errno(interp, "Read error", filename, &error);
     let Ok(metadata) = fs::metadata(host) else {
         return Ok(None);
     };
@@ -2000,7 +2176,9 @@ fn auto_coding_file_sample(path: &str, host: &Path) -> Result<Option<Vec<u8>>, L
             .map_err(read_error)?;
         if sample.len() == 1024 {
             file.seek(SeekFrom::Current((size - 3072) as i64))
-                .map_err(|error| file_operation_error("Setting file position", &error, path))?;
+                .map_err(|error| {
+                    report_file_errno(interp, "Setting file position", filename, &error)
+                })?;
             file.take(3072)
                 .read_to_end(&mut sample)
                 .map_err(read_error)?;
@@ -2238,7 +2416,10 @@ pub(crate) fn decide_file_coding(
     let buffer_was_empty = interp.buffer.borrow().size_total() == 0;
     let mut decided_bytes = None;
     if coding.is_none() {
-        coding = auto_coding_for_file(interp, env, bytes, path, &mut decided_bytes)?;
+        // FILENAME, insert-file-contents' first argument, names a read
+        // error.
+        let filename = operation_args.first().copied().unwrap_or(Value::Nil);
+        coding = auto_coding_for_file(interp, env, bytes, path, filename, &mut decided_bytes)?;
     }
     if coding.is_none() {
         let mut operation_env = env.clone();
@@ -2368,6 +2549,7 @@ fn record_visit(
     interp: &mut Interpreter,
     env: &mut Env,
     filename: Value,
+    encoded_filename: Value,
     empty_undo_list_p: bool,
 ) -> Result<(), LispError> {
     if empty_undo_list_p {
@@ -2381,7 +2563,9 @@ fn record_visit(
     {
         super::call(interp, "unlock-file", &[truename], env)?;
     }
-    super::call(interp, "unlock-file", &[filename], env)?;
+    // Funlock_file (filename): the name Finsert_file_contents ENCODE_FILEd
+    // before its open, not orig_filename, nor a new encoding.
+    super::call(interp, "unlock-file", &[encoded_filename], env)?;
     Ok(())
 }
 
@@ -2443,16 +2627,21 @@ pub(crate) fn insert_file_contents(
         args.get(4).copied().unwrap_or(Value::Nil),
     ];
     let mut open_failure = crate::buffer::ModtimeStamp::Unknown;
-    // fileio.c:Finsert_file_contents' emacs_open (O_RDONLY).
-    let opened = match host_file_name(interp, env, &path) {
-        Ok(host) => match emacs_open(interp, env, &host, libc::O_RDONLY, 0)? {
-            Ok(file) => Ok(file),
-            Err(error) => {
-                open_failure = time_error_value(&error);
-                Err(report_file_errno("Opening input file", args[0], &error))
-            }
-        },
-        Err(error) => Err(error),
+    // orig_filename = filename; filename = ENCODE_FILE (filename), the name
+    // emacs_open (O_RDONLY) opens and Funlock_file later unlocks.
+    let encoded_filename = super::system::encode_file_value(interp, env, args[0])?;
+    let host = super::system::encoded_host_path(&encoded_filename);
+    let opened = match emacs_open(interp, env, &host, libc::O_RDONLY, 0)? {
+        Ok(file) => Ok(file),
+        Err(error) => {
+            open_failure = time_error_value(&error);
+            Err(report_file_errno(
+                interp,
+                "Opening input file",
+                args[0],
+                &error,
+            ))
+        }
     };
     let file = match opened {
         Ok(file) => file,
@@ -2487,7 +2676,7 @@ pub(crate) fn insert_file_contents(
                     stamp: open_failure,
                     size: -1,
                 });
-            record_visit(interp, env, args[0], empty_undo_list_p)?;
+            record_visit(interp, env, args[0], encoded_filename, empty_undo_list_p)?;
             set_last_coding_system_used(interp, &coding, env);
             finish_insert_file_contents(interp, env, 0, &args[1..], empty_undo_list_p)?;
             return Err(error);
@@ -2503,7 +2692,7 @@ pub(crate) fn insert_file_contents(
                 size: metadata.len() as i64,
             })
         })
-        .map_err(|error| report_file_errno("Input file status", args[0], &error))?;
+        .map_err(|error| report_file_errno(interp, "Input file status", args[0], &error))?;
     // Replacement preserves point as it preserves markers
     // (get_window_points_and_markers): a marker at point that the change
     // moves and restore_window_points places, and point goes there at the
@@ -2518,7 +2707,8 @@ pub(crate) fn insert_file_contents(
         marker
     });
     let read_file = |interp: &mut Interpreter, env: &mut Env| -> Result<Value, LispError> {
-        let source = InsertFileSource::examine(file, args[0], replace_arg.as_ref(), beg, end)?;
+        let source =
+            InsertFileSource::examine(interp, file, args[0], replace_arg.as_ref(), beg, end)?;
         {
             let buffer = interp.buffer.borrow();
             let kept = buffer.size_total()
@@ -2536,7 +2726,7 @@ pub(crate) fn insert_file_contents(
         let (coding_used, inserted_chars) = if replace {
             let read = source.read(interp, env, args[0], true)?;
             if let Some(error) = read.error {
-                return Err(report_file_errno("Read error", args[0], &error));
+                return Err(report_file_errno(interp, "Read error", args[0], &error));
             }
             replace_file_contents(
                 interp,
@@ -2566,7 +2756,7 @@ pub(crate) fn insert_file_contents(
                 .buffer
                 .borrow_mut()
                 .set_visited_file_modtime(opened_modtime);
-            record_visit(interp, env, args[0], empty_undo_list_p)?;
+            record_visit(interp, env, args[0], encoded_filename, empty_undo_list_p)?;
             if !regular {
                 return Err(LispError::SignalValue(Value::list([
                     Value::symbol("file-error"),
@@ -2686,7 +2876,12 @@ fn insert_file_bytes(
             interp.set_variable_key(cached_symbol!("deactivate-mark"), Value::T, env);
         }
         if let Some(error) = read.error {
-            return Err(report_file_errno("Read error", operation_args[0], &error));
+            return Err(report_file_errno(
+                interp,
+                "Read error",
+                operation_args[0],
+                &error,
+            ));
         }
         let bytes = read.bytes;
         let (coding, decided_bytes) = match decision.take() {

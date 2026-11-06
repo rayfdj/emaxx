@@ -413,7 +413,7 @@ pub(crate) fn vmessage(
         return Ok(());
     }
     let message = crate::lisp::primitives::strings::make_string(bytes)
-        .map_err(|_| LispError::Signal("String overflow".into()))?;
+        .map_err(|error| crate::lisp::primitives::string_storage_error(interp, env, error))?;
     let log = crate::lisp::primitives::string_text(&message)?;
     message3(interp, message, &log, env)
 }
@@ -1170,8 +1170,8 @@ fn frame_or_buffer_changed(
         && current
             .iter()
             .zip(items)
-            .all(|(new, old)| new.eq_value(*old))
-        && items[current.len()].eq_value(lambda)
+            .all(|(new, old)| crate::lisp::types::eq(*new, *old))
+        && crate::lisp::types::eq(items[current.len()], lambda)
     {
         return Ok(Value::Nil);
     }
@@ -1304,7 +1304,10 @@ fn window_parameter_entry(
         .and_then(|record| record.slots.get(WINDOW_PARAMETERS_SLOT))
         .copied()?;
     while let Some((item, rest)) = params.cons_values() {
-        if item.car().is_ok_and(|key| key.eq_value(*parameter)) {
+        if item
+            .car()
+            .is_ok_and(|key| crate::lisp::types::eq(key, *parameter))
+        {
             return Some(item);
         }
         params = rest;
@@ -1880,7 +1883,7 @@ pub(crate) fn resolve_tty_face_attrs(
                 env,
             )
             .ok()
-            .filter(|value| !matches!(value.kind(), Kind::Symbol(s) if s.is_named("unspecified")))
+            .filter(|value| !crate::lisp::types::eq_symbol_named(value, "unspecified"))
             .filter(|value| !value.is_nil())
     };
     let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
@@ -1982,7 +1985,7 @@ fn resolve_tty_face_reference_options(
     let pairs = items.as_chunks::<2>().0;
     let inherited = pairs
         .iter()
-        .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name.is_named(":inherit")))
+        .find(|pair| crate::lisp::types::eq_symbol_named(pair[0], ":inherit"))
         .map(|pair| &pair[1])
         .filter(|value| value.is_truthy());
     let mut merged = inherited
@@ -1994,7 +1997,7 @@ fn resolve_tty_face_reference_options(
             continue;
         };
         let value = &pair[1];
-        if matches!(value.kind(), Kind::Symbol(name) if name.is_named("unspecified")) {
+        if crate::lisp::types::eq_symbol_named(value, "unspecified") {
             continue;
         }
         match name.as_ref() {
@@ -2030,7 +2033,7 @@ fn resolve_tty_face_attr_options(
                 env,
             )
             .ok()
-            .filter(|value| !matches!(value.kind(), Kind::Symbol(s) if s.is_named("unspecified")))
+            .filter(|value| !crate::lisp::types::eq_symbol_named(value, "unspecified"))
     };
     let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
         tty_face_color_index(interp, env, value.as_ref()?)
@@ -2088,7 +2091,7 @@ pub(crate) fn window_face_spans(
             .into_iter()
             .filter_map(|entry| {
                 let key = entry.car_if_list()?;
-                matches!(key.kind(), Kind::Symbol(name) if name.is_named("face"))
+                crate::lisp::types::eq_symbol_named(key, "face")
                     .then(|| entry.cdr_if_list()?.to_vec().ok())?
             })
             .flatten()
@@ -2946,19 +2949,32 @@ fn run_window_configuration_change_hook(
                 &frames,
             );
             for window in windows {
-                let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(window)) else {
+                // Fwindow_buffer: nil for a window a hook deleted after the
+                // list was made, and Flocal_variable_p of nil asks the
+                // current buffer.
+                let buffer_id = window_buffer_id(interp, &interp.record_value(window));
+                let hook = cached_symbol!("window-configuration-change-hook").symbol();
+                if !interp.has_buffer_local_binding_symbol(
+                    buffer_id.unwrap_or(interp.current_buffer_id()),
+                    &hook,
+                ) {
                     continue;
-                };
-                let Some(local) = interp.buffer_local_value_key(
-                    buffer_id,
-                    cached_symbol!("window-configuration-change-hook"),
-                ) else {
-                    continue;
-                };
+                }
                 let saved_window = interp.selected_window_id();
                 let mut inner = select_window_norecord(interp, window);
                 if inner.is_ok() {
-                    inner = run_window_funs(interp, local, env);
+                    // Fbuffer_local_value (..., buffer): CHECK_BUFFER, and a
+                    // void local binding's `void-variable'.
+                    inner = match buffer_id {
+                        Some(id) => match interp.buffer_local_value_symbol(id, &hook) {
+                            Some(local) => run_window_funs(interp, local, env),
+                            None => Err(LispError::SignalValue(Value::list([
+                                Value::symbol("void-variable"),
+                                Value::Symbol(hook),
+                            ]))),
+                        },
+                        None => Err(LispError::WrongTypeArgument("bufferp".into(), Value::Nil)),
+                    };
                 }
                 let unwound = select_window_norecord(interp, saved_window);
                 inner?;
@@ -4308,19 +4324,21 @@ fn window_list_frames(
         .frame_states
         .iter()
         .filter(|frame| frame.is_live())
-        .filter(|frame| match frame_filter.kind() {
-            Kind::T => true,
-            Kind::Frame(id) => **frame == id,
-            Kind::Integer(0) => {
-                frame.borrow().terminal.expect("live frame terminal").id
-                    == interp.selected_terminal_id()
-            }
-            Kind::Symbol(name) if name.is_named("visible") => {
-                frame.borrow().terminal.expect("live frame terminal").id
-                    == interp.selected_terminal_id()
-            }
-            _ => **frame == own_frame,
-        })
+        .filter(
+            |frame| match crate::lisp::types::eq_dispatch(frame_filter).kind() {
+                Kind::T => true,
+                Kind::Frame(id) => **frame == id,
+                Kind::Integer(0) => {
+                    frame.borrow().terminal.expect("live frame terminal").id
+                        == interp.selected_terminal_id()
+                }
+                Kind::Symbol(name) if name.is_named("visible") => {
+                    frame.borrow().terminal.expect("live frame terminal").id
+                        == interp.selected_terminal_id()
+                }
+                _ => **frame == own_frame,
+            },
+        )
         .copied()
         .collect()
 }
@@ -4600,8 +4618,7 @@ define_dispatch!(
                                 interp.call_function_value(function, None, &[], env).ok()
                             })
                             .is_some_and(|result| {
-                                matches!(result.kind(), Kind::Symbol(answer)
-                                    if answer.is_named("dont-clear-message"))
+                                crate::lisp::types::eq_symbol_named(result, "dont-clear-message")
                             });
                         if !kept {
                             set_echo_area_message(None);
@@ -4719,7 +4736,7 @@ define_dispatch!(
                 // print.c:Ferror_message_string returns the STRING of (error
                 // STRING) itself, without allocating or losing properties.
                 if let Some((head, rest)) = obj.cons_values()
-                    && head.eq_value(error)
+                    && crate::lisp::types::eq(head, error)
                     && let Some((message, end)) = rest.cons_values()
                     && message.is_string()
                     && end.is_nil()
@@ -4732,7 +4749,7 @@ define_dispatch!(
                     None if obj.is_nil() => Value::Nil,
                     None => return Err(LispError::WrongTypeArgument("listp".into(), obj)),
                 };
-                let (mut errmsg, file_error, data) = if errname.eq_value(error) {
+                let (mut errmsg, file_error, data) = if crate::lisp::types::eq(errname, error) {
                     let data = obj.cons_values().map_or(Value::Nil, |(_, rest)| rest);
                     let data = if data.cons_values().is_some() {
                         data
@@ -4809,8 +4826,8 @@ define_dispatch!(
                 // prin1 for every other condition's: Magit's multi-part git
                 // errors keep their quotes and escapes.
                 let printer = if file_error
-                    || errname.eq_value(Value::symbol("end-of-file"))
-                    || errname.eq_value(Value::symbol("user-error"))
+                    || crate::lisp::types::eq(errname, Value::symbol("end-of-file"))
+                    || crate::lisp::types::eq(errname, Value::symbol("user-error"))
                 {
                     "princ"
                 } else {
@@ -4846,9 +4863,14 @@ define_dispatch!(
                     )?,
                     None => Value::Nil,
                 };
-                let minibuffer_quit = conditions.to_vec().unwrap_or_default().iter().any(
-                    |condition| matches!(condition.kind(), Kind::Symbol(name) if name.is_named("minibuffer-quit")),
-                );
+                let minibuffer_quit =
+                    conditions
+                        .to_vec()
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|condition| {
+                            crate::lisp::types::eq_symbol_named(condition, "minibuffer-quit")
+                        });
                 let context = string_text(&args[1])?;
                 // keyboard.c command-error-default-function, noninteractive
                 // branch: print CONTEXT plus the error to stderr and
@@ -6599,7 +6621,7 @@ define_dispatch!(
                     .unwrap_or(Value::Nil);
                 let known = ["image", "text", "both", "both-horiz", "text-image-horiz"]
                     .iter()
-                    .any(|known| style == Value::symbol(known));
+                    .any(|known| crate::lisp::types::eq_symbol_named(style, known));
                 Ok(if known { style } else { Value::symbol("image") })
             }
             "tab-bar-height" | "tool-bar-height" => {
@@ -7628,27 +7650,7 @@ define_dispatch!(
                 let window_id =
                     live_window_id_or_selected(interp, args.first().filter(|w| !w.is_nil()))?;
                 let noforce = args.get(2).is_some_and(Value::is_truthy);
-                // set_marker_restricted (w->start, pos, w->contents): nil, or
-                // a marker that points nowhere, leaves the start pointing
-                // nowhere; the flags are set as for any start.
-                let nowhere = match args[1].kind() {
-                    Kind::Nil => true,
-                    Kind::Marker(marker) => marker.buffer().is_none(),
-                    _ => false,
-                };
-                if nowhere {
-                    if let Some(marker) = window_marker(interp, window_id, WINDOW_START_SLOT) {
-                        marker.detach();
-                    }
-                    set_window_flag(interp, window_id, WINDOW_START_AT_LINE_BEG_SLOT, false);
-                    if !noforce {
-                        set_window_flag(interp, window_id, WINDOW_FORCE_START_SLOT, true);
-                    }
-                    interp.wset_redisplay(window_id);
-                    return Ok(args[1]);
-                }
-                let start = position_from_value(interp, &args[1])?;
-                set_window_start_value(interp, &args[0], start, noforce)?;
+                set_window_start_value(interp, window_id, &args[1], noforce)?;
                 Ok(args[1])
             }
             "set-window-point" => {
@@ -7680,25 +7682,13 @@ define_dispatch!(
                         return Ok(pos);
                     }
                 } else {
-                    let nowhere = match args[1].kind() {
-                        Kind::Nil => true,
-                        Kind::Marker(marker) => marker.buffer().is_none(),
-                        _ => false,
-                    };
-                    if nowhere {
-                        if let Some(marker) = window_marker(interp, window_id, WINDOW_POINT_SLOT) {
-                            marker.detach();
-                        }
-                    } else {
-                        let pos = position_from_value(interp, &args[1])?;
-                        set_window_marker_restricted(
-                            interp,
-                            window_id,
-                            WINDOW_POINT_SLOT,
-                            buffer_id,
-                            pos,
-                        );
-                    }
+                    set_window_marker_restricted_value(
+                        interp,
+                        window_id,
+                        WINDOW_POINT_SLOT,
+                        buffer_id,
+                        &args[1],
+                    )?;
                     interp.wset_redisplay(window_id);
                 }
                 Ok(args[1])

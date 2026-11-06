@@ -3491,7 +3491,8 @@ impl Buffer {
         }
         self.overlays.insert_gap(to, inschars, true);
         if nchars_del > 0 {
-            self.overlays.delete_gap(from, nchars_del);
+            self.overlays
+                .delete_gap_with(from, nchars_del, vars.aliases);
         }
         self.adjust_extended_chars_for_delete(from, to);
         self.adjust_extended_chars_for_insert(from, inschars);
@@ -3529,15 +3530,28 @@ impl Buffer {
 
     /// Delete characters in the range [from, to) (1-based). Returns deleted text.
     pub fn delete_region(&mut self, from: usize, to: usize) -> Result<String, BufferError> {
-        self.delete_region_1(from, to, true)
+        self.delete_region_1(from, to, true, Value::Nil)
             .map(Option::unwrap_or_default)
+    }
+
+    /// `delete_region' (the text when RET_STRING) as del_range_1 makes it
+    /// for a Lisp caller, ALIASES being `char-property-alias-alist', which
+    /// evaporate_overlays' Foverlay_get reads.
+    pub(crate) fn delete_region_aliased(
+        &mut self,
+        from: usize,
+        to: usize,
+        ret_string: bool,
+        aliases: Value,
+    ) -> Result<Option<String>, BufferError> {
+        self.delete_region_1(from, to, ret_string, aliases)
     }
 
     /// `delete_region' for a caller that has no use for the deleted text,
     /// which is then read only for the undo list (del_range_1 without
     /// RET_STRING).
     pub fn delete_region_unreturned(&mut self, from: usize, to: usize) -> Result<(), BufferError> {
-        self.delete_region_1(from, to, false).map(drop)
+        self.delete_region_1(from, to, false, Value::Nil).map(drop)
     }
 
     /// decode_eol's deletions of the characters at POSITIONS (each one
@@ -3633,6 +3647,7 @@ impl Buffer {
         from: usize,
         to: usize,
         ret_string: bool,
+        aliases: Value,
     ) -> Result<Option<String>, BufferError> {
         let from = from.max(self.begv);
         let to = to.min(self.zv);
@@ -3708,7 +3723,8 @@ impl Buffer {
         }
 
         // Adjust overlays and evaporate empty ones
-        self.overlays.delete_gap(from, to.saturating_sub(from));
+        self.overlays
+            .delete_gap_with(from, to.saturating_sub(from), aliases);
         self.offset_intervals(from, -(nchars as isize), &PropertyVariables::NONE);
         self.adjust_extended_chars_for_delete(from, to);
 
@@ -4445,7 +4461,7 @@ fn modiff_incr(count: &mut ModCount, len: usize) {
 fn plist_has_name(plist: Value, name: Value) -> bool {
     let mut tail = plist;
     while let Some(cell) = tail.cons_ref() {
-        if cell.car.get().word() == name.word() {
+        if crate::lisp::types::eq(cell.car.get(), name) {
             return true;
         }
         let Some(value) = cell.cdr.get().cons_ref() else {

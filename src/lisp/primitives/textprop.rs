@@ -488,7 +488,10 @@ pub(crate) fn get_property_and_range(
             return Ok(None);
         }
         let same = |interval: &PropertyInterval| -> Result<bool, LispError> {
-            Ok(textget(interp, interval.plist, prop)?.word() == value.word())
+            Ok(crate::lisp::types::eq(
+                textget(interp, interval.plist, prop)?,
+                value,
+            ))
         };
         let mut first = found;
         while let Some(previous) = intervals.previous(&first) {

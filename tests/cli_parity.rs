@@ -2838,7 +2838,8 @@ fn symbols_with_position_decode_as_lisp_h_symbolp_xsymbol_and_eq() {
 fn file_names_reach_errors_and_buffers_as_the_lisp_strings_gnu_keeps() {
     // fileio.c's report_file_error is given the Lisp file names (expanded,
     // or as given for access-file and load), so a name's text properties
-    // and raw bytes reach the error data; BVAR (b, filename) and
+    // and raw bytes reach the error data, and its errno text is the
+    // string code_convert_string_norecord makes; BVAR (b, filename) and
     // file_truename hold the string `buffer-file-name' was set to; and a
     // C string from SSDATA (a hostname, a module file, access-file's
     // message) carries the string's own bytes.
@@ -2858,9 +2859,7 @@ fn file_names_reach_errors_and_buffers_as_the_lisp_strings_gnu_keeps() {
                                (list s (multibyte-string-p s) (text-properties-at 0 s)))
                            x)))
        (err (lambda (thunk) (condition-case e (progn (funcall thunk) 'ok)
-                              ;; The errno text (the third element) as text alone.
-                              (error (append (list (car e) (funcall show (nth 1 e)) (nth 2 e))
-                                             (mapcar show (nthcdr 3 e)))))))
+                              (error (cons (car e) (mapcar show (cdr e)))))))
        (p (propertize "nd/foo" 'face 'bold))
        (r (string-to-multibyte "nd/\377a")))
   (unwind-protect
@@ -2898,6 +2897,732 @@ fn file_names_reach_errors_and_buffers_as_the_lisp_strings_gnu_keeps() {
             ),
         ],
     );
+}
+
+#[test]
+fn file_error_data_is_get_file_errno_data_s() {
+    // fileio.c:get_file_errno_data: the condition, the message, the errno
+    // text through code_convert_string_norecord (a multibyte copy of an
+    // ASCII text under an ASCII-compatible `locale-coding-system', nil's
+    // `no-conversion' included), then the Lisp names -- call-process's
+    // output and stderr files, make-temp-file's prefix, write-region's and
+    // load's files among them.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            &format!(
+                "(progn {})",
+                r##"(let ((show (lambda (e) (list (car e) (cadr e) (multibyte-string-p (nth 2 e)) (nthcdr 3 e)))))
+  (prin1 (list (with-temp-buffer (insert "x") (condition-case e (write-region nil nil "/nonexistent-dir/f" nil 0) (error (funcall show e))))
+               (condition-case e (call-process "true" nil '(:file "/nonexistent-dir/out")) (error (funcall show e)))
+               (condition-case e (call-process "true" nil (list t "/nonexistent-dir/err")) (error (funcall show e)))
+               (condition-case e (make-temp-file "/nonexistent-dir/pfx") (error (funcall show e)))
+               (condition-case e (make-temp-file "/nonexistent-dir/pfx" t) (error (funcall show e)))
+               (condition-case e (load "/nonexistent-dir/l" nil t) (error (funcall show e)))))
+  (terpri))
+"##
+            ),
+        ],
+    );
+}
+
+#[test]
+fn file_errors_name_the_lisp_objects_gnu_names() {
+    // The errno text is code_convert_string_norecord's under each
+    // `locale-coding-system': a bad one signals, `utf-16le' decodes the
+    // ASCII bytes.  call-process names DECODE_FILE (ENCODE_FILE) of each
+    // file without its "/:" (the expanded string itself for an ASCII name,
+    // properties and all; a decoded copy of a unibyte one), the program
+    // search names the program given, get_current_directory names
+    // `default-directory' after file_accessible_directory_p, and
+    // redirect-debugging-output, serial_open, make-temp-file-internal's
+    // GT_NOCREATE lstat, create_temp_file's pattern and a network
+    // connection report what GNU's report_file_errno does.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            &format!(
+                "(progn {})",
+                r##"(defmacro show (form) `(condition-case err (prin1 (list ',form '=> ,form)) (error (prin1 (list ',form 'ERR err (mapcar (lambda (x) (if (stringp x) (list (multibyte-string-p x) (text-properties-at 0 x)) x)) (cdr err)))))))
+(dolist (lcs (list nil 'bogus-cs "str" 'utf-16le 'utf-8 'latin-1))
+  (let ((locale-coding-system lcs))
+    (show (rename-file "/nonexistent-dir/a" "/nonexistent-dir/b")) (terpri)))
+(let ((p (propertize "/nonexistent-dir/out" 'face 'bold)))
+  (show (call-process "true" nil (list :file p))) (terpri)
+  (show (call-process "true" nil (list t p))) (terpri)
+  (show (call-process "true" nil (list :file (concat "/:" p)))) (terpri)
+  (show (call-process "true" nil (list :file (string-to-unibyte "/nonexistent-dir/\351")))) (terpri)
+  (show (call-process "true" nil (list t (string-to-unibyte "/nonexistent-dir/\351")))) (terpri)
+  (show (call-process "true" nil (list :file "/nonexistent-dir/\u00e9"))) (terpri)
+  (show (redirect-debugging-output p)) (terpri)
+  (show (call-process (propertize "no-such-program-xyz" 'face 'bold))) (terpri)
+  (show (make-process :name "x" :command (list (propertize "no-such-program-xyz" 'face 'bold)))) (terpri)
+  (show (make-serial-process :port p :speed nil)) (terpri))
+(let ((default-directory nil)) (show (call-process "true"))) (terpri)
+(let ((default-directory "/etc/passwd/")) (show (call-process "true"))) (terpri)
+(let ((default-directory (propertize "/nonexistent-dir/" 'face 'bold))) (show (call-process "true"))) (terpri)
+(show (make-temp-file-internal "/etc/passwd/pfx" 0 "" nil)) (terpri)
+(show (make-temp-file-internal "/etc/passwd/pfx" nil "" nil)) (terpri)
+(show (make-network-process :name "c" :host "127.0.0.1" :service 1)) (terpri)
+(show (with-temp-buffer (insert "abc") (call-process-region (point-min) (point-max) "cat" nil t))) (terpri)
+(let ((temporary-file-directory "/nonexistent-dir/")) (show (with-temp-buffer (insert "abc") (call-process-region (point-min) (point-max) "cat" nil t)))) (terpri)
+(defvar zz-log nil)
+(defun zz-handler (op &rest args)
+  (push op zz-log)
+  (let ((inhibit-file-name-handlers (cons 'zz-handler inhibit-file-name-handlers))
+        (inhibit-file-name-operation op))
+    (if (eq op 'write-region) nil (apply op args))))
+(let ((file-name-handler-alist (list (cons "\\.zzh\\'" 'zz-handler))))
+  (let ((f (make-temp-file-internal "/tmp/zzp" nil ".zzh" "hello")))
+    (prin1 (list (reverse zz-log) (file-attribute-size (file-attributes f))))
+    (delete-file f)))
+(terpri)
+(show (make-serial-process :port "/nonexistent-dir/port" :speed "x")) (terpri)
+(show (make-serial-process :port "/nonexistent-dir/port" :speed nil :name 5)) (terpri)
+"##
+            ),
+        ],
+    );
+}
+
+#[test]
+fn the_audit_of_rounds_323_to_328_is_answered_as_gnu_answers() {
+    // The probes of the independent review of rounds 323 to 328, each in
+    // its own session: describe-vector as keymap.c's describe_vector (its
+    // elements read afresh, a change hook that drops one and collects
+    // included; a range as three insertions; get_keyelt; a char-table's
+    // runs, 8-bit split, default and no parent), coding systems and labels
+    // and properties given as symbols with position, unshow_buffer's start
+    // recorded before its point is read, set_marker_restricted on window
+    // markers, the configuration-change hook over a window deleted under
+    // it, get-file-buffer's Fstring_equal, scan_for_column's window
+    // lookup, a syntax description's matching character, and the
+    // hostname failure message cut at its NUL.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defvar v nil)
+(setq v (vector (list 'a) (list (make-string 3 ?b) 'bb) (list (make-string 3 ?c) 'cc)))
+(with-temp-buffer
+  (add-hook 'after-change-functions (lambda (&rest _) (aset v 2 (list 'hooked)) (garbage-collect)) nil t)
+  (describe-vector v)
+  (message "%S" (buffer-string))))"##,
+        r##"(progn
+(defmacro try (f) `(condition-case e ,f (error (list 'ERR e))))
+(defvar log nil)
+(with-temp-buffer
+  (add-hook 'after-change-functions (lambda (b e l) (push (buffer-substring-no-properties b e) log)) nil t)
+  (describe-vector [a a a nil b])
+  (message "range hooks: %S" (reverse log))
+  (message "text: %S" (buffer-string)))
+(with-temp-buffer
+  (describe-vector [("label" . forward-char) nil (menu-item "x" backward-char)])
+  (message "keyelt: %S" (buffer-string)))
+(with-temp-buffer
+  (let ((ct (make-char-table nil)))
+    (set-char-table-range ct '(?a . ?b) (list 1))
+    (set-char-table-range ct ?c (list 1))
+    (describe-vector ct)
+    (message "ct equal: %S" (buffer-string))))
+(with-temp-buffer
+  (let ((ct (make-char-table nil)))
+    (set-char-table-range ct '(#x3FFF70 . #x3FFF90) 'z)
+    (describe-vector ct)
+    (message "ct 8bit: %S" (buffer-string))))
+(with-temp-buffer
+  (let ((ct (make-char-table nil 'dflt)))
+    (set-char-table-range ct '(?a . ?b) 'q)
+    (describe-vector ct)
+    (message "ct default: %S" (substring (buffer-string) 0 (min 200 (length (buffer-string)))))))
+(with-temp-buffer
+  (let* ((p (make-char-table nil)) (ct (make-char-table nil)))
+    (set-char-table-range p '(?a . ?c) 'par)
+    (set-char-table-parent ct p)
+    (set-char-table-range ct ?b 'own)
+    (describe-vector ct)
+    (message "ct parent: %S" (buffer-string)))))"##,
+        r##"(progn
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (message "a %S" (condition-case e (encode-coding-string "a" (p 'utf-8)) (error (list (car e) (cdr e) (type-of (cadr e)) (bare-symbol (cadr e)) (eq (cadr e) 'utf-8))))))
+(message "b %S" (condition-case e (let ((symbols-with-pos-enabled t)) (encode-coding-string "a" (p 'utf-8))) (error (list (car e) (cdr e) (type-of (cadr e))))))
+(message "c %S" (condition-case e (encode-coding-string "a" (p 'utf-8)) (error e)))
+(message "d %S" (condition-case e (let ((symbols-with-pos-enabled t)) (decode-coding-string "a" (p 'utf-8))) (error e)))
+(message "e %S" (condition-case e (let ((symbols-with-pos-enabled t)) (check-coding-system (p 'utf-8))) (error e)))
+(message "f %S" (condition-case e (let ((symbols-with-pos-enabled t)) (with-temp-buffer (insert "a") (encode-coding-region 1 2 (p 'utf-8)))) (error e)))
+(message "g %S" (condition-case e (let ((symbols-with-pos-enabled t)) (let ((coding-system-for-read (p 'utf-8))) (with-temp-buffer (insert-file-contents "/etc/passwd") (buffer-size)))) (error e))))"##,
+        r##"(progn
+(defun show (tag form) (message "%s: %S" tag (condition-case e (funcall form) (error (list 'ERR e)))))
+(let* ((b (get-buffer-create "B"))
+       (w1 (selected-window))
+       w2)
+  (with-current-buffer b (insert (make-string 200 ?x)))
+  (setq w2 (split-window w1))
+  (set-window-buffer w2 b)
+  (set-window-start w2 50)
+  (set-window-point w2 nil)
+  (show "wp" (lambda () (window-point w2)))
+  (show "ws" (lambda () (window-start w2)))
+  (show "del" (lambda () (delete-window w2)))
+  (show "live" (lambda () (list (window-live-p w2) (window-buffer w2) (length (window-list)))))
+  (show "set-wb" (lambda () (set-window-buffer w1 b)))
+  (show "ws1" (lambda () (window-start w1)))))"##,
+        r##"(progn
+(defmacro try (f) `(condition-case e ,f (error (list 'ERR e))))
+(let* ((b (get-buffer-create "B")) (c (get-buffer-create "C"))
+       (w1 (selected-window)) (w2 (split-window w1)))
+  (with-current-buffer b (insert (make-string 100 ?x)))
+  (with-current-buffer c (insert (make-string 300 ?y)))
+  (set-window-buffer w2 b)
+  (with-current-buffer b (narrow-to-region 10 50))
+  (let ((m (with-current-buffer b (copy-marker 80)))
+        (mc (with-current-buffer c (copy-marker 250))))
+    (message "1 %S" (try (list (set-window-start w2 m) (window-start w2))))
+    (message "2 %S" (try (list (set-window-start w2 mc) (window-start w2))))
+    (message "3 %S" (try (list (set-window-point w2 m) (window-point w2))))
+    (message "4 %S" (try (list (set-window-point w2 mc) (window-point w2))))
+    (message "5 %S" (try (list (set-window-start w2 200) (window-start w2))))
+    (message "6 %S" (try (list (set-window-start w2 1.5) (window-start w2))))
+    (message "7 %S" (try (list (set-window-start w2 (1+ most-positive-fixnum)) (window-start w2))))
+    (message "8 %S" (try (list (set-window-point w2 (1+ most-positive-fixnum)) (window-point w2))))
+    (message "9 %S" (try (list (set-window-point w2 -5) (window-point w2))))
+    (with-current-buffer b (widen))
+    (message "10 %S" (try (list (set-window-start w2 m) (window-start w2) (set-window-start w2 3) (window-start w2))))
+    (with-current-buffer b (narrow-to-region 10 50))
+    (message "11 %S" (try (list (set-window-start w2 m) (window-start w2))))
+    (message "12 %S" (try (list (set-window-point w2 m) (window-point w2))))
+    ;; selected window, other buffer current
+    (select-window w2)
+    (message "13 %S" (try (with-current-buffer c (list (set-window-point nil m) (point) (window-point w2)))))
+    (message "14 %S" (try (with-current-buffer c (list (set-window-point nil mc) (window-point w2)))))
+    (message "15 %S" (try (with-current-buffer b (list (set-window-point nil mc) (window-point w2)))))
+    )))"##,
+        r##"(progn
+(defvar log nil)
+(let* ((a (get-buffer-create "A")) (b (get-buffer-create "B")) (c (get-buffer-create "C"))
+       (w1 (selected-window)) (w2 (split-window w1)) (w3 (split-window w2)))
+  (set-window-buffer w1 a) (set-window-buffer w2 b) (set-window-buffer w3 c)
+  (with-current-buffer a (setq-local window-configuration-change-hook
+     (list (lambda () (push (list 'a (buffer-name) (eq (selected-window) w1)) log) (delete-window w3) (garbage-collect)))))
+  (with-current-buffer b (setq-local window-configuration-change-hook
+     (list (lambda () (push (list 'b (buffer-name)) log)))))
+  (with-current-buffer c (setq-local window-configuration-change-hook
+     (list (lambda () (push (list 'c (buffer-name) (window-live-p (selected-window))) log)))))
+  (setq-default window-configuration-change-hook (list (lambda () (push (list 'g (buffer-name)) log))))
+  (message "r %S" (condition-case e (run-window-configuration-change-hook) (error e)))
+  (message "%S" (reverse log))))"##,
+        r##"(progn
+(defmacro try (f) `(condition-case e ,f (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (message "8 %S" (try (with-temp-buffer (insert (propertize "x" 'face 'bold)) (list (get-text-property 1 (p 'face)) (get-char-property 1 (p 'face)) (text-property-any 1 2 (p 'face) 'bold) (next-single-property-change 1 (p 'face)) (next-single-char-property-change 1 (p 'face))))))
+  (message "19 %S" (try (with-temp-buffer (insert "abc") (narrow-to-region 2 3) (internal--labeled-narrow-to-region 2 3 'L) (internal--labeled-widen (p 'L)) (widen) (list (point-min) (point-max)))))
+  (message "22 %S" (try (with-temp-buffer (insert "x") (overlay-get (let ((o (make-overlay 1 1))) (overlay-put o 'q 9) o) (p 'q)))))
+  (message "24 %S" (try (frame-parameter nil (p 'name))))
+  (message "24b %S" (try (frame-parameter nil (p 'nonexistent-param))))
+  (message "31 %S" (try (network-lookup-address-info "127.0.0.1" (p 'ipv4) (p 'numeric))))
+  (message "32 %S" (try (network-lookup-address-info "127.0.0.1" nil (p 'numeric))))
+  (message "33 %S" (try (length (network-interface-list nil (p 'ipv4)))))
+  (message "34 %S" (try (let ((proc (make-network-process (p :name) "e" (p :server) t :family (p 'ipv4) :service 0 :host "127.0.0.1" :noquery t))) (prog1 (list (process-name proc) (process-contact proc :family)) (delete-process proc))))))
+(message "35 %S" (try (let ((proc (make-network-process :name "a" :name "b" :server t :service 0 :host "127.0.0.1" :noquery t))) (prog1 (process-name proc) (delete-process proc)))))
+(message "36 %S" (try (with-temp-buffer (setq buffer-file-name "/tmp/xyz-q") (list (eq (get-file-buffer "/tmp/xyz-q") (current-buffer)) (get-file-buffer 5)))))
+(message "37 %S" (try (get-truename-buffer 5))))"##,
+        r##"(progn
+(defmacro try (f) `(condition-case e ,f (error (list 'ERR e))))
+(let ((b (get-buffer-create "rb")))
+  (with-current-buffer b (setq buffer-file-name (string-to-unibyte "/tmp/x\377")))
+  (message "1 %S" (try (list (get-file-buffer (string-to-unibyte "/tmp/x\377")) (get-file-buffer (string-to-multibyte "/tmp/x\377")) (get-file-buffer "/tmp/xÿ"))))
+  (with-current-buffer b (setq buffer-file-name "/tmp/xÿ"))
+  (message "2 %S" (try (list (get-file-buffer (string-to-unibyte "/tmp/x\377")) (get-file-buffer (string-to-multibyte "/tmp/x\377")) (get-file-buffer "/tmp/xÿ"))))))"##,
+        r##"(progn
+(defun ws-push (&rest xs) (prin1 xs) (terpri))
+(defmacro ws-try (tag form) `(ws-push ,tag (condition-case e (progn ,form 'ok) (error (list 'ERR (car e) (if (windowp (cadr e)) 'W (cadr e)))))))
+(defvar ws-objs nil)
+(defun ws-setup (n)
+  (ws-try (list n 'sel) (select-window (frame-first-window)))
+  (ws-try (list n 'dow) (delete-other-windows))
+  (ws-try (list n 'stb) (switch-to-buffer (get-buffer-create "wsA")))
+  (erase-buffer) (insert "line one\nline two\nline three\n") (goto-char 5)
+  (ws-try (list n 'split)
+          (let* ((sel (selected-window))
+                 (right (split-window sel nil 'right))
+                 (below (split-window right nil 'below))
+                 (dead (split-window below nil 'below)))
+            (set-window-buffer below (get-buffer-create "wsB"))
+            (delete-window dead)
+            (setq ws-objs (list (cons 'selected sel) (cons 'right right) (cons 'below below) (cons 'dead dead))))))
+(ws-setup 0)
+(ws-push 'swp (condition-case e (set-window-point (cdr (assq 'below ws-objs)) nil) (error e)))
+(ws-setup 1)
+(ws-setup 2)
+(ignore-errors (select-window (frame-first-window)))
+(ignore-errors (delete-other-windows))
+(ws-push 'dead-selected (window-live-p (selected-window)) (buffer-name))
+(ws-try 'cc (current-column))
+(ws-try 'cc2 (progn (insert "\t\tx") (current-column)))
+(ws-try 'mtc (move-to-column 3))
+(ws-try 'gbw (get-buffer-window))
+(kill-emacs 0))"##,
+        r##"(progn
+(dolist (m (list #xD800 #x3FFF80 #x110000))
+  (with-temp-buffer (internal-describe-syntax-value (cons 4 m)) (message "%x %S" m (buffer-string))))
+(with-temp-buffer (internal-describe-syntax-value (cons 4 ?\))) (set-buffer-multibyte nil) (message "%S" (buffer-string))))"##,
+        r##"(progn
+(network-lookup-address-info "a\0b" nil (quote numeric)))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn symbols_with_position_compare_as_eq_where_gnu_compares() {
+    // lisp.h's EQ while `symbols-with-pos-enabled' is set, a symbol with
+    // position standing for its symbol, in the comparisons C makes: text
+    // property writes and removals, stickiness lists, face merging and
+    // interval merging, overlay plists and `evaporate', frame and window
+    // parameter alists, keymaps, features, catch tags, faces, font keys,
+    // invisibility specs and lexical environments; setq's XSYMBOL, its
+    // value evaluated before CHECK_SYMBOL; and code_convert_string's fast
+    // path storing the coding system as given in `last-coding-system-used'.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (with-temp-buffer
+    (insert "abcdef")
+    (put-text-property 2 4 'face 'bold)
+    (message "1 %S" (try (put-text-property 3 5 (p 'face) 'italic) (buffer-string)))
+    (message "2 %S" (try (add-face-text-property 1 3 'underline nil) (get-text-property 2 'face)))
+    (message "3 %S" (try (add-face-text-property 1 3 (p 'x) t) (get-text-property 2 'face)))
+    (message "4 %S" (try (text-property-not-all 1 7 (p 'face) nil)))
+    (message "5 %S" (try (next-single-property-change 1 (p 'face))))
+    (message "6 %S" (try (put-text-property 1 2 'rear-nonsticky (list (p 'k))) (put-text-property 1 2 'k 1) (goto-char 2) (insert-and-inherit "Z") (get-text-property 2 'k)))
+    (message "7 %S" (try (put-text-property 3 4 'front-sticky (list (p 'm))) (put-text-property 3 4 'm 2) (goto-char 3) (insert-and-inherit "Y") (get-text-property 3 'm)))
+    (message "8 %S" (try (remove-list-of-text-properties 1 (point-max) (list (p 'k) (p 'm))) (text-properties-at 2)))
+    (message "9 %S" (try (let ((s (concat (propertize "a" (p 'q) 1) (propertize "b" 'q 1)))) (list (next-single-property-change 0 'q s) (equal-including-properties s (propertize "ab" 'q 1))))))
+    (message "10 %S" (try (let ((s (propertize "xy" 'face 'bold))) (add-face-text-property 0 2 'italic t s) (get-text-property 0 'face s))))
+    (message "11 %S" (try (let ((o (make-overlay 1 1))) (overlay-put o (p 'evaporate) t) (overlay-buffer o))))
+    (message "12 %S" (try (let ((o (make-overlay 1 3))) (overlay-put o 'z 1) (overlay-put o (p 'z) 2) (overlay-properties o))))
+    (message "13 %S" (try (modify-frame-parameters nil (list (cons (p 'zz1) 7))) (frame-parameter nil 'zz1)))
+    (message "14 %S" (try (set-frame-parameter nil (p 'zz2) 8) (set-frame-parameter nil 'zz2 9) (let ((n 0)) (dolist (c (frame-parameters) n) (when (eq (car-safe c) 'zz2) (setq n (1+ n)))))))
+    (message "15 %S" (try (set-window-parameter nil (p 'wq) 3) (list (window-parameter nil 'wq) (window-parameter nil (p 'wq)))))
+    (message "16 %S" (try (let ((s (propertize "ab" 'composition nil))) (put-text-property 0 1 (p 'composition) '(1 . 2) s) (text-properties-at 0 s))))
+    (message "17 %S" (try (let ((s "a")) (list (encode-coding-string s (p 'utf-8)) last-coding-system-used (decode-coding-string s (p 'latin-1)) last-coding-system-used))))
+    (message "18 %S" (try (encode-coding-string "a\n" (p 'utf-8-dos)) last-coding-system-used))
+    (message "19 %S" (try (with-temp-buffer (encode-coding-string "a" (p 'utf-8) nil (current-buffer)) last-coding-system-used)))
+    (message "20 %S" (try (let ((cs (make-symbol "myalias"))) (define-coding-system-alias cs 'utf-8) (encode-coding-string "a" cs) (eq last-coding-system-used cs))))
+    )))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(put 'mycat 'zap 'from-cat)
+(let ((symbols-with-pos-enabled t))
+  (with-temp-buffer
+    (insert (propertize "abc" 'category 'mycat 'face 'bold) "def")
+    (let ((o (make-overlay 2 5)))
+      (overlay-put o 'ov 'ovval) (overlay-put o 'category 'mycat)
+      (message "1 %S" (try (get-text-property 1 (p 'zap))))
+      (message "2 %S" (try (let ((char-property-alias-alist '((alias face)))) (get-text-property 1 (p 'alias)))))
+      (message "3 %S" (try (let ((default-text-properties '(dtp 7))) (get-text-property 5 (p 'dtp)))))
+      (message "4 %S" (try (get-char-property 3 (p 'ov))))
+      (message "5 %S" (try (overlay-get o (p 'zap))))
+      (message "6 %S" (try (get-char-property-and-overlay 3 (p 'ov))))
+      (message "7 %S" (try (text-property-any 1 7 (p 'face) 'bold)))
+      (message "8 %S" (try (text-property-not-all 1 7 (p 'face) 'bold)))
+      (message "9 %S" (try (next-single-property-change 1 (p 'face))))
+      (message "10 %S" (try (previous-single-property-change 7 (p 'face))))
+      (message "11 %S" (try (next-single-char-property-change 1 (p 'ov))))
+      (message "12 %S" (try (previous-single-char-property-change 7 (p 'ov))))
+      (message "13 %S" (try (get-pos-property 3 (p 'ov))))
+      (message "14 %S" (try (get-pos-property 2 (p 'face))))
+      (message "15 %S" (try (let ((s (concat (propertize "x" 'face 'b) "y"))) (put-text-property 0 1 (p 'face) 'i s) (text-properties-at 0 s))))
+      (message "16 %S" (try (let ((s (concat (propertize "x" 'face 'b) "y"))) (remove-text-properties 0 1 (list (p 'face) nil) s) (text-properties-at 0 s))))
+      (message "17 %S" (try (let ((s (concat (propertize "x" 'face 'b) "y"))) (remove-list-of-text-properties 0 1 (list (p 'face)) s) (text-properties-at 0 s))))
+      (message "18 %S" (try (let ((s (concat (propertize "x" 'face 'b) "y"))) (add-text-properties 0 1 (list (p 'face) 'q) s) (text-properties-at 0 s))))
+      (message "19 %S" (try (let ((s (propertize "x" 'face 'b))) (get-text-property 0 (p 'face) s))))
+      (message "20 %S" (try (let ((s (propertize "xy" 'face 'b))) (next-single-property-change 0 (p 'face) s))))
+      (message "21 %S" (try (let ((s (propertize "x" 'face 'b))) (text-property-any 0 1 (p 'face) 'b s))))
+      (message "22 %S" (try (overlay-properties o)))
+      (message "23 %S" (try (overlays-in 1 7)))
+      (message "24 %S" (try (let ((inhibit-read-only (list (p 'ro)))) (put-text-property 4 5 'read-only 'ro) (goto-char 5) (insert "Z") (buffer-string))))
+      (message "25 %S" (try (let ((inhibit-read-only (list 'ro))) (put-text-property 4 5 'read-only (p 'ro)) (goto-char 5) (delete-char 1) (buffer-string))))
+      (message "26 %S" (try (get-char-property 3 (p 'zap))))
+      (message "27 %S" (try (plist-get (text-properties-at 1) (p 'face))))
+      (message "28 %S" (try (next-char-property-change 1)))
+      ))))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (with-temp-buffer
+    (insert "abcdef")
+    (let ((o (make-overlay 2 5)))
+      (overlay-put o 'ov 'ovval)
+      (message "1 %S" (try (overlay-put o (p 'ov) 'new) (overlay-properties o)))
+      (message "2 %S" (try (modify-frame-parameters nil (list (cons (p 'zzparm) 1))) (frame-parameter nil 'zzparm)))
+      (message "3 %S" (try (frame-parameter nil (p 'zzparm))))
+      (message "4 %S" (try (frame-parameter nil (p 'height))))
+      (message "5 %S" (try (frame-parameter nil (p 'buffer-list))))
+      (message "6 %S" (try (frame-parameter nil (p 'minibuffer))))
+      (message "7 %S" (try (frame-parameter nil 3)))
+      (message "8 %S" (try (frame-parameter nil nil)))
+      (message "9 %S" (try (frame-parameter nil (p 'menu-bar-lines))))
+      (message "10 %S" (try (frame-parameter nil (p 'foreground-color))))
+      (message "11 %S" (try (frame-parameter nil (p 'background-mode))))
+      (message "12 %S" (try (frame-parameter nil (p 'font))))
+      (message "13 %S" (try (frame-parameter nil (p 'cursor-color))))
+      (message "14 %S" (try (frame-parameter nil (p 'window-system))))
+      (message "15 %S" (try (frame-parameter nil (p 'title))))
+      (message "16 %S" (try (frame-parameter nil (p 'tty-type))))
+      (message "17 %S" (try (frame-parameter nil (p 'display-type))))
+      )))
+(message "n1 %S" (try (frame-parameter nil (p 'name))))
+(message "n2 %S" (try (frame-parameter nil (p 'height)))))"##,
+        r##"(progn
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (with-temp-buffer
+    (insert "abc")
+    (let ((o (make-overlay 2 2)))
+      (overlay-put o (p 'evaporate) t)
+      (message "1 %S %S" (overlay-buffer o) (overlay-properties o)))
+    (let ((o (make-overlay 1 2)))
+      (overlay-put o 'k 1)
+      (overlay-put o (p 'k) 2)
+      (message "2 %S %S" (overlay-get o 'k) (overlay-properties o))))))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (modify-frame-parameters nil (list (cons (p 'zzparm) 1)))
+  (message "1 %S" (try (frame-parameter nil 'zzparm)))
+  (message "2 %S" (try (frame-parameter nil (p 'zzparm))))
+  (message "3 %S" (try (cdr (assq 'zzparm (frame-parameters)))))
+  (message "4 %S" (try (seq-find (lambda (c) (eq (car c) 'zzparm)) (frame-parameters))))
+  (modify-frame-parameters nil (list (cons 'yyparm 2)))
+  (message "5 %S" (try (frame-parameter nil (p 'yyparm))))))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (set-window-parameter nil (p 'wq) 1)
+  (message "1 %S" (try (list (window-parameter nil 'wq) (window-parameter nil (p 'wq)))))
+  (set-window-parameter nil 'wq 2)
+  (message "2 %S" (try (window-parameters)))
+  (set-frame-parameter nil (p 'fz) 1)
+  (set-frame-parameter nil 'fz 2)
+  (message "3 %S" (try (seq-filter (lambda (c) (eq (car c) 'fz)) (frame-parameters))))
+  (message "4 %S" (try (let ((s (propertize "ab" 'face 'bold))) (set-text-properties 0 1 (list (p 'face) 'x) s) (list (get-text-property 0 'face s) (next-single-property-change 0 'face s)))))
+  (message "5 %S" (try (let ((s (concat (propertize "a" (p 'face) 'x) (propertize "b" 'face 'x)))) (list (next-single-property-change 0 'face s) (next-property-change 0 s) s))))
+  ))"##,
+        r##"(progn
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (encode-coding-string "a" (p 'latin-1))
+  (message "1 %S" last-coding-system-used)
+  (decode-coding-string "a" (p 'utf-8))
+  (message "2 %S" last-coding-system-used)
+  (decode-coding-string "\351" (p 'latin-1))
+  (message "3 %S" last-coding-system-used))
+(let ((cs (make-symbol "utf-8")))
+  (define-coding-system-alias cs 'utf-8)
+  (decode-coding-string "a" cs)
+  (message "4 %S %S" last-coding-system-used (eq last-coding-system-used cs))))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(provide 'zzfeat)
+(let ((symbols-with-pos-enabled t))
+  (message "1 %S" (try (keymapp (list (p 'keymap)))))
+  (message "2 %S" (try (let ((m (list (p 'keymap)))) (define-key m "a" 'forward-char) (lookup-key m "a"))))
+  (message "3 %S" (try (memql (p 'x) '(a x b))))
+  (message "4 %S" (try (featurep (p 'zzfeat))))
+  (message "5 %S" (try (char-table-subtype (make-char-table (p 'syntax-table)))))
+  (message "6 %S" (try (let ((ct (make-char-table (p 'syntax-table)))) (syntax-table-p ct))))
+  (message "7 %S" (try (catch 'tg (throw (p 'tg) 5))))
+  (message "8 %S" (try (catch (p 'tg) (throw 'tg 6))))
+  (message "9 %S" (try (eql (p 'a) 'a)))
+  (message "10 %S" (try (font-get (font-spec :family "x" (p :weight) 'bold) :weight)))
+  (message "11 %S" (try (let ((f (font-spec :family "x"))) (font-put f (p :size) 12) (font-get f :size))))
+  (message "12 %S" (try (with-temp-buffer (insert "abc") (put-text-property 1 2 'invisible 'zz) (setq buffer-invisibility-spec (list (p 'zz))) (invisible-p 1))))
+  (message "13 %S" (try (let ((lx 1)) (ignore lx) (eval `(let ((,(p 'lv) 2)) lv) t))))
+  (message "14 %S" (try (eval `(let ((lv 3)) ,(p 'lv)) t)))
+  (message "15 %S" (try (face-attribute (p 'default) :inverse-video)))
+  (message "16 %S" (try (assq (p 'a) '((a . 1)))))
+  (message "17 %S" (try (plist-get (list (p 'k) 1) 'k)))
+  (message "18 %S" (try (with-temp-buffer (insert "a\tb") (setq-local tab-width (p 8)))))
+  (message "19 %S" (try (with-temp-buffer (insert "xyz") (put-text-property 1 3 (p 'field) 'f) (field-beginning 2))))
+  (message "20 %S" (try (let ((m (make-sparse-keymap))) (define-key m [remap kill-line] 'ignore) (key-binding [remap kill-line] nil nil) (lookup-key m (vector (p 'remap) 'kill-line)))))
+  )
+(with-temp-buffer
+  (switch-to-buffer (current-buffer))
+  (dotimes (i 60) (insert (format "line\t%d\n" i)))
+  (goto-char (point-min)) (forward-line 10) (forward-char 6)
+  (let ((scroll-preserve-screen-position t)) (message "21 %S" (try (scroll-up 3) (list (line-number-at-pos) (current-column)))))))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(defvar zzv 0)
+(message "1 %S" (try (eval '(setq 3 (progn (message "evaluated 1") 1)) t)))
+(message "2 %S" (try (eval '(setq zzv 5 "str" (progn (message "evaluated 2") 1)) t) zzv))
+(message "3 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(setq ,(p 'zzv) 7) t) zzv)))
+(message "4 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(let ((lx 1)) (setq ,(p 'lx) 9) lx) t))))
+(message "5 %S" (try (eval `(setq ,(p 'zzv) 8) t) zzv))
+(message "6 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(setq ,(p nil) 1) t))))
+(message "7 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(setq ,(p t) 1) t)))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn the_review_of_round_331_is_answered_as_gnu_answers() {
+    // The probes of round 331's review, each in its own session: keymaps
+    // reached through a symbol with position, setq and set of keywords
+    // with EQ values and the object `setting-constant' names, face and
+    // font keys, category values and symbol plists by EQ, defvar's
+    // declaration as given, overlays evaporating after a deletion through
+    // their category, lexical scopes, and the flag across buffer-local
+    // values, makunbound, unwinding and threads.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(defvar zmap (make-sparse-keymap))
+(fset 'zmap zmap)
+(define-key zmap "a" 'forward-char)
+(defun zfn () (interactive) 1)
+(let ((symbols-with-pos-enabled t))
+  (message "1 %S" (try (keymapp (p 'zmap))))
+  (message "2 %S" (try (indirect-function (p 'zfn))))
+  (message "3 %S" (try (lookup-key (p 'zmap) "a")))
+  (message "4 %S" (try (let ((m (make-sparse-keymap))) (define-key m "b" (p 'zmap)) (lookup-key m "ba"))))
+  (message "5 %S" (try (let ((m (make-sparse-keymap))) (set-keymap-parent m (p 'zmap)) (lookup-key m "a"))))
+  (message "6 %S" (try (with-temp-buffer (use-local-map (p 'zmap)) (key-binding "a"))))
+  (message "7 %S" (try (commandp (p 'zfn))))
+  (message "8 %S" (try (functionp (p 'zfn))))
+  (message "9 %S" (try (fboundp (p 'zfn))))
+  (message "10 %S" (try (funcall (p 'zfn))))
+  (message "11 %S" (try (apply (p 'zfn) nil)))
+  (message "12 %S" (try (mapcar (p 'car) '((1) (2)))))
+  (message "13 %S" (try (where-is-internal (p 'forward-char) zmap)))
+  (message "14 %S" (try (keymap-parent (let ((m (make-sparse-keymap))) (set-keymap-parent m zmap) m))))
+  (message "15 %S" (try (map-keymap (lambda (k v) (message "  mk %S %S" k v)) (p 'zmap))))
+  (message "16 %S" (try (copy-keymap (p 'zmap))))
+  (message "17 %S" (try (funcall (p 'zundefined))))
+  (message "18 %S" (try (symbol-function (p 'zfn))))
+  ))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (message "1 %S" (try (set :kw (p :kw))))
+  (message "2 %S" (try (set (p :kw) (p :kw))))
+  (message "3 %S" (try (set (p :kw) 5)))
+  (message "4 %S" (try (eval `(setq ,(p :kw) ,(p :kw)) t)))
+  (message "5 %S" (try (eval `(setq ,(p :kw) (quote ,(p :kw))) t)))
+  (message "6 %S" (try (set-default (p :kw) 5)))
+  (message "7 %S" (try (set-default :kw (p :kw))))
+  (message "8 %S" (try (eval `(setq ,(p 'nil) 1) t)))
+  (message "9 %S" (try (eval `(let ((,(p 'nil) 1)) 1) t)))
+  (message "10 %S" (try (eval `(defvar ,(p 'zzdv) 1) t)))
+  (message "11 %S" (try (makunbound (p :kw))))
+  ))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(let ((symbols-with-pos-enabled t))
+  (message "1 %S" (try (face-attribute-relative-p (p :height) 1.5)))
+  (message "2 %S" (try (merge-face-attribute (p :height) 1.5 100)))
+  (message "3 %S" (try (face-attribute-relative-p :weight (p 'unspecified))))
+  (message "4 %S" (try (merge-face-attribute :weight (p 'unspecified) 'bold)))
+  (message "5 %S" (try (let ((tool-bar-style (p 'text))) (tool-bar-get-system-style))))
+  (message "6 %S" (try (progn (set-face-attribute 'default nil (p :height) 120) (face-attribute 'default :height))))
+  (message "7 %S" (try (face-attribute 'default (p :foreground))))
+  (message "8 %S" (try (internal-lisp-face-p (p 'default))))
+  (message "9 %S" (try (facep (p 'bold))))
+  (message "10 %S" (try (face-font (p 'default))))
+  (message "11 %S" (try (with-temp-buffer (insert "ab") (put-text-property 1 2 'face (list (p :weight) 'bold)) (get-text-property 1 'face))))
+  (message "12 %S" (try (format "%S" (font-spec (p :weight) 'bold))))
+  (message "13 %S" (try (font-get (font-spec :weight 'bold) (p :weight))))
+  (message "14 %S" (try (font-spec (p :size) 10 :size 12)))
+  ))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(put 'zcat 'zprop 42)
+(let ((symbols-with-pos-enabled t))
+  (with-temp-buffer
+    (insert "abcd")
+    (put-text-property 1 3 'category (p 'zcat))
+    (message "1 %S" (try (get-text-property 1 'zprop)))
+    (put-text-property 1 3 (p 'category) 'zcat)
+    (message "2 %S" (try (get-text-property 1 'zprop)))
+    (let ((o (make-overlay 1 3)))
+      (overlay-put o 'category (p 'zcat))
+      (message "3 %S" (try (overlay-get o 'zprop))))
+    (let ((o (make-overlay 1 3)))
+      (overlay-put o (p 'category) 'zcat)
+      (message "4 %S" (try (overlay-get o 'zprop))))
+    (message "5 %S" (try (get (p 'zcat) 'zprop)))
+    (message "6 %S" (try (progn (put (p 'zcat) (p 'zp2) 1) (list (get 'zcat 'zp2) (symbol-plist 'zcat)))))
+    (message "7 %S" (try (plist-put (list 'a 1) (p 'a) 2)))
+    (message "8 %S" (try (plist-member (list 'a 1) (p 'a))))
+    (message "9 %S" (try (let ((h (make-hash-table :test 'eq))) (puthash 'k 1 h) (gethash (p 'k) h))))
+    (message "10 %S" (try (rassq (p 'v) '((1 . v)))))
+    (message "11 %S" (try (delq (p 'a) (list 'a 'b 'a))))
+    (message "12 %S" (try (remq (p 'a) (list 'a 'b 'a))))
+    (message "13 %S" (try (alist-get (p 'a) '((a . 1)))))
+    )))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(put 'zcat 'zprop 42)
+(let ((symbols-with-pos-enabled t))
+  (with-temp-buffer
+    (insert "abcd")
+    (put-text-property 1 3 (p 'category) 'zcat)
+    (message "1 %S" (try (list (text-properties-at 1) (get-text-property 1 'zprop) (get-char-property 1 'zprop) (get-text-property 1 'category)))))
+  (with-temp-buffer
+    (insert "abcd")
+    (put-text-property 1 3 'category 'zcat)
+    (message "2 %S" (try (list (text-properties-at 1) (get-text-property 1 'zprop)))))
+  (message "3 %S" (try (get-text-property 0 'zprop (propertize "ab" (p 'category) 'zcat))))
+  (message "4 %S" (try (get-text-property 0 'zprop (propertize "ab" 'category 'zcat)))))
+(with-temp-buffer
+    (insert "abcd")
+    (put-text-property 1 3 'category 'zcat)
+    (message "5 %S" (try (list (text-properties-at 1) (get-text-property 1 'zprop))))))"##,
+        r##"(progn
+(defun p (s) (position-symbol s 3))
+(put 'zcat 'zprop 42)
+(let ((symbols-with-pos-enabled t))
+  (with-temp-buffer
+    (insert "abcd")
+    (put-text-property 1 3 'category (p 'zcat))
+    (message "1 %S" (list (text-properties-at 1) (get-text-property 1 'zprop)))
+    (put-text-property 1 3 (p 'category) 'zcat)
+    (message "2 %S" (list (text-properties-at 1) (get-text-property 1 'zprop)))
+    (put-text-property 1 3 'category 'zcat)
+    (message "3 %S" (list (text-properties-at 1) (get-text-property 1 'zprop))))))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(message "1 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(let ((zx 1)) (defvar ,(p 'zx)) (let ((symbols-with-pos-enabled nil)) (let ((zx 2)) (list zx (boundp 'zx))))) t))))
+(message "2 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(let ((zy 1)) (defvar ,(p 'zy)) (let ((zy 2)) (list zy (boundp 'zy)))) t))))
+(message "3 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(let ((zw 1)) (defvar ,(p 'zw)) (lambda () zw)) t))))
+(message "4 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(let ((,(p 'zv) 1)) (lambda () zv)) t))))
+(message "5 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(function (lambda (,(p 'a1)) a1)) t))))
+(message "6 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(let ((,(p 'zu) 1)) (let ((symbols-with-pos-enabled nil)) zu)) t)))))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(with-temp-buffer
+  (insert "abcdef")
+  (put 'zcat 'evaporate t)
+  (let ((o (make-overlay 2 4)))
+    (overlay-put o 'category 'zcat)
+    (delete-region 2 4)
+    (message "1 cat %S" (overlay-buffer o))))
+(let ((symbols-with-pos-enabled t))
+ (with-temp-buffer
+  (insert "abcdef")
+  (let ((o (make-overlay 2 4)))
+    (overlay-put o (p 'evaporate) t)
+    (delete-region 2 4)
+    (message "2 swp %S" (overlay-buffer o)))
+  (let ((o (make-overlay 2 4)))
+    (overlay-put o (p 'evaporate) t)
+    (move-overlay o 3 3)
+    (message "3 swp-move %S" (overlay-buffer o)))
+  (let ((o (make-overlay 1 3)))
+    (overlay-put o (p 'face) 'bold)
+    (message "4 %S" (list (overlay-get o 'face) (get-char-property 1 'face) (get-pos-property 1 'face))))
+  (let ((o (make-overlay 1 3)))
+    (overlay-put o (p 'priority) 5)
+    (overlay-put o 'pz 1)
+    (message "5 %S" (try (mapcar (lambda (x) (overlay-get x 'priority)) (overlays-at 1 t)))))
+  (put-text-property 1 3 (p 'invisible) t)
+  (message "6 %S" (list (invisible-p 1) (get-text-property 1 'invisible) (text-properties-at 1)))
+  (put-text-property 1 3 'invisible nil)
+  (message "7 %S" (text-properties-at 1))
+  (add-text-properties 1 3 (list 'kk 1))
+  (add-text-properties 1 3 (list (p 'kk) 2))
+  (message "8 %S" (text-properties-at 1))
+  (set-text-properties 1 3 (list (p 'q1) 1 'q1 2))
+  (message "9 %S" (list (get-text-property 1 'q1) (text-properties-at 1)))
+  (remove-text-properties 1 3 (list (p 'q1) nil))
+  (message "10 %S" (text-properties-at 1))
+  )))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defun p (s) (position-symbol s 3))
+(defvar zf1 (let ((symbols-with-pos-enabled t)) (eval `(let ((,(p 'lv) 2)) (lambda () lv)) t)))
+(message "1 %S" zf1)
+(message "2 %S" (try (funcall zf1)))
+(message "3 %S" (let ((symbols-with-pos-enabled t)) (try (funcall zf1))))
+(defvar zf2 (eval `(let ((lv 5)) (lambda () ,(p 'lv))) t))
+(message "4 %S" (try (funcall zf2)))
+(message "5 %S" (let ((symbols-with-pos-enabled t)) (try (funcall zf2))))
+(defvar zf3 (let ((symbols-with-pos-enabled t)) (eval `(let ((,(p 'lv) 2)) (lambda () (setq lv 9) lv)) t)))
+(message "6 %S" (try (funcall zf3)))
+(message "7 %S" zf3)
+(message "8 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(let ((,(p 'lv) 2) (lv 3)) lv) t))))
+(message "9 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(let* ((lv 2) (,(p 'lv) 4)) lv) t))))
+(message "10 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(funcall (lambda (,(p 'av)) av) 7) t))))
+(message "11 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(funcall (lambda (av) ,(p 'av)) 7) t))))
+(message "12 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(let ((x 1)) (defvar ,(p 'x)) (let ((x 2)) (list x (symbol-value 'x)))) t))))
+(message "13 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(condition-case ,(p 'err) (error "boo") (error err)) t))))
+(message "14 %S" (let ((symbols-with-pos-enabled t)) (try (eval `(condition-case ,(p 'err) (error "boo") (error (lambda () err))) t)))))"##,
+        r##"(progn
+(defmacro try (&rest f) `(condition-case e (progn ,@f) (error (list 'ERR e))))
+(defvar zs (position-symbol 'foo 3))
+(message "0 %S" (list (eq zs 'foo) (local-variable-if-set-p 'symbols-with-pos-enabled) (special-variable-p 'symbols-with-pos-enabled)))
+(with-temp-buffer
+  (setq-local symbols-with-pos-enabled t)
+  (message "1 %S" (list (eq zs 'foo) (memq zs '(foo)) (assq zs '((foo . 1))) (get-text-property 0 'foo (propertize "a" zs 1))))
+  (let ((b (current-buffer)))
+    (with-temp-buffer
+      (message "2 %S" (list symbols-with-pos-enabled (eq zs 'foo) (get-text-property 0 'foo (propertize "a" zs 1)))))
+    (message "3 %S" (list symbols-with-pos-enabled (eq zs 'foo)))))
+(message "4 %S" (list symbols-with-pos-enabled (eq zs 'foo)))
+(setq symbols-with-pos-enabled t)
+(makunbound 'symbols-with-pos-enabled)
+(message "5 %S" (list (boundp 'symbols-with-pos-enabled) (eq zs 'foo) (memq zs '(foo)) (get-text-property 0 'foo (propertize "a" zs 1))
+   (with-temp-buffer (insert "ab") (put-text-property 1 2 zs 1) (get-text-property 1 'foo))))
+(setq symbols-with-pos-enabled nil)
+(message "6 %S" (list (eq zs 'foo)))
+(let ((symbols-with-pos-enabled t))
+  (message "7 %S" (list (eq zs 'foo) (catch 'a (let ((symbols-with-pos-enabled nil)) (throw 'a (eq zs 'foo)))) (eq zs 'foo)))
+  (message "8 %S" (try (let ((symbols-with-pos-enabled nil)) (error "x")) ))
+  (message "9 %S" (eq zs 'foo)))
+(message "10 %S" (eq zs 'foo)))"##,
+        r##"(progn
+(defvar zs (position-symbol 'foo 3))
+(defvar zr nil)
+(let ((symbols-with-pos-enabled t))
+  (let ((th (make-thread (lambda () (setq zr (list symbols-with-pos-enabled (eq zs 'foo) (get-text-property 0 'foo (propertize "a" zs 1))))))))
+    (thread-join th)
+    (message "1 %S %S" zr (list symbols-with-pos-enabled (eq zs 'foo)))))
+(let ((th (make-thread (lambda () (let ((symbols-with-pos-enabled t)) (thread-yield) (setq zr (list (eq zs 'foo) (memq zs '(foo)))))))))
+  (thread-yield)
+  (message "2 %S" (list symbols-with-pos-enabled (eq zs 'foo) (memq zs '(foo)) (get-text-property 0 'foo (propertize "a" zs 1))))
+  (thread-join th)
+  (message "3 %S" zr)))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
 }
 
 #[test]

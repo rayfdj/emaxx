@@ -251,10 +251,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "kbd_macro_iterations",
         "macros.c's executing_kbd_macro_iterations, a count Fexecute_kbd_macro resets",
     ),
-    (
-        "symbols_with_positions_enabled",
-        "the forwarded C slot of symbols-with-pos-enabled, refilled likewise",
-    ),
     ("lisp_eval_depth", "eval.c:init_eval resets lisp_eval_depth"),
     (
         "garbage_collection_inhibited",

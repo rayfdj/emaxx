@@ -874,16 +874,14 @@ impl Interpreter {
     }
 
     /// Fdefvar without a value under lexical binding:
-    /// `Vinternal_interpreter_environment = Fcons (sym, ...)' -- the bare
-    /// symbol stored into the current environment, no specpdl entry, so
-    /// the declaration lasts to the end of the enclosing scope (the file,
-    /// at top level).  `let's of the name in that scope bind dynamically
-    /// (Flet's Fmemq) without the global special flag.
-    pub(crate) fn push_local_special_declaration(&mut self, symbol: &SymbolName, env: &mut Env) {
-        let declared = Value::cons(
-            Value::Symbol(*symbol),
-            crate::lisp::types::current_environment_value(env),
-        );
+    /// `Vinternal_interpreter_environment = Fcons (sym, ...)' -- SYM as
+    /// the caller gave it (a symbol with position kept) stored into the
+    /// current environment, no specpdl entry, so the declaration lasts to
+    /// the end of the enclosing scope (the file, at top level).  `let's of
+    /// the name in that scope bind dynamically (Flet's Fmemq) without the
+    /// global special flag.
+    pub(crate) fn push_local_special_declaration(&mut self, given: Value, env: &mut Env) {
+        let declared = Value::cons(given, crate::lisp::types::current_environment_value(env));
         match env.last_mut() {
             Some(frame) => frame.set_environment(declared),
             None => env.push(EnvFrame::from_alist(declared)),
@@ -896,7 +894,11 @@ impl Interpreter {
     /// bare symbols installed or mutated after a closure was constructed.
     pub(crate) fn local_special_active(&self, symbol: &SymbolName, env: &Env) -> bool {
         crate::lisp::types::current_environment(env).is_some_and(|environment| {
-            crate::lisp::types::environment_declares_special(environment, symbol)
+            crate::lisp::types::environment_declares_special_with(
+                environment,
+                symbol,
+                self.symbols_with_positions_enabled(),
+            )
         })
     }
 
@@ -947,13 +949,20 @@ impl Interpreter {
         };
         let mut tortoise = crate::lisp::types::ConsCell::identity(&cell);
         let (mut power, mut steps) = (2usize, 0usize);
+        // EQ: a key that is a symbol with position stands for its symbol
+        // while `symbols-with-pos-enabled' is set.
+        let with_pos = self.globals.symbols_with_pos_enabled().get();
+        let is_property = |key: Value| match key.kind() {
+            Kind::Symbol(key) => key == *property,
+            Kind::Nil => property.is_named("nil"),
+            Kind::T => property.is_named("t"),
+            _ => false,
+        };
         loop {
-            let matches = match cell.car.get().kind() {
-                Kind::Symbol(key) => key == *property,
-                Kind::Nil => property.is_named("nil"),
-                Kind::T => property.is_named("t"),
-                _ => false,
-            };
+            let key = cell.car.get();
+            let matches = is_property(key)
+                || (with_pos
+                    && matches!(key.kind(), Kind::SymbolWithPos(positioned) if is_property(positioned.symbol())));
             let next = {
                 let rest = cell.cdr.get();
                 let Kind::Cons(value_cell) = (rest).kind() else {
@@ -1603,7 +1612,9 @@ impl Interpreter {
             }
             // symbols-with-pos-enabled
             7 => {
-                self.symbols_with_positions_enabled.set(value.is_truthy());
+                self.globals
+                    .symbols_with_pos_enabled()
+                    .set(value.is_truthy());
             }
             // undo-inhibit-record-point
             8 => self.set_undo_inhibit_record_point(value.is_truthy()),
@@ -1696,14 +1707,18 @@ impl Interpreter {
         }
     }
 
+    /// data.c's C variable symbols_with_pos_enabled: the one this editor's
+    /// symbol table holds, which lisp.h's EQ reads where no interpreter is
+    /// at hand (`types::eq').
+    #[inline]
     pub(crate) fn symbols_with_positions_enabled(&self) -> bool {
-        self.symbols_with_positions_enabled.get()
+        self.globals.symbols_with_pos_enabled().get()
     }
 
     /// comp.c connects loaded code directly to the same bool that
     /// store_symval_forwarding changes. There is no per-native-call snapshot.
     pub(crate) fn symbols_with_positions_relocation(&self) -> *mut bool {
-        self.symbols_with_positions_enabled.as_ptr()
+        self.globals.symbols_with_pos_enabled().as_ptr()
     }
 
     pub(crate) fn quit_flag_is_nil(&self) -> bool {
@@ -2063,15 +2078,30 @@ impl Interpreter {
         symbol: &SymbolName,
         value: Value,
     ) -> Result<bool, LispError> {
+        self.check_constant_assignment_given(symbol, Value::Symbol(*symbol), value)
+    }
+
+    /// set_internal's SYMBOL_NOWRITE case for SYMBOL, the bare symbol of
+    /// GIVEN, the object the caller passed: a keyword set to its own
+    /// value is no change, any other store `(setting-constant GIVEN)'.
+    pub(crate) fn check_constant_assignment_given(
+        &self,
+        symbol: &SymbolName,
+        given: Value,
+        value: Value,
+    ) -> Result<bool, LispError> {
         if !symbol.cell().is_constant() {
             return Ok(false);
         }
-        if symbol.is_keyword() && self.symbol_value_cell_symbol(symbol)? == value {
+        // `!EQ (newval, Fsymbol_value (symbol))'.
+        if symbol.is_keyword()
+            && crate::lisp::types::eq(self.symbol_value_cell_symbol(symbol)?, value)
+        {
             return Ok(true);
         }
         Err(LispError::SignalValue(Value::list([
             Value::symbol("setting-constant"),
-            Value::Symbol(*symbol),
+            given,
         ])))
     }
 
@@ -3286,7 +3316,9 @@ impl Interpreter {
         if !base.is_nil() {
             let base = indirect(base);
             while frames
-                .next_if(|(_, frame)| !indirect(frame.function_snapshot()).eq_value(base))
+                .next_if(|(_, frame)| {
+                    !crate::lisp::types::eq(indirect(frame.function_snapshot()), base)
+                })
                 .is_some()
             {}
             let mut offset = offset;
@@ -3814,7 +3846,7 @@ impl Interpreter {
             let mut frames = self.backtrace_frames.iter().rev().skip(1);
             let mut frame = frames.next();
             if frame.is_some_and(|frame| {
-                matches!(frame.function_snapshot().kind(), Kind::Symbol(name) if name.is_named("error"))
+                crate::lisp::types::eq_symbol_named(frame.function_snapshot(), "error")
             }) {
                 frame = frames.next();
             }
@@ -4109,12 +4141,15 @@ impl Interpreter {
             .map(|restriction| restriction.label)
     }
 
-    /// EQ (labeled_restrictions_peek_label (BUFFER_ID), LABEL).
+    /// EQ (labeled_restrictions_peek_label (BUFFER_ID), LABEL): lisp.h's EQ,
+    /// under which a symbol with position is its symbol while
+    /// symbols-with-pos-enabled.  The outermost restriction's label is the
+    /// uninterned Qoutermost_restriction, which no LABEL is.
     pub(crate) fn labeled_restriction_label_is(&self, buffer_id: u64, label: Value) -> bool {
         match self.labeled_restrictions_peek(buffer_id) {
-            None => label.is_nil(),
+            None => crate::lisp::primitives::lisp_eq(self, &Value::Nil, &label),
             Some(None) => false,
-            Some(Some(innermost)) => innermost.word() == label.word(),
+            Some(Some(innermost)) => crate::lisp::primitives::lisp_eq(self, &innermost, &label),
         }
     }
 

@@ -103,7 +103,7 @@ pub(crate) fn print(
         if let Some(table) = number_table(interp) {
             let once = table
                 .entries()
-                .filter(|(_, _, state)| state.word() == Value::T.word())
+                .filter(|(_, _, state)| crate::lisp::types::eq(*state, Value::T))
                 .map(|(slot, _, _)| slot)
                 .collect::<Vec<_>>();
             for slot in once {
@@ -563,6 +563,7 @@ impl Printer {
     ) -> Result<Step, LispError> {
         self.out.push_str("#s(hash-table");
         let test = table.test_name();
+        // `!BASE_EQ (h->test->name, Qeql)'.
         if !matches!(test.kind(), Kind::Symbol(name) if name.is_named("eql")) {
             self.out.push_str(" test ");
             self.print_object(interp, env, test, escape)?;
@@ -626,7 +627,7 @@ impl Printer {
                         let mut labelled = false;
                         if self.options.circle {
                             let num = number_table_get(interp, env, &next)?;
-                            labelled = !(num.is_nil() || num.word() == Value::T.word());
+                            labelled = !(num.is_nil() || crate::lisp::types::eq(num, Value::T));
                         }
                         if labelled {
                             self.out.push_str(" . ");

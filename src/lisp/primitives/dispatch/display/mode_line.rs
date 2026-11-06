@@ -98,8 +98,9 @@ fn primitive(
     super::super::call(interp, name, args, env)
 }
 
+/// lisp.h's EQ.
 fn eq(a: Value, b: Value) -> bool {
-    a.word() == b.word()
+    crate::lisp::types::eq(a, b)
 }
 
 fn string_chars(value: &Value) -> Vec<char> {
@@ -253,7 +254,7 @@ impl<'a> ModeLine<'a> {
                 Kind::Cons(cell) => {
                     let car = cell.car.get();
                     let cdr = cell.cdr.get();
-                    if matches!(car.kind(), Kind::Symbol(name) if name.is_named(":eval")) {
+                    if crate::lisp::types::eq_symbol_named(car, ":eval") {
                         // (:eval FORM): FORM's value as a mode line element.
                         if risky {
                             break 'tail_recurse;
@@ -273,7 +274,7 @@ impl<'a> ModeLine<'a> {
                         }
                         break 'tail_recurse;
                     }
-                    if matches!(car.kind(), Kind::Symbol(name) if name.is_named(":propertize")) {
+                    if crate::lisp::types::eq_symbol_named(car, ":propertize") {
                         // (:propertize ELT PROPS...): ELT with PROPS.
                         if risky {
                             break 'tail_recurse;
@@ -948,7 +949,7 @@ fn handle_display_spec(
     for spec in specs {
         let mut spec = spec;
         if let Kind::Cons(cell) = spec.kind()
-            && matches!(cell.car.get().kind(), Kind::Symbol(name) if name.is_named("when"))
+            && crate::lisp::types::eq_symbol_named(cell.car.get(), "when")
         {
             let Kind::Cons(rest) = cell.cdr.get().kind() else {
                 continue;
@@ -976,10 +977,10 @@ fn handle_display_spec(
         match spec.kind() {
             Kind::Cons(cell) => {
                 let head = cell.car.get();
-                if matches!(head.kind(), Kind::Symbol(name) if name.is_named("min-width")) {
+                if crate::lisp::types::eq_symbol_named(head, "min-width") {
                     let width = cell.cdr.get().car().unwrap_or(Value::Nil);
                     display_min_width(interp, row, string, width, face);
-                } else if matches!(head.kind(), Kind::Symbol(name) if name.is_named("space")) {
+                } else if crate::lisp::types::eq_symbol_named(head, "space") {
                     let plist = cell.cdr.get().to_vec().unwrap_or_default();
                     let width = row.cells.stretch(interp, &plist, row.x);
                     row.stretch(width, face, true);
@@ -1894,7 +1895,7 @@ pub(super) fn display_mode_line(
                 ],
             )
         };
-        if matches!(compact_value.kind(), Kind::Symbol(name) if name.is_named("long"))
+        if crate::lisp::types::eq_symbol_named(compact_value, "long")
             && window_total_columns(interp, window_id).max(0) as usize >= chars.len()
         {
             ml.display_string(interp, env, None, Some(mode_string), None, 0, 0, 0)?;

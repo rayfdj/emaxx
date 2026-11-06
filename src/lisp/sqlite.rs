@@ -329,8 +329,7 @@ fn bind_values(
                 if coding_system.is_nil() {
                     // Default to utf-8.
                     bind_text(stmt, index, &encode_string(&string)?)
-                } else if matches!(coding_system.kind(), Kind::Symbol(symbol) if symbol.is_named("binary"))
-                {
+                } else if crate::lisp::types::eq_symbol_named(coding_system, "binary") {
                     if bytes.len() != string.text.chars().count() {
                         return Err(sqlite_error("BLOB values must be unibyte"));
                     }
@@ -361,7 +360,7 @@ fn bind_values(
         } else {
             // SAFETY: binding a scalar to the caller's statement.
             unsafe {
-                match value.kind() {
+                match crate::lisp::types::eq_dispatch(value).kind() {
                     Kind::Integer(number) => ffi::sqlite3_bind_int64(stmt, index, number),
                     // bignum_to_intmax: 0 for one beyond intmax_t.
                     Kind::BigInteger(number) => {
@@ -655,7 +654,7 @@ fn sqlite_select(
         }
     }
     // Return a handle to get the data.
-    if matches!(return_type.kind(), Kind::Symbol(symbol) if symbol.is_named("set")) {
+    if crate::lisp::types::eq_symbol_named(return_type, "set") {
         let name = match args[0].kind() {
             Kind::Record(id) => match interp.find_sqlite_handle(id.id) {
                 Some(SqliteHandleState::Database(state)) => state.name.clone(),
@@ -680,7 +679,7 @@ fn sqlite_select(
         while unsafe { ffi::sqlite3_step(stmt) } == ffi::SQLITE_ROW {
             data.push(row_to_value(interp, env, stmt)?);
         }
-        if matches!(return_type.kind(), Kind::Symbol(symbol) if symbol.is_named("full")) {
+        if crate::lisp::types::eq_symbol_named(return_type, "full") {
             Ok(Value::cons(
                 column_names(interp, env, stmt)?,
                 Value::list(std::mem::take(&mut data)),

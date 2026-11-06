@@ -80,17 +80,19 @@ fn dump_with_context(
     filename: &Value,
     track_referrers: Option<&Value>,
 ) -> Result<Value, LispError> {
-    let Some(name) = string_like(filename).map(|string| string.text) else {
+    // CHECK_STRING; Fexpand_file_name (filename, Qnil); ENCODE_FILE.
+    if !filename.is_string() {
         return Err(LispError::WrongTypeArgument("stringp".into(), *filename));
-    };
-    let filename = super::system::expand_file_name_runtime(interp, env, &name, None)?;
+    }
+    let filename = super::system::fexpand_file_name(interp, env, *filename, Value::Nil)?;
+    let filename = super::system::encode_file_value(interp, env, filename)?;
     // record_unwind_protect_ptr (dump_unwind_cleanup, ctx); block_input ():
     // Emaxx has no asynchronous input handler to block.
     let context = DumpContextVariables::enter(interp);
     let result = write_dump(
         interp,
         env,
-        &filename,
+        filename,
         track_referrers.is_some_and(|value| value.is_truthy()),
     );
     context.leave(interp);
@@ -138,13 +140,14 @@ impl DumpContextVariables {
 }
 
 /// From `emacs_open (SSDATA (filename), O_RDWR | O_TRUNC | O_CREAT, 0666)'
-/// on.  The image is built in memory and written once at the end, as
+/// on, FILENAME the expanded name ENCODE_FILE gave, which the errors
+/// name.  The image is built in memory and written once at the end, as
 /// GNU's is; a failure before that leaves the truncated, empty file, as
 /// GNU's does.  The startup reconstruction hands off before the open.
 fn write_dump(
     interp: &mut Interpreter,
     env: &mut crate::lisp::types::Env,
-    filename: &str,
+    filename: Value,
     track_referrers: bool,
 ) -> Result<Value, LispError> {
     if interp.image_reconstruction_handoff {
@@ -158,15 +161,10 @@ fn write_dump(
             .create(true)
             .truncate(true)
             .mode(0o666)
-            // ENCODE_FILE.
-            .open(super::system::host_file_name(interp, env, filename)?)
+            .open(super::system::encoded_host_path(&filename))
     }
     .map_err(|error| {
-        LispError::SignalValue(super::file_io::file_operation_error_value(
-            "Opening dump output",
-            &error,
-            filename,
-        ))
+        super::file_io::report_file_errno(interp, "Opening dump output", filename, &error)
     })?;
     let mut ctx = DumpContext::new(track_referrers, interp.main_thread_record_id());
     let summary = match write_image(&mut ctx, interp, RootSource::Interpreter) {
@@ -180,11 +178,13 @@ fn write_dump(
         }
         Err(DumpError::Lisp(error)) => return Err(error),
     };
-    if file.write_all(ctx.buffer()).is_err() {
-        return Err(LispError::SignalValue(super::file_io::file_error_value(
+    if let Err(error) = file.write_all(ctx.buffer()) {
+        return Err(super::file_io::report_file_errno(
+            interp,
             "Could not write to dump file",
             filename,
-        )));
+            &error,
+        ));
     }
     if !dump_messages_suppressed() {
         eprint!("{}", summary.report());

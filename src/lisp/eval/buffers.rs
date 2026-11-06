@@ -275,11 +275,12 @@ impl Interpreter {
             return;
         }
         let current_id = self.current_buffer_id();
+        let aliases = self.property_alias_alist();
         for buffer_id in related {
             if *buffer_id != current_id
                 && let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id)
             {
-                buffer.overlays.delete_gap(from, to - from);
+                buffer.overlays.delete_gap_with(from, to - from, aliases);
             }
         }
         self.fetch_family_positions(related);
@@ -313,6 +314,12 @@ impl Interpreter {
             return true;
         }
         false
+    }
+
+    /// Vchar_property_alias_alist as the current buffer holds it.
+    pub(crate) fn property_alias_alist(&self) -> Value {
+        self.symbol_value_key(cached_symbol!("char-property-alias-alist"))
+            .unwrap_or(Value::Nil)
     }
 
     /// The variables an insertion into the current buffer reads, when its
@@ -418,7 +425,9 @@ impl Interpreter {
                 {
                     buffer.overlays.insert_gap(to, inschars, true);
                     if to > from {
-                        buffer.overlays.delete_gap(from, to - from);
+                        buffer
+                            .overlays
+                            .delete_gap_with(from, to - from, vars.aliases);
                     }
                 }
             }
@@ -477,14 +486,12 @@ impl Interpreter {
             self.marker_adjustments_for_delete(self.current_buffer_id(), from, to)
         };
         let related = self.related_buffer_ids(self.current_buffer_id());
-        let deleted = if ret_string {
-            Some(self.buffer.borrow_mut().delete_region(from, to)?)
-        } else {
-            self.buffer
-                .borrow_mut()
-                .delete_region_unreturned(from, to)?;
-            None
-        };
+        // evaporate_overlays' Foverlay_get reads the alternatives.
+        let aliases = self.property_alias_alist();
+        let deleted = self
+            .buffer
+            .borrow_mut()
+            .delete_region_aliased(from, to, ret_string, aliases)?;
         self.buffer
             .borrow_mut()
             .record_marker_adjustments(marker_adjustments);

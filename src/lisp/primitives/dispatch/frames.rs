@@ -74,7 +74,7 @@ fn assq_entry(alist: Value, prop: Value) -> Result<Option<Value>, LispError> {
     while let Some((entry, rest)) = tail.cons_values() {
         if entry
             .cons_values()
-            .is_some_and(|(key, _)| key.eq_value(prop))
+            .is_some_and(|(key, _)| crate::lisp::types::eq(key, prop))
         {
             return Ok(Some(entry));
         }
@@ -366,7 +366,7 @@ fn store_frame_parameter(
             if !old.is_nil() {
                 if is_window_record(interp, old) && val.is_nil() {
                     val = old;
-                } else if !old.eq_value(val) {
+                } else if !crate::lisp::types::eq(old, val) {
                     return Err(crate::lisp::primitives::values::doprnt_error(
                         interp,
                         "Can't change the `minibuffer' parameter of this frame",
@@ -384,7 +384,7 @@ fn store_frame_parameter(
     .map(SymbolKey::name)
     {
         let old = get_frame_param(id, prop);
-        if !old.eq_value(val) && !val.is_nil() {
+        if !crate::lisp::types::eq(old, val) && !val.is_nil() {
             let live = |value: Value| matches!(value.kind(), Kind::Frame(frame) if interp.frame_is_live(frame));
             if !live(val) {
                 return Err(crate::lisp::primitives::values::doprnt_error(
@@ -900,11 +900,11 @@ define_dispatch!(
             "frame-parameter" => {
                 need_args(name, args, 2)?;
                 let id = decode_frame(interp, args.first(), true, false)?;
-                if !matches!(args[1].kind(), Kind::Symbol(_) | Kind::Nil | Kind::T) {
-                    return Err(wrong_type_argument("symbolp", args[1]));
-                }
+                // CHECK_SYMBOL; the EQ tests and Fassq below then see a
+                // symbol with position as its symbol.
+                let parameter = crate::lisp::primitives::check_symbol(interp, args[1])?;
                 if interp.frame_is_live(id) {
-                    frame_parameter_of(interp, id, args[1])
+                    frame_parameter_of(interp, id, parameter)
                 } else {
                     Ok(Value::Nil)
                 }

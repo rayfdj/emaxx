@@ -267,6 +267,59 @@ pub(crate) fn set_window_marker_restricted(
     set_window_marker(interp, window_id, slot, buffer_id, charpos.clamp(begv, zv));
 }
 
+/// marker.c:set_marker_restricted of SLOT's marker to POSITION in
+/// BUFFER_ID, the window's buffer (set_marker_internal with RESTRICTED):
+/// nil, a marker pointing nowhere or a dead buffer unchains it; a marker
+/// of that buffer, when SLOT's marker is in it already, lends its
+/// positions as they are; a fixnum's or another marker's position is
+/// clipped to the accessible portion; anything else is
+/// `(wrong-type-argument integer-or-marker-p POSITION)'.
+pub(crate) fn set_window_marker_restricted_value(
+    interp: &mut Interpreter,
+    window_id: u64,
+    slot: usize,
+    buffer_id: u64,
+    position: &Value,
+) -> Result<(), LispError> {
+    let buffer = interp.buffer_object(buffer_id);
+    let Some(marker) = window_marker_for_set(interp, window_id, slot) else {
+        return Ok(());
+    };
+    let buffer = match buffer {
+        Some(buffer) if !position.is_nil() => buffer,
+        _ => {
+            marker.detach();
+            return Ok(());
+        }
+    };
+    if let Kind::Marker(source) = position.kind() {
+        let Some(source_buffer) = source.buffer() else {
+            marker.detach();
+            return Ok(());
+        };
+        // "Optimize the special case where we are copying the position of
+        // an existing marker, and MARKER is already in the same buffer."
+        if source_buffer.ptr_eq(&buffer) && marker.buffer().is_some_and(|own| own.ptr_eq(&buffer)) {
+            marker.set_positions(source.last_position(), source.bytepos());
+            return Ok(());
+        }
+    }
+    let charpos = match position.kind() {
+        Kind::Integer(charpos) => charpos,
+        Kind::Marker(source) => source.last_position() as i64,
+        _ => {
+            return Err(LispError::WrongTypeArgument(
+                "integer-or-marker-p".into(),
+                *position,
+            ));
+        }
+    };
+    let (begv, zv) = buffer_point_bounds(interp, buffer_id);
+    let charpos = clip_to_bounds(begv as i64, charpos, zv as i64) as usize;
+    set_window_marker(interp, window_id, slot, buffer_id, charpos);
+    Ok(())
+}
+
 /// marker.c:unchain_marker on WINDOW_ID's three markers, as
 /// delete_window and delete_all_child_windows do: they point nowhere.
 pub(crate) fn unchain_window_markers(interp: &Interpreter, window_id: u64) {
@@ -560,24 +613,22 @@ pub(crate) fn record_window_display(
     }
 }
 
-/// window.c Fset_window_start: the exact position, clamped to the
-/// accessible region; redisplay must show it (force_start) unless
-/// NOFORCE, and treats it as not known to begin a line.
+/// window.c Fset_window_start past decode_live_window: the start marker
+/// set_marker_restricted to POS in the window's buffer; redisplay must
+/// show it (force_start) unless NOFORCE, and treats it as not known to
+/// begin a line.
 pub(crate) fn set_window_start_value(
     interp: &mut Interpreter,
-    window: &Value,
-    start: usize,
+    id: u64,
+    pos: &Value,
     noforce: bool,
 ) -> Result<(), LispError> {
-    let window = if window.is_nil() {
-        interp.selected_window_value()
-    } else {
-        *window
-    };
-    let Some(id) = window_record_id_from_value(interp, &window) else {
-        return Err(LispError::WrongTypeArgument("windowp".into(), window));
-    };
-    set_window_start_marker(interp, id, start);
+    // set_marker_restricted (w->start, pos, w->contents): its live_buffer
+    // is decode_buffer's, the current buffer for the nil contents of a
+    // deleted selected window, which decode_live_window gives for nil.
+    let buffer_id =
+        window_buffer_id(interp, &interp.record_value(id)).unwrap_or(interp.current_buffer_id());
+    set_window_marker_restricted_value(interp, id, WINDOW_START_SLOT, buffer_id, pos)?;
     set_window_flag(interp, id, WINDOW_START_AT_LINE_BEG_SLOT, false);
     if !noforce {
         set_window_flag(interp, id, WINDOW_FORCE_START_SLOT, true);
@@ -802,7 +853,7 @@ fn motion_from_start(
     start: usize,
     pos: usize,
     limit: usize,
-) -> (i64, i64) {
+) -> Result<(i64, i64), LispError> {
     let mut rows = 0i64;
     let mut cursor = start;
     while (rows as usize) < limit && pos >= cursor {
@@ -813,19 +864,15 @@ fn motion_from_start(
         cursor = next;
         rows += 1;
     }
+    // indent.c's current_column_1 of a position from its line's start,
+    // its error let through.
     let column_at = |interp: &mut Interpreter, env: &mut Env, at: usize| {
-        let saved = interp.buffer.borrow().point();
-        interp.buffer.borrow_mut().goto_char(at);
-        let column = super::dispatch::call(interp, "current-column", &[], env)
-            .ok()
-            .and_then(|value| value.integer_value())
-            .unwrap_or(0);
-        interp.buffer.borrow_mut().goto_char(saved);
-        column
+        let line_start = super::buffers::line_beginning_at(interp, at);
+        super::buffers::column_at(interp, env, line_start, at).map(|column| column as i64)
     };
     let row_start = move_screen_lines_in(interp, env, window_id, pos, 0).0;
-    let hpos = column_at(interp, env, pos) - column_at(interp, env, row_start);
-    (rows, hpos.max(0))
+    let hpos = column_at(interp, env, pos)? - column_at(interp, env, row_start)?;
+    Ok((rows, hpos.max(0)))
 }
 
 /// window.c window_scroll_line_based on the selected window, whose
@@ -881,7 +928,7 @@ pub(crate) fn window_scroll(
             .is_ok_and(|value| value.is_truthy());
         original = if vpos <= 0 || !scroll_command {
             let (vpos, hpos) =
-                motion_from_start(interp, env, window_id, startpos, opoint, text_height);
+                motion_from_start(interp, env, window_id, startpos, opoint, text_height)?;
             let saved = (hpos + hscroll, vpos);
             SCROLL_PRESERVE.with(|cell| cell.set(saved));
             saved

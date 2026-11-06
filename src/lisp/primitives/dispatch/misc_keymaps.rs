@@ -206,7 +206,7 @@ fn key_binding_value(
             && let Kind::Symbol(name) = head.kind()
             && interp
                 .get_symbol_property_of(&name, &cached_symbol!("event-kind").with(Clone::clone))
-                .is_some_and(|kind| kind.eq_value(Value::symbol("mouse-click")))
+                .is_some_and(|kind| crate::lisp::types::eq(kind, Value::symbol("mouse-click")))
         {
             position = start;
         }
@@ -306,96 +306,6 @@ fn thread_object_name(name: Option<&Value>) -> Result<Value, LispError> {
         Some(name) if name.is_nil() || name.is_string() => Ok(*name),
         Some(name) => Err(LispError::WrongTypeArgument("stringp".into(), *name)),
     }
-}
-
-fn vector_index_description(index: u32) -> Result<String, LispError> {
-    key_sequence_binding_text(&Value::vector([Value::Integer(i64::from(index))]))
-}
-
-fn describe_vector_value(
-    interp: &mut Interpreter,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    need_arg_range("describe-vector", args, 1, 2)?;
-    let mut ranges = Vec::<(u32, u32, Value)>::new();
-    match args[0].kind() {
-        Kind::CharTable(table_id) => {
-            for entry in interp
-                .char_table_effective_ranges(table_id)
-                .unwrap_or_default()
-            {
-                if entry.value.is_nil() {
-                    continue;
-                }
-                if let Some((_, end, previous)) = ranges.last_mut()
-                    && end.saturating_add(1) == entry.start
-                    && values_equal(interp, previous, &entry.value)?
-                {
-                    *end = entry.end;
-                } else {
-                    ranges.push((entry.start, entry.end, entry.value));
-                }
-            }
-        }
-        vector if is_vector_value(&vector.value()) => {
-            for (index, value) in vector_items(&vector.value())?.into_iter().enumerate() {
-                if value.is_nil() {
-                    continue;
-                }
-                let index = u32::try_from(index)
-                    .map_err(|_| LispError::Signal("Vector is too large".into()))?;
-                if let Some((_, end, previous)) = ranges.last_mut()
-                    && end.saturating_add(1) == index
-                    && values_equal(interp, previous, &value)?
-                {
-                    *end = index;
-                } else {
-                    ranges.push((index, index, value));
-                }
-            }
-        }
-        other => {
-            // CHECK_VECTOR_OR_CHAR_TABLE: the object is the datum.
-            return Err(wrong_type_argument("vector-or-char-table-p", other.value()));
-        }
-    }
-
-    let describer = args
-        .get(1)
-        .filter(|value| !value.is_nil())
-        .cloned()
-        .unwrap_or_else(|| Value::Symbol("princ".into()));
-    let output_buffer = Value::Buffer(interp.buffer);
-    let restore = interp.bind_special_key(cached_symbol!("standard-output"), output_buffer, env)?;
-    let mut result = (|| -> Result<Value, LispError> {
-        let mut first = true;
-        for (start, end, value) in ranges {
-            let mut key = vector_index_description(start)?;
-            if start != end {
-                key.push_str(" .. ");
-                key.push_str(&vector_index_description(end)?);
-            }
-            // keymap.c:describe_vector's insert and insert1, then
-            // describe_vector_princ's Findent_to (16, 1), the describer
-            // and Fterpri.
-            if first {
-                super::buffer_edit::insert_string(interp, "\n", env)?;
-                first = false;
-            }
-            super::buffer_edit::insert_string(interp, &key, env)?;
-            super::buffer_edit::indent_to(interp, 16, 1, env)?;
-            interp.call_function_value(describer, None, &[value], env)?;
-            super::buffer_edit::insert_string(interp, "\n", env)?;
-        }
-        Ok(Value::Nil)
-    })();
-    if let Err(error) = interp.restore_special_binding(restore, env)
-        && result.is_ok()
-    {
-        result = Err(error);
-    }
-    result
 }
 
 define_dispatch!(
@@ -530,7 +440,7 @@ define_dispatch!(
                 let keymap = get_keymap(interp, args[1], true, true, env)?;
                 map_keymap_direct_value(interp, &args[0], &keymap, env)
             }
-            "describe-vector" => describe_vector_value(interp, args, env),
+            "describe-vector" => describe_vector_primitive(interp, args, env),
             "use-local-map" => {
                 need_args(name, args, 1)?;
                 let keymap = if args[0].is_nil() {
@@ -1390,7 +1300,12 @@ define_dispatch!(
                     match prop {
                         // A partially permanent hook variable keeps only the
                         // elements that want to be kept.
-                        Some(prop) if prop.eq_value(Value::symbol("permanent-local-hook")) => {
+                        Some(prop)
+                            if crate::lisp::types::eq(
+                                prop,
+                                Value::symbol("permanent-local-hook"),
+                            ) =>
+                        {
                             let newlist = permanent_hook_elements(interp, *value, env)?;
                             interp.notify_variable_watchers_symbol(
                                 name,

@@ -714,7 +714,7 @@ impl GlState {
         let tmp_table = textget(i.plist)?;
 
         if invalidate {
-            invalidate = tmp_table.word() != self.old_prop.word();
+            invalidate = !crate::lisp::types::eq(tmp_table, self.old_prop);
         }
         if invalidate {
             if count > 0 {
@@ -726,7 +726,7 @@ impl GlState {
             }
         }
 
-        if tmp_table.word() != self.old_prop.word() {
+        if !crate::lisp::types::eq(tmp_table, self.old_prop) {
             self.old_prop = tmp_table;
             match tmp_table.kind() {
                 Kind::CharTable(table) if table.has_purpose("syntax-table") => {
@@ -752,7 +752,7 @@ impl GlState {
         let mut cnt = 0;
         let mut walk = Some(i.index());
         while let Some(index) = walk {
-            if cnt != 0 && textget(items.plist(index))?.word() != tmp_table.word() {
+            if cnt != 0 && !crate::lisp::types::eq(textget(items.plist(index))?, tmp_table) {
                 let i = intervals.at(index);
                 if count > 0 {
                     self.e_property = i.start;
@@ -3296,7 +3296,7 @@ pub(super) fn parse_partial_sexp(
     let mut state = internalize_parse_state(arg(4))?;
     let commentstop = match arg(5) {
         value if value.is_nil() => 0,
-        value if matches!(value.kind(), Kind::Symbol(name) if name.is_named("syntax-table")) => -1,
+        value if crate::lisp::types::eq_symbol_named(value, "syntax-table") => -1,
         _ => 1,
     };
     let text = interp.buffer.borrow().scan_text();

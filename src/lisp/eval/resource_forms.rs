@@ -187,7 +187,7 @@ impl Interpreter {
             {
                 return Err(self.invalid_condition_handler(clause, env));
             }
-            if head.word() == success.word() {
+            if crate::lisp::types::eq(head, success) {
                 success_handler = Some(clause_cell.cdr.get());
             } else {
                 if heads == 0 {
@@ -202,7 +202,7 @@ impl Interpreter {
             crate::lisp::eval::CaseHeads::Many(
                 list_forms(&handlers)
                     .filter_map(|clause| clause.cons_ref().map(|cell| cell.car.get()))
-                    .filter(|head| head.word() != success.word())
+                    .filter(|head| !crate::lisp::types::eq(*head, success))
                     .collect(),
             )
         };
@@ -249,7 +249,7 @@ impl Interpreter {
                         continue;
                     };
                     let head = clause_cell.car.get();
-                    if head.word() == success.word()
+                    if crate::lisp::types::eq(head, success)
                         || !Self::clause_head_matches(&head, &condition_list)
                     {
                         continue;

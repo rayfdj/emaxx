@@ -457,7 +457,7 @@ fn libxml_attributes_in_source_order(node: &LibxmlNode) -> Vec<Value> {
 pub(crate) fn find_display_property(disp: Value, prop: Value) -> Value {
     let spec_value = |elem: Value| {
         elem.cons_values()
-            .filter(|(head, rest)| rest.is_cons() && head.eq_value(prop))
+            .filter(|(head, rest)| rest.is_cons() && crate::lisp::types::eq(*head, prop))
             .and_then(|(_, rest)| rest.cons_values())
             .map(|(value, _)| value)
     };
@@ -1259,7 +1259,9 @@ mod tests {
             call(interp, "garbage-collect", &[], env).expect("collect rooted detached overlay");
             assert!(id.is_dead());
             assert_eq!(
-                id.get_symbol_prop("self").expect("surviving plist").word(),
+                id.get_prop(&Value::symbol("self"))
+                    .expect("surviving plist")
+                    .word(),
                 overlay.word()
             );
             assert_eq!(table_id.count(), 1);

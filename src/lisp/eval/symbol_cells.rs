@@ -71,6 +71,12 @@ impl SymbolCells {
         self.symbols.len()
     }
 
+    /// data.c's C variable symbols_with_pos_enabled, this editor's.
+    #[inline]
+    pub(crate) fn symbols_with_pos_enabled(&self) -> &std::cell::Cell<bool> {
+        self.symbols.symbols_with_pos_enabled()
+    }
+
     /// The initial obarray's size_bits.
     pub(crate) fn initial_size_bits(&self) -> u32 {
         self.symbols.size_bits()

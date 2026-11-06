@@ -408,7 +408,7 @@ pub(crate) fn print_prune_string_charset(
         }
         let mut val = plist;
         while let Some(cell) = val.cons_ref() {
-            if cell.car.get().word() == charset_symbol.word() {
+            if crate::lisp::types::eq(cell.car.get(), charset_symbol) {
                 break;
             }
             val = cell
@@ -1497,7 +1497,7 @@ fn hash_table_from_plist(
             .as_chunks::<2>()
             .0
             .iter()
-            .find(|[key, _]| key.eq_value(prop))
+            .find(|[key, _]| crate::lisp::types::eq(*key, prop))
             .map_or(Value::Nil, |[_, value]| *value)
     };
     let mut params = Vec::new();
@@ -1758,7 +1758,7 @@ pub(crate) fn md5_source_bytes(
         }
         coding = validate(interp, coding)?;
         *source
-    } else if matches!(source.kind(), Kind::Symbol(name) if name.is_named("iv-auto")) {
+    } else if crate::lisp::types::eq_symbol_named(source, "iv-auto") {
         let Kind::Integer(length @ 0..) = start.kind() else {
             return Err(crate::lisp::primitives::values::doprnt_error(
                 interp,

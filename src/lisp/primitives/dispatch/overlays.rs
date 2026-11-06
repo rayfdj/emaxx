@@ -188,8 +188,11 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 let object = overlay(args[0])?;
                 object.put_prop(args[1], args[2]);
-                if matches!(args[1].kind(), Kind::Symbol(prop) if prop.is_named("evaporate"))
-                    && args[2].is_truthy()
+                // EQ (prop, Qevaporate).
+                if crate::lisp::types::eq(
+                    args[1],
+                    cached_symbol!("evaporate").with(|symbol| Value::Symbol(*symbol)),
+                ) && args[2].is_truthy()
                     && object.beg() == object.end()
                 {
                     object.detach();

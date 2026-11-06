@@ -6,6 +6,12 @@ requirements](docs/runtime-representation-goal.md) and the
 editing. A validated checkpoint, green gate or handover does not complete it.
 Current user instructions take precedence over historical notes.
 
+**Every round is audited before it is committed** ([the round audit](docs/round-audit.md)):
+the anti-cheat checks in the gate, `tools/round_audit.py` on the round's diff
+(enforced by the commit; a hard finding stops it) and an independent
+adversarial review against GNU's sources. Each round's entry records the
+outcome in an **Audit** line; a real finding is fixed or recorded as open.
+
 This file holds only the current state and the next steps. Every earlier
 checkpoint, failure, diagnosis, draft and evidence link is preserved verbatim in
 the [15 October archive](docs/runtime-representation-handover-history-2026-10-15.md)
@@ -15403,6 +15409,241 @@ setup_process_coding_systems's check now refuses). A 13-form
   names in the UTF-8 and C locales. Local validation: the grouped gate's
   3,501 library tests, the integration targets and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 329: file-error data as get_file_errno_data makes it, file
+  names as the Lisp objects GNU's callers hold, and the round audit.**
+  The second element of a file error is emacs_strerror's text through
+  code_convert_string_norecord with `locale-coding-system': a nil coding
+  system is `no-conversion', any other passes CHECK_CODING_SYSTEM (a
+  `bogus-cs' signals coding-system-error, a string `wrong-type-argument
+  symbolp'), and the ASCII fast path of an ASCII-compatible coding
+  system makes a multibyte copy, while any other text is decoded
+  (`utf-16le' turns the ASCII bytes into CJK characters). Emaxx's was
+  the host's text as a unibyte string. Every builder of file-error data
+  now goes through report_file_errno with the interpreter, the errno
+  text's own errors included, and each name is the Lisp object GNU's
+  caller passes. call-process ENCODE_FILEs its output and stderr files,
+  without their "/:", before it searches for the program, and an open
+  failure names DECODE_FILE of that, which for an ASCII name is the
+  expanded string itself, properties and all, and for a unibyte name a
+  decoded multibyte copy; ENCODE_FILE and DECODE_FILE of Lisp strings
+  are now coding.c's convert_string_nocopy, so they return the same
+  object wherever code_convert_string's fast path does. The program
+  search names the program given; get_current_directory runs
+  `unhandled-file-name-directory' on `default-directory' itself (nil now
+  signals `stringp' as in GNU), checks the encoded name with
+  file_accessible_directory_p's faccessat and names `default-directory'
+  with the errno's own text; redirect-debugging-output, serial_open
+  (which opens SSDATA of the port, unencoded), create_temp_file's
+  pattern, dump-emacs-portable's encoded file (its write error now
+  carries the errno text), make-temp-file's prefix, kqueue-add-watch's
+  directory name, set-visited-file-modtime's file and load's file all
+  name what GNU names. make-temp-file-internal is
+  Fmake_temp_file_internal over gen_tempname: an encoded template, 62**3
+  attempts, try_nocreate's lstat (a name under a non-directory is
+  "Creating file name with prefix", where Emaxx returned it), EEXIST
+  once the attempts run out (Emaxx returned a name that existed) and the
+  DECODE_FILE'd result. The network errors (binding, the server and
+  client failures, socket options, a module channel's dup) are
+  report_file_errno's too, so their errno texts are the decoded
+  multibyte strings GNU's are. The names GNU itself builds from C
+  strings (`/proc', the null device, the file-notify paths) stay text.
+  Two command-line comparisons run these errors, one under six values of
+  `locale-coding-system'. **Audit:** `tools/round_audit.py' against
+  round 328 reports no hard findings; its review findings were read (the
+  spawning and state are GNU's own mechanisms: callproc.c's static
+  stderr_dup, the temp-name counter). The independent review of this
+  diff found three P1, seven P2 and three P3 findings: the errno text
+  skipped CHECK_CODING_SYSTEM and the ASCII-compatibility test;
+  call-process named a properties-free copy instead of DECODE_FILE
+  (ENCODE_FILE); redirect-debugging-output rebuilt its name; the program
+  search, current directory, serial port, dump output and temp-file
+  pattern named text; the network errno texts were unibyte;
+  make-temp-file-internal ignored GT_NOCREATE's lstat errors and faked
+  success. All ten P1 and P2 findings are fixed in this round, with the
+  comparisons above; the P3s are recorded below (LC_MESSAGES, load's
+  "Reading file") or fixed (the errno text's swallowed decode error). A
+  second independent review of the whole diff, with the fixes, found
+  five P1, five P2 and five P3 findings. Fixed here:
+  make-temp-file-internal's TEXT now goes through write_region's
+  `write-region' handler (a `.gz' prefix is compressed, as in GNU);
+  make-serial-process checks its speed (`fixnump') and name before it
+  opens the port; ENCODE_FILE and DECODE_FILE load an autoloaded
+  file-name coding system (CHECK_CODING_SYSTEM's define-form), which
+  round 329's first version had made an error for ASCII names;
+  report_file_errno takes a nil or list name as get_file_errno_data does
+  and builds the errno text first; the string-allocation failures are
+  the real conditions, not a made-up "String overflow"; and the audit
+  tool's holes are closed with a negative control each (a deleted test
+  file, `#[expect]' and cfg_attr suppressions, Cargo lint allowances,
+  `#[cfg(any())]', `assert!(true)', comparison helpers uncounted,
+  assertions in inline test modules, harness code in src/compat.rs and
+  src/perf.rs, exec and posix_spawn, embedded files, and every changed
+  assertion listed). Recorded below: make-process's check order,
+  name-resolution failures, and the errno text's post-read conversion
+  and autoload. A deliberate deviation: GNU's make-temp-file-internal
+  writes a TEXT given with a non-nil DIR-FLAG to descriptor 0
+  (gen_tempname's return for a directory or a bare name), so to the
+  standard input; Emaxx writes nothing there. The gate's early-Lisp
+  make-process test bound `default-directory' to a nil
+  `temporary-file-directory' (that interpreter has no files.el); with
+  get_current_directory as GNU's that is `stringp nil', so the test now
+  gives it a directory, its expectation unchanged. Local validation: the
+  grouped gate's 3,501 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 330: the audit of rounds 323 to 328, answered.** An
+  independent review of decb77e..67710f4 found four P1 and eight P2
+  findings, each with a GNU source and a probe; this round fixes all
+  twelve and the P3s it could, and records the rest. `describe-vector'
+  is keymap.c's Fdescribe_vector over the one describe_vector that
+  `help--describe-vector' uses (describe_vector_princ against
+  describe_vector_basic, ELT_PREFIX outside a keymap, keys fontified
+  only for one): it read the vector into a Rust vector the collector
+  does not trace before running the describer and the change hooks, so a
+  hook that dropped an element and collected made it read freed memory
+  (a crash in one probe); its elements are now read afresh on each pass,
+  a range is the three insertions GNU makes, the element is
+  get_keyelt's, a char-table is walked by char_table_ref_and_range with
+  the 8-bit split and its default line, and its parent is not consulted;
+  PARTIAL skips a SYMBOLP definition with `suppress-keymap', `t'
+  included. A coding system given as a symbol with position is its bare
+  symbol (it became the empty-name symbol, so encode-coding-string,
+  decode-coding-string, encode-coding-region and coding-system-for-read
+  signalled `coding-system-error'). unshow_buffer records
+  last_window_start before it reads the point marker, as window.c does.
+  set-window-start and set-window-point are set_marker_restricted: a
+  marker of the window's buffer lends its position unclipped when the
+  window marker is in that buffer, a bignum is `integer-or-marker-p'.
+  run-window-configuration-change-hook walks the list it took first, so
+  a window a hook deleted asks the current buffer and
+  Fbuffer_local_value signals `bufferp nil', and a void local binding
+  signals `void-variable' as Fbuffer_local_value does.
+  internal--labeled-widen compares labels with EQ. The text-property,
+  overlay, read-only and field lookups take a Lisp caller's property
+  with EQ (PropertyName carries symbols-with-pos-enabled as the lookup
+  starts; the writes do not yet, below), frame-parameter takes
+  CHECK_SYMBOL's symbol (its Fassq is not yet EQ, below), and
+  network-lookup-address-info and network-interface-list compare their
+  family and hints with EQ, network-interface-list saying "Unsupported
+  address family" where the lookup says "Unsupported family".
+  make-network-process reads :type, then :name as
+  get_required_string_keyword_param does, then the server and nowait
+  check, as process.c does; :family is nil, `local', `ipv6', `ipv4' or
+  an integer, else "Unknown address family", and an integer it cannot
+  use fails at the lookup with EAI_FAMILY's gai_strerror text; each
+  keyword is read as plist_get reads it, its first occurrence by EQ, and
+  the option keys are checked to be symbols only after those. The
+  hostname failure message stops at a NUL; get-file-buffer is
+  CHECK_STRING, one Fexpand_file_name, the `get-file-buffer' handler and
+  Fstring_equal, and get-truename-buffer compares with Fstring_equal;
+  scan_for_column asks Fget_buffer_window at its start and lets its
+  error through; internal-describe-syntax-value accepts any CHARACTERP
+  matching character and inserts it with insert_char. Of the P3s:
+  copy-file, rename-file, add-name-to-file and make-symbolic-link name
+  the expand_cp_target object the choke point made (their bodies' own
+  second directory-name expansion is gone), insert-file-contents unlocks
+  the name ENCODE_FILE made before the open, and unshow_buffer and
+  kill-buffer test the selected window's contents (nil for a deleted
+  one). A command-line comparison runs every probe of the review.
+  **Audit:** `tools/round_audit.py' against round 329 reports no hard
+  findings; its review findings were read (an absent keyword is nil, as
+  Fplist_get answers; the six assertions on Emaxx's deleted helpers now
+  compare GNU and Emaxx; a quoted window.c comment; the audit's own
+  assertion count, which now counts every `assert_*' helper). An
+  independent review of this round's diff found five P1, four P2 and
+  four P3 findings. Fixed in this round: make-network-process's check
+  order and its families; the void local hook binding; get-file-buffer's
+  second expansion; the name unlocked after a coding switch mid-read;
+  network-interface-list's error text; the replacement tests that ran
+  only GNU (and the audit count that missed them); PARTIAL's SYMBOLP
+  test; and the unreachable second directory-name expansion in copy-file
+  and its siblings. Of the fallbacks it named, set-window-start's
+  current buffer is GNU's own (set_marker_restricted's live_buffer is
+  decode_buffer's, the current buffer for nil contents), and
+  window_marker_for_set has none to give for a window decode_live_window
+  returns. Recorded below: property and overlay writes, frame and window
+  parameters and intervals_equal still compare with BASE_EQ under
+  symbols-with-pos-enabled, and last-coding-system-used holds the bare
+  symbol of a positioned or uninterned coding system. Local validation:
+  the grouped gate's 3,501 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 331: lisp.h's EQ, wherever C compares with it.** GNU's EQ is
+  BASE_EQ, or, while `symbols-with-pos-enabled' is set, the bare
+  symbols' BASE_EQ, read from one global C variable inside every
+  comparison; Emaxx kept the flag in each interpreter and compared with
+  it only where a primitive had the interpreter in hand, so the
+  text-property writes and removals, the stickiness lists and interval
+  merging (intervals_equal), overlay plists and `evaporate', the frame
+  and window parameter alists and every name Rust supplies compared with
+  BASE_EQ (round 330's review: a positioned name stored as a second key,
+  or missed). The C variable now lives in the editor's symbol table
+  beside its obarray, as GNU's globals are the process's: native code's
+  relocation is its address, the interpreter reads its own table's, and
+  `types::eq', lisp.h's EQ, reads the running editor's through the
+  pointer `ACTIVE_POS_FLAG' that is kept with the selected table's keys;
+  a shallow interpreter copy shares it as it shares the obarray and the
+  symbols' value cells, an image copy has its own. intervals.c's and
+  textprop.c's comparisons, buffer.c's Foverlay_put, frame.c's Fassq of
+  the parameters, window.c's of the window parameters, `EQ (sym, Qface)'
+  and `Qcomposition', and every `PropertyName', `SymbolKey' or text key
+  comparison are that EQ; a lookup no longer carries its own copy of the
+  flag. code_convert_string's fast path stores the coding system as
+  given in `last-coding-system-used' (a symbol with position or an
+  uninterned alias), the slow path its name. A census of the 254 word
+  comparisons left elsewhere found 136 that stand for EQ where a symbol
+  with position can reach them (keymap.c's keymap, autoload and
+  menu-item tests, font.c's keys and styles, the faces' names,
+  char-table purposes, catch tags, Feql and so memql, the features list,
+  the lexical environment among them), now EQ, and 117 that are GNU's
+  BASE_EQ or compare objects no symbol with position can be; of the name
+  tests that stand for EQ, 74 `is_named' matches are EQ and 20 matches
+  take the bare symbol, as XSYMBOL does. setq takes a positioned name
+  under the flag, evaluates the value before Fset's CHECK_SYMBOL of a
+  non-symbol, and names the object given in `setting-constant', as set
+  and set-default now do too, set_internal's keyword test being EQ;
+  default-value and default-toplevel-value name the object given in
+  `void-variable', and funcall's void-function names ORIGINAL_FUN; a
+  matched symbol is its bare symbol except a positioned nil, which NILP
+  does not take; keymaps reach indirect_function through a positioned
+  symbol; font-spec's and font-get's CHECK_SYMBOL, indirect_function,
+  the invisibility spec's comparisons and Feql are GNU's, and so are
+  xfaces.c's UNSPECIFIEDP and `:height' tests and resolve_face_name's
+  SYMBOLP; Fget's plist walk and the category value's SYMBOLP take a
+  positioned symbol; defvar's local declaration conses the symbol as
+  given; an overlay emptied by a deletion evaporates by Foverlay_get,
+  its category and `char-property-alias-alist' included; and
+  is_pty_from_symbol's unknown type is report_file_error with the errno
+  that holds. The lexical lookups read the flag once per walk:
+  interpreted mule-tests takes 20.56G instructions against round 329's
+  20.03G (the walk's test, which GNU's Fassq makes per element), in the
+  same time run alternately. The scroll commands' screen position reads
+  its columns with indent.c's scan and lets its error through, where it
+  took a failed `current-column' for column 0. A command-line comparison
+  runs round 330's review probes and this round's. **Audit:**
+  `tools/round_audit.py' against round 330 reports no hard findings (two
+  `#[allow(clippy::too_many_arguments)]' it found in a draft gave way to
+  `RecordUsed'); its review findings were read: the absent and unbound
+  values read as nil are GNU's C variables' and SDATA's, and
+  ACTIVE_POS_FLAG is the pointer to the flag, not a copy of it. A helper
+  classified the 254 census sites from GNU's sources, each with its GNU
+  line. The independent review of the round found three P1, seven P2 and
+  five P3 findings: keymaps rejected a positioned symbol before
+  indirect_function, matches made a positioned nil NILP, set_internal's
+  keyword test was `equal'; evaporation after a deletion, set and
+  set-default's error data, font-get, the face primitives, Fget's plist
+  and the category value, defvar's declaration and funcall's
+  void-function diverged; and object() was dead, two conversions were EQ
+  where GNU is BASE_EQ, the core.rs test's expectation was inverted
+  unseen by the audit tool, tool-bar-get-system-style compared with
+  `equal'. All P1 and P2 and the first, second and fourth P3 are fixed
+  above; the third is this: a shallow interpreter copy now shares its
+  editor's flag as it shares the obarray and the value cells, so the
+  test asserts that, and an image copy's independence. The fifth, a
+  second editor in one process overwriting a loaded .eln's relocation,
+  predates the round and arises only in tests. Stated deviation:
+  report_file_error's text is the errno the process holds, which differs
+  from GNU's when their system calls before it differ. Local validation:
+  the grouped gate's 3,501 library tests, the integration targets
+  and clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -18077,16 +18318,117 @@ ert-tests as a whole 26,307 ms against 27,211.
   against 29,204) and mule-tests (1,886 against 1,304), and
   `ert-test-run-tests-batch-expensive' runs in 1.01 of GNU's time.
 
+**On `67710f4`** (round 328): the full Rust gate (run 42144282211)
+  passed; the frozen run (run 42144286212) passed at its first attempt,
+  7,928 of 7,928 outcomes matching. Setup 55.9 s against 47.8 s (1.170),
+  test bodies 240.1 s against 227.8 s (1.054), in all 1.067, with a
+  per-file setup median of 85 ms against 74. The widest body gaps are
+  tramp-tests (16,308 ms against 14,001), comp-tests (13,826 against
+  11,589), semantic-utest-ia (2,682 against 1,885), mule-tests (2,021
+  against 1,308) and ert-tests (28,889 against 28,401), and
+  `ert-test-run-tests-batch-expensive' runs in 1.01 of GNU's time.
+  Rounds 323 to 328 were merged to main (PR #131, `e456460`).
+
+**On `615acad`** (round 329): the full Rust gate (run 42175563135)
+  passed; the frozen run (run 42175566953) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a slower runner (GNU's own total
+  365.6 s against round 328's 290.4). Setup 78.7 s against 67.3 s
+  (1.169), test bodies 298.7 s against 278.3 s (1.073), in all 1.079,
+  with a per-file setup median of 118 ms against 103. The widest body
+  gaps are tramp-tests (22,700 ms against 19,436), ert-tests (45,388
+  against 42,468), comp-tests (17,928 against 15,321), semantic-utest-ia
+  (3,780 against 2,593) and mule-tests (3,007 against 1,982), and
+  `ert-test-run-tests-batch-expensive' runs in 1.06 of GNU's time.
+
+**On `3f81ed8`** (round 330): the full Rust gate (run 42185872816)
+  passed; the frozen run (run 42185876448) passed at its first attempt,
+  7,928 of 7,928 outcomes matching. Setup 76.8 s against 60.2 s (1.274),
+  test bodies 290.8 s against 255.1 s (1.140), in all 1.158, with a
+  per-file setup median of 116 ms against 93, on a runner where GNU took
+  331.0 s in all against round 329's 365.6 while Emaxx took 383.3
+  against 394.5. The widest body gaps are ert-tests (42,963 ms against
+  36,102), tramp-tests (20,044 against 16,511), comp-tests (16,612
+  against 13,521), semantic-utest-ia (4,214 against 2,711) and
+  mule-tests (3,395 against 1,924), and
+  `ert-test-run-tests-batch-expensive' runs in 1.18 of GNU's time. The
+  rise is the runner's, not the round's: locally the round 329 and round
+  331 release builds take the same instructions for mule-tests (20.03G
+  against 20.10G) and the same time when run alternately (medians 1,773
+  and 1,764 ms), and their setups of xml-tests, mule-tests and ert-tests
+  are within noise of each other.
+
 **Findings recorded, not fixed:**
-- **The errno text of file errors (round 328).** get_file_errno_data
-  decodes strerror's text with `locale-coding-system'
-  (code_convert_string_norecord), so under a UTF-8 locale the second
-  element of a file error is a multibyte string; Emaxx's is the host's
-  text as a unibyte string when it is ASCII. The builders of file-error
-  data take no interpreter to read the coding system with; giving them
-  one, with the remaining builders that take the name as text (directory
-  reading, process output files, the thread and native-unit loaders), is
-  the change that makes the data GNU's.
+- **The name tests and SYMBOLP guards left (round 331).** Of the
+  `is_named' tests that stand for EQ against an interned symbol, round
+  331 made 74 `matches!' tests EQ and 20 matches take the bare symbol;
+  187 other uses remain (51 in compound `matches!' guards, 72 in match
+  arms beside other patterns, 64 in plain conditions), each to be read
+  against its GNU caller, many of them names Rust supplies and a symbol
+  with position never reaches. Guards that accept only a bare symbol
+  before an EQ (font.rs's `is_symbol', values.rs's keymap entry checks,
+  key_sequence.rs's event heads) reject a symbol with position that
+  GNU's SYMBOLP takes while `symbols-with-pos-enabled' is set.
+- **`==' on a Lisp value is `equal' (round 331).** Value's PartialEq is
+  values_equal_recursive, `equal', and Rust code compares Lisp objects
+  with it where GNU's C uses EQ (set_internal's keyword test `EQ
+  (newval, Fsymbol_value (symbol))', the `t' and `no-record' heads of an
+  event). For symbols and fixnums the two agree but for a symbol with
+  position under the flag; for strings, conses and vectors `equal'
+  answers t where EQ answers nil. A census of `==' between Lisp values
+  against GNU's EQ is to be made.
+- **kill-buffer's window replacement (round 330).** GNU's Fkill_buffer
+  replaces the dying buffer in each window through
+  replace_buffer_in_windows and replace_buffer_in_windows_safely
+  (window_loop's REPLACE_BUFFER_IN_WINDOWS_SAFELY: undedicate,
+  set_window_buffer with other_buffer_safely, Fset_buffer for the
+  selected window); Emaxx's kill_buffer_id writes the replacement into
+  each window's buffer slot and an integer into its start slot, and
+  swallows unshow_buffer's error for the selected window. To be rebuilt
+  as window_loop's case.
+- **The selected window's buffer (round 330).**
+  selected_window_buffer_id answers the current buffer for a deleted
+  selected window, whose contents are nil in GNU; round 330 gives
+  unshow_buffer, the configuration restore and kill-buffer the contents
+  themselves, and sixteen other callers keep the old answer. Each wants
+  reading against its GNU caller (Fset_buffer of a nil contents signals
+  there); set-window-point's, for a deleted selected window, stands
+  where GNU's XBUFFER (w->contents) of nil has no defined answer.
+- **The errno text's locale (round 329).** emacs_strerror calls
+  synchronize_system_messages_locale, so strerror's text follows
+  LC_MESSAGES; Emaxx sets only LC_CTYPE, so its text is always the C
+  locale's. This host has only the C and C.UTF-8 locales, where the two
+  agree.
+- **load's read errors (round 329).** GNU's readbyte_from_stdio takes a
+  read error for the end of the file, so the forms read before it are
+  evaluated and the next read signals end-of-file; Emaxx reads the whole
+  file first and signals (file-error "Reading file" ...), which is no
+  GNU message. Faithful behaviour needs the reader to read the stream as
+  it evaluates.
+- **The kqueue backend's file names (round 329).** The macOS file-notify
+  backend (threads.rs) still names its directory reads and open and
+  registration failures with text paths. It cannot be compiled or probed
+  on this host; it is to be converted with a macOS check.
+- **make-process's argument checks (round 329).** Fmake_process runs
+  get_current_directory before it reads :name, searches for the program
+  before it checks each argument with CHECK_STRING, and so reports a bad
+  `default-directory' or a missing program first; Emaxx parses :name and
+  every argument before the search and checks the directory at the
+  spawn, so `(make-process :command '("zz-no-such" 5))' is `stringp 5'
+  where GNU's is "Searching for program". Converting it means building
+  make-process in GNU's order of steps.
+- **Name-resolution failures (round 329).** connect_network_socket's
+  getaddrinfo failure is `(error "HOST/SERVICE gai_strerror")'; Emaxx
+  resolves through Rust's ToSocketAddrs and reports a file-error
+  carrying Rust's own text ("failed to lookup address information:
+  ..."). The fix is GNU's getaddrinfo call and message, as
+  host_service_database_port already does for named services.
+- **The errno text's conversion (round 329).** code_convert_string runs
+  a coding system's post-read-conversion in a work buffer and loads an
+  autoloaded coding system (CHECK_CODING_SYSTEM's define-form);
+  errno_string does neither, because report_file_errno's builders hold
+  the interpreter shared and running Lisp needs it mutably. Only a
+  `locale-coding-system' with a post-read-conversion, or an autoloaded
+  one, shows it.
 - **tramp-tests' body gap is the pty's timing (round 327).**
   tramp-accept-process-output evaluates (buffer-string) of the
   connection buffer, which grows to 2 MB, each time

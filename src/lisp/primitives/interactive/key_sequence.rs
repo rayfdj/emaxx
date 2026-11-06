@@ -81,7 +81,7 @@ impl KeySequenceReader {
         };
         if first.is_symbol() && second.is_cons() {
             let start = car_safe(cdr_safe(second));
-            if first.eq_value(car_safe(cdr_safe(start))) {
+            if crate::lisp::types::eq(first, car_safe(cdr_safe(start))) {
                 position = start;
             }
         }
@@ -223,9 +223,12 @@ impl KeySequenceReader {
         // site. A collecting remap filter can change its answer between
         // deciding to scan function-key-map and actually translating it.
         Ok(binding.is_nil()
-            || binding.eq_value(undefined)
+            || crate::lisp::types::eq(binding, undefined)
             || (binding.is_symbol()
-                && command_remapping(interp, &binding, None, env)?.eq_value(undefined)))
+                && crate::lisp::types::eq(
+                    command_remapping(interp, &binding, None, env)?,
+                    undefined,
+                )))
     }
 
     fn shift(&mut self, index: usize, diff: isize) {
@@ -379,7 +382,10 @@ impl KeySequenceReader {
         env: &mut Env,
     ) -> Result<KeyResolution, LispError> {
         let event = match event.cons_values() {
-            Some((head, tail)) if head == Value::T || head.eq_value(Value::symbol("no-record")) => {
+            Some((head, tail))
+                if crate::lisp::types::eq(head, Value::T)
+                    || crate::lisp::types::eq(head, Value::symbol("no-record")) =>
+            {
                 tail
             }
             _ => event,
@@ -408,7 +414,7 @@ impl KeySequenceReader {
             && let Ok(area) = position_tail.car()
             && ["menu-bar", "tab-bar", "tool-bar"]
                 .iter()
-                .any(|name| area.eq_value(Value::symbol(name)))
+                .any(|name| crate::lisp::types::eq(area, Value::symbol(name)))
         {
             // Non-mouse parameterized events receive this prefix only
             // on external input, never when returned by a translation.

@@ -90,6 +90,7 @@ pub(crate) fn load_file(
         // report_file_error ("Cannot open load file", file): FILE as
         // Fload holds it.
         return Err(crate::lisp::primitives::file_io::report_file_errno(
+            interp,
             "Cannot open load file",
             request.file,
             &std::io::Error::from_raw_os_error(errno),
@@ -294,11 +295,12 @@ fn load_with_context(
                 return Ok((result, None));
             }
             let Some(file) = found.file.take() else {
-                return Err(LispError::SignalValue(file_errno_error_value(
+                return Err(crate::lisp::primitives::file_io::report_file_errno(
+                    interp,
                     "Opening stdio stream",
-                    libc::EINVAL,
-                    &string_text(&request.file)?,
-                )));
+                    request.file,
+                    &std::io::Error::from_raw_os_error(libc::EINVAL),
+                ));
             };
             let kind = if module {
                 " (module)"
@@ -497,10 +499,11 @@ fn safe_to_load_version(
         }
     }
     file.rewind().map_err(|error| {
-        file_operation_error(
+        crate::lisp::primitives::file_io::report_file_errno(
+            interp,
             "Seeking to start of file",
+            *name,
             &error,
-            &string_text(name).unwrap_or_default(),
         )
     })?;
     Ok(version)

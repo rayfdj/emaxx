@@ -370,13 +370,25 @@ pub(crate) fn set_internal_symbol(
     value: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    set_internal_given(interp, symbol, Value::Symbol(*symbol), value, env)
+}
+
+/// set_internal of SYMBOL, the bare symbol of GIVEN, the object a Lisp
+/// caller passed, which `setting-constant' names.
+pub(crate) fn set_internal_given(
+    interp: &mut Interpreter,
+    symbol: &crate::lisp::types::SymbolName,
+    given: Value,
+    value: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
     // data.c:set_internal's SYMBOL_PLAINVAL, untrapped: the store alone;
     // SYMBOL_LOCALIZED with the current buffer's binding loaded: the
     // store into it alone.
     if interp.assign_plain_global(symbol, value) || interp.assign_loaded_local(symbol, value) {
         return Ok(());
     }
-    if interp.check_constant_assignment_symbol(symbol, value)? {
+    if interp.check_constant_assignment_given(symbol, given, value)? {
         return Ok(());
     }
     let resolved = interp.resolve_variable_symbol(symbol)?;
@@ -402,10 +414,22 @@ pub(crate) fn set_default_internal_symbol(
     value: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    set_default_internal_given(interp, symbol, Value::Symbol(*symbol), value, env)
+}
+
+/// set_default_internal of SYMBOL, the bare symbol of GIVEN, which
+/// `setting-constant' names.
+pub(crate) fn set_default_internal_given(
+    interp: &mut Interpreter,
+    symbol: &crate::lisp::types::SymbolName,
+    given: Value,
+    value: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
     if interp.store_default_value(symbol, value) {
         return Ok(());
     }
-    if interp.check_constant_assignment_symbol(symbol, value)? {
+    if interp.check_constant_assignment_given(symbol, given, value)? {
         return Ok(());
     }
     let resolved = interp.resolve_variable_symbol(symbol)?;
@@ -944,7 +968,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Fset reaches set_internal's CHECK_SYMBOL.
                 let checked = checked_symbol_identity(interp, &args[0], env)?;
-                set_internal_symbol(interp, &checked, args[1], env)?;
+                set_internal_given(interp, &checked, args[0], args[1], env)?;
                 Ok(args[1])
             }
             "set-default" => {
@@ -952,7 +976,7 @@ define_dispatch!(
                 // GNU 30.2 data.c:Fset_default reaches
                 // set_default_internal's CHECK_SYMBOL.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
-                set_default_internal_symbol(interp, &symbol, args[1], env)?;
+                set_default_internal_given(interp, &symbol, args[0], args[1], env)?;
                 Ok(args[1])
             }
             "symbol-value" => direct_symbol_value(interp, args, env),
@@ -960,25 +984,24 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Fdefault_value delegates to
                 // default_value, which uses CHECK_SYMBOL/XSYMBOL.
+                // `xsignal1 (Qvoid_variable, symbol)', the object given.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
                 interp.default_value_symbol(&symbol)?.ok_or_else(|| {
-                    LispError::SignalValue(Value::list([
-                        Value::symbol("void-variable"),
-                        Value::Symbol(symbol),
-                    ]))
+                    LispError::SignalValue(Value::list([Value::symbol("void-variable"), args[0]]))
                 })
             }
             "default-toplevel-value" => {
                 need_args(name, args, 1)?;
                 // GNU 30.2 eval.c:Fdefault_toplevel_value ultimately uses
                 // the same CHECK_SYMBOL default-value path.
+                // `xsignal1 (Qvoid_variable, symbol)', the object given.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
                 interp
                     .default_toplevel_value_symbol(&symbol)?
                     .ok_or_else(|| {
                         LispError::SignalValue(Value::list([
                             Value::symbol("void-variable"),
-                            Value::Symbol(symbol),
+                            args[0],
                         ]))
                     })
             }
@@ -2120,6 +2143,7 @@ fn snarf_documentation(
     // report_file_errno ("Opening doc string file", build_string (name)).
     let bytes = std::fs::read(&path).map_err(|error| {
         crate::lisp::primitives::file_io::report_file_errno(
+            interp,
             "Opening doc string file",
             crate::lisp::primitives::strings::make_string(name.clone())
                 .unwrap_or_else(|_| Value::string("")),
@@ -2235,7 +2259,7 @@ fn documentation_property(
     // missing `variable-documentation' is looked for on the indirect
     // variable.
     let mut doc = super::call(interp, "get", &[args[0], args[1]], env)?;
-    if doc.is_nil() && args[1].eq_value(Value::symbol("variable-documentation")) {
+    if doc.is_nil() && crate::lisp::types::eq(args[1], Value::symbol("variable-documentation")) {
         let indirect = super::call(interp, "indirect-variable", &[args[0]], env)?;
         if !indirect.is_nil() {
             doc = super::call(interp, "get", &[indirect, args[1]], env)?;

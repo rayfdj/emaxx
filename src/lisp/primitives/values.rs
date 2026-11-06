@@ -162,7 +162,7 @@ fn internal_equal_1(
                     .get_or_insert_with(HashMap::new)
                     .entry(o1.word())
                     .or_default();
-                if o2s.iter().any(|seen| seen.eq_value(o2)) {
+                if o2s.iter().any(|seen| crate::lisp::types::eq(*seen, o2)) {
                     return Ok(true);
                 }
                 o2s.push(o2);
@@ -399,11 +399,11 @@ fn string_intervals_equal(
     }
 }
 
-/// fns.c:Feql with no symbol reckoned its position's: a float is eql to
-/// a float of the same bits (same_float), a bignum to a bignum of the
-/// same value, any other object to itself (BASE_EQ).
+/// fns.c:Feql: a float is eql to a float of the same bits (same_float),
+/// a bignum to a bignum of the same value, any other object to what it
+/// is EQ to.
 pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
-    left.word() == right.word() || eql_numbers(left, right)
+    crate::lisp::types::eq(*left, *right) || eql_numbers(left, right)
 }
 
 /// Feql's FLOATP and BIGNUMP arms for two objects of different words.
@@ -1408,7 +1408,7 @@ pub(crate) fn resolve_callable(
 pub(crate) fn is_lambda_expression(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         items.first().is_some_and(|head| {
-            matches!(head.kind(), Kind::Symbol(name) if name.is_named("lambda"))
+            crate::lisp::types::eq_symbol_named(head, "lambda")
                 || (symbols_with_pos_enabled(interp, env)
                     && matches!(
                         symbol_with_pos_parts(interp, head).map(|(a0, a1)| (a0.kind(), a1)),
@@ -1529,7 +1529,7 @@ fn keymap_symbol() -> Value {
 pub(crate) fn is_keymap_placeholder(value: &Value) -> bool {
     value
         .cons_values()
-        .is_some_and(|(head, _)| head.eq_value(keymap_symbol()))
+        .is_some_and(|(head, _)| crate::lisp::types::eq(head, keymap_symbol()))
 }
 
 pub(crate) fn is_keymap_value(_interp: &Interpreter, value: &Value) -> bool {
@@ -1550,7 +1550,7 @@ pub(crate) fn keymap_char_table_value(_interp: &Interpreter, keymap: &Value) -> 
             break;
         }
         let item = cell.car.get();
-        if matches!(item.kind(), Kind::Symbol(name) if name.is_named("keymap")) {
+        if crate::lisp::types::eq_symbol_named(item, "keymap") {
             break; // The inherited parent's cells are not this map's table.
         }
         if matches!(item.kind(), Kind::CharTable(_)) {
@@ -1597,7 +1597,7 @@ fn keymap_public_view_own_items(view: &Value) -> Result<(Vec<Value>, Value), Lis
             return Ok((items, Value::Nil));
         }
         let item = cell.car.get();
-        if matches!(item.kind(), Kind::Symbol(name) if name.is_named("keymap")) {
+        if crate::lisp::types::eq_symbol_named(item, "keymap") {
             return Ok((items, tail));
         }
         items.push(item);
@@ -1632,7 +1632,10 @@ pub(crate) fn map_keymap_own_entries(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let map = keymap;
-    let mut tail = if map.car().is_ok_and(|head| head.eq_value(keymap_symbol())) {
+    let mut tail = if map
+        .car()
+        .is_ok_and(|head| crate::lisp::types::eq(head, keymap_symbol()))
+    {
         map.cdr()?
     } else {
         map
@@ -1640,7 +1643,7 @@ pub(crate) fn map_keymap_own_entries(
     let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![map, tail, Value::Nil]);
     // GNU walks the cells as they are, with no test for a circular list.
     while let Some((entry, _)) = tail.cons_values() {
-        if entry.eq_value(keymap_symbol()) || is_keymap_value(interp, &entry) {
+        if crate::lisp::types::eq(entry, keymap_symbol()) || is_keymap_value(interp, &entry) {
             break;
         }
         roots[2] = entry;
@@ -2100,13 +2103,128 @@ pub(crate) fn help_describe_vector(
     };
     let output_buffer = Value::Buffer(interp.buffer);
     let restore = interp.bind_special_key(cached_symbol!("standard-output"), output_buffer, env)?;
-    let mut result = describe_vector(interp, vector, table, args, env);
+    let mut result = describe_vector(
+        interp,
+        DescribeVector {
+            vector,
+            table,
+            prefix: args[1],
+            args: args[2],
+            elt_describer: EltDescriber::Basic,
+            partial: args[3].is_truthy(),
+            shadow: args[4],
+            entire_map: args[5],
+            keymap_p: true,
+            mention_shadow: args[6].is_truthy(),
+        },
+        env,
+    );
     if let Err(error) = interp.restore_special_binding(restore, env)
         && result.is_ok()
     {
         result = Err(error);
     }
     result.map(|()| Value::Nil)
+}
+
+/// keymap.c Fdescribe_vector: describe_vector of VECTOR with DESCRIBER
+/// (nil meaning `princ') through describe_vector_princ, no prefix, no
+/// shadowing and no keymap fontification, `standard-output' bound to the
+/// current buffer.
+pub(crate) fn describe_vector_primitive(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    need_arg_range("describe-vector", args, 1, 2)?;
+    let vector = args[0];
+    let describer = match args.get(1).copied().filter(|value| !value.is_nil()) {
+        Some(describer) => describer,
+        None => Value::symbol("princ"),
+    };
+    let table = match vector.kind() {
+        Kind::CharTable(table) => Some(table),
+        Kind::Vector(_) => None,
+        _ => {
+            return Err(LispError::WrongTypeArgument(
+                "vector-or-char-table-p".into(),
+                vector,
+            ));
+        }
+    };
+    let output_buffer = Value::Buffer(interp.buffer);
+    let restore = interp.bind_special_key(cached_symbol!("standard-output"), output_buffer, env)?;
+    let mut result = describe_vector(
+        interp,
+        DescribeVector {
+            vector,
+            table,
+            prefix: Value::Nil,
+            args: describer,
+            elt_describer: EltDescriber::Princ,
+            partial: false,
+            shadow: Value::Nil,
+            entire_map: Value::Nil,
+            keymap_p: false,
+            mention_shadow: false,
+        },
+        env,
+    );
+    if let Err(error) = interp.restore_special_binding(restore, env)
+        && result.is_ok()
+    {
+        result = Err(error);
+    }
+    result.map(|()| Value::Nil)
+}
+
+/// keymap.c describe_vector's ELT_DESCRIBER.
+#[derive(Clone, Copy)]
+enum EltDescriber {
+    /// describe_vector_princ: Findent_to (16, 1), the function, Fterpri.
+    Princ,
+    /// describe_vector_basic: the function alone.
+    Basic,
+}
+
+/// describe_vector's arguments.
+struct DescribeVector {
+    vector: Value,
+    table: Option<crate::lisp::types::CharTableRef>,
+    prefix: Value,
+    args: Value,
+    elt_describer: EltDescriber,
+    partial: bool,
+    shadow: Value,
+    entire_map: Value,
+    keymap_p: bool,
+    mention_shadow: bool,
+}
+
+/// (*elt_describer) (ELT, FUN).
+fn describe_vector_element(
+    interp: &mut Interpreter,
+    describer: EltDescriber,
+    elt: Value,
+    fun: &Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    match describer {
+        EltDescriber::Princ => {
+            call(
+                interp,
+                "indent-to",
+                &[Value::Integer(16), Value::Integer(1)],
+                env,
+            )?;
+            call_function_value(interp, fun, &[elt], env)?;
+            call(interp, "terpri", &[], env)?;
+        }
+        EltDescriber::Basic => {
+            call_function_value(interp, fun, &[elt], env)?;
+        }
+    }
+    Ok(())
 }
 
 /// shadow_lookup without remapping: KEY's binding in the keymaps SHADOW,
@@ -2124,20 +2242,43 @@ fn shadow_lookup(
     })
 }
 
+/// keymap.c describe_vector: each element of VECTOR (read afresh on each
+/// pass, as AREF and char_table_ref_and_range read it) whose get_keyelt is
+/// non-nil, its key described after ELT_PREFIX, a run of equal elements
+/// (a vector's) or a char-table range as "FROM .. TO", then the element
+/// described; a char-table's default last.
 fn describe_vector(
     interp: &mut Interpreter,
-    vector: Value,
-    table: Option<crate::lisp::types::CharTableRef>,
-    args: &[Value],
+    request: DescribeVector,
     env: &mut Env,
 ) -> Result<(), LispError> {
     // MAX_5_BYTE_CHAR + 1 and MAX_CHAR + 1.
     const BYTE8_START: u32 = 0x3F_FF80;
     const END: u32 = 0x40_0000;
-    let (prefix, describer) = (args[1], args[2]);
-    let partial = args[3].is_truthy();
-    let (shadow, entire_map) = (args[4], args[5]);
-    let mention_shadow = args[6].is_truthy();
+    let DescribeVector {
+        vector,
+        table,
+        mut prefix,
+        args: describer,
+        elt_describer,
+        partial,
+        shadow,
+        entire_map,
+        keymap_p,
+        mention_shadow,
+    } = request;
+    // Outside a keymap, PREFIX's description and a space lead each key.
+    let mut elt_prefix = Value::Nil;
+    if !keymap_p {
+        if !prefix.is_nil() {
+            let length = call(interp, "length", &[prefix], env)?;
+            if matches!(length.kind(), Kind::Integer(n) if n > 0) {
+                let description = call(interp, "key-description", &[prefix, Value::Nil], env)?;
+                elt_prefix = call(interp, "concat", &[description, Value::string(" ")], env)?;
+            }
+        }
+        prefix = Value::Nil;
+    }
     let element = |index: u32| match vector.kind() {
         Kind::Vector(items) => items.get(index as usize).unwrap_or(Value::Nil),
         _ => Value::Nil,
@@ -2169,13 +2310,23 @@ fn describe_vector(
             None => element(i),
         };
         let definition = keymap_get_keyelt(interp, &val, false, env)?;
-        let suppressed = || {
-            partial
-                && matches!(definition.kind(), Kind::Symbol(symbol)
-                    if interp.get_symbol_property_of(&symbol, &cached_symbol!("suppress-keymap").with(Clone::clone))
-                        .is_some_and(|value| value.is_truthy()))
-        };
-        if definition.is_nil() || suppressed() {
+        if definition.is_nil() {
+            i += 1;
+            continue;
+        }
+        // Don't mention suppressed commands: SYMBOLP (definition) -- t
+        // and a symbol with position while enabled included -- and its
+        // Fget of `suppress-keymap'.
+        if partial
+            && crate::lisp::primitives::lisp_symbol(interp, definition).is_some()
+            && call(
+                interp,
+                "get",
+                &[definition, Value::symbol("suppress-keymap")],
+                env,
+            )?
+            .is_truthy()
+        {
             i += 1;
             continue;
         }
@@ -2184,7 +2335,7 @@ fn describe_vector(
         let mut shadowed_by = Value::Nil;
         if !shadow.is_nil() {
             shadowed_by = shadow_lookup(interp, &shadow, &key, env)?;
-            if !shadowed_by.is_nil() && !shadowed_by.eq_value(definition) {
+            if !shadowed_by.is_nil() && !crate::lisp::types::eq(shadowed_by, definition) {
                 if mention_shadow {
                     this_shadowed = true;
                 } else {
@@ -2197,7 +2348,7 @@ fn describe_vector(
         if !entire_map.is_nil() {
             let tem =
                 keymap_lookup_sequence_value_with_default(interp, &entire_map, &key, true, env)?;
-            if !tem.eq_value(definition) {
+            if !crate::lisp::types::eq(tem, definition) {
                 i += 1;
                 continue;
             }
@@ -2206,7 +2357,10 @@ fn describe_vector(
             super::dispatch::insert_string(interp, "\n", env)?;
             first = false;
         }
-        insert_described_key_of(interp, starting_i, &prefix, env)?;
+        if !elt_prefix.is_nil() {
+            call(interp, "insert", &[elt_prefix], env)?;
+        }
+        insert_described_key_of(interp, starting_i, &prefix, keymap_p, env)?;
         if table.is_none() {
             while i + 1 < stop {
                 let next = keymap_get_keyelt(interp, &element(i + 1), false, env)?;
@@ -2226,8 +2380,8 @@ fn describe_vector(
         if !check.is_nil()
             && table.is_some()
             && i != starting_i
-            && (!check.eq_value(Value::symbol("ignore-self-insert"))
-                || !definition.eq_value(Value::symbol("self-insert-command")))
+            && (!crate::lisp::types::eq(check, Value::symbol("ignore-self-insert"))
+                || !crate::lisp::types::eq(definition, Value::symbol("self-insert-command")))
         {
             // C's `j <= i' reads the I the body may have lowered.
             let mut j = range_beg + 1;
@@ -2241,9 +2395,12 @@ fn describe_vector(
         }
         if i != starting_i {
             super::dispatch::insert_string(interp, " .. ", env)?;
-            insert_described_key_of(interp, i, &prefix, env)?;
+            if !elt_prefix.is_nil() {
+                call(interp, "insert", &[elt_prefix], env)?;
+            }
+            insert_described_key_of(interp, i, &prefix, keymap_p, env)?;
         }
-        call_function_value(interp, &describer, &[definition], env)?;
+        describe_vector_element(interp, elt_describer, definition, &describer, env)?;
         if this_shadowed {
             let point = interp.buffer.borrow().point();
             interp.buffer.borrow_mut().goto_char(point - 1);
@@ -2264,36 +2421,43 @@ fn describe_vector(
     if let Some(table) = table
         && !table.default().is_nil()
     {
+        if !elt_prefix.is_nil() {
+            call(interp, "insert", &[elt_prefix], env)?;
+        }
         super::dispatch::insert_string(interp, "default", env)?;
-        call_function_value(interp, &describer, &[table.default()], env)?;
+        describe_vector_element(interp, elt_describer, table.default(), &describer, env)?;
     }
     Ok(())
 }
 
-/// describe_key_maybe_fontify of the one-event key CODE after PREFIX.
+/// insert1 of describe_key_maybe_fontify of the one-event key CODE after
+/// PREFIX: Fkey_description, given fontify_key_properties when KEYMAP_P.
 fn insert_described_key_of(
     interp: &mut Interpreter,
     code: u32,
     prefix: &Value,
+    keymap_p: bool,
     env: &mut Env,
 ) -> Result<(), LispError> {
     let key = Value::vector([Value::Integer(i64::from(code))]);
     let description = call(interp, "key-description", &[key, *prefix], env)?;
-    let length = call(interp, "length", &[description], env)?;
-    call(
-        interp,
-        "add-text-properties",
-        &[
-            Value::Integer(0),
-            length,
-            Value::list([
-                Value::symbol("font-lock-face"),
-                Value::symbol("help-key-binding"),
-            ]),
-            description,
-        ],
-        env,
-    )?;
+    if keymap_p {
+        let length = call(interp, "length", &[description], env)?;
+        call(
+            interp,
+            "add-text-properties",
+            &[
+                Value::Integer(0),
+                length,
+                Value::list([
+                    Value::symbol("font-lock-face"),
+                    Value::symbol("help-key-binding"),
+                ]),
+                description,
+            ],
+            env,
+        )?;
+    }
     call(interp, "insert", &[description], env)?;
     Ok(())
 }
@@ -2359,7 +2523,7 @@ pub(crate) fn current_minor_maps(
                 while let Some((entry, rest)) = tail.cons_values() {
                     if entry
                         .cons_values()
-                        .is_some_and(|(car, _)| car.eq_value(var))
+                        .is_some_and(|(car, _)| crate::lisp::types::eq(car, var))
                     {
                         overridden = true;
                         break;
@@ -2543,8 +2707,8 @@ fn current_active_maps_1(
                 .cdr_if_list()
                 .and_then(|rest| rest.car_if_list())
                 .unwrap_or(Value::Nil);
-            let line_area = area.eq_value(Value::symbol("mode-line"))
-                || area.eq_value(Value::symbol("header-line"));
+            let line_area = crate::lisp::types::eq(area, Value::symbol("mode-line"))
+                || crate::lisp::types::eq(area, Value::symbol("header-line"));
             let map = super::textprop::get_text_property(
                 interp,
                 &Value::Integer(pos),

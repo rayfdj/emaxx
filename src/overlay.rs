@@ -115,14 +115,23 @@ impl OverlayValue {
         self.interval.set_detached_bounds(beg, end);
     }
 
+    /// The value of the property EQ to KEY.
     pub fn get_prop(&self, key: &Value) -> Option<Value> {
-        self.find_prop(|property| property.word() == key.word())
+        self.find_prop(|property| crate::lisp::types::eq(property, *key))
     }
 
-    pub(crate) fn get_symbol_prop(&self, key: &str) -> Option<Value> {
-        self.find_prop(
-            |property| matches!(property.kind(), Kind::Symbol(name) if name.is_named(key)),
-        )
+    /// buffer.c's `Foverlay_get (overlay, Qevaporate)' is non-nil:
+    /// lookup_char_property over the plist, its `category' symbol and the
+    /// alternatives ALIASES (`char-property-alias-alist') gives.
+    pub(crate) fn evaporates(&self, aliases: Value) -> bool {
+        let mut variables = crate::intervals::PropertyVariables {
+            aliases,
+            ..crate::intervals::PropertyVariables::NONE
+        };
+        let evaporate =
+            crate::lisp::cached_symbol!("evaporate").with(|symbol| Value::Symbol(*symbol));
+        crate::intervals::lookup_char_property(self.plist(), evaporate, false, &mut variables)
+            .is_ok_and(|value| value.is_truthy())
     }
 
     fn find_prop(&self, matches: impl Fn(Value) -> bool) -> Option<Value> {
@@ -147,7 +156,7 @@ impl OverlayValue {
             let Kind::Cons(value_cell) = property.cdr.get().kind() else {
                 break;
             };
-            if property.car.get().word() == key.word() {
+            if crate::lisp::types::eq(property.car.get(), key) {
                 value_cell.car.set(value);
                 return;
             }
@@ -231,6 +240,12 @@ impl OverlayTree {
             .insert_gap(pos as isize, length as isize, before_markers);
     }
     pub(crate) fn delete_gap(&mut self, pos: usize, length: usize) {
+        self.delete_gap_with(pos, length, Value::Nil);
+    }
+
+    /// adjust_overlays_for_delete, then evaporate_overlays at POS, ALIASES
+    /// being `char-property-alias-alist' as the deleting buffer holds it.
+    pub(crate) fn delete_gap_with(&mut self, pos: usize, length: usize, aliases: Value) {
         self.0.delete_gap(pos as isize, length as isize);
         // Only overlays collapsed at POS can newly evaporate. Empty overlays
         // with evaporate already set are removed by overlay-put/move-overlay.
@@ -239,9 +254,7 @@ impl OverlayTree {
             .iter(pos as isize, pos as isize + 1, Traversal::PreOrder)
             .filter(|node| {
                 node.bounds() == (pos as isize, pos as isize)
-                    && overlay_of(*node)
-                        .get_symbol_prop("evaporate")
-                        .is_some_and(|v| v.is_truthy())
+                    && overlay_of(*node).evaporates(aliases)
             })
             .map(overlay_of)
             .collect();

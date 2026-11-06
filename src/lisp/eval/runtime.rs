@@ -288,9 +288,7 @@ impl Interpreter {
         let kind = crate::lisp::primitives::call(self, "nth", &[Value::Integer(4), fundef], env)?;
         let loads_macro = matches!(kind.kind(), Kind::T)
             || matches!(kind.kind(), Kind::Symbol(symbol) if symbol.is_named("t") || symbol.is_named("macro"));
-        if matches!(macro_only.kind(), Kind::Symbol(symbol) if symbol.is_named("macro"))
-            && !loads_macro
-        {
+        if crate::lisp::types::eq_symbol_named(macro_only, "macro") && !loads_macro {
             return Ok(fundef);
         }
         if self.will_dump_without_bootstrap(env) {
@@ -878,6 +876,16 @@ impl Interpreter {
         Some(bumped)
     }
 
+    /// XWINDOW (selected_window)->contents as a buffer: None for a
+    /// deleted selected window (a state a failed deletion can leave),
+    /// whose contents are nil.
+    pub(crate) fn selected_window_contents_buffer_id(&self) -> Option<u64> {
+        primitives::window_slot_buffer_id(
+            self.find_record(self.selected_window_id)
+                .and_then(|record| record.slots.get(primitives::WINDOW_BUFFER_SLOT)),
+        )
+    }
+
     pub fn selected_window_buffer_id(&self) -> u64 {
         primitives::window_slot_buffer_id(
             self.find_record(self.selected_window_id)
@@ -967,7 +975,8 @@ impl Interpreter {
     /// point is the buffer's own) or the window it was last selected in
     /// is another still showing it; and it forgets WINDOW_ID as that
     /// window.  A start or point marker that points nowhere is
-    /// marker_position's error, before any of this changes.
+    /// marker_position's error where unshow_buffer reads it: the start
+    /// first, so a point marker's error leaves the start recorded.
     pub(crate) fn unshow_window_buffer(&mut self, window_id: u64) -> Result<(), LispError> {
         let Some(buffer_id) = self.window_record_buffer_id(window_id) else {
             return Ok(());
@@ -984,13 +993,19 @@ impl Interpreter {
                 None => Ok(None),
             }
         };
-        let start = marker_position(self, primitives::WINDOW_START_SLOT)?;
+        // b->last_window_start = marker_position (w->start).
+        if let Some(start) = marker_position(self, primitives::WINDOW_START_SLOT)?
+            && let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id)
+        {
+            buffer.set_last_window_start(start);
+        }
         let last_selected = self
             .get_buffer_by_id(buffer_id)
             .map(|buffer| buffer.last_selected_window())
             .unwrap_or(Value::Nil);
         let last_selected_id = primitives::window_record_id_from_value(self, &last_selected);
-        let point = if buffer_id != self.selected_window_buffer_id()
+        // ! EQ (buf, XWINDOW (selected_window)->contents).
+        let point = if Some(buffer_id) != self.selected_window_contents_buffer_id()
             && !last_selected_id.is_some_and(|id| {
                 id != window_id && self.window_record_buffer_id(id) == Some(buffer_id)
             }) {
@@ -999,9 +1014,6 @@ impl Interpreter {
             None
         };
         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-            if let Some(start) = start {
-                buffer.set_last_window_start(start);
-            }
             if let Some(point) = point {
                 let point = point.clamp(buffer.point_min(), buffer.point_max());
                 buffer.goto_char(point);
@@ -1619,7 +1631,10 @@ impl Interpreter {
             a.0 == b.0
                 && a.2 == b.2
                 && a.3 == b.3
-                && a.1.iter().zip(&b.1).all(|(a, b)| a.word() == b.word())
+                && a.1
+                    .iter()
+                    .zip(&b.1)
+                    .all(|(a, b)| crate::lisp::types::eq(*a, *b))
         };
         Ok(left.0 == right.0
             && left.1.len() == right.1.len()
@@ -1843,7 +1858,7 @@ impl Interpreter {
                         let mut found = None;
                         while let Some(cell) = tail.cons_ref() {
                             if let Some(entry) = cell.car.get().cons_ref()
-                                && entry.car.get().word() == name.word()
+                                && crate::lisp::types::eq(entry.car.get(), name)
                             {
                                 found = Some(entry);
                                 break;
@@ -2102,7 +2117,7 @@ impl Interpreter {
             self.set_current_buffer_id(buffer)?;
             // A new current buffer the selected window does not show goes
             // to its old point (Bug#12208).
-            if self.selected_window_buffer_id() != buffer
+            if self.selected_window_contents_buffer_id() != Some(buffer)
                 && let Some(point) = old_point
             {
                 let mut state = self.buffer.borrow_mut();
@@ -2285,7 +2300,7 @@ impl Interpreter {
         }
         self.frames_discard_buffer(id);
         self.delete_buffer_overlays(id);
-        let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
+        let selected_window_showed_buffer = self.selected_window_contents_buffer_id() == Some(id);
         self.detach_markers_for_buffer(id);
         // An indirect buffer stops sharing its base's text (and chain).
         if let Some(object) = self.buffer_object(id) {
@@ -2710,13 +2725,6 @@ impl Interpreter {
     #[inline]
     pub fn char_table_get(&self, table: CharTableRef, key: u32) -> Option<Value> {
         Some(table.get(key))
-    }
-
-    pub(crate) fn char_table_effective_ranges(
-        &self,
-        table: CharTableRef,
-    ) -> Option<Vec<CharTableEntry>> {
-        Some(table.effective_ranges())
     }
 
     pub fn char_table_explicit_get(&self, mut table: CharTableRef, key: u32) -> Option<Value> {
@@ -3273,17 +3281,19 @@ impl Interpreter {
     }
 
     /// Ffeaturep's and Frequire's `Fmemq (feature, Vfeatures)': FEATURE
-    /// by its word, read in place (a circular or dotted list has none).
+    /// by EQ, read in place (a circular or dotted list has none).
     pub(crate) fn has_feature_symbol(&self, feature: SymbolName) -> bool {
         let features = cached_symbol!("features")
             .with(|symbol| self.global_binding_value_symbol(symbol))
             .unwrap_or_else(|| self.features_value());
-        let word = Value::Symbol(feature).word();
+        let feature = Value::Symbol(feature);
         if matches!(features.kind(), Kind::Vector(_)) {
             // A vector reads as `to_vec' gives it, marker first.
-            return features
-                .to_vec()
-                .is_ok_and(|features| features.iter().any(|value| value.word() == word));
+            return features.to_vec().is_ok_and(|features| {
+                features
+                    .iter()
+                    .any(|value| crate::lisp::types::eq(*value, feature))
+            });
         }
         // Fmemq's walk, stopping at the first match.
         let mut tail = features;
@@ -3292,7 +3302,7 @@ impl Interpreter {
             if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
                 return false;
             }
-            if cell.car.get().word() == word {
+            if crate::lisp::types::eq(cell.car.get(), feature) {
                 return true;
             }
             tail = cell.cdr.get();
@@ -3559,7 +3569,7 @@ fn assq_plain(key: Value, alist: Value) -> Option<(Value, Value)> {
     let mut walk = crate::lisp::types::TailWalk::new(tail);
     while let Some(cell) = tail.cons_ref() {
         if let Some(entry) = cell.car.get().cons_ref()
-            && entry.car.get().word() == key.word()
+            && crate::lisp::types::eq(entry.car.get(), key)
         {
             return Some((entry.car.get(), entry.cdr.get()));
         }

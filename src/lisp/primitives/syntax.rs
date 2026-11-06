@@ -230,10 +230,31 @@ pub(super) fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
     Some(entry)
 }
 
+/// One insertion of Finternal_describe_syntax_value: a text (insert,
+/// insert_string) or insert_char of a character code.
+pub(super) enum DescribePiece {
+    Text(String),
+    Char(i64),
+}
+
+impl From<String> for DescribePiece {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
+
+impl From<&str> for DescribePiece {
+    fn from(text: &str) -> Self {
+        Self::Text(text.into())
+    }
+}
+
 /// syntax.c:Finternal_describe_syntax_value's text, as the pieces it
 /// inserts one by one (each an insertion of its own, with its own change
-/// hooks), and whether the prefix flag's text follows.
-pub(super) fn describe_syntax_value(value: &Value) -> (Vec<String>, bool) {
+/// hooks), and whether the prefix flag's text follows.  The matching
+/// character is any CHARACTERP code, raw bytes and codes past Unicode
+/// included, inserted by insert_char.
+pub(super) fn describe_syntax_value(value: &Value) -> (Vec<DescribePiece>, bool) {
     if value.is_nil() {
         return (vec!["default".into()], false);
     }
@@ -246,14 +267,15 @@ pub(super) fn describe_syntax_value(value: &Value) -> (Vec<String>, bool) {
     let Kind::Integer(raw_code) = car.get().kind() else {
         return (vec!["invalid".into()], false);
     };
-    let matching = match cdr.get().kind() {
+    // !(NILP (match_lisp) || CHARACTERP (match_lisp)).
+    let matching_code = match cdr.get().kind() {
         Kind::Nil => None,
-        Kind::Integer(code) => u32::try_from(code).ok().and_then(char::from_u32),
+        Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code) => Some(code),
         _ => return (vec!["invalid".into()], false),
     };
-    if !cdr.get().is_nil() && matching.is_none() {
-        return (vec!["invalid".into()], false);
-    }
+    let matching = matching_code
+        .and_then(|code| u32::try_from(code).ok())
+        .and_then(char::from_u32);
     let syntax_code = raw_code & i64::from(i32::MAX);
     let Some(class) = syntax_class_from_code(syntax_code & 0xff) else {
         return (vec!["invalid".into()], false);
@@ -270,32 +292,35 @@ pub(super) fn describe_syntax_value(value: &Value) -> (Vec<String>, bool) {
         nested: syntax_code & (1 << 22) != 0,
         style_c: syntax_code & (1 << 23) != 0,
     };
-    let mut description: Vec<String> = Vec::new();
-    description.push(String::from(syntax_class_char(class)));
-    description.push(String::from(entry.matching.unwrap_or(' ')));
+    let mut description: Vec<DescribePiece> = Vec::new();
+    description.push(String::from(syntax_class_char(class)).into());
+    description.push(match matching_code {
+        Some(code) => DescribePiece::Char(code),
+        None => " ".into(),
+    });
     if entry.start_first {
-        description.push(String::from('1'));
+        description.push(String::from('1').into());
     }
     if entry.start_second {
-        description.push(String::from('2'));
+        description.push(String::from('2').into());
     }
     if entry.end_first {
-        description.push(String::from('3'));
+        description.push(String::from('3').into());
     }
     if entry.end_second {
-        description.push(String::from('4'));
+        description.push(String::from('4').into());
     }
     if entry.prefix {
-        description.push(String::from('p'));
+        description.push(String::from('p').into());
     }
     if entry.style_b {
-        description.push(String::from('b'));
+        description.push(String::from('b').into());
     }
     if entry.style_c {
-        description.push(String::from('c'));
+        description.push(String::from('c').into());
     }
     if entry.nested {
-        description.push(String::from('n'));
+        description.push(String::from('n').into());
     }
     let meaning = match class {
         SyntaxClass::Whitespace => "whitespace",
@@ -317,9 +342,9 @@ pub(super) fn describe_syntax_value(value: &Value) -> (Vec<String>, bool) {
     };
     description.push("\twhich means: ".into());
     description.push(meaning.into());
-    if let Some(matching) = entry.matching {
+    if let Some(code) = matching_code {
         description.push(", matches ".into());
-        description.push(String::from(matching));
+        description.push(DescribePiece::Char(code));
     }
     if entry.start_first {
         description.push(",\n\t  is the first character of a comment-start sequence".into());

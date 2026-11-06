@@ -1051,8 +1051,8 @@ pub(crate) fn column_at(
     env: &mut Env,
     line_start: usize,
     pos: usize,
-) -> usize {
-    scan_for_column(interp, env, line_start, pos, None).col
+) -> Result<usize, LispError> {
+    Ok(scan_for_column(interp, env, line_start, pos, None)?.col)
 }
 
 /// indent.c:position_indentation: the columns of the blanks from POS, a
@@ -1161,7 +1161,7 @@ pub(crate) fn scan_for_column(
     line_start: usize,
     end: usize,
     goal: Option<usize>,
-) -> ColumnScan {
+) -> Result<ColumnScan, LispError> {
     let goal = goal.unwrap_or(usize::MAX);
     // SANE_TAB_WIDTH.
     let tab_width = interp
@@ -1193,10 +1193,13 @@ pub(crate) fn scan_for_column(
     let mut prev_col = 0usize;
     let mut scan = line_start;
     let mut prev_pos = scan;
-    // The composition iterator, its W the window Fget_buffer_window finds
-    // for the current buffer (none: static compositions only), looked for
-    // when an automatic composition would need it.
-    let mut cmp_it = dispatch::CompositionIterator::for_window(None);
+    // window = Fget_buffer_window (Fcurrent_buffer (), Qnil), whose error
+    // is scan_for_column's: the composition iterator's W (none: static
+    // compositions only).
+    let windowed =
+        dispatch::display::buffer_window(interp, interp.current_buffer_id(), &Value::Nil)?
+            .is_some();
+    let mut cmp_it = dispatch::CompositionIterator::for_window(windowed);
     cmp_it.compute_stop_pos(interp, env, scan, end);
     'scan: while scan < end {
         // skip_invisible with no window: invisible text, not the text an
@@ -1285,12 +1288,12 @@ pub(crate) fn scan_for_column(
         }
         scan += 1;
     }
-    ColumnScan {
+    Ok(ColumnScan {
         col,
         pos: scan,
         prev_pos,
         prev_col,
-    }
+    })
 }
 
 /// MULTIBYTE_BYTES_WIDTH: a display table's glyph count for the
@@ -1475,7 +1478,7 @@ pub(crate) fn invisibility_level(interp: &Interpreter, value: &Value, env: &Env)
 }
 
 pub(crate) fn prefix_numeric_value(value: &Value) -> Result<Value, LispError> {
-    Ok(match value.kind() {
+    Ok(match crate::lisp::types::eq_dispatch(value).kind() {
         Kind::Nil => Value::Integer(1),
         Kind::Symbol(symbol) if symbol.is_named("-") => Value::Integer(-1),
         Kind::Integer(_) => *value,

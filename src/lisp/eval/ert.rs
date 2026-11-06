@@ -264,7 +264,7 @@ impl Interpreter {
             // GNU wraps each test body in (catch 'ert--pass ...); `ert-pass'
             // terminates the test successfully by throwing to that tag.
             if let Err(LispErrorKind::Throw(tag, _)) = result.as_ref().map_err(LispError::kind)
-                && matches!(tag.kind(), Kind::Symbol(name) if name.is_named("ert--pass"))
+                && crate::lisp::types::eq_symbol_named(tag, "ert--pass")
             {
                 result = Ok(Value::Nil);
             }
@@ -348,7 +348,7 @@ fn selector_atom(value: &Value) -> String {
 
 #[cfg(test)]
 fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {
-    match unquote(selector).kind() {
+    match crate::lisp::types::eq_dispatch(unquote(selector)).kind() {
         Kind::Nil => false,
         Kind::T => true,
         Kind::Symbol(name) if name.is_named("t") => true,

@@ -101,7 +101,7 @@ fn native_arity(
 ) -> Result<(usize, NativeCallingConvention, Option<usize>), LispError> {
     let min_args = usize::try_from(min_args)
         .map_err(|_| super::lisp::native_ice("negative native minimum arity"))?;
-    let (convention, max_args) = match max_value.kind() {
+    let (convention, max_args) = match crate::lisp::types::eq_dispatch(max_value).kind() {
         Kind::Integer(maximum) => {
             let maximum = usize::try_from(maximum)
                 .map_err(|_| super::lisp::native_ice("negative native maximum arity"))?;

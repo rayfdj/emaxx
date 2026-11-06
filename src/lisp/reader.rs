@@ -2148,6 +2148,7 @@ impl<'a> Reader<'a> {
                 })();
                 self.locate_symbols = saved_locate;
                 let (kind, fields) = result?;
+                // `BASE_EQ (XCAR (elems), Qhash_table)'.
                 if matches!(kind.kind(), Kind::Symbol(kind_name) if kind_name.is_named("hash-table"))
                 {
                     self.literal_object(ReaderForm::HashTable { fields })

@@ -1477,7 +1477,7 @@ pub(crate) fn tzlookup(interp: &Interpreter, zone: &Value) -> Result<TimeZone, L
         return Ok(local_tz(interp));
     }
     let zone = super::values::bare_symbol(interp, *zone);
-    match zone.kind() {
+    match crate::lisp::types::eq_dispatch(zone).kind() {
         Kind::T | Kind::Integer(0) => Ok(TimeZone::Utc),
         Kind::Symbol(symbol) if symbol.is_named("wall") => Ok(TimeZone::Tz(None)),
         _ if zone.is_string() => Ok(TimeZone::Tz(Some(Rc::from(string_text(&zone)?.as_str())))),
@@ -1765,10 +1765,10 @@ fn time_convert(interp: &Interpreter, time: &Value, form: &Value) -> Result<Valu
     } else {
         Value::T
     };
-    if matches!(form.kind(), Kind::Symbol(symbol) if symbol.is_named("list")) {
+    if crate::lisp::types::eq_symbol_named(form, "list") {
         return exact_time_to_old_style(&decoded);
     }
-    if matches!(form.kind(), Kind::Symbol(symbol) if symbol.is_named("integer")) {
+    if crate::lisp::types::eq_symbol_named(form, "integer") {
         return Ok(if time.is_integer() {
             *time
         } else {

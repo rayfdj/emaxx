@@ -1253,7 +1253,7 @@ fn settle_command_error(
     let top_level = matches!(
         &error,
         LispErrorKind::Throw(tag, _)
-            if matches!(tag.kind(), Kind::Symbol(name) if name.is_named("top-level"))
+            if crate::lisp::types::eq_symbol_named(tag, "top-level")
     );
     let error = LispError::from(error);
     let reported = if top_level {
@@ -1673,8 +1673,8 @@ fn window_render_geometry(
     let auto_mode = auto_mode_value.is_truthy();
     // hscrolling_current_line_p: `current-line' hscrolls only the row
     // showing point, and only while auto-hscroll is not suspended.
-    let current_line_only = !suspended
-        && matches!(auto_mode_value.kind(), Kind::Symbol(name) if name.is_named("current-line"));
+    let current_line_only =
+        !suspended && crate::lisp::types::eq_symbol_named(auto_mode_value, "current-line");
     let truncate_now = truncate_lines || hscroll > 0 || partial_truncates;
     if auto_mode && !suspended && truncate_now {
         let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
@@ -1791,7 +1791,7 @@ fn space_align_to_target(value: &Value) -> Option<usize> {
     }
     let position = items
         .iter()
-        .position(|item| matches!(item.kind(), Kind::Symbol(name) if name.is_named(":align-to")))?;
+        .position(|item| crate::lisp::types::eq_symbol_named(item, ":align-to"))?;
     match items.get(position + 1).map(|v| v.kind()) {
         Some(Kind::Integer(column)) if column >= 0 => Some(column as usize),
         _ => None,
@@ -1816,7 +1816,7 @@ fn specified_space(value: &Value) -> Option<SpecifiedSpace> {
     }
     if let Some(position) = items
         .iter()
-        .position(|item| matches!(item.kind(), Kind::Symbol(name) if name.is_named(":width")))
+        .position(|item| crate::lisp::types::eq_symbol_named(item, ":width"))
         && let Some(width) = items
             .get(position + 1)
             .and_then(|value| value.as_float().ok())
@@ -1844,14 +1844,14 @@ fn specified_space(value: &Value) -> Option<SpecifiedSpace> {
 fn margin_display_spec(display: &Value) -> Option<(Option<String>, Value)> {
     let (head, rest) = display.cons_values()?;
     let (tag, location) = head.cons_values()?;
-    if !matches!(tag.kind(), Kind::Symbol(name) if name.is_named("margin")) {
+    if !crate::lisp::types::eq_symbol_named(tag, "margin") {
         return None;
     }
     let location = match location.cons_values() {
         Some((side, _)) => side,
         None => Value::Nil,
     };
-    let location = match location.kind() {
+    let location = match crate::lisp::types::eq_dispatch(location).kind() {
         Kind::Nil => None,
         Kind::Symbol(name) if name.is_named("left-margin") || name.is_named("right-margin") => {
             Some(name.to_string())
@@ -1860,9 +1860,9 @@ fn margin_display_spec(display: &Value) -> Option<(Option<String>, Value)> {
     };
     let value = rest.cons_values().map_or(rest, |(value, _)| value);
     let valid = crate::lisp::primitives::string_text(&value).is_ok()
-        || value.cons_values().is_some_and(
-            |(car, _)| matches!(car.kind(), Kind::Symbol(name) if name.is_named("space")),
-        );
+        || value
+            .cons_values()
+            .is_some_and(|(car, _)| crate::lisp::types::eq_symbol_named(car, "space"));
     valid.then_some((location, value))
 }
 
@@ -2405,7 +2405,7 @@ impl<'a> CharacterDisplayContext<'a> {
             .cons_values()
             .map(|(_, text_terminal)| text_terminal)
             .unwrap_or(value);
-        let method = match value.kind() {
+        let method = match crate::lisp::types::eq_dispatch(value).kind() {
             // lookup_glyphless_char_display: no method (the usual entry).
             Kind::Nil if !no_font_fallback => return None,
             Kind::Symbol(name) if name.is_named("zero-width") && no_font_fallback => {
@@ -5489,7 +5489,7 @@ fn redraw_with_echo_policy(
                     crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
                 });
             let row = &mut frame[row_index];
-            if matches!(face.kind(), Kind::Symbol(name) if name.is_named("default")) {
+            if crate::lisp::types::eq_symbol_named(face, "default") {
                 row.replace_attrs(from, to, attrs);
             } else {
                 row.overlay(from, to, attrs);

@@ -5122,6 +5122,10 @@ impl Interpreter {
             "cannot clone an interpreter with live terminal devices"
         );
         let symbol_owner = crate::lisp::types::symbols::SymbolOwner::fresh();
+        // The copy's own C flag, as the image holds the variable's value.
+        symbol_owner
+            .symbols_with_pos_enabled()
+            .set(self.symbols_with_positions_enabled());
         let symbol_scope = symbol_owner.enter();
         let mut clone = self.clone();
         clone.finalizers = crate::lisp::alloc::FinalizerList::default();
@@ -5726,10 +5730,6 @@ pub struct InterpreterState {
     pub(crate) executing_kbd_macro: bool,
     /// macros.c's executing_kbd_macro_iterations.
     pub(crate) kbd_macro_iterations: i64,
-    /// data.c's forwarded C boolean, also read through comp.c's native
-    /// relocation. The box keeps its address stable if the interpreter moves;
-    /// Cell permits same-thread FFI reads while Rust updates the live slot.
-    symbols_with_positions_enabled: Box<Cell<bool>>,
     /// data.c set_internal: storing void into a variable forwarded to a C
     /// slot (DEFVAR_LISP/BOOL/INT) detaches the symbol from that slot and
     /// leaves it void, so `boundp' reads nil and the built-in fallback no
@@ -6569,7 +6569,6 @@ impl Interpreter {
             print_unreadable_callback_buffer: None,
             executing_kbd_macro: false,
             kbd_macro_iterations: 0,
-            symbols_with_positions_enabled: Box::new(Cell::new(false)),
             lisp_eval_depth: 0,
             garbage_collection_inhibited: 0,
             kbd_macro_definition: Vec::new(),
@@ -8545,7 +8544,7 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
 fn is_lambda_form(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         items.first().is_some_and(|head| {
-            matches!(head.kind(), Kind::Symbol(name) if name.is_named("lambda"))
+            crate::lisp::types::eq_symbol_named(head, "lambda")
                 || (crate::lisp::primitives::symbols_with_pos_enabled(interp, env)
                     && matches!(
                         crate::lisp::primitives::symbol_with_pos_parts(interp, head).map(|(a0, a1)| (a0.kind(), a1)),

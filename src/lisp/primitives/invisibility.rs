@@ -115,7 +115,7 @@ pub(crate) fn invisibility_spec_of(spec: Value) -> InvisibilitySpec {
         Kind::Nil => InvisibilitySpec::default(),
         value
             if matches!(value.value().kind(), Kind::T)
-                || matches!(value.value().kind(), Kind::Symbol(name) if name.is_named("t")) =>
+                || crate::lisp::types::eq_symbol_named(value.value(), "t") =>
         {
             InvisibilitySpec {
                 all: true,
@@ -142,16 +142,9 @@ pub(crate) fn invisibility_spec_of(spec: Value) -> InvisibilitySpec {
     }
 }
 
-/// EQ for the atoms an invisibility spec realistically holds (symbols,
-/// integers); other object identities answer false, as a pointer EQ
-/// against a fresh value would.
+/// xdisp.c's EQ of an invisibility spec's elements: lisp.h's EQ.
 pub(crate) fn invisibility_atom_eq(a: &Value, b: &Value) -> bool {
-    match (a.kind(), b.kind()) {
-        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
-        (Kind::Integer(a), Kind::Integer(b)) => a == b,
-        (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
-        _ => false,
-    }
+    crate::lisp::types::eq(*a, *b)
 }
 
 /// xdisp.c:invisible_prop on Lisp values: 1 when PROPVAL, or else an
@@ -163,11 +156,11 @@ pub(crate) fn invisible_prop(propval: Value, list: Value) -> u8 {
         let mut tail = list;
         while let Kind::Cons(_) = tail.kind() {
             let tem = tail.car().unwrap_or(Value::Nil);
-            if tem.eq_value(elt) {
+            if crate::lisp::types::eq(tem, elt) {
                 return 1;
             }
             if let Kind::Cons(_) = tem.kind()
-                && tem.car().is_ok_and(|car| car.eq_value(elt))
+                && tem.car().is_ok_and(|car| crate::lisp::types::eq(car, elt))
             {
                 return if tem.cdr().is_ok_and(|cdr| cdr.is_nil()) {
                     1

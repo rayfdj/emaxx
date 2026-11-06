@@ -38,6 +38,26 @@ pub(crate) fn memory_full(interp: &mut Interpreter, env: &Env, nbytes: usize) ->
     )
 }
 
+/// `string_storage_error' where only a shared interpreter is at hand (the
+/// file-error data builders): a condition as it is, a failed allocation
+/// as memory_full's signal data, without the `memory-full' flag and
+/// consing threshold memory_full also sets, which need the interpreter
+/// mutably.
+pub(crate) fn string_storage_error_shared(
+    interp: &Interpreter,
+    error: crate::lisp::types::string_data::StringError,
+) -> LispError {
+    use crate::lisp::types::string_data::StringError;
+    match error {
+        StringError::Condition(error) => error,
+        StringError::AllocationFailed(_) => LispError::SignalValue(
+            interp
+                .symbol_value_key(cached_symbol!("memory-signal-data"))
+                .unwrap_or(Value::Nil),
+        ),
+    }
+}
+
 /// alloc.c:memory_full for a vector allocator's failure.
 pub(crate) fn allocation_error(
     interp: &mut Interpreter,
@@ -1220,9 +1240,12 @@ pub(crate) fn property_from_props_with_category(
         }
         // A category symbol gives every property but `category': Fget of
         // the symbol object itself.
-        if tem.word() == category.word() && value.is_symbol() {
+        // SYMBOLP and Fget take a symbol with position while
+        // `symbols-with-pos-enabled' is set.
+        let symbol = crate::lisp::types::maybe_remove_pos(value);
+        if crate::lisp::types::eq(tem, category) && symbol.is_symbol() {
             fallback = interp
-                .get_property_of_symbol_value(value, prop)
+                .get_property_of_symbol_value(symbol, prop)
                 .unwrap_or(Value::Nil);
         }
         let Some(rest) = rest else {
@@ -1402,11 +1425,10 @@ pub(crate) fn overlay_property_with_category(
         }
         // A category symbol gives every property but `category': Fget of
         // the symbol object itself.
-        if matches!(name.kind(), Kind::Symbol(symbol) if symbol.is_named("category"))
-            && value.is_symbol()
-        {
+        let symbol = crate::lisp::types::maybe_remove_pos(value);
+        if crate::lisp::types::eq_symbol_named(name, "category") && symbol.is_symbol() {
             fallback = interp
-                .get_property_of_symbol_value(value, prop)
+                .get_property_of_symbol_value(symbol, prop)
                 .unwrap_or(Value::Nil);
         }
         let Kind::Cons(rest) = rest.kind() else {

@@ -563,16 +563,14 @@ impl Interpreter {
             // GNU reads (macro . EXPANDER) from the current function cell.
             // Direct/native stores must be visible without notifying a
             // per-name cache. Resolve once, including symbol aliases.
-            if matches!(head.kind(), Kind::Symbol(name) if name.is_named("macro")) {
+            if crate::lisp::types::eq_symbol_named(head, "macro") {
                 let expanded = self.with_macro_lexical_binding(caller, env, |interp, env| {
                     interp.call_expander(expander, symbol, args, env)
                 })?;
                 return Ok(Some(expanded));
             }
 
-            if attempted_autoload
-                || !matches!(head.kind(), Kind::Symbol(name) if name.is_named("autoload"))
-            {
+            if attempted_autoload || !crate::lisp::types::eq_symbol_named(head, "autoload") {
                 return Ok(None);
             }
             if crate::lisp::primitives::autoload_parts(&function).is_none() {

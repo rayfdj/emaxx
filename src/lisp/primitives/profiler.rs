@@ -80,7 +80,7 @@ fn closure_code(function: Value) -> Option<Value> {
 
 /// profiler.c:Ffunction_equal's test.
 pub(crate) fn function_equal(f1: Value, f2: Value) -> bool {
-    f1.eq_value(f2)
+    crate::lisp::types::eq(f1, f2)
         || matches!((closure_code(f1), closure_code(f2)), (Some(c1), Some(c2)) if c1.eq_value(c2))
 }
 

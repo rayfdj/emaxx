@@ -37,7 +37,7 @@ fn restore_buffer_modified_p(
         interp.buffer.borrow_mut().set_unmodified();
     } else {
         interp.buffer.borrow_mut().set_modified();
-        if matches!(flag.kind(), Kind::Symbol(symbol) if symbol.is_named("autosaved")) {
+        if crate::lisp::types::eq_symbol_named(flag, "autosaved") {
             let modiff = interp.buffer.borrow().modified_tick();
             if let Some(mut buffer) = interp.get_buffer_by_id_mut(base) {
                 buffer.set_autosave_modiff(modiff);
@@ -1176,7 +1176,7 @@ define_dispatch!(
                 interp.buffer.borrow_mut().goto_char(new_end);
                 Ok(Value::Nil)
             }
-            "current-column" => Ok(Value::Integer(current_column(interp, env) as i64)),
+            "current-column" => Ok(Value::Integer(current_column(interp, env)? as i64)),
             "current-indentation" => {
                 // indent.c:Fcurrent_indentation: position_indentation from
                 // the line's start.
@@ -1205,7 +1205,7 @@ define_dispatch!(
                 let point = interp.buffer.borrow().point();
                 let start = line_beginning_at(interp, point);
                 let zv = interp.buffer.borrow().point_max();
-                let scan = scan_for_column(interp, env, start, zv, Some(goal));
+                let scan = scan_for_column(interp, env, start, zv, Some(goal))?;
                 let mut col = scan.col;
                 interp.buffer.borrow_mut().goto_char(scan.pos);
                 // If a tab made us overshoot, change it to spaces and scan
@@ -1648,7 +1648,7 @@ fn prefix_property_width(interp: &mut Interpreter, env: &mut Env, prop: Option<V
     {
         let mut cursor = 1;
         while cursor + 1 < items.len() {
-            if matches!(items[cursor].kind(), Kind::Symbol(key) if key.is_named(":width")) {
+            if crate::lisp::types::eq_symbol_named(items[cursor], ":width") {
                 return display_spec_width(interp, env, &items[cursor + 1]).max(0) as usize;
             }
             cursor += 2;
@@ -3047,22 +3047,25 @@ pub(super) fn direct_char_before(
 /// point nor the buffer's modiff has changed (nor the buffer, its
 /// restriction), else point's column scanned from its line's beginning,
 /// then recorded.
-fn current_column(interp: &mut Interpreter, env: &mut crate::lisp::types::Env) -> usize {
+fn current_column(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+) -> Result<usize, LispError> {
     let (point, modiff) = {
         let buffer = interp.buffer.borrow();
         (buffer.point(), buffer.modified_tick())
     };
     let (column, known_point, known_modiff) = interp.last_known_column;
     if point == known_point && modiff == known_modiff {
-        return column;
+        return Ok(column);
     }
     let bol = line_beginning_at(interp, point);
     let column = match plain_current_column(interp, env, bol, point) {
         Some(column) => column,
-        None => column_at(interp, env, bol, point),
+        None => column_at(interp, env, bol, point)?,
     };
     remember_current_column(interp, column);
-    column
+    Ok(column)
 }
 
 /// indent.c current_column's own scan, back from POINT to the line's
@@ -3180,7 +3183,7 @@ pub(super) fn indent_to(
     minimum: i64,
     env: &mut crate::lisp::types::Env,
 ) -> Result<i64, LispError> {
-    let mut from_col = current_column(interp, env) as i64;
+    let mut from_col = current_column(interp, env)? as i64;
     let min_col = (from_col + minimum).max(column);
     if min_col == from_col {
         return Ok(min_col);
