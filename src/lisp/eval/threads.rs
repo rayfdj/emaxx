@@ -154,21 +154,132 @@ fn signal_event_message(_signal: i32) -> String {
     "killed\n".into()
 }
 
-/// Write all of INPUT to a non-blocking stream, napping through WouldBlock.
-fn send_all<W: std::io::Write>(stream: &mut W, input: &[u8]) -> Result<(), LispError> {
-    let mut written = 0;
-    while written < input.len() {
-        match stream.write(&input[written..]) {
-            Ok(n) => written += n,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(1));
+/// What send_process's write of a connection's socket did.
+enum NetworkWrite {
+    /// The bytes written, or the error that wrote none.
+    Done(std::io::Result<usize>),
+    /// sendto's EMSGSIZE, which send_process reports as "Sending
+    /// datagram".
+    DatagramTooLarge(std::io::Error),
+}
+
+/// One write of send_process's loop on a connection: a datagram's sendto
+/// to its datagram_address (repeated while interrupted); else
+/// emacs_gnutls_write when p->gnutls_p, nothing written being the errno
+/// it left; else emacs_write_sig, which writes until all is written or a
+/// write fails, retrying an interrupted one.
+fn network_write(
+    network: &mut NetworkRuntime,
+    tls: &mut ProcessGnuTlsState,
+    input: &[u8],
+) -> NetworkWrite {
+    fn write_sig<W: std::io::Write>(stream: &mut W, input: &[u8]) -> std::io::Result<usize> {
+        let mut written = 0;
+        while written < input.len() {
+            match stream.write(&input[written..]) {
+                Ok(0) => break,
+                Ok(count) => written += count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) if written == 0 => return Err(error),
+                Err(_) => break,
             }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(LispError::Signal(error.to_string())),
+        }
+        Ok(written)
+    }
+    match network {
+        #[cfg(unix)]
+        NetworkRuntime::Datagram { socket, address } => {
+            use std::os::fd::AsRawFd;
+            loop {
+                // SAFETY: INPUT and the address are live for the call.
+                let sent = unsafe {
+                    libc::sendto(
+                        socket.as_raw_fd(),
+                        input.as_ptr().cast(),
+                        input.len(),
+                        0,
+                        address.as_ptr(),
+                        address.length,
+                    )
+                };
+                if sent >= 0 {
+                    return NetworkWrite::Done(Ok(sent as usize));
+                }
+                let error = std::io::Error::last_os_error();
+                match error.raw_os_error() {
+                    Some(libc::EINTR) => continue,
+                    Some(libc::EMSGSIZE) => return NetworkWrite::DatagramTooLarge(error),
+                    _ => return NetworkWrite::Done(Err(error)),
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        NetworkRuntime::Datagram { .. } => {
+            NetworkWrite::Done(Err(std::io::Error::from(std::io::ErrorKind::Unsupported)))
+        }
+        NetworkRuntime::Stream(_) | NetworkRuntime::UnixStream(_)
+            if tls.gnutls_p && tls.session.is_some() =>
+        {
+            let Some(session) = tls.session.as_mut() else {
+                return NetworkWrite::Done(Ok(0));
+            };
+            let (written, errno) = session.send(input);
+            NetworkWrite::Done(if written > 0 || input.is_empty() {
+                Ok(written)
+            } else {
+                Err(std::io::Error::from_raw_os_error(errno))
+            })
+        }
+        NetworkRuntime::Stream(stream) => NetworkWrite::Done(write_sig(stream, input)),
+        NetworkRuntime::UnixStream(stream) => NetworkWrite::Done(write_sig(stream, input)),
+        NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_) => {
+            NetworkWrite::Done(Err(std::io::Error::from_raw_os_error(libc::ENOTCONN)))
         }
     }
-    let _ = stream.flush();
-    Ok(())
+}
+
+/// sysdep.c:emacs_write_sig on FD: writes until all of INPUT is written
+/// or one fails, an interrupted one retried; the bytes written, or the
+/// error when none were.
+#[cfg(unix)]
+fn fd_write_sig(fd: std::os::fd::RawFd, input: &[u8]) -> std::io::Result<usize> {
+    let mut written = 0;
+    while written < input.len() {
+        // SAFETY: the rest of INPUT is borrowed for the call; FD is live.
+        let count =
+            unsafe { libc::write(fd, input[written..].as_ptr().cast(), input.len() - written) };
+        if count > 0 {
+            written += count as usize;
+            continue;
+        }
+        if count == 0 {
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if written == 0 {
+            return Err(error);
+        }
+        break;
+    }
+    Ok(written)
+}
+
+/// gnutls.c:emacs_gnutls_deinit of a process's TLS state: false (nil)
+/// while p->gnutls_p is false, which leaves the session as it is; else
+/// the session freed, the stage put below GNUTLS_STAGE_INIT, gnutls_p
+/// cleared, and true.
+fn gnutls_deinit(tls: &mut ProcessGnuTlsState) -> bool {
+    if !tls.gnutls_p {
+        return false;
+    }
+    if tls.session.take().is_some() && tls.initstage >= GNUTLS_STAGE_INIT {
+        tls.initstage = GNUTLS_STAGE_INIT - 1;
+    }
+    tls.gnutls_p = false;
+    true
 }
 
 fn terminate_child_without_blocking(mut runtime: RunningProcess) {
@@ -249,6 +360,8 @@ impl Interpreter {
             process.in_alist = false;
             process.module_pipe = None;
             process.pipe_input = None;
+            process.network = None;
+            process.dns_request = None;
             if let Some(runtime) = process.runtime.as_mut() {
                 runtime.child.stdin = None;
                 runtime.child.stdout = None;
@@ -396,70 +509,109 @@ impl Interpreter {
             .map(|process| process.gnutls.initstage)
     }
 
+    /// gnutls.c:emacs_gnutls_deinit: nil while p->gnutls_p is false, the
+    /// session left as it is; else the session and its credentials freed,
+    /// the stage put below GNUTLS_STAGE_INIT, p->gnutls_p cleared, and t.
     pub fn deinit_process_gnutls(&mut self, record_id: u64) -> Option<bool> {
-        self.find_process_state_mut(record_id).map(|process| {
-            let was_active = process.gnutls.active;
-            if was_active {
-                process.gnutls.session = None;
-                process.gnutls.active = false;
-                if process.gnutls.initstage >= GNUTLS_STAGE_INIT {
-                    process.gnutls.initstage = GNUTLS_STAGE_INIT - 1;
-                }
-            }
-            was_active
-        })
+        self.find_process_state_mut(record_id)
+            .map(|process| gnutls_deinit(&mut process.gnutls))
     }
 
+    /// Fgnutls_boot's session for RECORD_ID, at GNUTLS_STAGE_CRED_SET,
+    /// with p->gnutls_complete_negotiation_p.
     pub(crate) fn install_process_gnutls(
         &mut self,
         record_id: u64,
         session: ProcessGnuTlsSession,
-        initstage: i64,
-        peer_verification: u32,
         peer_is_x509: bool,
+        complete_negotiation: bool,
     ) -> Result<(), LispError> {
         let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.gnutls.session = Some(session);
-        process.gnutls.initstage = initstage;
-        process.gnutls.active = true;
-        process.gnutls.peer_verification = peer_verification;
+        process.gnutls.initstage = GNUTLS_STAGE_CRED_SET;
+        process.gnutls.peer_verification = 0;
         process.gnutls.peer_is_x509 = peer_is_x509;
+        process.gnutls.complete_negotiation_p = complete_negotiation;
         Ok(())
     }
 
-    pub(crate) fn continue_process_gnutls_handshake(
+    pub(crate) fn set_process_gnutls_initstage(&mut self, record_id: u64, stage: i64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.initstage = stage;
+        }
+    }
+
+    /// p->gnutls_p of RECORD_ID.
+    pub(crate) fn process_gnutls_p(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| process.gnutls.gnutls_p)
+    }
+
+    pub(crate) fn set_process_gnutls_p(&mut self, record_id: u64, gnutls_p: bool) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.gnutls_p = gnutls_p;
+        }
+    }
+
+    /// p->gnutls_complete_negotiation_p of RECORD_ID.
+    pub(crate) fn process_gnutls_complete_negotiation(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| process.gnutls.complete_negotiation_p)
+    }
+
+    /// p->gnutls_handshakes_tried++, the count after it.
+    pub(crate) fn count_gnutls_handshake(&mut self, record_id: u64) -> u32 {
+        self.find_process_state_mut(record_id).map_or(0, |process| {
+            process.gnutls.handshakes_tried = process.gnutls.handshakes_tried.saturating_add(1);
+            process.gnutls.handshakes_tried
+        })
+    }
+
+    /// One gnutls_handshake of RECORD_ID's session, and
+    /// gnutls_error_is_fatal of its result; None with no session.
+    pub(crate) fn process_gnutls_handshake_step(
         &mut self,
         record_id: u64,
-    ) -> Result<(std::ffi::c_int, *mut std::ffi::c_void), LispError> {
-        let record_id_value = self.record_value(record_id);
-        let process = self
-            .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-        let session = process
+    ) -> Option<(std::ffi::c_int, bool)> {
+        let session = self
+            .find_process_state_mut(record_id)?
             .gnutls
             .session
-            .as_mut()
-            .ok_or_else(|| LispError::Signal("GnuTLS session is not initialized".into()))?;
-        let result = session.handshake(false)?;
-        Ok((result, session.raw_state()))
+            .as_mut()?;
+        let result = session.handshake_step();
+        Some((result, result < 0 && session.error_is_fatal(result)))
     }
 
-    pub(crate) fn finish_process_gnutls_handshake(
+    /// The raw state of RECORD_ID's session, which gnutls_verify_boot
+    /// queries without Lisp running.
+    pub(crate) fn process_gnutls_raw_state(&self, record_id: u64) -> Option<*mut std::ffi::c_void> {
+        Some(
+            self.find_process_state(record_id)?
+                .gnutls
+                .session
+                .as_ref()?
+                .raw_state(),
+        )
+    }
+
+    /// Whether RECORD_ID's session takes X.509 certificates.
+    pub(crate) fn process_gnutls_peer_is_x509(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| process.gnutls.peer_is_x509)
+    }
+
+    /// p->gnutls_peer_verification, which gnutls_verify_boot sets.
+    pub(crate) fn set_process_gnutls_peer_verification(
         &mut self,
         record_id: u64,
-        peer_verification: u32,
-    ) -> Result<(), LispError> {
-        let record_id_value = self.record_value(record_id);
-        let process = self
-            .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-        process.gnutls.initstage = 9;
-        process.gnutls.peer_verification = peer_verification;
-        process.gnutls.boot_parameters = Value::Nil;
-        Ok(())
+        verification: u32,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.peer_verification = verification;
+        }
     }
 
     /// The caller may query the session without invoking Lisp or yielding.
@@ -494,25 +646,6 @@ impl Interpreter {
             .as_mut()
             .ok_or_else(|| LispError::Signal("GnuTLS session is not initialized".into()))?;
         Ok(session.bye(continue_transport))
-    }
-
-    #[cfg(unix)]
-    pub(crate) fn process_network_transport_handle(
-        &self,
-        record_id: u64,
-    ) -> Result<usize, LispError> {
-        use std::os::fd::AsRawFd;
-
-        let process = self
-            .find_process_state(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
-        match process.network.as_ref() {
-            Some(NetworkRuntime::Stream(stream)) => Ok(stream.as_raw_fd() as usize),
-            Some(NetworkRuntime::UnixStream(stream)) => Ok(stream.as_raw_fd() as usize),
-            _ => Err(LispError::Signal(
-                "GnuTLS requires a connected stream process".into(),
-            )),
-        }
     }
 
     pub(super) fn find_process_state_mut(&mut self, record_id: u64) -> Option<&mut ProcessState> {
@@ -758,6 +891,12 @@ impl Interpreter {
             decoding: Value::Nil,
             encoding: Value::Nil,
             command: Value::Nil,
+            status_data: Value::Nil,
+            failed_message: None,
+            dns_request: None,
+            network_setup: Default::default(),
+            non_blocking_connect_fd: false,
+            write_queue: Default::default(),
             stderr_process_id: None,
             exit_code: None,
             exit_signal: None,
@@ -812,6 +951,9 @@ impl Interpreter {
         decoding: Value,
         encoding: Value,
     ) -> Result<Value, LispError> {
+        // make_process: NAME, or NAME<1>, NAME<2>... until no process has
+        // it.
+        let name = self.make_process_name(name)?;
         let status = match &network {
             Some(NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_)) => {
                 ProcessStatus::Listen
@@ -821,8 +963,9 @@ impl Interpreter {
                 | NetworkRuntime::Datagram { .. }
                 | NetworkRuntime::UnixStream(_),
             ) => ProcessStatus::Open,
-            // A non-blocking client none of whose addresses would connect.
-            None => ProcessStatus::Failed,
+            // make_process's `run', which a connection reads as `open',
+            // until connect_network_socket gives it its socket.
+            None => ProcessStatus::Open,
         };
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
         let Kind::Record(record_id) = process.kind() else {
@@ -859,6 +1002,12 @@ impl Interpreter {
             decoding,
             encoding,
             command: Value::Nil,
+            status_data: Value::Nil,
+            failed_message: None,
+            dns_request: None,
+            network_setup: Default::default(),
+            non_blocking_connect_fd: false,
+            write_queue: Default::default(),
             stderr_process_id: None,
             exit_code: None,
             exit_signal: None,
@@ -942,6 +1091,12 @@ impl Interpreter {
             decoding,
             encoding,
             command: Value::Nil,
+            status_data: Value::Nil,
+            failed_message: None,
+            dns_request: None,
+            network_setup: Default::default(),
+            non_blocking_connect_fd: false,
+            write_queue: Default::default(),
             stderr_process_id: None,
             exit_code: None,
             exit_signal: None,
@@ -979,7 +1134,7 @@ impl Interpreter {
     /// process.c setup_process_coding_systems once a connection has its
     /// channels: setup_coding_system signals `coding-system-error' for an
     /// undefined coding, the process staying registered as GNU leaves it.
-    fn setup_process_coding_systems(
+    pub(crate) fn setup_process_coding_systems(
         &self,
         decoding: Value,
         encoding: Value,
@@ -1200,6 +1355,17 @@ impl Interpreter {
             .and_then(|process| process.log)
     }
 
+    /// NETCONN1_P || SERIALCONN1_P || PIPECONN1_P: a process whose contact
+    /// is a plist.
+    pub(crate) fn is_connection_process(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id).is_some_and(|process| {
+            matches!(
+                process.kind,
+                ProcessKind::Network | ProcessKind::Serial | ProcessKind::Pipe
+            )
+        })
+    }
+
     pub fn is_network_process(&self, record_id: u64) -> bool {
         self.find_process_state(record_id)
             .is_some_and(|process| process.kind == ProcessKind::Network)
@@ -1242,40 +1408,81 @@ impl Interpreter {
         Ok(())
     }
 
-    /// process.c:2990 `pset_childp (p, plist_put (p->childp, option, value))'
-    /// -- an accepted socket option becomes visible through `process-contact'.
-    pub fn put_process_contact_option(&mut self, record_id: u64, option: &Value, value: Value) {
-        let Some(process) = self.find_process_state_mut(record_id) else {
-            return;
+    /// fns.c:plist_put on p->childp, in place: the value after the first
+    /// KEY (EQ) at a key's place replaced, else (KEY VALUE) put at the
+    /// list's end; a contact that is no proper plist is plistp's error.
+    pub(crate) fn process_contact_plist_put(
+        &mut self,
+        record_id: u64,
+        key: Value,
+        value: Value,
+    ) -> Result<(), LispError> {
+        let Some(process) = self.find_process_state(record_id) else {
+            return Ok(());
         };
-        // plist_put walks with CONSP guards and never discards; using
-        // unwrap_or_default() here would replace a dotted or improper contact
-        // plist with just this one pair.
-        let Ok(mut items) = process.contact.to_vec() else {
-            return;
-        };
-        // plist_put compares with EQ, not by name: a symbol from another
-        // obarray is a DIFFERENT key even when it prints the same, so it
-        // appends rather than replacing.  Emaxx encodes that identity in the
-        // raw symbol name, so compare raw names here -- deliberately NOT the
-        // visible name used for the option-table lookup.
-        let key_name = option.symbol_str();
-        let mut index = 0;
-        while index + 1 < items.len() {
-            if items[index].symbol_str() == key_name {
-                items[index + 1] = value;
-                process.contact = Value::list(items);
-                return;
+        let plist = process.contact;
+        let mut prev: Option<Value> = None;
+        let mut tail = plist;
+        while let Some((car, cdr)) = tail.cons_values() {
+            if !matches!(cdr.kind(), Kind::Cons(_)) {
+                break;
             }
-            index += 2;
+            if crate::lisp::types::eq(key, car) {
+                cdr.set_car(value)?;
+                return Ok(());
+            }
+            prev = Some(tail);
+            tail = cdr.cons_values().map_or(Value::Nil, |(_, next)| next);
         }
-        // plist_put appends when the key is absent, storing the CALLER's
-        // symbol -- so `(process-contact p t)' followed by `plist-get' with
-        // the interned keyword legitimately misses a foreign-obarray key,
-        // exactly as it does in GNU.
-        items.push(*option);
-        items.push(value);
-        process.contact = Value::list(items);
+        if !tail.is_nil() {
+            return Err(wrong_type_argument("plistp", plist));
+        }
+        let rest = match prev {
+            None => plist,
+            Some(prev) => prev
+                .cons_values()
+                .and_then(|(_, value_cell)| value_cell.cons_values())
+                .map_or(Value::Nil, |(_, rest)| rest),
+        };
+        let newcell = Value::cons(key, Value::cons(value, rest));
+        match prev {
+            None => {
+                if let Some(process) = self.find_process_state_mut(record_id) {
+                    process.contact = newcell;
+                }
+            }
+            Some(prev) => {
+                if let Some((_, value_cell)) = prev.cons_values() {
+                    value_cell.set_cdr(newcell)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// pset_buffer alone: Fmake_network_process gives a connection its
+    /// buffer, and connect_network_socket's update_process_mark its mark.
+    pub(crate) fn set_process_buffer_only(
+        &mut self,
+        record_id: u64,
+        buffer_id: Option<u64>,
+        buffer: Value,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.buffer_id = buffer_id;
+            process.buffer = buffer;
+        }
+    }
+
+    /// update_process_mark: the mark at the end (ZV) of the process's
+    /// buffer, pointing nowhere when that buffer is killed or none.
+    pub(crate) fn update_process_mark(&mut self, record_id: u64) {
+        let Some(process) = self.find_process_state(record_id) else {
+            return;
+        };
+        let (mark_id, buffer_id) = (process.mark_marker_id, process.buffer_id);
+        let position = buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|b| b.point_max()));
+        let _ = self.set_marker(mark_id, position, buffer_id);
     }
 
     #[cfg(unix)]
@@ -1291,49 +1498,63 @@ impl Interpreter {
         Ok(serial.port.as_raw_fd())
     }
 
-    pub fn process_datagram_address(
+    /// datagram_address[channel] of the datagram process RECORD_ID.
+    pub(crate) fn process_datagram_address(
         &self,
         record_id: u64,
-    ) -> Result<Option<std::net::SocketAddr>, LispError> {
+    ) -> Result<Option<super::RawSockaddr>, LispError> {
         let process = self
             .find_process_state(record_id)
             .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
-        let Some(NetworkRuntime::Datagram { socket, remote }) = process.network.as_ref() else {
+        let Some(NetworkRuntime::Datagram { address, .. }) = process.network.as_ref() else {
             return Ok(None);
         };
-        Ok(Some(remote.unwrap_or_else(|| {
-            socket
-                .local_addr()
-                .map(|address| match address {
-                    std::net::SocketAddr::V4(_) => std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
-                    std::net::SocketAddr::V6(_) => {
-                        std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 0))
-                    }
-                })
-                .unwrap_or_else(|_| std::net::SocketAddr::from(([0, 0, 0, 0], 0)))
-        })))
+        Ok(Some(address.clone()))
     }
 
-    pub fn set_process_datagram_address(
+    /// Fset_process_datagram_address's store: ADDRESS replaces the
+    /// datagram address of RECORD_ID when it has the same length.
+    pub(crate) fn set_process_datagram_address(
         &mut self,
         record_id: u64,
-        address: std::net::SocketAddr,
+        address: super::RawSockaddr,
     ) -> Result<bool, LispError> {
         let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-        let Some(NetworkRuntime::Datagram { socket, remote }) = process.network.as_mut() else {
+        let Some(NetworkRuntime::Datagram {
+            address: current, ..
+        }) = process.network.as_mut()
+        else {
             return Ok(false);
         };
-        let same_family = socket
-            .local_addr()
-            .is_ok_and(|local| local.is_ipv4() == address.is_ipv4());
-        if !same_family {
+        #[cfg(unix)]
+        if current.length != address.length {
             return Ok(false);
         }
-        *remote = Some(address);
+        *current = address;
         Ok(true)
+    }
+
+    /// connect_network_socket's settings for RECORD_ID.
+    pub(crate) fn network_setup(&self, record_id: u64) -> super::NetworkSetup {
+        self.find_process_state(record_id)
+            .map(|process| process.network_setup)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_network_setup(&mut self, record_id: u64, setup: super::NetworkSetup) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.network_setup = setup;
+        }
+    }
+
+    /// pset_log.
+    pub(crate) fn set_process_log(&mut self, record_id: u64, log: Option<Value>) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.log = log;
+        }
     }
 
     pub fn network_listener_ids(&self) -> Vec<u64> {
@@ -1364,8 +1585,9 @@ impl Interpreter {
                         | Some(NetworkRuntime::UnixStream(_))
                 ) || process.serial.is_some())
                     && process.status.is_live()
-                    // A connecting socket is read once it connects.
-                    && !matches!(process.status, ProcessStatus::Connect(_))
+                    // A connecting socket is read once it connects
+                    // (add_process_read_fd after delete_write_fd).
+                    && !process.non_blocking_connect_fd
                     && process
                         .thread_id
                         .is_none_or(|thread_id| thread_id == self.active_thread_id)
@@ -1438,26 +1660,59 @@ impl Interpreter {
             return Ok((Vec::new(), false));
         };
         let readmax = process.readmax;
-        if let Some(session) = process.gnutls.session.as_mut() {
+        // read_process_output: emacs_gnutls_read when p->gnutls_p, else
+        // a plain read (a blocking client whose handshake failed).
+        if process.gnutls.gnutls_p
+            && let Some(session) = process.gnutls.session.as_mut()
+        {
             return session.receive(readmax);
         }
         Ok(match process.network.as_mut() {
             Some(NetworkRuntime::Stream(stream)) => read_chunk(stream, readmax),
             Some(NetworkRuntime::UnixStream(stream)) => read_chunk(stream, readmax),
-            Some(NetworkRuntime::Datagram { socket, remote }) => {
-                // recvfrom of at most readmax bytes: a longer datagram is
-                // truncated.
+            Some(NetworkRuntime::Datagram { socket, address }) => {
+                // recvfrom of at most readmax bytes into the datagram
+                // address, of its length: a longer datagram is truncated.
                 let mut bytes = vec![0; readmax];
-                loop {
-                    match socket.recv_from(&mut bytes) {
-                        Ok((length, peer)) => {
-                            bytes.truncate(length);
-                            *remote = Some(peer);
+                #[cfg(unix)]
+                {
+                    use std::os::fd::AsRawFd;
+                    loop {
+                        let mut length = address.length;
+                        // SAFETY: BYTES holds READMAX bytes, the address its
+                        // LENGTH.
+                        let read = unsafe {
+                            libc::recvfrom(
+                                socket.as_raw_fd(),
+                                bytes.as_mut_ptr().cast(),
+                                readmax,
+                                0,
+                                address.as_mut_ptr(),
+                                &mut length,
+                            )
+                        };
+                        // An empty datagram is a read of zero bytes, which
+                        // ends the connection as any other end does; so
+                        // does an error but EAGAIN.
+                        if read > 0 {
+                            bytes.truncate(read as usize);
                             break (bytes, false);
                         }
-                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(_) => break (Vec::new(), false),
+                        if read == 0 {
+                            break (Vec::new(), true);
+                        }
+                        match std::io::Error::last_os_error().kind() {
+                            std::io::ErrorKind::Interrupted => {}
+                            std::io::ErrorKind::WouldBlock => break (Vec::new(), false),
+                            _ => break (Vec::new(), true),
+                        }
                     }
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = (socket, address);
+                    bytes.clear();
+                    (bytes, false)
                 }
             }
             _ => {
@@ -1485,26 +1740,28 @@ impl Interpreter {
         })
     }
 
-    /// wait_reading_process_output at a connection's end of stream:
-    /// deactivate_process, the status `(exit 256)' process-status shows
-    /// as `closed'.
     /// wait_reading_process_output on a connection's end: deactivate_process
-    /// and status (exit 256), which status_notify, with
-    /// `delete-exited-processes', takes off the process alist before the
-    /// sentinel hears of it.
-    pub fn close_connection_stream(&mut self, record_id: u64) {
+    /// and, for a running connection, status (exit 256), which
+    /// status_notify, with `delete-exited-processes', takes off the
+    /// process alist before the sentinel hears of it; a connection whose
+    /// TLS negotiation keeps it connecting keeps that status.  The
+    /// sentinel's message for the status it is left with.
+    pub fn close_connection_stream(&mut self, record_id: u64) -> String {
         let remove = self
             .lookup_var_key(cached_symbol!("delete-exited-processes"), &Env::new())
             .is_none_or(|value| value.is_truthy());
-        if let Some(process) = self.find_process_state_mut(record_id) {
-            process.gnutls.session = None;
-            process.gnutls.active = false;
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return String::new();
+        };
+        gnutls_deinit(&mut process.gnutls);
+        if matches!(process.status, ProcessStatus::Run | ProcessStatus::Open) {
             process.status = ProcessStatus::Closed;
             process.exit_code = Some(256);
-            process.network = None;
-            process.serial = None;
-            process.sentinel_notified |= remove;
         }
+        process.network = None;
+        process.serial = None;
+        process.sentinel_notified |= remove;
+        Self::process_status_message(process)
     }
 
     /// Whether a read of the process's output pipe (or its stderr pipe)
@@ -1564,10 +1821,15 @@ impl Interpreter {
                     format!("exited abnormally with code {code}\n")
                 }
             }
-            ProcessStatus::Failed => {
-                format!("failed with code {}\n", process.exit_code.unwrap_or(0))
-            }
-            ProcessStatus::Run | ProcessStatus::Open | ProcessStatus::Connect(_) => "run".into(),
+            // "failed with code %s\n" of the status's data, made when the
+            // data was given.
+            ProcessStatus::Failed => match &process.failed_message {
+                Some(message) => message.clone(),
+                None => format!("failed with code {}\n", process.exit_code.unwrap_or(0)),
+            },
+            ProcessStatus::Run | ProcessStatus::Open => "run".into(),
+            // Fcopy_sequence (Fsymbol_name (symbol)) of (connect . ADDRINFOS).
+            ProcessStatus::Connect(_) => "connect".into(),
             ProcessStatus::Listen => "listen".into(),
         }
     }
@@ -1578,10 +1840,10 @@ impl Interpreter {
         let process = self
             .find_process_state(record_id)
             .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
-        if matches!(
-            process.status,
-            ProcessStatus::Run | ProcessStatus::Open | ProcessStatus::Connect(_)
-        ) {
+        // `! EQ (p->status, Qrun)': a connection still connecting (a
+        // datagram client a name lookup made, a TLS negotiation that
+        // kept its status) is not running.
+        if matches!(process.status, ProcessStatus::Run | ProcessStatus::Open) {
             return Ok(());
         }
         // error ("Process %s not running: %s", SDATA (p->name), SDATA
@@ -1670,43 +1932,6 @@ impl Interpreter {
         let was = process.decoder.last_block;
         process.decoder.last_block = true;
         (was, process.decoder.carryover.len())
-    }
-
-    pub fn connection_send(&mut self, record_id: u64, input: &[u8]) -> Result<(), LispError> {
-        let Some(process) = self.find_process_state_mut(record_id) else {
-            return Err(wrong_type_argument(
-                "processp",
-                self.record_value(record_id),
-            ));
-        };
-        if let Some(session) = process.gnutls.session.as_mut() {
-            return session.send_all(input);
-        }
-        match process.network.as_mut() {
-            Some(NetworkRuntime::Stream(stream)) => send_all(stream, input),
-            Some(NetworkRuntime::UnixStream(stream)) => send_all(stream, input),
-            Some(NetworkRuntime::Datagram {
-                socket,
-                remote: Some(remote),
-            }) => socket
-                .send_to(input, *remote)
-                .map(|_| ())
-                .map_err(|error| LispError::Signal(error.to_string())),
-            Some(NetworkRuntime::Datagram { remote: None, .. }) => {
-                Err(LispError::Signal("Datagram address is not set".into()))
-            }
-            _ => {
-                let Some(serial) = process.serial.as_mut() else {
-                    return Err(LispError::Signal(
-                        "Process has no writable connection".into(),
-                    ));
-                };
-                serial
-                    .port
-                    .write_all(input)
-                    .map_err(|error| LispError::Signal(error.to_string()))
-            }
-        }
     }
 
     pub(super) fn refresh_process_state(process: &mut ProcessState) -> Result<(), LispError> {
@@ -1824,22 +2049,22 @@ impl Interpreter {
 
     pub fn process_exit_status_value(&mut self, record_id: u64) -> Option<Value> {
         let _ = self.refresh_process_id(record_id);
-        self.find_process_state(record_id)
-            .map(|process| Value::Integer(process.exit_code.unwrap_or(0) as i64))
-    }
-
-    /// connect_network_socket's non-blocking client: status (connect .
-    /// ADDRESSES), the addresses to try should this connect fail.
-    pub(crate) fn mark_network_process_connecting(
-        &mut self,
-        record_id: u64,
-        addresses: Vec<std::net::SocketAddr>,
-    ) -> bool {
-        let Some(process) = self.find_process_state_mut(record_id) else {
-            return false;
-        };
-        process.status = ProcessStatus::Connect(addresses);
-        true
+        self.find_process_state(record_id).map(|process| {
+            // XCAR (XCDR (status)) of a (failed DATA) status.
+            if matches!(process.status, ProcessStatus::Failed) && !process.status_data.is_nil() {
+                return process.status_data;
+            }
+            // Of (connect . ADDRINFOS), the next (PROTOCOL . ADDRESS).  A
+            // bare (connect), a name lookup's or the last address's, is
+            // XCAR of nil there, which GNU 30.2 does not survive; 0 here.
+            #[cfg(unix)]
+            if let ProcessStatus::Connect(addrinfos) = &process.status
+                && let Some(addrinfo) = addrinfos.first()
+            {
+                return crate::lisp::primitives::addrinfo_to_lisp(addrinfo);
+            }
+            Value::Integer(process.exit_code.unwrap_or(0) as i64)
+        })
     }
 
     /// wait_reading_process_output's test of a non-blocking connect: None
@@ -1899,7 +2124,7 @@ impl Interpreter {
     pub(crate) fn take_network_connect_addresses(
         &mut self,
         record_id: u64,
-    ) -> Vec<std::net::SocketAddr> {
+    ) -> Vec<super::NetworkAddrinfo> {
         match self
             .find_process_state_mut(record_id)
             .map(|process| &mut process.status)
@@ -1909,28 +2134,130 @@ impl Interpreter {
         }
     }
 
-    /// connect_network_socket again, on the next address: the new
-    /// connecting stream replaces the failed one.
-    pub(crate) fn restart_network_connect(
+    /// connect_network_socket's channel for RECORD_ID: the socket it made,
+    /// and the status it leaves, `listen' for a stream server, (connect .
+    /// ADDRINFOS) for a non-blocking client, else as it was (`run', which
+    /// a connection reads as `open').
+    pub(crate) fn install_network_socket(
         &mut self,
         record_id: u64,
-        stream: std::net::TcpStream,
-        addresses: Vec<std::net::SocketAddr>,
+        network: NetworkRuntime,
+        status: Option<Vec<super::NetworkAddrinfo>>,
     ) {
         if let Some(process) = self.find_process_state_mut(record_id) {
-            process.network = Some(NetworkRuntime::Stream(stream));
-            process.status = ProcessStatus::Connect(addresses);
+            let listener = matches!(
+                network,
+                NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_)
+            );
+            process.network = Some(network);
+            process.non_blocking_connect_fd = false;
+            if listener {
+                process.status = ProcessStatus::Listen;
+            } else if let Some(addresses) = status {
+                // pset_status (p, Fcons (Qconnect, addrinfos)) and
+                // add_non_blocking_write_fd.
+                process.status = ProcessStatus::Connect(addresses);
+                process.non_blocking_connect_fd = true;
+            }
         }
+    }
+
+    /// deactivate_process of a connection: emacs_gnutls_deinit, and its
+    /// socket closed.
+    pub(crate) fn close_network_socket(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            gnutls_deinit(&mut process.gnutls);
+            process.network = None;
+            process.non_blocking_connect_fd = false;
+        }
+    }
+
+    /// delete_write_fd of a connection whose connect wait_reading_process_
+    /// output saw end: NON_BLOCKING_CONNECT_FD cleared.
+    pub(crate) fn clear_non_blocking_connect_fd(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.non_blocking_connect_fd = false;
+        }
+    }
+
+    /// NON_BLOCKING_CONNECT_FD of RECORD_ID's live socket.
+    pub(crate) fn non_blocking_connect_fd(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| process.non_blocking_connect_fd && process.network.is_some())
+    }
+
+    /// pset_status (p, list2 (Qfailed, DATA)), without a tick of its own:
+    /// no sentinel hears it.  DEACTIVATE closes the channel first, as
+    /// deactivate_process does.
+    pub(crate) fn set_network_process_failed(
+        &mut self,
+        record_id: u64,
+        data: Value,
+        deactivate: bool,
+        message: Option<String>,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            if deactivate {
+                gnutls_deinit(&mut process.gnutls);
+                process.network = None;
+                process.serial = None;
+                process.non_blocking_connect_fd = false;
+            }
+            process.failed_message = message;
+            process.status = ProcessStatus::Failed;
+            process.exit_code = match data.kind() {
+                crate::lisp::types::Kind::Integer(errno) => i32::try_from(errno).ok(),
+                _ => None,
+            };
+            process.status_data = data;
+        }
+    }
+
+    /// p->dns_request for RECORD_ID, and its (connect) status.
+    pub(crate) fn set_network_dns_request(&mut self, record_id: u64, request: super::DnsRequest) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.dns_request = Some(request);
+            process.status = ProcessStatus::Connect(Vec::new());
+        }
+    }
+
+    /// Whether RECORD_ID has a p->dns_request.
+    pub(crate) fn process_has_dns_request(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| process.dns_request.is_some())
+    }
+
+    /// FOR_EACH_PROCESS of wait_reading_process_output's asynchronous
+    /// checks, in Vprocess_alist's order: the processes with a pending
+    /// p->dns_request or a TLS handshake tried and not done.
+    pub(crate) fn process_ids_for_async_checks(&self) -> Vec<u64> {
+        self.process_states
+            .iter()
+            .filter(|process| {
+                process.in_alist
+                    && (process.dns_request.is_some()
+                        || process.gnutls.initstage == super::GNUTLS_STAGE_HANDSHAKE_TRIED)
+            })
+            .map(|process| process.record_id)
+            .collect()
+    }
+
+    /// check_for_dns: None while the lookup is in progress (EAI_INPROGRESS),
+    /// else the request, freed, with getaddrinfo's answer.
+    pub(crate) fn take_finished_dns_request(
+        &mut self,
+        record_id: u64,
+    ) -> Option<(Vec<u8>, super::DnsAnswer)> {
+        let process = self.find_process_state_mut(record_id)?;
+        let answer = process.dns_request.as_ref()?.slot.lock().ok()?.take()?;
+        let request = process.dns_request.take()?;
+        Some((request.host, answer))
     }
 
     /// A non-blocking connect that failed with ERRNO: deactivate_process
     /// closes its socket, and the status is (failed ERRNO).
     pub(crate) fn fail_network_connect(&mut self, record_id: u64, errno: i32) {
-        if let Some(process) = self.find_process_state_mut(record_id) {
-            process.network = None;
-            process.status = ProcessStatus::Failed;
-            process.exit_code = Some(errno);
-        }
+        self.set_network_process_failed(record_id, Value::Integer(i64::from(errno)), true, None);
     }
 
     pub(crate) fn connecting_network_processes(&self) -> Vec<u64> {
@@ -1938,7 +2265,10 @@ impl Interpreter {
         self.process_states
             .iter()
             .filter(|process| {
-                matches!(process.status, ProcessStatus::Connect(_))
+                // NON_BLOCKING_CONNECT_FD: a non-blocking client's socket,
+                // whose connect wait_reading_process_output's write mask
+                // checks.
+                process.non_blocking_connect_fd
                     && process.network.is_some()
                     && process
                         .thread_id
@@ -1953,14 +2283,6 @@ impl Interpreter {
             return false;
         };
         process.status = ProcessStatus::Open;
-        true
-    }
-
-    pub(crate) fn mark_network_process_failed(&mut self, record_id: u64) -> bool {
-        let Some(process) = self.find_process_state_mut(record_id) else {
-            return false;
-        };
-        process.status = ProcessStatus::Failed;
         true
     }
 
@@ -2429,8 +2751,7 @@ impl Interpreter {
         // GNU clears the connection flow-control marker while closing the
         // descriptor, so a stopped connection reports `closed' afterwards.
         process.traffic_stopped = false;
-        process.gnutls.session = None;
-        process.gnutls.active = false;
+        gnutls_deinit(&mut process.gnutls);
         // p->infd >= 0: a channel still open.
         let has_channel = process.runtime.is_some()
             || process.module_pipe.is_some()
@@ -2489,10 +2810,9 @@ impl Interpreter {
 
     /// send_process's checks before its loop: the process must be running
     /// (process_send_check); a channel whose output went to the null
-    /// device after Fprocess_send_eof takes the bytes and drops them, and a
-    /// connection sends them whole.  True when the caller is to write them
-    /// with process_write_some.
-    pub fn process_send_begin(&mut self, record_id: u64, input: &[u8]) -> Result<bool, LispError> {
+    /// device after Fprocess_send_eof takes the bytes and drops them.  True
+    /// when the caller is to write them with process_write_some.
+    pub fn process_send_begin(&mut self, record_id: u64) -> Result<bool, LispError> {
         self.refresh_process_id(record_id)?;
         let record_id_value = self.record_value(record_id);
         self.find_process_state(record_id)
@@ -2502,10 +2822,6 @@ impl Interpreter {
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         if process.output_to_null {
-            return Ok(false);
-        }
-        if matches!(process.kind, ProcessKind::Network | ProcessKind::Serial) {
-            self.connection_send(record_id, input)?;
             return Ok(false);
         }
         Ok(true)
@@ -2528,7 +2844,32 @@ impl Interpreter {
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         let name = process.name;
-        let written = if let Some(runtime) = process.runtime.as_mut() {
+        let written = if let Some(network) = process.network.as_mut() {
+            match network_write(network, &mut process.gnutls, input) {
+                NetworkWrite::Done(result) => result,
+                // report_file_error ("Sending datagram", proc).
+                NetworkWrite::DatagramTooLarge(error) => {
+                    return Err(crate::lisp::primitives::report_file_errno(
+                        self,
+                        "Sending datagram",
+                        record_id_value,
+                        &error,
+                    ));
+                }
+            }
+        } else if let Some(serial) = process.serial.as_mut() {
+            // emacs_write_sig on the serial port's descriptor.
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                fd_write_sig(serial.port.as_raw_fd(), input)
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = serial;
+                Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+            }
+        } else if let Some(runtime) = process.runtime.as_mut() {
             let stdin: &mut dyn Write = if let Some(pty) = runtime.pty_input.as_mut() {
                 pty
             } else if let Some(stdin) = runtime.child.stdin.as_mut() {
@@ -2577,6 +2918,10 @@ impl Interpreter {
                 process.exit_signal = None;
                 process.module_pipe = None;
                 process.pipe_input = None;
+                gnutls_deinit(&mut process.gnutls);
+                process.network = None;
+                process.serial = None;
+                process.non_blocking_connect_fd = false;
                 if let Some(runtime) = process.runtime.as_mut() {
                     drop(runtime.child.stdin.take());
                     runtime.pty_input = None;
@@ -2594,6 +2939,31 @@ impl Interpreter {
                 &error,
             )),
         }
+    }
+
+    /// write_queue_push: BYTES at the back of the process's write queue,
+    /// or at its front for the rest of a batch a full channel left.
+    pub(crate) fn write_queue_push(&mut self, record_id: u64, bytes: Vec<u8>, front: bool) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            if front {
+                process.write_queue.push_front(bytes);
+            } else {
+                process.write_queue.push_back(bytes);
+            }
+        }
+    }
+
+    /// write_queue_pop: the front of the process's write queue.
+    pub(crate) fn write_queue_pop(&mut self, record_id: u64) -> Option<Vec<u8>> {
+        self.find_process_state_mut(record_id)?
+            .write_queue
+            .pop_front()
+    }
+
+    /// Whether the process's write queue holds anything.
+    pub(crate) fn write_queue_pending(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| !process.write_queue.is_empty())
     }
 
     /// The bytes written down a child's input flushed.
@@ -2784,7 +3154,7 @@ impl Interpreter {
             {
                 return true;
             }
-            let events = if matches!(process.status, ProcessStatus::Connect(_)) {
+            let events = if process.non_blocking_connect_fd {
                 libc::POLLOUT
             } else {
                 libc::POLLIN

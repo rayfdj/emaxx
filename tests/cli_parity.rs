@@ -4818,3 +4818,218 @@ fn the_review_of_round_333_is_answered_as_gnu_answers() {
         assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
     }
 }
+
+#[test]
+fn make_network_process_as_process_c_makes_it() {
+    // Fmake_network_process's order of steps and connect_network_socket,
+    // each probe in its own session: getaddrinfo's errors as
+    // "HOST/SERVICE gai_strerror" for clients, servers and datagram
+    // sockets, a family the address has not, the port string, a non-ASCII
+    // host; `:nowait''s name lookup answered later, its failure "Name
+    // lookup of HOST failed", a datagram client left connecting;
+    // `:remote' and `:local' address objects, a malformed one, (FAMILY .
+    // VECTOR); a local socket's name and its ignored host; servers'
+    // options, backlog, `:stop', `:noquery' and `:plist'; the datagram
+    // address of a client and a server; and the errors after
+    // make_process, which remove the process.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun noport (v) (if (and (vectorp v) (memq (length v) '(5 9))) (vconcat (butlast (append v nil)) '(0)) v))
+(show "a1" (lambda () (make-network-process :name "a1" :host "no-such-host.invalid" :service 80)))
+(show "a2" (lambda () (make-network-process :name "a2" :host "no-such-host.invalid" :service t :server t)))
+(show "a3" (lambda () (make-network-process :name "a3" :host "no-such-host.invalid" :service 80 :type 'datagram)))
+(show "a4" (lambda () (make-network-process :name "a4" :host "no-such-host.invalid" :service 80 :type 'datagram :server t)))
+(show "a5" (lambda () (make-network-process :name "a5" :host "127.0.0.1" :service 80 :family 'ipv6)))
+(show "a6" (lambda () (make-network-process :name "a6" :host "::1" :service 80 :family 'ipv4)))
+(show "a7" (lambda () (make-network-process :name "a7" :host "127.0.0.1" :service t :server t :family 'ipv6)))
+(show "a8" (lambda () (make-network-process :name "a8" :host "" :service 80)))
+(show "a9" (lambda () (make-network-process :name "a9" :host "no-such-host.invalid" :service 70000)))
+(show "a10" (lambda () (make-network-process :name "a10" :host "no-such-host.invalid" :service -1)))
+(show "a11" (lambda () (let* ((ev nil) (p (make-network-process :name "a11" :host "no-such-host.invalid" :service 80 :nowait t
+                         :sentinel (lambda (_ s) (push s ev)))))
+   (list (process-status p) (progn (dotimes (_ 40) (accept-process-output nil 0.05)) (process-status p)) (reverse ev)
+         (process-exit-status p) (process-contact p :remote)))))
+(show "a12" (lambda () (make-network-process :name "a12" :host "localhost" :service 1 :family 'ipv4)))
+(show "a13" (lambda () (open-network-stream "a13" nil "no-such-host.invalid" 80)))
+(show "a14" (lambda () (make-network-process :name "a14" :host 'local :service t :server t :family 'ipv6)))
+(show "a15" (lambda () (let ((s (make-network-process :name "a15" :host "localhost" :service t :server t)))
+   (prog1 (list (noport (process-contact s :local)) (process-contact s :host)) (delete-process s)))))
+(show "a16" (lambda () (let ((s (make-network-process :name "a16" :host "127.0.0.1" :service t :server t)))
+   (prog1 (let ((c (make-network-process :name "a16c" :host "localhost" :service (process-contact s :service) :family 'ipv4)))
+            (prog1 (list (process-status c) (noport (process-contact c :remote))) (delete-process c))) (delete-process s))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun noport (v) (if (and (vectorp v) (memq (length v) '(5 9))) (vconcat (butlast (append v nil)) '(0)) v))
+(show "w1" (lambda () (let ((p (make-network-process :name "w1" :host "127.0.0.1" :service t :server t :nowait t))) (list (process-status p) (process-contact p :service)))))
+(show "w2" (lambda () (let ((p (make-network-process :name "w2" :host "127.0.0.1" :service 9 :type 'datagram :nowait t)))
+  (list (process-status p) (progn (dotimes (_ 10) (accept-process-output nil 0.05)) (process-status p)) (process-contact p :remote) (process-contact p :local)))))
+(show "w3" (lambda () (let ((p (make-network-process :name "w3" :host "127.0.0.1" :service 9 :type 'datagram)))
+  (list (process-status p) (process-contact p :remote) (process-contact p :local)))))
+(show "w4" (lambda () (let ((p (make-network-process :name "w4" :host "127.0.0.1" :service t :type 'datagram :server t)))
+  (list (process-status p) (numberp (process-contact p :service)) (process-contact p :remote) (length (process-contact p :local))))))
+(show "w5" (lambda () (let ((s (make-network-process :name "w5" :host "127.0.0.1" :service t :server t :keepalive t :reuseaddr nil)))
+  (list (process-status s) (process-contact s :reuseaddr)))))
+(show "w6" (lambda () (make-network-process :name "w6" :host "127.0.0.1" :service t :server t :bogus-option 5)))
+(show "w7" (lambda () (make-network-process :name "w7" :host "127.0.0.1" :service t :server t :linger 'x)))
+(show "w8" (lambda () (let ((s (make-network-process :name "w8" :host "127.0.0.1" :service t :server t)))
+  (make-network-process :name "w8b" :host "127.0.0.1" :service (process-contact s :service) :server t :reuseaddr nil))))
+(show "w9" (lambda () (let* ((ev nil) (p (make-network-process :name "w9" :host "127.0.0.1" :service 1 :nowait t :sentinel (lambda (_ s) (push s ev)))))
+  (list (process-status p) (progn (dotimes (_ 20) (accept-process-output nil 0.05)) (process-status p)) (reverse ev)))))
+(show "w10" (lambda () (make-network-process :name "w10" :host "127.0.0.1" :service "80x")))
+(show "w11" (lambda () (make-network-process :name "w11" :host 5 :service 80)))
+(show "w12" (lambda () (make-network-process :name "w12" :host "127.0.0.1" :service 'foo)))
+(show "w13" (lambda () (make-network-process :name "w13" :host "héllo" :service 80))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun noport (v) (if (and (vectorp v) (memq (length v) '(5 9))) (vconcat (butlast (append v nil)) '(0)) v))
+(show "c1" (lambda () (let ((p (make-network-process :name "c1" :host "127.0.0.1" :service t :server t :noquery t :stop t :plist '(a 1))))
+  (prog1 (list (process-status p) (process-query-on-exit-flag p) (process-plist p) (process-command p) (process-type p)) (delete-process p)))))
+(show "c2" (lambda () (let* ((s (make-network-process :name "c2s" :host "127.0.0.1" :service t :server t))
+                             (port (process-contact s :service))
+                             (c (make-network-process :name "c2c" :remote (vector 127 0 0 1 port))))
+  (prog1 (list (process-status c) (noport (process-contact c :remote)) (process-contact c :host) (equal (process-contact c :service) nil)) (delete-process c) (delete-process s)))))
+(show "c3" (lambda () (make-network-process :name "c3" :remote [1 2 3])))
+(show "c4" (lambda () (make-network-process :name "c4" :remote "/nonexistent/sock")))
+(show "c5" (lambda () (let ((s (make-network-process :name "c5" :server t :local (vector 127 0 0 1 0))))
+  (prog1 (list (process-status s) (numberp (process-contact s :service)) (aref (process-contact s :local) 0)) (delete-process s)))))
+(show "c6" (lambda () (let* ((s (make-network-process :name "c6s" :host "127.0.0.1" :service t :server t :type 'datagram))
+                             (port (process-contact s :service))
+                             (got nil)
+                             (c (make-network-process :name "c6c" :host "127.0.0.1" :service port :type 'datagram)))
+   (set-process-filter s (lambda (_ str) (push str got)))
+   (process-send-string c "hello")
+   (dotimes (_ 10) (accept-process-output nil 0.02))
+   (list got (equal (process-datagram-address s) (process-contact c :local)) (vectorp (process-contact s :remote))
+         (set-process-datagram-address s [127 0 0 1 9]) (process-datagram-address s)
+         (set-process-datagram-address s [0 0 0 0 0 0 0 0 9]) (noport (process-contact c :remote))))))
+(show "c7" (lambda () (let* ((f (make-temp-name "/tmp/emx-sock-")) (s (make-network-process :name "c7s" :family 'local :service f :server t)))
+   (prog1 (let ((c (make-network-process :name "c7c" :family 'local :service f)))
+      (list (process-status s) (equal (process-contact s :local) f) (equal (process-contact c :remote) f) (process-contact c :local) (process-status c)))
+     (delete-file f)))))
+(show "c8" (lambda () (make-network-process :name "c8" :family 'local :host "x" :service "/tmp/emx-no-such-sock")))
+(show "c9" (lambda () (make-network-process :name "c9" :family 'local :service (make-string 200 ?a))))
+(show "c10" (lambda () (make-network-process :name "c10" :family 'local :service 5)))
+(show "c11" (lambda () (make-network-process :name "c11" :host "127.0.0.1" :service t :server t :plist 5)))
+(show "c12" (lambda () (list (make-network-process :name "c12" :host "127.0.0.1" :service t :server t :tls-parameters 5) (mapcar #'process-name (process-list)))))
+(show "c13" (lambda () (make-network-process :name "c13" :host "127.0.0.1" :service t :server t :coding 'no-such)))
+(show "c14" (lambda () (mapcar #'process-name (process-list))))
+(show "c15" (lambda () (make-network-process :name "c15" :host "127.0.0.1" :service t :server 'x :type 'foo)))
+(show "c16" (lambda () (make-network-process :name "c16" :host "127.0.0.1" :service 1)))
+(show "c17" (lambda () (let ((s (make-network-process :name "c17" :host "127.0.0.1" :service t :server 2)))
+   (prog1 (process-status s) (delete-process s)))))
+(show "c18" (lambda () (make-network-process :name "c18" :remote '(2 . [0 80 127 0 0 1]))))
+(show "c19" (lambda () (let ((s (make-network-process :name "c19" :host "127.0.0.1" :service "0" :server t)))
+   (prog1 (numberp (process-contact s :service)) (delete-process s))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun noport (v) (if (and (vectorp v) (memq (length v) '(5 9))) (vconcat (butlast (append v nil)) '(0)) v))
+(show "d1" (lambda () (let* ((s (make-network-process :name "d1s" :host "127.0.0.1" :service t :server t))
+                             (port (process-contact s :service)) (ev nil)
+                             (c (make-network-process :name "d1c" :host "127.0.0.1" :service port :nowait t
+                                  :sentinel (lambda (_ e) (push e ev)))))
+  (list (process-status c) (progn (dotimes (_ 10) (accept-process-output nil 0.02)) (process-status c)) (reverse ev)
+        (prog1 (vectorp (process-contact c :local)) (delete-process c) (delete-process s))))))
+(show "d2" (lambda () (let* ((s (make-network-process :name "d2s" :host "localhost" :service t :server t :family 'ipv4))
+                             (port (process-contact s :service)) (ev nil)
+                             (c (make-network-process :name "d2c" :host "localhost" :service port :nowait t :family 'ipv4
+                                  :sentinel (lambda (_ e) (push e ev)))))
+  (list (process-status c) (noport (process-contact c :remote)) (progn (dotimes (_ 10) (accept-process-output nil 0.02)) (process-status c)) (reverse ev)
+        (prog1 (noport (process-contact c :remote)) (delete-process c) (delete-process s))))))
+(show "d3" (lambda () (let* ((c (make-network-process :name "d3c" :host "localhost" :service 1 :nowait t :family 'ipv4)))
+  (list (process-status c) (process-contact c t t) (progn (dotimes (_ 10) (accept-process-output nil 0.02)) (process-status c)) (process-exit-status c)))))
+(show "d4" (lambda () (let* ((f (make-temp-name "/tmp/emx-dg-")) (s (make-network-process :name "d4s" :family 'local :service f :server t :type 'datagram)) (got nil))
+  (set-process-filter s (lambda (_ str) (push str got)))
+  (prog1 (let ((c (make-network-process :name "d4c" :family 'local :service f :type 'datagram)))
+     (process-send-string c "dg")
+     (dotimes (_ 10) (accept-process-output nil 0.02))
+     (list (process-status s) got (equal (process-contact s :local) f) (equal (process-datagram-address c) f) (equal (process-contact c :remote) f)))
+   (delete-file f))))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn the_review_of_round_334_is_answered_as_gnu_answers() {
+    // The review of round 334, each probe in its own session: names made
+    // unique as make_process makes them; a failed status's data and its
+    // message; the mark placed by connect_network_socket's
+    // update_process_mark, not at creation; the *Messages* lines of the
+    // socket and connection waits; the inherit flag a `:coding' clears;
+    // the contact changed in place by plist_put (`:remote' of a datagram
+    // process, `:filter', `:sentinel'); a (FAMILY . VECTOR) longer than a
+    // sockaddr_storage; a unibyte host's raw byte in the lookup's error;
+    // set-process-datagram-address of a process that has no datagram
+    // address.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar srv (make-network-process :name "srv" :host "127.0.0.1" :service t :server t))
+(defvar port (process-contact srv :service))
+(defvar b (get-buffer-create "pb"))
+(with-current-buffer b (insert "abc"))
+(show "n1" (lambda () (let ((x (make-network-process :name "srv" :host "127.0.0.1" :service t :server t)))
+   (prog1 (process-name x) (delete-process x)))))
+(show "k1" (lambda () (let* ((c (make-network-process :name "k1" :host "127.0.0.1" :service port :nowait t :buffer b)))
+   (let ((m0 (marker-position (process-mark c))))
+     (with-current-buffer b (insert "defgh"))
+     (dotimes (_ 5) (accept-process-output nil 0.02))
+     (prog1 (list m0 (marker-position (process-mark c)) (marker-buffer (process-mark c))) (delete-process c))))))
+(show "k2" (lambda () (let* ((c (make-network-process :name "k2" :remote '(99 . [0 0]) :nowait t :buffer b)))
+   (list (process-status c) (marker-position (process-mark c)) (marker-buffer (process-mark c))))))
+(show "k3" (lambda () (let* ((c (make-network-process :name "k3" :host "127.0.0.1" :service port :buffer b)))
+   (prog1 (list (marker-position (process-mark c))) (delete-process c)))))
+(show "k4" (lambda () (let* ((c (make-network-process :name "k4" :host "no-such-host.invalid" :service port :nowait t :buffer b)))
+   (dotimes (_ 20) (accept-process-output nil 0.05))
+   (list (process-status c) (process-exit-status c) (marker-position (process-mark c)) (marker-buffer (process-mark c))))))
+(show "k5" (lambda () (let* ((s (make-network-process :name "k5" :host "127.0.0.1" :service t :server t :buffer b)))
+   (prog1 (list (marker-position (process-mark s))) (delete-process s))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun noport (v) (if (and (vectorp v) (memq (length v) '(5 9))) (vconcat (butlast (append v nil)) '(0)) v))
+(defvar srv (make-network-process :name "srv" :host "127.0.0.1" :service t :server t))
+(defvar port (process-contact srv :service))
+(defun msgs () (with-current-buffer (messages-buffer) (prog1 (buffer-string) (let ((inhibit-read-only t)) (erase-buffer)))))
+(msgs)
+(show "m5" (lambda () (let* ((a (make-network-process :name "a5" :remote (vector 127 0 0 1 port) :nowait t)))
+   (list (process-send-string a "x") (msgs)))))
+(show "m6" (lambda () (let* ((a (make-network-process :name "a6" :remote (vector 127 0 0 1 port) :nowait t)))
+   (list (set-process-datagram-address a [1 2 3]) (process-datagram-address a) (msgs))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(setq inherit-process-coding-system t)
+(show "h1" (lambda () (let ((s (make-network-process :name "h1" :host "127.0.0.1" :service t :server t :buffer "hb" :coding 'utf-8)))
+   (prog1 (process-inherit-coding-system-flag s) (delete-process s)))))
+(show "h3" (lambda () (let ((s (make-network-process :name "h3" :host "127.0.0.1" :service t :server t :buffer "hb")))
+   (prog1 (process-inherit-coding-system-flag s) (delete-process s)))))
+(show "v1" (lambda () (let ((p (make-network-process :name "v1" :remote (cons 2 (make-vector 200 0)))))
+   (list (process-status p) (let ((r (process-contact p :remote))) (if (consp r) (list (car r) (length (cdr r))) r))))))
+(show "s11" (lambda () (make-network-process :name "s11" :host (string-to-unibyte "h\377x") :service 1)))
+(show "e1" (lambda () (let* ((ev nil) (c (make-network-process :name "e1" :host "127.0.0.1" :service 1 :nowait t
+                                        :sentinel (lambda (_ e) (push e ev)))))
+   (dotimes (_ 10) (accept-process-output nil 0.02))
+   (list (process-status c) (process-exit-status c) (reverse ev)))))
+(show "i3" (lambda () (let* ((d (make-network-process :name "d" :host "127.0.0.1" :service 9 :type 'datagram))
+                             (held (process-contact d t)))
+   (set-process-datagram-address d [127 0 0 1 7])
+   (let ((now (process-contact d t)))
+     (list (eq held now) (plist-get now :remote))))))
+(show "f1" (lambda () (let* ((s (make-network-process :name "f1" :host "127.0.0.1" :service t :server t)))
+   (set-process-filter s #'ignore)
+   (set-process-sentinel s #'ignore)
+   (prog1 (list (plist-get (process-contact s t) :filter) (plist-get (process-contact s t) :sentinel))
+     (delete-process s))))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}

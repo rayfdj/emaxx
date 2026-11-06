@@ -269,7 +269,7 @@ define_dispatch_modules! {
     Frames => frames => frames::call(interp, name, args, env),
     Terminals => terminals => terminals::call(interp, name, args, env),
     Treesit => treesit => treesit::call(interp, name, args, env),
-    Gnutls => gnutls => gnutls::call(interp, name, args),
+    Gnutls => gnutls => gnutls::call(interp, name, args, env),
     GuiActions => gui_actions => gui_actions::call(interp, name, args, env),
     Comp => comp => comp::call(interp, name, args, env),
     Predicates => predicates => predicates::call(interp, name, args, env),

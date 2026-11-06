@@ -2398,11 +2398,20 @@ define_dispatch!(
                     Some(args[1])
                 };
                 interp.set_process_filter(process_id, filter)?;
-                Ok(if args[1].is_nil() {
+                let filter = if args[1].is_nil() {
                     Value::symbol("internal-default-process-filter")
                 } else {
                     args[1]
-                })
+                };
+                // A connection's contact keeps its :filter.
+                if interp.is_connection_process(process_id) {
+                    interp.process_contact_plist_put(
+                        process_id,
+                        Value::symbol(":filter"),
+                        filter,
+                    )?;
+                }
+                Ok(filter)
             }
             "internal-default-process-sentinel" => {
                 need_args(name, args, 2)?;
@@ -2415,11 +2424,20 @@ define_dispatch!(
                 let process_id = interp.resolve_process_id(&args[0])?;
                 let sentinel = (!args[1].is_nil()).then(|| args[1]);
                 interp.set_process_sentinel(process_id, sentinel);
-                Ok(if args[1].is_nil() {
+                let sentinel = if args[1].is_nil() {
                     Value::symbol("internal-default-process-sentinel")
                 } else {
                     args[1]
-                })
+                };
+                // A connection's contact keeps its :sentinel.
+                if interp.is_connection_process(process_id) {
+                    interp.process_contact_plist_put(
+                        process_id,
+                        Value::symbol(":sentinel"),
+                        sentinel,
+                    )?;
+                }
+                Ok(sentinel)
             }
             "set-process-buffer" => {
                 need_args(name, args, 2)?;
@@ -2431,7 +2449,20 @@ define_dispatch!(
                     Kind::Buffer(buffer) => interp.live_buffer_id(buffer),
                     _ => return Err(LispError::WrongTypeArgument("bufferp".into(), args[1])),
                 };
-                interp.set_process_buffer_id(process_id, buffer_id, args[1]);
+                // pset_buffer and update_process_mark only for a buffer
+                // that is not EQ to the process's.
+                if !crate::lisp::types::eq(interp.process_buffer_value(process_id), args[1]) {
+                    interp.set_process_buffer_only(process_id, buffer_id, args[1]);
+                    interp.update_process_mark(process_id);
+                }
+                // A connection's contact keeps its :buffer.
+                if interp.is_connection_process(process_id) {
+                    interp.process_contact_plist_put(
+                        process_id,
+                        Value::symbol(":buffer"),
+                        args[1],
+                    )?;
+                }
                 Ok(args[1])
             }
             "process-sentinel" => {
@@ -2460,24 +2491,64 @@ define_dispatch!(
             "process-datagram-address" => {
                 need_args(name, args, 1)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                Ok(interp
+                // conv_sockaddr_to_lisp of datagram_address[channel].
+                crate::lisp::primitives::processes::wait_for_socket_fds(
+                    interp,
+                    env,
+                    process_id,
+                    "process-datagram-address",
+                )?;
+                #[cfg(unix)]
+                return Ok(interp
                     .process_datagram_address(process_id)?
-                    .map(sockaddr_vector)
-                    .unwrap_or(Value::Nil))
+                    .map(|address| {
+                        crate::lisp::primitives::processes::conv_sockaddr_to_lisp(&address)
+                    })
+                    .unwrap_or(Value::Nil));
+                #[cfg(not(unix))]
+                {
+                    let _ = process_id;
+                    Ok(Value::Nil)
+                }
             }
             "set-process-datagram-address" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let Some(address) = socket_addr_from_value(&args[1]) else {
-                    return Ok(Value::Nil);
-                };
-                Ok(
-                    if interp.set_process_datagram_address(process_id, address)? {
-                        args[1]
-                    } else {
-                        Value::Nil
-                    },
-                )
+                // wait_for_socket_fds; nil for no datagram process; then
+                // get_lisp_to_sockaddr_size: nil for an address object of
+                // no family, or of a length the datagram address has not.
+                #[cfg(unix)]
+                {
+                    crate::lisp::primitives::processes::wait_for_socket_fds(
+                        interp,
+                        env,
+                        process_id,
+                        "set-process-datagram-address",
+                    )?;
+                    if interp.process_datagram_address(process_id)?.is_none() {
+                        return Ok(Value::Nil);
+                    }
+                    let Some((family, len)) =
+                        crate::lisp::primitives::processes::lisp_to_sockaddr_size(&args[1])
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    let address = crate::lisp::primitives::processes::conv_lisp_to_sockaddr(
+                        family, &args[1], len,
+                    );
+                    return Ok(
+                        if interp.set_process_datagram_address(process_id, address)? {
+                            args[1]
+                        } else {
+                            Value::Nil
+                        },
+                    );
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = process_id;
+                    Ok(Value::Nil)
+                }
             }
             "process-type" => {
                 need_args(name, args, 1)?;
@@ -2579,10 +2650,35 @@ define_dispatch!(
                 // KEY nil the (HOST SERVICE) pair, any other KEY a plist_get.
                 need_arg_range(name, args, 1, 3)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                if matches!(args.get(1).map(|v| v.kind()), Some(Kind::Symbol(key)) if key.is_named(":remote"))
+                // A connection with no socket yet waits for it, unless
+                // NO-BLOCK.
+                if interp.is_network_process(process_id)
+                    && interp.network_socket_fd(process_id).is_none()
+                {
+                    if args.get(2).is_some_and(|no_block| !no_block.is_nil()) {
+                        return Ok(Value::Nil);
+                    }
+                    crate::lisp::primitives::processes::wait_for_socket_fds(
+                        interp,
+                        env,
+                        process_id,
+                        "process-contact",
+                    )?;
+                }
+                // DATAGRAM_CONN_P with KEY t or :remote: plist_put of the
+                // datagram address into the contact.
+                #[cfg(unix)]
+                if (matches!(args.get(1).map(|v| v.kind()), Some(Kind::T))
+                    || matches!(args.get(1).map(|v| v.kind()), Some(Kind::Symbol(key)) if key.is_named(":remote")))
                     && let Some(address) = interp.process_datagram_address(process_id)?
                 {
-                    return Ok(sockaddr_vector(address));
+                    let address =
+                        crate::lisp::primitives::processes::conv_sockaddr_to_lisp(&address);
+                    interp.process_contact_plist_put(
+                        process_id,
+                        Value::symbol(":remote"),
+                        address,
+                    )?;
                 }
                 let contact = interp
                     .process_contact_plist(process_id)
@@ -2624,7 +2720,14 @@ define_dispatch!(
                 if !interp.is_network_process(process_id) {
                     return Err(LispError::Signal("Process is not a network process".into()));
                 }
-                // process.c:2984-2986: a closed socket is "not running".
+                // wait_for_socket_fds, then process.c:2984-2986: a closed
+                // socket is "not running".
+                crate::lisp::primitives::processes::wait_for_socket_fds(
+                    interp,
+                    env,
+                    process_id,
+                    "set-network-process-option",
+                )?;
                 let Some(fd) = interp.network_socket_fd(process_id) else {
                     return Err(LispError::Signal("Process is not running".into()));
                 };
@@ -2641,7 +2744,7 @@ define_dispatch!(
                 if set_socket_option(interp, fd, &option, &args[1], &args[2])? {
                     // process.c:2990 records the accepted option on the
                     // process's contact plist, which `process-contact' reads.
-                    interp.put_process_contact_option(process_id, &args[1], args[2]);
+                    interp.process_contact_plist_put(process_id, args[1], args[2])?;
                     return Ok(Value::T);
                 }
                 // process.c:2994-2997.
@@ -2915,8 +3018,12 @@ define_dispatch!(
                 };
                 let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
-                // send_process: wait_while_connecting.
+                // send_process: wait_while_connecting and
+                // wait_for_tls_negotiation.
                 crate::lisp::primitives::processes::wait_while_connecting(interp, env, process_id)?;
+                crate::lisp::primitives::processes::wait_for_tls_negotiation(
+                    interp, env, process_id,
+                )?;
                 let encoded = crate::lisp::primitives::processes::encode_process_input(
                     interp,
                     process_id,
@@ -2933,9 +3040,13 @@ define_dispatch!(
                 // buffer as the object, encoded as its multibyteness says.
                 let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
-                crate::lisp::primitives::processes::wait_while_connecting(interp, env, process_id)?;
-                // validate_region, then the region's text.
+                // validate_region, then wait_while_connecting, and
+                // send_process's wait_for_tls_negotiation.
                 validate_region(interp, &args[1], &args[2])?;
+                crate::lisp::primitives::processes::wait_while_connecting(interp, env, process_id)?;
+                crate::lisp::primitives::processes::wait_for_tls_negotiation(
+                    interp, env, process_id,
+                )?;
                 let text = super::buffer_edit::direct_buffer_substring_no_properties(
                     interp,
                     &[args[1], args[2]],
@@ -3558,32 +3669,52 @@ fn process_send_signal(
     Ok(())
 }
 
-/// process.c:send_process's loop over BYTES once its checks pass: each
-/// write as much as the channel takes, and while it would block,
-/// wait_reading_process_output (0, 20 ms) accepting output and running
-/// timers (which may delete the process: the next write's channel check
-/// then signals), then another try.
+/// process.c:send_process's loop over BYTES once its checks pass: BYTES
+/// put at the back of the write queue when it holds anything; then,
+/// until the queue is empty, its front (else BYTES) written as much as
+/// the channel takes, and while it would block the rest put back at the
+/// queue's front and wait_reading_process_output (0, 20 ms) accepting
+/// output and running timers (whose sends queue behind it, and which
+/// may delete the process: the next write's channel check then
+/// signals), then the queue read again.
 pub(crate) fn send_process(
     interp: &mut Interpreter,
     env: &mut Env,
     process_id: u64,
     bytes: &[u8],
 ) -> Result<(), LispError> {
-    if !interp.process_send_begin(process_id, bytes)? {
+    if !interp.process_send_begin(process_id)? {
         return Ok(());
     }
-    let mut offset = 0;
-    while offset < bytes.len() {
-        match interp.process_write_some(process_id, &bytes[offset..])? {
-            Some(written) => offset += written,
-            None => {
-                super::call(
-                    interp,
-                    "accept-process-output",
-                    &[Value::Nil, Value::Integer(0), Value::Integer(20)],
-                    env,
-                )?;
+    let mut given = Some(bytes.to_vec());
+    if interp.write_queue_pending(process_id) {
+        interp.write_queue_push(process_id, given.take().unwrap_or_default(), false);
+    }
+    // do ... while (!NILP (p->write_queue)): the queue's front, else what
+    // was given when the queue was empty.
+    loop {
+        let batch = interp
+            .write_queue_pop(process_id)
+            .or_else(|| given.take())
+            .unwrap_or_default();
+        let mut offset = 0;
+        while offset < batch.len() {
+            match interp.process_write_some(process_id, &batch[offset..])? {
+                Some(written) => offset += written,
+                None => {
+                    interp.write_queue_push(process_id, batch[offset..].to_vec(), true);
+                    super::call(
+                        interp,
+                        "accept-process-output",
+                        &[Value::Nil, Value::Integer(0), Value::Integer(20)],
+                        env,
+                    )?;
+                    break;
+                }
             }
+        }
+        if !interp.write_queue_pending(process_id) {
+            break;
         }
     }
     interp.process_send_flush(process_id)
@@ -4230,7 +4361,7 @@ fn file_mode_string_for_metadata(metadata: &fs::Metadata) -> String {
 /// it, so omitting it would be a regression -- verified against the
 /// oracle, which returns t and records the loopback name on the contact
 /// plist.
-fn set_socket_option(
+pub(crate) fn set_socket_option(
     interp: &Interpreter,
     fd: std::os::fd::RawFd,
     option: &str,

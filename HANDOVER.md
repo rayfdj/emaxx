@@ -15826,6 +15826,172 @@ setup_process_coding_systems's check now refuses). A 13-form
   is recorded below. Local validation: the grouped gate's 3,501 library
   tests, the integration targets (cli_parity's 69 included) and clippy
   with `--all-targets --all-features -D warnings' pass.
+- **Round 334: make-network-process as process.c's Fmake_network_process
+  and connect_network_socket.** Emaxx parsed the keywords into Rust
+  values, resolved hosts through Rust's ToSocketAddrs, made its sockets
+  through std's TcpListener, TcpStream and UdpSocket, and reported its
+  own messages ("make-network-process: no matching address for HOST", a
+  file-error with Rust's lookup text, "Datagram local sockets are not
+  supported"); it ignored `:noquery', `:stop', `:server' QLEN, `:remote'
+  and `:local' address objects, and rejected an odd plist. Now the DEFUN
+  follows GNU's steps: nil for no arguments; `:type' (a stream or
+  `datagram', else "Unsupported connection type", this build defining no
+  HAVE_SEQPACKET); the required string `:name'; `:server' with `:nowait'
+  refused; a `:remote' (a server's `:local') address object as the only
+  address (get_lisp_to_sockaddr_size: a vector of 5 or 9, a string,
+  (FAMILY . VECTOR) of up to MAX_ALLOCA less sa_family bytes; "Malformed
+  :address"), made a sockaddr as conv_lisp_to_sockaddr makes it, in a
+  buffer of the address's own length (a non-fixnum byte of an IPv4
+  vector shifting the rest, a (FAMILY . VECTOR) form leaving sa_family 0
+  while the socket takes FAMILY); else `:family' ("Unknown address
+  family"), `:service', `:host' (nil or `local' the family's loopback,
+  CHECK_STRING); a local family's service as its socket's name ("Service
+  name too long"), a host given dropped from the contact with ":family
+  local ignores the :host property"; else the port string (t "0", a
+  fixnum's digits, CHECK_STRING) and network_lookup_address_info_1: the
+  non-ASCII host error, getaddrinfo with the family and socket type as
+  hints, its addresses in order as their Lisp form keeps them, and a
+  failure's `(error "HOST/SERVICE gai_strerror")' through
+  `locale-coding-system', the service and the reason made by
+  build_string, so a unibyte host's raw byte stays one byte. With
+  `:nowait' the lookup is getaddrinfo_a's, a thread here, the process
+  `connect' until wait_reading_process_output's check_for_dns hands its
+  addresses to connect_network_socket, or, if it failed, makes it
+  (failed "Name lookup of HOST failed") with no sentinel, as GNU does; a
+  datagram client so made stays `connect'. Then Fget_buffer_create of
+  `:buffer', make_process (a unique name, "NAME<N>", and remove_process
+  undoing an error after it), the contact, a copy of `:plist', the
+  buffer alone (the mark gets its place in connect_network_socket),
+  `:sentinel', `:filter', `:log', `:noquery', `:stop', CHECK_LIST of
+  `:tls-parameters', the coding systems (the inherit flag cleared by a
+  `:coding'), and the backlog (5, or `:server' QLEN).
+  connect_network_socket tries each address: a socket of its family, the
+  socket type, non-blocking for a `:nowait' client (SOCK_NONBLOCK, or
+  fcntl where the system has none, as on macOS), and its protocol, an
+  error or one at FD_SETSIZE going on to the next; a datagram client
+  takes it as it is; else each contact option by its SYMBOL_NAME through
+  set_socket_option (CHECK_SYMBOL of each name); a server sets
+  SO_REUSEADDR unless `:reuseaddr' was given, binds ("Cannot bind server
+  socket"), takes its port as `:service', and listens ("Cannot listen on
+  server socket"); a client connects, waiting out an interrupted connect
+  ("Failed connect"); with none made a non-blocking client is (failed
+  DATA) with get_file_errno_data's data, which shares the contact as its
+  tail, and no sentinel, any other process "make client process failed"
+  or "make server process failed" with the contact and the last errno.
+  The contact takes `:remote' (a server's `:local') and a client's own
+  `:local' (getsockname, [0 0 0 0 0] for an unbound datagram socket) by
+  plist_put, in place, so a contact held from before sees them; the
+  process its channel, `listen' or (connect . ADDRINFOS) with
+  NON_BLOCKING_CONNECT_FD, its mark at the end of its buffer
+  (update_process_mark), and its coding systems set up; a connect that
+  fails later goes on to the addresses left. With `:tls-parameters',
+  Fgnutls_boot follows (`:use-external-socket' changes nothing,
+  external_sock_fd being -1 in a build without HAVE_LIBSYSTEMD): READY
+  runs finish_after_tls_connection (`nsm-verify-connection' when fbound,
+  a nil answer failing the process with "The Network Security Manager
+  stopped the connections", then `run' and "open\n" unless the connect
+  is still under way); a stage short of a handshake tried closes the
+  channel and fails the process with the boot's error, or "TLS
+  negotiation failed" for nil; a handshake tried is left as it is.
+  Fgnutls_boot is gnutls.c's in its order (boot_error, which fails a
+  non-blocking client's status and signals for any other, for a missing
+  GnuTLS, a bad credential type, a `:hostname' that is no string, a
+  trust, CRL or key file that is no string; GNUTLS_NONBLOCK for a
+  non-blocking client only; emacs_gnutls_nonblock_errno as its errno
+  function; `:complete-negotiation'), its handshake gnutls_try_handshake
+  (maybe_quit and a 10 ms sleep between tries, a non-blocking client
+  stopping at the first error but GNUTLS_E_INTERRUPTED and setting
+  p->gnutls_p), and gnutls_verify_boot after it ("Certificate validation
+  failed HOST, verification code HEX", "The x509 certificate does not
+  match \"HOST\"", p->gnutls_p once it passes); where Emaxx waited 30 s
+  and then signaled "GnuTLS handshake timed out", "GnuTLS negotiation
+  failed: Integer(-15)" or sent "TLS negotiation failed: Integer(-15)\n"
+  to the sentinel. A blocking client whose handshake fails fatally is
+  returned `open', its reads and sends plain ones as GNU's are without
+  p->gnutls_p; a non-blocking client's negotiation continues in
+  wait_reading_process_output once its connect is done,
+  gnutls_verify_boot and finish_after_tls_connection when it is READY,
+  (failed "TLS negotiation failed") after GNUTLS_EMACS_HANDSHAKES_LIMIT
+  tries; its connect's end runs no "open" sentinel while TLS has it to
+  finish. emacs_gnutls_read and emacs_gnutls_write are gnutls.c's
+  (EAGAIN before READY, GNUTLS_E_UNEXPECTED_PACKET_LENGTH as the end,
+  emacs_gnutls_handle_error's errno), emacs_gnutls_deinit leaves a
+  session alone while p->gnutls_p is false, and send_process waits for
+  the negotiation ("Waiting for TLS..."). wait_reading_process_output
+  looks at name lookups and TLS negotiations only for WAIT_PROC (any
+  process when there is none) and only at the top of an iteration of its
+  loop: the first, one after its select returned for a descriptor or a
+  timer, and one ASYNC_RETRY_NSEC (100 ms) after an iteration that asked
+  to retry; a select that waits out the time breaks the loop with no
+  further check, so a lookup that ends within a 0.1 s wait connects at
+  the next one, as GNU's does. A datagram process keeps GNU's
+  datagram_address: a client's peer, a server's zeroed address of its
+  own length (`(0 . [0 ...])' to `process-contact') unless a `:remote'
+  fits it; recvfrom leaves the sender there (an empty datagram ending
+  the process, as any read of nothing does) and sendto uses it, repeated
+  while interrupted ("Sending datagram" for EMSGSIZE, EAGAIN waited out,
+  EPIPE closing the process); `set-process-datagram-address' waits for
+  the socket, answers nil for a process with no datagram address, then
+  takes any address of the same length; `process-contact' with t or
+  `:remote' puts it in the contact by plist_put; local datagram sockets
+  work. send_process is GNU's for every channel: its write queue (what a
+  nested send adds while a write waits goes after what was queued, the
+  rest of a full channel's batch back at the queue's front),
+  emacs_write_sig on a serial port's descriptor where the serialport
+  crate polled first, EPIPE's (exit 256) closing a connection too;
+  `set-process-filter' and `set-process-sentinel' put `:filter' and
+  `:sentinel' in a connection's contact. `process-exit-status' answers a
+  failed status's data and, for (connect . ADDRINFOS), the next
+  (PROTOCOL . ADDRESS); a failed status's message is "failed with code
+  DATA", a connecting one's "connect", and a connection still connecting
+  (a datagram client a lookup made) is "not running" to a send.
+  `process-contact', `process-datagram-address',
+  `set-process-datagram-address' and `set-network-process-option' wait
+  for a connection's socket as wait_for_socket_fds does, logging
+  "Waiting for socket from NAME..." (`process-contact' answering nil
+  with NO-BLOCK), sends and `process-send-eof' log "Waiting for
+  connection..." as wait_while_connecting does, and `delete-process'
+  frees a pending lookup. A command-line comparison runs this round's
+  probes against GNU's. **Audit:** `tools/round_audit.py' against round
+  333 reports no hard findings. The independent review of the round
+  found two P1, six P2 and nine P3 findings: network processes' names
+  were not made unique; connect_network_socket did not build for macOS
+  (SOCK_CLOEXEC and SOCK_NONBLOCK); a failed status whose data is a list
+  had the wrong message; an empty datagram did not end the process; the
+  mark was placed when the process was made; check_for_dns ran for every
+  process during any wait; the socket and connection waits logged
+  nothing; a TLS failure gave Emaxx's own messages and a 30 s timeout;
+  `:coding' did not clear the inherit flag; a datagram contact was
+  rebuilt, not changed in place; `process-exit-status' of a connecting
+  process was 0; a (FAMILY . VECTOR) address was capped at a
+  sockaddr_storage; a unibyte host's raw byte came out double-encoded in
+  the lookup's error; `set-process-datagram-address' checked the address
+  before waiting; a datagram send had no EINTR retry or EAGAIN wait;
+  `:use-external-socket' was not accounted for; and `set-process-filter'
+  and `set-process-sentinel' left the contact alone. All are fixed
+  above, and verifying them found send_process's write queue, the
+  asynchronous checks' place in the wait loop, the serial port's write,
+  the funcall of `nsm-verify-connection' and the status messages, fixed
+  too; what of gnutls.c's verification and logging differs is recorded
+  below. Two of GNU's answers are undefined and are not matched:
+  `process-exit-status' of a bare (connect) status (a `:nowait' client
+  whose lookup is pending or whose last address is connecting) is XCAR
+  of nil in GNU 30.2, which crashes Emacs, where Emaxx answers 0; and an
+  address vector whose port is no fixnum gives GNU a port of the
+  object's address bits (XFIXNUM of a symbol, a different port each
+  run), where Emaxx takes 0. GNU's network-stream-tests (23 as expected,
+  the IPv6 TLS failure and three IPv6 skips as GNU's), process-tests (35
+  and two skips), erc-d-tests (41) and the erc base-misc-regressions,
+  base-reconnect and auto-recon scenarios give GNU's results. Local
+  validation: the grouped gate's 3,501 library tests (the m–z
+  group's after
+  make_network_process_nowait_opens_through_the_event_pump, which
+  asserted an open within one 0.05 s wait, was made to wait as GNU's
+  pump does; a run of that group beside the integration targets that
+  stopped is recorded below), the integration targets (cli_parity's 71
+  included; cli's 30 on a second run, the first failing in GNU's own
+  batch_exit_terminates_owned_children_like_gnu) and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -18559,7 +18725,54 @@ ert-tests as a whole 26,307 ms against 27,211.
   against 1,161) and esh-cmd-tests (5,551 against 5,059), and
   `ert-test-run-tests-batch-expensive' runs in 0.96 of GNU's time.
 
+**On `feb2573`** (round 333): the full Rust gate (run 42241907167)
+  passed; the frozen run (run 42241912311) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a slower runner than round 332's
+  (GNU's own setup 54.1 s against 48.3 s). Setup 62.8 s against 54.1 s
+  (1.161), test bodies 263.4 s against 247.1 s (1.066), in all 1.096,
+  with a per-file setup median of 97 ms against 85. The widest body gaps
+  are ert-tests (36,205 ms against 33,283), comp-tests (15,656 against
+  12,818), tramp-tests (18,664 against 16,145), semantic-utest-ia (3,259
+  against 2,433) and mule-tests (2,333 against 1,512), and
+  `ert-test-run-tests-batch-expensive' runs in 1.078 of GNU's time (35.4
+  s against 32.8 s), where round 332's ran in 0.96 (27.1 s against
+  28.1); run alone here the test takes 0.70 to 0.74 s against GNU's 0.75
+  to 0.77, so the change is not reproduced here, and the test runs none
+  of the process code round 333 changed.
+
 **Findings recorded, not fixed:**
+- **gnutls.c's verification and logging (round 334).**
+  gnutls_verify_boot calls gnutls_certificate_verify_peers2 and then
+  gnutls_x509_crt_check_hostname, keeping a host mismatch in
+  p->gnutls_extra_peer_verification (CERTIFICATE_NOT_MATCHING); Emaxx
+  calls gnutls_certificate_verify_peers3 with the host, whose
+  GNUTLS_CERT_UNEXPECTED_OWNER bit (and GNUTLS_CERT_INVALID with it) it
+  reads as the mismatch, so a certificate that does not match the host
+  gives `gnutls-peer-status' a verification code with those bits where
+  GNU's has none, and `:invalid' among its warnings beside the
+  `:no-host-match' that GNU's alone has. GNUTLS_LOG and GNUTLS_LOG2
+  write nothing at any `gnutls-log-level' (GNU's `message' "gnutls.c:
+  [LEVEL] ..."); the trust, CRL and key file names are given to GnuTLS
+  as their text, where GNU gives ENCODE_FILE's bytes; gnutls-boot on a
+  process that is no network connection hands GnuTLS descriptor -1 where
+  GNU hands it the process's p->infd (a pipe process's pipe); and the
+  X.509 certificate chain is not imported and checked for "No x509
+  certificate was found". To be made: gnutls_verify_boot's own calls,
+  the log function, and the transport of p->infd.
+- **A `:nowait' TLS client left connecting with no socket (round 334).**
+  One run of the primitives' m–z group, made while the integration
+  targets ran beside it, stopped in
+  native_gnutls_session_encrypts_process_io_and_closes_the_same_transport:
+  its `:nowait' client to 127.0.0.1 stayed `connect' through the test's
+  hundred `sit-for's and then in process-send-string's
+  wait_while_connecting for half an hour, polling no socket of its own
+  (only the child-signal pipe), so its name lookup's answer was never
+  taken; a client whose negotiation fails is failed after
+  GNUTLS_EMACS_HANDSHAKES_LIMIT tries (121 s against a silent server),
+  so the handshake had not begun. The group passed when run again (474
+  of 474), as the m and n groups did in seven more runs, two of them
+  beside the integration targets, and the test alone in forty. To be
+  traced: what keeps the lookup thread's answer from its slot.
 - **A pty child's tty held by Emacs (round 333).** On GNU/Linux, which
   defines USG and not USG_SUBTTY_WORKS, create_process does not open the
   pty's tty in Emacs: emacs_spawn's child opens it by name, so Emacs
@@ -18634,12 +18847,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   backend (threads.rs) still names its directory reads and open and
   registration failures with text paths. It cannot be compiled or probed
   on this host; it is to be converted with a macOS check.
-- **Name-resolution failures (round 329).** connect_network_socket's
-  getaddrinfo failure is `(error "HOST/SERVICE gai_strerror")'; Emaxx
-  resolves through Rust's ToSocketAddrs and reports a file-error
-  carrying Rust's own text ("failed to lookup address information:
-  ..."). The fix is GNU's getaddrinfo call and message, as
-  host_service_database_port already does for named services.
 - **The errno text's conversion (round 329).** code_convert_string runs
   a coding system's post-read-conversion in a work buffer and loads an
   autoloaded coding system (CHECK_CODING_SYSTEM's define-form);

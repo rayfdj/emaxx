@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
-    use std::ffi::{c_char, c_int, c_void};
+    use std::ffi::{c_int, c_void};
 
     #[derive(Default)]
     struct Transport {
@@ -26,11 +26,9 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     unsafe extern "C" fn bye(_: *mut c_void, _: c_int) -> c_int {
         0
     }
-    unsafe extern "C" fn error_string(_: c_int) -> *const c_char {
-        std::ptr::null()
-    }
-    unsafe extern "C" fn error_is_fatal(_: c_int) -> c_int {
-        1
+    unsafe extern "C" fn error_is_fatal(code: c_int) -> c_int {
+        // gnutls_error_is_fatal: GNUTLS_E_AGAIN is not.
+        c_int::from(code != -28)
     }
     unsafe extern "C" fn check_pending(_: *mut c_void) -> usize {
         0
@@ -49,7 +47,6 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
             record_check_pending: check_pending,
             handshake,
             bye,
-            error_string,
             error_is_fatal,
         },
         false,
@@ -59,7 +56,7 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     // behind process.c's back when ordinary output polling asks for bytes.
     assert_eq!(session.receive(65_536).unwrap(), (Vec::new(), false));
     assert_eq!((transport.handshakes, transport.reads), (0, 0));
-    assert_eq!(session.handshake(false).unwrap(), 0);
+    assert_eq!(session.handshake_step(), 0);
     assert_eq!(session.receive(65_536).unwrap(), (Vec::new(), false));
     assert_eq!((transport.handshakes, transport.reads), (1, 1));
 }
