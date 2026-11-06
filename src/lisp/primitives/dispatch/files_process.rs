@@ -3143,12 +3143,17 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let inhibit_hooks = interp.buffer_hooks_inhibited(id);
-                let saved = interp.current_buffer_id();
-                let switched = saved != id;
-                if switched {
-                    interp.set_current_buffer_id(id)?;
+                // Run hooks with the buffer to be killed as the current
+                // buffer, in record_unwind_protect_excursion: the buffer
+                // that was current, and its point, come back after.
+                let excursion = interp.save_excursion_state();
+                if let Err(error) = interp.set_current_buffer_id(id) {
+                    interp.restore_excursion_state(excursion);
+                    return Err(error);
                 }
-                let consultation = (|| -> Result<bool, LispError> {
+                // Some(answer) returns ANSWER (unbind_to (count, ...)),
+                // None goes on to the teardown.
+                let consultation = (|| -> Result<Option<Value>, LispError> {
                     // CALLN (Frun_hook_with_args_until_failure,
                     // Qkill_buffer_query_functions).
                     if !inhibit_hooks {
@@ -3166,7 +3171,7 @@ define_dispatch!(
                             },
                         )?;
                         if failed.is_truthy() {
-                            return Ok(false);
+                            return Ok(Some(Value::Nil));
                         }
                     }
                     let mut modified = interp
@@ -3181,7 +3186,7 @@ define_dispatch!(
                             env,
                         )?;
                         if answer.is_nil() {
-                            return Ok(false);
+                            return Ok(Some(Value::Nil));
                         }
                         // The interactive helper can save the buffer.  GNU
                         // rechecks BUF_MODIFF after it returns before deciding
@@ -3191,64 +3196,71 @@ define_dispatch!(
                             .map(|buffer| buffer.is_modified() && buffer.visits_file())
                             .unwrap_or(false);
                     }
-                    if modified {
-                        let auto_save_path = interp
-                            .buffer_local_value_key(
-                                id,
-                                cached_symbol!("buffer-auto-save-file-name"),
-                            )
-                            .as_ref()
-                            .and_then(|value| string_text(value).ok());
-                        let visited_path = interp
+                    // Delete the autosave file, if requested: the C
+                    // variables, Frecent_auto_save_p, a string name that
+                    // Ffile_exists_p finds and that is not the visited
+                    // file's, then do_yes_or_no_p and the Lisp function.
+                    let auto_save_name = interp
+                        .buffer_local_value_key(id, cached_symbol!("buffer-auto-save-file-name"))
+                        .unwrap_or(Value::Nil);
+                    let wanted =
+                        |interp: &Interpreter,
+                         env: &Env,
+                         name: crate::lisp::types::symbols::SymbolKey| {
+                            interp
+                                .lookup_var_key(name, env)
+                                .is_some_and(|value| value.is_truthy())
+                        };
+                    if modified
+                        && wanted(
+                            interp,
+                            env,
+                            cached_symbol!("kill-buffer-delete-auto-save-files"),
+                        )
+                        && wanted(interp, env, cached_symbol!("delete-auto-save-files"))
+                        && interp
                             .get_buffer_by_id(id)
-                            .and_then(|buffer| buffer.file_name_text());
-                        if let Some(path) = auto_save_path.as_ref()
-                            && let Ok(host) = host_file_name(interp, env, path)
-                            && fs::metadata(&host).is_ok()
-                            && visited_path.as_ref() != Some(path)
-                            && interp
-                                .lookup_var_key(
-                                    cached_symbol!("kill-buffer-delete-auto-save-files"),
-                                    env,
-                                )
-                                .is_some_and(|value| value.is_truthy())
-                            && interp
-                                .lookup_var_key(cached_symbol!("delete-auto-save-files"), env)
-                                .is_some_and(|value| value.is_truthy())
-                            && interp
+                            .is_some_and(|buffer| buffer.recent_auto_save_p())
+                        && matches!(auto_save_name.kind(), Kind::StringObject(_))
+                        && super::call(interp, "file-exists-p", &[auto_save_name], env)?.is_truthy()
+                        && {
+                            let file_name = interp
                                 .get_buffer_by_id(id)
-                                .is_some_and(|buffer| buffer.is_autosaved())
-                        {
-                            let delete = call_named_function(
+                                .map(|buffer| buffer.file_name())
+                                .unwrap_or(Value::Nil);
+                            super::call(interp, "string-equal", &[auto_save_name, file_name], env)?
+                                .is_nil()
+                        }
+                    {
+                        let delete = call_named_function(
+                            interp,
+                            "yes-or-no-p",
+                            &[Value::String("Delete auto-save file? ".into())],
+                            env,
+                        )?;
+                        if delete.is_truthy() {
+                            call_named_function(
                                 interp,
-                                "yes-or-no-p",
-                                &[Value::String("Delete auto-save file? ".into())],
+                                "delete-auto-save-file-if-necessary",
+                                &[],
                                 env,
                             )?;
-                            if delete.is_truthy() {
-                                let _ = fs::remove_file(host);
-                            }
                         }
+                    }
+                    // If the hooks have killed the buffer, exit now.
+                    if !interp.has_buffer_id(id) {
+                        return Ok(Some(Value::T));
                     }
                     if !inhibit_hooks {
                         // The kill hooks run with the dying buffer current, as
                         // in GNU (auto-revert's rm-watch reads its locals).
                         run_hook(interp, &cached_symbol!("kill-buffer-hook").symbol(), env)?;
                     }
-                    Ok(true)
+                    Ok(None)
                 })();
-                let restore = if switched && interp.has_buffer_id(saved) {
-                    interp.set_current_buffer_id(saved)
-                } else {
-                    Ok(())
-                };
-                let proceed = match (consultation, restore) {
-                    (Err(error), _) => return Err(error),
-                    (Ok(_), Err(error)) => return Err(error),
-                    (Ok(proceed), Ok(())) => proceed,
-                };
-                if !proceed {
-                    return Ok(Value::Nil);
+                interp.restore_excursion_state(excursion);
+                if let Some(answer) = consultation? {
+                    return Ok(answer);
                 }
                 // buffer.c:Fkill_buffer once nothing more is asked: a buffer
                 // the hooks killed is reported killed, and the minibuffer
@@ -3350,7 +3362,7 @@ define_dispatch!(
                 if !interp.has_buffer_id(id) {
                     return Ok(Value::T);
                 }
-                interp.kill_buffer_id(id);
+                interp.kill_buffer_id(id)?;
                 if !inhibit_hooks {
                     run_hook(
                         interp,

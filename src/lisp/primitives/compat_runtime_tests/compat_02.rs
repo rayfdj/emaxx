@@ -1448,7 +1448,7 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
     let buf3 = interp
         .buffer_value(buf3_id)
         .expect("existing buffer object");
-    interp.kill_buffer_id(buf3_id);
+    interp.kill_buffer_id(buf3_id).expect("kill the buffer");
     // fns-tests.el:fns-value<-ordered inserts twenty characters before
     // positioning markers. Empty buffers would clamp both markers to 1.
     for (id, text) in [
@@ -1848,13 +1848,13 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
     let dead_buf1 = {
         let (id, _) = interp.create_buffer(" *dead-one*");
         let buffer = interp.buffer_value(id).expect("existing buffer object");
-        interp.kill_buffer_id(id);
+        interp.kill_buffer_id(id).expect("kill the buffer");
         buffer
     };
     let dead_buf2 = {
         let (id, _) = interp.create_buffer(" *dead-two*");
         let buffer = interp.buffer_value(id).expect("existing buffer object");
-        interp.kill_buffer_id(id);
+        interp.kill_buffer_id(id).expect("kill the buffer");
         buffer
     };
     let hash1 = call(&mut interp, "make-hash-table", &[], &mut env).expect("hash1");

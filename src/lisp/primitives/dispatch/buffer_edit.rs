@@ -2565,28 +2565,48 @@ fn line_number_display_width_value(
     env: &mut Env,
     pixelwise: Option<&Value>,
 ) -> Result<Value, LispError> {
+    let none = || {
+        if matches!(pixelwise.map(|v| v.kind()), Some(Kind::Symbol(name)) if name.is_named("columns"))
+        {
+            Value::float(0.0)
+        } else {
+            Value::Integer(0)
+        }
+    };
+    // indent.c:line_number_display_width tests Vdisplay_line_numbers in
+    // the current buffer, before it makes the window's buffer current.
+    if interp
+        .lookup_var_key(cached_symbol!("display-line-numbers"), env)
+        .unwrap_or(Value::Nil)
+        .is_nil()
+    {
+        return Ok(none());
+    }
+    // SET_TEXT_POS_FROM_MARKER (startpos, w->start), whose marker_position
+    // signals for a deleted selected window's start, before the window's
+    // buffer is made current.
+    let window_start = interp.selected_window_start_checked()?;
     let body_height = super::call(interp, "window-body-height", &[], env)?
         .as_integer()?
         .max(1) as usize;
-    let selected_buffer = interp.selected_window_buffer_id();
+    // set_buffer_internal_1 (XBUFFER (w->contents)): a live window's
+    // buffer, a deleted one having signaled for its start.
     let saved_buffer = interp.current_buffer_id();
+    let selected_buffer = interp
+        .selected_window_contents_buffer_id()
+        .unwrap_or(saved_buffer);
     interp.set_current_buffer_id(selected_buffer)?;
     let result = (|| -> Result<Value, LispError> {
+        // The iterator lays out line numbers by the window's buffer's
+        // value: none while it is nil there.
         let mode = interp
             .lookup_var_key(cached_symbol!("display-line-numbers"), env)
             .unwrap_or(Value::Nil);
         if mode.is_nil() {
-            return Ok(
-                if matches!(pixelwise.map(|v| v.kind()), Some(Kind::Symbol(name)) if name.is_named("columns"))
-                {
-                    Value::float(0.0)
-                } else {
-                    Value::Integer(0)
-                },
-            );
+            return Ok(none());
         }
 
-        let start = interp.selected_window_start().clamp(
+        let start = window_start.clamp(
             interp.buffer.borrow().point_min(),
             interp.buffer.borrow().point_max(),
         );

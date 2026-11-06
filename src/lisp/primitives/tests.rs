@@ -24857,7 +24857,7 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
         .div_ceil(std::mem::size_of::<Value>())
             + 6 // configured GNU Lisp_Marker: header plus five payload words
     );
-    interp.kill_buffer_id(id);
+    interp.kill_buffer_id(id).expect("kill the buffer");
     let killed = interp.live_object_census();
     // alloc.c:sweep_buffers counts the live buffers of Vbuffer_alist; the
     // killed one stays a vector of its size.

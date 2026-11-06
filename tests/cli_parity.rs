@@ -4017,3 +4017,422 @@ fn generated_uninterned_symbol_programs_run_as_gnu_runs_them() {
         ],
     );
 }
+
+#[test]
+fn kill_buffer_and_the_selected_windows_buffer_as_gnu_answers() {
+    // window_loop's REPLACE_BUFFER_IN_WINDOWS_SAFELY when
+    // `replace-buffer-in-windows' is not fbound: other_buffer_safely's
+    // buffer, undedicated, with its start, point, hscroll and margins; the
+    // readers of the selected window's buffer with a live window (the
+    // line-number width's variable, the scroll commands' excursion) and
+    // with a deleted one, GNU's answer where its C has one.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+;; kill-buffer when replace-buffer-in-windows is not fboundp: window_loop's
+;; REPLACE_BUFFER_IN_WINDOWS_SAFELY replaces the dying buffer in windows.
+(defun show (tag form)
+  (message "%s %S" tag (condition-case err (funcall form) (error (list 'ERR err)))))
+
+(fmakunbound 'replace-buffer-in-windows)
+
+;; 1. the selected window shows a dedicated buffer that is not current;
+;; the replacement is other_buffer_safely's, not the current buffer.
+(show "k1"
+ (lambda ()
+   (let ((b (get-buffer-create "kb1"))
+         (h (get-buffer-create " hidden")))
+     (with-current-buffer b (insert "hello world\nsecond line\n") (goto-char 5))
+     (set-window-buffer nil b)
+     (set-window-dedicated-p nil t)
+     (set-window-hscroll nil 3)
+     (set-buffer h)
+     (let ((r (kill-buffer b)))
+       (list r (buffer-name (window-buffer)) (window-dedicated-p)
+             (window-start) (window-point) (window-hscroll)
+             (markerp (window-start)) (buffer-name (current-buffer))
+             (buffer-live-p b))))))
+
+;; 2. the dying buffer is current and shown: Fother_buffer becomes
+;; current first, then the window shows other_buffer_safely's buffer.
+(show "k2"
+ (lambda ()
+   (let ((b (get-buffer-create "kb2")))
+     (with-current-buffer "*scratch*" (erase-buffer) (insert "abc\ndef\n") (goto-char 3))
+     (set-window-buffer nil b)
+     (set-buffer b)
+     (let ((r (kill-buffer b)))
+       (list r (buffer-name (window-buffer)) (buffer-name (current-buffer))
+             (window-point) (window-start))))))
+
+;; 3. the minibuffer window shows the dying buffer.
+(show "k3"
+ (lambda ()
+   (let ((b (get-buffer-create "kb3"))
+         (old (window-buffer (minibuffer-window))))
+     (set-window-buffer (minibuffer-window) b)
+     (let ((r (kill-buffer b)))
+       (prog1 (list r (buffer-name (window-buffer (minibuffer-window))))
+         (when (buffer-live-p old) (set-window-buffer (minibuffer-window) old)))))))
+
+;; 4. the replacement window's start is the new buffer's last window start
+;; and `inhibit-quit' is restored after the kill.
+(show "k4"
+ (lambda ()
+   (let ((b (get-buffer-create "kb4")) (seen nil))
+     (set-window-buffer nil b)
+     (set-buffer "*scratch*")
+     (list (kill-buffer b) inhibit-quit (buffer-name (window-buffer))
+           (window-start) (window-margins)))))
+
+;; 5. a window showing a buffer whose margins are set gets the new
+;; buffer's margins.
+(show "k5"
+ (lambda ()
+   (let ((b (get-buffer-create "kb5")))
+     (with-current-buffer "*scratch*" (setq left-margin-width 2))
+     (set-window-buffer nil b)
+     (set-window-margins nil 5 1)
+     (set-buffer "*Messages*")
+     (prog1 (list (kill-buffer b) (buffer-name (window-buffer)) (window-margins))
+       (with-current-buffer "*scratch*" (setq left-margin-width 0))))))
+
+;; 6. buffer-list-update-hook and kill-buffer-hook see the window state.
+(show "k6"
+ (lambda ()
+   (let* ((b (get-buffer-create "kb6")) (log nil))
+     (set-window-buffer nil b)
+     (with-current-buffer b
+       (add-hook 'kill-buffer-hook
+                 (lambda () (push (list 'kbh (buffer-name (window-buffer))) log)) nil t))
+     (set-buffer "*scratch*")
+     (kill-buffer b)
+     (list (reverse log) (buffer-name (window-buffer)))))))"##,
+        r##"(progn
+;; Selected-window buffer readers with a live selected window.
+(defun show (tag form)
+  (message "%s %S" tag (condition-case err (funcall form) (error (list 'ERR err)))))
+(defun fill-buf (name n)
+  (with-current-buffer (get-buffer-create name)
+    (erase-buffer)
+    (dotimes (i n) (insert (format "line %d\n" i)))
+    (goto-char (point-min))
+    (current-buffer)))
+;; line-number-display-width reads display-line-numbers in the current buffer.
+(show "ln1" (lambda ()
+  (let ((a (fill-buf "lnA" 50)) (b (fill-buf "lnB" 5)))
+    (set-window-buffer nil a)
+    (with-current-buffer a (setq display-line-numbers t))
+    (with-current-buffer b (setq display-line-numbers nil))
+    (list (with-current-buffer b (line-number-display-width))
+          (with-current-buffer a (line-number-display-width))
+          (with-current-buffer b (line-number-display-width 'columns))))))
+(show "ln2" (lambda ()
+  (let ((a (fill-buf "lnA" 50)) (b (fill-buf "lnB" 5)))
+    (with-current-buffer a (setq display-line-numbers nil))
+    (with-current-buffer b (setq display-line-numbers t))
+    (list (with-current-buffer b (line-number-display-width))
+          (with-current-buffer a (line-number-display-width))))))
+;; scroll-up scrolls the selected window's buffer, in an excursion.
+(show "sc1" (lambda ()
+  (let ((a (fill-buf "scA" 200)) (b (fill-buf "scB" 200)))
+    (set-window-buffer nil a)
+    (set-window-start nil 1)
+    (set-buffer b)
+    (goto-char 30)
+    (let ((r (condition-case e (scroll-up 3) (error (list 'ERR e)))))
+      (list r (current-buffer) (point) (window-start)
+            (with-current-buffer a (point)) (window-point))))))
+(show "sc2" (lambda ()
+  (let ((a (fill-buf "scA" 200)) (b (fill-buf "scB" 200)))
+    (set-window-buffer nil a)
+    (set-window-start nil 1)
+    (set-buffer b)
+    (let ((r (condition-case e (scroll-down 2) (error (list 'ERR e)))))
+      (list r (current-buffer) (point) (window-start) (window-point))))))
+(show "sc3" (lambda ()
+  (let ((a (fill-buf "scA" 200)) (b (fill-buf "scB" 200)))
+    (set-window-buffer nil a)
+    (set-window-start nil 1)
+    (set-buffer b)
+    (condition-case e (scroll-up 'x) (error (list 'ERR e)))))))"##,
+        r##"(progn
+(defun ws-push (&rest xs) (prin1 xs) (terpri))
+(defmacro ws-try (tag form) `(ws-push ,tag (condition-case e (progn ,form 'ok) (error (car e)))))
+(defvar ws-objs nil)
+(defun ws-setup (n)
+  (ws-try (list n 'sel) (select-window (frame-first-window)))
+  (ws-try (list n 'dow) (delete-other-windows))
+  (ws-try (list n 'stb) (switch-to-buffer (get-buffer-create "wsA")))
+  (erase-buffer) (insert "line one\nline two\nline three\n") (goto-char 5)
+  (ws-try (list n 'split)
+          (let* ((sel (selected-window))
+                 (right (split-window sel nil 'right))
+                 (below (split-window right nil 'below))
+                 (dead (split-window below nil 'below)))
+            (set-window-buffer below (get-buffer-create "wsB"))
+            (delete-window dead)
+            (setq ws-objs (list (cons 'selected sel) (cons 'right right) (cons 'below below) (cons 'dead dead))))))
+(ws-setup 0)
+(ws-push 'swp (condition-case e (set-window-point (cdr (assq 'below ws-objs)) nil) (error e)))
+(ws-setup 1)
+(ws-setup 2)
+(ignore-errors (select-window (frame-first-window)))
+(ignore-errors (select-window (frame-first-window)))
+(ignore-errors (delete-other-windows))
+(ws-push 'dead-selected (window-live-p (selected-window)) (buffer-name) (window-buffer (selected-window)))
+
+(defun show (tag form)
+  (message "%s %S" tag (condition-case err (funcall form) (error (list 'ERR err)))))
+(set-buffer "wsA")
+(show "d-start" (lambda () (window-start)))
+(show "d-end" (lambda () (window-end)))
+(show "d-body" (lambda () (list (window-body-height) (window-text-height) (window-mode-line-height) (window-header-line-height) (window-tab-line-height))))
+(show "d-recenter" (lambda () (recenter 0)))
+(show "d-mtwl" (lambda () (move-to-window-line 0)))
+(show "d-scroll" (lambda () (scroll-up 1)))
+(show "d-scroll-x" (lambda () (scroll-up 'x)))
+(show "d-lndw" (lambda () (line-number-display-width)))
+(show "d-pos" (lambda () (pos-visible-in-window-p)))
+(show "d-fml" (lambda () (format-mode-line "%b")))
+(show "d-wcch" (lambda () (let ((window-configuration-change-hook (list (lambda () (princ "HOOK\n")))))
+                            (run-window-configuration-change-hook))))
+(show "d-cur" (lambda () (list (buffer-name) (window-live-p (selected-window)))))
+)"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn the_review_of_round_332_is_answered_as_gnu_answers() {
+    // The probes of round 332's review, each in its own session: a
+    // sentinel, a buffer predicate or an unlock handler making the dying
+    // buffer current again, `save-current-buffer' and a second
+    // `kill-buffer' while the windows are replaced, an error there,
+    // kill-buffer's excursion, move-point-visually's buffer, the scratch
+    // buffer's creation and its log, and the replacement's window state.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+;; A pipe process's sentinel, run by kill_buffer_processes's Fdelete_process,
+;; kills the buffer now current; its Fkill_buffer makes the dying buffer
+;; current.  GNU goes on to kill the dying buffer while it is current.
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(show "s1"
+ (lambda ()
+   (let* ((b1 (get-buffer-create "dying"))
+          (b2 (get-buffer-create "other"))
+          (p (make-pipe-process :name "pp" :buffer b1 :noquery t
+                                :sentinel (lambda (proc ev)
+                                            (princ (format "sentinel cur=%s\n" (buffer-name)))
+                                            (when (buffer-live-p b2) (kill-buffer b2))
+                                            (princ (format "after kill cur=%s\n" (buffer-name)))))))
+     ;; buffer-list order: dying first, so other-buffer of b2 is b1.
+     (switch-to-buffer "*scratch*")
+     (bury-buffer "*scratch*") (bury-buffer "*Messages*")
+     (set-buffer b2)
+     (princ (format "list=%S\n" (mapcar #'buffer-name (buffer-list))))
+     (let ((r (kill-buffer b1)))
+       (list r (buffer-live-p b1) (buffer-live-p b2) (buffer-name (current-buffer))
+             (buffer-live-p (current-buffer)))))))
+(princ "survived\n"))"##,
+        r##"(progn
+;; The frame's buffer-predicate, called by Fkill_buffer's second Fother_buffer
+;; (the minibuffer-buffer check), makes the dying buffer current.
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar dying (get-buffer-create "dying"))
+(show "p1"
+ (lambda ()
+   (set-frame-parameter nil 'buffer-predicate
+                        (lambda (b) (when (buffer-live-p dying) (set-buffer dying)) t))
+   (let ((r (with-current-buffer (window-buffer (minibuffer-window))
+              (prog1 (kill-buffer dying)
+                (princ (format "inner cur=%S\n" (current-buffer)))))))
+     (set-frame-parameter nil 'buffer-predicate nil)
+     (list r (buffer-live-p dying) (buffer-name)))))
+(princ "survived\n"))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar dying (get-buffer-create "dying"))
+(defun zz-handler (op &rest args)
+  (if (eq op 'unlock-file)
+      (progn (princ (format "handler %S\n" op)) (set-buffer dying) nil)
+    (let ((inhibit-file-name-handlers (cons 'zz-handler inhibit-file-name-handlers))
+          (inhibit-file-name-operation op))
+      (apply op args))))
+(push '("\\`/zz:" . zz-handler) file-name-handler-alist)
+(show "u1"
+ (lambda ()
+   (with-current-buffer dying
+     (setq buffer-file-name "/zz:/tmp/nofile.txt")
+     (setq buffer-file-truename "/zz:/tmp/nofile.txt")
+     (insert "modified"))
+   (set-buffer "*scratch*")
+   (let ((r (kill-buffer dying)))
+     (list r (buffer-live-p dying) (buffer-name)))))
+(princ "survived\n"))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar dying nil)
+(defvar log nil)
+(advice-add 'get-scratch-buffer-create :before
+            (lambda (&rest _) (push (condition-case e (progn (set-buffer dying) (list 'ok (eq (current-buffer) dying))) (error e)) log)))
+(advice-add 'get-scratch-buffer-create :after
+            (lambda (&rest _) (push (list 'after (eq (current-buffer) dying) (buffer-live-p (current-buffer))) log)))
+(show "m3"
+ (lambda ()
+   (fmakunbound 'replace-buffer-in-windows)
+   (kill-buffer "*Messages*")
+   (setq dying (get-buffer "*scratch*"))
+   (set-window-buffer nil dying)
+   (set-buffer " *load*")
+   (let ((r (kill-buffer dying)))
+     (list r (reverse log) (eq (current-buffer) dying) (buffer-live-p (current-buffer))))))
+(set-buffer " *load*")
+(show "msgs" (lambda () (and (get-buffer "*Messages*") (with-current-buffer "*Messages*" (buffer-string))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(fmakunbound 'replace-buffer-in-windows)
+(defvar b (get-buffer-create "dying"))
+(defvar o (get-buffer-create "repl"))
+(dolist (n (list "*scratch*" "*Messages*")) (bury-buffer n))
+(with-current-buffer o (setq-local left-margin-width -2))
+(with-current-buffer b (insert "text in dying") (setq-local foo-local 7))
+(defvar m (with-current-buffer b (copy-marker 3)))
+(set-window-buffer nil b)
+(set-buffer o)
+(show "e1" (lambda () (kill-buffer b)))
+(setq inhibit-quit nil)
+(show "e1b" (lambda () (list (buffer-live-p b) (marker-buffer m) (buffer-local-value 'foo-local b)
+                             (buffer-name (window-buffer)) (eq (window-buffer) b)
+                             (window-start) (window-point)
+                             (with-current-buffer b (list (buffer-string) (point)))
+                             (get-buffer-window b)
+                             (length (buffer-list)))))
+(with-current-buffer o (setq-local left-margin-width 1))
+(show "e1c" (lambda () (list (kill-buffer b) (buffer-live-p b) (marker-buffer m)
+                             (buffer-name (window-buffer)) (window-margins))))
+(show "e1d" (lambda () (list (set-buffer b))))
+(show "e1e" (lambda () (with-current-buffer b (rename-buffer "zz")))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar a (get-buffer-create "A"))
+(with-current-buffer a (insert "0123456789abcdef") (goto-char 10))
+(show "x1"
+ (lambda ()
+   (let ((b (get-buffer-create "B")))
+     (with-current-buffer b
+       (add-hook 'kill-buffer-hook (lambda () (with-current-buffer a (goto-char 3))) nil t))
+     (set-buffer a)
+     (list (kill-buffer b) (buffer-name) (point)))))
+(show "x2"
+ (lambda ()
+   (let ((b (get-buffer-create "B2")))
+     (with-current-buffer b
+       (add-hook 'kill-buffer-query-functions (lambda () (with-current-buffer a (goto-char 5)) t) nil t))
+     (set-buffer a) (goto-char 12)
+     (list (kill-buffer b) (buffer-name) (point))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar a (get-buffer-create "A"))
+(defvar b (get-buffer-create "B"))
+(with-current-buffer a (insert "aaaaaaaaaa\nbbbbbbbbbb\n") (goto-char 3))
+(with-current-buffer b (insert "xxxxxxxxxxxxxxxxxxxx\nyyyy\n") (goto-char 8))
+(set-window-buffer nil a)
+(set-buffer b)
+(show "mpv" (lambda () (list (move-point-visually 1) (buffer-name) (point) (with-current-buffer a (point)))))
+(show "mpv-1" (lambda () (list (move-point-visually -1) (buffer-name) (point) (with-current-buffer a (point)))))
+(show "cont" (lambda () (list (display--line-is-continued-p) (buffer-name) (point) (with-current-buffer a (point))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(advice-add 'get-scratch-buffer-create :override
+            (lambda (&rest _) (error "no scratch for you")))
+(show "l2"
+ (lambda ()
+   (fmakunbound 'replace-buffer-in-windows)
+   (kill-buffer "*Messages*")
+   (set-window-buffer nil "*scratch*")
+   (set-buffer " *load*")
+   (let* ((old (get-buffer "*scratch*"))
+          (r (kill-buffer old)))
+     (list r (buffer-live-p old) (buffer-name (window-buffer))
+           (buffer-name) inhibit-quit
+           (mapcar #'buffer-name (buffer-list))
+           (with-current-buffer (window-buffer) major-mode)
+           (and (get-buffer "*Messages*") (with-current-buffer "*Messages*" (buffer-string))))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(fmakunbound (quote get-scratch-buffer-create)) (ignore
+            (lambda (&rest _) (error "no scratch for you")))
+(show "l3"
+ (lambda ()
+   (fmakunbound 'replace-buffer-in-windows)
+   (kill-buffer "*Messages*")
+   (set-window-buffer nil "*scratch*")
+   (set-buffer " *load*")
+   (let* ((old (get-buffer "*scratch*"))
+          (r (kill-buffer old)))
+     (list r (buffer-live-p old) (buffer-name (window-buffer))
+           (buffer-name) inhibit-quit
+           (mapcar #'buffer-name (buffer-list))
+           (with-current-buffer (window-buffer) major-mode)
+           (and (get-buffer "*Messages*") (with-current-buffer "*Messages*" (buffer-string))))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(fmakunbound 'replace-buffer-in-windows)
+(setq frame-resize-pixelwise nil)
+;; non-selected windows, display counts, prev-buffers, fringes, scroll bars,
+;; vscroll, point insertion type.
+(show "r1"
+ (lambda ()
+   (let* ((b (get-buffer-create "kbx"))
+          (o (get-buffer-create "repl"))
+          (w1 (selected-window))
+          (w2 (split-window)))
+     (with-current-buffer b (insert (make-string 300 ?x)) (goto-char 50))
+     (with-current-buffer o (insert "repl text\nmore\n") (goto-char 4)
+                          (setq buffer-display-count 7)
+                          (setq-local window-point-insertion-type t)
+                          (setq-local left-fringe-width 3)
+                          (setq-local scroll-bar-width 5)
+                          (setq-local left-margin-width 1))
+     (set-window-buffer w1 b)
+     (set-window-buffer w2 b)
+     (set-window-dedicated-p w2 t)
+     (set-window-hscroll w2 2)
+     (set-window-start w2 20)
+     ;; o first in the buffer list
+     (dolist (n (list "*scratch*" "*Messages*")) (bury-buffer n))
+     (switch-to-buffer o t t) (set-window-buffer w1 b)
+     (set-buffer o)
+     (princ (format "list=%S\n" (mapcar #'buffer-name (buffer-list))))
+     (let ((before (buffer-local-value 'buffer-display-count o))
+           (r (kill-buffer b)))
+       (list r before
+             (buffer-local-value 'buffer-display-count o)
+             (buffer-name (window-buffer w1)) (buffer-name (window-buffer w2))
+             (window-dedicated-p w2) (window-start w2) (window-point w2)
+             (window-hscroll w2) (window-margins w2) (window-fringes w2)
+             (window-scroll-bars w2)
+             (window-vscroll w2)
+             (let ((p (window-point w2))) (with-current-buffer o (save-excursion (goto-char p) (insert "Z"))) (list p (window-point w2)))
+             (mapcar (lambda (e) (buffer-name (car e))) (window-prev-buffers w2))
+             (window-next-buffers w2)
+             (eq (get-buffer-window o) w1)
+             (buffer-name (current-buffer)) (point))))))
+(princ "done\n"))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}

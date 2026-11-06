@@ -695,7 +695,9 @@ pub(crate) fn recenter_selected_window(
     interactive: bool,
 ) -> Result<(), LispError> {
     let window_id = interp.selected_window_id();
-    if interp.selected_window_buffer_id() != interp.current_buffer_id() {
+    // buf = XBUFFER (w->contents): a deleted selected window's nil is no
+    // buffer, so not the current one either.
+    if interp.selected_window_contents_buffer_id() != Some(interp.current_buffer_id()) {
         return Err(crate::lisp::primitives::values::doprnt_error(
             interp,
             "`recenter'ing a window that does not display current-buffer.",
@@ -1048,8 +1050,10 @@ pub(crate) fn window_scroll(
         }
     }
     if adjust_old_pointm {
+        // Fset_marker (w->old_pointm, BUF_PT (XBUFFER (w->contents)),
+        // w->contents): scroll_command has made the buffer current.
         let point = interp.buffer.borrow().point();
-        let buffer_id = interp.selected_window_buffer_id();
+        let buffer_id = interp.current_buffer_id();
         set_window_marker(interp, window_id, WINDOW_OLD_POINT_SLOT, buffer_id, point);
     }
     Ok(())

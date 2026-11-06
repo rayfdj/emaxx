@@ -15644,6 +15644,94 @@ setup_process_coding_systems's check now refuses). A 13-form
   from GNU's when their system calls before it differ. Local validation:
   the grouped gate's 3,501 library tests, the integration targets
   and clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 332: kill-buffer's windows, and the selected window's
+  buffer.** Fkill_buffer's teardown is now buffer.c's from
+  frames_discard_buffer on: the buffer leaves the frames' lists, its
+  undo list is nil, it leaves Vbuffer_alist, and
+  replace_buffer_in_windows_safely, window_loop's
+  REPLACE_BUFFER_IN_WINDOWS_SAFELY, walks Vframe_list as it then is (a
+  frame Lisp deletes meanwhile is skipped, none held across Lisp) and
+  gives each window still showing the buffer, minibuffer windows
+  included, other_buffer_safely's buffer by set_window_buffer,
+  undedicated, from that buffer's last window start and point, its
+  hscroll reset and its margins the buffer's, no hooks run, with
+  `inhibit-quit' t (an error there leaves it t and the buffer half
+  killed, as GNU's plain assignment does); then the markers, overlays
+  and local variables go and the name is nil. Emaxx gave each such
+  window the current buffer, an integer start and its old hscroll, kept
+  it dedicated, and unshowed the dying buffer in the selected window.
+  window.c's set_window_buffer is one function, which Fset_window_buffer
+  calls after unshow_buffer, the replacement without it, and make_frame
+  for a new frame's root and minibuffer windows (a new tty frame's root
+  window took the buffer's point as its start, and no margins).
+  BUFFER_LIVE_P is the buffer's name, as in GNU: a buffer out of
+  Vbuffer_alist whose windows are being replaced, or that an error there
+  left half killed, is live (`save-current-buffer' returns to it,
+  `kill-buffer' kills it again), and a buffer a buffer predicate, an
+  unlock handler or a sentinel made current again is killed as the
+  current buffer, which stays current, dead, as in GNU, where Emaxx
+  asserted it could not be. other_buffer_safely calls
+  `get-scratch-buffer-create' through its symbol, as safe_calln does, so
+  an error or an unbound function is logged as that form's. Fkill_buffer
+  runs its query functions and hooks in record_unwind_protect_excursion,
+  so the buffer that was current comes back with its point; it deletes
+  the auto-save file through `delete-auto-save-file-if-necessary', the
+  Lisp function GNU calls, after its own tests in GNU's order (the C
+  variables, Frecent_auto_save_p, Ffile_exists_p, Fstring_equal with the
+  visited name), where Emaxx removed the file itself, and returns t when
+  the hooks killed the buffer before `kill-buffer-hook'. The selected
+  window's buffer: the helper that answered the current buffer for a
+  deleted selected window, whose contents are nil, is gone, and each of
+  its callers does what GNU's C does at its own site: select_window_1
+  stores the old window's point only when its contents are a buffer; the
+  configuration-change hook's Fset_buffer of `(window-buffer)', nil, is
+  CHECK_STRING's error; window-end's CHECK_BUFFER signals; WINDOW_LEAF_P
+  gives a deleted window no mode, header or tab line, so its body
+  heights are its total; recenter and move-to-window-line signal; the
+  scroll commands are scroll_command, which makes the window's buffer
+  current in an excursion (Fset_buffer of nil signaling) and only then
+  reads its argument; pos-visible-in-window-p and
+  line-number-display-width read the window's start with
+  marker_position, which signals for a deleted window's; and where GNU's
+  XBUFFER of nil has no answer (command_loop_1's set_buffer_internal,
+  execute-kbd-macro's, display--line-is-continued-p) the current buffer
+  stays, which the code says. Three differed with a live window too:
+  line-number-display-width tests `display-line-numbers' in the current
+  buffer before the window's, as indent.c does; the scroll commands
+  scrolled with the current buffer's point when another buffer was
+  current; make-frame showed the selected window's buffer where
+  make_frame takes the current one, or other_buffer_safely's when it is
+  hidden. move-point-visually moves the current buffer's point, as
+  Fmove_point_visually does, where Emaxx moved the window buffer's.
+  format-mode-line's unwind is format_mode_line_unwind_data's, recorded
+  before the window is selected: the window frame's selected window (not
+  the selected window's frame's), its tty's top frame, and that window's
+  buffer's point in a marker, restored in GNU's order, an error
+  selecting the window included. A command-line comparison runs this
+  round's probes against GNU's. **Audit:** `tools/round_audit.py'
+  against round 331 reports no hard findings. The independent review of
+  the round found two P1, six P2 and six P3 findings: the assert in the
+  teardown could be reached from Lisp and aborted; a frame deleted
+  during the replacement crashed its walk; the dying buffer read as dead
+  during the replacement; line-number-display-width answered for a
+  deleted window's start where GNU signals; a new tty frame's root
+  window had the wrong start and margins; `get-scratch-buffer-create'
+  was called by its function, not its symbol; move-point-visually moved
+  the wrong buffer's point; kill-buffer's hooks lost the previous
+  buffer's point; and doc comments that misdescribed GNU, the unrooted
+  frame list, format-mode-line's missing top frame, its marker left
+  chained after an error, and an unreachable fallback in
+  pos-visible-in-window-p. All are fixed above but one P3: GNU's
+  window_list_1 binds `inhibit-quit' around its walk, which a variable
+  watcher sees and Emaxx's window walks do not; it predates the round
+  and is recorded below. Local validation: the grouped gate's library
+  tests pass, 3,501 on the round's first build and 3,500 of 3,501 on its
+  final build, where
+  `suspended_bytecode_observes_live_constant_vector_mutation' failed: an
+  intermittent recorded below, which fails alone 12 of 80 runs on round
+  331's build, 14 of 80 on this round's first and 10 of 80 on its final;
+  the integration targets (cli_parity's 67 included) and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -18357,7 +18445,44 @@ ert-tests as a whole 26,307 ms against 27,211.
   and 1,764 ms), and their setups of xml-tests, mule-tests and ert-tests
   are within noise of each other.
 
+**On `7eecb20`** (round 331): the full Rust gate (run 42209552288)
+  passed; the frozen run (run 42209556248) passed at its first attempt,
+  7,928 of 7,928 outcomes matching. Setup 67.8 s against 59.5 s (1.139),
+  test bodies 269.0 s against 248.2 s (1.084), in all 1.090, with a
+  per-file setup median of 103 ms against 91. The widest body gaps are
+  ert-tests (36,850 ms against 34,075), tramp-tests (18,862 against
+  16,289), comp-tests (15,331 against 13,653), semantic-utest-ia (3,373
+  against 2,495) and mule-tests (2,390 against 1,572), and
+  `ert-test-run-tests-batch-expensive' runs in 1.07 of GNU's time.
+
 **Findings recorded, not fixed:**
+- **window_list_1's `inhibit-quit' (round 332).** GNU's window_list_1
+  specbinds `inhibit-quit' to t around its walk of the window list, so
+  `window-list', `next-window', `get-buffer-window', window.el's
+  `replace-buffer-in-windows' and the other window walks notify a
+  variable watcher of `inhibit-quit' (a let, a set and an unlet event
+  per walk); Emaxx's walks read the window tree without binding it. To
+  be made where each window walk is entered.
+- **The echo area buffers in the buffer list (round 332).** In an
+  interactive session GNU's ` *Echo Area 0*' and ` *Echo Area 1*' are
+  live buffers of Vbuffer_alist, which `buffer-list' returns; Emaxx's
+  tty session lists neither.
+- **A frame deleted from get-scratch-buffer-create during kill-buffer
+  (round 332).** When `get-scratch-buffer-create', advised to delete
+  another frame with garbage collections between, runs from
+  kill-buffer's window replacement, GNU's delete-frame re-enters about
+  130 times and leaves the frame live, its window showing *Messages*;
+  Emaxx deletes the frame once. The same probe without the collections
+  agrees. The path GNU's delete-frame takes there is not yet traced.
+- **A weak table's key kept after `garbage-collect' (round 332).**
+  `suspended_bytecode_observes_live_constant_vector_mutation' replaces a
+  constant of a byte-code function whose thread is suspended in a call,
+  collects, and expects the replaced list to leave its weak hash table,
+  as it does in GNU; Emaxx keeps it in about one run in seven (12 of 80
+  alone on round 331's build, 10 of 80 on round 332's), so something,
+  most likely a stale word that the conservative scan of a stack finds,
+  still references it. The test is otherwise right; the retention is to
+  be traced.
 - **The name tests and SYMBOLP guards left (round 331).** Of the
   `is_named' tests that stand for EQ against an interned symbol, round
   331 made 74 `matches!' tests EQ and 20 matches take the bare symbol;
@@ -18376,23 +18501,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   position under the flag; for strings, conses and vectors `equal'
   answers t where EQ answers nil. A census of `==' between Lisp values
   against GNU's EQ is to be made.
-- **kill-buffer's window replacement (round 330).** GNU's Fkill_buffer
-  replaces the dying buffer in each window through
-  replace_buffer_in_windows and replace_buffer_in_windows_safely
-  (window_loop's REPLACE_BUFFER_IN_WINDOWS_SAFELY: undedicate,
-  set_window_buffer with other_buffer_safely, Fset_buffer for the
-  selected window); Emaxx's kill_buffer_id writes the replacement into
-  each window's buffer slot and an integer into its start slot, and
-  swallows unshow_buffer's error for the selected window. To be rebuilt
-  as window_loop's case.
-- **The selected window's buffer (round 330).**
-  selected_window_buffer_id answers the current buffer for a deleted
-  selected window, whose contents are nil in GNU; round 330 gives
-  unshow_buffer, the configuration restore and kill-buffer the contents
-  themselves, and sixteen other callers keep the old answer. Each wants
-  reading against its GNU caller (Fset_buffer of a nil contents signals
-  there); set-window-point's, for a deleted selected window, stands
-  where GNU's XBUFFER (w->contents) of nil has no defined answer.
 - **The errno text's locale (round 329).** emacs_strerror calls
   synchronize_system_messages_locale, so strerror's text follows
   LC_MESSAGES; Emaxx sets only LC_CTYPE, so its text is always the C
@@ -18408,14 +18516,22 @@ ert-tests as a whole 26,307 ms against 27,211.
   backend (threads.rs) still names its directory reads and open and
   registration failures with text paths. It cannot be compiled or probed
   on this host; it is to be converted with a macOS check.
-- **make-process's argument checks (round 329).** Fmake_process runs
-  get_current_directory before it reads :name, searches for the program
-  before it checks each argument with CHECK_STRING, and so reports a bad
-  `default-directory' or a missing program first; Emaxx parses :name and
-  every argument before the search and checks the directory at the
-  spawn, so `(make-process :command '("zz-no-such" 5))' is `stringp 5'
-  where GNU's is "Searching for program". Converting it means building
-  make-process in GNU's order of steps.
+- **make-process's argument checks (rounds 329, 332).** Fmake_process
+  runs get_current_directory before it reads :name, searches for the
+  program before it checks each argument with CHECK_STRING, and so
+  reports a bad `default-directory' or a missing program first; Emaxx
+  parses :name and every argument before the search and checks the
+  directory at the spawn, so `(make-process :command '("zz-no-such" 5))'
+  is `stringp 5' where GNU's is "Searching for program". Round 332 found
+  more: Emaxx serves make-process and make-pipe-process with one
+  function keyed on `:command', so make-process with a nil `:command'
+  errors where process.c's create_pty makes a pty process with no
+  program (pid -2, status run, a tty name unless the connection type is
+  a pipe), make-pipe-process honors `:command', `:stderr' and
+  `:file-handler', which Fmake_pipe_process does not read, both reject
+  an odd plist, which plist_get reads, and a real process given as
+  `:stderr' is taken where GNU signals "Process is not a pipe process".
+  Converting it means building the two DEFUNs in GNU's order of steps.
 - **Name-resolution failures (round 329).** connect_network_socket's
   getaddrinfo failure is `(error "HOST/SERVICE gai_strerror")'; Emaxx
   resolves through Rust's ToSocketAddrs and reports a file-error

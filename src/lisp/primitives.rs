@@ -309,6 +309,8 @@ pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::native_elisp_load;
 #[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
+pub(crate) use dispatch::replace_buffer_in_windows_safely;
+pub(crate) use dispatch::set_window_buffer;
 pub(crate) use dispatch::unibyte_doc_string;
 pub(crate) use dispatch::{
     EchoSpans, echo_area_message_tick, echo_area_print_logged, echo_display_message,

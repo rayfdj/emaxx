@@ -930,12 +930,19 @@ fn current_bidi_paragraph_direction_value(interp: &Interpreter, env: &Env) -> Va
     }
 }
 
+/// xdisp.c's `set_buffer_internal_1 (XBUFFER (w->contents))' of the
+/// selected window around OPERATION, then the buffer that was current, as
+/// Fdisplay__line_is_continued_p makes the window's buffer current.  A
+/// deleted selected window's nil contents have no XBUFFER (GNU's checking
+/// build aborts there); the current buffer stays.
 fn with_selected_window_buffer<T>(
     interp: &mut Interpreter,
     operation: impl FnOnce(&mut Interpreter) -> Result<T, LispError>,
 ) -> Result<T, LispError> {
-    let selected_buffer = interp.selected_window_buffer_id();
     let saved_buffer = interp.current_buffer_id();
+    let selected_buffer = interp
+        .selected_window_contents_buffer_id()
+        .unwrap_or(saved_buffer);
     interp.set_current_buffer_id(selected_buffer)?;
     let result = operation(interp);
     let restore = interp.set_current_buffer_id(saved_buffer);
@@ -2429,15 +2436,18 @@ fn select_window_value(
         // select_window marks both windows for redisplay, the newly
         // selected one while it is still another window.
         interp.redisplay_other_windows();
-        let previous_buffer_id = interp.selected_window_buffer_id();
-        let previous_point = interp.buffer_point_by_id(previous_buffer_id);
-        set_window_marker(
-            interp,
-            previous_window_id,
-            WINDOW_POINT_SLOT,
-            previous_buffer_id,
-            previous_point,
-        );
+        // `if (BUFFERP (ow->contents))': a deleted old selected window
+        // keeps its unchained point marker.
+        if let Some(previous_buffer_id) = interp.selected_window_contents_buffer_id() {
+            let previous_point = interp.buffer_point_by_id(previous_buffer_id);
+            set_window_marker(
+                interp,
+                previous_window_id,
+                WINDOW_POINT_SLOT,
+                previous_buffer_id,
+                previous_point,
+            );
+        }
         // set_point_from_marker's marker_position, None for a marker that
         // points nowhere: the error comes once the window is selected.
         window_marker(interp, window_id, WINDOW_POINT_SLOT).map(|marker| marker.position())
@@ -2925,8 +2935,13 @@ fn run_window_configuration_change_hook(
     if interp.hooks_cleared {
         return Ok(());
     }
+    // `if (current_buffer != XBUFFER (Fwindow_buffer (Qnil))) Fset_buffer
+    // (Fwindow_buffer (Qnil))': a deleted selected window's buffer is nil,
+    // and Fset_buffer's Fget_buffer of nil is CHECK_STRING's error.
     let saved_buffer = interp.current_buffer_id();
-    let selected_buffer = interp.selected_window_buffer_id();
+    let selected_buffer = interp
+        .selected_window_contents_buffer_id()
+        .ok_or_else(|| wrong_type_argument("stringp", Value::Nil))?;
     let switch_buffer = selected_buffer != saved_buffer;
     if switch_buffer {
         interp.set_current_buffer_id(selected_buffer)?;
@@ -3272,6 +3287,89 @@ fn set_window_margins(
     interp.set_window_margins(window_id, Some(left), Some(right));
     interp.wset_redisplay(window_id);
     Ok(true)
+}
+
+/// window.c:set_window_buffer: WINDOW_ID shows BUFFER_ID.  Its start,
+/// points and hscroll are the buffer's unless KEEP_MARGINS_P and the
+/// window already shows that buffer; without KEEP_MARGINS_P its margins
+/// are the buffer's (a same-buffer refresh included); RUN_HOOKS_P runs
+/// `window-scroll-functions'.  It does not unshow the buffer the window
+/// showed: Fset_window_buffer does that first, window_loop's
+/// REPLACE_BUFFER_IN_WINDOWS_SAFELY does not.
+pub(crate) fn set_window_buffer(
+    interp: &mut Interpreter,
+    window_id: u64,
+    buffer_id: u64,
+    run_hooks_p: bool,
+    keep_margins_p: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    // samebuf = EQ (buffer, w->contents).
+    let samebuf = window_slot_buffer_id(
+        interp
+            .find_record(window_id)
+            .and_then(|window| window.slots.get(WINDOW_BUFFER_SLOT)),
+    ) == Some(buffer_id);
+    interp.show_buffer_in_window(window_id, buffer_id, keep_margins_p && samebuf);
+    if !keep_margins_p {
+        // set_window_margins (w, BVAR (b, left_margin_cols), BVAR (b,
+        // right_margin_cols)).
+        let margin_width = |name: &str| {
+            interp
+                .buffer_local_value(buffer_id, name)
+                .unwrap_or(Value::Nil)
+        };
+        let (left, right) = (
+            margin_width("left-margin-width"),
+            margin_width("right-margin-width"),
+        );
+        set_window_margins(interp, window_id, left, right)?;
+    }
+    if run_hooks_p {
+        set_window_buffer_hooks(interp, window_id, buffer_id, env)?;
+    }
+    Ok(())
+}
+
+/// window.c:replace_buffer_in_windows_safely: window_loop's
+/// REPLACE_BUFFER_IN_WINDOWS_SAFELY over each frame of Vframe_list, from
+/// the frame's selected window, minibuffer windows included.  A window
+/// still showing BUFFER_ID is undedicated and shows other_buffer_safely's
+/// buffer by set_window_buffer, its hooks not run and its margins the new
+/// buffer's.  (GNU then makes the selected window's buffer current only
+/// when it already is, which changes nothing.)  other_buffer_safely can
+/// run Lisp that deletes frames: FOR_EACH_FRAME walks the list as it now
+/// is, so each step takes the next live frame of the current list not
+/// yet visited, and no frame is held across Lisp.
+pub(crate) fn replace_buffer_in_windows_safely(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+) -> Result<(), LispError> {
+    let mut visited: Vec<u64> = Vec::new();
+    let mut env = Env::new();
+    while let Some(frame) = interp
+        .frame_states
+        .iter()
+        .find(|frame| frame.is_live() && !visited.contains(&frame.borrow().id))
+        .copied()
+    {
+        visited.push(frame.borrow().id);
+        let start = interp.record_value(frame.borrow().selected_window_id());
+        for window_id in window_list_ids(interp, Some(&Value::T), Some(&start), &[frame]) {
+            let shows = window_slot_buffer_id(
+                interp
+                    .find_record(window_id)
+                    .and_then(|window| window.slots.get(WINDOW_BUFFER_SLOT)),
+            ) == Some(buffer_id);
+            if !shows {
+                continue;
+            }
+            set_window_slot_value(interp, window_id, WINDOW_DEDICATED_SLOT, Value::Nil)?;
+            let other = interp.other_buffer_safely(buffer_id)?;
+            set_window_buffer(interp, window_id, other, false, false, &mut env)?;
+        }
+    }
+    Ok(())
 }
 
 /// set_window_buffer's run_hooks_p: `window-scroll-functions' see the
@@ -3639,10 +3737,13 @@ fn window_change_safe_call(
 
 fn window_body_pixel_size(interp: &Interpreter, window: u64, env: &Env) -> (i64, i64) {
     let (_, height, _, _) = window_geometry(interp, window);
-    let body_height = window_buffer_id(interp, &interp.record_value(window))
-        .map_or(height, |buffer| {
-            height - window_non_body_height(interp, window, buffer, env)
-        });
+    let body_height = height
+        - window_non_body_height(
+            interp,
+            window,
+            window_buffer_id(interp, &interp.record_value(window)),
+            env,
+        );
     (window_text_width_columns(interp, window), body_height)
 }
 
@@ -3974,15 +4075,18 @@ fn run_window_change_functions_body(
     Ok(())
 }
 
+/// The buffer of the window decode_live_window answers for WINDOW: None
+/// for nil when the selected window is deleted, whose contents are nil.
 fn window_buffer_id_or_selected(
     interp: &Interpreter,
     window: Option<&Value>,
-) -> Result<u64, LispError> {
+) -> Result<Option<u64>, LispError> {
     match window.map(|v| v.kind()) {
-        None | Some(Kind::Nil) => Ok(interp.selected_window_buffer_id()),
+        None | Some(Kind::Nil) => Ok(interp.selected_window_contents_buffer_id()),
         Some(window) => {
             window_id_or_selected(interp, &window.value())?;
             window_buffer_id(interp, &window.value())
+                .map(Some)
                 .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), window.value()))
         }
     }
@@ -4016,12 +4120,22 @@ fn window_line_height(
 
 /// The lines of WINDOW_ID showing BUFFER_ID that are not its body:
 /// window.c's window_wants_mode_line, window_wants_header_line and
-/// window_wants_tab_line, each a line of a leaf that is no minibuffer
-/// window, whose window parameter of the format's name is not `none' and
-/// either it or the buffer's format is non-nil, and whose height holds it
-/// beside the lines wanted before it (the mode line prevails).
-fn window_non_body_height(interp: &Interpreter, window_id: u64, buffer_id: u64, env: &Env) -> i64 {
+/// window_wants_tab_line, each a line of a leaf (WINDOW_LEAF_P, contents a
+/// buffer: none for a deleted window, BUFFER_ID None) that is no
+/// minibuffer window, whose window parameter of the format's name is not
+/// `none' and either it or the buffer's format is non-nil, and whose
+/// height holds it beside the lines wanted before it (the mode line
+/// prevails).
+fn window_non_body_height(
+    interp: &Interpreter,
+    window_id: u64,
+    buffer_id: Option<u64>,
+    env: &Env,
+) -> i64 {
     let kind = window_kind_of_id(interp, window_id);
+    let Some(buffer_id) = buffer_id else {
+        return 0;
+    };
     if kind.is_internal() || kind == WindowKind::Minibuffer {
         return 0;
     }
@@ -4053,7 +4167,7 @@ fn window_non_body_height(interp: &Interpreter, window_id: u64, buffer_id: u64, 
 /// still describe the pre-minibuffer height.
 fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
     let window_id = interp.selected_window_id();
-    let buffer_id = interp.selected_window_buffer_id();
+    let buffer_id = interp.selected_window_contents_buffer_id();
     (window_geometry(interp, window_id).1
         - window_non_body_height(interp, window_id, buffer_id, env))
     .max(1) as usize
@@ -5594,7 +5708,9 @@ define_dispatch!(
             "window-end" => {
                 need_arg_range(name, args, 0, 2)?;
                 let window_id = live_window_id_or_selected(interp, args.first())?;
-                let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
+                // buf = w->contents; CHECK_BUFFER (buf).
+                let buffer_id = window_buffer_id_or_selected(interp, args.first())?
+                    .ok_or_else(|| wrong_type_argument("bufferp", Value::Nil))?;
                 let z = buffer_z(interp, buffer_id);
                 // xdisp.c Fwindow_end: UPDATE on a real frame displays the
                 // window's body from its start; otherwise the answer is Z
@@ -5610,7 +5726,7 @@ define_dispatch!(
                     let start = window_start_marker(interp, window_id, buffer_id)
                         .clamp(point_min, point_max);
                     let height = (window_geometry(interp, window_id).1
-                        - window_non_body_height(interp, window_id, buffer_id, env))
+                        - window_non_body_height(interp, window_id, Some(buffer_id), env))
                     .max(1) as isize;
                     let saved = interp.current_buffer_id();
                     interp.set_current_buffer_id(buffer_id)?;
@@ -5833,8 +5949,23 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 3)?;
                 let window = args.get(1).filter(|value| !value.is_nil());
                 let window_id = live_window_id_or_selected(interp, window)?;
-                // xdisp.c: decode_live_window, then fix_position of a POS
-                // that is neither t nor nil, before anything is displayed.
+                // xdisp.c: decode_live_window, buf = XBUFFER (w->contents),
+                // SET_TEXT_POS_FROM_MARKER (top, w->start), whose
+                // marker_position signals for the unchained start of a
+                // deleted selected window (its contents nil), then
+                // fix_position of a POS that is neither t nor nil, before
+                // anything is displayed.
+                let Some(buffer_id) = window_slot_buffer_id(
+                    interp
+                        .find_record(window_id)
+                        .and_then(|record| record.slots.get(WINDOW_BUFFER_SLOT)),
+                )
+                .filter(|_| {
+                    window_marker(interp, window_id, WINDOW_START_SLOT)
+                        .is_none_or(|start| start.position().is_some())
+                }) else {
+                    return Err(LispError::Signal("Marker does not point anywhere".into()));
+                };
                 if let Some(pos) = args
                     .first()
                     .filter(|pos| !matches!(pos.kind(), Kind::Nil | Kind::T))
@@ -5847,12 +5978,6 @@ define_dispatch!(
                 {
                     return Ok(Value::Nil);
                 }
-                let buffer_id = if let Some(window) = window {
-                    window_buffer_id(interp, window)
-                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), *window))?
-                } else {
-                    interp.selected_window_buffer_id()
-                };
                 let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
                 let pos = match args.first().map(|v| v.kind()) {
                     None | Some(Kind::Nil) => interp.buffer.borrow().point(),
@@ -5875,7 +6000,7 @@ define_dispatch!(
                 // window tree already owns the queried window's exact body
                 // height.
                 let limit = (window_geometry(interp, window_id).1
-                    - window_non_body_height(interp, window_id, buffer_id, env))
+                    - window_non_body_height(interp, window_id, Some(buffer_id), env))
                 .max(1) as usize;
                 let rows = {
                     let saved_buffer = interp.current_buffer_id();
@@ -6162,7 +6287,11 @@ define_dispatch!(
                 if window_is_minibuffer(interp, window_id) {
                     return Ok(Value::Integer(0));
                 }
-                let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
+                // window_wants_mode_line and its siblings: WINDOW_LEAF_P
+                // first, so a deleted selected window has none.
+                let Some(buffer_id) = window_buffer_id_or_selected(interp, args.first())? else {
+                    return Ok(Value::Integer(0));
+                };
                 let format_variable = match name {
                     "window-mode-line-height" => "mode-line-format",
                     "window-header-line-height" => "header-line-format",
@@ -6192,7 +6321,9 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 1)?;
                 // window.c Fmove_to_window_line.
                 let window_id = interp.selected_window_id();
-                if interp.selected_window_buffer_id() != interp.current_buffer_id() {
+                // `if (!(BUFFERP (w->contents) && XBUFFER (w->contents) ==
+                // current_buffer))'.
+                if interp.selected_window_contents_buffer_id() != Some(interp.current_buffer_id()) {
                     return Err(LispError::Signal(
                         "move-to-window-line called from unrelated buffer".into(),
                     ));
@@ -6262,33 +6393,54 @@ define_dispatch!(
             }
             "scroll-up" | "scroll-down" => {
                 need_arg_range(name, args, 0, 1)?;
-                // window.c scroll_command on the selected window.
+                // window.c scroll_command on the selected window: when its
+                // buffer is not current, record_unwind_protect_excursion and
+                // Fset_buffer (w->contents), whose Fget_buffer of a deleted
+                // window's nil is CHECK_STRING's error.
                 let direction: i64 = if name == "scroll-up" { 1 } else { -1 };
-                let (n, whole) = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => (direction, true),
-                    Some(Kind::Symbol(minus)) if minus.is_named("-") => (-direction, true),
-                    Some(value) => (
-                        prefix_numeric_value(&value.value())?.as_integer()? * direction,
-                        false,
-                    ),
+                let selected = interp.selected_window_contents_buffer_id();
+                let excursion = if selected == Some(interp.current_buffer_id()) {
+                    None
+                } else {
+                    let buffer =
+                        selected.ok_or_else(|| wrong_type_argument("stringp", Value::Nil))?;
+                    let saved = interp.save_excursion_state();
+                    if let Err(error) = interp.set_current_buffer_id(buffer) {
+                        interp.restore_excursion_state(saved);
+                        return Err(error);
+                    }
+                    Some(saved)
                 };
-                let height = selected_command_text_height(interp, env);
-                let window_id = interp.selected_window_id();
-                let total_lines = window_geometry(interp, window_id).1;
-                let hscroll = window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT)
-                    .as_integer()
-                    .unwrap_or(0);
-                crate::lisp::primitives::window::window_scroll(
-                    interp,
-                    env,
-                    n,
-                    whole,
-                    false,
-                    height,
-                    total_lines,
-                    hscroll,
-                )?;
-                Ok(Value::Nil)
+                let result = (|| -> Result<(), LispError> {
+                    let (n, whole) = match args.first().map(|v| v.kind()) {
+                        None | Some(Kind::Nil) => (direction, true),
+                        Some(Kind::Symbol(minus)) if minus.is_named("-") => (-direction, true),
+                        Some(value) => (
+                            prefix_numeric_value(&value.value())?.as_integer()? * direction,
+                            false,
+                        ),
+                    };
+                    let height = selected_command_text_height(interp, env);
+                    let window_id = interp.selected_window_id();
+                    let total_lines = window_geometry(interp, window_id).1;
+                    let hscroll = window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT)
+                        .as_integer()
+                        .unwrap_or(0);
+                    crate::lisp::primitives::window::window_scroll(
+                        interp,
+                        env,
+                        n,
+                        whole,
+                        false,
+                        height,
+                        total_lines,
+                        hscroll,
+                    )
+                })();
+                if let Some(saved) = excursion {
+                    interp.restore_excursion_state(saved);
+                }
+                result.map(|()| Value::Nil)
             }
             "window-text-pixel-size" => {
                 // xdisp.c:Fwindow_text_pixel_size: measured in WINDOW's
@@ -6581,7 +6733,10 @@ define_dispatch!(
                 let Kind::Integer(direction) = args[0].kind() else {
                     return Err(wrong_type_argument("fixnump", args[0]));
                 };
-                with_selected_window_buffer(interp, |interp| {
+                // Fmove_point_visually moves the current buffer's point; it
+                // reads the selected window's buffer only to test whether
+                // its glyph rows can answer, and never makes it current.
+                (|| {
                     // `int dir = XFIXNUM (direction)': the fixnum's low 32
                     // bits, so most-positive-fixnum moves left.
                     let right = (direction as i32) > 0;
@@ -6604,7 +6759,7 @@ define_dispatch!(
                     };
                     interp.buffer.borrow_mut().goto_char(target);
                     Ok(Value::Integer(target as i64))
-                })
+                })()
             }
             "long-line-optimizations-p" => {
                 need_args(name, args, 0)?;
@@ -7085,26 +7240,10 @@ define_dispatch!(
                     }
                 }
                 // window.c Fset_window_buffer: unshow_buffer, then
-                // set_window_buffer.
+                // set_window_buffer (window, buffer, true, !NILP
+                // (keep_margins)).
                 interp.unshow_window_buffer(window_id)?;
-                interp.show_buffer_in_window(window_id, buffer_id, keep_margins && !changes_buffer);
-                if !keep_margins {
-                    // GNU resets margins from the displayed buffer by
-                    // default, including on a same-buffer refresh.  A true
-                    // KEEP-MARGINS third argument preserves the window's
-                    // explicit widths (Magit relies on that during refresh).
-                    let margin_width = |name: &str| {
-                        interp
-                            .buffer_local_value(buffer_id, name)
-                            .unwrap_or(Value::Nil)
-                    };
-                    let (left, right) = (
-                        margin_width("left-margin-width"),
-                        margin_width("right-margin-width"),
-                    );
-                    set_window_margins(interp, window_id, left, right)?;
-                }
-                set_window_buffer_hooks(interp, window_id, buffer_id, env)?;
+                set_window_buffer(interp, window_id, buffer_id, true, keep_margins, env)?;
                 Ok(Value::Nil)
             }
             "window-list" => {
