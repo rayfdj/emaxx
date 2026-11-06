@@ -31,7 +31,10 @@ pub(super) fn source_callback(
 fn eval_buffer_uses_the_supplied_history_filename_without_visiting_it() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
-    interp.buffer.borrow_mut().file = Some("buffer-visited-name.el".into());
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_name(Value::string("buffer-visited-name.el"));
     let filename = Value::string("explicit-history-name.el");
     let outer = Value::list([Value::string("outer-load.el")]);
     interp.set_variable_key(cached_symbol!("current-load-list"), outer, &mut env);
@@ -59,7 +62,7 @@ fn eval_buffer_uses_the_supplied_history_filename_without_visiting_it() {
         &env,
     ));
     assert_eq!(
-        interp.buffer.borrow().file.as_deref(),
+        interp.buffer.borrow().file_name_text().as_deref(),
         Some("buffer-visited-name.el")
     );
 }
@@ -147,7 +150,10 @@ fn eval_buffer_uses_the_history_suffix_to_disable_eager_macroexpansion() {
     let source = fs::read_to_string(gnu_root().join("test/src/comp-resources/comp-test-45603.el"))
         .expect("read unchanged GNU source");
     interp.buffer.borrow_mut().insert(&source);
-    interp.buffer.borrow_mut().file = Some("visited-source.el".into());
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_name(Value::string("visited-source.el"));
     super::super::call(
         &mut interp,
         "eval-buffer",

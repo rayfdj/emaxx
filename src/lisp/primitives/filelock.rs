@@ -761,11 +761,8 @@ pub(crate) fn funlock_file(
 
 /// The buffer's `buffer-file-truename' when it is a string.
 fn buffer_file_truename(interp: &Interpreter, buffer_id: u64) -> Option<Value> {
-    interp
-        .get_buffer_by_id(buffer_id)?
-        .file_truename
-        .as_deref()
-        .map(Value::string)
+    let truename = interp.get_buffer_by_id(buffer_id)?.file_truename();
+    truename.is_string().then_some(truename)
 }
 
 /// Flock_buffer: FILE (the current buffer's `buffer-file-truename' when

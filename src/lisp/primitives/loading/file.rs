@@ -87,11 +87,13 @@ pub(crate) fn load_file(
         if request.noerror.is_truthy() {
             return Ok((Value::Nil, Value::Nil));
         }
-        return Err(LispError::SignalValue(file_errno_error_value(
+        // report_file_error ("Cannot open load file", file): FILE as
+        // Fload holds it.
+        return Err(crate::lisp::primitives::file_io::report_file_errno(
             "Cannot open load file",
-            errno,
-            &requested,
-        )));
+            request.file,
+            &std::io::Error::from_raw_os_error(errno),
+        ));
     };
 
     // Native substitution applies only to locally opened files. Retain the

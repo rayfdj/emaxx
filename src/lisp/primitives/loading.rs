@@ -409,9 +409,7 @@ pub(crate) fn eval_buffer_impl(
         .unwrap_or_else(|| {
             interp
                 .get_buffer_by_id(buffer_id)
-                .map_or(Value::Nil, |buffer| {
-                    buffer.file.as_deref().map_or(Value::Nil, Value::string)
-                })
+                .map_or(Value::Nil, |buffer| buffer.file_name())
         });
     if !source_file.is_nil() {
         string_text(&source_file)?;
@@ -553,7 +551,7 @@ pub(crate) fn eval_region_impl(
         )
         });
     let buffer_id = interp.current_buffer_id();
-    let source_file = interp.buffer.borrow().file.clone();
+    let source_file = interp.buffer.borrow().file_name();
     let readcharfun = interp.buffer_value(buffer_id).expect("live buffer object");
 
     // lread.c dynamically binds these around `readevalloop'.  In
@@ -588,7 +586,7 @@ pub(crate) fn eval_region_impl(
     restores.push(interp.bind_special_key(cached_symbol!("macroexp--dynvars"), dynvars, env)?);
     restores.push(interp.bind_special_key(
         cached_symbol!("current-load-list"),
-        Value::list([source_file.map_or(Value::Nil, |file| Value::String(file.into()))]),
+        Value::list([source_file]),
         env,
     )?);
 

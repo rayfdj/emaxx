@@ -537,22 +537,8 @@ impl Interpreter {
             "buffer-undo-list" => Some(crate::lisp::primitives::buffer_undo_list_value(
                 &self.buffer.borrow(),
             )),
-            "buffer-file-name" => Some(
-                self.buffer
-                    .borrow()
-                    .file
-                    .clone()
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil),
-            ),
-            "buffer-file-truename" => Some(
-                self.buffer
-                    .borrow()
-                    .file_truename
-                    .clone()
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil),
-            ),
+            "buffer-file-name" => Some(self.buffer.borrow().file_name()),
+            "buffer-file-truename" => Some(self.buffer.borrow().file_truename()),
             "buffer-file-coding-system" => Some(
                 self.buffer_local_value(self.current_buffer_id(), "buffer-file-coding-system")
                     .unwrap_or(Value::Nil),
@@ -1298,21 +1284,13 @@ impl Interpreter {
             return;
         }
 
+        // bset_filename and bset_file_truename: the object itself.
         if resolved == "buffer-file-name" {
-            let file = match value.kind() {
-                Kind::Nil => None,
-                Kind::StringObject(state) => Some(state.borrow().text()),
-                other => Some(other.to_string()),
-            };
-            self.set_current_buffer_file_name(file);
+            self.set_current_buffer_file_name(value);
             return;
         }
         if resolved == "buffer-file-truename" {
-            self.buffer.borrow_mut().file_truename = match value.kind() {
-                Kind::Nil => None,
-                Kind::StringObject(state) => Some(state.borrow().text()),
-                other => Some(other.to_string()),
-            };
+            self.buffer.borrow_mut().set_file_truename(value);
             return;
         }
         if resolved == "mark-active" {

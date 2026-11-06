@@ -2835,6 +2835,72 @@ fn symbols_with_position_decode_as_lisp_h_symbolp_xsymbol_and_eq() {
 }
 
 #[test]
+fn file_names_reach_errors_and_buffers_as_the_lisp_strings_gnu_keeps() {
+    // fileio.c's report_file_error is given the Lisp file names (expanded,
+    // or as given for access-file and load), so a name's text properties
+    // and raw bytes reach the error data; BVAR (b, filename) and
+    // file_truename hold the string `buffer-file-name' was set to; and a
+    // C string from SSDATA (a hostname, a module file, access-file's
+    // message) carries the string's own bytes.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            &format!(
+                "(progn {})",
+                r##"(let* ((dir (file-name-as-directory (make-temp-file "fe" t)))
+       (default-directory dir)
+       (show (lambda (x) (if (stringp x)
+                             (let ((s (if (string-prefix-p dir x) (substring x (length dir)) x)))
+                               (list s (multibyte-string-p s) (text-properties-at 0 s)))
+                           x)))
+       (err (lambda (thunk) (condition-case e (progn (funcall thunk) 'ok)
+                              ;; The errno text (the third element) as text alone.
+                              (error (append (list (car e) (funcall show (nth 1 e)) (nth 2 e))
+                                             (mapcar show (nthcdr 3 e)))))))
+       (p (propertize "nd/foo" 'face 'bold))
+       (r (string-to-multibyte "nd/\377a")))
+  (unwind-protect
+      (dolist (f (list p r))
+        (prin1 (list (funcall err (lambda () (with-temp-buffer (insert-file-contents f))))
+                     (funcall err (lambda () (with-temp-buffer (insert "x") (write-region nil nil f nil 0))))
+                     (funcall err (lambda () (copy-file f "dst")))
+                     (funcall err (lambda () (rename-file f "dst")))
+                     (funcall err (lambda () (add-name-to-file f "dst")))
+                     (funcall err (lambda () (make-symbolic-link "x" f)))
+                     (funcall err (lambda () (delete-directory f)))
+                     (funcall err (lambda () (make-directory f)))
+                     (funcall err (lambda () (set-file-modes f #o644)))
+                     (funcall err (lambda () (set-file-times f)))
+                     (funcall err (lambda () (access-file f (string-to-multibyte "m\377"))))
+                     (funcall err (lambda () (load f nil t)))))
+        (terpri))
+    (delete-directory dir t)))
+(with-temp-buffer
+  (setq buffer-file-name (propertize "/tmp/x" 'a 1))
+  (setq buffer-file-truename (propertize "/tmp/y" 'b 2))
+  (prin1 (list (eq buffer-file-name buffer-file-name) buffer-file-name (buffer-file-name)
+               (eq buffer-file-truename buffer-file-truename) buffer-file-truename
+               (condition-case e (setq buffer-file-name 5) (error e))
+               (let ((r (string-to-multibyte "/tmp/\377a"))) (setq buffer-file-name r)
+                    (list (eq (buffer-file-name) r) (append buffer-file-name nil)))))
+  (terpri))
+(let ((r (string-to-multibyte "\377a")))
+  (prin1 (list (condition-case e (network-lookup-address-info r) (error (list (multibyte-string-p (cadr e)) (append (cadr e) nil))))
+               (condition-case e (network-lookup-address-info r 'bogus) (error e))
+               (condition-case e (module-load (string-to-multibyte "/nonexistent/\377a"))
+                 (error (list (car e) (multibyte-string-p (nth 2 e)) (append (substring (nth 2 e) 0 16) nil))))))
+  (terpri))
+"##
+            ),
+        ],
+    );
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

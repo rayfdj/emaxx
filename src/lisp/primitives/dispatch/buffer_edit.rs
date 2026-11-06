@@ -19,19 +19,17 @@ fn restore_buffer_modified_p(
         .lookup_var_key(cached_symbol!("inhibit-modification-hooks"), env)
         .is_some_and(|value| value.is_truthy())
     {
+        // `!NILP (fn) && !NILP (BVAR (b, filename))', FN the truename.
         let truename = interp.get_buffer_by_id(base).and_then(|buffer| {
-            buffer
-                .file
-                .is_some()
-                .then(|| buffer.file_truename.clone())
-                .flatten()
+            (buffer.visits_file() && !buffer.file_truename().is_nil())
+                .then(|| buffer.file_truename())
         });
         if let Some(truename) = truename {
             let already = interp.buffer.borrow().is_modified();
             if !already && flag.is_truthy() {
-                flock_file(interp, env, Value::string(&truename))?;
+                flock_file(interp, env, truename)?;
             } else if already && flag.is_nil() {
-                funlock_file(interp, env, Value::string(&truename))?;
+                funlock_file(interp, env, truename)?;
             }
         }
     }

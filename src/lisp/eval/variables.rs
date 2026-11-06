@@ -174,8 +174,8 @@ impl Interpreter {
     /// from that name.  `buffer-file-name' is one logical state transition:
     /// callers must not have to remember a second remote-visit registration
     /// for modification-time, locking, or supersession policy to work.
-    pub(crate) fn set_current_buffer_file_name(&mut self, file: Option<String>) {
-        self.buffer.borrow_mut().file = file;
+    pub(crate) fn set_current_buffer_file_name(&mut self, file: Value) {
+        self.buffer.borrow_mut().set_file_name(file);
     }
 
     /// SYMBOL is `text-conversion-style', still forwarded to buffer.h's
@@ -218,11 +218,6 @@ impl Interpreter {
     /// bset_* of SLOT in BUFFER.  `enable-multibyte-characters' is a
     /// constant only `set-buffer-multibyte' changes.
     fn set_buffer_field_value(&mut self, buffer_id: u64, slot: BufferFieldSlot, value: Value) {
-        let text = || match value.kind() {
-            Kind::Nil => None,
-            Kind::StringObject(state) => Some(state.borrow().text()),
-            other => Some(other.to_string()),
-        };
         if matches!(value.kind(), Kind::Unbound) {
             return;
         }
@@ -230,8 +225,8 @@ impl Interpreter {
             return;
         };
         match slot {
-            BufferFieldSlot::FileName => buffer.file = text(),
-            BufferFieldSlot::FileTruename => buffer.file_truename = text(),
+            BufferFieldSlot::FileName => buffer.set_file_name(value),
+            BufferFieldSlot::FileTruename => buffer.set_file_truename(value),
             BufferFieldSlot::MarkActive => buffer.set_mark_active_value(value),
             BufferFieldSlot::Multibyte => {}
             BufferFieldSlot::UndoList => buffer.set_undo_list(value),
@@ -4314,13 +4309,9 @@ enum BufferFieldSlot {
 
 /// BVAR (BUFFER, SLOT) of a slot held as a Buffer field.
 fn buffer_field_of(buffer: &crate::buffer::Buffer, slot: BufferFieldSlot) -> Value {
-    let file = |name: &Option<String>| {
-        name.clone()
-            .map_or(Value::Nil, |name| Value::String(name.into()))
-    };
     match slot {
-        BufferFieldSlot::FileName => file(&buffer.file),
-        BufferFieldSlot::FileTruename => file(&buffer.file_truename),
+        BufferFieldSlot::FileName => buffer.file_name(),
+        BufferFieldSlot::FileTruename => buffer.file_truename(),
         BufferFieldSlot::MarkActive => buffer.mark_active_value(),
         BufferFieldSlot::Multibyte => {
             if buffer.is_multibyte() {

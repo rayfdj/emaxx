@@ -12075,7 +12075,10 @@ fn insert_file_contents_reports_missing_input_as_file_missing() {
     .expect_err("visiting a nonexistent input file must still signal");
 
     assert_eq!(error.condition_type(), "file-missing");
-    assert_eq!(interp.buffer.borrow().file.as_deref(), Some(path.as_str()));
+    assert_eq!(
+        interp.buffer.borrow().file_name_text().as_deref(),
+        Some(path.as_str())
+    );
     assert!(!interp.buffer.borrow().is_modified());
 }
 

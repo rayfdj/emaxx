@@ -1081,8 +1081,8 @@ impl Interpreter {
             .buffer_local_value_key(self.current_buffer_id, cached_symbol!("default-directory"))
             .unwrap_or(Value::Nil);
         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-            buffer.file = None;
-            buffer.file_truename = None;
+            buffer.set_file_name(Value::Nil);
+            buffer.set_file_truename(Value::Nil);
             buffer.set_visited_file_modtime(crate::buffer::VisitedModtime::UNKNOWN);
             buffer.set_autosave_modiff(0);
             buffer.auto_save_failure_time = 0;

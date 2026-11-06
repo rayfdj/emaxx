@@ -383,6 +383,41 @@ pub(crate) fn message3(
     })
 }
 
+/// xdisp.c:vmessage of the bytes doprnt made of a C format: in batch
+/// written to standard error as they are (a newline first after output to
+/// stdout, and one after them unless `cursor-in-echo-area'), not logged;
+/// otherwise message3 of make_string of them.
+pub(crate) fn vmessage(
+    interp: &mut Interpreter,
+    bytes: Vec<u8>,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    use std::io::Write;
+    if interp
+        .forwarded_c_value("noninteractive", &Env::new())
+        .is_some_and(|value| value.is_truthy())
+    {
+        let mut stderr = std::io::stderr().lock();
+        if interp.batch_stdout_need_newline {
+            interp.batch_stdout_need_newline = false;
+            let _ = stderr.write_all(b"\n");
+        }
+        let _ = stderr.write_all(&bytes);
+        if !interp
+            .forwarded_c_value("cursor-in-echo-area", &Env::new())
+            .is_some_and(|value| value.is_truthy())
+        {
+            let _ = stderr.write_all(b"\n");
+        }
+        let _ = stderr.flush();
+        return Ok(());
+    }
+    let message = crate::lisp::primitives::strings::make_string(bytes)
+        .map_err(|_| LispError::Signal("String overflow".into()))?;
+    let log = crate::lisp::primitives::string_text(&message)?;
+    message3(interp, message, &log, env)
+}
+
 /// xdisp.c:message3_nolog: MESSAGE in the echo area, neither logged nor
 /// withheld by `inhibit-message'; on the initial frame (a batch session's)
 /// written to standard error (message_to_stderr).

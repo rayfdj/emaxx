@@ -629,8 +629,14 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
     let old_path = make_compat_temp_file(&mut interp, &mut env, "emaxx-rename-visited-file-");
     let new_path = format!("{old_path}.zip");
 
-    interp.buffer.borrow_mut().file = Some(old_path.clone());
-    interp.buffer.borrow_mut().file_truename = Some(old_path.clone());
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_name(Value::string(&old_path));
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_truename(Value::string(&old_path));
     interp.buffer.borrow_mut().set_visited_file_modtime(
         stat_visited_modtime(&interp, &env, &old_path)
             .expect("source modtime")
@@ -648,13 +654,13 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
     assert!(!Path::new(&old_path).exists());
     assert!(Path::new(&new_path).exists());
     assert_eq!(
-        interp.buffer.borrow().file.as_deref(),
+        interp.buffer.borrow().file_name_text().as_deref(),
         Some(new_path.as_str())
     );
     let canonical_new_path =
         canonical_file_name(&interp, &env, &new_path).expect("canonical file name");
     assert_eq!(
-        interp.buffer.borrow().file_truename.as_deref(),
+        interp.buffer.borrow().file_truename_text().as_deref(),
         Some(canonical_new_path.as_str())
     );
     assert!(
@@ -680,8 +686,14 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
     interp
         .buffer
         .replace_state(crate::buffer::Buffer::from_text("*raw*", ""));
-    interp.buffer.borrow_mut().file = Some(path.clone());
-    interp.buffer.borrow_mut().file_truename = Some(path.clone());
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_name(Value::string(&path));
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_truename(Value::string(&path));
     interp.buffer.borrow_mut().set_multibyte(false);
     interp.buffer.borrow_mut().set_visited_file_modtime(
         stat_visited_modtime(&interp, &env, &path)
@@ -714,8 +726,14 @@ fn save_buffer_skips_unmodified_and_unchanged_files() {
     interp
         .buffer
         .replace_state(crate::buffer::Buffer::from_text("*save*", "fresh"));
-    interp.buffer.borrow_mut().file = Some(path.clone());
-    interp.buffer.borrow_mut().file_truename = Some(path.clone());
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_name(Value::string(&path));
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_truename(Value::string(&path));
     interp.buffer.borrow_mut().set_unmodified();
 
     let original_permissions = std::fs::metadata(&path).expect("metadata").permissions();
@@ -759,9 +777,15 @@ fn write_region_checks_supersession_when_lockfile_creation_is_disabled() {
 
     *interp.buffer.borrow_mut() =
         crate::buffer::Buffer::from_text("*lock-supersession*", "local bytes\n");
-    interp.buffer.borrow_mut().file = Some(path.clone());
-    interp.buffer.borrow_mut().file_truename =
-        Some(canonical_file_name(&interp, &env, &path).expect("canonical file name"));
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_name(Value::string(&path));
+    let truename = canonical_file_name(&interp, &env, &path).expect("canonical file name");
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_truename(Value::string(&truename));
     interp.buffer.borrow_mut().set_visited_file_modtime(
         stat_visited_modtime(&interp, &env, &path)
             .expect("initial visited modtime")
@@ -824,8 +848,14 @@ fn buffer_stale_default_detects_clean_file_modtime_changes() {
     interp
         .buffer
         .replace_state(crate::buffer::Buffer::from_text("*stale*", "fresh"));
-    interp.buffer.borrow_mut().file = Some(path.clone());
-    interp.buffer.borrow_mut().file_truename = Some(path.clone());
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_name(Value::string(&path));
+    interp
+        .buffer
+        .borrow_mut()
+        .set_file_truename(Value::string(&path));
     interp.buffer.borrow_mut().set_visited_file_modtime(
         stat_visited_modtime(&interp, &env, &path)
             .expect("source modtime")
@@ -870,8 +900,14 @@ fn revert_buffer_honors_buffer_local_revert_function() {
         interp
             .buffer
             .replace_state(crate::buffer::Buffer::from_text("*revert*", "stale"));
-        interp.buffer.borrow_mut().file = Some(path.clone());
-        interp.buffer.borrow_mut().file_truename = Some(path.clone());
+        interp
+            .buffer
+            .borrow_mut()
+            .set_file_name(Value::string(&path));
+        interp
+            .buffer
+            .borrow_mut()
+            .set_file_truename(Value::string(&path));
 
         let result = crate::test_support::eval_lisp(
             &mut interp,
@@ -907,8 +943,14 @@ fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
         interp
             .buffer
             .replace_state(crate::buffer::Buffer::from_text("*revert*", "stale"));
-        interp.buffer.borrow_mut().file = Some(path.clone());
-        interp.buffer.borrow_mut().file_truename = Some(path.clone());
+        interp
+            .buffer
+            .borrow_mut()
+            .set_file_name(Value::string(&path));
+        interp
+            .buffer
+            .borrow_mut()
+            .set_file_truename(Value::string(&path));
 
         let result = crate::test_support::eval_lisp(
             &mut interp,

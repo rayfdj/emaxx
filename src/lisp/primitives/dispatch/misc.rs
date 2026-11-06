@@ -2086,11 +2086,25 @@ fn snarf_documentation(
     let directory = interp
         .lookup_var_key(cached_symbol!("doc-directory"), env)
         .unwrap_or(Value::Nil);
-    // doc.c names the file by appending FILENAME to `doc-directory'.
-    let directory = string_like(&directory)
-        .ok_or_else(|| wrong_type_argument("stringp", directory))?
-        .text;
-    let path = directory + &string_text(filename)?;
+    // doc.c names the file by appending FILENAME's data to that of
+    // `doc-directory' (stpcpy and lispstpcpy, each up to its NUL).
+    let sdata = |value: &Value| -> Option<Vec<u8>> {
+        let Kind::StringObject(state) = value.kind() else {
+            return None;
+        };
+        let bytes = state.borrow().bytes().to_vec();
+        let end = bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(bytes.len());
+        Some(bytes[..end].to_vec())
+    };
+    let mut name = sdata(&directory).ok_or_else(|| wrong_type_argument("stringp", directory))?;
+    name.extend(sdata(filename).unwrap_or_default());
+    let path = {
+        use std::os::unix::ffi::OsStrExt;
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&name))
+    };
     // doc.c: `build-files' is nil until the first snarf, which conses it
     // from buildobj.h before opening the file.
     let build_files_unset = interp
@@ -2103,11 +2117,13 @@ fn snarf_documentation(
             env,
         );
     }
+    // report_file_errno ("Opening doc string file", build_string (name)).
     let bytes = std::fs::read(&path).map_err(|error| {
-        crate::lisp::primitives::file_io::file_operation_error(
+        crate::lisp::primitives::file_io::report_file_errno(
             "Opening doc string file",
+            crate::lisp::primitives::strings::make_string(name.clone())
+                .unwrap_or_else(|_| Value::string("")),
             &error,
-            &path,
         )
     })?;
     let entries = parse_doc_file_entries(&bytes)?;

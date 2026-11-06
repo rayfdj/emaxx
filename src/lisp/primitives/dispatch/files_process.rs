@@ -115,7 +115,7 @@ fn buffer_visiting_exact_file_name(interp: &Interpreter, expanded_file_name: &st
     interp.buffer_list.iter().find_map(|(id, _)| {
         interp
             .get_buffer_by_id(*id)
-            .is_some_and(|buffer| buffer.file.as_deref() == Some(expanded_file_name))
+            .is_some_and(|buffer| buffer.file_name_text().as_deref() == Some(expanded_file_name))
             .then_some(*id)
     })
 }
@@ -181,18 +181,14 @@ impl AddressFamily {
 }
 
 fn network_lookup_addresses(
-    host: &str,
+    host: &[u8],
     family: AddressFamily,
     numeric: bool,
 ) -> Result<Vec<std::net::SocketAddr>, String> {
     // process.c passes the string data to getaddrinfo, so an embedded NUL
     // terminates the name instead of making construction of a Rust CString
-    // fail.  The public primitive has already rejected non-ASCII names.
-    let host_prefix = host
-        .as_bytes()
-        .split(|byte| *byte == 0)
-        .next()
-        .unwrap_or_default();
+    // fail.
+    let host_prefix = host.split(|byte| *byte == 0).next().unwrap_or_default();
     let host = std::ffi::CString::new(host_prefix).expect("NUL-free hostname prefix");
     let mut hints = unsafe { std::mem::zeroed::<libc::addrinfo>() };
     hints.ai_family = family.resolver_family();
@@ -564,12 +560,7 @@ define_dispatch!(
                 // buffer.c:decode_buffer: a buffer, live or killed.
                 let buffer = interp.decode_buffer(args.first())?;
                 if !buffer.ptr_eq(&interp.buffer) {
-                    return Ok(buffer
-                        .borrow()
-                        .file
-                        .clone()
-                        .map(|value| Value::String(value.into()))
-                        .unwrap_or(Value::Nil));
+                    return Ok(buffer.borrow().file_name());
                 }
                 // `buffer-file-name' is a per-buffer special variable.  A
                 // dynamic binding in the current buffer is observable both
@@ -597,9 +588,10 @@ define_dispatch!(
                 // time are read as it left them.
                 let buffer = interp.decode_buffer(args.first())?;
                 let buffer = buffer.borrow();
-                let Some(path) = buffer.file.as_deref() else {
+                let Some(path) = buffer.file_name_text() else {
                     return Ok(Value::T);
                 };
+                let path = path.as_str();
                 let visited = buffer.visited_file_modtime();
                 if visited.stamp == crate::buffer::ModtimeStamp::Unknown {
                     return Ok(Value::T);
@@ -740,7 +732,7 @@ define_dispatch!(
                     .buffer_list
                     .iter()
                     .filter_map(|(id, _)| {
-                        let truename = interp.get_buffer_by_id(*id)?.file_truename.clone()?;
+                        let truename = interp.get_buffer_by_id(*id)?.file_truename_text()?;
                         Some((*id, truename))
                     })
                     .collect::<Vec<_>>();
@@ -1034,12 +1026,13 @@ define_dispatch!(
                 // its errno -- FILENAME as given, which the preamble
                 // passes after the two arguments.
                 need_args(name, args, 3)?;
-                let message = string_text(&args[1])?;
-                let requested = string_text(&args[2])?;
                 let host = encoded_file_name(interp, env, &args[0])?;
                 match faccessat_errno(&host, libc::R_OK) {
                     Ok(()) => Ok(Value::Nil),
-                    Err(error) => Err(file_operation_error(&message, &error, &requested)),
+                    // report_file_error (SSDATA (string), filename).
+                    Err(error) => Err(crate::lisp::primitives::file_io::report_file_errno_sdata(
+                        &args[1], args[2], &error,
+                    )),
                 }
             }
             // fileio.c:Ffile_regular_p: an fstatat of the name
@@ -1147,17 +1140,21 @@ define_dispatch!(
                             {
                                 return Ok(Value::Nil);
                             }
-                            return Err(file_operation_error(
+                            return Err(crate::lisp::primitives::file_io::report_file_errno(
                                 "Getting ACLs",
+                                args[0],
                                 &std::io::Error::from_raw_os_error(errno),
-                                &absname,
                             ));
                         }
                         let text = (libacl.to_text)(acl, std::ptr::null_mut());
                         if text.is_null() {
                             let error = std::io::Error::last_os_error();
                             (libacl.free)(acl);
-                            return Err(file_operation_error("Getting ACLs", &error, &absname));
+                            return Err(crate::lisp::primitives::file_io::report_file_errno(
+                                "Getting ACLs",
+                                args[0],
+                                &error,
+                            ));
                         }
                         let bytes = std::ffi::CStr::from_ptr(text).to_bytes().to_vec();
                         (libacl.free)(text.cast());
@@ -1192,10 +1189,10 @@ define_dispatch!(
                         if acl.is_null() {
                             let error = std::io::Error::last_os_error();
                             if acl_errno_valid(error.raw_os_error().unwrap_or(0)) {
-                                return Err(file_operation_error(
+                                return Err(crate::lisp::primitives::file_io::report_file_errno(
                                     "Converting ACL",
+                                    args[0],
                                     &error,
-                                    &absname,
                                 ));
                             }
                             return Ok(Value::Nil);
@@ -1210,7 +1207,11 @@ define_dispatch!(
                         let error = std::io::Error::last_os_error();
                         (libacl.free)(acl);
                         if failed && acl_errno_valid(error.raw_os_error().unwrap_or(0)) {
-                            return Err(file_operation_error("Setting ACL", &error, &absname));
+                            return Err(crate::lisp::primitives::file_io::report_file_errno(
+                                "Setting ACL",
+                                args[0],
+                                &error,
+                            ));
                         }
                         return Ok(if failed { Value::Nil } else { Value::T });
                     }
@@ -1246,8 +1247,13 @@ define_dispatch!(
                 validate_file_name(&file)?;
                 let mut newname = string_text(&args[1])?;
                 validate_file_name(&newname)?;
+                // The Lisp names report_file_error is given: FILE and the
+                // expand_cp_target NEWNAME the preamble made.
+                let file_value = args[0];
+                let mut newname_value = args[1];
                 if directory_name_p(&newname) {
                     newname = file_name_concat(&[newname, file_name_nondirectory(&file)]);
+                    newname_value = Value::String(newname.as_str().into());
                 }
                 let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
@@ -1260,21 +1266,31 @@ define_dispatch!(
                     .read(true)
                     .custom_flags(libc::O_NONBLOCK)
                     .open(&host_file)
-                    .map_err(|error| file_operation_error("Opening input file", &error, &file))?;
-                let st = input
-                    .metadata()
-                    .map_err(|error| file_operation_error("Input file status", &error, &file))?;
+                    .map_err(|error| {
+                        crate::lisp::primitives::file_io::report_file_errno(
+                            "Opening input file",
+                            file_value,
+                            &error,
+                        )
+                    })?;
+                let st = input.metadata().map_err(|error| {
+                    crate::lisp::primitives::file_io::report_file_errno(
+                        "Input file status",
+                        file_value,
+                        &error,
+                    )
+                })?;
                 // We can copy only regular files.
                 if !st.is_file() {
-                    return Err(LispError::SignalValue(file_errno_error_value(
+                    return Err(crate::lisp::primitives::file_io::report_file_errno(
                         "Non-regular file",
-                        if st.is_dir() {
+                        file_value,
+                        &std::io::Error::from_raw_os_error(if st.is_dir() {
                             libc::EISDIR
                         } else {
                             libc::EINVAL
-                        },
-                        &file,
-                    )));
+                        }),
+                    ));
                 }
                 let new_mask = st.mode() & if preserve_uid_gid { 0o700 } else { 0o777 };
                 let mut already_exists = false;
@@ -1302,27 +1318,35 @@ define_dispatch!(
                             .write(true)
                             .open(&host_newname)
                             .map_err(|error| {
-                                file_operation_error("Opening output file", &error, &newname)
+                                crate::lisp::primitives::file_io::report_file_errno(
+                                    "Opening output file",
+                                    newname_value,
+                                    &error,
+                                )
                             })?
                     }
                     Err(error) => {
-                        return Err(file_operation_error(
+                        return Err(crate::lisp::primitives::file_io::report_file_errno(
                             "Opening output file",
+                            newname_value,
                             &error,
-                            &newname,
                         ));
                     }
                 };
                 let mut oldsize = 0;
                 if already_exists {
                     let out_st = output.metadata().map_err(|error| {
-                        file_operation_error("Output file status", &error, &newname)
+                        crate::lisp::primitives::file_io::report_file_errno(
+                            "Output file status",
+                            newname_value,
+                            &error,
+                        )
                     })?;
                     if st.dev() == out_st.dev() && st.ino() == out_st.ino() {
-                        return Err(file_operation_error_files(
+                        return Err(crate::lisp::primitives::file_io::report_file_errno_files(
                             "Input and output files are the same",
+                            &[file_value, newname_value],
                             &std::io::Error::from_raw_os_error(0),
-                            &[&file, &newname],
                         ));
                     }
                     if out_st.is_file() {
@@ -1366,11 +1390,19 @@ define_dispatch!(
                             Ok(copied) => copied,
                             Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                             Err(error) => {
-                                return Err(file_operation_error("Read error", &error, &file));
+                                return Err(crate::lisp::primitives::file_io::report_file_errno(
+                                    "Read error",
+                                    file_value,
+                                    &error,
+                                ));
                             }
                         };
                         output.write_all(&buf[..copied]).map_err(|error| {
-                            file_operation_error("Write error", &error, &newname)
+                            crate::lisp::primitives::file_io::report_file_errno(
+                                "Write error",
+                                newname_value,
+                                &error,
+                            )
                         })?;
                         newsize += copied as u64;
                     }
@@ -1378,7 +1410,11 @@ define_dispatch!(
                 // Truncate an existing output file after writing the data.
                 if newsize < oldsize {
                     output.set_len(newsize).map_err(|error| {
-                        file_operation_error("Truncating output file", &error, &newname)
+                        crate::lisp::primitives::file_io::report_file_errno(
+                            "Truncating output file",
+                            newname_value,
+                            &error,
+                        )
                     })?;
                 }
                 // The original file's permissions, and if requested its
@@ -1420,10 +1456,10 @@ define_dispatch!(
                         preserved_permissions as libc::mode_t,
                     ) != 0
                     {
-                        return Err(file_operation_error(
+                        return Err(crate::lisp::primitives::file_io::report_file_errno(
                             "Copying permissions to",
+                            newname_value,
                             &std::io::Error::last_os_error(),
-                            &newname,
                         ));
                     }
                 }
@@ -1440,10 +1476,10 @@ define_dispatch!(
                 if let Some(mode) = chmod
                     && unsafe { libc::fchmod(ofd, mode as libc::mode_t) } != 0
                 {
-                    return Err(file_operation_error(
+                    return Err(crate::lisp::primitives::file_io::report_file_errno(
                         "Copying permissions to",
+                        newname_value,
                         &std::io::Error::last_os_error(),
-                        &newname,
                     ));
                 }
                 if keep_time {
@@ -1462,7 +1498,7 @@ define_dispatch!(
                         return Err(LispError::SignalValue(Value::list([
                             Value::symbol("file-date-error"),
                             Value::string("Cannot set file date"),
-                            Value::string(&newname),
+                            newname_value,
                         ])));
                     }
                 }
@@ -1472,7 +1508,11 @@ define_dispatch!(
                 if unsafe { libc::close(ofd) } < 0 {
                     let error = std::io::Error::last_os_error();
                     if error.kind() != ErrorKind::Interrupted {
-                        return Err(file_operation_error("Write error", &error, &newname));
+                        return Err(crate::lisp::primitives::file_io::report_file_errno(
+                            "Write error",
+                            newname_value,
+                            &error,
+                        ));
                     }
                 }
                 drop(input);
@@ -1491,11 +1531,16 @@ define_dispatch!(
                 validate_file_name(&file)?;
                 let mut newname = string_text(&args[1])?;
                 validate_file_name(&newname)?;
+                // The Lisp names Frename_file reports and passes on: FILE
+                // and the expand_cp_target NEWNAME the preamble made.
+                let file_value = args[0];
+                let mut newname_value = args[1];
                 if directory_name_p(&newname) {
                     newname = file_name_concat(&[
                         newname,
                         file_name_nondirectory(&directory_file_name(&file)),
                     ]);
+                    newname_value = Value::String(newname.as_str().into());
                 }
                 let mut ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
@@ -1545,10 +1590,10 @@ define_dispatch!(
                     ok_if_already_exists = Value::T;
                 }
                 let renaming_error = |errno: i32| {
-                    file_operation_error_files(
+                    crate::lisp::primitives::file_io::report_file_errno_files(
                         "Renaming",
+                        &[file_value, newname_value],
                         &std::io::Error::from_raw_os_error(errno),
-                        &[&file, &newname],
                     )
                 };
                 if rename_errno != libc::EXDEV {
@@ -1564,7 +1609,6 @@ define_dispatch!(
                     dirp = metadata.is_dir();
                     file_type = Some(metadata.file_type());
                 }
-                let (file_value, newname_value) = (Value::string(&file), Value::string(&newname));
                 if dirp {
                     call_named_function(
                         interp,
@@ -1642,7 +1686,11 @@ define_dispatch!(
                     Ok(()) => true,
                     Err(error) if error.kind() == ErrorKind::NotFound => false,
                     Err(error) => {
-                        return Err(file_operation_error("Removing old name", &error, &path));
+                        return Err(crate::lisp::primitives::file_io::report_file_errno(
+                            "Removing old name",
+                            filename,
+                            &error,
+                        ));
                     }
                 };
                 if removed {
@@ -1660,8 +1708,13 @@ define_dispatch!(
                     crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
                 let directory = super::call(interp, "directory-file-name", &[directory], env)?;
                 let path = string_text(&directory)?;
-                fs::remove_dir(host_file_name(interp, env, &path)?)
-                    .map_err(|error| file_operation_error("Removing directory", &error, &path))?;
+                fs::remove_dir(host_file_name(interp, env, &path)?).map_err(|error| {
+                    crate::lisp::primitives::file_io::report_file_errno(
+                        "Removing directory",
+                        directory,
+                        &error,
+                    )
+                })?;
                 interp.queue_directory_deletion_notification(&path);
                 interp.invalidate_file_notify_watches_for_path(&path);
                 Ok(Value::Nil)
@@ -1679,7 +1732,13 @@ define_dispatch!(
                 std::fs::DirBuilder::new()
                     .mode(0o777 & !crate::lisp::primitives::file_io::auto_saving_dir_umask())
                     .create(host_file_name(interp, env, &path)?)
-                    .map_err(|error| file_operation_error("Creating directory", &error, &path))?;
+                    .map_err(|error| {
+                        crate::lisp::primitives::file_io::report_file_errno(
+                            "Creating directory",
+                            directory,
+                            &error,
+                        )
+                    })?;
                 dispatch_file_notification(interp, env, &path, "created")?;
                 Ok(Value::Nil)
             }
@@ -1689,8 +1748,11 @@ define_dispatch!(
                 // expanded FILE and NEWNAME.
                 let file = string_text(&args[0])?;
                 let mut newname = string_text(&args[1])?;
+                // The Lisp names report_file_error is given.
+                let mut newname_value = args[1];
                 if directory_name_p(&newname) {
                     newname = file_name_concat(&[newname, file_name_nondirectory(&file)]);
+                    newname_value = Value::String(newname.as_str().into());
                 }
                 let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
@@ -1716,7 +1778,11 @@ define_dispatch!(
                     linked = fs::hard_link(&host_file, &host_newname);
                 }
                 linked.map_err(|error| {
-                    file_operation_error_files("Adding new name", &error, &[&file, &newname])
+                    crate::lisp::primitives::file_io::report_file_errno_files(
+                        "Adding new name",
+                        &[args[0], newname_value],
+                        &error,
+                    )
                 })?;
                 Ok(Value::Nil)
             }
@@ -1966,8 +2032,15 @@ define_dispatch!(
                 let nofollow = args.get(2).is_some_and(Value::is_truthy);
                 let path = string_text(&args[0])?;
                 let host = host_file_name(interp, env, &path)?;
-                fchmodat_errno(&host, (mode & 0o7777) as libc::mode_t, nofollow)
-                    .map_err(|error| file_operation_error("Doing chmod", &error, &path))?;
+                fchmodat_errno(&host, (mode & 0o7777) as libc::mode_t, nofollow).map_err(
+                    |error| {
+                        crate::lisp::primitives::file_io::report_file_errno(
+                            "Doing chmod",
+                            args[0],
+                            &error,
+                        )
+                    },
+                )?;
                 dispatch_file_notification(interp, env, &path, "attribute-changed")?;
                 Ok(Value::Nil)
             }
@@ -1989,7 +2062,7 @@ define_dispatch!(
                     Some(value) => file_modtime_from_value(interp, &value.value())?.modified,
                 };
                 set_file_times_path(
-                    &path,
+                    args[0],
                     &host,
                     modified,
                     args.get(2).is_some_and(Value::is_truthy),
@@ -2054,8 +2127,11 @@ define_dispatch!(
                 // OK-IF-ALREADY-EXISTS, a `~' or `/:' TARGET).
                 let target = string_text(&args[0])?;
                 let mut linkname = string_text(&args[1])?;
+                // The Lisp names report_file_error is given.
+                let mut linkname_value = args[1];
                 if directory_name_p(&linkname) {
                     linkname = file_name_concat(&[linkname, file_name_nondirectory(&target)]);
+                    linkname_value = Value::String(linkname.as_str().into());
                 }
                 let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
@@ -2086,10 +2162,10 @@ define_dispatch!(
                     }
                 }
                 linked.map_err(|error| {
-                    file_operation_error_files(
+                    crate::lisp::primitives::file_io::report_file_errno_files(
                         "Making symbolic link",
+                        &[args[0], linkname_value],
                         &error,
-                        &[&target, &linkname],
                     )
                 })?;
                 Ok(Value::Nil)
@@ -2116,11 +2192,26 @@ define_dispatch!(
                     None => Value::string(NULL_DEVICE),
                 };
                 // remove_slash_colon, ENCODE_FILE and emacs_open; an error
-                // names INFILE without its "/:".
-                let infile = remove_slash_colon(&string_text(&infile)?);
+                // names INFILE without its "/:", the string
+                // make_specified_string copies from its data.
+                let infile_text = string_text(&infile)?;
+                let infile = if infile_text.starts_with("/:") {
+                    super::call(
+                        interp,
+                        "substring-no-properties",
+                        &[infile, Value::Integer(2)],
+                        env,
+                    )?
+                } else {
+                    infile
+                };
                 let filefd =
-                    fs::File::open(host_file_name(interp, env, &infile)?).map_err(|error| {
-                        file_operation_error("Opening process input file", &error, &infile)
+                    fs::File::open(encoded_file_name(interp, env, &infile)?).map_err(|error| {
+                        crate::lisp::primitives::file_io::report_file_errno(
+                            "Opening process input file",
+                            infile,
+                            &error,
+                        )
                     })?;
                 call_process(interp, env, args, filefd, None)
             }
@@ -2536,29 +2627,54 @@ define_dispatch!(
             "network-interface-info" => network_interface_info(args),
             "network-lookup-address-info" => {
                 need_arg_range(name, args, 1, 3)?;
-                let host = string_text(&args[0])?;
-                if !host.is_ascii() {
-                    return Err(crate::lisp::primitives::values::doprnt_error(
-                        interp,
-                        "Non-ASCII hostname {} detected, please use `puny-encode-domain'",
-                        &[&host],
-                    ));
-                }
+                // CHECK_STRING, the family and the hint, then
+                // network_lookup_address_info_1: a multibyte NAME holding
+                // a non-ASCII character is refused with its SSDATA, and
+                // getaddrinfo is given that data.
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(wrong_type_argument("stringp", args[0]));
+                };
                 let family = AddressFamily::parse(args.get(1))?;
                 let numeric = match args.get(2).map(|v| v.kind()) {
                     None | Some(Kind::Nil) => false,
                     Some(Kind::Symbol(hint)) if hint.is_named("numeric") => true,
                     _ => return Err(LispError::Signal("Unsupported hints value".into())),
                 };
+                let (host, non_ascii) = {
+                    let state = state.borrow();
+                    (
+                        state.bytes().to_vec(),
+                        state.is_multibyte() && state.bytes().len() != state.len(),
+                    )
+                };
+                if non_ascii {
+                    return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                        Some(interp),
+                        "Non-ASCII hostname {} detected, please use `puny-encode-domain'",
+                        &[args[0]],
+                    ));
+                }
                 let addresses = match network_lookup_addresses(&host, family, numeric) {
                     Ok(addresses) => addresses,
                     Err(error) => {
-                        let _ = super::call(
+                        // Fformat ("%s/%s %s", host, "0", the error), and
+                        // message ("%s", SSDATA (msg)).
+                        let msg = super::call(
                             interp,
-                            "message",
-                            &[Value::String(format!("{host}/0 {error}").into())],
+                            "format",
+                            &[
+                                Value::string("%s/%s %s"),
+                                args[0],
+                                Value::string("0"),
+                                Value::string(&error),
+                            ],
                             env,
                         )?;
+                        let bytes = match msg.kind() {
+                            Kind::StringObject(state) => state.borrow().bytes().to_vec(),
+                            _ => Vec::new(),
+                        };
+                        super::display::vmessage(interp, bytes, env)?;
                         return Ok(Value::Nil);
                     }
                 };
@@ -3011,7 +3127,7 @@ define_dispatch!(
                     }
                     let mut modified = interp
                         .get_buffer_by_id(id)
-                        .map(|buffer| buffer.is_modified() && buffer.file.is_some())
+                        .map(|buffer| buffer.is_modified() && buffer.visits_file())
                         .unwrap_or(false);
                     if modified && interp.in_interactive_call() {
                         let answer = call_named_function(
@@ -3028,7 +3144,7 @@ define_dispatch!(
                         // whether a recent auto-save is disposable.
                         modified = interp
                             .get_buffer_by_id(id)
-                            .map(|buffer| buffer.is_modified() && buffer.file.is_some())
+                            .map(|buffer| buffer.is_modified() && buffer.visits_file())
                             .unwrap_or(false);
                     }
                     if modified {
@@ -3041,7 +3157,7 @@ define_dispatch!(
                             .and_then(|value| string_text(value).ok());
                         let visited_path = interp
                             .get_buffer_by_id(id)
-                            .and_then(|buffer| buffer.file.clone());
+                            .and_then(|buffer| buffer.file_name_text());
                         if let Some(path) = auto_save_path.as_ref()
                             && let Ok(host) = host_file_name(interp, env, path)
                             && fs::metadata(&host).is_ok()

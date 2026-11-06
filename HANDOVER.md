@@ -15367,6 +15367,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   comparison runs each with the flag off and on. Local validation: the
   grouped gate's 3,501 library tests, the integration targets and
   clippy with `--all-targets --all-features -D warnings' pass.
+- **Round 328: file names as the Lisp strings GNU keeps.** BVAR (b,
+  filename) and BVAR (b, file_truename) are Lisp objects:
+  `buffer-file-name' is the string it was set to, the same object each
+  time it is read (`eq'), with its text properties and raw bytes. Emaxx
+  kept the visited name and truename as host text and made a new string
+  at every read, so `(eq buffer-file-name buffer-file-name)' was nil, a
+  propertized name lost its properties and a multibyte name holding a
+  raw byte came back unibyte. The buffer now holds both as Lisp values,
+  traced by the collector and dumped as they are, and
+  insert-file-contents' visit, write-region's VISIT (Fexpand_file_name
+  of a string VISIT, else FILENAME), the handler path and the readers of
+  the slots use them; the code that needs a host path reads their text.
+  fileio.c's report_file_error is given the Lisp names too, the expanded
+  names of insert-file-contents, write-region, copy-file, rename-file,
+  add-name-to-file, make-symbolic-link, make-directory,
+  delete-directory, delete-file, set-file-modes, set-file-times and the
+  ACL functions and call-process's input file, and the names as given
+  for access-file (whose message is build_string of its STRING's SSDATA)
+  and load; Emaxx rebuilt each from text, which turned a raw byte into
+  the byte 255 and dropped properties. insert-file-contents answers its
+  FILENAME object. A C string from SSDATA carries the string's own
+  bytes: network-lookup-address-info checks the family and hint first,
+  refuses only a multibyte name with a non-ASCII character (Emaxx
+  refused a unibyte one too) with the message error makes of its bytes,
+  passes them to getaddrinfo and reports a failure through vmessage
+  (standard error in batch, not logged); module-load opens the file's
+  bytes and signals with dlerror's; Snarf-documentation names its file
+  by the bytes of `doc-directory' and FILENAME. A sweep of the 579 subrs
+  with propertized, unibyte and multibyte raw-byte string arguments
+  answers as GNU's does but where GNU crashes, for the address hashes,
+  random temporary names and file times, the X build's resource lookups,
+  and Snarf-documentation of an empty name, where GNU reads past its
+  buffer. A command-line comparison runs the file errors and the visited
+  names in the UTF-8 and C locales. Local validation: the grouped gate's
+  3,501 library tests, the integration targets and clippy with
+  `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -18031,7 +18067,26 @@ ert-tests as a whole 26,307 ms against 27,211.
   ucs-names tests take 1.2 s with the gate build here, 0.75 s with the
   release build and 0.76 s with GNU's.
 
+**On `de6119f`** (round 327): the full Rust gate (run 42137177294)
+  passed; the frozen run (run 42137180505) passed at its first attempt,
+  7,928 of 7,928 outcomes matching. Setup 57.2 s against 48.5 s (1.179),
+  test bodies 240.6 s against 229.0 s (1.051), in all 1.071, with a
+  per-file setup median of 89 ms against 77. The widest body gaps are
+  tramp-tests (15,858 ms against 13,818), comp-tests (13,450 against
+  12,567), semantic-utest-ia (2,917 against 2,075), ert-tests (29,801
+  against 29,204) and mule-tests (1,886 against 1,304), and
+  `ert-test-run-tests-batch-expensive' runs in 1.01 of GNU's time.
+
 **Findings recorded, not fixed:**
+- **The errno text of file errors (round 328).** get_file_errno_data
+  decodes strerror's text with `locale-coding-system'
+  (code_convert_string_norecord), so under a UTF-8 locale the second
+  element of a file error is a multibyte string; Emaxx's is the host's
+  text as a unibyte string when it is ASCII. The builders of file-error
+  data take no interpreter to read the coding system with; giving them
+  one, with the remaining builders that take the name as text (directory
+  reading, process output files, the thread and native-unit loaders), is
+  the change that makes the data GNU's.
 - **tramp-tests' body gap is the pty's timing (round 327).**
   tramp-accept-process-output evaluates (buffer-string) of the
   connection buffer, which grows to 2 MB, each time

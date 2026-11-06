@@ -2251,8 +2251,8 @@ impl Loader<'_> {
         if !matches!(name.kind(), Kind::StringObject(_)) {
             return Err(LoadError::Error("buffer name is not a string".into()));
         }
-        let file = self.optional_string_at(offset + 8 * BUFFER_FILE)?;
-        let file_truename = self.optional_string_at(offset + 8 * BUFFER_FILE_TRUENAME)?;
+        let file = self.value_at(offset + 8 * BUFFER_FILE)?;
+        let file_truename = self.value_at(offset + 8 * BUFFER_FILE_TRUENAME)?;
         let size = word(self, BUFFER_Z)? as usize;
         let (text, extended_chars) = self.cold_text_at(
             word(self, BUFFER_TEXT)? as u32,
@@ -2463,16 +2463,6 @@ impl Loader<'_> {
             .get(data as usize..data as usize + nbytes)
             .ok_or_else(|| LoadError::Error(format!("text at {data} is outside the image")))?;
         decode_internal_bytes(bytes, multibyte)
-    }
-
-    /// A field that is a string or nil.
-    fn optional_string_at(&mut self, field: u32) -> Result<Option<String>, LoadError> {
-        match (self.value_at(field)?).kind() {
-            Kind::Nil => Ok(None),
-            value => string_like(&value.value())
-                .map(|string| Some(string.text))
-                .ok_or_else(|| LoadError::Error(format!("field at {field} is not a string"))),
-        }
     }
 
     /// A field that is a char-table or nil.
