@@ -1,6 +1,5 @@
 use super::*;
 use crate::lisp::types::Kind;
-use crate::lisp::types::LispErrorKind;
 
 /// One `compare-buffer-substrings' operand: its buffer and ordered bounds,
 /// nil bounds meaning the buffer's accessible region. editfns.c signals
@@ -906,47 +905,19 @@ define_dispatch!(
             }
             "indirect-function" => {
                 need_arg_range(name, args, 1, 2)?;
-                let mut seen = Vec::new();
+                // data.c:indirect_function: each SYMBOLP other than nil
+                // (BASE_EQ, so a positioned nil, and t, read their cells
+                // too) steps to its function cell; a void cell is nil.
+                // Unbounded as GNU's: Ffset refuses a cycle.
                 let mut current = args[0];
-                loop {
-                    let symbol = match current.kind() {
-                        Kind::Symbol(symbol) => symbol,
-                        // SYMBOLP (t): its function cell is read too.
-                        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
-                        _ if symbols_with_pos_enabled(interp, env) => {
-                            let Some((Kind::Symbol(symbol), _)) =
-                                symbol_with_pos_parts(interp, &current)
-                                    .map(|(a0, a1)| (a0.kind(), a1))
-                            else {
-                                return Ok(current);
-                            };
-                            symbol
-                        }
-                        _ => return Ok(current),
-                    };
-                    if seen.iter().any(|existing| existing == &symbol) {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("cyclic-function-indirection".into()),
-                            Value::Symbol(symbol),
-                        ])));
-                    }
-                    seen.push(symbol);
-                    match interp
-                        .lookup_function_symbol(&symbol, env)
-                        .map_err(LispError::into_kind)
-                    {
-                        Ok(resolved) if matches!(resolved.kind(), Kind::Symbol(_) | Kind::T) => {
-                            current = resolved;
-                        }
-                        Ok(resolved) => return Ok(resolved),
-                        // Since Emacs 24.4, a void function cell is
-                        // represented as nil and indirect-function returns
-                        // that nil.  Calling the result is where a
-                        // void-function condition belongs.
-                        Err(LispErrorKind::VoidFunction(_)) => return Ok(Value::Nil),
-                        Err(error) => return Err(LispError::from(error)),
-                    }
+                while !current.is_nil()
+                    && let Some(symbol) = lisp_symbol_identity(interp, current)
+                {
+                    current = interp
+                        .raw_function_binding_symbol(&symbol, env)
+                        .unwrap_or(Value::Nil);
                 }
+                Ok(current)
             }
             "byteorder" => {
                 need_args(name, args, 0)?;
@@ -1568,8 +1539,8 @@ define_dispatch!(
                 let spec = if args[0].is_nil() {
                     interp.coding_spec_index("no-conversion")
                 } else {
-                    args[0]
-                        .symbol_cell()
+                    // CODING_SYSTEM_P's `eq' lookup.
+                    lisp_symbol_identity(interp, args[0])
                         .and_then(|symbol| interp.coding_spec_index_symbol(&symbol))
                 };
                 let Some(spec) = spec.map(|spec| &interp.coding_specs[spec]) else {

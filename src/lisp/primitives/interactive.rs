@@ -734,11 +734,53 @@ thread_local! {
 }
 
 pub(crate) fn symbols_with_pos_enabled(interp: &Interpreter, _env: &Env) -> bool {
+    symbols_with_pos_flag(interp)
+}
+
+/// `symbols_with_pos_enabled', the C boolean.
+#[inline]
+pub(crate) fn symbols_with_pos_flag(interp: &Interpreter) -> bool {
     #[cfg(test)]
     SYMBOL_WITH_POS_FLAG_READ_COUNT.with(|count| count.set(count.get() + 1));
     // lisp.h:SYMBOLP/EQ read the C boolean, not a lexical environment or
     // even the Lisp value cell after makunbound has detached that symbol.
     interp.symbols_with_positions_enabled()
+}
+
+/// lisp.h:SYMBOLP and XSYMBOL: VALUE's bare symbol (nil and t
+/// included), a symbol with position counting only while
+/// `symbols-with-pos-enabled' is set.
+pub(crate) fn lisp_symbol(interp: &Interpreter, value: Value) -> Option<Value> {
+    if value.is_symbol() {
+        return Some(value);
+    }
+    if interp.symbols_with_positions_enabled()
+        && let Some((symbol, _)) = symbol_with_pos_parts(interp, &value)
+        && symbol.is_symbol()
+    {
+        return Some(symbol);
+    }
+    None
+}
+
+/// `lisp_symbol' as the symbol cell XSYMBOL addresses, nil and t
+/// included.
+pub(crate) fn lisp_symbol_identity(
+    interp: &Interpreter,
+    value: Value,
+) -> Option<crate::lisp::types::SymbolName> {
+    match lisp_symbol(interp, value)?.kind() {
+        Kind::Symbol(symbol) => Some(symbol),
+        Kind::Nil => Some(crate::lisp::types::symbols::builtin_boolean(false)),
+        Kind::T => Some(crate::lisp::types::symbols::builtin_boolean(true)),
+        _ => None,
+    }
+}
+
+/// lisp.h:CHECK_SYMBOL, then XSYMBOL: VALUE's bare symbol, or
+/// wrong-type-argument symbolp of VALUE as given.
+pub(crate) fn check_symbol(interp: &Interpreter, value: Value) -> Result<Value, LispError> {
+    lisp_symbol(interp, value).ok_or_else(|| LispError::WrongTypeArgument("symbolp".into(), value))
 }
 
 /// GNU's `CHECK_SYMBOL' accepts a symbol-with-position while

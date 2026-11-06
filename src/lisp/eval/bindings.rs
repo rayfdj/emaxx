@@ -1385,10 +1385,11 @@ impl Interpreter {
     pub(crate) fn fset_function_symbol(
         &mut self,
         symbol: &SymbolName,
+        argument: Value,
         definition: Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        self.validate_function_binding_symbol(symbol, &definition)?;
+        self.validate_function_binding_symbol(symbol, argument, &definition)?;
         let installs_trampolines = self
             .lookup_var_key(cached_symbol!("native-comp-enable-subr-trampolines"), env)
             .is_some_and(|value| value.is_truthy());
@@ -1468,32 +1469,30 @@ impl Interpreter {
         }
     }
 
+    /// data.c:Ffset's non-circularity loop: from DEFINITION through each
+    /// `SYMBOLP' other than nil (`BASE_EQ', so a positioned nil goes on
+    /// to nil's cell), cyclic-function-indirection of ARGUMENT, the
+    /// symbol as given, when one is `EQ' to SYMBOL.  Every store checks
+    /// this, so the cells it follows hold no cycle of their own.
     pub(crate) fn validate_function_binding_symbol(
         &self,
         symbol: &SymbolName,
+        argument: Value,
         function: &Value,
     ) -> Result<(), LispError> {
-        let Kind::Symbol(current) = function.kind() else {
-            return Ok(());
-        };
-        let mut current = current;
-        let mut seen = vec![*symbol];
-        loop {
-            if seen.iter().any(|existing| existing == &current) {
+        let mut current = *function;
+        while !current.is_nil()
+            && let Some(bare) = crate::lisp::primitives::lisp_symbol_identity(self, current)
+        {
+            if bare == *symbol {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-function-indirection".into()),
-                    Value::Symbol(*symbol),
+                    argument,
                 ])));
             }
-            seen.push(current);
-            let Some(value) = self.globals.function(&current) else {
-                return Ok(());
-            };
-            let Kind::Symbol(next) = value.kind() else {
-                return Ok(());
-            };
-            current = next;
+            current = self.globals.function(&bare).unwrap_or(Value::Nil);
         }
+        Ok(())
     }
 }
 

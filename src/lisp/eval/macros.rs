@@ -430,7 +430,7 @@ impl Interpreter {
                         args[0],
                     ])));
                 }
-                self.fset_function_symbol(&name, function, env)?;
+                self.fset_function_symbol(&name, args[0], function, env)?;
             }
         }
         if !docstring.is_nil() {

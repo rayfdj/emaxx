@@ -439,11 +439,18 @@ pub(crate) fn values_eq_in_env(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
-    env: &Env,
+    _env: &Env,
 ) -> bool {
+    lisp_eq(interp, left, right)
+}
+
+/// lisp.h:EQ: BASE_EQ, or while `symbols-with-pos-enabled' the bare
+/// symbols' BASE_EQ.
+#[inline]
+pub(crate) fn lisp_eq(interp: &Interpreter, left: &Value, right: &Value) -> bool {
     left.word() == right.word()
         || ((left.is_vectorlike() || right.is_vectorlike())
-            && crate::lisp::primitives::symbols_with_pos_enabled(interp, env)
+            && crate::lisp::primitives::symbols_with_pos_flag(interp)
             && bare_symbols_eq(left, right))
 }
 

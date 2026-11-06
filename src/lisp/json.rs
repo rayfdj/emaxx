@@ -929,8 +929,12 @@ impl JsonOut<'_> {
             self.buf.extend_from_slice(b"false");
             return Ok(());
         }
+        // EQ (obj, Qt): a positioned t too while enabled.
+        if self.eq(value, &Value::T) {
+            self.buf.extend_from_slice(b"true");
+            return Ok(());
+        }
         match value.kind() {
-            Kind::T => self.buf.extend_from_slice(b"true"),
             Kind::Nil => self.buf.extend_from_slice(b"{}"),
             Kind::Integer(number) => {
                 use std::io::Write;

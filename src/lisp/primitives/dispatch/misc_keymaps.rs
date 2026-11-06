@@ -762,16 +762,14 @@ define_dispatch!(
                 // streams by EQ, the output streams flushed; on a Posix
                 // system set_binary_mode answers O_BINARY, so the value is
                 // t whatever MODE asks.
-                if !args[0].is_symbol() {
-                    return Err(wrong_type_argument("symbolp", args[0]));
-                }
-                if args[0].is_key(cached_symbol!("stdout")) {
+                let stream = check_symbol(interp, args[0])?;
+                if stream.is_key(cached_symbol!("stdout")) {
                     use std::io::Write as _;
                     let _ = std::io::stdout().flush();
-                } else if args[0].is_key(cached_symbol!("stderr")) {
+                } else if stream.is_key(cached_symbol!("stderr")) {
                     use std::io::Write as _;
                     let _ = std::io::stderr().flush();
-                } else if !args[0].is_key(cached_symbol!("stdin")) {
+                } else if !stream.is_key(cached_symbol!("stdin")) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("error"),
                         Value::string("unsupported stream"),

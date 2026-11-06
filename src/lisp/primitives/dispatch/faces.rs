@@ -61,12 +61,10 @@ fn resolve_face_name_1(
 }
 
 /// CHECK_SYMBOL (FACE): the symbol, a symbol with position's bare one.
-fn face_symbol(value: &Value) -> Result<Value, LispError> {
-    match value.kind() {
-        Kind::Symbol(_) | Kind::Nil | Kind::T => Ok(*value),
-        Kind::SymbolWithPos(object) => Ok(object.symbol()),
-        _ => Err(wrong_type_argument("symbolp", *value)),
-    }
+/// CHECK_SYMBOL, then XSYMBOL: a symbol with position is its symbol
+/// only while `symbols-with-pos-enabled' is set.
+fn face_symbol(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
+    crate::lisp::primitives::interactive::check_symbol(interp, *value)
 }
 
 fn face_vector(items: impl IntoIterator<Item = Value>) -> Value {
@@ -1269,7 +1267,7 @@ define_dispatch!(
             }
             "internal-make-lisp-face" => {
                 need_arg_range(name, args, 1, 2)?;
-                let face = face_symbol(&args[0])?;
+                let face = face_symbol(interp, &args[0])?;
                 let target = match args.get(1).map(|v| v.kind()) {
                     None | Some(Kind::Nil) => None,
                     Some(frame) => Some(frames::decode_live_frame(
@@ -1308,8 +1306,8 @@ define_dispatch!(
             }
             "internal-copy-lisp-face" => {
                 need_args(name, args, 4)?;
-                let from = face_symbol(&args[0])?;
-                let to = face_symbol(&args[1])?;
+                let from = face_symbol(interp, &args[0])?;
+                let to = face_symbol(interp, &args[1])?;
                 let (source, target) = if matches!(args[2].kind(), Kind::T) {
                     (None, None)
                 } else {
@@ -1326,10 +1324,9 @@ define_dispatch!(
             }
             "internal-set-lisp-face-attribute" => {
                 need_arg_range(name, args, 3, 4)?;
-                let face = resolve_face_name(interp, &face_symbol(&args[0])?)?;
+                let face = resolve_face_name(interp, &face_symbol(interp, &args[0])?)?;
                 // CHECK_SYMBOL (attr); the symbol itself is the attribute.
-                args[1].as_symbol()?;
-                let attribute = args[1];
+                let attribute = face_symbol(interp, &args[1])?;
                 let frame = args.get(3).unwrap_or(&Value::Nil);
                 if matches!(frame.kind(), Kind::Integer(0)) {
                     if interp.lisp_face_vector(face, true).is_none() {
@@ -1364,8 +1361,8 @@ define_dispatch!(
             // Finternal_set_lisp_face_attribute.
             "internal-set-lisp-face-attribute-from-resource" => {
                 need_arg_range(name, args, 3, 4)?;
-                let face = face_symbol(&args[0])?;
-                let attribute = face_symbol(&args[1])?;
+                let face = face_symbol(interp, &args[0])?;
+                let attribute = face_symbol(interp, &args[1])?;
                 if !matches!(args[2].kind(), Kind::StringObject(_)) {
                     return Err(wrong_type_argument("stringp", args[2]));
                 }
@@ -1415,8 +1412,8 @@ define_dispatch!(
                 let vector = interp
                     .lisp_face_vector_on(face, target)
                     .ok_or_else(|| invalid_face_error(face))?;
-                face_symbol(&args[0])?;
-                let attribute = face_symbol(&args[1])?;
+                face_symbol(interp, &args[0])?;
+                let attribute = face_symbol(interp, &args[1])?;
                 // The attribute names its keyword ladder knows: neither
                 // :bold nor :italic.
                 let index = match attribute.as_symbol()? {
@@ -1436,7 +1433,8 @@ define_dispatch!(
             }
             "internal-lisp-face-attribute-values" => {
                 need_args(name, args, 1)?;
-                let attribute = args[0].as_symbol()?;
+                let attribute = face_symbol(interp, &args[0])?;
+                let attribute = attribute.as_symbol()?;
                 Ok(
                     if matches!(
                         attribute,

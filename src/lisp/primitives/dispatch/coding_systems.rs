@@ -38,8 +38,11 @@ const ARG_UTF8_MAX: usize = 14;
 const ARG_UTF16_MAX: usize = 15;
 const ARG_UNDECIDED_MAX: usize = 16;
 
-/// The symbol name of VALUE when it is a symbol, nil and t included.
-fn symbol_name(value: &Value) -> Option<String> {
+/// The symbol name of VALUE when it is a symbol, nil and t included: a
+/// positioned symbol's while `symbols-with-pos-enabled', as SYMBOLP and
+/// SYMBOL_NAME read it.
+fn symbol_name(interp: &Interpreter, value: &Value) -> Option<String> {
+    let value = crate::lisp::primitives::lisp_symbol(interp, *value)?;
     match value.kind() {
         Kind::Nil => Some("nil".into()),
         Kind::T => Some("t".into()),
@@ -49,29 +52,26 @@ fn symbol_name(value: &Value) -> Option<String> {
 }
 
 /// XSYMBOL of a value CHECK_SYMBOL passed: the symbol itself, nil and t
-/// as theirs.
-fn symbol_object(value: &Value) -> Option<crate::lisp::types::SymbolName> {
-    match value.kind() {
-        Kind::Nil => Some(crate::lisp::types::symbols::builtin_boolean(false)),
-        Kind::T => Some(crate::lisp::types::symbols::builtin_boolean(true)),
-        Kind::Symbol(symbol) => Some(symbol),
-        _ => None,
-    }
+/// as theirs, a positioned symbol's bare one while enabled.  The
+/// coding system table is an `eq' one, which finds a positioned symbol
+/// the same way.
+fn symbol_object(interp: &Interpreter, value: &Value) -> Option<crate::lisp::types::SymbolName> {
+    crate::lisp::primitives::lisp_symbol_identity(interp, *value)
 }
 
 /// CHECK_SYMBOL.
-fn check_symbol(value: &Value) -> Result<(), LispError> {
-    symbol_name(value)
+fn check_symbol(interp: &Interpreter, value: &Value) -> Result<(), LispError> {
+    symbol_object(interp, value)
         .map(|_| ())
         .ok_or_else(|| wrong_type_argument("symbolp", *value))
 }
 
 /// A translation table argument: a char-table, a cons or a symbol.
-fn check_translation_table(value: &Value) -> Result<(), LispError> {
+fn check_translation_table(interp: &Interpreter, value: &Value) -> Result<(), LispError> {
     if matches!(value.kind(), Kind::CharTable(_) | Kind::Cons(_)) {
         return Ok(());
     }
-    check_symbol(value)
+    check_symbol(interp, value)
 }
 
 /// The mnemonic argument: a string's first character, else
@@ -95,15 +95,11 @@ pub(crate) fn check_coding_system(
     coding_system: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    // Fget's CHECK_SYMBOL, then the symbol's own property.
-    let symbol = match coding_system.kind() {
-        Kind::Symbol(symbol) => symbol,
-        Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
-        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
-        _ => return Err(wrong_type_argument("symbolp", *coding_system)),
-    };
+    // Fget's CHECK_SYMBOL, then the property of XSYMBOL's cell.
+    let bare = crate::lisp::primitives::check_symbol(interp, *coding_system)?;
+    let symbol = symbol_object(interp, &bare).expect("a symbol CHECK_SYMBOL passed");
     let define_form = interp
-        .get_property_of_symbol_value(*coding_system, "coding-system-define-form")
+        .get_property_of_symbol_value(bare, "coding-system-define-form")
         .unwrap_or(Value::Nil);
     if !define_form.is_nil() {
         interp.put_symbol_property_on(&symbol, "coding-system-define-form", Value::Nil);
@@ -125,7 +121,7 @@ pub(crate) fn checked_coding_spec(
     env: &mut Env,
 ) -> Result<usize, LispError> {
     let lookup = |interp: &Interpreter| {
-        symbol_object(x).and_then(|symbol| interp.coding_spec_index_symbol(&symbol))
+        symbol_object(interp, x).and_then(|symbol| interp.coding_spec_index_symbol(&symbol))
     };
     if let Some(spec) = lookup(interp) {
         return Ok(spec);
@@ -140,7 +136,7 @@ fn check_coding_system_macro(
     x: &Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if symbol_object(x).is_some_and(|symbol| interp.has_coding_system_symbol(&symbol)) {
+    if symbol_object(interp, x).is_some_and(|symbol| interp.has_coding_system_symbol(&symbol)) {
         return Ok(());
     }
     if check_coding_system(interp, x, env)?.is_nil() {
@@ -220,16 +216,16 @@ pub(crate) fn define_coding_system_internal(
         return Err(short_args());
     }
     let name_value = args[ARG_NAME];
-    let name_symbol =
-        symbol_object(&name_value).ok_or_else(|| wrong_type_argument("symbolp", name_value))?;
+    let name_symbol = symbol_object(interp, &name_value)
+        .ok_or_else(|| wrong_type_argument("symbolp", name_value))?;
     let mnemonic = check_mnemonic(&args[ARG_MNEMONIC])?;
     let coding_type_value = args[ARG_CODING_TYPE];
-    let coding_type = symbol_name(&coding_type_value)
+    let coding_type = symbol_name(interp, &coding_type_value)
         .ok_or_else(|| wrong_type_argument("symbolp", coding_type_value))?;
 
     let invalid_charset_list = || LispError::Signal("Invalid charset-list".into());
     let charset_arg = args[ARG_CHARSET_LIST];
-    let charset_list = match symbol_name(&charset_arg) {
+    let charset_list = match symbol_name(interp, &charset_arg) {
         Some(symbol) => {
             // The symbols `iso-2022' and `emacs-mule' stand for those
             // lists of charset ids; any other symbol (nil included) has
@@ -276,13 +272,13 @@ pub(crate) fn define_coding_system_internal(
 
     let mut ascii_compatible = args[ARG_ASCII_COMPATIBLE_P];
     let decode_table = args[ARG_DECODE_TRANSLATION_TABLE];
-    check_translation_table(&decode_table)?;
+    check_translation_table(interp, &decode_table)?;
     let encode_table = args[ARG_ENCODE_TRANSLATION_TABLE];
-    check_translation_table(&encode_table)?;
+    check_translation_table(interp, &encode_table)?;
     let post_read = args[ARG_POST_READ_CONVERSION];
-    check_symbol(&post_read)?;
+    check_symbol(interp, &post_read)?;
     let pre_write = args[ARG_PRE_WRITE_CONVERSION];
-    check_symbol(&pre_write)?;
+    check_symbol(interp, &pre_write)?;
     let default_char = if args[ARG_DEFAULT_CHAR].is_nil() {
         u32::from(b' ')
     } else {
@@ -328,7 +324,7 @@ pub(crate) fn define_coding_system_internal(
             let bom = args[13];
             check_bom(interp, &bom, env)?;
             let endian_value = args[14];
-            let endian = symbol_name(&endian_value)
+            let endian = symbol_name(interp, &endian_value)
                 .ok_or_else(|| wrong_type_argument("symbolp", endian_value))?;
             let big = match endian.as_str() {
                 "nil" | "big" => true,
@@ -484,7 +480,7 @@ pub(crate) fn define_coding_system_internal(
     );
     let eol_type = args[ARG_EOL_TYPE];
     if !matches!(
-        symbol_name(&eol_type).as_deref(),
+        symbol_name(interp, &eol_type).as_deref(),
         Some("nil" | "unix" | "dos" | "mac")
     ) {
         return Err(LispError::Signal("Invalid eol-type".into()));
@@ -579,19 +575,19 @@ pub(crate) fn coding_system_put(
             interp.coding_attrs[attrs].default_char = check_character(&val)?;
         }
         Some(":decode-translation-table") => {
-            check_translation_table(&val)?;
+            check_translation_table(interp, &val)?;
             interp.coding_attrs[attrs].decode_table = val;
         }
         Some(":encode-translation-table") => {
-            check_translation_table(&val)?;
+            check_translation_table(interp, &val)?;
             interp.coding_attrs[attrs].encode_table = val;
         }
         Some(":post-read-conversion") => {
-            check_symbol(&val)?;
+            check_symbol(interp, &val)?;
             interp.coding_attrs[attrs].post_read = val;
         }
         Some(":pre-write-conversion") => {
-            check_symbol(&val)?;
+            check_symbol(interp, &val)?;
             interp.coding_attrs[attrs].pre_write = val;
         }
         Some(":ascii-compatible-p") => interp.coding_attrs[attrs].ascii_compatible = val,
@@ -611,7 +607,8 @@ pub(crate) fn define_coding_system_alias(
     coding_system: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let alias = symbol_object(alias).ok_or_else(|| wrong_type_argument("symbolp", *alias))?;
+    let alias =
+        symbol_object(interp, alias).ok_or_else(|| wrong_type_argument("symbolp", *alias))?;
     let spec = checked_coding_spec(interp, coding_system, env)?;
     interp.define_coding_system_alias(alias, spec)?;
     Ok(Value::Nil)

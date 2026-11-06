@@ -2783,6 +2783,58 @@ fn describe_insertions_are_insert_string_s() {
 }
 
 #[test]
+fn symbols_with_position_decode_as_lisp_h_symbolp_xsymbol_and_eq() {
+    // lisp.h: while `symbols-with-pos-enabled' is set, CHECK_SYMBOL takes
+    // a symbol with position and XSYMBOL reaches its bare symbol, EQ
+    // compares the bare symbols, and NILP stays BASE_EQ.  Ffset's cycle
+    // check, indirect_function, the fringe, CCL, char-table, coding
+    // system, face and key decoders, json's `true' and where_is_internal
+    // all read them so; with the flag off each refuses them.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            &format!(
+                "(progn {})",
+                r##"(defmacro ps-try (form) `(condition-case e ,form (error (list 'ERR e))))
+(let ((print-symbols-bare t))
+  (dolist (on '(nil t))
+    (let* ((symbols-with-pos-enabled on)
+           (p (lambda (s) (position-symbol s 5))))
+      (prin1 (list on
+        (ps-try (fset (funcall p 'ps-a) (funcall p 'ps-a)))
+        (ps-try (progn (fset 'ps-b 'car) (fset 'ps-c (funcall p 'ps-b)) (fset 'ps-b (funcall p 'ps-c))))
+        (ps-try (defalias (funcall p 'ps-d) (funcall p 'ps-d)))
+        (ps-try (fmakunbound (funcall p t)))
+        (ps-try (list (indirect-function (funcall p t)) (indirect-function t) (indirect-function (funcall p 'ps-c))))
+        (ps-try (let ((ct (make-char-table (funcall p 'ps-purpose)))) (list (char-table-subtype ct) (eq (char-table-subtype ct) 'ps-purpose))))
+        (ps-try (list (define-fringe-bitmap (funcall p 'ps-bitmap) [1 2]) (integerp (get 'ps-bitmap 'fringe)) (eq (car fringe-bitmaps) 'ps-bitmap)
+                      (set-fringe-bitmap-face (funcall p 'ps-bitmap) 'error) (destroy-fringe-bitmap (funcall p 'ps-bitmap)) (get 'ps-bitmap 'fringe)))
+        (ps-try (progn (defvar ps-special 1) (internal-make-var-non-special (funcall p 'ps-special)) (special-variable-p 'ps-special)))
+        (ps-try (internal-event-symbol-parse-modifiers (funcall p 'C-M-ps-key)))
+        (ps-try (list (register-ccl-program (funcall p 'ps-ccl) nil) (register-ccl-program 'ps-ccl nil) (get 'ps-ccl 'ccl-program-idx)))
+        (ps-try (list (register-code-conversion-map (funcall p 'ps-map) [1]) (register-code-conversion-map 'ps-map [2]) (get 'ps-map 'code-conversion-map)))
+        (ps-try (list (single-key-description (funcall p 'C-home)) (single-key-description (funcall p 'home) t)))
+        (ps-try (list (string-collate-lessp (funcall p 'a) (funcall p 'b)) (string-collate-equalp (funcall p 'a) "a")))
+        (ps-try (internal-default-signal-process (emacs-pid) (funcall p 'ps-nosig)))
+        (ps-try (set-binary-mode (funcall p 'ps-stream) nil))
+        (ps-try (list (json-serialize (vector (funcall p t))) (json-serialize (list (funcall p :k) 1))))
+        (ps-try (check-coding-system (funcall p 'utf-8)))
+        (ps-try (check-coding-system (funcall p nil)))
+        (ps-try (coding-system-base (funcall p 'utf-8-unix)))
+        (ps-try (internal-lisp-face-attribute-values (funcall p :underline)))
+        (ps-try (list (coding-system-eol-type (funcall p 'utf-8-unix)) (consp (where-is-internal (funcall p nil)))))))
+      (terpri))))
+"##
+            ),
+        ],
+    );
+}
+
+#[test]
 fn argument_types_are_checked_and_answered_as_gnu_does() {
     // A sweep of every subr with ordinary values of each type in each
     // argument found these: abs, max, min and the one-argument logical

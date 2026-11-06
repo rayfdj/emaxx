@@ -15336,6 +15336,37 @@ setup_process_coding_systems's check now refuses). A 13-form
   settings. Local validation: the grouped gate's 3,501 library
   tests, the integration targets and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 327: symbols with position as lisp.h's SYMBOLP, XSYMBOL and
+  EQ.** While `symbols-with-pos-enabled' is set, GNU's CHECK_SYMBOL
+  takes a symbol with position and XSYMBOL reaches its bare symbol, EQ
+  compares bare symbols, and NILP stays BASE_EQ, so a positioned nil is
+  no nil. A sweep of the 579 subrs of one to three arguments, called
+  with positioned symbols with the flag off and on, found two dozen that
+  refused or mistook them: the fringe functions (their `fringe' property
+  is the bare symbol's, the list and the answer keep the argument),
+  `internal-make-var-non-special',
+  `internal-event-symbol-parse-modifiers', `make-char-table' (whose
+  table keeps the purpose as given), `register-ccl-program' and
+  `register-code-conversion-map' (which find a name by EQ),
+  `single-key-description', `string-collate-lessp' and
+  `string-collate-equalp', the signal name of
+  `internal-default-signal-process', `set-binary-mode', the coding
+  system decoder of `check-coding-system' and its kin and
+  `coding-system-eol-type' (a positioned nil is no coding system there,
+  as GNU's coding-system-error says), the face decoders, json's `true'
+  and where-is-internal's EQ of each binding with the definition.
+  `fmakunbound' refuses a positioned t; `fset' and `defalias' walk
+  Ffset's non-circularity loop through positioned symbols in the
+  definition, signalling with the argument as given; and
+  `indirect-function' is data.c's indirect_function, every symbol but
+  nil stepping to its cell, so a positioned t or nil answers nil as t
+  does (Emaxx answered t). The sweep now answers as GNU's does but where
+  GNU's crashes, in the address hashes of the sxhash functions and in
+  the known move-point-visually case. One `lisp_symbol' and
+  `check_symbol' pair and one EQ carry the rule. A command-line
+  comparison runs each with the flag off and on. Local validation: the
+  grouped gate's 3,501 library tests, the integration targets and
+  clippy with `--all-targets --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -17981,7 +18012,35 @@ ert-tests as a whole 26,307 ms against 27,211.
   round 324's run, take 111 and 41 against 73 and 33 here, as in round
   323's: a pause of that runner, not the code.
 
+**On `7b37e9f`** (round 326): the full Rust gate (run 42128657750)
+  passed; the frozen run (run 42128661222) failed at both its attempts
+  on one outcome of the oracle's,
+  `eglot-test-rust-completion-exit-function', whose rust-analyzer
+  request GNU's run gave up on after 11 s ("Timed out") where Emaxx's
+  passed in 4.8 s; the other 7,927 of 7,928 outcomes match at both. The
+  first attempt read setup 78.0 s against 66.3 s (1.177), test bodies
+  297.8 s against 284.3 s (1.047), in all 1.059, with a per-file setup
+  median of 118 ms against 102; its widest body gaps are ert-tests
+  (45,628 ms against 40,033), comp-tests (18,513 against 15,342),
+  tramp-tests (22,107 against 18,983), semantic-utest-ia (3,730 against
+  2,580) and mule-tests (2,958 against 1,924), and
+  `ert-test-run-tests-batch-expensive' runs in 1.13 of GNU's time. The
+  second, on a faster runner, read setup 61.1 s against 47.7 (1.280),
+  bodies 240.9 s against 233.4 (1.032), in all 1.066, the expensive test
+  in 1.00 of GNU's time. mule-tests' gap is the gate profile's: its two
+  ucs-names tests take 1.2 s with the gate build here, 0.75 s with the
+  release build and 0.76 s with GNU's.
+
 **Findings recorded, not fixed:**
+- **tramp-tests' body gap is the pty's timing (round 327).**
+  tramp-accept-process-output evaluates (buffer-string) of the
+  connection buffer, which grows to 2 MB, each time
+  accept-process-output returns. Emaxx's reads take less of the pty's
+  output at a time than GNU's, which spend about 0.5 ms each, so its
+  accept-process-output returns 693 times where GNU's returns 228: 2.3
+  times the string consing (733 MB against 321 MB) and 35 collections
+  against 14. The test's own work matches; what differs is when output
+  arrives, not a defect in the reader.
 - **Windows as generic records (round 321).** A window is a record whose
   slots are a vector apart from it, so each window primitive decodes the
   record's kind and reads a slot through that vector; called from native

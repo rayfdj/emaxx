@@ -7831,6 +7831,9 @@ pub(crate) fn single_key_description(
     if matches!(key.kind(), Kind::Cons(_)) {
         key = key.car()?;
     }
+    // SYMBOLP, then SYMBOL_NAME of XSYMBOL: a positioned symbol's name
+    // while enabled.
+    let key = lisp_symbol(interp, key).unwrap_or(key);
     match key.kind() {
         // Normal character.
         Kind::Integer(code) => {

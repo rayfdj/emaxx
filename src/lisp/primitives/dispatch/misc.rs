@@ -32,13 +32,11 @@ fn lookup_fringe_bitmap(interp: &Interpreter, bitmap: &Value) -> Option<i64> {
     .then_some(number)
 }
 
-/// CHECK_SYMBOL of a fringe bitmap argument.
-fn check_fringe_symbol(value: &Value) -> Result<(), LispError> {
-    if value.is_symbol() {
-        Ok(())
-    } else {
-        Err(wrong_type_argument("symbolp", *value))
-    }
+/// CHECK_SYMBOL of a fringe bitmap argument: the bare symbol, which
+/// `Fget' and `Fput' reach through XSYMBOL of a positioned one while
+/// `symbols-with-pos-enabled'.
+fn check_fringe_symbol(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
+    crate::lisp::primitives::interactive::check_symbol(interp, *value)
 }
 
 fn fringe_bits_length(value: &Value) -> Result<usize, LispError> {
@@ -63,7 +61,7 @@ fn define_fringe_bitmap(
     args: &[Value],
     env: &Env,
 ) -> Result<Value, LispError> {
-    check_fringe_symbol(&args[0])?;
+    let symbol = check_fringe_symbol(interp, &args[0])?;
     let bits_length = fringe_bits_length(&args[1])?;
     let height = match args.get(2).filter(|value| !value.is_nil()) {
         Some(value) => fringe_fixnum(value)?.clamp(0, 255),
@@ -99,7 +97,7 @@ fn define_fringe_bitmap(
         return Err(LispError::Signal("Bad align argument".into()));
     }
 
-    let existing_id = lookup_fringe_bitmap(interp, &args[0]);
+    let existing_id = lookup_fringe_bitmap(interp, &symbol);
     let bitmap_id = existing_id.unwrap_or_else(|| {
         interp
             .fringe_bitmap_states
@@ -119,7 +117,7 @@ fn define_fringe_bitmap(
         );
         interp.set_global_binding_key(cached_symbol!("fringe-bitmaps"), Value::list(bitmaps));
         // Fput (bitmap, Qfringe, ...) on the symbol itself.
-        if let Some(symbol) = args[0].symbol_cell() {
+        if let Some(symbol) = symbol.symbol_cell() {
             interp.put_symbol_property_on(&symbol, "fringe", Value::Integer(bitmap_id));
         }
     }
@@ -157,8 +155,8 @@ fn destroy_fringe_bitmap(
     bitmap: &Value,
     env: &Env,
 ) -> Result<Value, LispError> {
-    check_fringe_symbol(bitmap)?;
-    let Some(id) = lookup_fringe_bitmap(interp, bitmap) else {
+    let symbol = check_fringe_symbol(interp, bitmap)?;
+    let Some(id) = lookup_fringe_bitmap(interp, &symbol) else {
         return Ok(Value::Nil);
     };
     let Some(index) = interp
@@ -173,7 +171,7 @@ fn destroy_fringe_bitmap(
         interp.fringe_bitmap_states[index].face = Value::Nil;
     } else {
         interp.fringe_bitmap_states.remove(index);
-        if let Some(symbol) = bitmap.symbol_cell() {
+        if let Some(symbol) = symbol.symbol_cell() {
             interp.put_symbol_property_on(&symbol, "fringe", Value::Nil);
         }
         let bitmaps = interp
@@ -690,8 +688,8 @@ define_dispatch!(
             }
             "set-fringe-bitmap-face" => {
                 need_arg_range(name, args, 1, 2)?;
-                check_fringe_symbol(&args[0])?;
-                let Some(bitmap) = lookup_fringe_bitmap(interp, &args[0]).and_then(|id| {
+                let symbol = check_fringe_symbol(interp, &args[0])?;
+                let Some(bitmap) = lookup_fringe_bitmap(interp, &symbol).and_then(|id| {
                     interp
                         .fringe_bitmap_states
                         .iter_mut()
@@ -1427,8 +1425,8 @@ define_dispatch!(
             }
             "internal-make-var-non-special" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
-                interp.unmark_special_variable(symbol);
+                let symbol = crate::lisp::primitives::interactive::check_symbol(interp, args[0])?;
+                interp.unmark_special_variable(symbol.as_symbol()?);
                 // Finternal_make_var_non_special returns nil.
                 Ok(Value::Nil)
             }

@@ -1514,7 +1514,7 @@ fn where_is_internal(
                     };
                     let filling = !interp.where_is_cache.is_nil();
                     if !(filling
-                        || binding.eq_value(definition)
+                        || crate::lisp::primitives::lisp_eq(interp, &binding, &definition)
                         || (definition.is_cons() && values_equal(interp, &binding, &definition)?))
                     {
                         return Ok(());
@@ -1628,24 +1628,26 @@ pub(crate) fn where_is_internal_command(
     };
     roots[0] = definition;
 
-    if definition.is_symbol() && !firstonly.is_nil() {
-        // Fget (definition, QCadvertised_binding) of the symbol itself.
+    if let Some(symbol) = crate::lisp::primitives::lisp_symbol(interp, definition)
+        && !firstonly.is_nil()
+    {
+        // Fget (definition, QCadvertised_binding) of XSYMBOL's cell.
         let mut tem = interp
-            .get_property_of_symbol_value(definition, ":advertised-binding")
+            .get_property_of_symbol_value(symbol, ":advertised-binding")
             .unwrap_or(Value::Nil);
         if !tem.is_nil() {
             // A list of advertised bindings.
             roots[6] = tem;
             while let Some(cell) = tem.cons_ref() {
                 let candidate = cell.car.get();
-                if shadow_lookup(interp, keymaps, candidate, false, false, env)?
-                    .eq_value(definition)
-                {
+                let found = shadow_lookup(interp, keymaps, candidate, false, false, env)?;
+                if crate::lisp::primitives::lisp_eq(interp, &found, &definition) {
                     return Ok(candidate);
                 }
                 tem = cell.cdr.get();
             }
-            if shadow_lookup(interp, keymaps, tem, false, false, env)?.eq_value(definition) {
+            let found = shadow_lookup(interp, keymaps, tem, false, false, env)?;
+            if crate::lisp::primitives::lisp_eq(interp, &found, &definition) {
                 return Ok(tem);
             }
         }

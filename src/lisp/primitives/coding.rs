@@ -801,14 +801,15 @@ fn checked_coding_name_or_unnamed(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<Option<String>, LispError> {
+    // CHECK_SYMBOL: a symbol with position while symbols-with-pos-enabled
+    // is its symbol.
+    // NILP is BASE_EQ: a positioned nil goes on to the lookup, which
+    // fails for nil's own symbol.
     if value.is_nil() {
         return Ok(None);
     }
-    let symbol = match value.kind() {
-        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
-        Kind::Symbol(symbol) => symbol,
-        _ => return Err(wrong_type_argument("symbolp", *value)),
-    };
+    let symbol = crate::lisp::primitives::lisp_symbol_identity(interp, *value)
+        .ok_or_else(|| wrong_type_argument("symbolp", *value))?;
     // CODING_SYSTEM_SPEC, by EQ: an uninterned alias's spec is its
     // target's, which an interned name stands for.
     interp
@@ -3589,15 +3590,20 @@ pub(crate) fn find_operation_coding_system_value(
 /// coding.c Fcoding_system_p: nil, a name in the table, or a symbol
 /// with a `coding-system-define-form' still to evaluate.
 pub(crate) fn coding_system_p(interp: &Interpreter, value: &Value) -> bool {
-    let symbol = match value.kind() {
-        Kind::Nil => return true,
-        Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
-        Kind::Symbol(symbol) => symbol,
-        _ => return false,
+    // NILP (BASE_EQ), then CODING_SYSTEM_ID's `eq' lookup and Fget, which
+    // reach a positioned symbol's bare one while enabled.
+    if value.is_nil() {
+        return true;
+    }
+    let Some(bare) = crate::lisp::primitives::lisp_symbol(interp, *value) else {
+        return false;
+    };
+    let Some(symbol) = crate::lisp::primitives::lisp_symbol_identity(interp, bare) else {
+        return false;
     };
     interp.has_coding_system_symbol(&symbol)
         || interp
-            .get_property_of_symbol_value(*value, "coding-system-define-form")
+            .get_property_of_symbol_value(bare, "coding-system-define-form")
             .is_some_and(|form| !form.is_nil())
 }
 

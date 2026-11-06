@@ -2563,12 +2563,11 @@ impl Interpreter {
         initial: Value,
     ) -> Result<Value, LispError> {
         // chartab.c:Fmake_char_table's CHECK_SYMBOL, then Fget (PURPOSE,
-        // Qchar_table_extra_slots) of the symbol itself.
-        if !purpose.is_symbol() {
-            return Err(LispError::WrongTypeArgument("symbolp".into(), purpose));
-        }
+        // Qchar_table_extra_slots) of XSYMBOL's cell; the table keeps
+        // PURPOSE as given.
+        let symbol = crate::lisp::primitives::check_symbol(self, purpose)?;
         let extra = self
-            .get_property_of_symbol_value(purpose, "char-table-extra-slots")
+            .get_property_of_symbol_value(symbol, "char-table-extra-slots")
             .unwrap_or(Value::Nil);
         let extras = match extra.kind() {
             Kind::Nil => 0,

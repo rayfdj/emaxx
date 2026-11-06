@@ -2684,7 +2684,7 @@ define_dispatch!(
                     let Some(pid) = signal_process_target_pid(interp, &args[0])? else {
                         return Ok(Value::Nil);
                     };
-                    let signal = process_signal_code(&args[1])?;
+                    let signal = process_signal_code(interp, &args[1])?;
                     // SAFETY: `kill' does not dereference pointers; PID and signal
                     // are validated Lisp integers or known platform constants.
                     Ok(Value::Integer(i64::from(unsafe {
@@ -3548,7 +3548,7 @@ fn make_process_value(
 /// process.c:Finternal_default_signal_process's SIGCODE: a fixnum in
 /// int's range, else a symbol abbr_to_signal knows.
 #[cfg(unix)]
-fn process_signal_code(value: &Value) -> Result<i32, LispError> {
+fn process_signal_code(interp: &Interpreter, value: &Value) -> Result<i32, LispError> {
     if let Kind::Integer(number) = value.kind() {
         // check_integer_range (sigcode, INT_MIN, INT_MAX).
         return i32::try_from(number).map_err(|_| {
@@ -3560,7 +3560,9 @@ fn process_signal_code(value: &Value) -> Result<i32, LispError> {
             ]))
         });
     }
-    let symbol_name = value.as_symbol()?;
+    // CHECK_SYMBOL, then SYMBOL_NAME of XSYMBOL.
+    let symbol = check_symbol(interp, *value)?;
+    let symbol_name = symbol.as_symbol()?;
     abbr_to_signal(symbol_name)
         .ok_or_else(|| LispError::Signal(format!("Undefined signal name {symbol_name}")))
 }

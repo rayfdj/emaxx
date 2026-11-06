@@ -508,13 +508,12 @@ fn larger_vector(vec: &Value) -> Value {
 }
 
 /// CHECK_SYMBOL's symbol of VALUE, nil and t among them.
-fn checked_symbol(value: &Value) -> Result<crate::lisp::types::SymbolName, LispError> {
-    match value.kind() {
-        Kind::Symbol(symbol) => Ok(symbol),
-        Kind::Nil => Ok(crate::lisp::types::symbols::builtin_boolean(false)),
-        Kind::T => Ok(crate::lisp::types::symbols::builtin_boolean(true)),
-        _ => Err(LispError::WrongTypeArgument("symbolp".into(), *value)),
-    }
+fn checked_symbol(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<crate::lisp::types::SymbolName, LispError> {
+    crate::lisp::primitives::lisp_symbol_identity(interp, *value)
+        .ok_or_else(|| LispError::WrongTypeArgument("symbolp".into(), *value))
 }
 
 /// Fregister_ccl_program.
@@ -523,7 +522,7 @@ fn register_ccl_program(
     name: &Value,
     ccl_prog: &Value,
 ) -> Result<Value, LispError> {
-    let symbol = checked_symbol(name)?;
+    let symbol = checked_symbol(interp, name)?;
     let mut ccl_prog = *ccl_prog;
     let mut resolved = Value::Nil;
     if !ccl_prog.is_nil() {
@@ -548,7 +547,8 @@ fn register_ccl_program(
             // The first unused slot.
             break;
         }
-        if slot(&entry, 0) == Some(*name) {
+        if slot(&entry, 0).is_some_and(|slot| crate::lisp::primitives::lisp_eq(interp, name, &slot))
+        {
             aset_vector_value(&entry, 1, ccl_prog)?;
             aset_vector_value(&entry, 2, resolved)?;
             aset_vector_value(&entry, 3, Value::T)?;
@@ -574,7 +574,7 @@ fn register_code_conversion_map(
     symbol: &Value,
     map: &Value,
 ) -> Result<Value, LispError> {
-    let name = checked_symbol(symbol)?;
+    let name = checked_symbol(interp, symbol)?;
     if !matches!(map.kind(), Kind::Vector(_)) {
         return Err(LispError::WrongTypeArgument("vectorp".into(), *map));
     }
@@ -592,7 +592,7 @@ fn register_code_conversion_map(
         let Kind::Cons(cell) = entry.kind() else {
             break;
         };
-        if cell.car.get() == *symbol {
+        if crate::lisp::primitives::lisp_eq(interp, symbol, &cell.car.get()) {
             let idx = Value::Integer(i as i64);
             cell.cdr.set(*map);
             interp.put_symbol_property_on(&name, "code-conversion-map", *map);
