@@ -282,15 +282,48 @@ fn gnutls_deinit(tls: &mut ProcessGnuTlsState) -> bool {
     true
 }
 
+/// Where Fprocess_send_eof's null device goes: the open_fd slot of the
+/// channel it replaces, WRITE_TO_SUBPROCESS.
+enum NullOutputSlot {
+    /// A child's input pipe.
+    ChildInput,
+    /// A pipe process's writer, beside its SUBPROCESS_STDIN.
+    PipeWriter(Option<fs::File>),
+    /// No channel slot: ProcessState's own.
+    Process,
+}
+
 fn terminate_child_without_blocking(mut runtime: RunningProcess) {
-    let _ = runtime.child.kill();
+    // record_kill_process: SIGKILL to the child's process group while
+    // p->alive.  GNU's SIGCHLD handler clears p->alive as soon as the child
+    // exits, so a child that has exited is reaped here as that handler
+    // would have reaped it, and its group, which may outlive it, is left
+    // alone.
+    let exited = matches!(runtime.child.try_wait(), Ok(Some(_)));
+    #[cfg(unix)]
+    if !exited {
+        runtime.child.kill_group();
+    }
+    #[cfg(not(unix))]
+    if !exited {
+        let _ = runtime.child.kill();
+    }
+    // deactivate_process: every descriptor the process holds is closed
+    // now (an input-only pty's master excepted, which no open_fd slot
+    // holds; spawn_persistent_process keeps it open).
+    runtime.child.stdin = None;
+    runtime.child.stdout = None;
+    runtime.child.stderr = None;
+    runtime.pty_input = None;
+    runtime.pty_output = None;
     if matches!(runtime.child.try_wait(), Ok(Some(_))) {
         return;
     }
     // GNU `delete-process' closes the Lisp process immediately and reaps the
-    // OS child later.  Waiting inline can deadlock when a killed server is
-    // still unwinding an active connection (notably gnutls-serv on Darwin).
-    // Retain the Child and its pipes in one detached reaper until wait(2)
+    // OS child later (handle_child_signal, by deleted_pid_list).  Waiting
+    // inline can deadlock when a killed server is still unwinding an
+    // active connection (notably gnutls-serv on Darwin).  Retain the Child,
+    // its descriptors closed, in one detached reaper until wait(2)
     // completes, so prompt deletion does not trade the stall for a zombie.
     let _ = std::thread::Builder::new()
         .name("process-reaper".into())
@@ -361,6 +394,7 @@ impl Interpreter {
             process.module_pipe = None;
             process.pipe_input = None;
             process.network = None;
+            process.null_output = None;
             process.dns_request = None;
             if let Some(runtime) = process.runtime.as_mut() {
                 runtime.child.stdin = None;
@@ -381,22 +415,15 @@ impl Interpreter {
         record_id: u64,
         pty: Option<(fs::File, Option<fs::File>, Option<String>)>,
     ) -> Result<(), LispError> {
-        let channels = match pty {
-            Some((master, slave, name)) => {
-                let reader = master
-                    .try_clone()
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                Some((reader, master, slave, name))
-            }
-            None => None,
-        };
         let Some(process) = self.find_process_state_mut(record_id) else {
             return Ok(());
         };
         process.kind = ProcessKind::Real;
         process.childless_pid = Some(-2);
-        if let Some((reader, master, slave, name)) = channels {
-            process.module_pipe = Some((reader, None));
+        if let Some((master, slave, name)) = pty {
+            // p->infd = p->outfd = pty_fd: one descriptor.
+            let master = std::sync::Arc::new(master);
+            process.module_pipe = Some((std::sync::Arc::clone(&master), None));
             process.pipe_input = Some((slave, master));
             process.tty = name.map(|name| (name, true, true));
         }
@@ -716,10 +743,22 @@ impl Interpreter {
     ) {
         if let Some(process) = self.find_process_state_mut(record_id) {
             let (reader, writer) = channels.output;
-            process.module_pipe = Some((reader, Some(writer)));
+            process.module_pipe = Some((std::sync::Arc::new(reader), Some(writer)));
             let (input, writer) = channels.input;
-            process.pipe_input = Some((Some(input), writer));
+            process.pipe_input = Some((Some(input), std::sync::Arc::new(writer)));
         }
+    }
+
+    /// The pipe process RECORD_ID's SUBPROCESS_STDOUT, create_process's
+    /// forkerr as it is (no copy of it made); None once an earlier child
+    /// was given it.
+    #[cfg(unix)]
+    pub(crate) fn pipe_process_stderr_fd(&self, record_id: u64) -> Option<std::os::fd::RawFd> {
+        use std::os::fd::AsRawFd;
+        self.find_process_state(record_id)
+            .and_then(|process| process.module_pipe.as_ref())
+            .and_then(|(_, writer)| writer.as_ref())
+            .map(AsRawFd::as_raw_fd)
     }
 
     /// A duplicate of the pipe process RECORD_ID's SUBPROCESS_STDOUT,
@@ -761,6 +800,7 @@ impl Interpreter {
         {
             process.module_pipe = None;
             process.pipe_input = None;
+            process.null_output = None;
             if process.status.is_live() {
                 process.status = ProcessStatus::Exit;
                 process.exit_code = Some(0);
@@ -829,7 +869,10 @@ impl Interpreter {
             if unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
                 return Err(std::io::Error::last_os_error());
             }
-            process.module_pipe = Some((fs::File::from(reader), Some(fs::File::from(writer))));
+            process.module_pipe = Some((
+                std::sync::Arc::new(fs::File::from(reader)),
+                Some(fs::File::from(writer)),
+            ));
         }
         // A pipe process another process has as its standard error no
         // longer holds SUBPROCESS_STDOUT: dup of -1 fails with EBADF.
@@ -923,6 +966,7 @@ impl Interpreter {
             stderr_eof: false,
             encoder: Default::default(),
             output_to_null: false,
+            null_output: None,
             in_alist: true,
             childless_pid: None,
             outfd_stale: false,
@@ -1034,6 +1078,7 @@ impl Interpreter {
             stderr_eof: false,
             encoder: Default::default(),
             output_to_null: false,
+            null_output: None,
             in_alist: true,
             childless_pid: None,
             outfd_stale: false,
@@ -1123,6 +1168,7 @@ impl Interpreter {
             stderr_eof: false,
             encoder: Default::default(),
             output_to_null: false,
+            null_output: None,
             in_alist: true,
             childless_pid: None,
             outfd_stale: false,
@@ -1760,6 +1806,7 @@ impl Interpreter {
         }
         process.network = None;
         process.serial = None;
+        process.null_output = None;
         process.sentinel_notified |= remove;
         Self::process_status_message(process)
     }
@@ -1809,7 +1856,9 @@ impl Interpreter {
             }
             ProcessStatus::Exit | ProcessStatus::Closed => {
                 let code = process.exit_code.unwrap_or(0);
-                if matches!(process.kind, ProcessKind::Network | ProcessKind::Serial) {
+                // NETCONN1_P alone: a serial or pipe process's end is
+                // "finished".
+                if process.kind == ProcessKind::Network {
                     if code == 0 {
                         "deleted\n".into()
                     } else {
@@ -1951,27 +2000,23 @@ impl Interpreter {
                     // Drain whatever the child wrote before exiting so the
                     // next pump still delivers it to the filter (gpg's final
                     // status lines arrive after `process-status' notices the
-                    // exit).
+                    // exit): status_notify's reads until one returns <= 0,
+                    // EAGAIN among them when a job the child left in the
+                    // background still holds the pipe, what was read kept.
                     if let Some(pipe) = runtime.child.stdout.as_mut() {
-                        let mut tail = Vec::new();
-                        if std::io::Read::read_to_end(pipe, &mut tail).is_ok() {
-                            process.pending_stdout.extend(tail);
-                        }
+                        read_nonblocking_pipe(pipe, &mut process.pending_stdout, None)?;
                     }
                     if let Some(pipe) = runtime.child.stderr.as_mut() {
-                        let mut tail = Vec::new();
-                        if std::io::Read::read_to_end(pipe, &mut tail).is_ok() {
-                            process.pending_stderr.extend(tail);
-                        }
+                        read_nonblocking_pipe(pipe, &mut process.pending_stderr, None)?;
                     }
-                    if let Some(pty) = runtime.pty_output.as_mut() {
+                    if let Some(mut pty) = runtime.pty_output.as_deref() {
                         let mut tail = Vec::new();
-                        let _ = read_nonblocking_pipe(pty, &mut tail, None);
+                        let _ = read_nonblocking_pipe(&mut pty, &mut tail, None);
                         process.pending_stdout.extend(tail);
                     }
-                    drop(runtime.pty_slave_guard.take());
                     record_child_exit(process, status);
                     process.runtime = None;
+                    process.null_output = None;
                 }
             }
         }
@@ -1985,6 +2030,23 @@ impl Interpreter {
                 .then_some(process.record_id)
         })?;
         Some(self.record_value(record_id))
+    }
+
+    /// wait_reading_process_output's `! EQ (wait_proc->status, Qrun)' for a
+    /// process with a child (or a childless pty): its status as the SIGCHLD
+    /// handler leaves it, ended, stopped or failed.
+    pub(crate) fn process_child_ended(&mut self, record_id: u64) -> Result<bool, LispError> {
+        self.refresh_process_id(record_id)?;
+        Ok(self.find_process_state(record_id).is_some_and(|process| {
+            process.kind == ProcessKind::Real
+                && matches!(
+                    process.status,
+                    ProcessStatus::Exit
+                        | ProcessStatus::Signal
+                        | ProcessStatus::Stop
+                        | ProcessStatus::Failed
+                )
+        }))
     }
 
     pub(crate) fn refresh_process_id(&mut self, record_id: u64) -> Result<(), LispError> {
@@ -2168,6 +2230,7 @@ impl Interpreter {
         if let Some(process) = self.find_process_state_mut(record_id) {
             gnutls_deinit(&mut process.gnutls);
             process.network = None;
+            process.null_output = None;
             process.non_blocking_connect_fd = false;
         }
     }
@@ -2201,6 +2264,7 @@ impl Interpreter {
                 gnutls_deinit(&mut process.gnutls);
                 process.network = None;
                 process.serial = None;
+                process.null_output = None;
                 process.non_blocking_connect_fd = false;
             }
             process.failed_message = message;
@@ -2778,6 +2842,7 @@ impl Interpreter {
         process.serial = None;
         process.module_pipe = None;
         process.pipe_input = None;
+        process.null_output = None;
         if matches!(
             kind,
             ProcessKind::Network | ProcessKind::Serial | ProcessKind::Pipe
@@ -2870,7 +2935,8 @@ impl Interpreter {
                 Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
             }
         } else if let Some(runtime) = process.runtime.as_mut() {
-            let stdin: &mut dyn Write = if let Some(pty) = runtime.pty_input.as_mut() {
+            let mut pty_writer = runtime.pty_input.as_deref();
+            let stdin: &mut dyn Write = if let Some(pty) = pty_writer.as_mut() {
                 pty
             } else if let Some(stdin) = runtime.child.stdin.as_mut() {
                 stdin
@@ -2882,10 +2948,10 @@ impl Interpreter {
                 ));
             };
             stdin.write(input)
-        } else if let Some((_, writer)) = process.pipe_input.as_mut() {
+        } else if let Some((_, writer)) = process.pipe_input.as_ref() {
             // A pipe process's WRITE_TO_SUBPROCESS, which nothing reads, or
             // a childless pty's master.
-            writer.write(input)
+            (&**writer).write(input)
         } else if process.outfd_stale {
             Err(std::io::Error::from_raw_os_error(libc::EBADF))
         } else {
@@ -2921,6 +2987,7 @@ impl Interpreter {
                 gnutls_deinit(&mut process.gnutls);
                 process.network = None;
                 process.serial = None;
+                process.null_output = None;
                 process.non_blocking_connect_fd = false;
                 if let Some(runtime) = process.runtime.as_mut() {
                     drop(runtime.child.stdin.take());
@@ -2973,7 +3040,8 @@ impl Interpreter {
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         if let Some(runtime) = process.runtime.as_mut() {
-            let stdin: Option<&mut dyn Write> = if let Some(pty) = runtime.pty_input.as_mut() {
+            let mut pty_writer = runtime.pty_input.as_deref();
+            let stdin: Option<&mut dyn Write> = if let Some(pty) = pty_writer.as_mut() {
                 Some(pty)
             } else if let Some(stdin) = runtime.child.stdin.as_mut() {
                 Some(stdin)
@@ -3053,18 +3121,57 @@ impl Interpreter {
                 }
                 _ => {}
             }
-            process.output_to_null = true;
-            return Ok((Vec::new(), Vec::new()));
         }
-        let Some(runtime) = process.runtime.as_mut() else {
-            process.output_to_null = true;
-            return Ok((Vec::new(), Vec::new()));
-        };
         // A child on a pty takes its EOF character through send_process
-        // (process-send-eof's `p->pty_in' branch); one on a pipe has its
-        // input closed and the null device as its output channel.
+        // (process-send-eof's `p->pty_in' branch).  Otherwise
+        // close_process_fd (&p->open_fd[WRITE_TO_SUBPROCESS]), then the
+        // null device opened as the new p->outfd in that slot: a child's
+        // input pipe or a pipe process's writer is closed first, so the
+        // null device can take its number; a connection's socket, in no
+        // such slot, stays open for reading.
+        let slot = if let Some(runtime) = process.runtime.as_mut() {
+            drop(runtime.child.stdin.take());
+            NullOutputSlot::ChildInput
+        } else if let Some((reader, writer)) = process.pipe_input.take() {
+            drop(writer);
+            NullOutputSlot::PipeWriter(reader)
+        } else {
+            drop(process.null_output.take());
+            NullOutputSlot::Process
+        };
+        let null = match fs::OpenOptions::new()
+            .write(true)
+            .open(crate::lisp::primitives::NULL_DEVICE)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                // open_fd[WRITE_TO_SUBPROCESS] is -1 and p->outfd still
+                // names the closed descriptor.
+                process.outfd_stale = true;
+                return Err(crate::lisp::primitives::report_file_errno(
+                    self,
+                    "Opening null device",
+                    Value::Nil,
+                    &error,
+                ));
+            }
+        };
         process.output_to_null = true;
-        drop(runtime.child.stdin.take());
+        process.outfd_stale = false;
+        match slot {
+            #[cfg(unix)]
+            NullOutputSlot::ChildInput => {
+                if let Some(runtime) = process.runtime.as_mut() {
+                    runtime.child.stdin = Some(null);
+                }
+            }
+            #[cfg(not(unix))]
+            NullOutputSlot::ChildInput => process.null_output = Some(null),
+            NullOutputSlot::PipeWriter(reader) => {
+                process.pipe_input = Some((reader, std::sync::Arc::new(null)));
+            }
+            NullOutputSlot::Process => process.null_output = Some(null),
+        }
         // GNU only makes EOF visible after already queued input and returns.
         // Output remains owned by the normal event pump, which preserves
         // filter ordering and avoids an arbitrary synchronous drain timeout.
@@ -3104,6 +3211,20 @@ impl Interpreter {
         only_process_id: Option<u64>,
         fds: &mut Vec<libc::pollfd>,
     ) -> bool {
+        self.process_wait_set_for(only_process_id, false, fds)
+    }
+
+    /// process_wait_set, leaving out with SKIP_ENDED what a terminated
+    /// child's process still holds: handle_child_signal's delete_read_fd
+    /// takes its channel out of the input mask, so the output it left is
+    /// no input that holds status_notify back.
+    #[cfg(unix)]
+    fn process_wait_set_for(
+        &self,
+        only_process_id: Option<u64>,
+        skip_ended: bool,
+        fds: &mut Vec<libc::pollfd>,
+    ) -> bool {
         use std::os::fd::AsRawFd;
         let mut watch = |fd: std::os::fd::RawFd, events: libc::c_short| {
             fds.push(libc::pollfd {
@@ -3122,6 +3243,12 @@ impl Interpreter {
                     .filter
                     .as_ref()
                     .is_some_and(|filter| *filter == Value::T)
+                || (skip_ended
+                    && process.kind == ProcessKind::Real
+                    && matches!(
+                        process.status,
+                        ProcessStatus::Exit | ProcessStatus::Signal | ProcessStatus::Failed
+                    ))
             {
                 continue;
             }
@@ -3139,7 +3266,11 @@ impl Interpreter {
                 {
                     watch(pipe.as_raw_fd(), libc::POLLIN);
                 }
-                if let Some(pty) = runtime.pty_output.as_ref() {
+                // A master that read EIO is out of the read mask
+                // (delete_read_fd).
+                if let Some(pty) = runtime.pty_output.as_ref()
+                    && !runtime.stdout_at_end
+                {
                     watch(pty.as_raw_fd(), libc::POLLIN);
                 }
             }
@@ -3202,7 +3333,7 @@ impl Interpreter {
             return true;
         }
         let mut fds = Vec::new();
-        if self.process_wait_set(None, &mut fds) {
+        if self.process_wait_set_for(None, true, &mut fds) {
             return true;
         }
         // SAFETY: FDS holds live descriptors this interpreter owns.
@@ -3262,9 +3393,10 @@ impl Interpreter {
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         let readmax = Some(process.readmax);
-        if let Some((reader, _)) = process.module_pipe.as_mut() {
+        if let Some((reader, _)) = process.module_pipe.as_ref() {
             let mut output = std::mem::take(&mut process.pending_stdout);
-            match read_nonblocking_channel(reader, &mut output, readmax)? {
+            let mut reader: &fs::File = reader;
+            match read_nonblocking_channel(&mut reader, &mut output, readmax)? {
                 ChannelRead::End => process.stdout_eof = true,
                 ChannelRead::Eio if process.childless_pid.is_some() => {
                     // wait_reading_process_output's EIO on a pty:
@@ -3304,8 +3436,20 @@ impl Interpreter {
             process.stderr_eof = true;
             runtime.stderr_at_end = true;
         }
-        if let Some(pty) = runtime.pty_output.as_mut() {
-            read_nonblocking_pipe(pty, &mut stdout, readmax)?;
+        // The pty's master: EIO once no one has its tty open (the child
+        // and what it left there gone) is wait_reading_process_output's
+        // delete_read_fd, the exit itself coming with SIGCHLD.
+        if let Some(mut pty) = runtime.pty_output.as_deref()
+            && !runtime.stdout_at_end
+        {
+            match read_nonblocking_channel(&mut pty, &mut stdout, readmax)? {
+                ChannelRead::End => {
+                    process.stdout_eof = true;
+                    runtime.stdout_at_end = true;
+                }
+                ChannelRead::Eio => runtime.stdout_at_end = true,
+                ChannelRead::More => {}
+            }
         }
         if std::env::var_os("EMAXX_DEBUG_PROCESS_IO").is_some()
             && (stdout.len() > before.0 || stderr.len() > before.1)
@@ -3340,12 +3484,12 @@ impl Interpreter {
                     {
                         process.stderr_eof = true;
                     }
-                    if let Some(pty) = runtime.pty_output.as_mut() {
-                        read_nonblocking_pipe(pty, &mut stdout, None)?;
+                    if let Some(mut pty) = runtime.pty_output.as_deref() {
+                        read_nonblocking_pipe(&mut pty, &mut stdout, None)?;
                     }
-                    drop(runtime.pty_slave_guard.take());
                     record_child_exit(process, status);
                     process.runtime = None;
+                    process.null_output = None;
                 }
             }
         }
@@ -4915,6 +5059,12 @@ impl Interpreter {
         // Woken child event loops resume and service their own due timers.
         self.drive_threads_inner(env, true, WaitEvents::None, true)?;
         Ok(Value::Nil)
+    }
+
+    /// The events wait_reading_process_output looks at at the top of an
+    /// iteration of its loop, before any select: timer_check among them.
+    pub(crate) fn run_wait_loop_top_events(&mut self, env: &mut Env) -> Result<(), LispError> {
+        self.run_thread_wait_events(env, true)
     }
 
     fn run_thread_wait_events(

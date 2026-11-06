@@ -2507,6 +2507,19 @@ impl SpawnedChild {
         }
         Ok(())
     }
+
+    /// record_kill_process's kill (- p->pid, SIGKILL) while p->alive: the
+    /// process group the child leads (emacs_spawn's setsid), unless the
+    /// child has been reaped (its pid may be reused).
+    pub(crate) fn kill_group(&mut self) {
+        if self.status.is_none() {
+            // SAFETY: a signal to the group of this unreaped child, which
+            // leads it.
+            unsafe {
+                libc::kill(-(self.pid as libc::pid_t), libc::SIGKILL);
+            }
+        }
+    }
 }
 
 pub(crate) struct RunningProcess {
@@ -2515,13 +2528,9 @@ pub(crate) struct RunningProcess {
     /// Unix CLI instead sends GNU's SIGHUP and leaves reaping to the host.
     pub(crate) terminate_on_drop: bool,
     /// Writable master for a pseudo-terminal connected to child stdin.
-    pub(crate) pty_input: Option<fs::File>,
+    pub(crate) pty_input: Option<std::sync::Arc<fs::File>>,
     /// Readable master for a pseudo-terminal connected to child output.
-    pub(crate) pty_output: Option<fs::File>,
-    /// Parent-held slave descriptor.  Darwin can discard unread master-side
-    /// bytes when the final slave closes, so keep one slave alive until the
-    /// child has exited and its output has been drained.
-    pub(crate) pty_slave_guard: Option<fs::File>,
+    pub(crate) pty_output: Option<std::sync::Arc<fs::File>>,
     /// The pty slave's device path ("/dev/ttysNNN"), when this process runs
     /// on a pseudo-terminal.  `process-tty-name' reports it; python.el's
     /// send path branches on it to route long lines through a temp file
@@ -2605,7 +2614,6 @@ impl Drop for RunningProcess {
         }
         drop(self.pty_input.take());
         drop(self.pty_output.take());
-        drop(self.pty_slave_guard.take());
         match self.child.try_wait() {
             Ok(Some(_)) => return,
             // The Unix status pump uses waitpid directly so it can observe
@@ -2941,6 +2949,7 @@ impl Clone for ProcessState {
             stderr_eof: self.stderr_eof,
             encoder: Default::default(),
             output_to_null: self.output_to_null,
+            null_output: None,
             in_alist: self.in_alist,
             childless_pid: self.childless_pid,
             outfd_stale: self.outfd_stale,
@@ -3022,10 +3031,10 @@ struct ProcessState {
     /// (SUBPROCESS_STDIN, WRITE_TO_SUBPROCESS), which create_process
     /// closes once the process is another's standard error.  That
     /// child is given SUBPROCESS_STDOUT, and the parent's copy closed.
-    module_pipe: Option<(fs::File, Option<fs::File>)>,
+    module_pipe: Option<(std::sync::Arc<fs::File>, Option<fs::File>)>,
     /// A pipe process's SUBPROCESS_STDIN and WRITE_TO_SUBPROCESS, or a
     /// childless pty's slave, when create_pty opens it, and its master.
-    pipe_input: Option<(Option<fs::File>, fs::File)>,
+    pipe_input: Option<(Option<fs::File>, std::sync::Arc<fs::File>)>,
     /// Network :host/:service as given at creation (process-contact).
     contact_host: Option<String>,
     contact_service: Option<i64>,
@@ -3069,6 +3078,11 @@ struct ProcessState {
     /// Fprocess_send_eof reopened the output channel on the null device
     /// (p->outfd): what is sent after the EOF goes nowhere.
     output_to_null: bool,
+    /// That null device, open_fd[WRITE_TO_SUBPROCESS], when no channel
+    /// slot of the process holds it: a connection's, or a pipe process's
+    /// whose writer went to another process's standard error.
+    /// deactivate_process closes it.
+    null_output: Option<fs::File>,
     /// The process is on Vprocess_alist: remove_process, the unwind of a
     /// make-process or make-pipe-process that signaled, takes it off.
     in_alist: bool,

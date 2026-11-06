@@ -15992,6 +15992,121 @@ setup_process_coding_systems's check now refuses). A 13-form
   included; cli's 30 on a second run, the first failing in GNU's own
   batch_exit_terminates_owned_children_like_gnu) and clippy with
   `--all-targets --all-features -D warnings' pass.
+- **Round 335: a pty child spawned as emacs_spawn's vfork path spawns
+  it, and the descriptors deactivate_process closes.** Emaxx opened a
+  pty's tty in Emacs on every system, handed it to the child as its
+  standard streams through Rust's Command (posix_spawn), kept a copy
+  (`pty_slave_guard') until the child's output was drained, and set the
+  tty's modes from Emacs; a pty child cost three descriptors where GNU's
+  costs one, and no EIO reached its master while it lived. Now a child
+  with a stream on a pty is spawned on GNU/Linux as callproc.c's
+  emacs_spawn spawns it on its vfork path, by clone with CLONE_VM and
+  CLONE_VFORK, the child sharing the parent's memory until it execs or
+  exits while the parent waits, as vfork's does: the parent's signals
+  blocked meanwhile and the child's caught ones reset before it
+  unblocks; dissociate_controlling_tty (setsid, TIOCNOTTY of /dev/tty
+  when that fails); the pty opened by its name, O_RDWR, emacs_perror and
+  _exit (EXIT_CANCELED) when that fails for the input, written to
+  Emacs's own standard error; SIGINT, SIGQUIT, SIGPROF and SIGPIPE at
+  their defaults and the parent's mask; child_setup_tty on the output
+  side; standard error with standard output unless `:stderr' gives one;
+  then child_setup: the directory (_exit (EXIT_CANCELED) if it is gone),
+  restore_nofile_limit, the dup2s, setpgid and tcsetpgrp, execve, and
+  exec_failed (O_NONBLOCK on standard error, emacs_perror, 127 or 126).
+  strerror's texts are read in the parent, the child reaching no
+  allocator. With no pty to be had, posix_spawn with pipes, as GNU's
+  pty_name NULL takes; macOS keeps a fork, as GNU's Darwin build forks
+  for a pty, and there the parent opens the tty, closes it after the
+  spawn when it is the child's input, and keeps it, as GNU does, when it
+  is the output only. create_process's exec monitor is made on every
+  path, its two descriptors after the FD_SETSIZE check and before the
+  coding systems ("Creating pipe"), the write end held by the child
+  alone and the read end read once after the spawn; the `:stderr' pipe
+  process's SUBPROCESS_STDOUT is given to the child as it is, and a
+  merged standard error is made in the child, where Emaxx made a copy of
+  each in the parent; so at the descriptor limit a `(pty . pipe)'
+  process fails with "Creating pipe" or its child with exit 125 at the
+  counts at which GNU's do. At 600 MB of heap a pty child costs 1.6 ms
+  against GNU's 1.4, where the fork of the first version of this round
+  cost 17.6. On GNU/Linux, which defines USG and not USG_SUBTTY_WORKS,
+  Emacs holds the master alone. A read of EIO on the master is
+  delete_read_fd: the master is no longer waited on, and the exit comes
+  from SIGCHLD. Verifying the change against GNU found the descriptors
+  deactivate_process closes, fixed too: `delete-process' signaled the
+  child's pid alone and left its descriptors to the reaper thread,
+  closed once the child was reaped; it now sends record_kill_process's
+  SIGKILL to the child's process group while p->alive, a child that has
+  exited being reaped first as GNU's SIGCHLD handler would have reaped
+  it (its group, which may outlive it, left alone), and closes every
+  descriptor at once, the reaper keeping the pid alone. An input-only
+  pty's master is p->outfd in no open_fd slot, which deactivate_process
+  never closes, and Emaxx keeps it open as GNU does; a childless pty
+  (create_pty) holds its master once, p->infd and p->outfd alike, where
+  Emaxx held a dup of it too. `process-send-eof' on a pipe set a flag
+  and kept a pipe process's writer and a connection's channel as they
+  were; it now closes open_fd[WRITE_TO_SUBPROCESS] and opens the null
+  device as the new p->outfd in its place ("Opening null device"), for a
+  child's input, a pipe process's writer and a connection alike, and
+  returns at once for a datagram socket (DATAGRAM_CONN_P), whose sends
+  go on. A child's exit noticed by `process-status' or another status
+  refresh lost the output it had read when a job the child left in the
+  background still held the pipe (read_to_end's EAGAIN discarded the
+  bytes); the drain now reads until a read returns nothing or would
+  block, keeping what it read, as status_notify does.
+  wait_reading_process_output's order for a WAIT_PROC whose child has
+  ended (or stopped) is GNU's: timer_check at the top of the iteration;
+  every child whose status changed reaped, as handle_child_signal reaps
+  it, a terminated one's channel and the output it left out of the input
+  mask (delete_read_fd); status_notify only when a select that does not
+  wait finds no input on the channels it still watches, each changed
+  process's remaining output read before its sentinel; then WAIT_PROC's
+  remaining output read and the wait ended before any other channel is
+  read. So a `:stderr' pipe process's unread output holds the child's
+  sentinel back through any number of `accept-process-output' calls on
+  the child, as in GNU, while siblings that have exited are notified.
+  status_message's "deleted" is a network connection's alone; a serial
+  process's end is "finished". A command-line comparison runs this
+  round's probes against GNU's. **Audit:** `tools/round_audit.py'
+  against round 334 reports no hard findings. The independent review of
+  the round found one P2 and two P3 findings and three differences
+  outside its diff: a `delete-process' of a child that had exited,
+  unreaped, killed the process group it had left (the background job of
+  `sh -c "sleep 30 &"'); the child's merged standard error was a dup
+  made in the parent, whose failure gave Rust's error where GNU has
+  none; a failed open of the pty's tty wrote emacs_perror's line to the
+  child's final standard error, not Emacs's; and the serial status
+  message, the childless pty's second master and the `:stderr' sentinel
+  order. All are fixed above (the two P3 by the vfork path and the
+  child's own merged standard error; on macOS the fork path's Command
+  still takes copies of the parent's tty and of the `:stderr' pipe's
+  descriptor, recorded below). A second review, of what the round added
+  after the first, found two P1 and three P3 findings: the first version
+  of the exited-WAIT_PROC step reaped the target alone, so an exited
+  sibling's pipe (and the target's own drained output) counted as input
+  and held every sentinel back, a loop of `accept-process-output' on the
+  target spinning forever; it broke before the timers ran, so a timer
+  due then never fired; the stop sentinel GNU's status_notify runs is
+  not run (as before the round, recorded below); emacs_perror wrote one
+  buffer of exactly PIPE_BUF bytes at once where GNU's snprintf test
+  leaves it to pieces; and an empty argv[0] was printed as `emacs'. All
+  but the stop sentinel are fixed above, and the strerror table is read
+  again when LC_MESSAGES changes. GNU's process-tests (35 and two
+  skips), term-tests (12), comint-tests (4), shell-tests (8),
+  esh-proc-tests (24), esh-cmd-tests (67), eshell-tests (15),
+  esh-io-tests (39), network-stream-tests (23 as expected, the IPv6 TLS
+  failure and three IPv6 skips as GNU's), compile-tests (3),
+  vc-git-tests (8) and the erc base-misc-regressions scenarios give
+  GNU's results; esh-cmd-tests' `reset-in-pipeline/subcommand' failed
+  once in GNU itself and passed in three more GNU runs. Local
+  validation: the grouped gate's 3,501 library tests (a first gate,
+  of the round's fork-based spawn, failed
+  `just_this_one_wait_still_notifies_an_exited_distractor' under load,
+  which waits on a pty child's exit within 0.15 s, and the weak-table
+  intermittent; the vfork spawn's gate passed both), the integration
+  targets (cli_parity's 73 included; cli's 30 on a second run, the first
+  failing in GNU's own `batch_exit_terminates_owned_children_like_gnu',
+  which then passed ten runs alone) and clippy with `--all-targets
+  --all-features -D warnings' pass.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -18740,7 +18855,47 @@ ert-tests as a whole 26,307 ms against 27,211.
   to 0.77, so the change is not reproduced here, and the test runs none
   of the process code round 333 changed.
 
+**On `5298662`** (round 334): the full Rust gate (run 42279790695)
+  passed; the frozen run (run 42279795360) passed at its first attempt,
+  7,928 of 7,928 outcomes matching, on a slower runner than round 333's
+  (GNU's own setup 65.7 s against 54.1 s, its test bodies 270.5 s
+  against 247.1 s). Setup 79.6 s against 65.7 s (1.212), test bodies
+  304.1 s against 270.5 s (1.124), in all 1.125, with a per-file setup
+  median of 125 ms against 105. The widest body gaps are ert-tests
+  (46,272 ms against 37,750), tramp-tests (22,605 against 18,928),
+  comp-tests (18,428 against 16,515), semantic-utest-ia (4,168 against
+  2,705) and mule-tests (3,228 against 1,955);
+  `ert-test-run-tests-batch-expensive' runs in 1.215 of GNU's time (45.2
+  s against 37.2 s), where round 333's ran in 1.078 (35.4 s against
+  32.8), GNU's own run of it 13% slower than there and Emaxx's 28%. The
+  test runs none of the process or network code round 334 changed; run
+  alone here with the release build of round 335, beside its gate, it
+  takes 0.77 to 0.90 s against GNU's 0.78 to 1.03, so the change is not
+  reproduced here.
+
 **Findings recorded, not fixed:**
+- **The macOS spawn's copies of descriptors (round 335).** GNU's Darwin
+  build forks for a pty and passes the tty it opened (forkin and
+  forkout) and the `:stderr' pipe process's SUBPROCESS_STDOUT (forkerr)
+  to the child as they are; Emaxx's macOS path spawns through Rust's
+  Command, which takes its own copy of each, so at the descriptor limit
+  the spawn fails one or two descriptors sooner than GNU's (with "Doing
+  vfork" where GNU's child would run), and Command's redirection of the
+  standard streams comes before the child opens the pty's tty, so with a
+  `:stderr' pipe process emacs_perror's line for a tty that cannot be
+  opened goes to that pipe, not to Emacs's standard error. GNU/Linux
+  takes the vfork path and is not affected. To be made: the macOS fork
+  with the child's descriptors given as they are, as emacs_spawn's fork
+  does.
+- **A stopped child's sentinel (round 335).** GNU's handle_child_signal
+  records a child's stop (WUNTRACED) as a status change, and
+  status_notify runs the sentinel with status_message's "stopped
+  (signal)\n" (and so for a continue); Emaxx records the stop in the
+  status (`process-status' is `stop', and an `accept-process-output' on
+  the stopped child returns at once, as GNU's does) but queues no
+  notification, so no sentinel runs for a stop or a continue. To be
+  made: status_notify's p->tick / p->update_tick for every status
+  change, not only a terminal one.
 - **gnutls.c's verification and logging (round 334).**
   gnutls_verify_boot calls gnutls_certificate_verify_peers2 and then
   gnutls_x509_crt_check_hostname, keeping a host mismatch in
@@ -18773,20 +18928,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   of 474), as the m and n groups did in seven more runs, two of them
   beside the integration targets, and the test alone in forty. To be
   traced: what keeps the lookup thread's answer from its slot.
-- **A pty child's tty held by Emacs (round 333).** On GNU/Linux, which
-  defines USG and not USG_SUBTTY_WORKS, create_process does not open the
-  pty's tty in Emacs: emacs_spawn's child opens it by name, so Emacs
-  holds the master only, and the master reads EIO once the child and
-  everything it left on the tty have closed it. Emaxx opens the tty in
-  Emacs, hands it to the child as its standard streams, and keeps one
-  copy (`pty_slave_guard', which Darwin needs so that unread output
-  survives the last close) until the child's output is drained, so a pty
-  child costs Emacs three descriptors where GNU's costs one, and no EIO
-  reaches a pty child's master while it lives. The exit is still learned
-  from SIGCHLD in both, and no probe has shown a status or output
-  difference; the descriptor counts differ (two more per pty child). To
-  be made: the spawn opens the tty in the child, as emacs_spawn does,
-  with the guard kept only where the parent opens it.
 - **window_list_1's `inhibit-quit' (round 332).** GNU's window_list_1
   specbinds `inhibit-quit' to t around its walk of the window list, so
   `window-list', `next-window', `get-buffer-window', window.el's

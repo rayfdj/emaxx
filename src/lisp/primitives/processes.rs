@@ -14,13 +14,20 @@ use crate::lisp::types::LispErrorKind;
 ///   Rust's `Command' resets the signal *mask* but only the SIGPIPE
 ///   *disposition*.
 /// * A fresh session: POSIX_SPAWN_SETSID in GNU's non-pty path, `setsid' in
-///   its fork path (callproc.c:1289).  A PTY child additionally acquires
-///   stdin's slave as its controlling terminal.
+///   its fork path (callproc.c:1289).
+/// * For a child on a pty (PTY), emacs_spawn's vfork path: TIOCSCTTY of a
+///   tty the parent opened (where USG_SUBTTY_WORKS or no USG has it do
+///   so), then the pty's tty opened again by its name, which makes it the
+///   controlling terminal, child_setup_tty's modes on it for output, and
+///   it as the streams that are on the pty, standard error with standard
+///   output unless `:stderr' gave one.  A tty that cannot be opened for
+///   input is emacs_perror's line and _exit (EXIT_CANCELED).
 #[cfg(unix)]
-fn configure_emacs_spawn(command: &mut Command, controlling_pty: bool) {
+fn configure_emacs_spawn(command: &mut Command, pty: Option<PtyChildSetup>, merge_stderr: bool) {
     use std::os::unix::process::CommandExt;
-    // SAFETY: signal/setsid/ioctl are async-signal-safe child-side calls;
-    // fd 0 is already the PTY slave when CONTROLLING_PTY.
+    // SAFETY: signal, setsid, ioctl, open, tcgetattr, tcsetattr, dup2,
+    // close, write, strerror and _exit are async-signal-safe child-side
+    // calls on data the closure owns, as GNU's vfork child makes them.
     unsafe {
         command.pre_exec(move || {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
@@ -31,14 +38,180 @@ fn configure_emacs_spawn(command: &mut Command, controlling_pty: bool) {
             if libc::setsid() < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            if controlling_pty
-                && libc::ioctl(libc::STDIN_FILENO, libc::c_ulong::from(libc::TIOCSCTTY), 0) < 0
-            {
-                return Err(std::io::Error::last_os_error());
+            if let Some(pty) = &pty {
+                pty.setup_in_child();
+            }
+            // if (std_err < 0) std_err = std_out.
+            if merge_stderr {
+                libc::dup2(libc::STDOUT_FILENO, libc::STDERR_FILENO);
             }
             Ok(())
         });
     }
+}
+
+/// What emacs_spawn's vfork child does with the pty: its name, which of
+/// the child's input and output are on it, whether the parent opened the
+/// tty (and gave it as the child's streams), and emacs_perror's command
+/// name.
+#[cfg(unix)]
+struct PtyChildSetup {
+    name: std::ffi::CString,
+    input: bool,
+    output: bool,
+    parent_opened: bool,
+    command_name: std::ffi::CString,
+}
+
+#[cfg(unix)]
+impl PtyChildSetup {
+    /// callproc.c:emacs_spawn's child after dissociate_controlling_tty.
+    ///
+    /// # Safety
+    ///
+    /// Only in the child between fork and exec: it calls async-signal-safe
+    /// functions alone, on descriptors the child owns.
+    unsafe fn setup_in_child(&self) {
+        // SAFETY: as the function's contract states.
+        unsafe {
+            // Make the pty's terminal the controlling terminal.
+            if self.input && self.parent_opened {
+                libc::ioctl(libc::STDIN_FILENO, libc::c_ulong::from(libc::TIOCSCTTY), 0);
+            }
+            // Now close the pty (if we had it open) and reopen it.
+            if self.input && self.parent_opened {
+                libc::close(libc::STDIN_FILENO);
+            }
+            let fd = libc::open(self.name.as_ptr(), libc::O_RDWR);
+            if self.input && fd < 0 {
+                // emacs_perror (pty_name); _exit (EXIT_CANCELED).
+                let text =
+                    libc::strerror(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+                for part in [
+                    self.command_name.as_ptr(),
+                    c": ".as_ptr(),
+                    self.name.as_ptr(),
+                    c": ".as_ptr(),
+                    text,
+                    c"\n".as_ptr(),
+                ] {
+                    libc::write(libc::STDERR_FILENO, part.cast(), libc::strlen(part));
+                }
+                libc::_exit(EXIT_CANCELED);
+            }
+            if self.output {
+                child_setup_tty(fd);
+            }
+            if fd >= 0 {
+                if self.input {
+                    libc::dup2(fd, libc::STDIN_FILENO);
+                }
+                if self.output {
+                    libc::dup2(fd, libc::STDOUT_FILENO);
+                }
+                if fd > libc::STDERR_FILENO {
+                    libc::close(fd);
+                }
+            }
+        }
+    }
+}
+
+/// callproc.c's EXIT_CANCELED: a child that could not be set up.
+#[cfg(unix)]
+const EXIT_CANCELED: libc::c_int = 125;
+
+/// systty.h's CDISABLE: _POSIX_VDISABLE, the character that disables a
+/// terminal function.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const CDISABLE: libc::cc_t = 0;
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+const CDISABLE: libc::cc_t = 0xff;
+
+/// sysdep.c:child_setup_tty of OUT: emacs_get_tty (zeroed, then
+/// tcgetattr), output postprocessing without NL to CR-NL, delays, tab
+/// expansion or upcasing; no echo; signals; no input downcasing or 8th-bit
+/// stripping; CS8; VERASE and VKILL disabled; VQUIT and VINTR C-\\ and
+/// C-c where disabled (SIGNALS_VIA_CHARACTERS); ICANON with VEOF C-d; then
+/// emacs_set_tty without flushing.  Async-signal-safe.
+#[cfg(unix)]
+pub(crate) fn child_setup_tty(out: libc::c_int) {
+    // SAFETY: an all-zero termios is emacs_get_tty's memset; tcgetattr
+    // fills it from OUT or fails and leaves it.
+    let mut s: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    unsafe { libc::tcgetattr(out, &mut s) };
+    s.c_oflag |= libc::OPOST;
+    s.c_oflag &= !libc::ONLCR;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        s.c_oflag &=
+            !(libc::NLDLY | libc::CRDLY | libc::TABDLY | libc::BSDLY | libc::VTDLY | libc::FFDLY);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        s.c_oflag &=
+            !(libc::NLDLY | libc::CRDLY | libc::TABDLY | libc::BSDLY | libc::VTDLY | libc::FFDLY);
+    }
+    s.c_lflag &= !libc::ECHO;
+    s.c_lflag |= libc::ISIG;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        s.c_iflag &= !libc::IUCLC;
+    }
+    s.c_iflag &= !libc::ISTRIP;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        s.c_oflag &= !libc::OLCUC;
+    }
+    s.c_oflag &= !libc::TAB3;
+    s.c_cflag = (s.c_cflag & !libc::CSIZE) | libc::CS8;
+    s.c_cc[libc::VERASE] = CDISABLE;
+    s.c_cc[libc::VKILL] = CDISABLE;
+    if s.c_cc[libc::VQUIT] == CDISABLE {
+        s.c_cc[libc::VQUIT] = b'\\' & 0o37;
+    }
+    if s.c_cc[libc::VINTR] == CDISABLE {
+        s.c_cc[libc::VINTR] = b'C' & 0o37;
+    }
+    s.c_lflag |= libc::ICANON;
+    s.c_cc[libc::VEOF] = b'D' & 0o37;
+    emacs_set_tty(out, &s, false);
+}
+
+/// sysdep.c:emacs_set_tty of FD: tcsetattr (TCSAFLUSH for FLUSHP, else
+/// TCSADRAIN), retried when interrupted, up to ten times until tcgetattr
+/// reads back what was asked; -1 for any other failure.  Async-signal-safe.
+#[cfg(unix)]
+fn emacs_set_tty(fd: libc::c_int, settings: &libc::termios, flushp: bool) -> libc::c_int {
+    let action = if flushp {
+        libc::TCSAFLUSH
+    } else {
+        libc::TCSADRAIN
+    };
+    for _ in 0..10 {
+        // SAFETY: SETTINGS is an initialized termios; FD may be any value.
+        if unsafe { libc::tcsetattr(fd, action, settings) } < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        // SAFETY: an all-zero termios is the memset GNU makes; tcgetattr
+        // fills it.
+        let mut new: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        unsafe { libc::tcgetattr(fd, &mut new) };
+        if new.c_iflag == settings.c_iflag
+            && new.c_oflag == settings.c_oflag
+            && new.c_cflag == settings.c_cflag
+            && new.c_lflag == settings.c_lflag
+            && new.c_cc == settings.c_cc
+        {
+            break;
+        }
+    }
+    0
 }
 
 /// process.c's child_signal_read_fd: the pipe handle_child_signal writes a
@@ -291,7 +464,6 @@ impl ExecImage {
             let mut prefix = std::env::args_os()
                 .next()
                 .map(|argv0| argv0.as_bytes().to_vec())
-                .filter(|argv0| !argv0.is_empty())
                 .unwrap_or_else(|| b"emacs".to_vec());
             prefix.extend_from_slice(b": ");
             prefix.extend_from_slice(program.as_bytes());
@@ -1159,7 +1331,7 @@ fn spawn_call_process(
             std::ffi::CString::new(directory.clone()),
         ) {
             let stdio = [stdin, stdout, stderr].map(|file| SpawnFd::Fd(file.as_raw_fd()));
-            let pid = emacs_posix_spawn(&image, Some(&directory), stdio, None)
+            let pid = emacs_posix_spawn(&image, Some(&directory), stdio)
                 .map_err(|error| vfork_error(interp, &error))?;
             return Ok(SpawnedChild::new(pid as u32, None, None, None));
         }
@@ -1168,7 +1340,7 @@ fn spawn_call_process(
     add_command_arguments(&mut command, argv);
     set_command_environment(&mut command, &environment);
     #[cfg(unix)]
-    configure_emacs_spawn(&mut command, false);
+    configure_emacs_spawn(&mut command, None, false);
     #[cfg(unix)]
     exec_like_gnu(&mut command, program, argv, environment.0, false);
     let duplicate = |file: &fs::File| {
@@ -1323,36 +1495,53 @@ pub(crate) fn spawn_persistent_process(
     add_command_arguments(&mut command, argv);
     let child_environment = configure_external_command(interp, env, &mut command, directory)?;
     let (input_pty, output_pty) = pty_modes;
-    let stderr_writer = match stderr_process_id {
-        Some(stderr_id) => interp.pipe_process_stderr_writer(stderr_id)?,
-        None => None,
-    };
-    let stderr = stderr_writer.as_ref();
+    // create_process's forkerr: the `:stderr' pipe process's
+    // SUBPROCESS_STDOUT itself, -1 once an earlier child was given it.
+    #[cfg(target_os = "linux")]
+    let stderr_fd =
+        stderr_process_id.and_then(|stderr_id| interp.pipe_process_stderr_fd(stderr_id));
     #[cfg(target_os = "linux")]
     if let Some(runtime) = posix_spawn_process(
         interp,
         env,
         (program, argv, &child_environment),
         channels,
-        stderr.map(|file| {
-            use std::os::fd::AsRawFd;
-            file.as_raw_fd()
-        }),
+        stderr_fd,
         setup_coding,
     )? {
-        drop(stderr_writer);
         close_stderr_process_output(interp, stderr_process_id);
         return finish_spawned_runtime(runtime);
     }
+    #[cfg(target_os = "linux")]
+    if let Some(runtime) = vfork_pty_process(
+        interp,
+        env,
+        (program, argv, &child_environment),
+        channels,
+        stderr_fd,
+        setup_coding,
+    )? {
+        close_stderr_process_output(interp, stderr_process_id);
+        return finish_spawned_runtime(runtime);
+    }
+    // The fork path's Command takes the stream as a descriptor of its own.
+    let stderr_writer = match stderr_process_id {
+        Some(stderr_id) => interp.pipe_process_stderr_writer(stderr_id)?,
+        None => None,
+    };
+    let stderr = stderr_writer.as_ref();
     let mut pty_input = None;
     let mut pty_output = None;
-    let mut pty_slave_guard = None;
     let mut pty_slave_name: Option<String> = None;
+    #[cfg(unix)]
+    let mut pty_setup: Option<PtyChildSetup> = None;
     // create_process's pipes, made here rather than by the spawn so that
     // their descriptors are known before it: the write end of the child's
-    // input, the read ends of its output and its separate standard error.
+    // input and the read end of its output.  Its standard error is the
+    // `:stderr' pipe process's, else its standard output (emacs_spawn's
+    // `if (std_err < 0) std_err = std_out').
     #[cfg(unix)]
-    let (mut stdin_write, mut stdout_read, mut stderr_read) = (None, None, None);
+    let (mut stdin_write, mut stdout_read) = (None, None);
     #[cfg(unix)]
     {
         let pipe = || {
@@ -1360,32 +1549,17 @@ pub(crate) fn spawn_persistent_process(
                 file_operation_error_value_without_file(interp, "Creating pipe", &error)
             })
         };
-        let mut piped_stdin = |command: &mut Command| -> Result<(), LispError> {
-            let (read, write) = pipe()?;
-            command.stdin(Stdio::from(read));
-            stdin_write = Some(write);
-            Ok(())
+        let clone = |file: &fs::File| {
+            file.try_clone()
+                .map_err(|error| LispError::Signal(error.to_string()))
         };
-        let given_stderr = |command: &mut Command, file: &fs::File| -> Result<(), LispError> {
-            command.stderr(Stdio::from(
-                file.try_clone()
-                    .map_err(|error| LispError::Signal(error.to_string()))?,
-            ));
-            Ok(())
-        };
-        let piped_output = |command: &mut Command, error: bool| -> Result<fs::File, LispError> {
-            let (read, write) = pipe()?;
-            if error {
-                command.stderr(Stdio::from(write));
-            } else {
-                command.stdout(Stdio::from(write));
-            }
-            Ok(read)
-        };
-        // create_process: allocate_pty when a stream is to be on a pty, then
-        // its tty; when no pty is to be had, both streams are pipes.
+        // create_process: allocate_pty when a stream is to be on a pty;
+        // when no pty is to be had, both streams are pipes.  Where the
+        // parent opens the pty's tty (no USG, or USG_SUBTTY_WORKS) it is
+        // the child's forkin and forkout, closed here once the child is
+        // made; on GNU/Linux the child alone opens it.
         let pty = if input_pty || output_pty {
-            open_emacs_pty(interp, true)?
+            allocate_pty()
         } else {
             None
         };
@@ -1394,83 +1568,88 @@ pub(crate) fn spawn_persistent_process(
         } else {
             (false, false)
         };
-        match (pty, input_pty) {
-            (Some((master, slave, slave_name)), true) if output_pty => {
-                pty_slave_name = slave_name;
-                pty_slave_guard = Some(
-                    slave
-                        .try_clone()
-                        .map_err(|error| LispError::Signal(error.to_string()))?,
-                );
-                command.stdin(Stdio::from(
-                    slave
-                        .try_clone()
-                        .map_err(|error| LispError::Signal(error.to_string()))?,
-                ));
-                command.stdout(Stdio::from(
-                    slave
-                        .try_clone()
-                        .map_err(|error| LispError::Signal(error.to_string()))?,
-                ));
-                if let Some(file) = stderr {
-                    given_stderr(&mut command, file)?;
-                } else {
-                    command.stderr(Stdio::from(slave));
-                }
-                pty_input = Some(
-                    master
-                        .try_clone()
-                        .map_err(|error| LispError::Signal(error.to_string()))?,
-                );
+        let parent_tty = match &pty {
+            Some((_, name)) if PARENT_OPENS_PTY_TTY => Some(open_pty_tty(interp, name)?),
+            _ => None,
+        };
+        // The child's input: the pty (the parent's tty, or a placeholder
+        // the child's own open replaces), or a pipe.
+        if input_pty {
+            command.stdin(match &parent_tty {
+                Some(tty) => Stdio::from(clone(tty)?),
+                None => Stdio::inherit(),
+            });
+        } else {
+            let (read, write) = pipe()?;
+            command.stdin(Stdio::from(read));
+            stdin_write = Some(write);
+        }
+        // Its output, and its standard error with it unless given.
+        if output_pty {
+            command.stdout(match &parent_tty {
+                Some(tty) => Stdio::from(clone(tty)?),
+                None => Stdio::inherit(),
+            });
+            // Standard error is the output's in the child (std_err =
+            // std_out), not a descriptor of the parent's.
+            match stderr {
+                Some(file) => command.stderr(Stdio::from(clone(file)?)),
+                None => command.stderr(Stdio::inherit()),
+            };
+        } else {
+            let (read, write) = pipe()?;
+            match stderr {
+                Some(file) => command.stderr(Stdio::from(clone(file)?)),
+                None => command.stderr(Stdio::inherit()),
+            };
+            command.stdout(Stdio::from(write));
+            stdout_read = Some(read);
+        }
+        if let Some((master, name)) = pty {
+            pty_slave_name = Some(name.to_string_lossy().into_owned());
+            // The master is both the channel Emacs reads and the one it
+            // writes (ptychannel), one descriptor.
+            let master = std::sync::Arc::new(master);
+            if input_pty {
+                pty_input = Some(std::sync::Arc::clone(&master));
+            }
+            if output_pty {
                 pty_output = Some(master);
+            } else {
+                // create_process puts ptychannel in an open_fd slot only as
+                // READ_FROM_SUBPROCESS, when the pty is the output: an
+                // input-only pty's master is p->outfd alone, which
+                // deactivate_process never closes, so it stays open for
+                // the rest of the session.
+                std::mem::forget(master);
             }
-            (Some((master, slave, slave_name)), true) => {
-                pty_slave_name = slave_name;
-                command.stdin(Stdio::from(slave));
-                stdout_read = Some(piped_output(&mut command, false)?);
-                if let Some(file) = stderr {
-                    given_stderr(&mut command, file)?;
-                } else {
-                    stderr_read = Some(piped_output(&mut command, true)?);
-                }
-                pty_input = Some(master);
-            }
-            (pty, _) => {
-                piped_stdin(&mut command)?;
-                if let Some((master, slave, slave_name)) = pty {
-                    pty_slave_name = slave_name;
-                    pty_slave_guard = Some(
-                        slave
-                            .try_clone()
-                            .map_err(|error| LispError::Signal(error.to_string()))?,
-                    );
-                    command.stdout(Stdio::from(
-                        slave
-                            .try_clone()
-                            .map_err(|error| LispError::Signal(error.to_string()))?,
-                    ));
-                    if let Some(file) = stderr {
-                        given_stderr(&mut command, file)?;
-                    } else {
-                        command.stderr(Stdio::from(slave));
-                    }
-                    pty_output = Some(master);
-                } else {
-                    stdout_read = Some(piped_output(&mut command, false)?);
-                    if let Some(file) = stderr {
-                        given_stderr(&mut command, file)?;
-                    } else {
-                        stderr_read = Some(piped_output(&mut command, true)?);
-                    }
-                }
-            }
+            use std::os::unix::ffi::OsStrExt;
+            let command_name = std::env::args_os()
+                .next()
+                .and_then(|name| std::ffi::CString::new(name.as_bytes()).ok())
+                .unwrap_or_else(|| c"emacs".to_owned());
+            pty_setup = Some(PtyChildSetup {
+                name,
+                input: input_pty,
+                output: output_pty,
+                parent_opened: parent_tty.is_some(),
+                command_name,
+            });
+        }
+        // The parent's tty is in open_fd[SUBPROCESS_STDIN] when it is the
+        // child's input, and closed once the child is made; as its output
+        // only (forkout) no open_fd slot holds it, and it stays open.
+        if let Some(tty) = parent_tty
+            && !input_pty
+        {
+            std::mem::forget(tty);
         }
         close_stderr_process_input(interp, stderr_process_id);
         // create_process: the channel Emacs reads and the one it writes
         // must fit an fd_set; none is spawned otherwise.
         use std::os::fd::AsRawFd;
-        let inchannel = stdout_read.as_ref().or(pty_output.as_ref());
-        let outchannel = stdin_write.as_ref().or(pty_input.as_ref());
+        let inchannel = stdout_read.as_ref().or(pty_output.as_deref());
+        let outchannel = stdin_write.as_ref().or(pty_input.as_deref());
         if beyond_fd_setsize(
             &[inchannel, outchannel].map(|channel| channel.map_or(-1, |file| file.as_raw_fd())),
         ) {
@@ -1484,10 +1663,12 @@ pub(crate) fn spawn_persistent_process(
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
     }
+    #[cfg(unix)]
+    let exec_monitor = exec_monitor_pipe(interp)?;
     setup_coding(interp, env)?;
 
     #[cfg(unix)]
-    configure_emacs_spawn(&mut command, input_pty);
+    configure_emacs_spawn(&mut command, pty_setup, stderr.is_none());
     #[cfg(unix)]
     exec_like_gnu(
         &mut command,
@@ -1502,10 +1683,12 @@ pub(crate) fn spawn_persistent_process(
         .map_err(|error| vfork_error(interp, &error))?;
     // Only the child keeps the ends it was given.
     drop(command);
+    #[cfg(unix)]
+    await_exec_monitor(exec_monitor);
     drop(stderr_writer);
     close_stderr_process_output(interp, stderr_process_id);
     #[cfg(unix)]
-    let child = SpawnedChild::new(child.id(), stdin_write, stdout_read, stderr_read);
+    let child = SpawnedChild::new(child.id(), stdin_write, stdout_read, None);
     // Put the child under RunningProcess's terminate-and-reap Drop guard
     // before any fallible post-spawn setup.  A failed fcntl must not leak a
     // subprocess whose runtime was never installed in the interpreter.
@@ -1514,12 +1697,36 @@ pub(crate) fn spawn_persistent_process(
         terminate_on_drop: true,
         pty_input,
         pty_output,
-        pty_slave_guard,
         pty_slave_name,
         stdout_at_end: false,
         stderr_at_end: false,
     };
     finish_spawned_runtime(runtime)
+}
+
+/// create_process's READ_FROM_EXEC_MONITOR and EXEC_MONITOR_OUTPUT: a pipe
+/// made before the spawn ("Creating pipe" when none is to be had), whose
+/// write end the child holds until it execs or exits.
+#[cfg(unix)]
+fn exec_monitor_pipe(interp: &Interpreter) -> Result<(fs::File, fs::File), LispError> {
+    emacs_pipe()
+        .map_err(|error| file_operation_error_value_without_file(interp, "Creating pipe", &error))
+}
+
+/// After the spawn, close_process_fd of EXEC_MONITOR_OUTPUT, then one
+/// emacs_read of READ_FROM_EXEC_MONITOR, which returns once the child has
+/// exec'd or exited (its copy of the write end closes then), and the read
+/// end closed.
+#[cfg(unix)]
+fn await_exec_monitor((read, write): (fs::File, fs::File)) {
+    drop(write);
+    let mut dummy = [0u8; 1];
+    loop {
+        match std::io::Read::read(&mut &read, &mut dummy) {
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            _ => break,
+        }
+    }
 }
 
 /// create_process's close_process_fd of the stderr pipe process's
@@ -1550,7 +1757,7 @@ fn finish_spawned_runtime(runtime: RunningProcess) -> Result<RunningProcess, Lis
         if let Some(stdin) = runtime.child.stdin.as_ref() {
             set_nonblocking(stdin)?;
         }
-        if let Some(input) = runtime.pty_input.as_ref() {
+        if let Some(input) = runtime.pty_input.as_deref() {
             set_nonblocking(input)?;
         }
         if let Some(stdout) = runtime.child.stdout.as_ref() {
@@ -1559,7 +1766,7 @@ fn finish_spawned_runtime(runtime: RunningProcess) -> Result<RunningProcess, Lis
         if let Some(stderr) = runtime.child.stderr.as_ref() {
             set_nonblocking(stderr)?;
         }
-        if let Some(output) = runtime.pty_output.as_ref() {
+        if let Some(output) = runtime.pty_output.as_deref() {
             set_nonblocking(output)?;
         }
     }
@@ -1715,14 +1922,375 @@ fn emacs_pipe() -> std::io::Result<(fs::File, fs::File)> {
     ))
 }
 
+/// strerror's text for every errno below 256 in the current LC_MESSAGES
+/// locale, read in the parent: the vfork child, which shares the parent's
+/// memory, must not reach the allocator that a first translation of a
+/// message may call.  Read again when the locale has changed.
+#[cfg(target_os = "linux")]
+fn strerror_table() -> std::sync::Arc<Vec<std::ffi::CString>> {
+    type Table = (std::ffi::CString, std::sync::Arc<Vec<std::ffi::CString>>);
+    static TABLE: std::sync::Mutex<Option<Table>> = std::sync::Mutex::new(None);
+    // SAFETY: setlocale with a null locale only queries; the name is copied
+    // at once.
+    let locale = unsafe {
+        let name = libc::setlocale(libc::LC_MESSAGES, std::ptr::null());
+        if name.is_null() {
+            std::ffi::CString::default()
+        } else {
+            std::ffi::CStr::from_ptr(name).to_owned()
+        }
+    };
+    let mut table = TABLE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((name, texts)) = table.as_ref()
+        && *name == locale
+    {
+        return std::sync::Arc::clone(texts);
+    }
+    let texts = std::sync::Arc::new(
+        (0..256)
+            .map(|errno| {
+                // SAFETY: strerror returns a NUL-terminated string, copied
+                // at once.
+                unsafe { std::ffi::CStr::from_ptr(libc::strerror(errno)) }.to_owned()
+            })
+            .collect::<Vec<_>>(),
+    );
+    *table = Some((locale, std::sync::Arc::clone(&texts)));
+    texts
+}
+
+/// What callproc.c:emacs_spawn's vfork child is given: the standard
+/// descriptors create_process made (-1 for one on the pty, or a standard
+/// error to be the output), the pty's name and which streams are on it,
+/// the directory, the image, the limit to restore, the signal mask to
+/// restore, and emacs_perror's command name.
+#[cfg(target_os = "linux")]
+struct VforkChild<'a> {
+    std_in: libc::c_int,
+    std_out: libc::c_int,
+    std_err: libc::c_int,
+    pty_name: &'a std::ffi::CStr,
+    pty_in: bool,
+    pty_out: bool,
+    directory: &'a std::ffi::CStr,
+    image: &'a ExecImage,
+    nofile_limit: Option<libc::rlimit>,
+    old_mask: libc::sigset_t,
+    command: &'a std::ffi::CStr,
+    strerror: &'a [std::ffi::CString],
+}
+
+/// sysdep.c:emacs_perror in the vfork child: "COMMAND: MESSAGE:
+/// strerror (ERRNO)\n" in one write when it fits a pipe's atomic write,
+/// else in pieces.
+///
+/// # Safety
+///
+/// Only in the vfork child: it writes stack bytes and owned strings.
+#[cfg(target_os = "linux")]
+unsafe fn vfork_child_perror(child: &VforkChild, message: &std::ffi::CStr, errno: libc::c_int) {
+    let error = usize::try_from(errno)
+        .ok()
+        .and_then(|errno| child.strerror.get(errno))
+        .map_or(c"Unknown error", |text| text.as_c_str());
+    let parts = [
+        child.command.to_bytes(),
+        b": ",
+        message.to_bytes(),
+        b": ",
+        error.to_bytes(),
+        b"\n",
+    ];
+    let mut buffer = [0u8; libc::PIPE_BUF];
+    let mut length = 0usize;
+    let mut fits = true;
+    for part in parts {
+        match buffer.get_mut(length..length.saturating_add(part.len())) {
+            Some(slot) => {
+                slot.copy_from_slice(part);
+                length = length.saturating_add(part.len());
+            }
+            None => fits = false,
+        }
+    }
+    // snprintf's `nbytes < sizeof buf': one write for what is shorter than
+    // the buffer.
+    let fits = fits && length < buffer.len();
+    // SAFETY: each pointer and length is a live slice's.
+    unsafe {
+        if fits {
+            libc::write(libc::STDERR_FILENO, buffer.as_ptr().cast(), length);
+        } else {
+            for part in parts {
+                libc::write(libc::STDERR_FILENO, part.as_ptr().cast(), part.len());
+            }
+        }
+    }
+}
+
+/// callproc.c:emacs_spawn's vfork child, then child_setup: the new
+/// session, the pty opened by its name (emacs_perror and _exit
+/// (EXIT_CANCELED) when that fails for the input), the default signal
+/// dispositions and the parent's mask, child_setup_tty on the output side,
+/// standard error with standard output unless given, the directory
+/// (_exit (EXIT_CANCELED) if it is gone), restore_nofile_limit, the dup2s,
+/// setpgid and tcsetpgrp, execve, and exec_failed.
+#[cfg(target_os = "linux")]
+extern "C" fn vfork_child_main(argument: *mut libc::c_void) -> libc::c_int {
+    // SAFETY: ARGUMENT is the VforkChild emacs_vfork passed, alive while the
+    // parent waits for this child to exec or exit; everything below is a
+    // system call on owned data, on the child's own stack.
+    unsafe {
+        let child = &*(argument as *const VforkChild);
+        // The parent's handlers cannot run here, in its memory: every
+        // caught signal is reset (execve would reset them anyway).
+        for signal in 1..65 {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(signal, std::ptr::null(), &mut action) == 0
+                && action.sa_sigaction != libc::SIG_DFL
+                && action.sa_sigaction != libc::SIG_IGN
+            {
+                let mut default: libc::sigaction = std::mem::zeroed();
+                default.sa_sigaction = libc::SIG_DFL;
+                libc::sigaction(signal, &default, std::ptr::null_mut());
+            }
+        }
+        let (mut std_in, mut std_out, mut std_err) = (child.std_in, child.std_out, child.std_err);
+        // dissociate_controlling_tty.
+        if libc::setsid() < 0 {
+            let tty = libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+            if tty >= 0 {
+                libc::ioctl(tty, libc::TIOCNOTTY, 0);
+                libc::close(tty);
+            }
+        }
+        // Make the pty's terminal the controlling terminal.
+        if child.pty_in && std_in >= 0 {
+            libc::ioctl(std_in, libc::TIOCSCTTY, 0);
+        }
+        // Now close the pty (if we had it open) and reopen it.
+        if child.pty_in || child.pty_out {
+            if child.pty_in && std_in >= 0 {
+                libc::close(std_in);
+            }
+            let ptyfd = libc::open(child.pty_name.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if child.pty_in {
+                std_in = ptyfd;
+            }
+            if child.pty_out {
+                std_out = ptyfd;
+            }
+            if std_in < 0 {
+                vfork_child_perror(child, child.pty_name, errno);
+                libc::_exit(EXIT_CANCELED);
+            }
+        }
+        for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGPROF, libc::SIGPIPE] {
+            libc::signal(signal, libc::SIG_DFL);
+        }
+        // Stop blocking SIGCHLD in the child.
+        libc::sigprocmask(libc::SIG_SETMASK, &child.old_mask, std::ptr::null_mut());
+        if child.pty_out {
+            child_setup_tty(std_out);
+        }
+        if std_err < 0 {
+            std_err = std_out;
+        }
+        // child_setup.
+        if libc::chdir(child.directory.as_ptr()) < 0 {
+            libc::_exit(EXIT_CANCELED);
+        }
+        if let Some(limit) = &child.nofile_limit {
+            libc::setrlimit(libc::RLIMIT_NOFILE, limit);
+        }
+        libc::dup2(std_in, libc::STDIN_FILENO);
+        libc::dup2(std_out, libc::STDOUT_FILENO);
+        libc::dup2(std_err, libc::STDERR_FILENO);
+        libc::setpgid(0, 0);
+        libc::tcsetpgrp(0, libc::getpid());
+        let image = child.image;
+        libc::execve(image.argv[0], image.argv.as_ptr(), image.envp.as_ptr());
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        // exec_failed: a diagnostic that cannot block, then the exit.
+        libc::fcntl(libc::STDERR_FILENO, libc::F_SETFL, libc::O_NONBLOCK);
+        vfork_child_perror(child, std::ffi::CStr::from_ptr(image.argv[0]), errno);
+        libc::_exit(if errno == libc::ENOENT { 127 } else { 126 })
+    }
+}
+
+/// emacs_spawn's vfork () on GNU/Linux: clone with CLONE_VM and
+/// CLONE_VFORK, so the child shares the parent's memory, as vfork's does,
+/// until it execs or exits, while the parent waits.  The parent's signals
+/// stay blocked meanwhile, so that none of its handlers runs on the child's
+/// side before the child has reset them.
+#[cfg(target_os = "linux")]
+fn emacs_vfork(child: &VforkChild) -> std::io::Result<libc::pid_t> {
+    const STACK: usize = 256 * 1024;
+    let mut stack = vec![0u8; STACK];
+    // SAFETY: the stack's top, aligned down to 16 bytes, is inside STACK.
+    let top = unsafe { stack.as_mut_ptr().add(STACK) } as usize & !15;
+    // SAFETY: a full set blocked around clone and restored after it; clone
+    // runs vfork_child_main on its own stack with CHILD alive, and returns
+    // once the child has exec'd or exited.
+    unsafe {
+        let mut all: libc::sigset_t = std::mem::zeroed();
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::sigfillset(&mut all);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &all, &mut old);
+        let pid = libc::clone(
+            vfork_child_main,
+            top as *mut libc::c_void,
+            libc::CLONE_VM | libc::CLONE_VFORK | libc::SIGCHLD,
+            (child as *const VforkChild).cast_mut().cast(),
+        );
+        let error = std::io::Error::last_os_error();
+        libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+        drop(stack);
+        if pid < 0 { Err(error) } else { Ok(pid) }
+    }
+}
+
+/// Fmake_process's create_process for a child with a stream on a pty, on
+/// GNU/Linux: allocate_pty (posix_spawn with pipes when none is to be
+/// had), the pipes for the streams not on it, the stderr pipe process's
+/// input closed, the FD_SETSIZE check, the coding systems, and
+/// emacs_spawn's vfork path, where the child opens the pty's tty itself
+/// (USG without USG_SUBTTY_WORKS).  None leaves the spawn to the fork path:
+/// no pty is asked for, or an argument holds a NUL.
+#[cfg(target_os = "linux")]
+fn vfork_pty_process(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    spawn: (&std::ffi::OsStr, &[Vec<u8>], &ChildEnvironment),
+    channels: ProcessChannels,
+    stderr: Option<std::os::fd::RawFd>,
+    setup_coding: &mut dyn FnMut(&mut Interpreter, &mut Env) -> Result<(), LispError>,
+) -> Result<Option<RunningProcess>, LispError> {
+    use std::os::fd::AsRawFd;
+    let (program, argv, (environment, directory)) = spawn;
+    let ProcessChannels {
+        pty_modes: (input_pty, output_pty),
+        stderr_process_id,
+    } = channels;
+    if !(input_pty || output_pty) {
+        return Ok(None);
+    }
+    let Some(image) = ExecImage::new(program, argv, environment.clone()) else {
+        return Ok(None);
+    };
+    let Ok(directory) = std::ffi::CString::new(directory.clone()) else {
+        return Ok(None);
+    };
+    let Some((master, pty_name)) = allocate_pty() else {
+        // No pty: pty_name stays NULL, and emacs_spawn posix_spawns.
+        return posix_spawn_process(
+            interp,
+            env,
+            spawn,
+            ProcessChannels {
+                pty_modes: (false, false),
+                stderr_process_id,
+            },
+            stderr,
+            setup_coding,
+        );
+    };
+    let pipe = |interp: &Interpreter| {
+        emacs_pipe().map_err(|error| {
+            file_operation_error_value_without_file(interp, "Creating pipe", &error)
+        })
+    };
+    // The master is both the channel Emacs reads and the one it writes
+    // (ptychannel), one descriptor.
+    let master = std::sync::Arc::new(master);
+    let pty_input = input_pty.then(|| std::sync::Arc::clone(&master));
+    let (stdin_read, stdin_write) = if input_pty {
+        (None, None)
+    } else {
+        let (read, write) = pipe(interp)?;
+        (Some(read), Some(write))
+    };
+    let (stdout_read, stdout_write) = if output_pty {
+        (None, None)
+    } else {
+        let (read, write) = pipe(interp)?;
+        (Some(read), Some(write))
+    };
+    let pty_output = if output_pty {
+        Some(master)
+    } else {
+        // create_process puts ptychannel in an open_fd slot only as
+        // READ_FROM_SUBPROCESS, when the pty is the output: an input-only
+        // pty's master is p->outfd alone, which deactivate_process never
+        // closes, so it stays open for the rest of the session.
+        std::mem::forget(master);
+        None
+    };
+    close_stderr_process_input(interp, stderr_process_id);
+    let inchannel = stdout_read.as_ref().or(pty_output.as_deref());
+    let outchannel = stdin_write.as_ref().or(pty_input.as_deref());
+    if beyond_fd_setsize(
+        &[inchannel, outchannel].map(|channel| channel.map_or(-1, |file| file.as_raw_fd())),
+    ) {
+        return Err(fd_setsize_error(interp, "Creating pipe"));
+    }
+    #[cfg(unix)]
+    let exec_monitor = exec_monitor_pipe(interp)?;
+    setup_coding(interp, env)?;
+    use std::os::unix::ffi::OsStrExt;
+    // initial_argv[0], whatever it holds, "emacs" when there is none.
+    let command = std::env::args_os()
+        .next()
+        .and_then(|name| std::ffi::CString::new(name.as_bytes()).ok())
+        .unwrap_or_else(|| c"emacs".to_owned());
+    let strerror = strerror_table();
+    let strerror = strerror.as_slice();
+    // SAFETY: an empty set filled by pthread_sigmask with the current mask.
+    let old_mask = unsafe {
+        let mut mask: libc::sigset_t = std::mem::zeroed();
+        libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), &mut mask);
+        mask
+    };
+    let child = VforkChild {
+        std_in: stdin_read.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+        std_out: stdout_write.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+        std_err: stderr.unwrap_or(-1),
+        pty_name: &pty_name,
+        pty_in: input_pty,
+        pty_out: output_pty,
+        directory: &directory,
+        image: &image,
+        nofile_limit: nofile_limit_to_restore(),
+        old_mask,
+        command: &command,
+        strerror,
+    };
+    let pid = emacs_vfork(&child).map_err(|error| vfork_error(interp, &error))?;
+    // Close the pipe ends that the child uses.
+    drop((stdin_read, stdout_write));
+    #[cfg(unix)]
+    await_exec_monitor(exec_monitor);
+    let child = SpawnedChild::new(pid as u32, stdin_write, stdout_read, None);
+    Ok(Some(RunningProcess {
+        child,
+        terminate_on_drop: true,
+        pty_input,
+        pty_output,
+        pty_slave_name: Some(pty_name.to_string_lossy().into_owned()),
+        stdout_at_end: false,
+        stderr_at_end: false,
+    }))
+}
+
 /// Where emacs_spawn puts one of the child's standard descriptors.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
 enum SpawnFd {
     /// This descriptor of the parent's.
     Fd(std::os::fd::RawFd),
-    /// The pty, which the child opens by name (input before output).
-    Pty,
     /// The descriptor the child's standard output became.
     Stdout,
 }
@@ -1738,7 +2306,6 @@ fn emacs_posix_spawn(
     image: &ExecImage,
     directory: Option<&std::ffi::CStr>,
     stdio: [SpawnFd; 3],
-    pty_name: Option<&std::ffi::CStr>,
 ) -> std::io::Result<libc::pid_t> {
     use std::mem::MaybeUninit;
     let check = |error: libc::c_int| match error {
@@ -1759,30 +2326,12 @@ fn emacs_posix_spawn(
         let actions = actions.as_mut_ptr();
         let attributes = attributes.as_mut_ptr();
         let result = (|| {
-            let mut pty_fd = None;
             for (target, source) in stdio.into_iter().enumerate() {
                 let target = target as libc::c_int;
                 match source {
                     SpawnFd::Fd(fd) => {
                         check(libc::posix_spawn_file_actions_adddup2(actions, fd, target))?
                     }
-                    SpawnFd::Pty => match pty_fd {
-                        Some(fd) => {
-                            check(libc::posix_spawn_file_actions_adddup2(actions, fd, target))?
-                        }
-                        None => {
-                            let name = pty_name
-                                .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EINVAL))?;
-                            check(libc::posix_spawn_file_actions_addopen(
-                                actions,
-                                target,
-                                name.as_ptr(),
-                                libc::O_RDWR,
-                                0,
-                            ))?;
-                            pty_fd = Some(target);
-                        }
-                    },
                     SpawnFd::Stdout => check(libc::posix_spawn_file_actions_adddup2(
                         actions,
                         libc::STDOUT_FILENO,
@@ -1835,13 +2384,12 @@ fn emacs_posix_spawn(
     }
 }
 
-/// Fmake_process's create_process through emacs_spawn's posix_spawn: the
-/// pipes (or the pty) its connection type asks for, and the child's
-/// standard error on its own pipe when it goes to a process or buffer of
-/// its own, else where its output goes.  None leaves the spawn to the fork
-/// path: an argument with a NUL, a pty without a name, a pty child owed
-/// the open-files limit Emacs started with, or an exec on the pty that
-/// fails, whose report the vfork path's child makes.
+/// Fmake_process's create_process through emacs_spawn's posix_spawn,
+/// which it takes only with no pty (`use_posix_spawn = pty_name ==
+/// NULL'): the pipes, and the child's standard error on the `:stderr'
+/// pipe process's pipe, else where its output goes.  None leaves the
+/// spawn to the vfork path: a stream to be on a pty, or an argument with a
+/// NUL.
 #[cfg(target_os = "linux")]
 fn posix_spawn_process(
     interp: &mut Interpreter,
@@ -1855,6 +2403,9 @@ fn posix_spawn_process(
     setup_coding: &mut dyn FnMut(&mut Interpreter, &mut Env) -> Result<(), LispError>,
 ) -> Result<Option<RunningProcess>, LispError> {
     use std::os::fd::AsRawFd;
+    if input_pty || output_pty {
+        return Ok(None);
+    }
     let Some(image) = ExecImage::new(program, argv, environment.clone()) else {
         return Ok(None);
     };
@@ -1864,95 +2415,35 @@ fn posix_spawn_process(
     let pipe_error = |error: std::io::Error| {
         file_operation_error_value_without_file(interp, "Creating pipe", &error)
     };
-    // A pty child takes callproc.c's vfork path, whose child_setup gives
-    // it back the open-files limit Emacs started with: no spawn attribute
-    // sets a limit, so such a child is made on the fork path.
-    if (input_pty || output_pty) && nofile_limit_to_restore().is_some() {
-        return Ok(None);
-    }
-    // create_process: allocate_pty when a stream is to be on a pty, then
-    // its tty; when no pty is to be had, both streams are pipes.
-    let pty = if input_pty || output_pty {
-        open_emacs_pty(interp, true)?
-    } else {
-        None
-    };
-    let (input_pty, output_pty) = if pty.is_some() {
-        (input_pty, output_pty)
-    } else {
-        (false, false)
-    };
-    let (pty_master, pty_slave, pty_name) = match pty {
-        Some((master, slave, name)) => {
-            let Some(name) = name.and_then(|name| std::ffi::CString::new(name).ok()) else {
-                return Ok(None);
-            };
-            (Some(master), Some(slave), Some(name))
-        }
-        None => (None, None, None),
-    };
-    let input = (!input_pty)
-        .then(emacs_pipe)
-        .transpose()
-        .map_err(pipe_error)?;
-    let output = (!output_pty)
-        .then(emacs_pipe)
-        .transpose()
-        .map_err(pipe_error)?;
+    let (input_read, input_write) = emacs_pipe().map_err(pipe_error)?;
+    let (output_read, output_write) = emacs_pipe().map_err(pipe_error)?;
     close_stderr_process_input(interp, stderr_process_id);
-    // create_process: the channel Emacs reads and the one it writes, each
-    // a pipe or the pty, must fit an fd_set; none is spawned otherwise.
-    let master = pty_master.as_ref().map(|master| master.as_raw_fd());
-    let inchannel = output.as_ref().map(|(read, _)| read.as_raw_fd()).or(master);
-    let outchannel = input
-        .as_ref()
-        .map(|(_, write)| write.as_raw_fd())
-        .or(master);
-    if beyond_fd_setsize(&[inchannel, outchannel].map(|fd| fd.unwrap_or(-1))) {
+    // create_process: the channel Emacs reads and the one it writes must
+    // fit an fd_set; none is spawned otherwise.
+    if beyond_fd_setsize(&[output_read.as_raw_fd(), input_write.as_raw_fd()]) {
         return Err(fd_setsize_error(interp, "Creating pipe"));
     }
+    #[cfg(unix)]
+    let exec_monitor = exec_monitor_pipe(interp)?;
     setup_coding(interp, env)?;
     let stdio = [
-        input
-            .as_ref()
-            .map_or(SpawnFd::Pty, |(read, _)| SpawnFd::Fd(read.as_raw_fd())),
-        output
-            .as_ref()
-            .map_or(SpawnFd::Pty, |(_, write)| SpawnFd::Fd(write.as_raw_fd())),
+        SpawnFd::Fd(input_read.as_raw_fd()),
+        SpawnFd::Fd(output_write.as_raw_fd()),
         stderr.map_or(SpawnFd::Stdout, SpawnFd::Fd),
     ];
-    let pid = match emacs_posix_spawn(&image, Some(&directory), stdio, pty_name.as_deref()) {
-        Ok(pid) => pid,
-        Err(_) if pty_name.is_some() => return Ok(None),
-        Err(error) => return Err(vfork_error(interp, &error)),
-    };
+    let pid = emacs_posix_spawn(&image, Some(&directory), stdio)
+        .map_err(|error| vfork_error(interp, &error))?;
     // Only the child keeps its ends.
-    let child = SpawnedChild::new(
-        pid as u32,
-        input.map(|(_, write)| write),
-        output.map(|(read, _)| read),
-        None,
-    );
-    // As on the fork path: with the pty on both sides, one slave is held
-    // until the child's output is drained; the master is both channels.
-    let (pty_input, pty_output, pty_slave_guard) = match (pty_master, input_pty, output_pty) {
-        (Some(master), true, true) => {
-            let input = master
-                .try_clone()
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            (Some(input), Some(master), pty_slave)
-        }
-        (Some(master), true, false) => (Some(master), None, None),
-        (Some(master), false, true) => (None, Some(master), pty_slave),
-        _ => (None, None, None),
-    };
+    drop((input_read, output_write));
+    #[cfg(unix)]
+    await_exec_monitor(exec_monitor);
+    let child = SpawnedChild::new(pid as u32, Some(input_write), Some(output_read), None);
     Ok(Some(RunningProcess {
         child,
         terminate_on_drop: true,
-        pty_input,
-        pty_output,
-        pty_slave_guard,
-        pty_slave_name: pty_name.map(|name| name.to_string_lossy().into_owned()),
+        pty_input: None,
+        pty_output: None,
+        pty_slave_name: None,
         stdout_at_end: false,
         stderr_at_end: false,
     }))
@@ -2068,35 +2559,12 @@ pub(crate) const PARENT_OPENS_PTY_TTY: bool =
     !cfg!(any(target_os = "linux", target_os = "android"));
 
 #[cfg(unix)]
-/// allocate_pty, then the pty's tty, emacs_open (PTY_NAME, O_RDWR |
-/// O_NOCTTY) ("Opening pty"), with, for a child (CHILD_SETUP_TTY),
-/// child_setup_tty's modes; create_pty, which forks nothing, leaves the
-/// pty's modes as the system gives them (DONT_REOPEN_PTY is not defined).
-/// None when allocate_pty finds no pty.
-pub(crate) fn open_emacs_pty(
-    interp: &Interpreter,
-    child_setup_tty: bool,
-) -> Result<Option<(fs::File, fs::File, Option<String>)>, LispError> {
-    let Some((master, name)) = allocate_pty() else {
-        return Ok(None);
-    };
-    let slave = open_pty_tty(interp, &name, child_setup_tty)?;
-    Ok(Some((
-        master,
-        slave,
-        Some(name.to_string_lossy().into_owned()),
-    )))
-}
-
-#[cfg(unix)]
 /// create_process's and create_pty's emacs_open (PTY_NAME, O_RDWR |
-/// O_NOCTTY, 0) of the pty's tty, report_file_error ("Opening pty", Qnil)
-/// when it fails, and for a child (CHILD_SETUP_TTY) child_setup_tty's
-/// modes on it.
+/// O_NOCTTY, 0) of the pty's tty, where the parent opens it, and
+/// report_file_error ("Opening pty", Qnil) when it fails.
 pub(crate) fn open_pty_tty(
     interp: &Interpreter,
     name: &std::ffi::CStr,
-    child_setup_tty: bool,
 ) -> Result<fs::File, LispError> {
     // SAFETY: NAME is NUL-terminated; open returns a fresh descriptor or -1.
     let fd = unsafe {
@@ -2113,32 +2581,7 @@ pub(crate) fn open_pty_tty(
         ));
     }
     // SAFETY: ownership of the fresh descriptor is transferred exactly once.
-    let slave = unsafe { fs::File::from_raw_fd(fd) };
-    let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
-    // SAFETY: `slave' is a live terminal fd and `tcgetattr' initializes the
-    // termios value on success.
-    if child_setup_tty
-        && unsafe { libc::tcgetattr(slave.as_raw_fd(), attributes.as_mut_ptr()) } == 0
-    {
-        // SAFETY: the successful `tcgetattr' initialized `attributes'.
-        let mut attributes = unsafe { attributes.assume_init() };
-        // GNU leaves canonical input and EOF processing enabled, while
-        // disabling echo and CRLF expansion because the editor owns those
-        // presentation concerns.  In particular, canonical VEOF is what
-        // makes `process-send-eof' meaningful for PTY subprocesses.
-        attributes.c_oflag |= libc::OPOST;
-        attributes.c_oflag &= !libc::ONLCR;
-        attributes.c_lflag &= !libc::ECHO;
-        attributes.c_lflag |= libc::ISIG | libc::ICANON;
-        attributes.c_iflag &= !libc::ISTRIP;
-        attributes.c_cflag = (attributes.c_cflag & !libc::CSIZE) | libc::CS8;
-        attributes.c_cc[libc::VEOF] = 4;
-        // SAFETY: `tcsetattr' operates on initialized termios storage and
-        // the same live terminal fd.  emacs_set_tty's failure is ignored,
-        // as child_setup_tty ignores it.
-        unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &attributes) };
-    }
-    Ok(slave)
+    Ok(unsafe { fs::File::from_raw_fd(fd) })
 }
 
 #[cfg(unix)]
@@ -5015,6 +5458,37 @@ pub(crate) fn wait_pumping_processes(
                 check_async_connections(interp, env, target_process_id)?;
             progressed |= checked;
             async_check_at = retry_for_async.then(|| pass_start + ASYNC_RETRY);
+        }
+        // "If status of something has changed, and no input is available,
+        // notify the user of the change right away", then "Don't wait for
+        // output from a non-running process.  Just read whatever data has
+        // already been received": a WAIT_PROC whose child has ended ends the
+        // wait here, before any other channel is read, so another process's
+        // unread output (a `:stderr' pipe's) holds every sentinel back.
+        if let Some(process_id) = target_process_id
+            && interp.process_child_ended(process_id)?
+        {
+            // timer_check, which the top of every iteration runs first.
+            if run_timers {
+                interp.run_wait_loop_top_events(env)?;
+            }
+            // handle_child_signal has reaped every child whose status
+            // changed, taking a terminated one's channel out of the mask.
+            for other_id in interp.live_external_process_ids() {
+                interp.refresh_process_id(other_id)?;
+            }
+            if interp.any_process_exit_awaits_notification() && !interp.process_input_available() {
+                for (notified_id, event) in interp.take_pending_subprocess_exit_events_for(None) {
+                    // status_notify reads what remains before the sentinel.
+                    let (stdout, stderr) = interp.poll_process_output(notified_id)?;
+                    deliver_process_streams(interp, notified_id, &stdout, &stderr, env)?;
+                    run_process_sentinel(interp, notified_id, &event, env)?;
+                    delivered = true;
+                }
+            }
+            let (stdout, stderr) = interp.poll_process_output(process_id)?;
+            delivered |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
+            break;
         }
         progressed |= pump_external_process_output_for(interp, env, only_process_id)?;
         progressed |= pump_connection_processes_for(interp, env, only_process_id, true)?;

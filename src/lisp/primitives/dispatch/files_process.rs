@@ -2994,6 +2994,10 @@ define_dispatch!(
                 let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
                 crate::lisp::primitives::processes::wait_while_connecting(interp, env, process_id)?;
+                // DATAGRAM_CONN_P: a datagram socket takes no EOF.
+                if interp.process_datagram_address(process_id)?.is_some() {
+                    return Ok(process);
+                }
                 // Fprocess_send_eof: a coding that requires flushing is
                 // flushed first.
                 crate::lisp::primitives::processes::flush_process_encoder(interp, process_id, env)?;
@@ -3979,7 +3983,7 @@ fn make_process_value(
                 return Err(procs::fd_setsize_error(interp, "Opening pty"));
             }
             let slave = if procs::PARENT_OPENS_PTY_TTY {
-                Some(procs::open_pty_tty(interp, &pty_name, false)?)
+                Some(procs::open_pty_tty(interp, &pty_name)?)
             } else {
                 None
             };

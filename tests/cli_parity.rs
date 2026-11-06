@@ -79,7 +79,7 @@ impl Corpus {
             let text = String::from_utf8_lossy(bytes)
                 .replace(&binary.display().to_string(), "EMACS")
                 .replace(&self.directory.display().to_string(), "CORPUS");
-            replace_addresses(&text)
+            replace_pty_numbers(&replace_addresses(&text))
         };
         (normalize(&stdout), normalize(&stderr), status.code())
     }
@@ -160,6 +160,26 @@ fn replace_addresses(text: &str) -> String {
         let digits = after
             .find(|c: char| !c.is_ascii_hexdigit())
             .unwrap_or(after.len());
+        rest = &after[digits..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A pseudo-terminal's number (`/dev/pts/N') is whichever the system had
+/// free; a message naming one names it as `/dev/pts/N'.
+fn replace_pty_numbers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find("/dev/pts/") {
+        out.push_str(&rest[..index + "/dev/pts/".len()]);
+        let after = &rest[index + "/dev/pts/".len()..];
+        let digits = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        if digits > 0 {
+            out.push('N');
+        }
         rest = &after[digits..];
     }
     out.push_str(rest);
@@ -5029,6 +5049,303 @@ fn the_review_of_round_334_is_answered_as_gnu_answers() {
    (set-process-sentinel s #'ignore)
    (prog1 (list (plist-get (process-contact s t) :filter) (plist-get (process-contact s t) :sentinel))
      (delete-process s))))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn process_descriptors_are_gnu_s() {
+    // A pty child's tty opened by the child (emacs_spawn's vfork path):
+    // its modes (child_setup_tty), its controlling terminal, the streams
+    // a mixed connection type puts on the tty, the order of a shared
+    // stdout and stderr, a tty closed by a child still running (EIO),
+    // a background job keeping it, and the one descriptor Emacs holds;
+    // an exec failure on a pty and on a pipe, a pty's EOF, interrupt
+    // and input.  Then the descriptors deactivate_process closes:
+    // delete-process's SIGKILL to the child's process group and its
+    // descriptors closed at once; process-send-eof's null device as the
+    // new output channel, for a child, a pipe process and a connection,
+    // and none for a datagram socket; and the master of an input-only
+    // pty, which no open_fd slot holds and nothing closes.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun run (tag args &optional ctype)
+  (let* ((out nil) (ev nil)
+         (p (make-process :name tag :command args :connection-type (or ctype 'pty) :noquery t
+                          :filter (lambda (_ s) (push s out)) :sentinel (lambda (_ e) (push e ev)))))
+    (let ((n 0)) (while (and (< n 100) (or (process-live-p p) (null ev))) (accept-process-output p 0.05) (setq n (1+ n))))
+    (list (process-status p) (process-exit-status p) (apply #'concat (reverse out)) (reverse ev))))
+(show "s1" (lambda () (run "s1" '("sh" "-c" "stty -a | tr -s ' ' | sed 's/; /\\n/g' | grep -v rows | grep -v columns | grep -v speed"))))
+(show "s2" (lambda () (run "s2" '("sh" "-c" "tty >/dev/null && echo tty; (exec 3</dev/tty) 2>/dev/null && echo ctty; true"))))
+(show "s3" (lambda () (run "s3" '("sh" "-c" "echo out; echo err >&2; echo out2") '(pty . pipe))))
+(show "s4" (lambda () (run "s4" '("sh" "-c" "echo out; echo err >&2; echo out2") '(pipe . pty))))
+(show "s5" (lambda () (run "s5" '("sh" "-c" "test -t 0 && echo in-tty; test -t 1 && echo out-tty; test -t 2 && echo err-tty; true") '(pty . pipe))))
+(show "s6" (lambda () (run "s6" '("sh" "-c" "test -t 0 && echo in-tty; test -t 1 && echo out-tty; test -t 2 && echo err-tty; true") '(pipe . pty))))
+(show "s7" (lambda () (let* ((out nil) (p (make-process :name "s7" :command '("sh" "-c" "echo a; exec >/dev/null 2>&1 </dev/null; sleep 1") :connection-type 'pty :noquery t :filter (lambda (_ s) (push s out)))))
+   (dotimes (_ 5) (accept-process-output p 0.05))
+   (list (process-status p) (apply #'concat (reverse out))
+         (progn (while (process-live-p p) (accept-process-output p 0.1)) (process-status p)) (process-exit-status p)))))
+(show "s8" (lambda () (let* ((out nil) (ev nil) (p (make-process :name "s8" :command '("sh" "-c" "echo a; (sleep 1; echo late) & exit 3") :connection-type 'pty :noquery t
+                          :filter (lambda (_ s) (push s out)) :sentinel (lambda (_ e) (push e ev)))))
+   (let ((n 0)) (while (and (< n 60) (null ev)) (accept-process-output p 0.05) (setq n (1+ n))))
+   (list (process-status p) (process-exit-status p) (apply #'concat (reverse out)) (reverse ev)))))
+(defun nfd () (if (file-directory-p "/proc/self/fd") (length (directory-files "/proc/self/fd")) 0))
+(show "s9" (lambda () (let* ((before (nfd)) (p (make-process :name "s9" :command '("sleep" "2") :connection-type 'pty :noquery t)))
+   (prog1 (- (nfd) before) (delete-process p)))))
+(show "s10" (lambda () (let* ((before (nfd)) (p (make-process :name "s10" :command '("sleep" "2") :connection-type '(pty . pipe) :noquery t)))
+   (prog1 (- (nfd) before) (delete-process p))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun run (tag args &optional ctype)
+  (let* ((out nil) (ev nil)
+         (p (make-process :name tag :command args :connection-type (or ctype 'pty) :noquery t
+                          :filter (lambda (_ s) (push s out)) :sentinel (lambda (_ e) (push e ev)))))
+    (let ((n 0)) (while (and (< n 100) (or (process-live-p p) (null ev))) (accept-process-output p 0.05) (setq n (1+ n))))
+    (list (process-status p) (process-exit-status p) (apply #'concat (reverse out)) (reverse ev))))
+(let ((coding-system-for-write 'binary)) (write-region "\0\1garbage" nil "badexe" nil 0))
+(set-file-modes "badexe" #o755)
+(defvar bad (expand-file-name "badexe"))
+(show "e1" (lambda () (run "e1" (list bad))))
+(show "e2" (lambda () (run "e2" (list bad) 'pipe)))
+(show "e3" (lambda () (run "e3" (list bad) '(pty . pipe))))
+(show "e4" (lambda () (run "e4" (list bad) '(pipe . pty))))
+(show "e5" (lambda () (let* ((out nil) (p (make-process :name "e5" :command '("cat") :connection-type 'pty :noquery t :filter (lambda (_ s) (push s out)))))
+   (process-send-string p "abc\n") (process-send-eof p)
+   (let ((n 0)) (while (and (< n 60) (process-live-p p)) (accept-process-output p 0.05) (setq n (1+ n))))
+   (list (process-status p) (apply #'concat (reverse out))))))
+(show "e6" (lambda () (let* ((out nil) (p (make-process :name "e6" :command '("sh" "-c" "trap 'echo int' INT; while :; do sleep 0.05; done") :connection-type 'pty :noquery t :filter (lambda (_ s) (push s out)))))
+   (sleep-for 0.3) (interrupt-process p t) (sleep-for 0.3) (accept-process-output p 0.1)
+   (prog1 (list (process-status p) (apply #'concat (reverse out))) (delete-process p)))))
+(show "e7" (lambda () (let* ((p (make-process :name "e7" :command '("sh" "-c" "stty -echo; read x; echo got:$x") :connection-type 'pty :noquery t)) (out nil))
+   (set-process-filter p (lambda (_ s) (push s out)))
+   (sleep-for 0.2) (process-send-string p "hello\n")
+   (let ((n 0)) (while (and (< n 60) (process-live-p p)) (accept-process-output p 0.05) (setq n (1+ n))))
+   (list (process-status p) (process-exit-status p) (apply #'concat (reverse out)))))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun fds () (mapcar (lambda (f) (cons f (let ((l (file-symlink-p (concat "/proc/self/fd/" f)))) (and l (replace-regexp-in-string "\\[[0-9]+\\]" "" l)))))
+                      (directory-files "/proc/self/fd" nil "^[0-9]")))
+(defun new (now before) (sort (delq nil (mapcar #'cdr (seq-difference now before))) #'string<))
+(defun settle (p) (let ((n 0)) (while (and (< n 100) (process-live-p p)) (accept-process-output p 0.05) (setq n (1+ n)))))
+(make-process :name "warm" :command '("true") :noquery t)
+(sleep-for 0.2)
+(show "g1" (lambda () (let* ((out nil) (p (make-process :name "g1" :command '("sh" "-c" "sleep 30 & echo $!; wait") :noquery t :filter (lambda (_ s) (push s out)))))
+   (while (null out) (accept-process-output p 0.05))
+   (let ((child (string-to-number (car out))))
+     (delete-process p) (sleep-for 0.3)
+     (let ((st (ignore-errors (with-temp-buffer (insert-file-contents (format "/proc/%d/stat" child)) (buffer-string)))))
+       (if (and st (not (equal (nth 2 (split-string st)) "Z"))) 'alive 'dead))))))
+(show "f1" (lambda () (let* ((before (fds)) (p (make-process :name "f1" :command '("sleep" "2") :connection-type 'pipe :noquery t)))
+   (let ((mid (fds))) (process-send-eof p)
+     (prog1 (list (new mid before) (new (fds) before)) (delete-process p))))))
+(show "f2" (lambda () (let* ((before (fds)) (p (make-process :name "f2" :command '("sleep" "2") :connection-type 'pipe :noquery t)))
+   (delete-process p) (new (fds) before))))
+(show "f3" (lambda () (let* ((before (fds)) (p (make-process :name "f3" :command '("sh" "-c" "exit 0") :connection-type '(pty . pipe) :noquery t)))
+   (settle p) (accept-process-output nil 0.1) (list (process-status p) (new (fds) before)))))
+(show "f4" (lambda () (let* ((before (fds)) (p (make-pipe-process :name "f4" :noquery t)))
+   (let ((mid (fds))) (process-send-eof p) (process-send-string p "x")
+     (prog1 (list (new mid before) (new (fds) before)) (delete-process p))))))
+(show "f5" (lambda () (let* ((before (fds)) (p (make-process :name "f5" :command '("cat") :connection-type 'pipe :noquery t)))
+   (process-send-eof p) (process-send-eof p)
+   (prog1 (new (fds) before) (delete-process p)))))
+(show "d1" (lambda () (let* ((got nil) (srv (make-network-process :name "dsrv" :type 'datagram :host "127.0.0.1" :service t :server t :noquery t :filter (lambda (_ s) (push s got))))
+        (port (process-contact srv :service))
+        (c (make-network-process :name "dcl" :type 'datagram :host "127.0.0.1" :service port :noquery t)))
+   (process-send-eof c) (process-send-string c "after-eof")
+   (dotimes (_ 10) (accept-process-output nil 0.02))
+   (prog1 (list (process-status c) got) (delete-process c) (delete-process srv)))))
+(show "f6" (lambda () (let* ((before (fds)) (srv (make-network-process :name "s6" :host "127.0.0.1" :service t :server t :noquery t))
+        (c (make-network-process :name "c6" :host "127.0.0.1" :service (process-contact srv :service) :noquery t)))
+   (let ((mid (fds))) (process-send-eof c)
+     (prog1 (list (new mid before) (new (fds) mid)) (delete-process c) (delete-process srv)))))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn process_spawn_waits_and_ends_are_gnu_s() {
+    // The review of round 335: delete-process's SIGKILL to the group of a
+    // child still alive only, a child that has exited (unreaped) leaving
+    // the group it started alone; a child's last output kept when a job it
+    // left in the background holds its pipe; a `:stderr' pipe's unread
+    // output holding the child's sentinel back through
+    // accept-process-output on the child (status_notify only when no input
+    // is pending, WAIT_PROC's own output read first); status_message's
+    // "deleted" for a network connection alone; a childless pty's one
+    // master.  Then create_process at the descriptor limit: the pipes and
+    // the exec monitor's two descriptors made in the parent ("Creating
+    // pipe"), the pty's tty opened by the child (emacs_perror on Emacs's
+    // own standard error and exit 125), and room for all.  Last, the top
+    // of wait_reading_process_output's loop for a WAIT_PROC that has ended:
+    // timer_check first, every exited child reaped and out of the input
+    // mask, status_notify once no input is pending, and a stopped WAIT_PROC
+    // ending the wait at once.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun alive (pid)
+  (let ((st (ignore-errors (with-temp-buffer (insert-file-contents (format "/proc/%d/stat" pid)) (buffer-string)))))
+    (if (and st (not (equal (nth 2 (split-string st)) "Z"))) 'alive 'dead)))
+(defun fds () (mapcar (lambda (f) (cons f (let ((l (file-symlink-p (concat "/proc/self/fd/" f)))) (and l (replace-regexp-in-string "\\[[0-9]+\\]" "" l)))))
+                      (directory-files "/proc/self/fd" nil "^[0-9]")))
+(defun new (now before) (sort (delq nil (mapcar #'cdr (seq-difference now before))) #'string<))
+(make-process :name "warm" :command '("true") :noquery t)
+(sleep-for 0.2)
+(dolist (mode '(busy call))
+  (show mode (lambda () (let* ((out nil)
+         (p (make-process :name "g" :command '("sh" "-c" "sleep 30 & echo $!; exec 1>&- 2>&-; sleep 0.2; exit 0") :connection-type 'pipe :noquery t
+                          :filter (lambda (_ s) (push s out)))))
+    (while (null out) (accept-process-output p 0.05))
+    (if (eq mode 'busy)
+        (let ((end (+ (float-time) 0.6))) (while (< (float-time) end)))
+      (call-process "sleep" nil nil nil "0.6"))
+    (let ((child (string-to-number (car out))))
+      (delete-process p) (sleep-for 0.2)
+      (prog1 (list (process-status p) (alive child)) (ignore-errors (signal-process child 'KILL))))))))
+(dolist (ct '(pipe pty))
+  (show ct (lambda () (let* ((out nil) (ev nil) (p (make-process :name "bg" :command '("sh" "-c" "echo a; (sleep 1; echo b) &") :connection-type ct :noquery t :filter (lambda (_ s) (push s out)) :sentinel (lambda (_ e) (push e ev)))))
+    (let ((t0 (float-time))) (while (< (- (float-time) t0) 0.4)))
+    (list (process-status p) (progn (dotimes (_ 5) (accept-process-output nil 0.1)) out) ev)))))
+(dolist (ct '(pty pipe))
+  (show ct (lambda () (let* ((eo nil) (out nil) (ev nil) (n 0)
+         (errp (make-pipe-process :name "e" :noquery t :filter (lambda (_ s) (push s eo))))
+         (p (make-process :name "se" :command '("sh" "-c" "echo out; echo err >&2; exit 1") :connection-type ct :noquery t :stderr errp
+                          :filter (lambda (_ s) (push s out)) :sentinel (lambda (_ e) (push e ev)))))
+    (let ((end (+ (float-time) 0.3))) (while (< (float-time) end)))
+    (while (and (< n 60) (or (process-live-p p) (null ev))) (accept-process-output p 0.05) (setq n (1+ n)))
+    (list (process-status p) out ev n (progn (accept-process-output nil 0.3) eo) (process-status errp))))))
+(show "pipe-delete" (lambda () (let* ((ev nil) (p (make-pipe-process :name "pp" :noquery t :sentinel (lambda (_ e) (push e ev)))))
+  (delete-process p) (list ev (process-status p) (process-exit-status p)))))
+(show "server-delete" (lambda () (let* ((ev nil) (s (make-network-process :name "s" :host "127.0.0.1" :service t :server t :noquery t :sentinel (lambda (_ e) (push e ev)))))
+  (delete-process s) (list ev (process-status s) (process-exit-status s)))))
+(show "serial-delete" (lambda () (let* ((m (make-process :name "m" :command nil :connection-type 'pty :noquery t))
+       (s (make-serial-process :port (process-tty-name m) :speed 9600 :noquery t)) (ev nil))
+  (set-process-sentinel s (lambda (_ e) (push e ev)))
+  (delete-process s) (prog1 (list ev (process-status s) (process-exit-status s)) (delete-process m)))))
+(dolist (ct '(pty (pipe . pty) (pty . pipe)))
+  (show ct (lambda ()
+    (let* ((before (fds)) (p (make-process :name "cl" :command nil :connection-type ct :noquery t)))
+      (list (new (fds) before) (condition-case e (process-send-eof p) (error e)) (new (fds) before)
+            (condition-case e (process-send-string p "abc") (error e)) (process-status p)
+            (progn (delete-process p) (new (fds) before))))))))"##,
+        r##"(progn
+(make-process :name "warm" :command '("true") :noquery t :connection-type 'pty)
+(sleep-for 0.3)
+(defvar procs nil)
+(condition-case e (while t (push (make-pipe-process :name "f" :noquery t) procs)) (error (princ (format "filled %S\n" (car e)))))
+(defvar socks nil)
+(condition-case e (while t (push (make-network-process :name "u" :type 'datagram :server t :host "127.0.0.1" :service t :noquery t) socks)) (error (princ (format "filled %S\n" (car e)))))
+(dotimes (_ 4) (delete-process (pop procs)))
+(dotimes (_ (- 16 3)) (push (make-network-process :name "u" :type 'datagram :server t :host "127.0.0.1" :service t :noquery t) socks))
+(let* ((out nil) (ev nil)
+       (p (condition-case e (make-process :name "x" :command '("sh" "-c" "echo hi") :connection-type '(pty . pipe) :noquery t
+                         :filter (lambda (_ s) (push s out)) :sentinel (lambda (_ e) (push e ev)))
+            (error (princ (format "error %S\n" e)) nil))))
+  (when p
+    (let ((n 0)) (while (and (< n 40) (or (process-live-p p) (null ev))) (accept-process-output p 0.05) (setq n (1+ n))))
+    (princ (format "%S %S %S %S\n" (process-status p) (process-exit-status p) (apply #'concat (reverse out)) ev)))))"##,
+        r##"(progn
+(make-process :name "warm" :command '("true") :noquery t :connection-type 'pty)
+(sleep-for 0.3)
+(defvar procs nil)
+(condition-case e (while t (push (make-pipe-process :name "f" :noquery t) procs)) (error (princ (format "filled %S\n" (car e)))))
+(defvar socks nil)
+(condition-case e (while t (push (make-network-process :name "u" :type 'datagram :server t :host "127.0.0.1" :service t :noquery t) socks)) (error (princ (format "filled %S\n" (car e)))))
+(dotimes (_ 4) (delete-process (pop procs)))
+(dotimes (_ (- 16 4)) (push (make-network-process :name "u" :type 'datagram :server t :host "127.0.0.1" :service t :noquery t) socks))
+(let* ((out nil) (ev nil)
+       (p (condition-case e (make-process :name "x" :command '("sh" "-c" "echo hi") :connection-type '(pty . pipe) :noquery t
+                         :filter (lambda (_ s) (push s out)) :sentinel (lambda (_ e) (push e ev)))
+            (error (princ (format "error %S\n" e)) nil))))
+  (when p
+    (let ((n 0)) (while (and (< n 40) (or (process-live-p p) (null ev))) (accept-process-output p 0.05) (setq n (1+ n))))
+    (princ (format "%S %S %S %S\n" (process-status p) (process-exit-status p) (apply #'concat (reverse out)) ev)))))"##,
+        r##"(progn
+(make-process :name "warm" :command '("true") :noquery t :connection-type 'pty)
+(sleep-for 0.3)
+(defvar procs nil)
+(condition-case e (while t (push (make-pipe-process :name "f" :noquery t) procs)) (error (princ (format "filled %S\n" (car e)))))
+(defvar socks nil)
+(condition-case e (while t (push (make-network-process :name "u" :type 'datagram :server t :host "127.0.0.1" :service t :noquery t) socks)) (error (princ (format "filled %S\n" (car e)))))
+(dotimes (_ 4) (delete-process (pop procs)))
+(dotimes (_ (- 16 5)) (push (make-network-process :name "u" :type 'datagram :server t :host "127.0.0.1" :service t :noquery t) socks))
+(let* ((out nil) (ev nil)
+       (p (condition-case e (make-process :name "x" :command '("sh" "-c" "echo hi") :connection-type '(pty . pipe) :noquery t
+                         :filter (lambda (_ s) (push s out)) :sentinel (lambda (_ e) (push e ev)))
+            (error (princ (format "error %S\n" e)) nil))))
+  (when p
+    (let ((n 0)) (while (and (< n 40) (or (process-live-p p) (null ev))) (accept-process-output p 0.05) (setq n (1+ n))))
+    (princ (format "%S %S %S %S\n" (process-status p) (process-exit-status p) (apply #'concat (reverse out)) ev)))))"##,
+        r##"(progn
+(make-process :name "warm" :command '("true") :noquery t :connection-type 'pty)
+(sleep-for 0.3)
+(defvar procs nil)
+(condition-case e (while t (push (make-pipe-process :name "f" :noquery t) procs)) (error (princ (format "filled %S\n" (car e)))))
+(defvar socks nil)
+(condition-case e (while t (push (make-network-process :name "u" :type 'datagram :server t :host "127.0.0.1" :service t :noquery t) socks)) (error (princ (format "filled %S\n" (car e)))))
+(dotimes (_ 4) (delete-process (pop procs)))
+(dotimes (_ (- 16 6)) (push (make-network-process :name "u" :type 'datagram :server t :host "127.0.0.1" :service t :noquery t) socks))
+(let* ((out nil) (ev nil)
+       (p (condition-case e (make-process :name "x" :command '("sh" "-c" "echo hi") :connection-type '(pty . pipe) :noquery t
+                         :filter (lambda (_ s) (push s out)) :sentinel (lambda (_ e) (push e ev)))
+            (error (princ (format "error %S\n" e)) nil))))
+  (when p
+    (let ((n 0)) (while (and (< n 40) (or (process-live-p p) (null ev))) (accept-process-output p 0.05) (setq n (1+ n))))
+    (princ (format "%S %S %S %S\n" (process-status p) (process-exit-status p) (apply #'concat (reverse out)) ev)))))"##,
+        r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(show "own" (lambda () (let* ((log nil)
+       (p (make-process :name "x" :command '("sh" "-c" "echo hi")
+                        :filter (lambda (_p s) (push (list 'out s) log))
+                        :sentinel (lambda (_p e) (push (list 'sent e) log)))))
+  (busy 0.5)
+  (list (accept-process-output p) (reverse log) (accept-process-output p) (reverse log)))))
+(show "timer" (lambda () (let* ((fired nil) (p (make-process :name "x" :command '("true") :sentinel #'ignore)))
+  (busy 0.3)
+  (run-at-time 0 nil (lambda () (setq fired t)))
+  (list (accept-process-output p) fired (process-status p)))))
+(show "timer2" (lambda () (let* ((fired nil) (n 0) (end (+ (float-time) 3)) (p (make-process :name "x" :command '("true") :sentinel #'ignore)))
+  (run-at-time 0.2 nil (lambda () (setq fired t)))
+  (while (and (not fired) (< (float-time) end)) (accept-process-output p 0.1) (setq n (1+ n)))
+  (list fired (>= (float-time) end)))))
+(show "siblings" (lambda () (let* ((log nil)
+       (q (make-process :name "q" :command '("true") :sentinel (lambda (_p e) (push (list 'q e) log))))
+       (p (make-process :name "p" :command '("true") :sentinel (lambda (_p e) (push (list 'p e) log)))))
+  (busy 0.4)
+  (list (accept-process-output p) (reverse log) (accept-process-output p) (accept-process-output nil 0.1) (reverse log)))))
+(show "loop" (lambda () (let* ((done nil) (n 0)
+       (q (make-process :name "q" :command '("true")))
+       (p (make-process :name "p" :command '("true") :sentinel (lambda (_p _e) (setq done t)))))
+  (busy 0.3)
+  (while (and (not done) (< n 50)) (accept-process-output p 0.1) (setq n (1+ n)))
+  (list done (< n 50)))))
+(show "jto" (lambda () (let* ((log nil)
+       (q (make-process :name "q" :command '("sleep" "0.1") :sentinel (lambda (_p e) (push (list 'q e) log))))
+       (p (make-process :name "p" :command '("sleep" "0.1") :sentinel (lambda (_p e) (push (list 'p e) log)))))
+  (busy 0.4)
+  (list (accept-process-output p nil nil t) (reverse log) (accept-process-output p nil nil 0) (reverse log)))))
+(show "jto2" (lambda () (let* ((log nil)
+       (q (make-process :name "q2" :command '("true") :sentinel (lambda (_p e) (push (list 'q e) log))))
+       (p (make-process :name "p2" :command '("sh" "-c" "sleep 0.3; echo hi") :filter (lambda (_p s) (push (list 'pout s) log)) :sentinel (lambda (_p e) (push (list 'p e) log)))))
+  (busy 0.2)
+  (list (accept-process-output p 2 nil t) (reverse log) (accept-process-output p 2 nil t) (reverse log)))))
+(show "stopped" (lambda () (let* ((log nil)
+       (p (make-process :name "s" :command '("sleep" "5") :sentinel (lambda (_p e) (push (list 'p e) log)))))
+  (stop-process p)
+  (busy 0.3)
+  (let ((t0 (float-time)))
+    (prog1 (list (accept-process-output p 1) (process-status p) (< (- (float-time) t0) 0.5)) (delete-process p)))))))"##,
     ] {
         assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
     }
