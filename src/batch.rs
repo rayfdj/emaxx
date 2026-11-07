@@ -974,9 +974,14 @@ fn initialize_interpreter_attempt(
             BatchRunOutcome::Exit(0) => {
                 // The embedder's session goes on past the batch run's
                 // `kill-emacs', which no process outlives: Vrun_hooks is
-                // set again, as a process starting afresh has it.
+                // set again, sentinels run and redisplay is not inhibited,
+                // as in a process starting afresh.
                 interpreter.take_pending_termination();
                 interpreter.hooks_cleared = false;
+                // init_process_emacs: inhibit_sentinels = 0; and
+                // `inhibit-redisplay' nil, as syms_of_xdisp makes it.
+                interpreter.inhibit_sentinels = false;
+                interpreter.set_c_variable("inhibit-redisplay", Value::Nil);
             }
             other => return Err(format!("GNU batch startup did not complete: {other:?}")),
         }

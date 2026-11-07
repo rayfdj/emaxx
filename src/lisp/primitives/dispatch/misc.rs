@@ -590,12 +590,10 @@ define_dispatch!(
                 // process.  GNU uses safe_run_hooks in this mode: an ordinary
                 // hook error is reported but cannot cancel orderly shutdown.
                 safe_run_hooks(interp, &cached_symbol!("kill-emacs-hook").symbol(), env)?;
-                // shut_down_emacs (0, ...): no hook runs from now on, each
-                // buffer is auto-saved and the files unlocked (the
-                // subprocesses are hung up when the process ends).
-                interp.hooks_cleared = true;
-                crate::lisp::primitives::file_io::do_auto_save(interp, env, Value::T, Value::Nil)?;
-                unlock_all_files(interp, env)?;
+                // shut_down_emacs (0, ...): no hook or sentinel runs from
+                // now on, the connections are deleted and the subprocesses
+                // hung up, each buffer is auto-saved and the files unlocked.
+                crate::lisp::primitives::interactive::shut_down_emacs(interp, env)?;
                 // The auto-save list goes, Emacs exiting deliberately.
                 if let Some(list_file) = interp
                     .lookup_var_key(cached_symbol!("auto-save-list-file-name"), env)

@@ -3925,6 +3925,36 @@ pub(crate) fn delete_process_notifying(
     crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)
 }
 
+/// process.c:kill_buffer_processes: the processes of BUFFER_ID, or with
+/// None every process, as FOR_EACH_PROCESS reaches each on Vprocess_alist:
+/// a network, serial or pipe connection given to Fdelete_process, a
+/// subprocess whose channel is open sent SIGHUP (process_send_signal
+/// (proc, SIGHUP, Qnil, 1)).  The walk follows each cell's cdr after its
+/// process is dealt with, so a process a deletion's status_notify took off
+/// the alist before the walk reached it is passed over, unless the cell
+/// that led to it had left the alist first.
+pub(crate) fn kill_buffer_processes(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    buffer_id: Option<u64>,
+) -> Result<(), LispError> {
+    let cells = interp.process_alist_cells();
+    let mut index = (!cells.is_empty()).then_some(0);
+    while let Some(at) = index {
+        let process_id = interp.process_alist_cell_id(cells[at]);
+        match interp.kill_buffer_process_action(cells[at], buffer_id) {
+            Some(true) => delete_process_notifying(interp, process_id, env)?,
+            Some(false) => {
+                #[cfg(unix)]
+                interp.signal_process_group(process_id, libc::SIGHUP, &Value::Nil)?;
+            }
+            None => {}
+        }
+        index = interp.next_process_alist_cell(&cells, at);
+    }
+    Ok(())
+}
+
 /// gnutls.h GNUTLS_EMACS_HANDSHAKES_LIMIT: the handshakes
 /// wait_reading_process_output tries before a non-blocking client's
 /// negotiation fails.
@@ -5464,7 +5494,8 @@ pub(crate) fn make_serial_process(
 }
 
 /// exec_sentinel: the process's sentinel (or the default one) called with
-/// EVENT in run_asynch_code's frame.
+/// EVENT in run_asynch_code's frame; none once shut_down_emacs has set
+/// inhibit_sentinels.
 pub(crate) fn run_process_sentinel(
     interp: &mut Interpreter,
     process_id: u64,
@@ -5474,6 +5505,9 @@ pub(crate) fn run_process_sentinel(
     // What deactivate_process's emacs_gnutls_deinit and the walk's reads
     // logged, shown before the sentinel runs.
     crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
+    if interp.inhibit_sentinels {
+        return Ok(());
+    }
     run_asynch_code(interp, env, |interp, env| {
         call_catching_process_errors(
             interp,

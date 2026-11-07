@@ -16312,6 +16312,79 @@ setup_process_coding_systems's check now refuses). A 13-form
   336's process probes gives GNU's results, apart from GnuTLS's own
   shuffled extension order and session keys, the races GNU's runs show,
   the connect-and-accept order and the exit recorded.
+- **Round 338: the processes at exit, as shut_down_emacs leaves them.**
+  Fkill_emacs's shut_down_emacs now sets process.c's inhibit_sentinels,
+  after which exec_sentinel runs no sentinel, and gives
+  kill_buffer_processes (Qnil) every process before Fdo_auto_save and
+  unlock_all_files: each network, serial or pipe connection goes to
+  Fdelete_process, whose status_notify reads the output of every other
+  process whose status changed (their filters run, their sentinels do
+  not) and removes the ones that ended, and whose remove_process gives
+  deactivate_process's emacs_gnutls_deinit its "Deallocating x509
+  credentials" (or anon) message; each subprocess whose channel is open
+  is sent SIGHUP (process_send_signal (proc, SIGHUP, Qnil, 1), which
+  signals a live child's process group only). Emaxx ran neither: no
+  connection was deleted, so that message was never shown and a child
+  that had ended unnotified kept its last output, and the exit hung up
+  every child Emaxx still held, whatever its channel. The batch exit now
+  leaves each child as GNU's exit does; a run that ends without
+  `kill-emacs' (an embedder's) still hangs its live children up, and an
+  embedder's session that goes on past its startup's `kill-emacs' runs
+  sentinels again, as init_process_emacs sets inhibit_sentinels to 0. A
+  fatal signal's shut_down_emacs does the same, its terminals reset
+  first. kill_buffer_processes is one function for `kill-buffer' and the
+  exit, its walk process.c's FOR_EACH_PROCESS: each cell's cdr followed
+  once its process is dealt with, so a process a deletion's
+  status_notify took off Vprocess_alist before the walk reached it is
+  passed over, but a cell that left the alist itself still leads to the
+  cell that followed it when it left. A connection a sentinel deleted
+  while the walk stood on an earlier cell is so deleted again, and that
+  Fdelete_process's status_notify notifies a child that ended since,
+  where Emaxx's walk, which asked whether each process was still on the
+  alist, passed it over and left its sentinel to the next wait. Each
+  process records when it left the alist for that walk. A review of the
+  round's first form found one P1 and four P2 findings. Fdelete_process
+  left a connection's socket to deactivate_process's close(2) in GNU,
+  but Emaxx's delete_process shut it down (SHUT_RDWR) first, so a peer
+  whose data was unread saw an orderly end where GNU's reset reaches it
+  (a gnutls-serv logged "The TLS connection was non-properly terminated"
+  for Emaxx and "Error in the pull function" for GNU), now at every exit
+  as well as at `delete-process'; a connection's channels now stay open
+  until deactivate_process closes them, when status_notify's walk
+  reaches the process or remove_process follows. A fatal signal's
+  shutdown let a `kill-emacs' that a filter ran (a filter's error in
+  batch is one) go and carried on to the backtrace and the signal, where
+  GNU exits with that `kill-emacs''s status. shut_down_emacs did not set
+  Vinhibit_redisplay, which a filter run during the shutdown sees as t
+  in GNU. The new walk asked the process table for each cell, a cost of
+  every process ever made per `kill-buffer' (1.10 s for 20,000
+  `with-temp-buffer' with 3,000 processes made, against GNU's 0.20 s);
+  it now holds each process's place in the table, which only grows (0.13
+  s). An interactive session's exit dropped its interpreter, whose
+  processes then hung up and killed their children; it now releases them
+  as the batch exit does. Verifying that last one showed one more: the
+  exit closed the descriptors Emacs held to its children as it released
+  its process table, where GNU's exit leaves them to the kernel, so a
+  child that wrote to its standard error as its SIGHUP came (sh's
+  "Hangup") died of SIGPIPE before its trap ran; the exit now leaves
+  them to the kernel too. The gate of that form then failed five unit
+  tests: their interpreters go on past the `kill-emacs' that ends their
+  startup, and kept the Vinhibit_redisplay t that shut_down_emacs now
+  sets (edebug's display took its `inhibit-redisplay' branch); the
+  embedder sets it to nil again with Vrun_hooks and inhibit_sentinels,
+  as a process starting afresh has it. Local validation: the grouped
+  gate's 3,501 library tests (the gate of the round's first form
+  passed before the review; the second's failed the five tests above),
+  the integration targets (cli_parity's 79 included, its round 333 test
+  given a child that lives through its listing of the processes, as
+  round 337 gave another, a child running `true' having raced its exit
+  in Emaxx's run; cli's 30) and clippy with `--all-targets
+  --all-features -D warnings' pass; a command-line comparison of the
+  review's probes, the round's own exit probes and round 337's 35 gives
+  GNU's results, apart from GnuTLS's own shuffled extension order,
+  ephemeral ports, a C backtrace's frames and the races GNU's own runs
+  show; an interactive session run under script(1) leaves its children
+  as GNU's does.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -19111,6 +19184,18 @@ ert-tests as a whole 26,307 ms against 27,211.
   gate (run 42340075847) passed in every stage, cli_parity's 76 among
   them.
 
+**On `199b692`** (round 337): the frozen run (run 42346025765) passed at
+  its first attempt, 7,928 of 7,928 outcomes matching, on a slower
+  runner than round 336's (GNU's own setup 64.5 s against 53.7 s). Setup
+  77.2 s against 64.5 s (1.197), test bodies 298.0 s against 266.5 s
+  (1.118), in all 1.114, with a per-file setup median of 115 ms against
+  100. The widest body gaps are ert-tests (45,488 ms against 38,764),
+  tramp-tests (22,382 against 19,328), comp-tests (16,937 against
+  14,458), semantic-utest-ia (3,820 against 2,527), mule-tests (3,194
+  against 2,025) and process-tests (2,972 against 1,852). The full Rust
+  gate (run 42346023750) passed in every stage, cli_parity's 78 among
+  them.
+
 **Findings recorded, not fixed:**
 - **TLS over a process that is no network connection (round 337).**
   gnutls-boot on a pipe process or a subprocess gives GnuTLS the
@@ -19120,15 +19205,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   hands GnuTLS descriptor -1 for such a process and reads and writes its
   channels as they are. To be made: p->infd and p->outfd as the
   transport and the session's reads and writes for every process kind.
-- **The processes at exit (round 337's review).** shut_down_emacs sets
-  inhibit_sentinels and runs kill_buffer_processes (Qnil): each network,
-  serial or pipe connection goes to Fdelete_process
-  (deactivate_process's emacs_gnutls_deinit logging "Deallocating x509
-  credentials" at a `:loglevel' of 2), and each subprocess whose channel
-  is open gets process_send_signal's SIGHUP; Emaxx's exit sends SIGHUP
-  to each child it holds and deletes no connection, so that message is
-  never shown. To be made: kill_buffer_processes at the batch exit,
-  sentinels inhibited.
 - **A connect and an accept in one select pass (round 336's review).**
   wait_reading_process_output handles the channels a select found ready
   in descriptor order, so a `:nowait' client's connect that completes in

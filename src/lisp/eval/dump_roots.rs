@@ -244,6 +244,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "eval.c's Vrun_hooks cleared by shut_down_emacs, which a dumping process has not run",
     ),
     (
+        "inhibit_sentinels",
+        "process.c's inhibit_sentinels, set by shut_down_emacs, which a dumping process has not run",
+    ),
+    (
         "undo_inhibit_record_point",
         "the forwarded C slot of undo-inhibit-record-point, refilled likewise with the buffers' copies",
     ),

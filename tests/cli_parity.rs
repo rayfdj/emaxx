@@ -4714,7 +4714,7 @@ fn the_review_of_round_333_is_answered_as_gnu_answers() {
      (list (process-name p) (mapcar #'process-name (process-list)))))))
 ;; :stderr given as a buffer that has a process
 (show "a4" (lambda () (let ((q (make-process :name "a4q" :command '("sleep" "3") :buffer "a4b" :noquery t)))
-   (let ((p (make-process :name "a4" :command '("true") :stderr (get-buffer "a4b") :noquery t)))
+   (let ((p (make-process :name "a4" :command '("sleep" "3") :stderr (get-buffer "a4b") :noquery t)))
      (list (process-name p) (mapcar #'process-name (process-list)))))))
 ;; :stderr pipe left behind when make-process fails later
 (show "a5" (lambda () (list (condition-case e (make-process :name "a5" :command '("true") :stderr "a5err" :stop t) (error e))
@@ -5598,6 +5598,112 @@ fn a_sentinels_or_a_filters_error_is_caught_as_exec_sentinel_does() {
   (princ "after\n")))"##,
     ] {
         assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn the_processes_at_exit_are_shut_down_as_shut_down_emacs_does() {
+    // emacs.c:shut_down_emacs after `kill-emacs-hook': inhibit_sentinels
+    // set, then kill_buffer_processes (Qnil) walking Vprocess_alist, each
+    // network, serial or pipe connection given to Fdelete_process, whose
+    // status_notify reads the output of the other processes that changed
+    // (their filters run, their sentinels do not), and each subprocess
+    // whose channel is open sent SIGHUP; emacs_gnutls_deinit's message for
+    // a TLS connection.  Then kill-buffer's kill_buffer_processes, whose
+    // FOR_EACH_PROCESS follows the cdr of a cell its deletion took off the
+    // alist to a connection a sentinel deleted, deleting it again.  A
+    // filter that runs during the shutdown sees `inhibit-redisplay' t, and
+    // one whose error, in batch, kills Emacs during a fatal signal's
+    // shutdown ends it with that `kill-emacs''s status.
+    let resources = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../emacs/test/lisp/net/network-stream-resources");
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(defvar srv (make-network-process :name "srv" :server t :service t :host 'local :noquery t
+  :sentinel (lambda (_p e) (princ (format "srv-sentinel %S\n" e)))))
+(defvar cl (make-network-process :name "cl" :host 'local :service (process-contact srv :service) :noquery t
+  :sentinel (lambda (_p e) (princ (format "cl-sentinel %S\n" e)))))
+(accept-process-output nil 0.3)
+(defvar pp (make-pipe-process :name "pp" :noquery t :sentinel (lambda (_p e) (princ (format "pp-sentinel %S\n" e)))))
+(defvar ch (make-process :name "ch" :command '("sh" "-c" "echo out1; exit 4") :noquery t :connection-type 'pipe
+  :sentinel (lambda (_p e) (princ (format "ch-sentinel %S\n" e)))
+  :filter (lambda (_p s) (princ (format "ch-filter %S %S\n" s (length (process-list)))))))
+(defvar sl (make-process :name "sl" :command '("sh" "-c" "trap '' HUP; sleep 5") :noquery t :connection-type 'pipe
+  :sentinel (lambda (_p e) (princ (format "sl-sentinel %S\n" e)))))
+(busy 0.5)
+(add-hook 'kill-emacs-hook (lambda () (princ (format "hook %S\n" (mapcar #'process-status (list srv cl pp ch sl))))))
+(kill-emacs 0))"##
+            .to_string(),
+        r##"(progn
+(defvar pp (make-pipe-process :name "pp" :noquery t :filter (lambda (_p s) (princ (format "pp-filter %S\n" s)))
+  :sentinel (lambda (_p e) (princ (format "pp-sentinel %S\n" e)))))
+(defvar ch (make-process :name "ch" :command '("sh" "-c" "echo out1; exit 4") :noquery t :connection-type 'pipe
+  :sentinel (lambda (_p e) (princ (format "ch-sentinel %S\n" e)))
+  :filter (lambda (_p s) (princ (format "ch-filter %S %S\n" s (mapcar #'process-name (process-list)))))))
+(defvar ch2 (make-process :name "ch2" :command '("sh" "-c" "echo out2; exit 5") :noquery t :connection-type 'pipe
+  :sentinel (lambda (_p e) (princ (format "ch2-sentinel %S\n" e)))
+  :filter (lambda (_p s) (princ (format "ch2-filter %S %S\n" s (mapcar #'process-name (process-list)))))))
+(defvar pp2 (make-pipe-process :name "pp2" :noquery t :sentinel (lambda (_p e) (princ (format "pp2-sentinel %S\n" e)))))
+(let ((end (+ (float-time) 0.7))) (while (< (float-time) end)))
+(princ (format "before %S\n" (mapcar #'process-status (list ch ch2))))
+(princ "end\n"))"##
+            .to_string(),
+        r##"(progn
+(defvar b (get-buffer-create "B"))
+(defvar ch2 (make-process :name "ch2" :command '("sh" "-c" "sleep 0.3; echo out2; exit 5") :noquery t :connection-type 'pipe
+  :sentinel (lambda (_p e) (princ (format "ch2-sentinel %S\n" e)))
+  :filter (lambda (_p s) (princ (format "ch2-filter %S\n" s)))))
+(defvar pb (make-pipe-process :name "pb" :buffer b :noquery t :sentinel (lambda (_p e) (princ (format "pb-sentinel %S\n" e)))))
+(defvar pa (make-pipe-process :name "pa" :buffer b :noquery t
+  :sentinel (lambda (_p e) (princ (format "pa-sentinel %S\n" e)) (delete-process pb)
+              (let ((end (+ (float-time) 0.8))) (while (< (float-time) end)))
+              (princ "pa-sentinel-end\n"))))
+(kill-buffer b)
+(princ (format "after %S\n" (mapcar #'process-name (process-list))))
+(accept-process-output nil 0.1)
+(princ "end\n"))"##
+            .to_string(),
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(defvar pp (make-pipe-process :name "pp" :noquery t))
+(defvar ch (make-process :name "ch" :command '("sh" "-c" "sleep 0.2; echo out1; exit 4") :noquery t :connection-type 'pipe
+  :filter (lambda (_p s) (princ (format "filter %S inhibit-redisplay=%S\n" s inhibit-redisplay)))))
+(add-hook 'kill-emacs-hook (lambda () (princ (format "hook inhibit-redisplay=%S\n" inhibit-redisplay))))
+(busy 0.5)
+(kill-emacs 0))"##
+            .to_string(),
+        r##"(progn
+(defvar shutting nil)
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(defvar pp (make-pipe-process :name "pp" :noquery t))
+(defvar ch (make-process :name "ch" :command '("sh" "-c" "sleep 0.3; echo out1; exit 4") :noquery t :connection-type 'pipe
+  :filter (lambda (_p s) (message "filter %S" s) (when shutting (error "boom in filter")))))
+(defvar pp2 (make-pipe-process :name "pp2" :noquery t))
+(add-hook 'kill-emacs-hook (lambda () (message "hook")))
+(setq shutting t)
+(busy 0.6)
+(message "signal")
+(signal-process (emacs-pid) 'SIGVTALRM)
+(busy 0.5)
+(message "end"))"##
+            .to_string(),
+        r##"(progn
+(require 'gnutls)
+(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "44392"))
+(set-process-query-on-exit-flag srv nil)
+(sleep-for 1)
+(let ((c (open-network-stream "t" nil "127.0.0.1" 44392 :type 'plain)))
+  (set-process-query-on-exit-flag c nil)
+  (set-process-sentinel c (lambda (_p e) (princ (format "sentinel %S\n" e))))
+  (princ (format "boot %S\n" (gnutls-boot c 'gnutls-x509pki '(:hostname "localhost" :priority "NORMAL:%NO_SHUFFLE_EXTENSIONS" :loglevel 2)))))
+(add-hook 'kill-emacs-hook (lambda () (princ "hook\n")))
+(princ "end\n"))"##
+            .replace("KEYFILE", &resources.join("key.pem").display().to_string())
+            .replace("CERTFILE", &resources.join("cert.pem").display().to_string()),
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
     }
 }
 

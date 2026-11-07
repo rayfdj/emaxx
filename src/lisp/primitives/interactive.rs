@@ -445,7 +445,7 @@ pub(crate) fn run_pending_fatal_signal(
                     )
                     .map(drop);
                 }
-                shut_down_for_signal(interp, signal, env);
+                shut_down_for_signal(interp, signal, env)?;
                 emacs_backtrace(40);
             }
             // The default action, as terminate_due_to_signal set it first:
@@ -466,17 +466,46 @@ pub(crate) fn run_pending_fatal_signal(
     Ok(())
 }
 
-/// emacs.c:shut_down_emacs for SIGNAL: Vrun_hooks cleared, so no hook runs
-/// from now on; the diagnostic; kill_buffer_processes' SIGHUP to each
-/// subprocess, sentinels inhibited; Fdo_auto_save (t, nil); and
-/// unlock_all_files.  An error in a step does not stop the others.
-#[cfg(unix)]
-fn shut_down_for_signal(interp: &mut Interpreter, signal: libc::c_int, env: &mut Env) {
+/// emacs.c:shut_down_emacs (0, ...), as Fkill_emacs runs it: Vrun_hooks
+/// cleared, so no hook runs from now on, and Vinhibit_redisplay t;
+/// inhibit_sentinels set and kill_buffer_processes (Qnil), each connection
+/// deleted and each subprocess whose channel is open hung up; Fdo_auto_save
+/// (Qt, Qnil); and unlock_all_files.  reset_all_sys_modes is the
+/// terminals' release as the process exits.
+pub(crate) fn shut_down_emacs(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     interp.hooks_cleared = true;
+    interp.set_c_variable("inhibit-redisplay", Value::T);
+    interp.inhibit_sentinels = true;
+    super::processes::kill_buffer_processes(interp, env, None)?;
+    super::file_io::do_auto_save(interp, env, Value::T, Value::Nil)?;
+    super::filelock::unlock_all_files(interp, env)
+}
+
+/// emacs.c:shut_down_emacs for SIGNAL: Vrun_hooks cleared, so no hook runs
+/// from now on, and Vinhibit_redisplay t; the diagnostic; the terminals'
+/// modes reset; inhibit_sentinels set and kill_buffer_processes (Qnil);
+/// Fdo_auto_save (t, nil); and unlock_all_files.  An error in a step does
+/// not stop the others, but a `kill-emacs' a filter runs meanwhile (a
+/// filter's error in batch is one) ends Emacs then and there, as GNU's
+/// exit does.
+#[cfg(unix)]
+fn shut_down_for_signal(
+    interp: &mut Interpreter,
+    signal: libc::c_int,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let terminated = |result: Result<(), LispError>| match result {
+        Err(error) if matches!(error.kind(), LispErrorKind::Terminate(_)) => Err(error),
+        _ => Ok(()),
+    };
+    interp.hooks_cleared = true;
+    interp.set_c_variable("inhibit-redisplay", Value::T);
     fatal_error_diagnostic(signal);
-    interp.hang_up_processes_and_reset_terminals();
-    let _ = super::file_io::do_auto_save(interp, env, Value::T, Value::Nil);
-    let _ = super::filelock::unlock_all_files(interp, env);
+    interp.reset_terminals_for_shutdown();
+    interp.inhibit_sentinels = true;
+    terminated(super::processes::kill_buffer_processes(interp, env, None))?;
+    terminated(super::file_io::do_auto_save(interp, env, Value::T, Value::Nil).map(drop))?;
+    terminated(super::filelock::unlock_all_files(interp, env))
 }
 
 #[cfg(unix)]

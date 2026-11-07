@@ -554,6 +554,9 @@ fn run_owned(
     crate::lisp::primitives::set_tty_input_discard(None);
     crate::lisp::primitives::set_tty_menu_executor(None);
     crate::lisp::primitives::set_interactive_window_metrics(None);
+    // Fkill_emacs's exit leaves each child as shut_down_emacs left it
+    // (hung up, not killed), as the batch exit does.
+    interpreter.release_external_resources_for_exit();
     drop(guard);
     code
 }

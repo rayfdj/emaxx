@@ -3010,6 +3010,14 @@ pub(crate) fn next_process_tick() -> u64 {
     PROCESS_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
 }
 
+/// The removals from Vprocess_alist so far.
+static PROCESS_ALIST_REMOVALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A removal from Vprocess_alist: its place among the removals.
+pub(crate) fn next_process_alist_removal() -> u64 {
+    PROCESS_ALIST_REMOVALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+
 /// process_tick now.
 pub(crate) fn current_process_tick() -> u64 {
     PROCESS_TICK.load(std::sync::atomic::Ordering::Relaxed)
@@ -3533,6 +3541,7 @@ impl Clone for ProcessState {
             output_to_null: self.output_to_null,
             null_output: None,
             in_alist: self.in_alist,
+            alist_removal: self.alist_removal,
             childless_pid: self.childless_pid,
             outfd_stale: self.outfd_stale,
         }
@@ -3677,6 +3686,9 @@ struct ProcessState {
     /// The process is on Vprocess_alist: remove_process, the unwind of a
     /// make-process or make-pipe-process that signaled, takes it off.
     in_alist: bool,
+    /// When it left Vprocess_alist, as a count of the removals so far (0
+    /// while it is on): its cell's cdr is the cell that followed it then.
+    alist_removal: u64,
     /// p->pid of a process without a child: -2 for create_pty's.
     childless_pid: Option<i32>,
     /// create_process closed this `:stderr' pipe process's input but its
@@ -6529,6 +6541,9 @@ pub struct InterpreterState {
     /// eval.c's Vrun_hooks cleared: shut_down_emacs has begun, and no hook
     /// runs from then on.
     pub(crate) hooks_cleared: bool,
+    /// process.c's inhibit_sentinels, set by shut_down_emacs: exec_sentinel
+    /// runs no sentinel from then on.
+    pub(crate) inhibit_sentinels: bool,
     overriding_plist_environment: Value,
     max_lisp_eval_depth: i64,
     /// Ffuncall's depth bound for a call that does nothing else on its way
@@ -7399,6 +7414,7 @@ impl Interpreter {
             throw_on_input: Value::Nil,
             undo_inhibit_record_point: false,
             hooks_cleared: false,
+            inhibit_sentinels: false,
             overriding_plist_environment: Value::Nil,
             max_lisp_eval_depth: 1600,
             call_depth_gate: if core::profiling() { i64::MIN } else { 1600 },

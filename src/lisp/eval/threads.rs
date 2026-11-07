@@ -461,6 +461,14 @@ impl Interpreter {
         process.in_alist
     }
 
+    /// Fdelq of the process's cell from Vprocess_alist.
+    fn leave_process_alist(process: &mut ProcessState) {
+        if process.in_alist {
+            process.in_alist = false;
+            process.alist_removal = crate::lisp::eval::next_process_alist_removal();
+        }
+    }
+
     /// process.c:remove_process: the process leaves Vprocess_alist and its
     /// channels close (deactivate_process), its status and sentinel left
     /// as they are.  The unwind of a make-process or make-pipe-process
@@ -469,7 +477,7 @@ impl Interpreter {
     /// none.
     pub(crate) fn remove_process(&mut self, record_id: u64) {
         if let Some(process) = self.find_process_state_mut(record_id) {
-            process.in_alist = false;
+            Self::leave_process_alist(process);
             Self::deactivate_process_channels(process);
         }
     }
@@ -567,36 +575,59 @@ impl Interpreter {
         )
     }
 
-    /// The processes process.c:kill_buffer_processes acts on for a buffer
-    /// being killed: those on the process alist whose buffer it is, in the
-    /// alist's order, each with whether it is a connection (a network,
-    /// serial or pipe process), which Fdelete_process deletes, rather than
-    /// a subprocess, which is sent SIGHUP while its input is open.
-    pub(crate) fn buffer_processes(&self, buffer_id: u64) -> Vec<(u64, bool)> {
-        self.process_states
-            .iter()
+    /// Vprocess_alist's cells, in its order, as a FOR_EACH_PROCESS walk
+    /// starts: each a process's place in `process_states', which only
+    /// grows, so the place stays its own while the walk runs Lisp.
+    pub(crate) fn process_alist_cells(&self) -> Vec<usize> {
+        (0..self.process_states.len())
             .rev()
-            .filter(|process| {
-                Self::in_process_alist(process) && process.buffer_id == Some(buffer_id)
-            })
-            .map(|process| {
-                (
-                    process.record_id,
-                    !matches!(process.kind, ProcessKind::Real),
-                )
-            })
+            .filter(|&cell| Self::in_process_alist(&self.process_states[cell]))
             .collect()
     }
 
-    /// kill_buffer_processes's test as the walk reaches RECORD_ID: still on
-    /// Vprocess_alist, its buffer BUFFER_ID, and for a subprocess, its
-    /// input channel open (p->infd >= 0).
-    pub(crate) fn buffer_process_still_killable(&self, record_id: u64, buffer_id: u64) -> bool {
-        self.find_process_state(record_id).is_some_and(|process| {
-            Self::in_process_alist(process)
-                && process.buffer_id == Some(buffer_id)
-                && (process.kind != ProcessKind::Real || infd_open(process))
+    /// The index in CELLS of the cell FOR_EACH_PROCESS reaches after
+    /// CELLS[INDEX]: XCDR of a cell on Vprocess_alist is the next cell on
+    /// it, and of a cell Fdelq has taken off, the cell that followed it
+    /// then.  A process joins at the alist's head, so each cell after the
+    /// walk's first is in CELLS.
+    pub(crate) fn next_process_alist_cell(&self, cells: &[usize], index: usize) -> Option<usize> {
+        let removal = |cell: usize| self.process_states[cell].alist_removal;
+        let left = match removal(cells[index]) {
+            0 => u64::MAX,
+            left => left,
+        };
+        (index + 1..cells.len()).find(|&next| {
+            let removed = removal(cells[next]);
+            removed == 0 || removed > left
         })
+    }
+
+    /// The record id of the process at CELL.
+    pub(crate) fn process_alist_cell_id(&self, cell: usize) -> u64 {
+        self.process_states[cell].record_id
+    }
+
+    /// kill_buffer_processes's test as its walk reaches CELL, whose buffer
+    /// is to be BUFFER_ID (any, for None): Some(true) for a network,
+    /// serial or pipe connection, which Fdelete_process deletes,
+    /// Some(false) for a subprocess whose input channel is open (p->infd >=
+    /// 0), which is sent SIGHUP, and None for any other.
+    pub(crate) fn kill_buffer_process_action(
+        &self,
+        cell: usize,
+        buffer_id: Option<u64>,
+    ) -> Option<bool> {
+        let process = &self.process_states[cell];
+        if buffer_id.is_some_and(|buffer_id| process.buffer_id != Some(buffer_id)) {
+            return None;
+        }
+        if process.kind != ProcessKind::Real {
+            Some(true)
+        } else if infd_open(process) {
+            Some(false)
+        } else {
+            None
+        }
     }
 
     pub fn set_process_plist_value(&mut self, record_id: u64, plist: Value) -> bool {
@@ -1115,6 +1146,7 @@ impl Interpreter {
             output_to_null: false,
             null_output: None,
             in_alist: true,
+            alist_removal: 0,
             childless_pid: None,
             outfd_stale: false,
         });
@@ -1230,6 +1262,7 @@ impl Interpreter {
             output_to_null: false,
             null_output: None,
             in_alist: true,
+            alist_removal: 0,
             childless_pid: None,
             outfd_stale: false,
         });
@@ -1323,6 +1356,7 @@ impl Interpreter {
             output_to_null: false,
             null_output: None,
             in_alist: true,
+            alist_removal: 0,
             childless_pid: None,
             outfd_stale: false,
         });
@@ -1570,7 +1604,7 @@ impl Interpreter {
             gnutls_deinit(&mut process.gnutls);
             Self::deactivate_process_channels(process);
             if remove {
-                process.in_alist = false;
+                Self::leave_process_alist(process);
             }
         }
         process.update_tick = process.tick;
@@ -2007,7 +2041,7 @@ impl Interpreter {
         process.serial = None;
         process.null_output = None;
         if remove {
-            process.in_alist = false;
+            Self::leave_process_alist(process);
         }
         Self::process_status_message(process)
     }
@@ -3076,24 +3110,11 @@ impl Interpreter {
         if let Some(runtime) = process.runtime.take() {
             terminate_child_without_blocking(runtime);
         }
-        if let Some(network) = process.network.take() {
-            match &network {
-                NetworkRuntime::Stream(stream) => {
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                }
-                NetworkRuntime::UnixStream(stream) => {
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                }
-                NetworkRuntime::Datagram { .. } => {}
-                // GNU leaves a unix listener's socket file behind; the
-                // tests delete it themselves.
-                NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_) => {}
-            }
-        }
-        process.serial = None;
-        process.module_pipe = None;
-        process.pipe_input = None;
-        process.null_output = None;
+        // A connection's channels stay open until deactivate_process closes
+        // them, when status_notify's walk reaches the process or
+        // remove_process follows: close(2) alone, so a peer whose data
+        // was not read sees a reset, as GNU's does; a unix listener's
+        // socket file stays behind.
         if matches!(
             kind,
             ProcessKind::Network | ProcessKind::Serial | ProcessKind::Pipe

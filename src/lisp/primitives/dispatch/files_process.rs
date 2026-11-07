@@ -3470,20 +3470,7 @@ define_dispatch!(
                 unlock_buffer(interp, env, id)?;
                 // kill_buffer_processes: the buffer's connections are
                 // deleted and its subprocesses hung up.
-                for (process_id, connection) in interp.buffer_processes(id) {
-                    // FOR_EACH_PROCESS's test as it reaches the process: a
-                    // sentinel run by an earlier deletion may have deleted
-                    // or deactivated it.
-                    if !interp.buffer_process_still_killable(process_id, id) {
-                        continue;
-                    }
-                    if connection {
-                        delete_process_notifying(interp, process_id, env)?;
-                    } else {
-                        #[cfg(unix)]
-                        interp.signal_process_group(process_id, libc::SIGHUP, &Value::Nil)?;
-                    }
-                }
+                crate::lisp::primitives::processes::kill_buffer_processes(interp, env, Some(id))?;
                 // Their sentinels may have killed it.
                 if !interp.has_buffer_id(id) {
                     return Ok(Value::T);
