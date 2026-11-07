@@ -568,30 +568,15 @@ fn subprocess_exit_is_event_driven_and_notifies_newest_process_first_once() {
 #[test]
 fn process_waits_end_on_output_and_on_a_child_signal_before_their_timeout() {
     // process.c:wait_reading_process_output selects on the processes'
-    // channels and the child signal pipe: output arriving ends the wait,
-    // and so does a child's exit on a pty, whose slave Emacs keeps open so
-    // that no hangup reaches the master.  Each wait below may last five
-    // seconds; the whole exchange must not.
+    // channels and the child signal pipe: a wait for a process's output
+    // ends when output comes, and when the process stops running, as a
+    // child on a pty does when it exits (Emacs keeps the slave open, so no
+    // hangup reaches the master; the child's SIGCHLD ends the select).
+    // Each wait below may last five seconds; the whole exchange must not.
     run_with_large_stack(|| {
         let _permit = crate::test_support::acquire_host_test_permit();
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-        let mut env = crate::lisp::types::Env::new();
-        let mut wait_until = |interp: &mut Interpreter, done: &str, what: &str| {
-            let start = std::time::Instant::now();
-            while !eval_str_with(interp, done).is_truthy() {
-                assert!(
-                    start.elapsed() < std::time::Duration::from_secs(4),
-                    "the wait for {what} lasted until its timeout"
-                );
-                interp
-                    .wait_current_thread_for_process_input(
-                        &mut env,
-                        None,
-                        std::time::Duration::from_secs(5),
-                    )
-                    .expect("wait for process input");
-            }
-        };
+        let start = std::time::Instant::now();
         eval_str_with(
             &mut interp,
             r#"(setq emaxx-wait-exit
@@ -599,11 +584,16 @@ fn process_waits_end_on_output_and_on_a_child_signal_before_their_timeout() {
                                    :command (list (executable-find "sh") "-c" "sleep 0.2")
                                    :connection-type 'pty :noquery t))"#,
         );
-        wait_until(
-            &mut interp,
-            "(progn (accept-process-output nil 0) (not (process-live-p emaxx-wait-exit)))",
-            "a pty child's exit",
+        eval_str_with(&mut interp, "(accept-process-output emaxx-wait-exit 5)");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(4),
+            "the wait for a pty child's exit lasted until its timeout"
         );
+        assert_eq!(
+            eval_str_with(&mut interp, "(process-live-p emaxx-wait-exit)"),
+            Value::Nil
+        );
+        let start = std::time::Instant::now();
         eval_str_with(
             &mut interp,
             r#"(setq emaxx-wait-output nil
@@ -615,10 +605,13 @@ fn process_waits_end_on_output_and_on_a_child_signal_before_their_timeout() {
                                    :filter (lambda (_process string)
                                              (setq emaxx-wait-output string))))"#,
         );
-        wait_until(
-            &mut interp,
-            "(progn (accept-process-output nil 0) emaxx-wait-output)",
-            "a child's output",
+        assert_eq!(
+            eval_str_with(&mut interp, "(accept-process-output emaxx-wait-talker 5)"),
+            Value::T
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(4),
+            "the wait for a child's output lasted until its timeout"
         );
         assert_eq!(
             eval_str_with(

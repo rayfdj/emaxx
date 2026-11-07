@@ -58,6 +58,13 @@ impl Corpus {
         self.directory.join("script.el").display().to_string()
     }
 
+    /// A file NAME in the corpus directory holding CONTENTS, by its path.
+    fn write(&self, name: &str, contents: &str) -> String {
+        let path = self.directory.join(name);
+        std::fs::write(&path, contents).unwrap();
+        path.display().to_string()
+    }
+
     /// Run BINARY with ARGS from the corpus directory; the binary's own
     /// path (argv[0], echoed by messages and `command-line-args') and
     /// the corpus directory are replaced by placeholders, and bytecode
@@ -5598,6 +5605,159 @@ fn a_sentinels_or_a_filters_error_is_caught_as_exec_sentinel_does() {
   (princ "after\n")))"##,
     ] {
         assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
+    // process.c:wait_reading_process_output: one select over every channel
+    // this thread may watch, the ready ones handled in descriptor order
+    // from last_read_channel + 1, a channel's read before its connect, and
+    // no other channel read after one that read something until the next
+    // select; a server's readiness accepts one connection; a connection's
+    // end is reported by status_notify; WAIT_PROC's own reads, and what a
+    // nested wait read of its output (p->nbytes_read), make the value of
+    // `accept-process-output'; a server is no running process to wait for.
+    // A thread's wait selects on a process another thread made (only
+    // `set-process-thread' locks a descriptor); JUST-THIS-ONE reads no
+    // channel delete_read_fd took out (a stopped connection's, a filter of
+    // t's); a positive timeout however small runs one pass; Fsleep_for
+    // decodes its arguments as GNU's does; and a timed `read-event' ends
+    // when a filter sets `quit-flag'.
+    let corpus = Corpus::new();
+    for program in [
+        r##";;; -*- lexical-binding: t -*-
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((log nil)
+       (mk (lambda (n) (make-process :name n :command (list "sh" "-c" (format "printf '%s1 '; sleep 0.2; printf '%s2 '; sleep 3" n n))
+                                     :connection-type 'pipe :noquery t
+                                     :filter (lambda (_ s) (push (list n s) log)))))
+       (a (funcall mk "a")) (b (funcall mk "b")) (c (funcall mk "c")))
+  (busy 0.1)
+  (princ (format "apo1 %S %S\n" (accept-process-output nil 0.05) (reverse log)))
+  (busy 0.3)
+  (princ (format "apo2 %S %S\n" (accept-process-output nil 0.05) (reverse log)))
+  (mapc #'delete-process (list a b c)))
+(let* ((log nil)
+       (mk (lambda (n) (make-process :name n :command (list "sh" "-c" (format "printf '%s1 '; sleep 0.2; printf '%s2 '; sleep 3" n n))
+                                     :connection-type 'pipe :noquery t
+                                     :filter (lambda (_ s) (push (list n s) log)))))
+       (a (funcall mk "a")) (b (funcall mk "b")))
+  (busy 0.1)
+  (princ (format "jto %S %S\n" (accept-process-output b 0.05 nil t) (reverse log)))
+  (princ (format "jto2 %S %S\n" (accept-process-output b 0.05) (reverse log)))
+  (mapc #'delete-process (list a b)))
+(let* ((log nil)
+       (pp (make-pipe-process :name "pp" :noquery t
+                              :filter (lambda (_ s) (push (list 'err (string-trim s)) log))
+                              :sentinel (lambda (_ e) (push (list 'pp (string-trim e)) log))))
+       (p (make-process :name "p" :command '("sh" "-c" "echo e1 >&2; echo o1; echo e2 >&2; echo o2") :stderr pp :noquery t :connection-type 'pipe
+                        :filter (lambda (_ s) (push (list 'out (string-trim s)) log))
+                        :sentinel (lambda (_ e) (push (list 'p (string-trim e)) log)))))
+  (busy 0.4)
+  (princ (format "status %S %S\n" (process-status p) (process-status pp)))
+  (princ (format "stderr-wait %S %S\n" (accept-process-output pp 0.1) (reverse log))))
+(let* ((log nil)
+       (q (make-process :name "q2" :command '("true") :noquery t :sentinel (lambda (_p e) (push (list 'q e) log))))
+       (p (make-process :name "p2" :command '("sh" "-c" "sleep 0.3; echo hi") :noquery t :filter (lambda (_p s) (push (list 'pout s) log)) :sentinel (lambda (_p e) (push (list 'p e) log)))))
+  (busy 0.2)
+  (princ (format "%S\n" (list (accept-process-output p 2 nil t) (reverse log) (accept-process-output p 2 nil t) (reverse log)))))
+(princ "end\n")"##,
+        r##";;; -*- lexical-binding: t -*-
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((log nil)
+       (srv (make-network-process :name "srv" :server t :host "127.0.0.1" :service t :noquery t
+                                  :sentinel (lambda (_ e) (push (list 'srv (car (split-string e " from"))) log))))
+       (ok (make-network-process :name "ok" :host "127.0.0.1" :service (process-contact srv :service) :nowait t :noquery t
+                                 :sentinel (lambda (_ e) (push (list 'ok (string-trim e)) log)))))
+  (busy 0.3)
+  (accept-process-output nil 0.2)
+  (princ (format "connect-and-accept %S\n" (reverse log)))
+  (mapc #'delete-process (process-list)))
+(let ((srv (make-network-process :name "srv" :server t :service t :host 'local :noquery t)))
+  (let ((t0 (float-time)))
+    (princ (format "server-wait %S %s\n" (accept-process-output srv 0.3) (if (< (- (float-time) t0) 0.2) "fast" "slow"))))
+  (delete-process srv))
+(let* ((log nil)
+       (srv (make-network-process :name "s2" :server t :service t :host 'local :noquery t
+              :filter (lambda (p s) (push (list 'srv-in s) log) (process-send-string p "bye") (delete-process p))
+              :sentinel (lambda (_p e) (push (list 'srv-sen (car (split-string e " from"))) log))))
+       (cl (make-network-process :name "c2" :host 'local :service (process-contact srv :service) :noquery t
+              :filter (lambda (_p s) (push (list 'cl-in s) log))
+              :sentinel (lambda (_p e) (push (list 'cl-sen e) log)))))
+  (process-send-string cl "hi")
+  (accept-process-output nil 0.3)
+  (accept-process-output nil 0.3)
+  (princ (format "net %S\n" (reverse log)))
+  (delete-process srv))
+(let* ((log nil) p
+       (m (make-mutex)) (cv (make-condition-variable m)) (go nil)
+       (th (make-thread
+            (lambda ()
+              (setq p (make-process :name "tp" :command '("true") :noquery t :connection-type 'pipe
+                                    :sentinel (lambda (_ e) (push (list 'tp (string-trim e)) log))))
+              (with-mutex m (while (not go) (condition-wait cv)))
+              (push (list 'thread-wait (accept-process-output nil 0.3)) log))
+            "T")))
+  (while (not p) (sleep-for 0.05) (push 'slept log))
+  (busy 0.4)
+  (make-process :name "mp" :command '("true") :noquery t :connection-type 'pipe
+                :sentinel (lambda (_ e) (push (list 'mp (string-trim e)) log)))
+  (busy 0.3)
+  (accept-process-output nil 0.2)
+  (with-mutex m (setq go t) (condition-notify cv t))
+  (thread-join th)
+  (princ (format "threads %S\n" (reverse log))))
+(princ "end\n")"##,
+        r##";;; -*- lexical-binding: t -*-
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((done nil)
+       (p (make-process :name "srv" :command '("sh" "-c" "sleep 0.1; echo ready; sleep 30") :connection-type 'pipe :noquery t
+                        :filter (lambda (_ s) (setq done (string-trim s)))))
+       (t0 (float-time))
+       (th (make-thread (lambda () (while (and (not done) (< (- (float-time) t0) 3)) (accept-process-output nil 0.1))) "worker")))
+  (thread-join th)
+  (princ (format "worker done=%S %s\n" done (if (< (- (float-time) t0) 1) "soon" "late")))
+  (delete-process p))
+(let* ((log nil) (srvconn nil)
+       (srv (make-network-process :name "srv" :server t :service t :host 'local :noquery t
+              :sentinel (lambda (p _e) (setq srvconn p))))
+       (cl (make-network-process :name "cl" :host 'local :service (process-contact srv :service) :noquery t
+              :filter (lambda (_p s) (push (list 'cl-in s) log)))))
+  (while (not srvconn) (accept-process-output nil 0.05))
+  (stop-process cl)
+  (process-send-string srvconn "hello")
+  (busy 0.1)
+  (princ (format "stopped jto %S %S\n" (accept-process-output cl 0.2 nil t) log))
+  (continue-process cl)
+  (princ (format "continued %S %S\n" (accept-process-output cl 0.2) log))
+  (setq log nil)
+  (set-process-filter cl t)
+  (process-send-string srvconn "again")
+  (busy 0.1)
+  (princ (format "filter-t jto %S %S\n" (accept-process-output cl 0.2 nil t) log))
+  (set-process-filter cl (lambda (_p s) (push (list 'cl-in2 s) log)))
+  (princ (format "filter back %S %S\n" (accept-process-output cl 0.2) log))
+  (delete-process cl) (delete-process srv))
+(dolist (form '((sleep-for 1e-6) (sleep-for 1e-10) (accept-process-output nil 1e-9) (sit-for 1e-6)))
+  (let ((ran nil))
+    (run-at-time 0 nil (lambda () (setq ran t)))
+    (eval form t)
+    (princ (format "%S timer-ran=%S\n" form ran))))
+(dolist (args '(("x") (0.1 1.5) (0 -100) (nil)))
+  (princ (format "sleep-for %S %S\n" args (condition-case e (apply #'sleep-for args) (error e)))))
+(let* ((t0 (float-time))
+       (p (make-process :name "q" :command '("sh" "-c" "sleep 0.1; echo a; sleep 2") :connection-type 'pipe :noquery t
+                        :filter (lambda (_ _s) (setq quit-flag t)))))
+  (princ (format "read-event %S %s\n" (condition-case nil (progn (read-event nil nil 1) 'after) (quit 'quit))
+                 (if (< (- (float-time) t0) 0.5) "soon" "late")))
+  (setq quit-flag nil)
+  (delete-process p))
+(princ (format "read-event x %S\n" (read-event nil nil -1)))
+(princ "end\n")"##,
+    ] {
+        let file = corpus.write("wait.el", program);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &file]);
     }
 }
 

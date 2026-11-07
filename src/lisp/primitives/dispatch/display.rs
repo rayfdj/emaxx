@@ -1,6 +1,5 @@
 use super::*;
 use crate::lisp::primitives::image::valid_image_p;
-use crate::lisp::primitives::processes::wait_pumping_processes;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
@@ -5045,81 +5044,135 @@ define_dispatch!(
             }
             "sleep-for" => {
                 need_arg_range(name, args, 1, 2)?;
-                let duration = wait_duration(args)?;
-                if duration.is_zero() {
-                    // Fsleep_for enters wait_reading_process_output only for
-                    // a positive duration and otherwise returns nil at once:
-                    // no subprocess output, no timers (in batch `sit-for'
-                    // is this call, and the oracle leaves a due
-                    // `run-at-time' timer unrun across it).
-                    return Ok(Value::Nil);
+                // dispnew.c:Fsleep_for: SECONDS by extract_float, the
+                // deprecated MILLISECONDS a fixnum added in thousandths.
+                let mut duration = crate::lisp::primitives::extract_float(interp, &args[0])?;
+                if let Some(milliseconds) = args.get(1).filter(|value| !value.is_nil()) {
+                    let Kind::Integer(milliseconds) = milliseconds.kind() else {
+                        return Err(LispError::WrongTypeArgument(
+                            "fixnump".into(),
+                            *milliseconds,
+                        ));
+                    };
+                    duration += milliseconds as f64 / 1000.0;
                 }
-                // GNU processes subprocess output whenever it waits; epg relies
-                // on the trailing (sleep-for 0.1) in epg-wait-for-completion to
-                // flush gpg's final status lines through the process filter.
-                // wait_reading_process_output records READ_KBD 0 for the
-                // whole call, even when it nests inside a keyboard read.
-                let previous_wait = interp.set_waiting_for_user_input(false);
-                let wait_result =
-                    wait_pumping_processes(interp, env, Some(duration), false, None, None, true);
-                interp.set_waiting_for_user_input(previous_wait);
-                wait_result?;
+                if duration > 0.0 {
+                    // tend = now + dtotimespec (duration), None when past
+                    // what the clock can hold.  wait_reading_process_output
+                    // returns as soon as it detects output from any
+                    // subprocess, so wait in a loop until the time expires.
+                    let (mut secs, mut nsecs) =
+                        crate::lisp::primitives::processes::dtotimespec(duration);
+                    let tend = std::time::Instant::now()
+                        .checked_add(std::time::Duration::new(secs as u64, nsecs as u32));
+                    loop {
+                        crate::lisp::primitives::processes::wait_reading_process_output(
+                            interp,
+                            env,
+                            crate::lisp::primitives::processes::WaitRequest {
+                                // min (t.tv_sec, WAIT_READING_MAX): time_t's
+                                // maximum, which no tv_sec exceeds.
+                                time_limit: secs,
+                                nsecs,
+                                read_kbd: 0,
+                                do_display: false,
+                                wait_proc: None,
+                                just_wait_proc: 0,
+                            },
+                        )?;
+                        if let Some(tend) = tend {
+                            let left = tend.saturating_duration_since(std::time::Instant::now());
+                            if left.is_zero() {
+                                break;
+                            }
+                            secs = i64::try_from(left.as_secs())
+                                .unwrap_or(crate::lisp::primitives::processes::WAIT_READING_MAX);
+                            nsecs = i64::from(left.subsec_nanos());
+                        }
+                    }
+                }
                 Ok(Value::Nil)
             }
             "accept-process-output" => {
                 need_arg_range(name, args, 0, 4)?;
-                // GNU: (accept-process-output &optional PROCESS SECONDS MILLISEC
-                // JUST-THIS-ONE) - the wait always comes from args 2 and 3.
-                let duration_args = if args.len() > 1 {
-                    &args[1..args.len().min(3)]
+                // process.c:Faccept_process_output.
+                let process = args.first().copied().unwrap_or(Value::Nil);
+                let mut seconds = args.get(1).copied().unwrap_or(Value::Nil);
+                let millisec = args.get(2).copied().unwrap_or(Value::Nil);
+                let mut just_this_one = args.get(3).copied().unwrap_or(Value::Nil);
+                let wait_proc = if process.is_nil() {
+                    just_this_one = Value::Nil;
+                    None
                 } else {
-                    &[]
-                };
-                let target_process_id = args
-                    .first()
-                    .filter(|process| !process.is_nil())
-                    .map(|process| interp.resolve_process_id(process))
-                    .transpose()?;
-                if let Some(process_id) = target_process_id {
+                    // CHECK_PROCESS, and a process dedicated to another
+                    // thread cannot be waited for.
+                    let process_id = interp.resolve_process_id(&process)?;
                     interp.ensure_process_owned_by_current_thread(process_id)?;
+                    Some(process_id)
+                };
+                if !millisec.is_nil() {
+                    // Obsolete calling convention using integers rather
+                    // than floats.
+                    let Kind::Integer(millis) = millisec.kind() else {
+                        return Err(LispError::WrongTypeArgument("fixnump".into(), millisec));
+                    };
+                    seconds = if seconds.is_nil() {
+                        Value::float(millis as f64 / 1000.0)
+                    } else {
+                        let Kind::Integer(whole) = seconds.kind() else {
+                            return Err(LispError::WrongTypeArgument("fixnump".into(), seconds));
+                        };
+                        Value::float(millis as f64 / 1000.0 + whole as f64)
+                    };
                 }
-                let timeout = if args.get(1).is_some_and(|seconds| !seconds.is_nil()) {
-                    Some(wait_duration(duration_args)?)
-                } else if target_process_id.is_none() {
-                    // With neither PROCESS nor a timeout GNU performs one event
-                    // pump (including due timers) and returns.  Only a specified
-                    // process makes the timeout-less form wait indefinitely.
-                    Some(std::time::Duration::ZERO)
+                let mut secs: i64 = 0;
+                let mut nsecs: i64 = -1;
+                if !seconds.is_nil() {
+                    match seconds.kind() {
+                        Kind::Integer(whole) => {
+                            if whole > 0 {
+                                secs = whole;
+                                nsecs = 0;
+                            }
+                        }
+                        Kind::Float(float) => {
+                            let float = float.get();
+                            if float > 0.0 {
+                                let (whole, fraction) =
+                                    crate::lisp::primitives::processes::dtotimespec(float);
+                                // min (t.tv_sec, WAIT_READING_MAX): time_t's
+                                // maximum, which no tv_sec exceeds.
+                                secs = whole;
+                                nsecs = fraction;
+                            }
+                        }
+                        _ => {
+                            return Err(LispError::WrongTypeArgument("numberp".into(), seconds));
+                        }
+                    }
+                } else if wait_proc.is_some() {
+                    nsecs = 0;
+                }
+                let just_wait_proc = if just_this_one.is_nil() {
+                    0
+                } else if !matches!(just_this_one.kind(), Kind::Integer(_)) {
+                    1
                 } else {
-                    None
+                    -1
                 };
-                // A non-nil JUST-THIS-ONE suspends output from every other
-                // process.  Its integer spelling also suppresses timers.
-                // GNU ignores the flag when PROCESS itself is nil.
-                let just_this_one = if target_process_id.is_some() {
-                    args.get(3).filter(|value| value.is_truthy())
-                } else {
-                    None
-                };
-                let only_process_id = just_this_one.and(target_process_id);
-                let run_timers =
-                    just_this_one.is_none_or(|value| !matches!(value.kind(), Kind::Integer(_)));
-                // A READ_KBD 0 wait: it never selects the keyboard-class
-                // notification descriptor, even when a callback nests it
-                // inside a keyboard read.
-                let previous_wait = interp.set_waiting_for_user_input(false);
-                let wait_result = wait_pumping_processes(
+                let got = crate::lisp::primitives::processes::wait_reading_process_output(
                     interp,
                     env,
-                    timeout,
-                    true,
-                    target_process_id,
-                    only_process_id,
-                    run_timers,
-                );
-                interp.set_waiting_for_user_input(previous_wait);
-                let delivered = wait_result?;
-                Ok(if delivered { Value::T } else { Value::Nil })
+                    crate::lisp::primitives::processes::WaitRequest {
+                        time_limit: secs,
+                        nsecs,
+                        read_kbd: 0,
+                        do_display: false,
+                        wait_proc,
+                        just_wait_proc,
+                    },
+                )?;
+                Ok(if got <= 0 { Value::Nil } else { Value::T })
             }
             "input-pending-p" => {
                 need_arg_range(name, args, 0, 1)?;

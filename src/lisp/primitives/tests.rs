@@ -13107,10 +13107,6 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
         .strip_suffix("\nProcess accept-output-test finished\n")
         .unwrap_or(&text);
     assert_eq!(text, "ready");
-    assert_eq!(
-        wait_duration(&[Value::Integer(10)]).expect("ten-second wait should be valid"),
-        std::time::Duration::from_secs(10)
-    );
     call(
         &mut interp,
         "accept-process-output",
@@ -13118,11 +13114,6 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
         &mut env,
     )
     .expect("an explicit nil MILLISEC should mean zero milliseconds");
-    assert_eq!(
-        wait_duration(&[Value::Integer(10), Value::Nil])
-            .expect("nil optional milliseconds should be zero"),
-        std::time::Duration::from_secs(10)
-    );
 }
 
 #[test]
@@ -35843,7 +35834,7 @@ fn stderr_pipe_process_and_status_notify_as_process_c() {
         (a (make-process :name "t256-a" :noquery t :connection-type 'pipe
                          :command '("sh" "-c" "exec 1>&- 2>&-; sleep 0.3")))
         (b (make-process :name "t256-b" :noquery t :connection-type 'pipe
-                         :command '("true")
+                         :command '("sh" "-c" "sleep 0.1")
                          :sentinel (lambda (_p _e) (push (process-live-p a) seen)))))
    (while (or (null seen) (process-live-p a))
      (accept-process-output nil 0.05))

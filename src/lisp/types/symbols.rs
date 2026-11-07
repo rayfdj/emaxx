@@ -700,6 +700,8 @@ const KEY_NAMES: &[&str] = &[
     "fast-read-process-output",
     "gnutls-log-level",
     "process-error-pause-time",
+    "process-prioritize-lower-fds",
+    "process-adaptive-read-buffering",
     "line-number-display-limit",
     "line-number-display-limit-width",
     "mode-line-compact",

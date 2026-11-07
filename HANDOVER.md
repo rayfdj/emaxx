@@ -16385,6 +16385,89 @@ setup_process_coding_systems's check now refuses). A 13-form
   ephemeral ports, a C backtrace's frames and the races GNU's own runs
   show; an interactive session run under script(1) leaves its children
   as GNU's does.
+- **Round 339: wait_reading_process_output as process.c's select loop.**
+  The wait that `accept-process-output', `sleep-for', a batch
+  `read-event' with a timeout, send_process and the connect and TLS
+  waits run is process.c's loop, Emaxx's pump loop gone: each iteration
+  does a pending quit or the pending signals, the name lookups and TLS
+  negotiations of WAIT_PROC (or of every process), the timeout,
+  timer_check and its timer_delay, the status changes (status_notify
+  once a select that does not wait finds no input), WAIT_PROC's end (its
+  remaining output read, then the wait ends), then one select over the
+  channels this thread may watch (fd_callback_info's thread and
+  waiting_thread, JUST-THIS-ONE's single channel), the child signal pipe
+  and the connects pending, its timeout cut by got_some_output,
+  timer_delay, retry_for_async, adaptive read buffering and a TLS
+  session's decrypted records, and with nothing ready GNU's exits
+  (MINIMUM, WAIT_PROC's p->nbytes_read, got_output_end_time). The
+  channels ready are handled in descriptor order from last_read_channel
+  + 1 (`process-prioritize-lower-fds' starts at 0), each channel's read
+  before its connect: a server accepts one connection,
+  read_process_output reads at most p->readmax bytes once, and a read
+  that found something ends the reads of that select (FD_ZERO),
+  WAIT_PROC's making the wait MINIMUM; a connection's end deactivates it
+  with (exit 256) (a pipe connection's (exit 0)) and a new tick, its
+  sentinel coming from status_notify; a pty's EIO is delete_read_fd, a
+  childless one's status `failed'. Emaxx read every process's pipe and
+  every stream in each pass, connects before accepts, accepted until
+  EAGAIN and ran a stream's sentinel at its end. read_process_output
+  keeps p->nbytes_read and p->read_output_delay
+  (`process-adaptive-read-buffering', which Fmake_process and
+  Fmake_pipe_process take); status_notify gives the wait
+  got_some_output, WAIT_PROC's reads alone; the value of
+  `accept-process-output' is got_some_output, or what a nested wait read
+  of WAIT_PROC's output. With DO_DISPLAY the wait runs
+  redisplay_preserve_echo_area after timers that ran (timer_check again
+  until no timer runs or input is pending), after status_notify and
+  after a read; thread_select lets the other Lisp threads run while one
+  waits. Faccept_process_output decodes its arguments as GNU does (the
+  obsolete MILLISEC, a non-positive SECONDS a MINIMUM wait,
+  JUST-THIS-ONE 1 or -1), Fsleep_for waits again until its time is up,
+  and kbd_buffer_get_event's timed read waits with READ_KBD -1 until an
+  event or its end time. A review found one P1, five P2 and five P3. A
+  thread's wait left out every process another thread had made, its fd
+  lock taken from p->thread where GNU's fd_callback_info[fd].thread is
+  set by `set-process-thread' alone (and kept, with the descriptor,
+  until the thread dies); JUST-THIS-ONE read a channel delete_read_fd
+  had taken out (a stopped connection's, a filter of t's), where GNU
+  reads only one with PROCESS_FD; send_process and deactivate_process
+  kept the adaptive read delay, so a ping-pong slowed to 60 ms an
+  exchange; a positive wait too short to measure ran no pass, where
+  GNU's first pass uses the `now' its end time came from; a batch timed
+  `read-event' ignored `quit-flag' until its time was up; each pass
+  rebuilt and sorted the channel table for every descriptor;
+  thread_select slept blind while another thread ran; a failed connect
+  ran its sentinel at once, not status_notify's; and `sleep-for' kept
+  its old decoding (a string's `number-or-marker-p', a float
+  MILLISECONDS accepted, +INF no wait), `sleep-for' and a timed
+  `read-event' panicking on a time past the clock. All are fixed but the
+  tty pumps' p->nbytes_read, which go with the interactive waits
+  (recorded): the fd locks are a table by descriptor, a pass builds the
+  channel table once, a delay is given up after a stream write and at
+  deactivation, `now' is kept as GNU keeps it, `read-event' takes
+  SECONDS as read_filtered_event (a number an end time, past the clock a
+  wait without end), Fsleep_for decodes as GNU's does, and dtotimespec
+  is gnulib's, rounding nanoseconds up (a 1e-10 wait had been one
+  without end) and giving time_t and long. The round audit then refused
+  two lint suppressions the round had added, an unused DO_DISPLAY's and
+  a cast's: DO_DISPLAY now drives the redisplays above, and the cast is
+  gone. Local validation: the grouped gate's 3,501 library tests
+  pass on the round's final source (as they did on its first form,
+  before the review). Two runs between failed one test each: an oracle
+  test whose child closes its output while another exits at once, which
+  raced that closing under load and passed alone, and was given a second
+  child that outlives the closing; and, on one rebuilt binary, the
+  weak-table retention recorded below
+  (`suspended_bytecode_retains_operand_and_unwind_roots', in each of 16
+  runs of that build, where the builds before and after it, the release
+  build and a diagnostic build pass). The integration targets
+  (cli_parity's 80 included, cli's 30) and clippy with `--all-targets
+  --all-features -D warnings' pass (dtotimespec's casts allowed, time_t
+  and long being narrower on some targets); a command-line comparison of
+  the review's 31 probes, the round's own and round 336's 41 gives GNU's
+  results, apart from ephemeral ports and timing noise (300 idle
+  children cost 0.04 s for 300 exchanges where GNU takes 0.02 s, 0.50 s
+  before the review).
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -19196,7 +19279,33 @@ ert-tests as a whole 26,307 ms against 27,211.
   gate (run 42346023750) passed in every stage, cli_parity's 78 among
   them.
 
+**On `8a61d67`** (round 338): the frozen run (run 42353973564) passed at
+  its first attempt, 7,928 of 7,928 outcomes matching, on a faster
+  runner than round 337's (GNU's own setup 56.9 s against 64.5 s). Setup
+  64.6 s against 56.9 s (1.136), test bodies 265.0 s against 248.8 s
+  (1.065), in all 1.087, with a per-file setup median of 100 ms against
+  90. The widest body gaps are ert-tests (35,358 ms against 33,102),
+  tramp-tests (18,654 against 16,399), comp-tests (14,725 against
+  12,755), process-tests (2,905 against 1,616), semantic-utest-ia (2,878
+  against 2,063) and mule-tests (2,343 against 1,561). The full Rust
+  gate (run 42353971300) passed in every stage, cli_parity's 79 among
+  them.
+
 **Findings recorded, not fixed:**
+- **The interactive session's waits (round 339).** The tty command loop
+  reads its terminal and runs the old per-pass pumps
+  (pump_external_process_output, pump_connection_processes) between key
+  events, where GNU's read_char waits in wait_reading_process_output
+  with READ_KBD -1, the keyboard and the other KEYBOARD_FD descriptors
+  (inotify's among them) in the select, and swallow_events and
+  detect_input_pending ending it; and thread_select, which in GNU
+  releases the global lock for the select's whole timeout, lets another
+  Lisp thread run in slices of at most 10 ms. The pumps read without
+  p->nbytes_read, so a wait for a process whose output a tty read nested
+  in a timer consumed does not notice it and can wait on (the review's
+  P3). To be made: the tty loop's waits through
+  wait_reading_process_output with the terminal and the callbacks'
+  descriptors in its select.
 - **TLS over a process that is no network connection (round 337).**
   gnutls-boot on a pipe process or a subprocess gives GnuTLS the
   process's p->infd and p->outfd as its transport
@@ -19205,13 +19314,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   hands GnuTLS descriptor -1 for such a process and reads and writes its
   channels as they are. To be made: p->infd and p->outfd as the
   transport and the session's reads and writes for every process kind.
-- **A connect and an accept in one select pass (round 336's review).**
-  wait_reading_process_output handles the channels a select found ready
-  in descriptor order, so a `:nowait' client's connect that completes in
-  the pass that accepts it on a local server reports the server's "open
-  from" before the client's "open"; Emaxx checks the pending connects
-  before the servers' accepts, so the client's sentinel runs first. To
-  be made: the select pass's channels in descriptor order.
 - **The macOS spawn's copies of descriptors (round 335).** GNU's Darwin
   build forks for a pty and passes the tty it opened (forkin and
   forkout) and the `:stderr' pipe process's SUBPROCESS_STDOUT (forkerr)
@@ -19264,8 +19366,15 @@ ert-tests as a whole 26,307 ms against 27,211.
   as it does in GNU; Emaxx keeps it in about one run in seven (12 of 80
   alone on round 331's build, 10 of 80 on round 332's), so something,
   most likely a stale word that the conservative scan of a stack finds,
-  still references it. The test is otherwise right; the retention is to
-  be traced.
+  still references it. The test is otherwise right. Round 339's rebuilt
+  gate binary failed
+  `suspended_bytecode_retains_operand_and_unwind_roots' (round 47's
+  case: the key a byte-code worker held, kept after its thread's join
+  and a collection, `((1 t 0) (1 t 1))') in each of 16 runs, where the
+  builds before and after it, the release build of the same source and a
+  diagnostic build naming the scanned region that reaches the key all
+  pass: the word that keeps it depends on the code's layout. The
+  retention is to be traced.
 - **The name tests and SYMBOLP guards left (round 331).** Of the
   `is_named' tests that stand for EQ against an interned symbol, round
   331 made 74 `matches!' tests EQ and 20 matches take the bare symbol;

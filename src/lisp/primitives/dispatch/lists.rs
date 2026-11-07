@@ -1,5 +1,4 @@
 use super::*;
-use crate::lisp::primitives::processes::wait_pumping_processes;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
@@ -679,11 +678,12 @@ fn read_minibuffer_text_from_unread_events_inner(
     read_minibuffer_queued_commands(interp, env)
 }
 
-// keyboard.c:read_char with an end time: the first event consumed
-// (unread, macro or terminal) before TIMEOUT passes, or None.
+// keyboard.c:read_char with END_TIME (None when it is past what the clock
+// can hold): the first event consumed (unread, macro or terminal) before
+// it, or None.
 fn read_event_within(
     interp: &mut Interpreter,
-    timeout: std::time::Duration,
+    end_time: Option<std::time::Instant>,
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
     // read_char consumes unread and live macro events before entering
@@ -695,13 +695,66 @@ fn read_event_within(
     // when it elapses (keyboard.c's timed read); the process pump below is
     // the batch stand-in.
     if crate::lisp::primitives::has_tty_event_poller() {
-        return crate::lisp::primitives::read_tty_event_with_timeout(interp, env, timeout);
+        return crate::lisp::primitives::read_tty_event_with_timeout(interp, env, end_time);
     }
-    let previous_wait = interp.set_waiting_for_user_input(true);
-    let wait_result = wait_pumping_processes(interp, env, Some(timeout), false, None, None, true);
-    interp.set_waiting_for_user_input(previous_wait);
-    wait_result?;
-    pop_pending_input_event_value(interp, env)
+    // kbd_buffer_get_event with END_TIME: until an event comes or the
+    // time is up, wait_reading_process_output (the time left, -1, 1, Qnil,
+    // NULL, 0), which returns as soon as it detects process output.
+    loop {
+        // If the quit flag is set, then read_char will return quit_char,
+        // so that counts as "available input" (quit_throw_to_read_char).
+        if !interp.quit_flag_is_nil() {
+            return read_char_quit(interp, env).map(Some);
+        }
+        let (time_limit, nsecs) = match end_time {
+            Some(end) => {
+                let left = end.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Ok(None);
+                }
+                (
+                    i64::try_from(left.as_secs())
+                        .unwrap_or(crate::lisp::primitives::processes::WAIT_READING_MAX),
+                    i64::from(left.subsec_nanos()),
+                )
+            }
+            None => (crate::lisp::primitives::processes::WAIT_READING_MAX, 0),
+        };
+        crate::lisp::primitives::processes::wait_reading_process_output(
+            interp,
+            env,
+            crate::lisp::primitives::processes::WaitRequest {
+                time_limit,
+                nsecs,
+                read_kbd: -1,
+                do_display: true,
+                wait_proc: None,
+                just_wait_proc: 0,
+            },
+        )?;
+        if let Some(event) = pop_pending_input_event_value(interp, env)? {
+            return Ok(Some(event));
+        }
+    }
+}
+
+// keyboard.c:quit_throw_to_read_char from kbd_buffer_get_event (a
+// `quit-flag' of `kill-emacs' kills Emacs; the unread events are
+// dropped), then read_char's setjmp: the quit character, unless
+// `quit-flag' holds `throw-on-input', whose throw happens instead; under
+// `inhibit-quit' the quit, reported as this event, is not reported again.
+fn read_char_quit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
+    if crate::lisp::types::eq_symbol_named(interp.quit_flag_value(), "kill-emacs") {
+        call(interp, "kill-emacs", &[Value::Nil, Value::Nil], env)?;
+    }
+    interp.set_variable_key(cached_symbol!("unread-command-events"), Value::Nil, env);
+    if crate::lisp::types::eq(interp.quit_flag_value(), interp.throw_on_input_value()) {
+        interp.maybe_quit(env)?;
+    }
+    if interp.inhibit_quit_is_truthy() {
+        interp.set_c_variable("quit-flag", Value::Nil);
+    }
+    Ok(Value::Integer(7))
 }
 
 // lread.c:read_filtered_event's conversion of an event to a character
@@ -1885,19 +1938,28 @@ define_dispatch!(
                     super::display::message_with_string_nolog(interp, "%s", *prompt, env)?;
                 }
                 let read_event = name == "read-event";
-                // SECONDS bounds the whole read, retries included.
-                let deadline = if args.len() >= 3 && args[2].is_truthy() {
-                    let timeout = wait_duration(std::slice::from_ref(&args[2]))?;
-                    Some(std::time::Instant::now() + timeout)
-                } else {
-                    None
+                // read_filtered_event: a number SECONDS is an end time
+                // (dtotimespec added to now, None past what the clock can
+                // hold) bounding the whole read, retries included; any
+                // other SECONDS is none.
+                let deadline = match args.get(2).map(|seconds| seconds.kind()) {
+                    Some(Kind::Integer(_) | Kind::Float(_) | Kind::BigInteger(_)) => {
+                        let duration = crate::lisp::primitives::numeric_to_f64(interp, &args[2])?;
+                        let now = std::time::Instant::now();
+                        Some(if duration > 0.0 {
+                            let (secs, nsecs) =
+                                crate::lisp::primitives::processes::dtotimespec(duration);
+                            now.checked_add(std::time::Duration::new(secs as u64, nsecs as u32))
+                        } else {
+                            Some(now)
+                        })
+                    }
+                    _ => None,
                 };
                 loop {
                     let event = match deadline {
                         Some(deadline) => {
-                            let timeout =
-                                deadline.saturating_duration_since(std::time::Instant::now());
-                            let event = read_event_within(interp, timeout, env)?;
+                            let event = read_event_within(interp, deadline, env)?;
                             // A read with an end time adds nothing to
                             // this-command-keys.
                             interp.keyboard_input.last_event_reread = false;

@@ -2756,9 +2756,8 @@ pub(crate) fn has_tty_event_poller() -> bool {
 pub(crate) fn read_tty_event_with_timeout(
     interp: &mut Interpreter,
     env: &mut Env,
-    timeout: std::time::Duration,
+    deadline: Option<std::time::Instant>,
 ) -> Result<Option<Value>, LispError> {
-    let deadline = std::time::Instant::now() + timeout;
     let started = std::time::Instant::now();
     loop {
         if let Some(event) = pop_pending_input_event_value(interp, env)? {
@@ -2798,7 +2797,7 @@ pub(crate) fn read_tty_event_with_timeout(
                 return Ok(Some(event));
             }
             Some(None) => {
-                if std::time::Instant::now() >= deadline {
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
                     return Ok(None);
                 }
             }

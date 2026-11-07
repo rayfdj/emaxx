@@ -3819,6 +3819,18 @@ pub(crate) fn status_notify(
     env: &mut Env,
     deleting: Option<u64>,
 ) -> Result<bool, LispError> {
+    Ok(status_notify_walk(interp, env, deleting, None)?.0)
+}
+
+/// status_notify (DELETING, WAIT_PROC): whether any sentinel ran, and its
+/// got_some_output, the most one read of WAIT_PROC's output (any
+/// process's, with none) took, -1 when none was read.
+pub(crate) fn status_notify_walk(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    deleting: Option<u64>,
+    wait_proc: Option<u64>,
+) -> Result<(bool, i64), LispError> {
     // handle_child_signal records every child's change as its SIGCHLD
     // comes, whatever thread the process is locked to.
     for process_id in interp.child_process_ids() {
@@ -3826,6 +3838,7 @@ pub(crate) fn status_notify(
     }
     interp.begin_status_notify();
     let mut ran = false;
+    let mut got_some_output: i64 = -1;
     for process_id in interp.status_notify_order() {
         if interp.child_process_ids().contains(&process_id) {
             interp.refresh_process_id(process_id)?;
@@ -3835,10 +3848,14 @@ pub(crate) fn status_notify(
         }
         // "If process is still active, read any output that remains."
         while interp.status_notify_reads_output(process_id, deleting) {
-            let (stdout, stderr) = interp.poll_process_output(process_id)?;
-            let found = !stdout.is_empty() || !stderr.is_empty();
-            deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
-            if !found {
+            let nread = match read_process_output(interp, env, process_id)? {
+                ProcessRead::Bytes(nread) => nread as i64,
+                _ => -1,
+            };
+            if wait_proc.is_none_or(|id| id == process_id) && got_some_output < nread {
+                got_some_output = nread;
+            }
+            if nread <= 0 {
                 break;
             }
         }
@@ -3848,7 +3865,91 @@ pub(crate) fn status_notify(
         run_process_sentinel(interp, process_id, &message, env)?;
         ran = true;
     }
-    Ok(ran)
+    Ok((ran, got_some_output))
+}
+
+/// What read_process_output returned: the bytes it read with the
+/// carryover the last read left (0 at the channel's end), or -1 with
+/// errno EAGAIN, EIO or another.
+pub(crate) enum ProcessRead {
+    Bytes(usize),
+    WouldBlock,
+    Eio,
+    Error,
+}
+
+/// process.c:read_process_output (PROC, p->infd): one read of at most
+/// p->readmax bytes, the adaptive read buffering adjusted by it and the
+/// bytes added to p->nbytes_read, then decoded after the carryover and
+/// given to the filter (read_and_dispose_of_process_output); the first
+/// read of zero sets CODING_MODE_LAST_BLOCK and decodes the carryover.
+#[cfg(unix)]
+pub(crate) fn read_process_output(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    process_id: u64,
+) -> Result<ProcessRead, LispError> {
+    use crate::lisp::eval::ChannelOutcome;
+    let carryover = interp.process_decoding_carryover(process_id);
+    let readmax = interp.process_read_max(process_id);
+    let outcome = interp.read_process_channel(process_id)?;
+    match outcome {
+        ChannelOutcome::Data(bytes) => {
+            let (count, skip) = interp.adapt_read_output_delay(process_id, bytes.len(), readmax);
+            adjust_process_output_delay_count(count);
+            if skip {
+                PROCESS_OUTPUT_SKIP.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            interp.add_process_nbytes_read(process_id, bytes.len());
+            let output = decode_process_output(interp, process_id, &bytes, env)?;
+            deliver_process_output_decoded(interp, process_id, output, env)?;
+            Ok(ProcessRead::Bytes(bytes.len() + carryover))
+        }
+        ChannelOutcome::End => {
+            let (was_last, carried) = interp.mark_process_last_block(process_id);
+            if was_last {
+                return Ok(ProcessRead::Bytes(0));
+            }
+            let output = decode_process_output(interp, process_id, &[], env)?;
+            deliver_process_output_decoded(interp, process_id, output, env)?;
+            Ok(ProcessRead::Bytes(carried))
+        }
+        ChannelOutcome::WouldBlock => Ok(ProcessRead::WouldBlock),
+        ChannelOutcome::Eio => Ok(ProcessRead::Eio),
+        ChannelOutcome::Error => Ok(ProcessRead::Error),
+    }
+}
+
+/// process.c's process_output_delay_count: the processes whose
+/// read_output_delay is not zero.
+static PROCESS_OUTPUT_DELAY_COUNT: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(0);
+
+/// deactivate_process's `if (--process_output_delay_count < 0)
+/// process_output_delay_count = 0' for a process that had a delay.
+pub(crate) fn process_output_delay_given_up() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let _ =
+        PROCESS_OUTPUT_DELAY_COUNT.try_update(Relaxed, Relaxed, |count| Some((count - 1).max(0)));
+}
+
+/// send_process's process_output_delay_count-- once a write gave up a
+/// process's delay.
+pub(crate) fn process_output_delay_written() {
+    PROCESS_OUTPUT_DELAY_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+}
+/// process.c's process_output_skip: some process's read_output_skip is
+/// set.
+static PROCESS_OUTPUT_SKIP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// wait_reading_process_output's static last_read_channel.
+static LAST_READ_CHANNEL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+fn adjust_process_output_delay_count(change: i32) {
+    if change != 0 {
+        let count = PROCESS_OUTPUT_DELAY_COUNT.load(std::sync::atomic::Ordering::Relaxed) + change;
+        PROCESS_OUTPUT_DELAY_COUNT.store(count.max(0), std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 // ── Network processes (GNU process.c make-network-process) ──
@@ -5561,279 +5662,677 @@ fn run_process_log(
     Ok(())
 }
 
-/// GNU wait_reading_process_output: wait up to TOTAL, handling process
-/// output as it arrives and firing timers as they come due, instead of
-/// sleeping blind.  While progress is being made the loop re-pumps
-/// immediately, so an in-process client/server exchange completes at full
-/// speed rather than one round-trip per wait call.  With RETURN_ON_DELIVERY
-/// (accept-process-output) the wait ends as soon as output was handled.  A
-/// status change or sentinel alone is progress, but GNU does not report it as
-/// delivered process output.
-/// Returns whether any process output was delivered.
-pub(crate) fn wait_pumping_processes(
+/// process.c's WAIT_READING_MAX: the most seconds a wait asks for.
+pub(crate) const WAIT_READING_MAX: i64 = i64::MAX;
+
+/// Gnulib's dtotimespec (atimer.rs has it): the seconds truncated toward
+/// zero, the nanoseconds rounded up, a value past time_t's range clipped,
+/// as the timespec's time_t and long.
+pub(crate) fn dtotimespec(d: f64) -> (libc::time_t, libc::c_long) {
+    let spec = crate::lisp::primitives::atimer::dtotimespec(d);
+    (spec.tv_sec, spec.tv_nsec)
+}
+
+/// wait_reading_process_output (0, 20 * 1000 * 1000, 0, 0, Qnil, NULL,
+/// 0), the wait of wait_for_socket_fds, wait_while_connecting,
+/// wait_for_tls_negotiation and send_process.
+#[cfg(unix)]
+pub(crate) fn wait_twenty_milliseconds(
     interp: &mut Interpreter,
     env: &mut Env,
-    total: Option<std::time::Duration>,
-    return_on_delivery: bool,
-    target_process_id: Option<u64>,
-    only_process_id: Option<u64>,
-    run_timers: bool,
-) -> Result<bool, LispError> {
-    let deadline = total.map(|total| std::time::Instant::now() + total);
-    let mut delivered = false;
-    let mut delivery_grace_deadline = None;
-    let target_start =
-        target_process_id.and_then(|process_id| interp.process_output_delivery_count(process_id));
-    let mut all_processes_seen = interp.current_thread_process_output_delivery_count();
-    // The last wait ended early, and how many waits in a row did so before
-    // a pass that found nothing.  A pass can find nothing after a wake and
-    // still change the wait set (a pipe read to its end leaves it, before
-    // the child signal that follows), but a second such wake in a row
-    // makes the next wait a plain sleep, so a descriptor that stays ready
-    // (a child signal for another wait's process) cannot make it spin.
-    let mut woke_early = false;
-    let mut fruitless_wakes = 0;
-    // wait_reading_process_output runs timer_check at the top of each
-    // iteration of its select loop: the first, and each after select
-    // returns for output, a child or the timer_delay timer_check gave
-    // it.  A pass here that only ends this loop's 10ms poll is no such
-    // return, so a timer a callback added waits as it does in GNU.
-    let mut timer_check_at = Some(std::time::Instant::now());
-    // The top of one of its iterations: the first, each after its select
-    // returned for input or a timer, and each ASYNC_RETRY after one whose
-    // asynchronous checks asked to retry; only there does it look at name
-    // lookups and TLS negotiations.
-    let mut async_check_at = Some(std::time::Instant::now());
-    let mut last_progressed = false;
-    let mut first_pass = true;
+) -> Result<(), LispError> {
+    wait_reading_process_output(
+        interp,
+        env,
+        WaitRequest {
+            time_limit: 0,
+            nsecs: 20_000_000,
+            read_kbd: 0,
+            do_display: false,
+            wait_proc: None,
+            just_wait_proc: 0,
+        },
+    )
+    .map(drop)
+}
+
+/// What a caller asks of wait_reading_process_output: TIME_LIMIT seconds
+/// and NSECS nanoseconds (MINIMUM when either is negative, FOREVER when
+/// both are zero), READ_KBD (0, 1 or -1), DO_DISPLAY, WAIT_PROC and
+/// JUST_WAIT_PROC (0, 1, or -1, which also leaves the timers alone).
+#[derive(Clone, Copy)]
+pub(crate) struct WaitRequest {
+    pub(crate) time_limit: i64,
+    pub(crate) nsecs: i64,
+    pub(crate) read_kbd: i32,
+    /// DO_DISPLAY: redisplay_preserve_echo_area after timers that ran, a
+    /// status_notify and the reads (none without a frontend: batch).
+    pub(crate) do_display: bool,
+    pub(crate) wait_proc: Option<u64>,
+    pub(crate) just_wait_proc: i32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaitMode {
+    Minimum,
+    Timeout,
+    Forever,
+}
+
+/// process.c's READ_OUTPUT_DELAY_INCREMENT and READ_OUTPUT_DELAY_MAX.
+const READ_OUTPUT_DELAY_INCREMENT: std::time::Duration = std::time::Duration::from_millis(10);
+const READ_OUTPUT_DELAY_MAX: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// What thread_select's pselect found: the descriptors ready to read and
+/// to write, and nfds (-1 with EINTR).
+#[cfg(unix)]
+struct Selected {
+    nfds: i32,
+    readable: Vec<std::os::fd::RawFd>,
+    writable: Vec<std::os::fd::RawFd>,
+}
+
+/// thread.c:thread_select around pselect: the global lock released, so
+/// another Lisp thread runs while this one waits for READ (to read) or
+/// WRITE (to write) to be ready, or TIMEOUT to pass.
+#[cfg(unix)]
+fn thread_select(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    read: &[std::os::fd::RawFd],
+    write: &[std::os::fd::RawFd],
+    timeout: std::time::Duration,
+) -> Result<Selected, LispError> {
+    let mut fds: Vec<libc::pollfd> = read
+        .iter()
+        .map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .chain(write.iter().map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        }))
+        .collect();
+    let deadline = std::time::Instant::now() + timeout;
+    let nfds = loop {
+        let yielding = interp.other_threads_live();
+        let ready = yielding && interp.other_threads_ready();
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        // With another thread ready, this one gives way after looking;
+        // with others live but blocked, it waits a slice at most, as they
+        // may wake (a sleep's end) with no descriptor of this thread's.
+        let wait = if ready {
+            std::time::Duration::ZERO
+        } else if yielding {
+            remaining.min(std::time::Duration::from_millis(10))
+        } else {
+            remaining
+        };
+        for fd in &mut fds {
+            fd.revents = 0;
+        }
+        let millis = wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
+        // SAFETY: FDS holds descriptors of this interpreter's processes and
+        // the child signal pipe; a closed one comes back POLLNVAL.
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, millis) };
+        if n < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                break -1;
+            }
+            return Err(LispError::Signal("Failed select".into()));
+        }
+        if n > 0 || !yielding || remaining.is_zero() {
+            break n;
+        }
+        // The lock released: a thread that can run now does, until it
+        // blocks or yields, and this one selects again; none ready, it
+        // goes on watching its descriptors.
+        if ready {
+            interp.let_other_threads_run(env, std::time::Duration::ZERO)?;
+        }
+    };
+    let ready = |fd: &libc::pollfd, mask: libc::c_short| {
+        fd.revents & libc::POLLNVAL == 0 && fd.revents & mask != 0
+    };
+    let readable = fds[..read.len()]
+        .iter()
+        .filter(|fd| ready(fd, libc::POLLIN | libc::POLLHUP | libc::POLLERR))
+        .map(|fd| fd.fd)
+        .collect();
+    let writable = fds[read.len()..]
+        .iter()
+        .filter(|fd| ready(fd, libc::POLLOUT | libc::POLLHUP | libc::POLLERR))
+        .map(|fd| fd.fd)
+        .collect();
+    Ok(Selected {
+        nfds,
+        readable,
+        writable,
+    })
+}
+
+/// process.c:wait_reading_process_output: wait for output from processes,
+/// timers and, with READ_KBD, keyboard input, returning got_some_output
+/// (positive when some process's output was read, WAIT_PROC's only when
+/// it is given).
+#[cfg(unix)]
+pub(crate) fn wait_reading_process_output(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    request: WaitRequest,
+) -> Result<i64, LispError> {
+    if request.time_limit == 0
+        && request.nsecs == 0
+        && let Some(process_id) = request.wait_proc
+        && interp
+            .lookup_var_key(cached_symbol!("inhibit-quit"), env)
+            .is_some_and(|value| value.is_truthy())
+        && !interp.process_status_exit(process_id)
+    {
+        super::dispatch::display::message1(
+            interp,
+            "Blocking call to accept-process-output with quit inhibited!!",
+            env,
+        )?;
+    }
+    // waiting_for_user_input_p = read_kbd, restored with the waiting
+    // threads' marks by wait_reading_process_output_unwind.
+    let previous = interp.set_waiting_for_user_input(request.read_kbd != 0);
+    let result = wait_reading_process_output_1(interp, env, request);
+    interp.set_waiting_for_user_input(previous);
+    interp.clear_waiting_thread_state();
+    let (mut got_some_output, prev_wait_proc_nbytes_read) = result?;
+    crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
+    if request.read_kbd >= 0 {
+        interp.maybe_quit(env)?;
+    }
+    // Timers and process filters that ran may themselves have called
+    // `accept-process-output', reading some or all of WAIT_PROC's output
+    // unnoticed here: what it read is the value.
+    if let Some(process_id) = request.wait_proc {
+        let read = interp.process_nbytes_read(process_id);
+        if read != prev_wait_proc_nbytes_read {
+            got_some_output =
+                (read.wrapping_sub(prev_wait_proc_nbytes_read)).min(i32::MAX as u64) as i64;
+        }
+    }
+    Ok(got_some_output)
+}
+
+#[cfg(unix)]
+fn wait_reading_process_output_1(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    request: WaitRequest,
+) -> Result<(i64, u64), LispError> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let WaitRequest {
+        time_limit,
+        nsecs,
+        read_kbd,
+        do_display,
+        wait_proc,
+        just_wait_proc,
+    } = request;
+    let mut got_some_output: i64 = -1;
+    let prev_wait_proc_nbytes_read = wait_proc.map_or(0, |id| interp.process_nbytes_read(id));
+    // Close to the current time if known, None otherwise.
+    let mut now: Option<std::time::Instant> = None;
+    let (mut wait, end_time) = if time_limit < 0 || nsecs < 0 {
+        (WaitMode::Minimum, None)
+    } else if time_limit > 0 || nsecs > 0 {
+        let span = std::time::Duration::from_secs(time_limit as u64)
+            + std::time::Duration::from_nanos(nsecs as u64);
+        let start = *now.insert(std::time::Instant::now());
+        (WaitMode::Timeout, start.checked_add(span))
+    } else {
+        (WaitMode::Forever, None)
+    };
+    let mut got_output_end_time: Option<std::time::Instant> = None;
     loop {
-        // A fatal signal ends the wait as GNU's handler, run in the middle
-        // of the select, does; the other pending signals (a ripe atimer's
-        // SIGALRM) are processed as wait_reading_process_output's maybe_quit
-        // or process_pending_signals processes them at each iteration.
+        let mut process_skipped = false;
+        // If calling from keyboard input, do not quit; otherwise do a
+        // pending quit, and process the pending signals.
         if crate::lisp::primitives::atimer::signals_pending() {
             crate::lisp::primitives::atimer::process_pending_signals_in_wait(interp, env)?;
         }
-        // What the last pass's handshakes and checks logged, shown before
-        // anything else runs Lisp.
+        if read_kbd >= 0 {
+            interp.maybe_quit(env)?;
+        }
         crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
-        let pass_start = std::time::Instant::now();
-        // process.c after its select: the channels it found ready are read
-        // (a connect's end handled among them) before the loop's top looks
-        // again, so what woke the wait is read even when WAIT_PROC has
-        // ended meanwhile.
-        let mut woke_progress = false;
-        if woke_early {
-            woke_progress |= pump_external_process_output_for(interp, env, only_process_id)?;
-            woke_progress |= pump_connection_processes_for(interp, env, only_process_id, true)?;
-        }
-        if !std::mem::take(&mut first_pass)
-            && deadline.is_some_and(|deadline| pass_start >= deadline)
-        {
-            // A select that waited out the time breaks the loop then and
-            // there; one that returned for a descriptor at the deadline has
-            // what it saw handled (read above), and the next iteration's
-            // asynchronous checks run before it sees the time is up.  The
-            // streams are read once more either way.
-            let mut final_progress = woke_progress;
-            if woke_early {
-                final_progress |= check_async_connections(interp, env, target_process_id)?.0;
-            }
-            final_progress |= pump_external_process_output_for(interp, env, only_process_id)?;
-            final_progress |= pump_connection_processes_for(interp, env, only_process_id, false)?;
-            delivered |= final_progress;
-            break;
-        }
-        let iteration_top = woke_early
-            || last_progressed
-            || async_check_at.is_some_and(|at| pass_start >= at)
-            || (run_timers && timer_check_at.is_some_and(|at| pass_start >= at));
-        let mut progressed = woke_progress;
-        if iteration_top {
-            let (checked, retry_for_async) =
-                check_async_connections(interp, env, target_process_id)?;
-            progressed |= checked;
-            async_check_at = retry_for_async.then(|| pass_start + ASYNC_RETRY);
-        }
-        // "If status of something has changed, and no input is available,
-        // notify the user of the change right away", then "Don't wait for
-        // output from a non-running process.  Just read whatever data has
-        // already been received": a WAIT_PROC whose child has ended ends the
-        // wait here, before any other channel is read, so another process's
-        // unread output (a `:stderr' pipe's) holds every sentinel back.
-        if let Some(process_id) = target_process_id
-            && interp.process_child_ended(process_id)?
-        {
-            // timer_check, which the top of every iteration runs first.
-            if run_timers {
-                interp.run_wait_loop_top_events(env)?;
-            }
-            // handle_child_signal has reaped every child whose status
-            // changed, taking a terminated one's channel out of the mask.
-            for other_id in interp.child_process_ids() {
-                interp.refresh_process_id(other_id)?;
-            }
-            if interp.any_process_exit_awaits_notification() && !interp.process_input_available() {
-                delivered |= status_notify(interp, env, None)?;
-            }
-            // `if (wait_proc->raw_status_new) update_status (wait_proc)'
-            // before its test: a continue status_notify reported, or one
-            // that came since, leaves WAIT_PROC running, and the wait goes
-            // on.
-            if interp.process_child_ended(process_id)? {
-                // "If data can be read from the process, do so until
-                // exhausted."
-                loop {
-                    let (stdout, stderr) = interp.poll_process_output(process_id)?;
-                    let found = !stdout.is_empty() || !stderr.is_empty();
-                    delivered |=
-                        deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
-                    if !found {
-                        break;
-                    }
+
+        // The pending name lookups and TLS negotiations of WAIT_PROC, or
+        // of every process.
+        let (_, retry_for_async) = check_async_connections(interp, env, wait_proc)?;
+
+        // Compute time from now till when time limit is up; exit if
+        // already run out.
+        let mut timeout = match wait {
+            WaitMode::Timeout => {
+                let current = *now.get_or_insert_with(std::time::Instant::now);
+                match end_time {
+                    Some(end) if end > current => end - current,
+                    Some(_) => break,
+                    None => std::time::Duration::from_secs(100_000),
                 }
+            }
+            WaitMode::Minimum => std::time::Duration::ZERO,
+            WaitMode::Forever => std::time::Duration::from_secs(100_000),
+        };
+
+        // Normally we run timers here (timer_check).
+        let mut timer_delay: Option<std::time::Duration> = None;
+        if just_wait_proc >= 0 {
+            interp.run_wait_loop_input_events(env)?;
+            // do { timer_check; a redisplay after a timer ran, which may
+            // have requeued itself } while (!detect_input_pending ()).
+            loop {
+                let ran = interp.run_pending_timer_events(env)?;
+                if !(ran && do_display) {
+                    break;
+                }
+                redisplay_preserve_echo_area(interp, env);
+                if !interp.quit_flag_is_nil() || crate::lisp::primitives::tty_input_pending() {
+                    break;
+                }
+            }
+            let native = interp
+                .next_timer_due()
+                .map(|due| due.saturating_duration_since(std::time::Instant::now()));
+            timer_delay = match (interp.timer_check_delay, native) {
+                (Some(lisp), Some(native)) => Some(lisp.min(native)),
+                (lisp, native) => lisp.or(native),
+            };
+            // If there is unread keyboard input, also return.
+            if read_kbd != 0 && !unread_command_events(interp, env)?.is_empty() {
                 break;
             }
         }
-        progressed |= pump_external_process_output_for(interp, env, only_process_id)?;
-        progressed |= pump_connection_processes_for(interp, env, only_process_id, true)?;
-        last_progressed = progressed;
-        // process.c after its select: "If we woke up due to SIGWINCH,
-        // actually change size now" -- do_pending_window_change applies
-        // the frame sizes change_frame_size queued (a `menu-bar-lines'
-        // change, the batch frame's initial menu bar line).
+
+        // handle_child_signal's records, as the handler made them.
+        for process_id in interp.child_process_ids() {
+            interp.refresh_process_id(process_id)?;
+        }
+        // If status of something has changed, and no input is available,
+        // notify the user of the change right away.
+        if interp.status_changes_pending() {
+            let (input, write, _) = wait_masks(interp, read_kbd, true);
+            let write = if interp.connects_pending() {
+                write
+            } else {
+                Vec::new()
+            };
+            let ready = poll_now(&input, &write);
+            if ready <= 0 {
+                got_some_output = status_notify_walk(interp, env, None, wait_proc)?.1;
+                if do_display {
+                    redisplay_preserve_echo_area(interp, env);
+                }
+            }
+        }
+
+        // Don't wait for output from a non-running process.  Just read
+        // whatever data has already been received.
+        if let Some(process_id) = wait_proc
+            && !interp.wait_proc_running(process_id)
+        {
+            let mut read_some_bytes = false;
+            if interp.process_infd(process_id).is_some() {
+                while let ProcessRead::Bytes(nread) = read_process_output(interp, env, process_id)?
+                {
+                    let nread = nread as i64;
+                    if got_some_output < nread {
+                        got_some_output = nread;
+                    }
+                    if nread == 0 {
+                        break;
+                    }
+                    read_some_bytes = true;
+                }
+            }
+            if read_some_bytes && do_display {
+                redisplay_preserve_echo_area(interp, env);
+            }
+            break;
+        }
+
+        // Wait till there is something to do.
+        let (mut available, writeok, check_delay, check_write, channels) =
+            if let Some(process_id) = wait_proc.filter(|_| just_wait_proc != 0) {
+                let Some(fd) = interp.process_infd(process_id) else {
+                    break;
+                };
+                let channel: Vec<crate::lisp::eval::WaitChannel> =
+                    interp.channel_at(fd).into_iter().collect();
+                (vec![fd], Vec::new(), 0, false, channel)
+            } else {
+                let (input, write, channels) = wait_masks(interp, read_kbd, true);
+                let check_delay = if wait_proc.is_some() {
+                    0
+                } else {
+                    PROCESS_OUTPUT_DELAY_COUNT.load(Relaxed)
+                };
+                (input, write, check_delay, true, channels)
+            };
+        // We have to be informed when we receive a SIGCHLD signal for an
+        // asynchronous process: child_signal_init makes the pipe with the
+        // first child.
+        let child_fd = crate::lisp::primitives::child_signal_read_fd();
+        if let Some(fd) = child_fd {
+            available.push(fd);
+        }
+
+        // Adaptive read buffering: the processes with read_output_skip
+        // left out of this select, its timeout the least of their delays.
+        if PROCESS_OUTPUT_SKIP.load(Relaxed) && check_delay > 0 {
+            let mut adaptive = if timeout > READ_OUTPUT_DELAY_MAX {
+                READ_OUTPUT_DELAY_MAX
+            } else {
+                timeout
+            };
+            let mut check_delay = check_delay;
+            for channel in interp.process_channels() {
+                if check_delay <= 0 {
+                    break;
+                }
+                let (delay, skip) = (channel.read_output_delay, channel.read_output_skip);
+                if delay > 0 {
+                    check_delay -= 1;
+                    if !skip {
+                        continue;
+                    }
+                    available.retain(|&fd| fd != channel.fd);
+                    process_skipped = true;
+                    interp.clear_process_read_output_skip(&channel);
+                    let delay = std::time::Duration::from_nanos(delay as u64);
+                    if delay < adaptive {
+                        adaptive = delay;
+                    }
+                }
+            }
+            timeout = adaptive;
+            PROCESS_OUTPUT_SKIP.store(false, Relaxed);
+        }
+
+        // If we've got some output and haven't limited our timeout with
+        // adaptive read buffering, limit it.
+        if got_some_output > 0 && !process_skipped && timeout > READ_OUTPUT_DELAY_INCREMENT {
+            timeout = READ_OUTPUT_DELAY_INCREMENT;
+        }
+
+        if just_wait_proc >= 0
+            && let Some(delay) = timer_delay
+            && delay < timeout
+        {
+            let timeout_abs = *now.get_or_insert_with(std::time::Instant::now) + timeout;
+            if got_output_end_time.is_none_or(|end| timeout_abs < end) {
+                got_output_end_time = Some(timeout_abs);
+            }
+            timeout = delay;
+        } else {
+            got_output_end_time = None;
+        }
+
+        // NOW can become inaccurate if time can pass during pselect.
+        if !timeout.is_zero() {
+            now = None;
+        }
+
+        if retry_for_async && timeout > ASYNC_RETRY {
+            timeout = ASYNC_RETRY;
+        }
+
+        // GnuTLS buffers data internally: a session holding decrypted
+        // records is ready without the select.
+        let tls_available: Vec<std::os::fd::RawFd> = channels
+            .iter()
+            .filter(|channel| channel.tls_pending && available.contains(&channel.fd))
+            .map(|channel| channel.fd)
+            .collect();
+        if !tls_available.is_empty()
+            && wait_proc.is_none_or(|process_id| {
+                interp
+                    .process_infd(process_id)
+                    .is_some_and(|fd| tls_available.contains(&fd))
+            })
+        {
+            timeout = std::time::Duration::ZERO;
+        }
+
+        let selected = thread_select(
+            interp,
+            env,
+            &available,
+            if check_write { &writeok } else { &[] },
+            timeout,
+        )?;
+        let mut nfds = selected.nfds;
+        let mut readable = selected.readable;
+        let writable = selected.writable;
+        // Merge tls_available into Available.
+        if !tls_available.is_empty() {
+            if nfds <= 0 {
+                nfds = tls_available.len() as i32;
+                readable = tls_available.clone();
+            } else {
+                for fd in &tls_available {
+                    if !readable.contains(fd) {
+                        readable.push(*fd);
+                    }
+                }
+            }
+        }
+
+        // If we woke up due to SIGWINCH, actually change size now.
         crate::lisp::primitives::do_pending_window_change(interp, env)?;
-        // Output delivered since the previous pass: the grace below is
-        // measured from the latest output, so a wait returns once output
-        // has been quiet for one READ_OUTPUT_DELAY_INCREMENT.
-        let delivery_count = interp.current_thread_process_output_delivery_count();
-        let any_process_delivered = delivery_count != all_processes_seen;
-        all_processes_seen = delivery_count;
-        delivered |= any_process_delivered;
-        if return_on_delivery && target_process_id.is_none() && any_process_delivered {
-            // process.c:5657-5661 keeps waiting for up to one
-            // READ_OUTPUT_DELAY_INCREMENT (10ms) after some output.  This
-            // lets one readiness cycle drain sibling descriptors instead of
-            // returning on the first short stderr write while stdout is
-            // becoming readable (the ordinary JSON-RPC startup pattern).
-            delivery_grace_deadline =
-                Some(std::time::Instant::now() + std::time::Duration::from_millis(10));
-        }
-        // This pass's reads' messages, before a timer or another thread runs.
-        crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
-        if run_timers {
-            let check_timers = progressed
-                || woke_early
-                || timer_check_at.is_some_and(|at| std::time::Instant::now() >= at);
-            interp.drive_threads(env, check_timers)?;
-            if check_timers {
-                timer_check_at = interp
-                    .timer_check_delay
-                    .and_then(|delay| std::time::Instant::now().checked_add(delay));
+
+        if nfds == 0 {
+            // Exit the main loop if we've passed the requested timeout, or
+            // have read some bytes from our wait_proc, or aren't skipping
+            // processes and got some output and waited long enough.
+            if wait == WaitMode::Minimum
+                || wait_proc
+                    .is_some_and(|id| interp.process_nbytes_read(id) != prev_wait_proc_nbytes_read)
+            {
+                break;
+            }
+            let mut cmp_time = if wait == WaitMode::Timeout {
+                end_time
+            } else {
+                None
+            };
+            if !process_skipped && got_some_output > 0 && !timeout.is_zero() {
+                let Some(end) = got_output_end_time else {
+                    break;
+                };
+                if cmp_time.is_none_or(|cmp| end < cmp) {
+                    cmp_time = Some(end);
+                }
+            }
+            if let Some(cmp) = cmp_time
+                && cmp <= *now.insert(std::time::Instant::now())
+            {
+                break;
             }
         }
-        if interp.waiting_for_user_input() && !unread_command_events(interp, env)?.is_empty() {
-            break;
-        }
-        let requested_process_delivered = target_process_id.is_some_and(|process_id| {
-            interp.process_output_delivery_count(process_id) != target_start
-        });
-        // process.c: once WAIT_PROC has read something, the wait reads
-        // what else is available without waiting, and returns when a pass
-        // finds nothing.
-        if return_on_delivery
-            && target_process_id.is_some()
-            && requested_process_delivered
-            && !progressed
+        let no_avail = nfds < 0;
+
+        // Check for keyboard input: if there is any, return immediately to
+        // give it higher priority than subprocesses.
+        if read_kbd != 0
+            && (!unread_command_events(interp, env)?.is_empty()
+                || crate::lisp::primitives::tty_input_pending())
         {
             break;
         }
-        let now = std::time::Instant::now();
-        if return_on_delivery
-            && target_process_id.is_none()
-            && delivered
-            && delivery_grace_deadline.is_some_and(|grace| now >= grace)
-        {
-            break;
-        }
-        if deadline.is_some_and(|deadline| now >= deadline) {
-            // Timer/thread callbacks above can consume the remainder of the
-            // deadline while the requested child becomes readable.  Drain
-            // readiness once more before reporting a timeout; otherwise the
-            // bytes are left for the next caller, producing a deterministic
-            // one-wait lag under load.
-            // The next iteration runs the asynchronous checks at its top
-            // when this one handled something, and breaks on the time
-            // before another select could see a connect end.
-            let mut final_progress = false;
-            if progressed {
-                final_progress |= check_async_connections(interp, env, target_process_id)?.0;
-            }
-            final_progress |= pump_external_process_output_for(interp, env, only_process_id)?;
-            final_progress |= pump_connection_processes_for(interp, env, only_process_id, false)?;
-            delivered |= final_progress;
-            break;
-        }
-        // process.c:wait_reading_process_output: "Don't wait for output
-        // from a non-running process.  Just read whatever data has already
-        // been received" -- with or without a timeout, so a loop of
-        // `(accept-process-output PROC 10)' ends when PROC exits, not ten
-        // seconds later (erc's subprocess tests spent that on every child).
-        // Pending bytes keep the id live until the pump above has
-        // delivered them.
-        if target_process_id.is_some_and(|process_id| {
-            !interp.live_external_process_ids().contains(&process_id)
-                && !matches!(
-                    interp.process_status_value(process_id).map(|v| v.kind()),
-                    Some(Kind::Symbol(status))
-                        if matches!(status.as_str(), "run" | "open" | "connect" | "listen")
-                )
-        }) {
-            break;
-        }
-        if progressed {
-            woke_early = false;
-            fruitless_wakes = 0;
+
+        // Check for data from a process.
+        if no_avail || nfds == 0 {
             continue;
         }
-        // Idle: wait until input arrives, a child's status changes, the
-        // deadline passes or the next timer is due, for at most 10ms at a
-        // time, so that what the wait set leaves out is still looked at.
-        let mut nap = deadline
-            .map(|deadline| deadline.saturating_duration_since(now))
-            .unwrap_or(std::time::Duration::from_millis(10));
-        if let Some(due) = interp.next_timer_due() {
-            nap = nap.min(due.saturating_duration_since(now));
+
+        // The callbacks: the child signal pipe's child_signal_read.
+        if let Some(fd) = child_fd
+            && readable.contains(&fd)
+        {
+            crate::lisp::primitives::drain_child_signal_pipe(fd);
         }
-        if run_timers && let Some(at) = timer_check_at {
-            nap = nap.min(at.saturating_duration_since(now));
-        }
-        if let Some(grace) = delivery_grace_deadline {
-            nap = nap.min(grace.saturating_duration_since(now));
-        }
-        if let Some(at) = async_check_at {
-            nap = nap.min(at.saturating_duration_since(now));
-        }
-        nap = nap
-            .min(std::time::Duration::from_millis(10))
-            .max(std::time::Duration::from_millis(1));
-        if std::mem::take(&mut woke_early) {
-            fruitless_wakes += 1;
-        }
-        if fruitless_wakes >= 2 {
-            fruitless_wakes = 0;
-            interp.sleep_current_thread(env, nap)?;
+
+        // The channels in descriptor order, from last_read_channel + 1 round
+        // about unless `process-prioritize-lower-fds'.
+        let mut ready: Vec<std::os::fd::RawFd> = readable
+            .iter()
+            .chain(writable.iter())
+            .copied()
+            .filter(|fd| Some(*fd) != child_fd)
+            .collect();
+        ready.sort_unstable();
+        ready.dedup();
+        let prioritize = interp
+            .lookup_var_key(cached_symbol!("process-prioritize-lower-fds"), env)
+            .is_some_and(|value| value.is_truthy());
+        let channel_start = if prioritize {
+            0
         } else {
-            woke_early = interp.wait_current_thread_for_process_input(env, only_process_id, nap)?;
+            LAST_READ_CHANNEL.load(Relaxed) + 1
+        };
+        let split = ready.partition_point(|&fd| fd < channel_start);
+        ready.rotate_left(split);
+        let mut available_set: Vec<std::os::fd::RawFd> = readable;
+        for fd in ready {
+            // FD_ISSET (channel, &Available) and the flags PROCESS_FD
+            // without KEYBOARD_FD: a channel delete_read_fd took out (a
+            // stopped connection's, one whose filter is t) is not read even
+            // when JUST-THIS-ONE selected it.
+            if available_set.contains(&fd)
+                && let Some(channel) = interp.channel_at(fd)
+                && (channel.read || channel.connect)
+            {
+                let process_id = channel.process_id;
+                if interp.process_listening(process_id) {
+                    // If this is a server stream socket, accept connection.
+                    server_accept_connection(interp, env, process_id)?;
+                    continue;
+                }
+                let read = read_process_output(interp, env, process_id)?;
+                let nread = match read {
+                    ProcessRead::Bytes(nread) => nread as i64,
+                    _ => -1,
+                };
+                if wait_proc.is_none_or(|id| id == process_id) && got_some_output < nread {
+                    got_some_output = nread;
+                }
+                match read {
+                    ProcessRead::Bytes(nread) if nread > 0 => {
+                        // Vacuum up any leftovers without waiting.
+                        if wait_proc == Some(process_id) {
+                            wait = WaitMode::Minimum;
+                        }
+                        // A filter may have called accept-process-output:
+                        // no other process is read before the next select.
+                        available_set.clear();
+                        LAST_READ_CHANNEL.store(fd, Relaxed);
+                        if do_display {
+                            redisplay_preserve_echo_area(interp, env);
+                        }
+                    }
+                    ProcessRead::WouldBlock => {}
+                    ProcessRead::Eio => interp.delete_read_fd_after_eio(process_id),
+                    ProcessRead::Bytes(_) => {
+                        // If we can detect process termination, don't
+                        // consider the process gone just because its pipe
+                        // is closed.
+                        if interp.process_connection_kind(process_id).0 {
+                            interp.end_process_channel(process_id);
+                        }
+                    }
+                    ProcessRead::Error => interp.end_process_channel(process_id),
+                }
+            }
+            if writable.contains(&fd)
+                && let Some(channel) = interp.channel_at(fd)
+                && channel.connect
+            {
+                connect_completion(interp, env, channel.process_id)?;
+            }
         }
     }
-    crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
-    let result = if let Some(process_id) = target_process_id {
-        interp.process_output_delivery_count(process_id) != target_start
-    } else {
-        delivered
-    };
-    Ok(result)
+    Ok((got_some_output, prev_wait_proc_nbytes_read))
+}
+
+/// compute_input_wait_mask (READ_KBD) or compute_non_keyboard_wait_mask
+/// and compute_write_mask: the process channels this thread may watch,
+/// each marked as its own (fd_callback_info[fd].waiting_thread) when MARK,
+/// with every channel as process_channels found it.
+#[cfg(unix)]
+fn wait_masks(
+    interp: &mut Interpreter,
+    _read_kbd: i32,
+    mark: bool,
+) -> (
+    Vec<std::os::fd::RawFd>,
+    Vec<std::os::fd::RawFd>,
+    Vec<crate::lisp::eval::WaitChannel>,
+) {
+    let thread = interp.current_thread_id();
+    let mut input = Vec::new();
+    let mut write = Vec::new();
+    let channels = interp.process_channels();
+    for channel in &channels {
+        if channel.thread.is_some_and(|owner| owner != thread)
+            || channel.waiting.is_some_and(|waiter| waiter != thread)
+        {
+            continue;
+        }
+        if channel.read {
+            input.push(channel.fd);
+        }
+        if channel.connect {
+            write.push(channel.fd);
+        }
+        if mark && (channel.read || channel.connect) {
+            interp.set_process_waiting_thread(channel);
+        }
+    }
+    (input, write, channels)
+}
+
+/// xdisp.c:redisplay_preserve_echo_area: the frontend's redisplay, with the
+/// echo area's message kept (none without a frontend: batch).
+fn redisplay_preserve_echo_area(interp: &mut Interpreter, env: &mut Env) {
+    crate::lisp::primitives::run_tty_frame_redraw(interp, env);
+}
+
+/// A pselect of INPUT and WRITE that does not wait: how many are ready.
+#[cfg(unix)]
+fn poll_now(input: &[std::os::fd::RawFd], write: &[std::os::fd::RawFd]) -> i32 {
+    let mut fds: Vec<libc::pollfd> = input
+        .iter()
+        .map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .chain(write.iter().map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        }))
+        .collect();
+    if fds.is_empty() {
+        return 0;
+    }
+    // SAFETY: FDS holds this interpreter's process descriptors.
+    let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 0) };
+    if n <= 0 {
+        return n;
+    }
+    fds.iter()
+        .filter(|fd| fd.revents & libc::POLLNVAL == 0 && fd.revents != 0)
+        .count() as i32
 }
 
 /// process.c:wait_for_socket_fds: while a connection has no socket yet
@@ -5854,15 +6353,7 @@ pub(crate) fn wait_for_socket_fds(
             &[Value::string(name)],
             env,
         )?;
-        wait_pumping_processes(
-            interp,
-            env,
-            Some(std::time::Duration::from_millis(20)),
-            false,
-            None,
-            None,
-            true,
-        )?;
+        wait_twenty_milliseconds(interp, env)?;
     }
     Ok(())
 }
@@ -5882,15 +6373,7 @@ pub(crate) fn wait_while_connecting(
             &[],
             env,
         )?;
-        wait_pumping_processes(
-            interp,
-            env,
-            Some(std::time::Duration::from_millis(20)),
-            false,
-            None,
-            None,
-            true,
-        )?;
+        wait_twenty_milliseconds(interp, env)?;
     }
     Ok(())
 }
@@ -5913,15 +6396,7 @@ pub(crate) fn wait_for_tls_negotiation(
             &[],
             env,
         )?;
-        wait_pumping_processes(
-            interp,
-            env,
-            Some(std::time::Duration::from_millis(20)),
-            false,
-            None,
-            None,
-            true,
-        )?;
+        wait_twenty_milliseconds(interp, env)?;
     }
     Ok(())
 }
@@ -6037,6 +6512,217 @@ fn check_async_connections(
     Ok((progressed, retry_for_async))
 }
 
+/// wait_reading_process_output's handling of a channel with
+/// NON_BLOCKING_CONNECT_FD that its select found writable (delete_write_fd):
+/// a failure goes on to the addresses left, as connect_network_socket
+/// does, and with none left the status is (failed ERRNO), reported to the
+/// sentinel; a success is `run' and "open\n" unless TLS has the
+/// connection to finish.  False when the connect has not ended.
+fn connect_completion(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    process_id: u64,
+) -> Result<bool, LispError> {
+    let Some(errno) = interp.network_connect_error(process_id) else {
+        return Ok(false);
+    };
+    interp.clear_non_blocking_connect_fd(process_id);
+    if errno != 0 {
+        let addresses = interp.take_network_connect_addresses(process_id);
+        if addresses.is_empty() {
+            // p->tick and (failed ERRNO), deactivate_process: the sentinel
+            // is status_notify's.
+            interp.fail_network_connect(process_id, errno);
+            return Ok(true);
+        }
+        // deactivate_process, then connect_network_socket on the
+        // addresses left.
+        interp.close_network_socket(process_id);
+        #[cfg(unix)]
+        connect_network_socket(interp, env, process_id, addresses)?;
+        return Ok(true);
+    }
+    let boot_parameters = interp
+        .process_gnutls_boot_parameters(process_id)
+        .unwrap_or(Value::Nil);
+    if boot_parameters.is_nil() && !interp.process_gnutls_p(process_id) {
+        interp.mark_network_process_open(process_id);
+        run_process_sentinel(interp, process_id, "open\n", env)?;
+    }
+    Ok(true)
+}
+
+/// What one server_accept_connection did.
+#[derive(PartialEq)]
+enum Accept {
+    Accepted,
+    Failed,
+    Nothing,
+}
+
+/// process.c:server_accept_connection: one accept on SERVER_ID's socket,
+/// which its select found readable; the new connection made a process
+/// whose log function and sentinel hear of it.  A failed accept is the
+/// log function's to hear of, and the listener waits again.
+fn server_accept_connection(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    server_id: u64,
+) -> Result<Accept, LispError> {
+    let (child_runtime, peer_addr) = match interp.accept_network_connection(server_id)? {
+        None => return Ok(Accept::Nothing),
+        Some(crate::lisp::eval::AcceptedConnection::Stream(runtime, peer_addr)) => {
+            (runtime, peer_addr)
+        }
+        // server_accept_connection: a failed accept is the log
+        // function's to hear of, "accept failed with code" and the
+        // errno run together, and the listener waits again.
+        Some(crate::lisp::eval::AcceptedConnection::Failed(code)) => {
+            if let Some(log) = interp.process_log_function(server_id) {
+                call_function_value(
+                    interp,
+                    &log,
+                    &[
+                        interp.record_value(server_id),
+                        Value::Nil,
+                        Value::String(format!("accept failed with code{code}\n").into()),
+                    ],
+                    env,
+                )?;
+            }
+            return Ok(Accept::Failed);
+        }
+    };
+    interp.network_connect_counter += 1;
+    let connect_number = interp.network_connect_counter;
+    // GNU server_accept_connection gives each child a fresh copy of
+    // the server's plist (Fcopy_sequence), so the child's later
+    // `process-put' (plist-put mutates value cells in place) never
+    // clobbers the server's own properties.
+    let server_plist = interp.process_plist_value(server_id).unwrap_or(Value::Nil);
+    let server_plist = match server_plist.to_vec() {
+        Ok(items) => Value::list(items),
+        Err(_) => server_plist,
+    };
+    // The child's contact info is the server's with :server nil,
+    // :host/:service naming the peer, and :remote its address.
+    // Unix peers are unnamed: :host t, :remote "", :service and
+    // :local keep the server's socket path.
+    let mut contact_items = interp
+        .process_contact_plist(server_id)
+        .unwrap_or(Value::Nil)
+        .to_vec()
+        .unwrap_or_default();
+    plist_items_put(&mut contact_items, ":server", Value::Nil);
+    // server_accept_connection's HOST: HOST_FORMAT_IN, or
+    // HOST_FORMAT_IN6 over the address's 16-bit words as memory
+    // holds them; a unix peer has none (t, "-" in messages).
+    let host = peer_addr.map(|peer_addr| match peer_addr.ip() {
+        std::net::IpAddr::V4(ip) => ip.to_string(),
+        std::net::IpAddr::V6(ip) => ip
+            .octets()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|word| format!("{:x}", u16::from_ne_bytes(*word)))
+            .collect::<Vec<_>>()
+            .join(":"),
+    });
+    let remote = match peer_addr {
+        Some(peer_addr) => {
+            plist_items_put(
+                &mut contact_items,
+                ":host",
+                Value::String(host.clone().unwrap_or_default().into()),
+            );
+            plist_items_put(
+                &mut contact_items,
+                ":service",
+                Value::Integer(peer_addr.port() as i64),
+            );
+            if let crate::lisp::eval::NetworkRuntime::Stream(stream) = &child_runtime
+                && let Ok(addr) = stream.local_addr()
+            {
+                plist_items_put(&mut contact_items, ":local", sockaddr_vector(addr));
+            }
+            plist_items_put(&mut contact_items, ":remote", sockaddr_vector(peer_addr));
+            peer_addr.to_string()
+        }
+        None => {
+            plist_items_put(&mut contact_items, ":host", Value::T);
+            plist_items_put(
+                &mut contact_items,
+                ":remote",
+                Value::String(String::new().into()),
+            );
+            String::new()
+        }
+    };
+    let server_filter = interp.process_filter(server_id);
+    let server_sentinel = interp.process_sentinel(server_id);
+    let server_log = interp.process_log_function(server_id);
+    let server_buffer = interp.process_buffer_id(server_id);
+    let (child_decoding, child_encoding) = interp
+        .process_coding_system(server_id)?
+        .cons_values()
+        .unwrap_or((Value::Nil, Value::Nil));
+    let child_inherit_coding_system = server_buffer.is_some()
+        && interp
+            .process_inherit_coding_system_flag(server_id)
+            .unwrap_or(false);
+    let base_name = interp
+        .process_name(server_id)
+        .unwrap_or_else(|| Value::string(""));
+    // GNU names inet children "NAME <HOST:PORT>" (note the space)
+    // and unnamed-peer children "NAME <N>" from connect_counter,
+    // Fformat of the server's name and the caller; make_process
+    // makes it unique.
+    let suffix = if let (Some(peer_addr), Some(host)) = (peer_addr, &host) {
+        let port = peer_addr.port();
+        if peer_addr.is_ipv6() {
+            format!(" <[{host}]:{port}>")
+        } else {
+            format!(" <{host}:{port}>")
+        }
+    } else {
+        format!(" <{connect_number}>")
+    };
+    let child_name = call(interp, "concat", &[base_name, Value::string(&suffix)], env)?;
+    let child = interp.create_network_process(
+        child_name,
+        // GNU's accepted process inherits the listener's filter,
+        // sentinel, log function, plist, and coding systems, but it
+        // does not inherit the listener's process buffer.  Giving
+        // the child that buffer makes killing the listener buffer
+        // prompt about a still-live accepted connection.
+        None,
+        child_inherit_coding_system,
+        server_filter,
+        server_sentinel,
+        server_log,
+        server_plist,
+        Some(child_runtime),
+        None,
+        None,
+        Some(remote.clone()),
+        Some(server_id),
+        Value::list(contact_items),
+        child_decoding,
+        child_encoding,
+    )?;
+    let child_id = interp.resolve_process_id(&child)?;
+    let host = host.as_deref().unwrap_or("-");
+    run_process_log(
+        interp,
+        server_id,
+        child_id,
+        &format!("accept from {host}\n"),
+        env,
+    )?;
+    run_process_sentinel(interp, child_id, &format!("open from {host}\n"), env)?;
+    Ok(Accept::Accepted)
+}
+
 /// One pass of wait_reading_process_output over the connections after its
 /// select, ONLY_PROCESS_ID its JUST_WAIT_PROC's: with CONNECTS, the
 /// sockets whose connect the select saw end; then the servers' new
@@ -6059,37 +6745,7 @@ fn pump_connection_processes_for(
         if !connects || only_process_id.is_some_and(|id| process_id != id) {
             continue;
         }
-        let Some(errno) = interp.network_connect_error(process_id) else {
-            continue;
-        };
-        progressed = true;
-        interp.clear_non_blocking_connect_fd(process_id);
-        if errno != 0 {
-            let addresses = interp.take_network_connect_addresses(process_id);
-            if addresses.is_empty() {
-                interp.fail_network_connect(process_id, errno);
-                run_process_sentinel(
-                    interp,
-                    process_id,
-                    &format!("failed with code {errno}\n"),
-                    env,
-                )?;
-                continue;
-            }
-            // deactivate_process, then connect_network_socket on the
-            // addresses left.
-            interp.close_network_socket(process_id);
-            #[cfg(unix)]
-            connect_network_socket(interp, env, process_id, addresses)?;
-            continue;
-        }
-        let boot_parameters = interp
-            .process_gnutls_boot_parameters(process_id)
-            .unwrap_or(Value::Nil);
-        if boot_parameters.is_nil() && !interp.process_gnutls_p(process_id) {
-            interp.mark_network_process_open(process_id);
-            run_process_sentinel(interp, process_id, "open\n", env)?;
-        }
+        progressed |= connect_completion(interp, env, process_id)?;
     }
 
     // Accept new connections on every server listener.
@@ -6098,159 +6754,14 @@ fn pump_connection_processes_for(
             continue;
         }
         loop {
-            let (child_runtime, peer_addr) = match interp.accept_network_connection(server_id)? {
-                None => break,
-                Some(crate::lisp::eval::AcceptedConnection::Stream(runtime, peer_addr)) => {
-                    (runtime, peer_addr)
-                }
-                // server_accept_connection: a failed accept is the log
-                // function's to hear of, "accept failed with code" and the
-                // errno run together, and the listener waits again.
-                Some(crate::lisp::eval::AcceptedConnection::Failed(code)) => {
-                    if let Some(log) = interp.process_log_function(server_id) {
-                        call_function_value(
-                            interp,
-                            &log,
-                            &[
-                                interp.record_value(server_id),
-                                Value::Nil,
-                                Value::String(format!("accept failed with code{code}\n").into()),
-                            ],
-                            env,
-                        )?;
-                    }
+            match server_accept_connection(interp, env, server_id)? {
+                Accept::Accepted => progressed = true,
+                Accept::Failed => {
                     progressed = true;
                     break;
                 }
-            };
-            progressed = true;
-            interp.network_connect_counter += 1;
-            let connect_number = interp.network_connect_counter;
-            // GNU server_accept_connection gives each child a fresh copy of
-            // the server's plist (Fcopy_sequence), so the child's later
-            // `process-put' (plist-put mutates value cells in place) never
-            // clobbers the server's own properties.
-            let server_plist = interp.process_plist_value(server_id).unwrap_or(Value::Nil);
-            let server_plist = match server_plist.to_vec() {
-                Ok(items) => Value::list(items),
-                Err(_) => server_plist,
-            };
-            // The child's contact info is the server's with :server nil,
-            // :host/:service naming the peer, and :remote its address.
-            // Unix peers are unnamed: :host t, :remote "", :service and
-            // :local keep the server's socket path.
-            let mut contact_items = interp
-                .process_contact_plist(server_id)
-                .unwrap_or(Value::Nil)
-                .to_vec()
-                .unwrap_or_default();
-            plist_items_put(&mut contact_items, ":server", Value::Nil);
-            // server_accept_connection's HOST: HOST_FORMAT_IN, or
-            // HOST_FORMAT_IN6 over the address's 16-bit words as memory
-            // holds them; a unix peer has none (t, "-" in messages).
-            let host = peer_addr.map(|peer_addr| match peer_addr.ip() {
-                std::net::IpAddr::V4(ip) => ip.to_string(),
-                std::net::IpAddr::V6(ip) => ip
-                    .octets()
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|word| format!("{:x}", u16::from_ne_bytes(*word)))
-                    .collect::<Vec<_>>()
-                    .join(":"),
-            });
-            let remote = match peer_addr {
-                Some(peer_addr) => {
-                    plist_items_put(
-                        &mut contact_items,
-                        ":host",
-                        Value::String(host.clone().unwrap_or_default().into()),
-                    );
-                    plist_items_put(
-                        &mut contact_items,
-                        ":service",
-                        Value::Integer(peer_addr.port() as i64),
-                    );
-                    if let crate::lisp::eval::NetworkRuntime::Stream(stream) = &child_runtime
-                        && let Ok(addr) = stream.local_addr()
-                    {
-                        plist_items_put(&mut contact_items, ":local", sockaddr_vector(addr));
-                    }
-                    plist_items_put(&mut contact_items, ":remote", sockaddr_vector(peer_addr));
-                    peer_addr.to_string()
-                }
-                None => {
-                    plist_items_put(&mut contact_items, ":host", Value::T);
-                    plist_items_put(
-                        &mut contact_items,
-                        ":remote",
-                        Value::String(String::new().into()),
-                    );
-                    String::new()
-                }
-            };
-            let server_filter = interp.process_filter(server_id);
-            let server_sentinel = interp.process_sentinel(server_id);
-            let server_log = interp.process_log_function(server_id);
-            let server_buffer = interp.process_buffer_id(server_id);
-            let (child_decoding, child_encoding) = interp
-                .process_coding_system(server_id)?
-                .cons_values()
-                .unwrap_or((Value::Nil, Value::Nil));
-            let child_inherit_coding_system = server_buffer.is_some()
-                && interp
-                    .process_inherit_coding_system_flag(server_id)
-                    .unwrap_or(false);
-            let base_name = interp
-                .process_name(server_id)
-                .unwrap_or_else(|| Value::string(""));
-            // GNU names inet children "NAME <HOST:PORT>" (note the space)
-            // and unnamed-peer children "NAME <N>" from connect_counter,
-            // Fformat of the server's name and the caller; make_process
-            // makes it unique.
-            let suffix = if let (Some(peer_addr), Some(host)) = (peer_addr, &host) {
-                let port = peer_addr.port();
-                if peer_addr.is_ipv6() {
-                    format!(" <[{host}]:{port}>")
-                } else {
-                    format!(" <{host}:{port}>")
-                }
-            } else {
-                format!(" <{connect_number}>")
-            };
-            let child_name = call(interp, "concat", &[base_name, Value::string(&suffix)], env)?;
-            let child = interp.create_network_process(
-                child_name,
-                // GNU's accepted process inherits the listener's filter,
-                // sentinel, log function, plist, and coding systems, but it
-                // does not inherit the listener's process buffer.  Giving
-                // the child that buffer makes killing the listener buffer
-                // prompt about a still-live accepted connection.
-                None,
-                child_inherit_coding_system,
-                server_filter,
-                server_sentinel,
-                server_log,
-                server_plist,
-                Some(child_runtime),
-                None,
-                None,
-                Some(remote.clone()),
-                Some(server_id),
-                Value::list(contact_items),
-                child_decoding,
-                child_encoding,
-            )?;
-            let child_id = interp.resolve_process_id(&child)?;
-            let host = host.as_deref().unwrap_or("-");
-            run_process_log(
-                interp,
-                server_id,
-                child_id,
-                &format!("accept from {host}\n"),
-                env,
-            )?;
-            run_process_sentinel(interp, child_id, &format!("open from {host}\n"), env)?;
+                Accept::Nothing => break,
+            }
         }
     }
 

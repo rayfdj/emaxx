@@ -56,6 +56,7 @@ pub(crate) mod symbol_cell_flags {
     };
 }
 mod threads;
+pub(crate) use threads::{ChannelOutcome, WaitChannel};
 mod treesit;
 mod variables;
 use bootstrap::*;
@@ -3544,6 +3545,12 @@ impl Clone for ProcessState {
             alist_removal: self.alist_removal,
             childless_pid: self.childless_pid,
             outfd_stale: self.outfd_stale,
+            waiting_thread: None,
+            nbytes_read: self.nbytes_read,
+            adaptive_read_buffering: self.adaptive_read_buffering,
+            read_output_delay: self.read_output_delay,
+            read_output_skip: self.read_output_skip,
+            read_fd_deleted: self.read_fd_deleted,
         }
     }
 }
@@ -3694,6 +3701,23 @@ struct ProcessState {
     /// create_process closed this `:stderr' pipe process's input but its
     /// p->outfd still names the descriptor: a send is EBADF.
     outfd_stale: bool,
+    /// fd_callback_info[p->infd].waiting_thread: the thread whose
+    /// wait_reading_process_output put the channel in its select mask,
+    /// until that wait ends (clear_waiting_thread_state).
+    waiting_thread: Option<u64>,
+    /// p->nbytes_read: what read_process_output has read from the
+    /// process's channel.
+    nbytes_read: u64,
+    /// p->adaptive_read_buffering: 0, 1 (t) or 2 (another non-nil value),
+    /// as `process-adaptive-read-buffering' was when Fmake_process or
+    /// Fmake_pipe_process made the process; 0 for any other.
+    adaptive_read_buffering: u8,
+    /// p->read_output_delay, in nanoseconds, and p->read_output_skip.
+    read_output_delay: i64,
+    read_output_skip: bool,
+    /// delete_read_fd of a childless pty's master after its EIO: the
+    /// channel stays open but leaves the select mask.
+    read_fd_deleted: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -6544,6 +6568,10 @@ pub struct InterpreterState {
     /// process.c's inhibit_sentinels, set by shut_down_emacs: exec_sentinel
     /// runs no sentinel from then on.
     pub(crate) inhibit_sentinels: bool,
+    /// process.c's fd_callback_info[fd].thread: the descriptors
+    /// `set-process-thread' locked to a thread, which no other thread's
+    /// wait selects on; a descriptor keeps its lock until the thread dies.
+    pub(crate) fd_thread_locks: std::collections::HashMap<i32, u64>,
     overriding_plist_environment: Value,
     max_lisp_eval_depth: i64,
     /// Ffuncall's depth bound for a call that does nothing else on its way
@@ -7415,6 +7443,7 @@ impl Interpreter {
             undo_inhibit_record_point: false,
             hooks_cleared: false,
             inhibit_sentinels: false,
+            fd_thread_locks: std::collections::HashMap::new(),
             overriding_plist_environment: Value::Nil,
             max_lisp_eval_depth: 1600,
             call_depth_gate: if core::profiling() { i64::MIN } else { 1600 },

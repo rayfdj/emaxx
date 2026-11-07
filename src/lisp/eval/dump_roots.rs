@@ -248,6 +248,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "process.c's inhibit_sentinels, set by shut_down_emacs, which a dumping process has not run",
     ),
     (
+        "fd_thread_locks",
+        "process.c's fd_callback_info thread locks, of descriptors a dumped image does not carry",
+    ),
+    (
         "undo_inhibit_record_point",
         "the forwarded C slot of undo-inhibit-record-point, refilled likewise with the buffers' copies",
     ),
