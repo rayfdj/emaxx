@@ -1331,7 +1331,8 @@ fn make_terminal_frame(
                     }
                 })
         };
-        let tty = future(cached_symbol!("tty")).unwrap_or_else(|| "/dev/tty".into());
+        let tty =
+            future(cached_symbol!("tty")).unwrap_or_else(crate::lisp::eval::terminal::dev_tty);
         let kind = future(cached_symbol!("tty-type"))
             .ok_or_else(|| LispError::Signal("Unknown terminal type".into()))?;
         interp.open_tty_terminal(&tty, &kind)?

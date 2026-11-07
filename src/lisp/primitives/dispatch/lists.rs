@@ -691,70 +691,13 @@ fn read_event_within(
     if let Some(event) = pop_pending_input_event_value(interp, env)? {
         return Ok(Some(event));
     }
-    // A live terminal answers the first event inside the window, or nil
-    // when it elapses (keyboard.c's timed read); the process pump below is
-    // the batch stand-in.
-    if crate::lisp::primitives::has_tty_event_poller() {
-        return crate::lisp::primitives::read_tty_event_with_timeout(interp, env, end_time);
-    }
+    // read_char's redisplay when no input is pending (COMMANDFLAG 0),
+    // END_TIME or not.
+    crate::lisp::primitives::run_tty_frame_redraw(interp, env);
     // kbd_buffer_get_event with END_TIME: until an event comes or the
     // time is up, wait_reading_process_output (the time left, -1, 1, Qnil,
-    // NULL, 0), which returns as soon as it detects process output.
-    loop {
-        // If the quit flag is set, then read_char will return quit_char,
-        // so that counts as "available input" (quit_throw_to_read_char).
-        if !interp.quit_flag_is_nil() {
-            return read_char_quit(interp, env).map(Some);
-        }
-        let (time_limit, nsecs) = match end_time {
-            Some(end) => {
-                let left = end.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
-                    return Ok(None);
-                }
-                (
-                    i64::try_from(left.as_secs())
-                        .unwrap_or(crate::lisp::primitives::processes::WAIT_READING_MAX),
-                    i64::from(left.subsec_nanos()),
-                )
-            }
-            None => (crate::lisp::primitives::processes::WAIT_READING_MAX, 0),
-        };
-        crate::lisp::primitives::processes::wait_reading_process_output(
-            interp,
-            env,
-            crate::lisp::primitives::processes::WaitRequest {
-                time_limit,
-                nsecs,
-                read_kbd: -1,
-                do_display: true,
-                wait_proc: None,
-                just_wait_proc: 0,
-            },
-        )?;
-        if let Some(event) = pop_pending_input_event_value(interp, env)? {
-            return Ok(Some(event));
-        }
-    }
-}
-
-// keyboard.c:quit_throw_to_read_char from kbd_buffer_get_event (a
-// `quit-flag' of `kill-emacs' kills Emacs; the unread events are
-// dropped), then read_char's setjmp: the quit character, unless
-// `quit-flag' holds `throw-on-input', whose throw happens instead; under
-// `inhibit-quit' the quit, reported as this event, is not reported again.
-fn read_char_quit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
-    if crate::lisp::types::eq_symbol_named(interp.quit_flag_value(), "kill-emacs") {
-        call(interp, "kill-emacs", &[Value::Nil, Value::Nil], env)?;
-    }
-    interp.set_variable_key(cached_symbol!("unread-command-events"), Value::Nil, env);
-    if crate::lisp::types::eq(interp.quit_flag_value(), interp.throw_on_input_value()) {
-        interp.maybe_quit(env)?;
-    }
-    if interp.inhibit_quit_is_truthy() {
-        interp.set_c_variable("quit-flag", Value::Nil);
-    }
-    Ok(Value::Integer(7))
+    // NULL, 0) with the keyboard in its select.
+    crate::lisp::primitives::read_tty_event_with_timeout(interp, env, end_time)
 }
 
 // lread.c:read_filtered_event's conversion of an event to a character
@@ -1764,6 +1707,14 @@ define_dispatch!(
             }
             "suspend-emacs" => {
                 need_arg_range(name, args, 0, 1)?;
+                // Fsuspend_emacs: not with other tty frames open, then
+                // CHECK_STRING of STUFFSTRING.
+                if interp.secondary_tty_terminals_live() {
+                    return Err(LispError::Signal(
+                        "There are other tty frames open; close them before suspending Emacs"
+                            .into(),
+                    ));
+                }
                 if let Some(stuff_string) = args.first()
                     && !stuff_string.is_nil()
                     && string_like(stuff_string).is_none()
@@ -1774,10 +1725,42 @@ define_dispatch!(
                     ));
                 }
                 run_hook(interp, &cached_symbol!("suspend-hook").symbol(), env)?;
-                // Emaxx currently exposes a headless batch terminal.  There is no
-                // foreground terminal process group to stop and later resume;
-                // the observable native contract in that environment is the
-                // paired hook transition.
+                // A terminal session's modes are reset and the job stopped
+                // (sys_suspend), STUFFSTRING and the input read ahead stuffed
+                // for the shell; the modes come back, also after an error.
+                // GNU's batch session has no terminal to do this on (its
+                // CURTTY is null); there only the hooks run.
+                if crate::lisp::primitives::tty_input_modes().is_some() {
+                    let stuff = args.first().and_then(string_like).map(|string| {
+                        if string.multibyte {
+                            string.text.into_bytes()
+                        } else {
+                            string
+                                .character_codes()
+                                .into_iter()
+                                .map(|code| code as u8)
+                                .collect::<Vec<u8>>()
+                        }
+                    });
+                    let old_size = crate::lisp::eval::terminal::controlling_tty_size();
+                    crate::lisp::primitives::reset_all_sys_modes();
+                    crate::lisp::primitives::stuff_buffered_input(stuff.as_deref());
+                    crate::lisp::primitives::sys_suspend();
+                    let interrupt_input = interp.input_interrupt_mode();
+                    crate::lisp::primitives::init_all_sys_modes(interp, interrupt_input);
+                    // A size the terminal took while Emacs was stopped is
+                    // the selected frame's before suspend-resume-hook runs
+                    // (change_frame_size, not delayed).
+                    let size = crate::lisp::eval::terminal::controlling_tty_size();
+                    if let Some((width, height)) = size
+                        && size != old_size
+                    {
+                        let frame = interp.selected_frame_id;
+                        crate::lisp::primitives::change_frame_size(
+                            interp, frame, width, height, false, false, env,
+                        )?;
+                    }
+                }
                 run_hook(interp, &cached_symbol!("suspend-resume-hook").symbol(), env)?;
                 Ok(Value::Nil)
             }
@@ -1938,6 +1921,11 @@ define_dispatch!(
                     super::display::message_with_string_nolog(interp, "%s", *prompt, env)?;
                 }
                 let read_event = name == "read-event";
+                // read_filtered_event's read_char with PREV_EVENT t unless
+                // INHERIT-INPUT-METHOD: the terminal's bytes undecoded.
+                let _raw = crate::lisp::primitives::RawEventRead::enter(
+                    args.get(1).is_none_or(Value::is_nil),
+                );
                 // read_filtered_event: a number SECONDS is an end time
                 // (dtotimespec added to now, None past what the clock can
                 // hold) bounding the whole read, retries included; any
@@ -1969,13 +1957,19 @@ define_dispatch!(
                             }
                         }
                         None => {
-                            // GNU's read_char enters redisplay before
+                            // read_char takes an unread or keyboard-macro
+                            // event at once; else it redisplays before
                             // blocking for input: window-configuration
                             // changes a command made before reading (rmc's
                             // help pop-up, y-or-n-p's prompt context) reach
                             // the glass while the read waits.
-                            crate::lisp::primitives::run_tty_frame_redraw(interp, env);
-                            let event = pop_unread_command_event_value(interp, env)?;
+                            let event = match pop_pending_input_event_value(interp, env)? {
+                                Some(event) => event,
+                                None => {
+                                    crate::lisp::primitives::run_tty_frame_redraw(interp, env);
+                                    pop_unread_command_event_value(interp, env)?
+                                }
+                            };
                             crate::lisp::primitives::add_read_event_to_command_keys(interp, event);
                             event
                         }

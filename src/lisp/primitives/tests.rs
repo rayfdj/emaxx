@@ -12578,7 +12578,13 @@ fn process_connection_probe_with_default(
         )
         .expect("wait for probe process activity");
     }
-    pump_external_process_output(&mut interp, &mut env).expect("drain probe output");
+    call(
+        &mut interp,
+        "accept-process-output",
+        &[Value::Nil, Value::Integer(0)],
+        &mut env,
+    )
+    .expect("drain probe output");
     interp
         .get_buffer_by_id(buffer_id)
         .expect("probe buffer")
@@ -12705,7 +12711,13 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
         )
         .expect("wait for PTY output");
     }
-    pump_external_process_output(&mut interp, &mut env).expect("drain final PTY output");
+    call(
+        &mut interp,
+        "accept-process-output",
+        &[Value::Nil, Value::Integer(0)],
+        &mut env,
+    )
+    .expect("drain final PTY output");
 
     assert_eq!(
         interp
@@ -12770,7 +12782,13 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
         )
         .expect("wait for split PTY output");
     }
-    pump_external_process_output(&mut interp, &mut env).expect("drain split PTY output");
+    call(
+        &mut interp,
+        "accept-process-output",
+        &[Value::Nil, Value::Integer(0)],
+        &mut env,
+    )
+    .expect("drain split PTY output");
 
     assert_eq!(
         interp
@@ -12784,7 +12802,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
 #[cfg(unix)]
 #[test]
 fn signal_process_preserves_os_signal_status_and_sentinel_event() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("captured-signal-event", Value::Nil, &mut env);
     let process = call_via_lisp(
@@ -12830,7 +12848,13 @@ fn signal_process_preserves_os_signal_status_and_sentinel_event() {
         .expect("target process id");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
-        pump_external_process_output(&mut interp, &mut env).expect("pump signal target");
+        call(
+            &mut interp,
+            "accept-process-output",
+            &[Value::Nil, Value::Integer(0)],
+            &mut env,
+        )
+        .expect("pump signal target");
         if !interp.process_is_live(process_id) {
             break;
         }
@@ -13089,11 +13113,8 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
         let process_id = interp
             .resolve_process_id(&process)
             .expect("resolve timed process");
-        let (pending_stdout, pending_stderr) = interp
-            .poll_process_output(process_id)
-            .expect("inspect timed process output");
         panic!(
-            "accept-process-output timed out: status={:?}, deliveries={:?}, pending_stdout={pending_stdout:?}, pending_stderr={pending_stderr:?}",
+            "accept-process-output timed out: status={:?}, deliveries={:?}",
             interp.process_status_value(process_id),
             interp.process_output_delivery_count(process_id),
         );
@@ -16727,6 +16748,50 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
         "GnuTLS process transport did not round-trip through one live session:\nactual: {actual:?}"
     );
 
+    // GNU's own race, kept: when the whole handshake ends inside
+    // connect_network_socket's Fgnutls_boot (each of the server's flights
+    // already there by the client's read, as a loaded host makes likely),
+    // finish_after_tls_connection finds the descriptor still
+    // NON_BLOCKING_CONNECT_FD, and the connect's completion then leaves
+    // the status to TLS (p->gnutls_p): the process stays `connect' for
+    // good.  GNU 30.2 left 12 and 43 of 60 such clients connecting under
+    // CPU load, Emaxx 36 and 26.  A relay that holds the server's first
+    // flight back keeps the boot's handshake short of READY, as an
+    // unloaded host does.
+    let relay = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("reserve localhost port for the GnuTLS relay");
+    let relay_port = relay.local_addr().expect("relay address").port();
+    std::thread::spawn(move || {
+        let Ok((client, _)) = relay.accept() else {
+            return;
+        };
+        let Ok(server) = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)) else {
+            return;
+        };
+        let (Ok(mut from_client), Ok(mut to_server)) = (client.try_clone(), server.try_clone())
+        else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut from_client, &mut to_server);
+            let _ = to_server.shutdown(std::net::Shutdown::Write);
+        });
+        let (mut from_server, mut to_client) = (server, client);
+        let mut buffer = [0u8; 16384];
+        let mut first = true;
+        while let Ok(count) = from_server.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            if std::mem::take(&mut first) {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            if to_client.write_all(&buffer[..count]).is_err() {
+                break;
+            }
+        }
+        let _ = to_client.shutdown(std::net::Shutdown::Write);
+    });
     let asynchronous = format!(
         r#"
         (let* ((buffer (generate-new-buffer " *gnutls-async-transport*"))
@@ -16734,7 +16799,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
                          :name "gnutls-async-transport"
                          :buffer buffer
                          :host "127.0.0.1"
-                         :service {port}
+                         :service {relay_port}
                          :family 'ipv4
                          :coding 'no-conversion
                          :sentinel #'ignore
@@ -16748,7 +16813,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
               (let ((initial-status (process-status process))
                     (tries 0))
                 (while (and (eq (process-status process) 'connect)
-                            (< (setq tries (1+ tries)) 100))
+                            (< (setq tries (1+ tries)) 500))
                   (sit-for 0.01))
                 (let ((peer (gnutls-peer-status process)))
                   (list initial-status
@@ -27485,12 +27550,18 @@ fn native_subprocess_job_control_uses_child_groups_and_reaps_signal_states() {
                 std::time::Instant::now() < deadline,
                 "subprocess never reached {expected}; last status was {status:?}"
             );
-            pump_external_process_output(interp, env).expect("pump controlled subprocess");
+            call(
+                interp,
+                "accept-process-output",
+                &[Value::Nil, Value::Integer(0)],
+                env,
+            )
+            .expect("pump controlled subprocess");
             std::thread::sleep(Duration::from_millis(5));
         }
     }
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
 
     let stopped = start_sleep(&mut interp, &mut env, "stopped-child");
@@ -27765,11 +27836,8 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
         let process_id = interp
             .resolve_process_id(&process)
             .expect("resolve held-output process");
-        let (pending_stdout, pending_stderr) = interp
-            .poll_process_output(process_id)
-            .expect("inspect undelivered held output");
         panic!(
-            "held output was not delivered: status={:?}, filter={:?}, paused={}, deliveries={:?}, pending_stdout={pending_stdout:?}, pending_stderr={pending_stderr:?}",
+            "held output was not delivered: status={:?}, filter={:?}, paused={}, deliveries={:?}",
             interp.process_status_value(process_id),
             interp.process_filter_value(process_id),
             interp.process_output_paused(process_id),
@@ -27944,6 +28012,86 @@ fn tty_event_reader_does_not_preempt_queued_events() {
     );
 }
 
+/// A keyboard terminal over a pipe for a test's blocking read: the pipe is
+/// the descriptor the wait selects on, a thread writes its byte DELAY
+/// after the read begins (as a key typed then), and the read hook stores
+/// EVENT for it in the keyboard buffer the poller takes from.
+struct PipeKeyboard {
+    read_fd: i32,
+    writer: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PipeKeyboard {
+    fn install(event: Value, delay: std::time::Duration) -> Self {
+        let mut fds = [0; 2];
+        // SAFETY: FDS has room for the two descriptors pipe2 returns.
+        assert_eq!(
+            unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) },
+            0
+        );
+        let [read_fd, write_fd] = fds;
+        let buffer = std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::new()));
+        set_keyboard_terminal(Some(KeyboardTerminal {
+            read_socket_hook: Box::new({
+                let buffer = std::rc::Rc::clone(&buffer);
+                move |interp, env| {
+                    let mut byte = [0u8; 64];
+                    // SAFETY: BYTE is a writable buffer of its length.
+                    let nread =
+                        unsafe { libc::read(read_fd, byte.as_mut_ptr().cast(), byte.len()) };
+                    if nread <= 0 {
+                        return 0;
+                    }
+                    for _ in 0..nread {
+                        if crate::lisp::primitives::kbd_buffer_store_event(
+                            interp,
+                            env,
+                            Some(&event),
+                        ) {
+                            buffer.borrow_mut().push_back(event);
+                        }
+                    }
+                    nread as i32
+                }
+            }),
+            buffer_nonempty: Box::new({
+                let buffer = std::rc::Rc::clone(&buffer);
+                move || !buffer.borrow().is_empty()
+            }),
+            fd: Some(read_fd),
+        }));
+        set_tty_event_poller(Some(Box::new(move |_| {
+            Some(buffer.borrow_mut().pop_front())
+        })));
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            // SAFETY: WRITE_FD is the pipe's write end, closed only here.
+            unsafe {
+                libc::write(write_fd, b"x".as_ptr().cast(), 1);
+                libc::close(write_fd);
+            }
+        });
+        Self {
+            read_fd,
+            writer: Some(writer),
+        }
+    }
+}
+
+impl Drop for PipeKeyboard {
+    fn drop(&mut self) {
+        set_tty_event_poller(None);
+        set_keyboard_terminal(None);
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+        // SAFETY: READ_FD is the pipe's read end, closed only here.
+        unsafe {
+            libc::close(self.read_fd);
+        }
+    }
+}
+
 #[test]
 fn blocking_tty_event_read_redraws_after_a_due_timer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
@@ -27958,13 +28106,9 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
     )
     .expect("schedule an immediately due timer");
 
-    let polls = std::rc::Rc::new(std::cell::Cell::new(0));
-    let poll_count = std::rc::Rc::clone(&polls);
-    set_tty_event_poller(Some(Box::new(move |_| {
-        let count = poll_count.get();
-        poll_count.set(count + 1);
-        Some((count > 0).then_some(Value::Integer(120)))
-    })));
+    // The key comes after the read has begun waiting, the timer due then.
+    let keyboard =
+        PipeKeyboard::install(Value::Integer(120), std::time::Duration::from_millis(200));
     let saw_timer = std::rc::Rc::new(std::cell::Cell::new(false));
     let observed = std::rc::Rc::clone(&saw_timer);
     set_tty_frame_redraw(Some(Box::new(move |interp, env| {
@@ -27978,9 +28122,9 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_frame_redraw(None);
-    set_tty_event_poller(None);
+    drop(keyboard);
     assert_eq!(
-        event.expect("the second poll supplies input"),
+        event.expect("the key typed during the read is its event"),
         Value::Integer(120)
     );
     assert!(
@@ -28010,14 +28154,9 @@ fn blocking_tty_event_read_redraws_after_process_output() {
     .expect("start the redraw probe process");
 
     let saw_output = std::rc::Rc::new(std::cell::Cell::new(false));
-    let poll_observation = std::rc::Rc::clone(&saw_output);
-    let polls = std::rc::Rc::new(std::cell::Cell::new(0_usize));
-    let poll_count = std::rc::Rc::clone(&polls);
-    set_tty_event_poller(Some(Box::new(move |_| {
-        let count = poll_count.get() + 1;
-        poll_count.set(count);
-        Some((poll_observation.get() || count >= 100_000).then_some(Value::Integer(120)))
-    })));
+    // The key comes well after the child's output.
+    let keyboard =
+        PipeKeyboard::install(Value::Integer(120), std::time::Duration::from_millis(1500));
     let redraw_observation = std::rc::Rc::clone(&saw_output);
     set_tty_frame_redraw(Some(Box::new(move |interp, env| {
         if interp
@@ -28030,7 +28169,7 @@ fn blocking_tty_event_read_redraws_after_process_output() {
 
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_frame_redraw(None);
-    set_tty_event_poller(None);
+    drop(keyboard);
     let _ = call(
         &mut interp,
         "delete-process",
@@ -28038,7 +28177,7 @@ fn blocking_tty_event_read_redraws_after_process_output() {
         &mut env,
     );
     assert_eq!(
-        event.expect("the redraw observation releases the input poll"),
+        event.expect("the key typed during the read is its event"),
         Value::Integer(120)
     );
     assert!(

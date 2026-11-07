@@ -2191,7 +2191,7 @@ fn completing_read_contents(
 ) -> Result<Value, LispError> {
     // With simulated input queued (ert-simulate-keys), run a minibuffer
     // key loop: self-inserting chars, TAB completion, RET submits.
-    if !crate::lisp::primitives::unread_command_events(interp, env)?.is_empty() {
+    if crate::lisp::primitives::unread_command_events_pending(interp, env) {
         return simulated_completing_read(interp, args, env);
     }
 

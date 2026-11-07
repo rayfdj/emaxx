@@ -2,7 +2,25 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
+mod kbd_input;
 mod key_sequence;
+pub(crate) use kbd_input::{
+    KbdWait, KeyboardTerminal, clear_keyboard_waiting_thread, clear_waiting_for_input,
+    detect_input_pending, detect_input_pending_run_timers, get_input_pending, gobble_input,
+    kbd_buffer_get_event_wait, kbd_buffer_store_event, kbd_is_ours, keyboard_wait_descriptors,
+    redisplay_preserve_echo_area, set_keyboard_terminal, set_waiting_for_input, swallow_events,
+};
+#[cfg(unix)]
+pub(crate) use kbd_input::{
+    ResetState, arm_emergency_reset, disarm_emergency_reset, emergency_reset,
+};
+pub(crate) use kbd_input::{
+    SysModes, TtyInputModes, change_tty_input_modes, dev_tty_terminal, frame_garbaged,
+    init_all_sys_modes, interrupt_signal_pending, note_tty_erase_char, process_interrupt_signal,
+    quit_char, refresh_emergency_reset, reset_all_sys_modes, set_frame_garbaged, set_quit_char,
+    set_tty_input_modes, stuff_buffered_input, sys_suspend, take_frame_garbaged,
+    take_window_change_signal, tty_input_modes, unread_command_events_pending,
+};
 pub(crate) use key_sequence::{KeySequenceReader, read_key_sequence_events};
 
 #[cfg(unix)]
@@ -128,7 +146,15 @@ pub(crate) fn install_fatal_signal_handlers(noninteractive: bool) {
             install_process_fatal_handler(signal);
         }
         for signal in PROCESS_FATAL_SIGNALS {
+            // keyboard.c:init_keyboard gives SIGQUIT, like SIGINT, the
+            // interrupt handler in an interactive session.
+            if signal == libc::SIGQUIT && !noninteractive {
+                continue;
+            }
             install_process_fatal_handler(signal);
+        }
+        if !noninteractive {
+            install_interrupt_handlers();
         }
         install_thread_fatal_handlers(noninteractive);
         // SAFETY: setting a disposition has no other effect.
@@ -141,6 +167,73 @@ pub(crate) fn install_fatal_signal_handlers(noninteractive: bool) {
     }
     #[cfg(not(unix))]
     let _ = noninteractive;
+}
+
+/// keyboard.c:init_keyboard's deliver_interrupt_signal for SIGINT and
+/// SIGQUIT (C-g on the controlling terminal gives either): the main
+/// thread's next quit check runs handle_interrupt_signal.  Calls it
+/// interrupts fail with EINTR (emacs_sigaction_flags), so a wait's select
+/// ends.
+#[cfg(unix)]
+fn install_interrupt_handlers() {
+    for signal in [libc::SIGINT, libc::SIGQUIT] {
+        install_input_signal_handler(signal, kbd_input::note_interrupt_signal);
+    }
+    // USABLE_SIGIO's deliver_input_available_signal:
+    // handle_input_available_signal leaves process_pending_signals to read
+    // the input (handle_async_input).
+    install_input_signal_handler(libc::SIGIO, super::atimer::note_pending_signal);
+}
+
+/// dispnew.c:init_display's deliver_window_change_signal for SIGWINCH,
+/// for a session on a terminal: do_pending_window_change takes the size.
+pub(crate) fn install_window_change_handler() {
+    #[cfg(unix)]
+    {
+        static INSTALLED: OnceLock<()> = OnceLock::new();
+        INSTALLED.get_or_init(|| {
+            install_input_signal_handler(libc::SIGWINCH, kbd_input::note_window_change_signal);
+        });
+    }
+}
+
+/// A handler for SIGNAL that runs NOTE (async-signal-safe), installed
+/// without SA_RESTART.
+#[cfg(unix)]
+fn install_input_signal_handler(signal: libc::c_int, note: fn()) {
+    // SAFETY: NOTE only stores atomics, which is async-signal-safe.
+    if let Err(error) = unsafe { signal_hook::low_level::register(signal, note) } {
+        panic!("install the handler of signal {signal}: {error}");
+    }
+    // SAFETY: rewrites only the flags of the action just installed.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(signal, std::ptr::null(), &mut action) == 0 {
+            action.sa_flags &= !libc::SA_RESTART;
+            libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
+    }
+}
+
+/// Record SIGNAL as process_fatal_action does, for the next quit check's
+/// terminate_due_to_signal; false when one is recorded already.
+pub(crate) fn request_fatal_signal(signal: i32) -> bool {
+    #[cfg(unix)]
+    {
+        PENDING_FATAL_SIGNAL
+            .compare_exchange(
+                0,
+                signal,
+                UserSignalOrdering::Relaxed,
+                UserSignalOrdering::Relaxed,
+            )
+            .is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = signal;
+        false
+    }
 }
 
 /// Whether SIGNAL's disposition, as the process inherited it, is SIG_IGN.
@@ -290,22 +383,32 @@ extern "C" fn deliver_fatal_thread_signal(
         if attempt_orderly_shutdown()
             && !FATAL_ERROR_IN_PROGRESS.swap(true, UserSignalOrdering::Relaxed)
         {
-            fatal_error_diagnostic(signal);
+            // The terminal's reset as published at its last update: the
+            // signal may have come mid-allocation or with the terminal's
+            // state borrowed, and on any thread.
+            fatal_error_diagnostic(signal, &mut || emergency_reset());
             emacs_backtrace(40);
         }
         raise_unblocked(signal);
     }
 }
 
-/// emacs.c:shut_down_emacs's "Fatal error NUM: DESC" for SIGNAL (not
-/// SIGTERM), written with one write, when Emacs's process group is the
-/// foreground of the terminal on standard input.
+/// emacs.c:shut_down_emacs's terminal reset and "Fatal error NUM: DESC"
+/// for SIGNAL (not SIGTERM), written with one write, when Emacs's process
+/// group is the foreground of the terminal on standard input:
+/// RESET_ALL_SYS_MODES leaves the terminals as Emacs found them first.
 #[cfg(unix)]
-fn fatal_error_diagnostic(signal: libc::c_int) {
+fn fatal_error_diagnostic(signal: libc::c_int, reset_all_sys_modes: &mut dyn FnMut()) {
     // SAFETY: tcgetpgrp, getpgrp and write are async-signal-safe.
     unsafe {
         let foreground = libc::tcgetpgrp(libc::STDIN_FILENO);
-        if foreground == -1 || foreground != libc::getpgrp() || signal == libc::SIGTERM {
+        if foreground == -1 || foreground != libc::getpgrp() {
+            return;
+        }
+        // shut_down_emacs: the terminals as Emacs found them, then the
+        // message.
+        reset_all_sys_modes();
+        if signal == libc::SIGTERM {
             return;
         }
         let mut buffer = [0u8; 256];
@@ -500,7 +603,7 @@ fn shut_down_for_signal(
     };
     interp.hooks_cleared = true;
     interp.set_c_variable("inhibit-redisplay", Value::T);
-    fatal_error_diagnostic(signal);
+    fatal_error_diagnostic(signal, &mut || super::reset_all_sys_modes());
     interp.reset_terminals_for_shutdown();
     interp.inhibit_sentinels = true;
     terminated(super::processes::kill_buffer_processes(interp, env, None))?;
@@ -533,6 +636,18 @@ fn take_pending_user_signal() -> Option<&'static str> {
     None
 }
 
+/// A SIGUSR1 or SIGUSR2 not yet made an event.
+#[cfg(unix)]
+pub(crate) fn user_signals_pending() -> bool {
+    PENDING_SIGUSR1.load(UserSignalOrdering::Relaxed) != 0
+        || PENDING_SIGUSR2.load(UserSignalOrdering::Relaxed) != 0
+}
+
+#[cfg(not(unix))]
+pub(crate) fn user_signals_pending() -> bool {
+    false
+}
+
 /// Convert pending host user signals into GNU keyboard events.  A binding in
 /// `special-event-map' executes through `command-execute'; an unbound event is
 /// appended to `unread-command-events' for the active input reader to return.
@@ -563,13 +678,7 @@ pub(crate) fn run_pending_user_signal_events(
         roots.push(binding);
         interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
         if binding.is_nil() {
-            let mut unread = unread_command_events(interp, env)?;
-            unread.push(event);
-            interp.set_variable_key(
-                cached_symbol!("unread-command-events"),
-                Value::list(unread),
-                env,
-            );
+            append_unread_command_events(interp, env, [event]);
             // Keep later signals behind this unread event, matching the main
             // keyboard queue's ordering.
             break;
@@ -640,8 +749,13 @@ pub(crate) fn executing_kbd_macro_p(interp: &Interpreter, env: &Env) -> bool {
         .is_some_and(|value| value.is_truthy())
 }
 
-fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &Env) {
+/// keyboard.c:record_char for an event read_char got: the lossage
+/// (`recent-keys'), the input counts and the dribble file.
+pub(crate) fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &Env) {
     interp.keyboard_input.num_input_events += 1;
+    if UNREAD_NO_RECORD.replace(false) {
+        return;
+    }
     if executing_kbd_macro_p(interp, env) {
         return;
     }
@@ -1434,22 +1548,64 @@ fn read_via_tty_event_reader(
 fn poll_via_tty_event_poller(
     interp: &mut Interpreter,
     cursor_in_echo_area: bool,
+    end_time: Option<std::time::Instant>,
 ) -> Option<Option<Option<Value>>> {
     TTY_CURSOR_IN_ECHO_AREA.set(cursor_in_echo_area);
+    let outer_end_time = TTY_READ_END_TIME.replace(end_time);
     let result =
         TTY_EVENT_POLLER.with_borrow_mut(|slot| slot.as_mut().map(|poller| poller(interp)));
+    TTY_READ_END_TIME.set(outer_end_time);
     TTY_CURSOR_IN_ECHO_AREA.set(false);
     result
+}
+
+thread_local! {
+    /// The END_TIME of the read whose event the poller is fetching.
+    static TTY_READ_END_TIME: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// read_decoded_event_from_main_queue's END_TIME: the read's own, which
+/// the rest of an encoded sequence is waited for until.
+pub(crate) fn tty_read_end_time() -> Option<std::time::Instant> {
+    TTY_READ_END_TIME.get()
 }
 
 pub(crate) fn tty_cursor_in_echo_area() -> bool {
     TTY_CURSOR_IN_ECHO_AREA.get()
 }
 
+thread_local! {
+    static RAW_EVENT_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A read whose read_char gets PREV_EVENT t (read_filtered_event without
+/// INHERIT-INPUT-METHOD): read_decoded_event_from_main_queue leaves the
+/// terminal's bytes undecoded.  The previous state comes back when the
+/// read ends.
+pub(crate) struct RawEventRead(bool);
+
+impl RawEventRead {
+    pub(crate) fn enter(raw: bool) -> Self {
+        Self(RAW_EVENT_READ.replace(raw))
+    }
+}
+
+impl Drop for RawEventRead {
+    fn drop(&mut self) {
+        RAW_EVENT_READ.set(self.0);
+    }
+}
+
+/// Whether the read in progress takes the terminal's bytes undecoded.
+pub(crate) fn raw_event_read() -> bool {
+    RAW_EVENT_READ.get()
+}
+
 /// Whether a terminal frontend is feeding events this session; the
 /// minibuffer reads through its own event loop when one is.
 pub(crate) fn has_tty_event_reader() -> bool {
-    TTY_EVENT_READER.with_borrow(|slot| slot.is_some())
+    TTY_EVENT_READER.with_borrow(|slot| slot.is_some()) || has_tty_event_poller()
 }
 
 /// What a pending key sequence resolves to under the live keymaps.
@@ -1646,8 +1802,10 @@ pub(crate) fn execute_command_binding(
     execute_command_binding_inner(interp, env, binding, binding, keys, last_event, true)
 }
 
-/// The terminal reader already published the translated and raw sequences.
-/// Preserve that distinction while recording the completed macro command.
+/// The terminal reader already published the translated and raw sequences,
+/// and read_char's record_char stored each event it read in the macro
+/// being defined (store_kbd_macro_char): the terminal's own bytes, which
+/// a replay decodes again.  The resolved keys are not stored a second time.
 pub(crate) fn execute_read_key_command_binding(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1656,7 +1814,7 @@ pub(crate) fn execute_read_key_command_binding(
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
-    execute_command_binding_inner(interp, env, original, binding, keys, last_event, true)
+    execute_command_binding_inner(interp, env, original, binding, keys, last_event, false)
 }
 
 /// Execute a command whose input events were already recorded by a recursive
@@ -2241,49 +2399,16 @@ fn read_command_event(
     if let Some(event) = pop_pending_input_event_value(interp, env)? {
         return Ok(event);
     }
-    // Poll for the event so ripe timers fire during the wait, as
-    // GNU's read_char does; the blocking reader stands in when the
-    // frontend installed no poller.
-    let mut idle_start: Option<std::time::Instant> = None;
+    // read_char: timer_start_idle, then kbd_buffer_get_event until an
+    // event is in the keyboard buffer or `unread-command-events'.
     let cursor_in_echo_area = interp
         .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
         .is_some_and(|value| value.is_truthy());
-    while let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) {
-        match step {
-            None => return Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
-            Some(Some(event)) => {
-                if event == Value::Integer(7) && !quit_char_is_event {
-                    return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
-                }
-                interp.keyboard_input.last_event_reread = false;
-                record_external_input_event(interp, &event, env);
-                return Ok(event);
-            }
-            Some(None) => {
-                let idle = idle_start
-                    .get_or_insert_with(std::time::Instant::now)
-                    .elapsed();
-                let mut process_progress =
-                    crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
-                process_progress |=
-                    crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
-                if process_progress
-                    || interp.service_async_runtime_events(env, true, Some(idle.as_secs_f64()))?
-                {
-                    // A blocking Lisp reader owns the command thread, so
-                    // the outer terminal loop cannot observe asynchronous
-                    // work.  Redisplay here, as read_char does after
-                    // wait_reading_process_output.
-                    run_tty_frame_redraw(interp, env);
-                }
-                if let Some(event) = take_unread_command_event(interp, env) {
-                    record_external_input_event(interp, &event, env);
-                    return Ok(event);
-                }
-            }
-        }
-    }
-    if let Some(read) = read_via_tty_event_reader(interp, cursor_in_echo_area) {
+    // An embedder's (or a test's) event feed without a keyboard buffer
+    // hands over its events one at a time, None ending the feed.
+    if !has_tty_event_poller()
+        && let Some(read) = read_via_tty_event_reader(interp, cursor_in_echo_area)
+    {
         return match read {
             Some(event) if event != Value::Integer(7) || quit_char_is_event => {
                 interp.keyboard_input.last_event_reread = false;
@@ -2293,9 +2418,59 @@ fn read_command_event(
             _ => Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
         };
     }
-    Err(LispError::Signal(
-        "No unread-command-events available for interactive input".into(),
-    ))
+    tty_note_idle_start(interp, env);
+    let result = (|| loop {
+        // kbd_buffer_get_event: `unread-command-events' before the
+        // keyboard buffer.
+        if let Some(event) = take_unread_command_event(interp, env) {
+            record_external_input_event(interp, &event, env);
+            return Ok(event);
+        }
+        if let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area, None) {
+            match step {
+                None => return Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
+                Some(Some(event)) => {
+                    interp.keyboard_input.last_event_reread = false;
+                    record_external_input_event(interp, &event, env);
+                    return Ok(event);
+                }
+                Some(None) => {}
+            }
+        }
+        match kbd_input::kbd_buffer_get_event_wait(interp, env, None, true)? {
+            kbd_input::KbdWait::Quit => {
+                if let Some(event) = read_char_quit(interp, env)? {
+                    return Ok(event);
+                }
+            }
+            kbd_input::KbdWait::Ready | kbd_input::KbdWait::TimedOut => {}
+        }
+    })();
+    // read_char's timer_stop_idle once an event is in hand.
+    tty_note_idle_end();
+    // The quit character's quit, if `quit-flag' still holds it, comes at
+    // the next quit check after the read returns.
+    result
+}
+
+/// read_char's setjmp for quit_throw_to_read_char: the quit character,
+/// unless `quit-flag' holds `throw-on-input', when C stays nil and
+/// read_char reads again (non_reread, wrong_kboard): the event that set
+/// it is the read's, while-no-input's throw coming at the next quit check
+/// after the read returns; and under `inhibit-quit' the quit, reported as
+/// this event, is not reported again.
+fn read_char_quit(interp: &mut Interpreter, env: &mut Env) -> Result<Option<Value>, LispError> {
+    let throw_on_input = interp.throw_on_input_value();
+    if crate::lisp::types::eq(interp.quit_flag_value(), throw_on_input) {
+        return Ok(None);
+    }
+    if interp.inhibit_quit_is_truthy() {
+        interp.set_c_variable("quit-flag", Value::Nil);
+    }
+    interp.keyboard_input.last_event_reread = false;
+    let event = Value::Integer(kbd_input::quit_char());
+    record_external_input_event(interp, &event, env);
+    Ok(Some(event))
 }
 
 pub(crate) fn normalize_input_event_value(event: Value) -> Result<Value, LispError> {
@@ -2311,6 +2486,47 @@ pub(crate) fn normalize_input_event_value(event: Value) -> Result<Value, LispErr
     }
 }
 
+/// EVENTS after `unread-command-events'' events, for a reader to return
+/// in that order; a value that is not a list counts as none, as
+/// read_char's CONSP test reads it.
+pub(crate) fn append_unread_command_events(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    events: impl IntoIterator<Item = Value>,
+) {
+    let current = interp
+        .lookup_var_key(cached_symbol!("unread-command-events"), env)
+        .unwrap_or(Value::Nil);
+    let mut unread = if current.is_cons() {
+        current.to_vec().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    unread.extend(events);
+    interp.set_variable_key(
+        cached_symbol!("unread-command-events"),
+        Value::list(unread),
+        env,
+    );
+}
+
+/// EVENTS before `unread-command-events'' value, whatever it is:
+/// nconc2 (Flist (EVENTS), Vunread_command_events).
+pub(crate) fn prepend_unread_command_events(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    events: &[Value],
+) {
+    let mut list = interp
+        .lookup_var_key(cached_symbol!("unread-command-events"), env)
+        .unwrap_or(Value::Nil);
+    for event in events.iter().rev() {
+        list = Value::cons(*event, list);
+    }
+    interp.set_variable_key(cached_symbol!("unread-command-events"), list, env);
+}
+
+#[cfg(test)]
 pub(crate) fn unread_command_events(
     interp: &Interpreter,
     env: &Env,
@@ -2689,9 +2905,20 @@ pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> us
 /// stream, consulted before the terminal.
 pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
     let event = pop_unread_event_cell(interp, env)?;
+    UNREAD_NO_RECORD.set(false);
     match event.kind() {
         Kind::Cons(_) if matches!(event.car().map(|v| v.kind()), Ok(Kind::T)) => {
             interp.keyboard_input.last_event_reread = false;
+            event.cdr_if_list()
+        }
+        // (no-record . EVENT): EVENT, reread and not recorded again.
+        Kind::Cons(_)
+            if event
+                .car()
+                .is_ok_and(|head| crate::lisp::types::eq(head, Value::symbol("no-record"))) =>
+        {
+            interp.keyboard_input.last_event_reread = true;
+            UNREAD_NO_RECORD.set(true);
             event.cdr_if_list()
         }
         _ => {
@@ -2699,6 +2926,13 @@ pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env)
             Some(event)
         }
     }
+}
+
+thread_local! {
+    /// read_char's `recorded' for the event just taken from
+    /// `unread-command-events' as (no-record . EVENT): record_char is not
+    /// to see it.
+    static UNREAD_NO_RECORD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// keyboard.c:read_char's add_command_key for an event it returned: the
@@ -2709,21 +2943,6 @@ pub(crate) fn add_read_event_to_command_keys(interp: &mut Interpreter, event: Va
     if !reread || interp.keyboard_input.command_keys.is_empty() {
         interp.keyboard_input.command_keys.push(event);
     }
-}
-
-// Whether terminal input is ready without consuming it — keyboard.c's
-// input_pending, for `input-pending-p' and sit-for's early exit.
-thread_local! {
-    static TTY_INPUT_PENDING: std::cell::RefCell<Option<Box<dyn Fn() -> bool>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-pub(crate) fn set_tty_input_pending_check(check: Option<Box<dyn Fn() -> bool>>) {
-    TTY_INPUT_PENDING.with_borrow_mut(|slot| *slot = check);
-}
-
-pub(crate) fn tty_input_pending() -> bool {
-    TTY_INPUT_PENDING.with_borrow(|slot| slot.as_ref().is_some_and(|check| check()))
 }
 
 // keyboard.c's Fdiscard_input empties the keyboard buffer (kbd_fetch_ptr =
@@ -2750,57 +2969,42 @@ pub(crate) fn has_tty_event_poller() -> bool {
     TTY_EVENT_POLLER.with_borrow(|slot| slot.is_some())
 }
 
-/// A timed event read on the live terminal: the first event within
-/// TIMEOUT, or None when it elapses quietly.  Ripe timers fire between
-/// polls, exactly like the untimed read.
+/// read_char with an END_TIME (`read-event''s SECONDS, None when past what
+/// the clock holds): the first event consumed before it passes (unread, macro, or what
+/// kbd_buffer_get_event's wait finds in the keyboard buffer), or None.
 pub(crate) fn read_tty_event_with_timeout(
     interp: &mut Interpreter,
     env: &mut Env,
-    deadline: Option<std::time::Instant>,
+    end_time: Option<std::time::Instant>,
 ) -> Result<Option<Value>, LispError> {
-    let started = std::time::Instant::now();
     loop {
         if let Some(event) = pop_pending_input_event_value(interp, env)? {
             return Ok(Some(event));
         }
-        // A timed read is still wait_reading_process_output with keyboard
-        // input in the descriptor set.  In particular, subr.el's `sit-for'
-        // is the cancel-on-input wait used by jsonrpc/Eglot completion: a
-        // subprocess reply and the zero-delay continuation its filter
-        // schedules must run even when no key arrives.
-        let mut process_progress =
-            crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
-        process_progress |=
-            crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
-        let async_progress = interp.service_async_runtime_events(
-            env,
-            true,
-            Some(started.elapsed().as_secs_f64()),
-        )?;
-        if process_progress || async_progress {
-            run_tty_frame_redraw(interp, env);
-        }
         let cursor_in_echo_area = interp
             .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
             .is_some_and(|value| value.is_truthy());
-        let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) else {
-            return Ok(None);
-        };
-        match step {
-            None => return Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
-            Some(Some(event)) => {
-                if event == Value::Integer(7) {
-                    return Err(LispError::SignalValue(Value::list([Value::symbol("quit")])));
+        if let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area, end_time) {
+            match step {
+                None => return Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
+                Some(Some(event)) => {
+                    interp.keyboard_input.last_event_reread = false;
+                    record_external_input_event(interp, &event, env);
+                    return Ok(Some(event));
                 }
-                interp.keyboard_input.last_event_reread = false;
-                record_external_input_event(interp, &event, env);
-                return Ok(Some(event));
+                Some(None) => {}
             }
-            Some(None) => {
-                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                    return Ok(None);
+        }
+        match kbd_input::kbd_buffer_get_event_wait(interp, env, end_time, true)? {
+            kbd_input::KbdWait::TimedOut => return Ok(None),
+            kbd_input::KbdWait::Quit => {
+                // The quit character; the quit `quit-flag' still holds
+                // comes at the next quit check after the read returns.
+                if let Some(event) = read_char_quit(interp, env)? {
+                    return Ok(Some(event));
                 }
             }
+            kbd_input::KbdWait::Ready => {}
         }
     }
 }

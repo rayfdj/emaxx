@@ -1713,7 +1713,6 @@ pub(crate) fn spawn_persistent_process(
         pty_output,
         pty_slave_name,
         stdout_at_end: false,
-        stderr_at_end: false,
         child_ended: false,
     };
     finish_spawned_runtime(runtime)
@@ -1995,6 +1994,8 @@ struct VforkChild<'a> {
     old_mask: libc::sigset_t,
     command: &'a std::ffi::CStr,
     strerror: &'a [std::ffi::CString],
+    /// dev_tty, which dissociate_controlling_tty opens.
+    dev_tty: &'a std::ffi::CStr,
 }
 
 /// sysdep.c:emacs_perror in the vfork child: "COMMAND: MESSAGE:
@@ -2075,7 +2076,7 @@ extern "C" fn vfork_child_main(argument: *mut libc::c_void) -> libc::c_int {
         let (mut std_in, mut std_out, mut std_err) = (child.std_in, child.std_out, child.std_err);
         // dissociate_controlling_tty.
         if libc::setsid() < 0 {
-            let tty = libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+            let tty = libc::open(child.dev_tty.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
             if tty >= 0 {
                 libc::ioctl(tty, libc::TIOCNOTTY, 0);
                 libc::close(tty);
@@ -2263,6 +2264,8 @@ fn vfork_pty_process(
         .unwrap_or_else(|| c"emacs".to_owned());
     let strerror = strerror_table();
     let strerror = strerror.as_slice();
+    let dev_tty = std::ffi::CString::new(crate::lisp::eval::terminal::dev_tty())
+        .unwrap_or_else(|_| c"/dev/tty".to_owned());
     // SAFETY: an empty set filled by pthread_sigmask with the current mask.
     let old_mask = unsafe {
         let mut mask: libc::sigset_t = std::mem::zeroed();
@@ -2282,6 +2285,7 @@ fn vfork_pty_process(
         old_mask,
         command: &command,
         strerror,
+        dev_tty: &dev_tty,
     };
     let pid = emacs_vfork(&child).map_err(|error| vfork_error(interp, &error))?;
     // Close the pipe ends that the child uses.
@@ -2299,7 +2303,6 @@ fn vfork_pty_process(
         pty_output,
         pty_slave_name: Some(pty_name.to_string_lossy().into_owned()),
         stdout_at_end: false,
-        stderr_at_end: false,
         child_ended: false,
     }))
 }
@@ -2467,7 +2470,6 @@ fn posix_spawn_process(
         pty_output: None,
         pty_slave_name: None,
         stdout_at_end: false,
-        stderr_at_end: false,
         child_ended: false,
     }))
 }
@@ -3749,62 +3751,6 @@ fn flush_process_decoder(
     Ok((carried == 0, carried > 0))
 }
 
-/// Drain live external process pipes into their buffers/filters.
-/// Returns true if any output was delivered.
-pub(crate) fn pump_external_process_output(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    pump_external_process_output_for(interp, env, None)
-}
-
-fn pump_external_process_output_for(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    only_process_id: Option<u64>,
-) -> Result<bool, LispError> {
-    // handle_child_signal records every child's change as its SIGCHLD
-    // comes, whatever thread the process is locked to, an ended child's
-    // channel leaving the wait set before this pass reads it.
-    for process_id in interp.child_process_ids() {
-        interp.refresh_process_id(process_id)?;
-    }
-    let ids = interp.live_external_process_ids();
-    let mut progressed = false;
-    for process_id in ids {
-        if only_process_id.is_some_and(|id| process_id != id) {
-            // JUST-THIS-ONE takes the other descriptors out of the wait
-            // set, not SIGCHLD; status_notify reads what remains of a
-            // changed process's output, once no channel has input.
-            continue;
-        }
-        if interp.process_output_paused(process_id) {
-            // A stopped process's channel leaves the wait set; its status
-            // changes still come by SIGCHLD.
-            continue;
-        }
-        // handle_child_signal's delete_read_fd: an ended child's output
-        // waits for status_notify, its `:stderr' pipe still read.
-        if interp.process_read_fd_deleted(process_id) {
-            let stderr = interp.poll_process_stderr(process_id)?;
-            progressed |= deliver_process_streams(interp, process_id, &[], &stderr, env)?;
-            continue;
-        }
-        let (stdout, stderr) = interp.poll_process_output(process_id)?;
-        progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
-    }
-    // Changes that came while this pass read; status_notify walks every
-    // process, so a wait notifies the others' changes as well, once no
-    // channel has input left.
-    for process_id in interp.child_process_ids() {
-        interp.refresh_process_id(process_id)?;
-    }
-    if interp.any_process_exit_awaits_notification() && !interp.process_input_available() {
-        progressed |= status_notify(interp, env, None)?;
-    }
-    Ok(progressed)
-}
-
 /// process.c:status_notify (DELETING, NULL): each process of
 /// Vprocess_alist, newest first, whose status changed since status_notify
 /// last looked at it (p->tick != p->update_tick, asked as the walk reaches
@@ -4020,6 +3966,7 @@ pub(crate) fn delete_process_notifying(
 ) -> Result<(), LispError> {
     if interp.delete_process(process_id)? {
         status_notify(interp, env, Some(process_id))?;
+        crate::lisp::primitives::redisplay_preserve_echo_area(interp, env);
     }
     interp.remove_process(process_id);
     // remove_process's deactivate_process: emacs_gnutls_deinit's message.
@@ -5877,6 +5824,7 @@ fn wait_reading_process_output_1(
         wait_proc,
         just_wait_proc,
     } = request;
+    let thread = interp.current_thread_id();
     let mut got_some_output: i64 = -1;
     let prev_wait_proc_nbytes_read = wait_proc.map_or(0, |id| interp.process_nbytes_read(id));
     // Close to the current time if known, None otherwise.
@@ -5934,8 +5882,8 @@ fn wait_reading_process_output_1(
                 if !(ran && do_display) {
                     break;
                 }
-                redisplay_preserve_echo_area(interp, env);
-                if !interp.quit_flag_is_nil() || crate::lisp::primitives::tty_input_pending() {
+                crate::lisp::primitives::redisplay_preserve_echo_area(interp, env);
+                if crate::lisp::primitives::detect_input_pending(interp, env)? {
                     break;
                 }
             }
@@ -5947,9 +5895,20 @@ fn wait_reading_process_output_1(
                 (lisp, native) => lisp.or(native),
             };
             // If there is unread keyboard input, also return.
-            if read_kbd != 0 && !unread_command_events(interp, env)?.is_empty() {
+            if read_kbd != 0 && crate::lisp::primitives::unread_command_events_pending(interp, env)
+            {
                 break;
             }
+        }
+
+        // Cause C-g signals to take immediate action: with READ_KBD -1 and
+        // the keyboard this thread's, set_waiting_for_input, which throws
+        // to read_char at once (out of this wait) when `quit-flag' is set.
+        if read_kbd < 0
+            && crate::lisp::primitives::kbd_is_ours(interp, thread)
+            && crate::lisp::primitives::set_waiting_for_input(interp, env)?
+        {
+            break;
         }
 
         // handle_child_signal's records, as the handler made them.
@@ -5959,7 +5918,8 @@ fn wait_reading_process_output_1(
         // If status of something has changed, and no input is available,
         // notify the user of the change right away.
         if interp.status_changes_pending() {
-            let (input, write, _) = wait_masks(interp, read_kbd, true);
+            // compute_input_wait_mask: the keyboard's descriptors as well.
+            let (input, write, _) = wait_masks(interp, true, true);
             let write = if interp.connects_pending() {
                 write
             } else {
@@ -5967,9 +5927,10 @@ fn wait_reading_process_output_1(
             };
             let ready = poll_now(&input, &write);
             if ready <= 0 {
+                crate::lisp::primitives::clear_waiting_for_input();
                 got_some_output = status_notify_walk(interp, env, None, wait_proc)?.1;
                 if do_display {
-                    redisplay_preserve_echo_area(interp, env);
+                    crate::lisp::primitives::redisplay_preserve_echo_area(interp, env);
                 }
             }
         }
@@ -5979,6 +5940,7 @@ fn wait_reading_process_output_1(
         if let Some(process_id) = wait_proc
             && !interp.wait_proc_running(process_id)
         {
+            crate::lisp::primitives::clear_waiting_for_input();
             let mut read_some_bytes = false;
             if interp.process_infd(process_id).is_some() {
                 while let ProcessRead::Bytes(nread) = read_process_output(interp, env, process_id)?
@@ -5994,7 +5956,7 @@ fn wait_reading_process_output_1(
                 }
             }
             if read_some_bytes && do_display {
-                redisplay_preserve_echo_area(interp, env);
+                crate::lisp::primitives::redisplay_preserve_echo_area(interp, env);
             }
             break;
         }
@@ -6009,7 +5971,9 @@ fn wait_reading_process_output_1(
                     interp.channel_at(fd).into_iter().collect();
                 (vec![fd], Vec::new(), 0, false, channel)
             } else {
-                let (input, write, channels) = wait_masks(interp, read_kbd, true);
+                // compute_input_wait_mask with READ_KBD, else
+                // compute_non_keyboard_wait_mask.
+                let (input, write, channels) = wait_masks(interp, read_kbd != 0, true);
                 let check_delay = if wait_proc.is_some() {
                     0
                 } else {
@@ -6025,106 +5989,133 @@ fn wait_reading_process_output_1(
             available.push(fd);
         }
 
-        // Adaptive read buffering: the processes with read_output_skip
-        // left out of this select, its timeout the least of their delays.
-        if PROCESS_OUTPUT_SKIP.load(Relaxed) && check_delay > 0 {
-            let mut adaptive = if timeout > READ_OUTPUT_DELAY_MAX {
-                READ_OUTPUT_DELAY_MAX
-            } else {
-                timeout
-            };
-            let mut check_delay = check_delay;
-            for channel in interp.process_channels() {
-                if check_delay <= 0 {
-                    break;
-                }
-                let (delay, skip) = (channel.read_output_delay, channel.read_output_skip);
-                if delay > 0 {
-                    check_delay -= 1;
-                    if !skip {
-                        continue;
-                    }
-                    available.retain(|&fd| fd != channel.fd);
-                    process_skipped = true;
-                    interp.clear_process_read_output_skip(&channel);
-                    let delay = std::time::Duration::from_nanos(delay as u64);
-                    if delay < adaptive {
-                        adaptive = delay;
-                    }
-                }
+        // If frame size has changed (a SIGWINCH) or the terminal was entered
+        // again, redisplay now, before we start to wait.
+        if do_display && crate::lisp::primitives::frame_garbaged() {
+            crate::lisp::primitives::clear_waiting_for_input();
+            crate::lisp::primitives::redisplay_preserve_echo_area(interp, env);
+            if read_kbd < 0
+                && crate::lisp::primitives::kbd_is_ours(interp, thread)
+                && crate::lisp::primitives::set_waiting_for_input(interp, env)?
+            {
+                break;
             }
-            timeout = adaptive;
-            PROCESS_OUTPUT_SKIP.store(false, Relaxed);
         }
 
-        // If we've got some output and haven't limited our timeout with
-        // adaptive read buffering, limit it.
-        if got_some_output > 0 && !process_skipped && timeout > READ_OUTPUT_DELAY_INCREMENT {
-            timeout = READ_OUTPUT_DELAY_INCREMENT;
-        }
-
-        if just_wait_proc >= 0
-            && let Some(delay) = timer_delay
-            && delay < timeout
+        // Skip the select call if input is available and we're waiting for
+        // keyboard input.
+        let mut no_avail = false;
+        let (mut nfds, readable, writable) = if read_kbd != 0
+            && crate::lisp::primitives::detect_input_pending(interp, env)?
         {
-            let timeout_abs = *now.get_or_insert_with(std::time::Instant::now) + timeout;
-            if got_output_end_time.is_none_or(|end| timeout_abs < end) {
-                got_output_end_time = Some(timeout_abs);
-            }
-            timeout = delay;
+            no_avail = true;
+            (0, Vec::new(), Vec::new())
         } else {
-            got_output_end_time = None;
-        }
+            // Adaptive read buffering: the processes with read_output_skip
+            // left out of this select, its timeout the least of their delays.
+            if PROCESS_OUTPUT_SKIP.load(Relaxed) && check_delay > 0 {
+                let mut adaptive = if timeout > READ_OUTPUT_DELAY_MAX {
+                    READ_OUTPUT_DELAY_MAX
+                } else {
+                    timeout
+                };
+                let mut check_delay = check_delay;
+                for channel in interp.process_channels() {
+                    if check_delay <= 0 {
+                        break;
+                    }
+                    let (delay, skip) = (channel.read_output_delay, channel.read_output_skip);
+                    if delay > 0 {
+                        check_delay -= 1;
+                        if !skip {
+                            continue;
+                        }
+                        available.retain(|&fd| fd != channel.fd);
+                        process_skipped = true;
+                        interp.clear_process_read_output_skip(&channel);
+                        let delay = std::time::Duration::from_nanos(delay as u64);
+                        if delay < adaptive {
+                            adaptive = delay;
+                        }
+                    }
+                }
+                timeout = adaptive;
+                PROCESS_OUTPUT_SKIP.store(false, Relaxed);
+            }
 
-        // NOW can become inaccurate if time can pass during pselect.
-        if !timeout.is_zero() {
-            now = None;
-        }
+            // If we've got some output and haven't limited our timeout with
+            // adaptive read buffering, limit it.
+            if got_some_output > 0 && !process_skipped && timeout > READ_OUTPUT_DELAY_INCREMENT {
+                timeout = READ_OUTPUT_DELAY_INCREMENT;
+            }
 
-        if retry_for_async && timeout > ASYNC_RETRY {
-            timeout = ASYNC_RETRY;
-        }
-
-        // GnuTLS buffers data internally: a session holding decrypted
-        // records is ready without the select.
-        let tls_available: Vec<std::os::fd::RawFd> = channels
-            .iter()
-            .filter(|channel| channel.tls_pending && available.contains(&channel.fd))
-            .map(|channel| channel.fd)
-            .collect();
-        if !tls_available.is_empty()
-            && wait_proc.is_none_or(|process_id| {
-                interp
-                    .process_infd(process_id)
-                    .is_some_and(|fd| tls_available.contains(&fd))
-            })
-        {
-            timeout = std::time::Duration::ZERO;
-        }
-
-        let selected = thread_select(
-            interp,
-            env,
-            &available,
-            if check_write { &writeok } else { &[] },
-            timeout,
-        )?;
-        let mut nfds = selected.nfds;
-        let mut readable = selected.readable;
-        let writable = selected.writable;
-        // Merge tls_available into Available.
-        if !tls_available.is_empty() {
-            if nfds <= 0 {
-                nfds = tls_available.len() as i32;
-                readable = tls_available.clone();
+            if just_wait_proc >= 0
+                && let Some(delay) = timer_delay
+                && delay < timeout
+            {
+                let timeout_abs = *now.get_or_insert_with(std::time::Instant::now) + timeout;
+                if got_output_end_time.is_none_or(|end| timeout_abs < end) {
+                    got_output_end_time = Some(timeout_abs);
+                }
+                timeout = delay;
             } else {
-                for fd in &tls_available {
-                    if !readable.contains(fd) {
-                        readable.push(*fd);
+                got_output_end_time = None;
+            }
+
+            // NOW can become inaccurate if time can pass during pselect.
+            if !timeout.is_zero() {
+                now = None;
+            }
+
+            if retry_for_async && timeout > ASYNC_RETRY {
+                timeout = ASYNC_RETRY;
+            }
+
+            // GnuTLS buffers data internally: a session holding decrypted
+            // records is ready without the select.
+            let tls_available: Vec<std::os::fd::RawFd> = channels
+                .iter()
+                .filter(|channel| channel.tls_pending && available.contains(&channel.fd))
+                .map(|channel| channel.fd)
+                .collect();
+            if !tls_available.is_empty()
+                && wait_proc.is_none_or(|process_id| {
+                    interp
+                        .process_infd(process_id)
+                        .is_some_and(|fd| tls_available.contains(&fd))
+                })
+            {
+                timeout = std::time::Duration::ZERO;
+            }
+
+            let selected = thread_select(
+                interp,
+                env,
+                &available,
+                if check_write { &writeok } else { &[] },
+                timeout,
+            )?;
+            let mut nfds = selected.nfds;
+            let mut readable = selected.readable;
+            let writable = selected.writable;
+            // Merge tls_available into Available.
+            if !tls_available.is_empty() {
+                if nfds <= 0 {
+                    nfds = tls_available.len() as i32;
+                    readable = tls_available.clone();
+                } else {
+                    for fd in &tls_available {
+                        if !readable.contains(fd) {
+                            readable.push(*fd);
+                        }
                     }
                 }
             }
-        }
+            (nfds, readable, writable)
+        };
+
+        // Make C-g and alarm signals set flags again.
+        crate::lisp::primitives::clear_waiting_for_input();
 
         // If we woke up due to SIGWINCH, actually change size now.
         crate::lisp::primitives::do_pending_window_change(interp, env)?;
@@ -6158,15 +6149,46 @@ fn wait_reading_process_output_1(
                 break;
             }
         }
-        let no_avail = nfds < 0;
+        if nfds < 0 {
+            // EINTR.
+            no_avail = true;
+            nfds = -1;
+        }
 
         // Check for keyboard input: if there is any, return immediately to
         // give it higher priority than subprocesses.
-        if read_kbd != 0
-            && (!unread_command_events(interp, env)?.is_empty()
-                || crate::lisp::primitives::tty_input_pending())
-        {
+        if read_kbd != 0 {
+            let mut leave = false;
+            if crate::lisp::primitives::detect_input_pending_run_timers(interp, env, do_display)? {
+                crate::lisp::primitives::swallow_events(interp, env, do_display)?;
+                if crate::lisp::primitives::detect_input_pending_run_timers(
+                    interp, env, do_display,
+                )? {
+                    leave = true;
+                }
+            }
+            if leave {
+                break;
+            }
+        }
+        // If there is unread keyboard input, also return.
+        if read_kbd != 0 && crate::lisp::primitives::unread_command_events_pending(interp, env) {
             break;
+        }
+        // If we are not checking for keyboard input now, do process events
+        // (but don't run any timers).
+        if read_kbd == 0 && crate::lisp::primitives::detect_input_pending(interp, env)? {
+            crate::lisp::primitives::swallow_events(interp, env, do_display)?;
+        }
+        // If we think we have keyboard input waiting, but didn't get SIGIO,
+        // go read it (handle_input_available_signal's pending_signals).
+        if read_kbd != 0
+            && interp.input_interrupt_mode()
+            && crate::lisp::primitives::keyboard_wait_descriptors(interp, thread, false)
+                .iter()
+                .any(|fd| readable.contains(fd))
+        {
+            crate::lisp::primitives::atimer::note_pending_signal();
         }
 
         // Check for data from a process.
@@ -6236,7 +6258,7 @@ fn wait_reading_process_output_1(
                         available_set.clear();
                         LAST_READ_CHANNEL.store(fd, Relaxed);
                         if do_display {
-                            redisplay_preserve_echo_area(interp, env);
+                            crate::lisp::primitives::redisplay_preserve_echo_area(interp, env);
                         }
                     }
                     ProcessRead::WouldBlock => {}
@@ -6270,7 +6292,7 @@ fn wait_reading_process_output_1(
 #[cfg(unix)]
 fn wait_masks(
     interp: &mut Interpreter,
-    _read_kbd: i32,
+    keyboard: bool,
     mark: bool,
 ) -> (
     Vec<std::os::fd::RawFd>,
@@ -6297,13 +6319,13 @@ fn wait_masks(
             interp.set_process_waiting_thread(channel);
         }
     }
+    // The KEYBOARD_FD descriptors (the terminals' input).
+    if keyboard {
+        input.extend(crate::lisp::primitives::keyboard_wait_descriptors(
+            interp, thread, mark,
+        ));
+    }
     (input, write, channels)
-}
-
-/// xdisp.c:redisplay_preserve_echo_area: the frontend's redisplay, with the
-/// echo area's message kept (none without a frontend: batch).
-fn redisplay_preserve_echo_area(interp: &mut Interpreter, env: &mut Env) {
-    crate::lisp::primitives::run_tty_frame_redraw(interp, env);
 }
 
 /// A pselect of INPUT and WRITE that does not wait: how many are ready.
@@ -6399,16 +6421,6 @@ pub(crate) fn wait_for_tls_negotiation(
         wait_twenty_milliseconds(interp, env)?;
     }
     Ok(())
-}
-
-/// Accept pending server connections and deliver stream input/closure to
-/// filters and sentinels.  Returns true if anything was processed.
-pub(crate) fn pump_connection_processes(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    let (progressed, _) = check_async_connections(interp, env, None)?;
-    Ok(pump_connection_processes_for(interp, env, None, true)? || progressed)
 }
 
 /// process.c:ASYNC_RETRY_NSEC: how long a select may wait while a name
@@ -6721,75 +6733,4 @@ fn server_accept_connection(
     )?;
     run_process_sentinel(interp, child_id, &format!("open from {host}\n"), env)?;
     Ok(Accept::Accepted)
-}
-
-/// One pass of wait_reading_process_output over the connections after its
-/// select, ONLY_PROCESS_ID its JUST_WAIT_PROC's: with CONNECTS, the
-/// sockets whose connect the select saw end; then the servers' new
-/// connections and the streams' input.
-fn pump_connection_processes_for(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    only_process_id: Option<u64>,
-    connects: bool,
-) -> Result<bool, LispError> {
-    let mut progressed = false;
-
-    // wait_reading_process_output: a socket with NON_BLOCKING_CONNECT_FD
-    // that turns writable has finished connecting (delete_write_fd).  A
-    // failure goes on to the addresses left, as connect_network_socket
-    // does, and with none left the status is (failed ERRNO), reported to
-    // the sentinel; a success is `run' and "open\n" unless TLS has the
-    // connection to finish.
-    for process_id in interp.connecting_network_processes() {
-        if !connects || only_process_id.is_some_and(|id| process_id != id) {
-            continue;
-        }
-        progressed |= connect_completion(interp, env, process_id)?;
-    }
-
-    // Accept new connections on every server listener.
-    for server_id in interp.network_listener_ids() {
-        if only_process_id.is_some_and(|id| server_id != id) {
-            continue;
-        }
-        loop {
-            match server_accept_connection(interp, env, server_id)? {
-                Accept::Accepted => progressed = true,
-                Accept::Failed => {
-                    progressed = true;
-                    break;
-                }
-                Accept::Nothing => break,
-            }
-        }
-    }
-
-    // Deliver input / closure on every open network or serial stream.
-    for stream_id in interp.connection_stream_ids() {
-        if only_process_id.is_some_and(|id| stream_id != id) {
-            continue;
-        }
-        if interp.process_output_paused(stream_id) {
-            continue;
-        }
-        let (bytes, eof) = interp.poll_connection_stream(stream_id)?;
-        if !bytes.is_empty() {
-            progressed = true;
-            let output = decode_process_output(interp, stream_id, &bytes, env)?;
-            deliver_process_output_decoded(interp, stream_id, output, env)?;
-        } else if eof {
-            progressed = true;
-            // A read that returns the flushed carryover is not the end
-            // yet; the next one is.
-            if flush_process_decoder(interp, stream_id, env)?.0 {
-                // wait_reading_process_output: deactivate_process, status
-                // (exit 256), and status_notify's sentinel.
-                let message = interp.close_connection_stream(stream_id);
-                run_process_sentinel(interp, stream_id, &message, env)?;
-            }
-        }
-    }
-
-    Ok(progressed)
 }

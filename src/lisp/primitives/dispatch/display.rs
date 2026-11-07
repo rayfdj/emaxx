@@ -5010,6 +5010,8 @@ define_dispatch!(
                 if minibuffer_quit {
                     super::call(interp, "ding", &[Value::T], env)?;
                 } else {
+                    // Fdiscard_input: the typeahead goes with the error.
+                    super::call(interp, "discard-input", &[], env)?;
                     super::call(interp, "ding", &[], env)?;
                 }
                 // print_error_message (data, Qt, context, signal): printed
@@ -5176,24 +5178,37 @@ define_dispatch!(
             }
             "input-pending-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                // keyboard.c's process_special_events handles selection
-                // events only: buffered file notifications wait for read_char
-                // and the kernel notification queue is not read here at all
-                // (the oracle answers nil and runs no callback for a watched
-                // file written moments earlier).  A non-nil CHECK-TIMERS is
-                // READABLE_EVENTS_DO_TIMERS_NOW; `sit-for' deliberately calls
-                // `(input-pending-p t)', even for a zero-length no-redisplay
-                // wait.
-                if args.first().is_some_and(Value::is_truthy) {
-                    interp.run_pending_timer_events(env)?;
+                // keyboard.c:Finput_pending_p: requeued_events_pending_p,
+                // CONSP (Vunread_command_events) or either input-method
+                // queue non-nil, answers t.
+                if interp
+                    .lookup_var_key(cached_symbol!("unread-command-events"), env)
+                    .is_some_and(|events| events.is_cons())
+                    || [
+                        cached_symbol!("unread-post-input-method-events"),
+                        cached_symbol!("unread-input-method-events"),
+                    ]
+                    .into_iter()
+                    .any(|key| interp.lookup_var_key(key, env).is_some_and(|v| !v.is_nil()))
+                {
+                    return Ok(Value::T);
                 }
+                // process_special_events handles selection events only:
+                // buffered file notifications wait for read_char and the
+                // kernel notification queue is not read here at all (the
+                // oracle answers nil and runs no callback for a watched
+                // file written moments earlier).  A non-nil CHECK-TIMERS is
+                // READABLE_EVENTS_DO_TIMERS_NOW; `sit-for' deliberately
+                // calls `(input-pending-p t)', even for a zero-length
+                // no-redisplay wait.
+                // get_input_pending: `quit-flag' set, or an event in the
+                // keyboard buffer.
+                let check_timers = args.first().is_some_and(Value::is_truthy);
                 Ok(
-                    if unread_command_events(interp, env)?.is_empty()
-                        && !crate::lisp::primitives::tty_input_pending()
-                    {
-                        Value::Nil
-                    } else {
+                    if crate::lisp::primitives::get_input_pending(interp, env, check_timers)?.0 {
                         Value::T
+                    } else {
+                        Value::Nil
                     },
                 )
             }
@@ -5496,7 +5511,14 @@ define_dispatch!(
             "controlling-tty-p" => {
                 need_arg_range(name, args, 0, 1)?;
                 require_live_terminal(interp, args.first())?;
-                Ok(Value::Nil)
+                // term.c: a tty terminal whose name is dev_tty.
+                let target = args.first().copied().unwrap_or(Value::Nil);
+                let dev_tty = crate::lisp::eval::terminal::dev_tty();
+                let controlling = interp.decode_terminal(&target).is_some_and(|terminal| {
+                    let terminal = terminal.borrow();
+                    terminal.kind.is_some() && terminal.name == dev_tty
+                });
+                Ok(if controlling { Value::T } else { Value::Nil })
             }
             "tty-display-color-p" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -5606,43 +5628,62 @@ define_dispatch!(
             }
             "current-input-mode" => {
                 need_args(name, args, 0)?;
+                // keyboard.c: (INTERRUPT FLOW META QUIT); a frame not on a
+                // terminal has no flow control and takes 8-bit input as Meta.
+                let interrupt = if interp.input_interrupt_mode() {
+                    Value::T
+                } else {
+                    Value::Nil
+                };
+                let (flow, meta) = match crate::lisp::primitives::tty_input_modes() {
+                    Some(modes) => (
+                        if modes.flow_control {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        },
+                        match modes.meta_key {
+                            2 => Value::Integer(0),
+                            1 => Value::T,
+                            3 => Value::symbol("encoded"),
+                            _ => Value::Nil,
+                        },
+                    ),
+                    None => (Value::Nil, Value::T),
+                };
                 Ok(Value::list([
-                    if interp.input_interrupt_mode() {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                    Value::Nil,
-                    Value::T,
-                    Value::Integer(7),
+                    interrupt,
+                    flow,
+                    meta,
+                    Value::Integer(crate::lisp::primitives::quit_char()),
                 ]))
             }
             "set-input-interrupt-mode" => {
                 need_args(name, args, 1)?;
-                interp.set_input_interrupt_mode(args[0].is_truthy());
+                set_input_interrupt_mode(interp, args[0]);
                 Ok(Value::Nil)
             }
             "set-output-flow-control" | "set-input-meta-mode" => {
                 need_arg_range(name, args, 1, 2)?;
-                // keyboard.c: decode_tty_terminal's decode_live_terminal,
-                // then nothing for a terminal that is no tty: GNU's batch
-                // frame has none, so these terminal-local setters are
-                // successful no-ops.
                 let terminal = args.get(1).copied().unwrap_or(Value::Nil);
-                if interp.decode_terminal(&terminal).is_none() {
-                    return Err(wrong_type_argument("terminal-live-p", terminal));
-                }
+                set_tty_input_mode(interp, name, args[0], terminal)?;
                 Ok(Value::Nil)
             }
             "set-input-mode" => {
                 need_arg_range(name, args, 3, 4)?;
-                interp.set_input_interrupt_mode(args[0].is_truthy());
+                // Fset_input_mode: each mode's own setter, QUIT only when
+                // given.
+                set_input_interrupt_mode(interp, args[0]);
+                set_tty_input_mode(interp, "set-output-flow-control", args[1], Value::Nil)?;
+                set_tty_input_mode(interp, "set-input-meta-mode", args[2], Value::Nil)?;
+                if let Some(quit) = args.get(3).filter(|quit| !quit.is_nil()) {
+                    set_quit_char(interp, *quit)?;
+                }
                 Ok(Value::Nil)
             }
             "set-quit-char" => {
                 need_args(name, args, 1)?;
-                // No controlling tty in batch mode; GNU returns before
-                // validating or changing its tty-local quit character.
+                set_quit_char(interp, args[0])?;
                 Ok(Value::Nil)
             }
 
@@ -7749,8 +7790,15 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "send-string-to-terminal" => {
+                // dispnew.c: decode_live_terminal, CHECK_STRING, and the
+                // string's bytes written unaltered to the terminal.
                 need_arg_range(name, args, 1, 2)?;
-                let _ = string_text(&args[0])?;
+                let terminal = require_live_terminal(interp, args.get(1))?;
+                let Kind::StringObject(string) = args[0].kind() else {
+                    return Err(wrong_type_argument("stringp", args[0]));
+                };
+                let bytes = string.borrow().bytes().to_vec();
+                crate::lisp::eval::terminal::send_string_to_terminal(terminal, &bytes);
                 Ok(Value::Nil)
             }
             "get-buffer-window" => {
@@ -8133,6 +8181,71 @@ fn text_char_description(
 /// Fbuffer_text_pixel_size's measurement of the current buffer's
 /// accessible text on a terminal: the widest line's columns by the line
 /// count.
+/// keyboard.c:Fset_input_interrupt_mode: a change of `interrupt_input'
+/// between reset_all_sys_modes and init_all_sys_modes.
+fn set_input_interrupt_mode(interp: &mut Interpreter, interrupt: Value) {
+    let new = !interrupt.is_nil();
+    if new != interp.input_interrupt_mode() {
+        crate::lisp::primitives::reset_all_sys_modes();
+        interp.set_input_interrupt_mode(new);
+        crate::lisp::primitives::init_all_sys_modes(interp, new);
+    }
+}
+
+/// keyboard.c:Fset_output_flow_control and Fset_input_meta_mode:
+/// decode_tty_terminal's terminal, nothing for one that is no tty, and
+/// the tty's mode changed between reset_sys_modes and init_sys_modes.
+fn set_tty_input_mode(
+    interp: &mut Interpreter,
+    name: &str,
+    value: Value,
+    terminal: Value,
+) -> Result<(), LispError> {
+    let Some(decoded) = interp.decode_terminal(&terminal) else {
+        return Err(wrong_type_argument("terminal-live-p", terminal));
+    };
+    let (is_tty, is_session) = {
+        let state = decoded.borrow();
+        (state.kind.is_some(), state.device.is_none())
+    };
+    if !is_tty || !is_session {
+        return Ok(());
+    }
+    let interrupt_input = interp.input_interrupt_mode();
+    crate::lisp::primitives::change_tty_input_modes(interp, interrupt_input, |modes| {
+        if name == "set-output-flow-control" {
+            modes.flow_control = !value.is_nil();
+        } else {
+            modes.meta_key = if value.is_nil() {
+                0
+            } else if matches!(value.kind(), Kind::T) {
+                1
+            } else if crate::lisp::types::eq_symbol_named(value, "encoded") {
+                3
+            } else {
+                2
+            };
+        }
+    });
+    Ok(())
+}
+
+/// keyboard.c:Fset_quit_char: nothing without the controlling terminal;
+/// QUIT an ASCII character, kept in the meta mode's range.
+fn set_quit_char(interp: &mut Interpreter, quit: Value) -> Result<(), LispError> {
+    if !crate::lisp::primitives::dev_tty_terminal() {
+        return Ok(());
+    }
+    match quit.kind() {
+        Kind::Integer(code) if (0..=0o400).contains(&code) => {
+            let interrupt_input = interp.input_interrupt_mode();
+            crate::lisp::primitives::set_quit_char(interp, code, interrupt_input);
+            Ok(())
+        }
+        _ => Err(LispError::Signal("QUIT must be an ASCII character".into())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

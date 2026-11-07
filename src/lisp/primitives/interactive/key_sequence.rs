@@ -526,38 +526,10 @@ impl KeySequenceReader {
     }
 }
 
-// GNU's unchanged read-key owns its idle-timer ambiguity fallback. A batch
-// fixture with queued input has no frontend poller, but its timers still
-// need the same idle wait and may unwind this reader through a Lisp throw.
+// read_key_sequence's read_char: kbd_buffer_get_event's wait runs the
+// timers, idle ones included, until an event arrives.
 fn wait_for_sequence_event(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
-    let queued = interp
-        .lookup_var_key(cached_symbol!("unread-command-events"), env)
-        .is_some_and(|v| v.cons_values().is_some());
-    let idle_timers = interp
-        .lookup_var_key(cached_symbol!("timer-idle-list"), env)
-        .is_some_and(|value| value.is_truthy());
-    if queued || has_tty_event_poller() || executing_kbd_macro_p(interp, env) || !idle_timers {
-        return read_key_sequence_event(interp, env);
-    }
-    let previous = interp.set_waiting_for_user_input(true);
-    tty_note_idle_start(interp, env);
-    let start = std::time::Instant::now();
-    let result = (|| {
-        loop {
-            interp.service_async_runtime_events(env, true, Some(start.elapsed().as_secs_f64()))?;
-            if interp
-                .lookup_var_key(cached_symbol!("unread-command-events"), env)
-                .is_some_and(|v| v.cons_values().is_some())
-            {
-                return read_key_sequence_event(interp, env);
-            }
-            interp.maybe_quit(env)?;
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    })();
-    tty_note_idle_end();
-    interp.set_waiting_for_user_input(previous);
-    result
+    read_key_sequence_event(interp, env)
 }
 
 pub(crate) fn read_key_sequence_events(
@@ -566,6 +538,8 @@ pub(crate) fn read_key_sequence_events(
     dont_downcase_last: bool,
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
+    // read_key_sequence's read_char decodes the terminal's bytes.
+    let _decoded = super::RawEventRead::enter(false);
     let mut reader = KeySequenceReader::new(interp, prompt, env)?;
     loop {
         let event = wait_for_sequence_event(interp, env)?;

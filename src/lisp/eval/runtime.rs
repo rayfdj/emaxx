@@ -1188,16 +1188,10 @@ impl Interpreter {
             .expect("decoded terminal has state");
         let mut terminal = terminal.borrow_mut();
         terminal.kind = terminal_type;
-        #[cfg(unix)]
         if terminal.device.is_none() && terminal.kind.is_some() {
-            // The startup terminal is the existing standard-input device.
-            // Store its actual device name so init_tty reuses it by name.
-            let pointer = unsafe { libc::ttyname(libc::STDIN_FILENO) };
-            if !pointer.is_null() {
-                terminal.name = unsafe { std::ffi::CStr::from_ptr(pointer) }
-                    .to_string_lossy()
-                    .into_owned();
-            }
+            // term.c:init_tty with no name: the startup terminal is
+            // dev_tty, the controlling terminal.
+            terminal.name = super::terminal::dev_tty();
         }
     }
 
@@ -1240,10 +1234,6 @@ impl Interpreter {
             let _ =
                 primitives::change_frame_size(self, frame, width, height, false, true, &mut env);
         }
-    }
-
-    pub(crate) fn frame_text_height(&self) -> i64 {
-        self.selected_frame_id.borrow().text_height.max(1)
     }
 
     /// The selected frame's param_alist entry for the parameter named

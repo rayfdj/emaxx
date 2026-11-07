@@ -405,9 +405,18 @@ pub(crate) fn do_pending_atimers(interp: &mut Interpreter, env: &mut Env) {
     set_alarm(first);
 }
 
-/// keyboard.c:process_pending_signals: the atimers' turn (handle_async_input
-/// has nothing to read in Emaxx, whose input is not signal-driven).
+/// keyboard.c:process_pending_signals: handle_async_input, gobble_input
+/// until it reads nothing (the terminal input SIGIO said is there), then
+/// the atimers' turn.
 pub(crate) fn process_pending_signals(interp: &mut Interpreter, env: &mut Env) {
+    // A SIGINT's handle_interrupt runs on the main thread (as
+    // deliver_process_signal forwards it there); another thread leaves it
+    // for the main thread's next check.
+    crate::lisp::primitives::process_interrupt_signal(interp, env);
+    if crate::lisp::primitives::interrupt_signal_pending() {
+        note_pending_signal();
+    }
+    while crate::lisp::primitives::gobble_input(interp, env) > 0 {}
     let has_atimers = ATIMERS.with(|atimers| !atimers.borrow().active.is_empty());
     if has_atimers {
         do_pending_atimers(interp, env);

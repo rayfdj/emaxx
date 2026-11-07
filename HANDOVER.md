@@ -16468,6 +16468,188 @@ setup_process_coding_systems's check now refuses). A 13-form
   results, apart from ephemeral ports and timing noise (300 idle
   children cost 0.04 s for 300 exchanges where GNU takes 0.02 s, 0.50 s
   before the review).
+- **Round 340: the keyboard as keyboard.c and sysdep.c read it.** Emaxx
+  read its terminal through crossterm's raw mode, between commands, its
+  keys decoded in Rust, and ran per-pass pumps
+  (pump_external_process_output, pump_connection_processes, a 50 ms
+  poll) while it waited, so running Lisp could not be interrupted. The
+  terminal is now set up and read as GNU/Linux does it. init_sys_modes
+  sets its termios from the modes Emacs found (no echo or canonical
+  input; ISIG, with the quit character as VINTR and VQUIT on the
+  controlling terminal; start/stop output control and 8-bit input by the
+  terminal's flow-control and meta modes; the job-control and editing
+  characters disabled), asks for SIGIO with `interrupt_input' (O_ASYNC
+  on the terminal's own descriptor, the main thread its owner), and
+  writes the terminal's mode strings (ti, vs, ks); reset_sys_modes
+  undoes them. A C-g is the tty driver's SIGINT (the input it had not
+  yet given flushed), handle_interrupt_signal's on the main thread's
+  next quit check: handle_interrupt sets `quit-flag', the third request
+  in a row giving up `inhibit-quit', throws to read_char when it waits
+  for input, and for a C-g while a quit is still pending makes the
+  emergency escape (the job stopped, "Auto-save? (y or n)", "Abort (and
+  dump core)? (y or n)"). tty_read_avail_input reads the bytes FIONREAD
+  counts, each an ASCII_KEYSTROKE_EVENT whose 8th bit the meta mode
+  makes Meta or strips, stored with kbd_buffer_store_event (a quit
+  character read as a byte is handle_interrupt's, the rest of that read
+  dropped; any event inside `while-no-input' that
+  `while-no-input-ignore-events' does not name sets `quit-flag' to
+  `throw-on-input'). read_decoded_event_from_main_queue decodes them by
+  `keyboard-coding-system' (a `read-event' without INHERIT-INPUT-METHOD
+  takes them raw), and read_key_sequence's `input-decode-map', which
+  term_get_fkeys now fills from the terminal's termcap entry beside
+  term/xterm.el's, makes function keys their symbols; xterm mouse events
+  are xt-mouse.el's. SIGWINCH is handle_window_change_signal's:
+  do_pending_window_change gives the frame the terminal's new size, and
+  the garbaged frame is redisplayed before the wait selects again.
+  `current-input-mode', `set-input-interrupt-mode',
+  `set-output-flow-control', `set-input-meta-mode', `set-quit-char' and
+  `set-input-mode' are keyboard.c's; `suspend-emacs' resets the modes,
+  stuffs STUFFSTRING and the input read ahead back (TIOCSTI) and stops
+  the job; the session's terminal is dev_tty ("/dev/tty", or `-t''s
+  DEVICE), which `controlling-tty-p' names and a child's
+  dissociate_controlling_tty opens; and command-error-default-function
+  discards the typeahead. read_char's wait is kbd_buffer_get_event's
+  loop (the unread events, then the buffer, the user signal and thread
+  events whose `special-event-map' binding read_char runs, `quit-flag'
+  and quit_throw_to_read_char, gobble_input, then
+  wait_reading_process_output with READ_KBD -1 until an event or the
+  read's end time), and wait_reading_process_output takes the keyboard
+  as process.c does: compute_input_wait_mask's descriptors in its select
+  when READ_KBD is non-zero (and always in the status-change check's),
+  set_waiting_for_input (a pending `quit-flag' thrown at once) when the
+  keyboard is the waiting thread's, a garbaged frame redisplayed first,
+  no select while detect_input_pending, detect_input_pending_run_timers
+  and swallow_events after it, the timers' do-while ended by pending
+  input, a keyboard descriptor ready with nothing read taken as SIGIO's,
+  and with DO_DISPLAY redisplay_preserve_echo_area after timers,
+  status_notify, reads and Fdelete_process. get_input_pending counts
+  `quit-flag' before it runs timers, and `input-pending-p' is
+  Finput_pending_p. The redisplay's Lisp is called as xdisp.c calls it:
+  `pre-redisplay-function' by dsafe_calln with quits inhibited, the mode
+  and header lines with `inhibit-quit' bound, the menu-bar hooks by
+  safe_run_hooks. The command loop, menus and the key-sequence reader
+  wait the same way; the pumps and the helpers only they used are gone,
+  ERT's runner reaps children between tests where it pumped, five tests
+  wait with `accept-process-output' as a GNU test would, and two whose
+  fake event feed had no descriptor read a pipe a thread writes, as a
+  terminal is written. The session starts only where
+  dispnew.c:init_display and term.c:init_tty do: standard input a
+  terminal, TERM set, dev_tty opened for reading and writing as the
+  terminal's input and output (the display is written there, not to
+  standard output), its terminfo entry found, at least 3x3
+  (get_tty_size, else the entry's co and li) and able to position the
+  cursor; each failure prints GNU's text and exits with status 1, where
+  Emaxx started an ANSI screen or exited with status 2.
+  init_display_interactive gives the initial frame the terminal's size
+  before any Lisp runs (startup Lisp saw the batch frame's 80x24).
+  `send-string-to-terminal', a stub that wrote nothing, writes the
+  string's bytes to its terminal (in batch to stdout, in order with
+  `princ''s buffered text), so term/xterm.el's terminal-init-xterm sends
+  its device-attributes query and turns on bracketed paste and focus
+  reporting, and tty_set_terminal_modes and tty_reset_terminal_modes
+  send the `tty-mode-set-strings' and `tty-mode-reset-strings'
+  parameters' strings with the terminal's own. Two adversarial reviews
+  checked the round against GNU and the pre-round binary in a
+  pseudo-terminal. The first found seven problems: keys stuck behind a
+  CPU spin after a SIGWINCH or a burst over 1024 bytes (crossterm's
+  edge-triggered reads behind a level-triggered select; the terminal is
+  now read as tty_read_avail_input reads it); a pending thread event or
+  user signal spinning the readers (kbd_buffer_get_event's loop now runs
+  them); a C-g during a timer, filter or sentinel lost to the
+  redisplay's Lisp (`pre-redisplay-function' by dsafe_calln with quits
+  inhibited, and set_waiting_for_input's throw); a C-g quitting a
+  background thread instead of the command loop (the interrupt is now
+  the main thread's); C-g read as a byte, not SIGINT (init_sys_modes's
+  termios and the emergency escape); typeahead kept after a command
+  error (command-error-default-function's Fdiscard_input); and a
+  non-list `unread-command-events' spinning the command loop; and P3s by
+  reading, all fixed but the secondary terminals' input, recorded. The
+  second, against the rebuilt binary, found the first, second, fifth and
+  sixth fixed. A C-g was still lost where the frontend's mini-window
+  reconciliation calls `frame-root-window' and `window-total-height'
+  through funcall, whose quit check took it and whose error was dropped
+  (they are C calls in GNU and take no quit; the block now runs with
+  quits inhibited, `quit-flag' left for the next check), and the busy
+  loop remained in the thread wait's list read of
+  `unread-command-events' (every reader now tests CONSP, and the appends
+  keep a non-list as GNU's nconc2 does). It found a C-g killing the
+  shell Emacs ran under, the SIGINT reaching the whole foreground group
+  (narrow_foreground_group and widen_foreground_group now as
+  sysdep.c's); `while-no-input' leaving the key that interrupted it to
+  run again (read_char's setjmp with `quit-flag' holding
+  `throw-on-input' now reads again, the key the read's, the throw at the
+  next quit check); crash signals leaving the terminal in Emacs's modes
+  (shut_down_emacs's reset_all_sys_modes before the fatal message); and
+  P3s: an `encoded' meta mode under `no-conversion' (raw-text needs
+  decoding only with an eol type other than unix), a byte UTF-8 cannot
+  take decoded as a Latin-1 character instead of an eight-bit one
+  (decode_coding_c_string through the coding system's own decoder),
+  `tty-erase-char' nil (init_sys_modes sets VERASE's), the found modes
+  saved only once (re-read at every init_sys_modes), discard_tty_input
+  flushing the terminal's input (it sets the modes again with
+  TCSADRAIN), a quit or the read's end time while an encoded sequence
+  waits for its next byte, and kbd_is_ours true with no keyboard
+  descriptor (false, as process.c's). A third review, against the next
+  binary, found the startup, the display's output to dev_tty, the mode
+  strings and xterm.el's queries, job control, the crash reset and
+  `read-event''s redisplay GNU's, and fixed from it: `input-pending-p'
+  counting a non-list `unread-command-events'
+  (requeued_events_pending_p's CONSP); a `(no-record . EVENT)' there
+  read as itself (read_char takes EVENT, reread and not recorded again);
+  `suspend-resume-hook' seeing the size the frame had before the
+  suspension (Fsuspend_emacs's get_tty_size before and after and
+  change_frame_size before the hook; STUFFSTRING is also checked after
+  the other tty frames, as there); a terminal narrower than 10 columns
+  or shorter than 4 rows given a frame of that size (the frame takes the
+  terminal's, and the renderer paints the terminal's size; a resize
+  below 6x3 leaves the frames theirs, as handle_window_change_signal
+  does); and a fatal signal's terminal reset building its output,
+  interning a symbol and borrowing the terminal's record inside the
+  handler, where a fault in an allocation or during a borrow could hang
+  or abort it, and only on the main thread (the reset is now published
+  at each update and taken once, from any thread, with async-signal-safe
+  calls). A keyboard macro defined at the terminal now holds the events
+  read_char read, the terminal's bytes as record_char's
+  store_kbd_macro_char stores them (it held each command's decoded
+  keys), once. Two tests whose processes the wait pumps start from the
+  window-Lisp fixture, whose window.el applies the initial frame's
+  queued menu-bar resize as GNU's wait does. Recorded: a C stack
+  overflow killing Emacs where GNU's handle_sigsegv returns to the top
+  level (not new), no input polling with interrupt input off, the
+  terminal's colors from TERM's name, two C-g's before a quit check
+  count as one (GNU's handler runs handle_interrupt in the signal
+  itself), and a background thread reruns process_pending_signals at
+  each quit check while an interrupt waits for the main thread. The
+  `:nowait' TLS test that twice waited for good with its status still
+  `connect' (D65) met GNU's own race: when the whole handshake ends
+  inside connect_network_socket's Fgnutls_boot (each of the server's
+  flights already there at the client's read, as a loaded host makes
+  likely), finish_after_tls_connection finds the descriptor still
+  NON_BLOCKING_CONNECT_FD and the connect's completion leaves the status
+  to TLS (p->gnutls_p), so the process stays `connect' and the waits
+  after it never end. A trace of a third hang showed just that (the
+  connect done 32 ms in, no handshake tried after it, the server's close
+  50 s later), and under CPU load GNU 30.2 left 12 and 43 of 60 such
+  clients connecting, Emaxx 36 and 26; the test now relays the server's
+  first flight 200 ms late, as an unloaded host's timing has it.
+  cli_parity's d8 case, an interrupt character after unread echo, waits
+  for the echo first: a VINTR's flush drops echo the master has not
+  read, which under load both GNU and Emaxx do. Local validation: the
+  grouped gate's 3,502 library tests pass on the round's final
+  source (rustfmt's reflow of it aside), every group on its first run
+  but the primitives' m-z, whose first run and rerun hung in that TLS
+  test; the group's 473 others pass, and the test with its relay passes
+  15 runs beside ten busy loops. The integration targets (cli_parity's
+  87 included, cli's 30) and clippy with `--all-targets --all-features
+  -D warnings' pass. cli's test of the children a batch exit ends now
+  sets the editor's SIGHUP disposition itself, default and ignored, as
+  its GNU run failed under the gate's nohup: a child inherits SIGHUP
+  ignored and survives GNU's exit, as it does Emaxx's. A pty comparison
+  with GNU of the three reviews' probes, the startup refusals, the
+  frames of 3x3, 24x5 and 5x24 terminals, the suspension with a resize,
+  the eight exit and crash signals and the earlier rounds' keyboard
+  probes gives GNU's results, but for the stack overflow and `read-key'
+  inside `while-no-input' (read_char's input method), both recorded.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -19291,21 +19473,84 @@ ert-tests as a whole 26,307 ms against 27,211.
   gate (run 42353971300) passed in every stage, cli_parity's 79 among
   them.
 
+**On `e1746a0`** (round 339): the frozen run (run 42364125885) passed at
+  its first attempt, 7,928 of 7,928 outcomes matching, on a slower
+  runner than round 338's (GNU's own setup 65.3 s against 56.9 s). Setup
+  77.6 s against 65.3 s (1.188), test bodies 298.3 s against 265.3 s
+  (1.124), in all 1.118, with a per-file setup median of 117 ms against
+  101. The widest body gaps are ert-tests (44,947 ms against 37,806),
+  tramp-tests (22,076 against 19,302), comp-tests (16,948 against
+  14,317), eglot-tests (34,078 against 32,268), semantic-utest-ia (3,953
+  against 2,614), mule-tests (3,088 against 1,978) and process-tests
+  (2,689 against 1,749). The full Rust gate (run 42364124115) failed at
+  its first attempt on one test of 3,510, the weak-table retention
+  recorded below
+  (`suspended_bytecode_observes_live_constant_vector_mutation' found `(2
+  t 0)'), and passed in every stage at its second attempt.
+
 **Findings recorded, not fixed:**
-- **The interactive session's waits (round 339).** The tty command loop
-  reads its terminal and runs the old per-pass pumps
-  (pump_external_process_output, pump_connection_processes) between key
-  events, where GNU's read_char waits in wait_reading_process_output
-  with READ_KBD -1, the keyboard and the other KEYBOARD_FD descriptors
-  (inotify's among them) in the select, and swallow_events and
-  detect_input_pending ending it; and thread_select, which in GNU
-  releases the global lock for the select's whole timeout, lets another
-  Lisp thread run in slices of at most 10 ms. The pumps read without
-  p->nbytes_read, so a wait for a process whose output a tty read nested
-  in a timer consumed does not notice it and can wait on (the review's
-  P3). To be made: the tty loop's waits through
-  wait_reading_process_output with the terminal and the callbacks'
-  descriptors in its select.
+- **The terminal session's remaining keyboard differences (round 340).**
+  The secondary terminals `make-terminal-frame' opens read their bytes
+  through Emaxx's own decoder into `unread-command-events', with no quit
+  character and no `throw-on-input', where GNU's tty_read_avail_input
+  stores them in the keyboard buffer as the controlling terminal's;
+  `set-output-flow-control' and `set-input-meta-mode' change only the
+  controlling terminal's modes; and a SIGWINCH resizes only its frames.
+  `suspend-emacs' with `cannot-suspend' stops the job where GNU's
+  sys_subshell runs a shell. read_decoded_event_from_main_queue waits
+  for the rest of an incomplete sequence only under a UTF-8 keyboard
+  coding (another decodes each byte it is given). A user signal or a
+  thread's event is run when the keyboard wait finds it, after the keys
+  already in the buffer, where GNU's keyboard buffer keeps arrival
+  order. `suspend-tty' and `resume-tty' signal that every terminal is a
+  non-text one ("Attempt to suspend a non-text terminal device"), and
+  `tty--output-buffer-size' that it is not a tty, as on the batch frame;
+  and the terminal's color count is a guess from TERM's name (8, 256 for
+  a name with 256color, none for dumb), its color and attribute escapes
+  ANSI's SGR codes, and the face capabilities
+  tty_supports_face_attributes_p tests an xterm's (bold, italic, inverse
+  and strike-through; not dim or underline), where init_tty takes Co#,
+  the 24-bit setf24/setb24, RGB, Tc and COLORTERM=truecolor, the entry's
+  AF and AB through tparm, and md, us, so, mr, mh, ZH, smxx and NC. A C
+  stack overflow (unbounded recursion with `max-lisp-eval-depth' raised)
+  kills Emaxx with signal 11 after resetting the terminal, where GNU's
+  handle_sigsegv sees the fault in the stack's guard region and
+  stack_overflow's siglongjmp returns to the top level ("Re-entering top
+  level after C stack overflow"), Emacs still running; unwinding Rust
+  frames from a signal handler is not sound, so Emaxx needs its own
+  check of the native stack before it is exhausted, ending in the same
+  top-level re-entry. With interrupt input off nothing polls the
+  keyboard during a busy command, where a GNU build with POLL_FOR_INPUT
+  reads it every `polling-period' (start_polling's atimer,
+  poll_for_input), so a `discard-input' after a long command keeps
+  typeahead GNU has read and discards. Two C-g's typed before the main
+  thread's next quit check count as one, where GNU's SIGINT handler runs
+  handle_interrupt in the signal itself (the second, with `quit-flag'
+  still set, the emergency escape); and a background thread runs
+  process_pending_signals at each of its quit checks while an interrupt
+  waits for the main thread. read_char never calls
+  `input-method-function' nor takes `unread-input-method-events' and
+  `unread-post-input-method-events', so an input method's keys go in
+  unconverted (with `latin-1-prefix', ' e inserts "'e" where GNU inserts
+  "é"); the default `list' call's quit check is also where GNU's
+  `while-no-input' throw ends a `read-key' that a printing key
+  interrupts, which Emaxx's read returns the key from. A `(no-record .
+  EVENT)' a keyboard macro's command loop takes from
+  `unread-command-events', which records nothing, leaves its
+  not-recorded mark for the next event read, so the next key typed is
+  missing from `recent-keys' and from a macro being defined, where
+  read_char's `recorded' is its own call's. The mini window's greatest
+  height is `max-mini-window-height' of the terminal's rows, where
+  resize_mini_window takes it of the frame's inner height (the root and
+  mini windows' lines), so a long message on a tall narrow terminal
+  (24x5, 24x9) gets one row more than GNU's. To be made: the C stack
+  overflow's return to the top level, the no-record mark per read, the
+  mini window's height limit, input polling, read_char's input method,
+  the secondary terminals' input, modes and sizes as the controlling
+  terminal's, sys_subshell, the special events in the keyboard buffer's
+  order, handle_interrupt in the signal handler, suspend-tty and
+  resume-tty with the output buffer size as term.c's, and the colors and
+  face capabilities as init_tty's.
 - **TLS over a process that is no network connection (round 337).**
   gnutls-boot on a pipe process or a subprocess gives GnuTLS the
   process's p->infd and p->outfd as its transport

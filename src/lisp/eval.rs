@@ -2896,7 +2896,6 @@ pub(crate) struct RunningProcess {
     /// longer waited on, as the child's exit, not more input, is what can
     /// follow.
     pub(crate) stdout_at_end: bool,
-    pub(crate) stderr_at_end: bool,
     /// handle_child_signal found the child's end: p->alive is 0, and
     /// delete_read_fd took its output out of the select mask.
     pub(crate) child_ended: bool,

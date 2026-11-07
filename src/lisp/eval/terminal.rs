@@ -46,6 +46,376 @@ impl TerminalState {
     }
 }
 
+/// The parts of a terminal type's termcap entry term.c:init_tty takes.
+#[cfg(unix)]
+pub(crate) struct Termcap {
+    pub width: i64,
+    pub height: i64,
+    pub colors: i64,
+    /// tty_set_terminal_modes's output (TS_termcap_modes, TS_keypad_mode)
+    /// and the clear a new frame starts from.
+    pub enter: Vec<u8>,
+    /// tty_reset_terminal_modes's (TS_cursor_normal, TS_end_keypad_mode,
+    /// TS_end_termcap_modes).
+    pub exit: Vec<u8>,
+    /// term_get_fkeys's function keys, for the terminal's
+    /// `input-decode-map'.
+    pub keys: Vec<(Vec<u8>, String)>,
+    pub cursor_motion: bool,
+    /// tty->meta_key's start: the terminal has a Meta key (km or MT).
+    pub meta_key: bool,
+    /// The strings of init_tty's TS_ fields that tty_set_terminal_modes
+    /// and tty_reset_terminal_modes write: ti, te, ks, ke, vs, ve, op.
+    pub termcap_modes: Vec<u8>,
+    pub end_termcap_modes: Vec<u8>,
+    pub keypad_mode: Vec<u8>,
+    pub end_keypad_mode: Vec<u8>,
+    pub cursor_visible: Vec<u8>,
+    pub cursor_normal: Vec<u8>,
+    pub orig_pair: Vec<u8>,
+}
+
+/// emacs.c's dev_tty: the terminal init_tty opens for the startup frame,
+/// DEV_TTY ("/dev/tty") unless `-t DEVICE' named another.
+static DEV_TTY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// main's `-t DEVICE': DEVICE is dev_tty from here on.
+pub(crate) fn set_dev_tty(name: &str) {
+    *DEV_TTY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(name.to_owned());
+}
+
+/// dev_tty's name.
+pub(crate) fn dev_tty() -> String {
+    DEV_TTY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .unwrap_or_else(|| "/dev/tty".into())
+}
+
+/// What init_tty's tgetent answered when it found no entry.
+#[derive(Debug)]
+pub(crate) enum TermcapError {
+    /// tgetent < 0 (or no terminal library).
+    NoDatabase,
+    /// tgetent == 0: no entry for the type.
+    Undefined(String),
+}
+
+impl TermcapError {
+    /// maybe_fatal's STR2, the startup terminal's fatal text.
+    pub(crate) fn fatal_text(&self) -> String {
+        match self {
+            Self::NoDatabase => "Cannot open terminfo database file".into(),
+            Self::Undefined(kind) => format!(
+                "Terminal type {kind} is not defined.\n\
+If that is not the actual type of terminal you have,\n\
+use the Bourne shell command 'TERM=...; export TERM' (C-shell:\n\
+'setenv TERM ...') to specify the correct type.  It may be necessary\n\
+to do 'unset TERMINFO' (C-shell: 'unsetenv TERMINFO') as well."
+            ),
+        }
+    }
+}
+
+/// maybe_fatal's STR1, the error a later terminal signals.
+impl std::fmt::Display for TermcapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoDatabase => f.write_str("Cannot open terminfo database file"),
+            Self::Undefined(kind) => write!(f, "Terminal type {kind} is not defined"),
+        }
+    }
+}
+
+impl From<TermcapError> for LispError {
+    fn from(error: TermcapError) -> Self {
+        LispError::Signal(error.to_string())
+    }
+}
+
+/// term.c:init_tty's "not powerful enough" maybe_fatal STR2 for KIND.
+pub(crate) fn cursor_motion_fatal_text(kind: &str) -> String {
+    format!(
+        "Terminal type \"{kind}\" is not powerful enough to run Emacs.\n\
+It lacks the ability to position the cursor.\n\
+If that is not the actual type of terminal you have,\n\
+use the Bourne shell command 'TERM=...; export TERM' (C-shell:\n\
+'setenv TERM ...') to specify the correct type.  It may be necessary\n\
+to do 'unset TERMINFO' (C-shell: 'unsetenv TERMINFO') as well."
+    )
+}
+
+/// term.c:init_tty's termcap lookup of KIND for the terminal on FD (its
+/// size taken from the descriptor where it answers).  Capabilities are
+/// copied while the library's lock is held; no pointer into termcap's
+/// buffers escapes.
+#[cfg(unix)]
+pub(crate) fn read_termcap(kind: &str, fd: libc::c_int) -> Result<Termcap, TermcapError> {
+    use std::ffi::{CStr, CString};
+    static TERMCAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = TERMCAP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // SAFETY: these are the system terminal capability library and its
+    // documented C functions; all input strings and output buffers live
+    // through the calls. We retain copied bytes, never library pointers.
+    let termcap = unsafe {
+        let library = [
+            "libtinfo.so.6",
+            "libtinfo.so.5",
+            "libncursesw.so.6",
+            "/usr/lib/libncurses.dylib",
+        ]
+        .iter()
+        .find_map(|path| libloading::Library::new(path).ok())
+        .ok_or(TermcapError::NoDatabase)?;
+        let getent = library
+            .get::<unsafe extern "C" fn(*mut libc::c_char, *const libc::c_char) -> libc::c_int>(
+                b"tgetent\0",
+            )
+            .map_err(|_| TermcapError::NoDatabase)?;
+        let getnum = library
+            .get::<unsafe extern "C" fn(*const libc::c_char) -> libc::c_int>(b"tgetnum\0")
+            .map_err(|_| TermcapError::NoDatabase)?;
+        let getstr =
+            library
+                .get::<unsafe extern "C" fn(
+                    *const libc::c_char,
+                    *mut *mut libc::c_char,
+                ) -> *mut libc::c_char>(b"tgetstr\0")
+                .map_err(|_| TermcapError::NoDatabase)?;
+        let kind_c = CString::new(kind).map_err(|_| TermcapError::Undefined(kind.to_owned()))?;
+        let mut buffer = [0i8; 4096];
+        match getent(buffer.as_mut_ptr(), kind_c.as_ptr()) {
+            n if n < 0 => return Err(TermcapError::NoDatabase),
+            0 => return Err(TermcapError::Undefined(kind.to_owned())),
+            _ => {}
+        }
+        let cap = |key: &CStr| {
+            let value = getstr(key.as_ptr(), std::ptr::null_mut());
+            if value.is_null() {
+                Vec::new()
+            } else {
+                CStr::from_ptr(value).to_bytes().to_vec()
+            }
+        };
+        let getflag = library
+            .get::<unsafe extern "C" fn(*const libc::c_char) -> libc::c_int>(b"tgetflag\0")
+            .map_err(|_| TermcapError::NoDatabase)?;
+        // cm.c:Wcm_init accepts absolute motion or all four relative
+        // directions. term.c supplies the legacy aliases and disables
+        // downward motion on teleray terminals.
+        let cursor_motion = !cap(c"cm").is_empty()
+            || (!cap(c"up").is_empty()
+                && !cap(c"nd").is_empty()
+                && (getflag(c"bs".as_ptr()) != 0
+                    || !cap(c"le").is_empty()
+                    || !cap(c"bc").is_empty())
+                && getflag(c"xt".as_ptr()) == 0
+                && (!cap(c"do").is_empty() || !cap(c"nl").is_empty()));
+        // term.c:keys and term_get_fkeys_1, in source order (later
+        // capabilities override collisions in the input-decode map).
+        let mut keys = Vec::new();
+        for (capability, name) in [
+            (c"kh", "home"),
+            (c"kl", "left"),
+            (c"ku", "up"),
+            (c"kr", "right"),
+            (c"kd", "down"),
+            (c"%8", "prior"),
+            (c"%5", "next"),
+            (c"@7", "end"),
+            (c"@1", "begin"),
+            (c"*6", "select"),
+            (c"%9", "print"),
+            (c"@4", "execute"),
+            (c"&8", "undo"),
+            (c"%0", "redo"),
+            (c"%7", "menu"),
+            (c"@0", "find"),
+            (c"@2", "cancel"),
+            (c"%1", "help"),
+            (c"&4", "reset"),
+            (c"kE", "clearline"),
+            (c"kA", "insertline"),
+            (c"kL", "deleteline"),
+            (c"kI", "insertchar"),
+            (c"kD", "deletechar"),
+            (c"kB", "backtab"),
+            (c"@8", "kp-enter"),
+            (c"K4", "kp-1"),
+            (c"K5", "kp-3"),
+            (c"K2", "kp-5"),
+            (c"K1", "kp-7"),
+            (c"K3", "kp-9"),
+            (c"k1", "f1"),
+            (c"k2", "f2"),
+            (c"k3", "f3"),
+            (c"k4", "f4"),
+            (c"k5", "f5"),
+            (c"k6", "f6"),
+            (c"k7", "f7"),
+            (c"k8", "f8"),
+            (c"k9", "f9"),
+            (c"&0", "S-cancel"),
+            (c"&9", "S-begin"),
+            (c"*0", "S-find"),
+            (c"*1", "S-execute"),
+            (c"*4", "S-delete"),
+            (c"*7", "S-end"),
+            (c"*8", "S-clearline"),
+            (c"#1", "S-help"),
+            (c"#2", "S-home"),
+            (c"#3", "S-insert"),
+            (c"#4", "S-left"),
+            (c"%d", "S-menu"),
+            (c"%c", "S-next"),
+            (c"%e", "S-prior"),
+            (c"%f", "S-print"),
+            (c"%g", "S-redo"),
+            (c"%i", "S-right"),
+            (c"!3", "S-undo"),
+        ] {
+            let bytes = cap(capability);
+            if !bytes.is_empty() {
+                keys.push((bytes, name.to_owned()));
+            }
+        }
+        let semi = cap(c"k;");
+        let zero = cap(c"k0");
+        if !zero.is_empty() {
+            keys.push((zero, if semi.is_empty() { "f10" } else { "f0" }.into()));
+        }
+        if !semi.is_empty() {
+            keys.push((semi, "f10".into()));
+        }
+        for n in 11..64u8 {
+            let suffix = if n <= 19 {
+                b'1' + n - 11
+            } else if n <= 45 {
+                b'A' + n - 20
+            } else {
+                b'a' + n - 46
+            };
+            let capability =
+                CString::new(vec![b'F', suffix]).expect("termcap key names contain no NUL");
+            let bytes = cap(&capability);
+            if !bytes.is_empty() {
+                keys.push((bytes, format!("f{n}")));
+            }
+        }
+        let mut size: libc::winsize = std::mem::zeroed();
+        // get_tty_size's answer, else the entry's co and li (tgetnum's -1
+        // when it has none): init_tty's FrameCols and FrameRows.
+        let (columns, rows) = if libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) == 0 {
+            (i64::from(size.ws_col), i64::from(size.ws_row))
+        } else {
+            (0, 0)
+        };
+        let width = if columns > 0 {
+            columns
+        } else {
+            i64::from(getnum(c"co".as_ptr()))
+        };
+        let height = if rows > 0 {
+            rows
+        } else {
+            i64::from(getnum(c"li".as_ptr()))
+        };
+        Termcap {
+            width,
+            height,
+            colors: i64::from(getnum(c"Co".as_ptr())).max(0),
+            enter: [cap(c"ti"), cap(c"ks"), cap(c"cl")].concat(),
+            exit: [cap(c"ve"), cap(c"ke"), cap(c"te")].concat(),
+            keys,
+            cursor_motion,
+            meta_key: getflag(c"km".as_ptr()) != 0 || getflag(c"MT".as_ptr()) != 0,
+            termcap_modes: cap(c"ti"),
+            end_termcap_modes: cap(c"te"),
+            keypad_mode: cap(c"ks"),
+            end_keypad_mode: cap(c"ke"),
+            cursor_visible: cap(c"vs"),
+            cursor_normal: cap(c"ve"),
+            orig_pair: cap(c"op"),
+        }
+    };
+    Ok(termcap)
+}
+
+/// sysdep.c:init_sys_modes's terminal modes from ORIGINAL (the modes
+/// Emacs found): no echo, no canonical input, signals on, the quit
+/// character QUIT as VINTR and VQUIT on the CONTROLLING terminal (else
+/// disabled, its C-g read as input), start/stop output control only with
+/// FLOW_CONTROL, 8-bit input with META, and the job-control and editing
+/// characters disabled.
+#[cfg(unix)]
+pub(crate) fn emacs_tty_modes(
+    original: &libc::termios,
+    controlling: bool,
+    flow_control: bool,
+    meta: bool,
+    quit: u8,
+) -> libc::termios {
+    let mut tty = *original;
+    tty.c_iflag |= libc::IGNBRK;
+    tty.c_iflag &= !(libc::ICRNL | libc::INLCR | libc::ISTRIP);
+    tty.c_lflag &= !(libc::ECHO | libc::ICANON | libc::IEXTEN);
+    tty.c_lflag |= libc::ISIG;
+    if flow_control {
+        tty.c_iflag |= libc::IXON;
+        tty.c_iflag &= !libc::IXANY;
+    } else {
+        tty.c_iflag &= !libc::IXON;
+    }
+    tty.c_oflag &= !libc::ONLCR;
+    #[cfg(target_os = "linux")]
+    {
+        tty.c_oflag &= !libc::TAB3;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        tty.c_oflag &= !libc::OXTABS;
+    }
+    if meta {
+        tty.c_cflag |= libc::CS8;
+        tty.c_cflag &= !libc::PARENB;
+    }
+    let disabled = libc::_POSIX_VDISABLE;
+    if controlling {
+        // C-g (usually) gives SIGINT, and for SysV TERMIO SIGQUIT alike.
+        tty.c_cc[libc::VINTR] = quit;
+        tty.c_cc[libc::VQUIT] = quit;
+    } else {
+        tty.c_cc[libc::VINTR] = disabled;
+        tty.c_cc[libc::VQUIT] = disabled;
+    }
+    tty.c_cc[libc::VMIN] = 1;
+    tty.c_cc[libc::VTIME] = 0;
+    for index in [
+        libc::VSUSP,
+        libc::VLNEXT,
+        libc::VREPRINT,
+        libc::VWERASE,
+        libc::VDISCARD,
+    ] {
+        tty.c_cc[index] = disabled;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        tty.c_cc[libc::VDSUSP] = disabled;
+    }
+    if flow_control {
+        tty.c_cc[libc::VSTART] = 0o21;
+        tty.c_cc[libc::VSTOP] = 0o23;
+    } else {
+        tty.c_cc[libc::VSTART] = disabled;
+        tty.c_cc[libc::VSTOP] = disabled;
+    }
+    tty
+}
+
 #[derive(Debug)]
 pub(crate) struct TtyDevice {
     pub file: crate::file_system::File,
@@ -64,12 +434,7 @@ impl TtyDevice {
     /// termcap entry. Copy capabilities while holding the library's global
     /// lock; no pointer into termcap's mutable buffers escapes this call.
     pub fn open(name: &str, kind: &str, interactive: bool) -> Result<Self, LispError> {
-        use std::{
-            ffi::{CStr, CString},
-            io::Write,
-            os::fd::AsRawFd,
-            os::unix::fs::OpenOptionsExt,
-        };
+        use std::{io::Write, os::fd::AsRawFd, os::unix::fs::OpenOptionsExt};
         let mut file = crate::file_system::OpenOptions::new()
             .read(true)
             .write(true)
@@ -81,186 +446,16 @@ impl TtyDevice {
         if unsafe { libc::isatty(fd) } == 0 {
             return Err(LispError::Signal(format!("Not a tty device: {name}")));
         }
-        static TERMCAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = TERMCAP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        // SAFETY: these are the system terminal capability library and its
-        // documented C functions; all input strings and output buffers live
-        // through the calls. We retain copied bytes, never library pointers.
-        let (width, height, colors, enter, exit, keys, cursor_motion) = unsafe {
-            let library = [
-                "libtinfo.so.6",
-                "libtinfo.so.5",
-                "libncursesw.so.6",
-                "/usr/lib/libncurses.dylib",
-            ]
-            .iter()
-            .find_map(|path| libloading::Library::new(path).ok())
-            .ok_or_else(|| LispError::Signal("Cannot open terminfo database file".into()))?;
-            let getent = library
-                .get::<unsafe extern "C" fn(*mut libc::c_char, *const libc::c_char) -> libc::c_int>(
-                    b"tgetent\0",
-                )
-                .map_err(|_| LispError::Signal("Cannot open terminfo database file".into()))?;
-            let getnum = library
-                .get::<unsafe extern "C" fn(*const libc::c_char) -> libc::c_int>(b"tgetnum\0")
-                .map_err(|_| LispError::Signal("Cannot open terminfo database file".into()))?;
-            let getstr = library
-                .get::<unsafe extern "C" fn(
-                    *const libc::c_char,
-                    *mut *mut libc::c_char,
-                ) -> *mut libc::c_char>(b"tgetstr\0")
-                .map_err(|_| LispError::Signal("Cannot open terminfo database file".into()))?;
-            let kind_c = CString::new(kind)
-                .map_err(|_| LispError::Signal("Invalid terminal type".into()))?;
-            let mut buffer = [0i8; 4096];
-            match getent(buffer.as_mut_ptr(), kind_c.as_ptr()) {
-                n if n < 0 => {
-                    return Err(LispError::Signal(
-                        "Cannot open terminfo database file".into(),
-                    ));
-                }
-                0 => {
-                    return Err(LispError::Signal(format!(
-                        "Terminal type {kind} is not defined"
-                    )));
-                }
-                _ => {}
-            }
-            let cap = |key: &CStr| {
-                let value = getstr(key.as_ptr(), std::ptr::null_mut());
-                if value.is_null() {
-                    Vec::new()
-                } else {
-                    CStr::from_ptr(value).to_bytes().to_vec()
-                }
-            };
-            let getflag = library
-                .get::<unsafe extern "C" fn(*const libc::c_char) -> libc::c_int>(b"tgetflag\0")
-                .map_err(|_| LispError::Signal("Cannot open terminfo database file".into()))?;
-            // cm.c:Wcm_init accepts absolute motion or all four relative
-            // directions. term.c supplies the legacy aliases and disables
-            // downward motion on teleray terminals.
-            let cursor_motion = !cap(c"cm").is_empty()
-                || (!cap(c"up").is_empty()
-                    && !cap(c"nd").is_empty()
-                    && (getflag(c"bs".as_ptr()) != 0
-                        || !cap(c"le").is_empty()
-                        || !cap(c"bc").is_empty())
-                    && getflag(c"xt".as_ptr()) == 0
-                    && (!cap(c"do").is_empty() || !cap(c"nl").is_empty()));
-            // term.c:keys and term_get_fkeys_1, in source order (later
-            // capabilities override collisions in the input-decode map).
-            let mut keys = Vec::new();
-            for (capability, name) in [
-                (c"kh", "home"),
-                (c"kl", "left"),
-                (c"ku", "up"),
-                (c"kr", "right"),
-                (c"kd", "down"),
-                (c"%8", "prior"),
-                (c"%5", "next"),
-                (c"@7", "end"),
-                (c"@1", "begin"),
-                (c"*6", "select"),
-                (c"%9", "print"),
-                (c"@4", "execute"),
-                (c"&8", "undo"),
-                (c"%0", "redo"),
-                (c"%7", "menu"),
-                (c"@0", "find"),
-                (c"@2", "cancel"),
-                (c"%1", "help"),
-                (c"&4", "reset"),
-                (c"kE", "clearline"),
-                (c"kA", "insertline"),
-                (c"kL", "deleteline"),
-                (c"kI", "insertchar"),
-                (c"kD", "deletechar"),
-                (c"kB", "backtab"),
-                (c"@8", "kp-enter"),
-                (c"K4", "kp-1"),
-                (c"K5", "kp-3"),
-                (c"K2", "kp-5"),
-                (c"K1", "kp-7"),
-                (c"K3", "kp-9"),
-                (c"k1", "f1"),
-                (c"k2", "f2"),
-                (c"k3", "f3"),
-                (c"k4", "f4"),
-                (c"k5", "f5"),
-                (c"k6", "f6"),
-                (c"k7", "f7"),
-                (c"k8", "f8"),
-                (c"k9", "f9"),
-                (c"&0", "S-cancel"),
-                (c"&9", "S-begin"),
-                (c"*0", "S-find"),
-                (c"*1", "S-execute"),
-                (c"*4", "S-delete"),
-                (c"*7", "S-end"),
-                (c"*8", "S-clearline"),
-                (c"#1", "S-help"),
-                (c"#2", "S-home"),
-                (c"#3", "S-insert"),
-                (c"#4", "S-left"),
-                (c"%d", "S-menu"),
-                (c"%c", "S-next"),
-                (c"%e", "S-prior"),
-                (c"%f", "S-print"),
-                (c"%g", "S-redo"),
-                (c"%i", "S-right"),
-                (c"!3", "S-undo"),
-            ] {
-                let bytes = cap(capability);
-                if !bytes.is_empty() {
-                    keys.push((bytes, name.to_owned()));
-                }
-            }
-            let semi = cap(c"k;");
-            let zero = cap(c"k0");
-            if !zero.is_empty() {
-                keys.push((zero, if semi.is_empty() { "f10" } else { "f0" }.into()));
-            }
-            if !semi.is_empty() {
-                keys.push((semi, "f10".into()));
-            }
-            for n in 11..64u8 {
-                let suffix = if n <= 19 {
-                    b'1' + n - 11
-                } else if n <= 45 {
-                    b'A' + n - 20
-                } else {
-                    b'a' + n - 46
-                };
-                let capability =
-                    CString::new(vec![b'F', suffix]).expect("termcap key names contain no NUL");
-                let bytes = cap(&capability);
-                if !bytes.is_empty() {
-                    keys.push((bytes, format!("f{n}")));
-                }
-            }
-            let mut size: libc::winsize = std::mem::zeroed();
-            libc::ioctl(fd, libc::TIOCGWINSZ, &mut size);
-            let width = if size.ws_col > 0 {
-                i64::from(size.ws_col)
-            } else {
-                i64::from(getnum(c"co".as_ptr())).max(1)
-            };
-            let height = if size.ws_row > 0 {
-                i64::from(size.ws_row)
-            } else {
-                i64::from(getnum(c"li".as_ptr())).max(1)
-            };
-            (
-                width,
-                height,
-                i64::from(getnum(c"Co".as_ptr())).max(0),
-                [cap(c"ti"), cap(c"ks"), cap(c"cl")].concat(),
-                [cap(c"ve"), cap(c"ke"), cap(c"te")].concat(),
-                keys,
-                cursor_motion,
-            )
-        };
+        let Termcap {
+            width,
+            height,
+            colors,
+            enter,
+            exit,
+            keys,
+            cursor_motion,
+            ..
+        } = read_termcap(kind, fd)?;
         // sysdep.c:init_sys_modes: disable canonical input and echo; the
         // editor reads input bytes itself. Retain the original mode for close.
         let original = unsafe {
@@ -283,41 +478,8 @@ impl TtyDevice {
             )));
         }
         if interactive {
-            let mut raw = original;
-            raw.c_iflag |= libc::IGNBRK;
-            raw.c_iflag &= !(libc::ICRNL | libc::INLCR | libc::ISTRIP | libc::IXON);
-            raw.c_lflag &= !(libc::ECHO | libc::ICANON | libc::IEXTEN);
-            raw.c_lflag |= libc::ISIG;
-            raw.c_oflag &= !libc::ONLCR;
-            #[cfg(target_os = "linux")]
-            {
-                raw.c_oflag &= !libc::TAB3;
-            }
-            #[cfg(target_os = "macos")]
-            {
-                raw.c_oflag &= !libc::OXTABS;
-            }
-            raw.c_cflag |= libc::CS8;
-            raw.c_cflag &= !libc::PARENB;
-            for index in [
-                libc::VINTR,
-                libc::VQUIT,
-                libc::VSUSP,
-                libc::VLNEXT,
-                libc::VREPRINT,
-                libc::VWERASE,
-                libc::VSTART,
-                libc::VSTOP,
-            ] {
-                raw.c_cc[index] = libc::_POSIX_VDISABLE;
-            }
-            #[cfg(target_os = "macos")]
-            {
-                raw.c_cc[libc::VDSUSP] = libc::_POSIX_VDISABLE;
-            }
-            raw.c_cc[libc::VMIN] = 1;
-            raw.c_cc[libc::VTIME] = 0;
-            if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
+            let modes = emacs_tty_modes(&original, false, false, true, 7);
+            if unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &modes) } != 0 {
                 return Err(LispError::Signal(format!(
                     "Could not set terminal modes: {name}"
                 )));
@@ -813,8 +975,29 @@ impl Interpreter {
         }
     }
 
-    /// process.c's keyboard descriptors feed the ordinary keyboard queue;
-    /// terminal bytes still pass through Lisp's input-decode-map.
+    /// The input descriptors of the live secondary terminals, each one
+    /// init_tty gave add_keyboard_wait_descriptor.
+    #[cfg(unix)]
+    pub(crate) fn terminal_input_fds(&self) -> Vec<std::os::fd::RawFd> {
+        use std::os::fd::AsRawFd;
+        self.terminals
+            .iter()
+            .filter_map(|object| {
+                let terminal = object.borrow();
+                if !terminal.live {
+                    return None;
+                }
+                terminal
+                    .device
+                    .as_ref()
+                    .map(|device| device.file.as_raw_fd())
+            })
+            .collect()
+    }
+
+    /// The secondary terminals' tty_read_avail_input: process.c's keyboard
+    /// descriptors feed the ordinary keyboard queue; terminal bytes still
+    /// pass through Lisp's input-decode-map.
     pub(crate) fn service_terminal_input(
         &mut self,
         env: &mut super::Env,
@@ -905,13 +1088,7 @@ impl Interpreter {
         if events.is_empty() {
             return Ok(!disconnected.is_empty());
         }
-        let mut pending = crate::lisp::primitives::unread_command_events(self, env)?;
-        pending.extend(events);
-        self.set_variable_key(
-            cached_symbol!("unread-command-events"),
-            Value::list(pending),
-            env,
-        );
+        crate::lisp::primitives::append_unread_command_events(self, env, events);
         Ok(true)
     }
 }
@@ -922,6 +1099,7 @@ thread_local! {
     static OUTPUT_DEVICE: std::cell::RefCell<std::sync::Weak<TtyDevice>> = const { std::cell::RefCell::new(std::sync::Weak::new()) };
     static TTY_ROUTE_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PRIMARY_TOP_FRAME: std::cell::Cell<Option<crate::lisp::types::FrameRef>> = const { std::cell::Cell::new(None) };
+    static CONTROLLING_OUTPUT: std::cell::RefCell<Option<ControllingOutput>> = const { std::cell::RefCell::new(None) };
 }
 
 pub(crate) fn primary_top_frame() -> Option<crate::lisp::types::FrameRef> {
@@ -931,6 +1109,17 @@ pub(crate) fn primary_top_frame() -> Option<crate::lisp::types::FrameRef> {
 pub(crate) fn mark_frame_route(mark: &mut dyn FnMut(&Value)) {
     if let Some(frame) = PRIMARY_TOP_FRAME.get() {
         mark(&Value::Frame(frame));
+    }
+    // The controlling terminal, whose reset at exit reads its parameters
+    // after the terminal list is gone.
+    let terminal = CONTROLLING_OUTPUT.with(|output| {
+        output
+            .try_borrow()
+            .ok()
+            .and_then(|output| output.as_ref().map(|output| output.terminal))
+    });
+    if let Some(terminal) = terminal {
+        mark(&Value::Terminal(terminal));
     }
 }
 
@@ -942,6 +1131,7 @@ pub(crate) fn clear_frame_route() {
     TTY_ROUTE_ACTIVE.set(false);
     PRIMARY_TOP_FRAME.set(None);
     OUTPUT_DEVICE.with_borrow_mut(|output| *output = std::sync::Weak::new());
+    CONTROLLING_OUTPUT.with_borrow_mut(|output| *output = None);
 }
 
 pub(crate) fn output() -> std::io::Result<Box<dyn std::io::Write>> {
@@ -950,8 +1140,135 @@ pub(crate) fn output() -> std::io::Result<Box<dyn std::io::Write>> {
             .file
             .try_clone()
             .map(|file| Box::new(file) as Box<dyn std::io::Write>),
+        None => controlling_output(),
+    })
+}
+
+/// The controlling terminal's tty->output: the DEV_TTY descriptor
+/// init_tty opened for it, else (before there is one) standard output.
+fn controlling_output() -> std::io::Result<Box<dyn std::io::Write>> {
+    CONTROLLING_OUTPUT.with_borrow(|output| match output {
+        Some(output) => output
+            .file
+            .try_clone()
+            .map(|file| Box::new(file) as Box<dyn std::io::Write>),
         None => Ok(Box::new(std::io::stdout()) as Box<dyn std::io::Write>),
     })
+}
+
+/// sysdep.c:get_tty_size of the controlling terminal's descriptor
+/// (CURTTY ()->input): its columns and rows, 0x0 where the ioctl fails;
+/// None without a terminal session.
+#[cfg(unix)]
+pub(crate) fn controlling_tty_size() -> Option<(i64, i64)> {
+    CONTROLLING_OUTPUT.with_borrow(|output| {
+        output.as_ref().map(|output| {
+            use std::os::fd::AsRawFd;
+            // SAFETY: SIZE is a local winsize the ioctl fills.
+            let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+            if unsafe { libc::ioctl(output.file.as_raw_fd(), libc::TIOCGWINSZ, &mut size) } == -1 {
+                (0, 0)
+            } else {
+                (i64::from(size.ws_col), i64::from(size.ws_row))
+            }
+        })
+    })
+}
+
+/// The controlling terminal's output and the size init_tty found for it
+/// (FrameCols and FrameRows: get_tty_size's, else the entry's co and li).
+struct ControllingOutput {
+    file: std::fs::File,
+    width: i64,
+    height: i64,
+    /// Its terminal object, marked while it is set (mark_frame_route).
+    terminal: TerminalRef,
+}
+
+/// term.c:init_tty's tty->output for the controlling terminal TERMINAL:
+/// FD (a descriptor of dev_tty the caller keeps open while it is set) and
+/// its FrameCols and FrameRows, or none.
+#[cfg(unix)]
+pub(crate) fn set_controlling_output(output: Option<(std::os::fd::RawFd, i64, i64, TerminalRef)>) {
+    use std::os::fd::FromRawFd;
+    CONTROLLING_OUTPUT.with_borrow_mut(|controlling| {
+        *controlling = output.and_then(|(fd, width, height, terminal)| {
+            // SAFETY: FD is open; the File made from it is never dropped,
+            // so the caller's descriptor stays its own.
+            let borrowed = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+            let file = borrowed.try_clone().ok()?;
+            Some(ControllingOutput {
+                file,
+                width,
+                height,
+                terminal,
+            })
+        });
+    });
+}
+
+/// dispnew.c:Fsend_string_to_terminal's output of BYTES (SDATA) on
+/// TERMINAL: the initial terminal's stdout, a tty's tty->output, each
+/// flushed at once; write errors are ignored, as fwrite's are.
+pub(crate) fn send_string_to_terminal(terminal: TerminalRef, bytes: &[u8]) {
+    use std::io::Write;
+    let state = terminal.borrow();
+    if let Some(device) = &state.device {
+        let mut file = &device.file;
+        let _ = file.write_all(bytes).and_then(|()| file.flush());
+    } else if state.kind.is_some() {
+        drop(state);
+        if let Ok(mut out) = controlling_output() {
+            let _ = out.write_all(bytes).and_then(|()| out.flush());
+        }
+    } else {
+        drop(state);
+        let _ = crate::lisp::primitives::batch_stdout::write(bytes)
+            .and_then(|()| crate::lisp::primitives::batch_stdout::flush());
+    }
+}
+
+/// tty_send_additional_strings for the controlling terminal: its
+/// SYMBOL parameter's strings, none without one (or while its record is
+/// being changed).
+pub(crate) fn controlling_additional_strings(symbol: Value) -> Vec<u8> {
+    CONTROLLING_OUTPUT.with(|output| {
+        output
+            .try_borrow()
+            .ok()
+            .and_then(|output| output.as_ref().map(|output| output.terminal))
+            .map(|terminal| tty_additional_strings(terminal, symbol))
+            .unwrap_or_default()
+    })
+}
+
+/// term.c:tty_send_additional_strings: the strings of TERMINAL's
+/// parameter SYMBOL (`tty-mode-set-strings' or `tty-mode-reset-strings'),
+/// in list order, read without quitting (CDR_SAFE of assq_no_quit); none
+/// for a deleted terminal.
+pub(crate) fn tty_additional_strings(terminal: TerminalRef, symbol: Value) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if !terminal.borrow().live {
+        return bytes;
+    }
+    let mut extra = Value::Nil;
+    let mut rest = terminal.param_alist.get();
+    while let Kind::Cons(cell) = rest.kind() {
+        if let Kind::Cons(pair) = cell.car.get().kind()
+            && crate::lisp::types::eq(pair.car.get(), symbol)
+        {
+            extra = pair.cdr.get();
+            break;
+        }
+        rest = cell.cdr.get();
+    }
+    while let Kind::Cons(cell) = extra.kind() {
+        if let Kind::StringObject(string) = cell.car.get().kind() {
+            bytes.extend_from_slice(string.borrow().bytes());
+        }
+        extra = cell.cdr.get();
+    }
+    bytes
 }
 
 pub(crate) fn output_size() -> std::io::Result<(u16, u16)> {
@@ -969,8 +1286,38 @@ pub(crate) fn output_size() -> std::io::Result<(u16, u16)> {
             }
             return Ok((device.width as u16, device.height as u16));
         }
+        // The controlling terminal's: get_tty_size of its descriptor where
+        // that answers, else the size init_tty gave its frames.
+        #[cfg(unix)]
+        if let Some(size) = CONTROLLING_OUTPUT.with_borrow(|output| {
+            output.as_ref().map(|output| {
+                use std::os::fd::AsRawFd;
+                // SAFETY: SIZE is a local winsize the ioctl fills.
+                let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+                if unsafe { libc::ioctl(output.file.as_raw_fd(), libc::TIOCGWINSZ, &mut size) } == 0
+                    && size.ws_col > 0
+                    && size.ws_row > 0
+                {
+                    (size.ws_col, size.ws_row)
+                } else {
+                    (output.width as u16, output.height as u16)
+                }
+            })
+        }) {
+            return Ok(size);
+        }
         crossterm::terminal::size()
     })
+}
+
+impl super::Interpreter {
+    /// tty_list->next: a live tty terminal besides the session's own.
+    pub(crate) fn secondary_tty_terminals_live(&self) -> bool {
+        self.terminals.iter().any(|terminal| {
+            let state = terminal.borrow();
+            state.live && state.device.is_some()
+        })
+    }
 }
 
 pub(crate) fn secondary_output_active() -> bool {
