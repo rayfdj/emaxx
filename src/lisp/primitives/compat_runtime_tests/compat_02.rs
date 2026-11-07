@@ -1255,6 +1255,10 @@ fn call_process_waits_for_its_child_with_sigchld_at_its_default() {
     unsafe {
         libc::sigaction(libc::SIGCHLD, &old, std::ptr::null_mut());
     }
+    // A SIGCHLD that came at the default action is lost, as it is to GNU;
+    // other tests' children, which this window shares, are asked as one
+    // would have them asked.
+    crate::lisp::eval::handle_child_signal();
     assert_eq!(status.expect("call-process"), Value::Integer(3));
 }
 

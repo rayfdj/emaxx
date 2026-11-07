@@ -2398,6 +2398,239 @@ impl std::fmt::Debug for SerialRuntime {
     }
 }
 
+/// handle_child_signal's record of one asynchronous child: the pid the
+/// SIGCHLD handler asks waitpid about while the child is alive
+/// (p->alive), its negation once the handler has reaped it, 0 for a slot
+/// no child holds; and the newest status it found that the interpreter
+/// has not taken (p->raw_status with p->raw_status_new), as PID << 32 |
+/// the raw status, 0 for none.  Slots are never freed, only reused, so
+/// the handler walks them without taking a lock.
+#[cfg(unix)]
+pub(crate) struct ChildSlot {
+    pid: std::sync::atomic::AtomicI32,
+    record: std::sync::atomic::AtomicU64,
+    /// One poller at a time: the handler, or a thread that polls for a
+    /// signal it cannot count on.  A poll that finds another under way
+    /// leaves `again' for it to poll once more.
+    busy: std::sync::atomic::AtomicBool,
+    again: std::sync::atomic::AtomicBool,
+    next: std::sync::atomic::AtomicPtr<ChildSlot>,
+}
+
+#[cfg(unix)]
+static CHILD_SLOTS: std::sync::atomic::AtomicPtr<ChildSlot> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// Whether child_signal_init installed handle_child_signal as SIGCHLD's
+/// action, which then alone reaps the children it watches.
+#[cfg(unix)]
+pub(crate) static CHILD_SIGNAL_HANDLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+fn errno_location() -> *mut libc::c_int {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // SAFETY: returns this thread's errno slot.
+    unsafe {
+        libc::__errno_location()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    // SAFETY: returns this thread's errno slot.
+    unsafe {
+        libc::__error()
+    }
+}
+
+#[cfg(unix)]
+impl ChildSlot {
+    /// child_status_changed (PID, &status, WUNTRACED | WCONTINUED) of the
+    /// slot's child: a change found is the slot's newest status, and an
+    /// end reaps the child.  Async-signal-safe.
+    fn poll(&self) {
+        use std::sync::atomic::Ordering;
+        loop {
+            if self
+                .busy
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                self.again.store(true, Ordering::Release);
+                // The poller under way polls again when it lets the slot go;
+                // one that let it go before seeing AGAIN leaves it free, and
+                // this poll takes it.
+                if self.busy.load(Ordering::Acquire) {
+                    return;
+                }
+                continue;
+            }
+            let pid = self.pid.load(Ordering::Acquire);
+            if pid > 0 {
+                loop {
+                    let mut status = 0;
+                    // SAFETY: waitpid is async-signal-safe; PID is this slot's
+                    // unreaped child and STATUS writable storage.
+                    let result = unsafe {
+                        libc::waitpid(
+                            pid,
+                            &mut status,
+                            libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED,
+                        )
+                    };
+                    if result == pid {
+                        self.record.store(
+                            (u64::from(pid as u32) << 32) | u64::from(status as u32),
+                            Ordering::Release,
+                        );
+                        // Reaped: no longer asked about.  A slot the
+                        // interpreter released since (its end taken at once)
+                        // stays as it made it.
+                        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                            let _ = self.pid.compare_exchange(
+                                pid,
+                                -pid,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            );
+                        }
+                        break;
+                    }
+                    // SAFETY: this thread's errno.
+                    if result < 0 && unsafe { *errno_location() } == libc::EINTR {
+                        continue;
+                    }
+                    // No change, or ECHILD: "the status is lost".
+                    break;
+                }
+            }
+            self.busy.store(false, Ordering::Release);
+            if !self.again.swap(false, Ordering::AcqRel) {
+                return;
+            }
+        }
+    }
+
+    /// p->raw_status_new of PID: the newest status recorded since it was
+    /// last taken.
+    fn take(&self, pid: i32) -> Option<i32> {
+        let record = self.record.swap(0, std::sync::atomic::Ordering::AcqRel);
+        (record != 0 && (record >> 32) as u32 as i32 == pid).then_some(record as u32 as i32)
+    }
+
+    /// Whether handle_child_signal has reaped the slot's child.
+    fn reaped(&self) -> bool {
+        self.pid.load(std::sync::atomic::Ordering::Acquire) < 0
+    }
+
+    /// The slot given up, its child reaped and its end taken.
+    fn release(&self) {
+        use std::sync::atomic::Ordering;
+        self.record.store(0, Ordering::Release);
+        self.pid.store(0, Ordering::Release);
+    }
+}
+
+/// process.c:handle_child_signal, SIGCHLD's action: every watched child
+/// asked for its change of status, which is kept until the interpreter
+/// takes it.  Async-signal-safe; errno is preserved.
+#[cfg(unix)]
+pub(crate) fn handle_child_signal() {
+    let errno = errno_location();
+    // SAFETY: this thread's errno, restored below.
+    let saved = unsafe { *errno };
+    let mut slot = CHILD_SLOTS.load(std::sync::atomic::Ordering::Acquire);
+    while !slot.is_null() {
+        // SAFETY: slots are leaked once made and never freed.
+        let current = unsafe { &*slot };
+        current.poll();
+        slot = current.next.load(std::sync::atomic::Ordering::Acquire);
+    }
+    // SAFETY: as above.
+    unsafe { *errno = saved };
+}
+
+/// SIGCHLD's action around a libgccjit compile in the test binary, whose
+/// interpreters share one process: GCC's driver sets SIGCHLD to SIG_DFL
+/// for its own waits.  Once the call returns, a replaced action is put
+/// back and every watched child asked as a SIGCHLD would have it asked,
+/// since one that came meanwhile was lost.  An Emacs keeps the driver's
+/// SIG_DFL, as GNU's does.
+#[cfg(all(unix, test))]
+pub(crate) struct ChildSignalGuard {
+    saved: libc::sigaction,
+}
+
+#[cfg(all(unix, test))]
+impl ChildSignalGuard {
+    pub(crate) fn new() -> Self {
+        // SAFETY: querying the action writes only SAVED.
+        let mut saved: libc::sigaction = unsafe { std::mem::zeroed() };
+        unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut saved) };
+        Self { saved }
+    }
+}
+
+#[cfg(all(unix, test))]
+impl Drop for ChildSignalGuard {
+    fn drop(&mut self) {
+        if !CHILD_SIGNAL_HANDLED.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        // SAFETY: as above; the saved action is the one the process had.
+        let mut current: libc::sigaction = unsafe { std::mem::zeroed() };
+        unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut current) };
+        if current.sa_sigaction != self.saved.sa_sigaction {
+            // SAFETY: restores the action read before the call.
+            unsafe { libc::sigaction(libc::SIGCHLD, &self.saved, std::ptr::null_mut()) };
+            handle_child_signal();
+        }
+    }
+}
+
+/// create_process's p->alive = 1, made with SIGCHLD blocked: PID's slot,
+/// watched by handle_child_signal from now on, and polled at once, as
+/// the SIGCHLD the blocked mask held back would be delivered then.
+#[cfg(unix)]
+fn watch_child(pid: i32) -> &'static ChildSlot {
+    use std::sync::atomic::Ordering;
+    let mut slot = CHILD_SLOTS.load(Ordering::Acquire);
+    let mut found = None;
+    while !slot.is_null() {
+        // SAFETY: slots are leaked once made and never freed.
+        let current: &'static ChildSlot = unsafe { &*slot };
+        if current.record.load(Ordering::Acquire) == 0
+            && current
+                .pid
+                .compare_exchange(0, pid, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            found = Some(current);
+            break;
+        }
+        slot = current.next.load(Ordering::Acquire);
+    }
+    let slot = found.unwrap_or_else(|| {
+        let slot: &'static ChildSlot = Box::leak(Box::new(ChildSlot {
+            pid: std::sync::atomic::AtomicI32::new(pid),
+            record: std::sync::atomic::AtomicU64::new(0),
+            busy: std::sync::atomic::AtomicBool::new(false),
+            again: std::sync::atomic::AtomicBool::new(false),
+            next: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+        }));
+        let pointer = std::ptr::from_ref(slot).cast_mut();
+        let mut head = CHILD_SLOTS.load(Ordering::Acquire);
+        loop {
+            slot.next.store(head, Ordering::Release);
+            match CHILD_SLOTS.compare_exchange(head, pointer, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break,
+                Err(current) => head = current,
+            }
+        }
+        slot
+    });
+    slot.poll();
+    slot
+}
+
 /// A subprocess callproc.c:emacs_spawn started: its pid, the parent's ends
 /// of the pipes it was given, and its status once waitpid has reaped it.
 /// Unlike std's `Child', a status the process pump reaps (with waitpid's
@@ -2406,6 +2639,10 @@ impl std::fmt::Debug for SerialRuntime {
 pub(crate) struct SpawnedChild {
     pid: u32,
     status: Option<std::process::ExitStatus>,
+    /// handle_child_signal's slot, for an asynchronous child (`watch').
+    slot: Option<&'static ChildSlot>,
+    /// Whether status_change has given the end.
+    end_reported: bool,
     pub(crate) stdin: Option<fs::File>,
     pub(crate) stdout: Option<fs::File>,
     pub(crate) stderr: Option<fs::File>,
@@ -2425,10 +2662,94 @@ impl SpawnedChild {
         Self {
             pid,
             status: None,
+            slot: None,
+            end_reported: false,
             stdin,
             stdout,
             stderr,
         }
+    }
+
+    /// create_process's p->alive = 1: the child watched by
+    /// handle_child_signal, which alone reaps it from now on (once
+    /// child_signal_init has installed it).
+    pub(crate) fn watch(&mut self) {
+        if self.slot.is_none()
+            && self.status.is_none()
+            && CHILD_SIGNAL_HANDLED.load(std::sync::atomic::Ordering::Acquire)
+        {
+            self.slot = Some(watch_child(self.pid as i32));
+        }
+    }
+
+    /// The child's change of status since it was last asked, as waitpid
+    /// reports it with WUNTRACED | WCONTINUED: handle_child_signal's
+    /// newest record of a watched child (p->raw_status_new), else
+    /// waitpid's answer now; an end, once, which is kept.
+    pub(crate) fn status_change(&mut self) -> std::io::Result<Option<i32>> {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(status) = self.status {
+            // An end try_wait or wait reaped.
+            if self.end_reported {
+                return Ok(None);
+            }
+            self.end_reported = true;
+            return Ok(Some(status.into_raw()));
+        }
+        let raw = if let Some(slot) = self.slot {
+            let Some(raw) = slot.take(self.pid as i32) else {
+                return Ok(None);
+            };
+            raw
+        } else {
+            loop {
+                let mut raw = 0;
+                // SAFETY: the pid is this child's and has not been reaped;
+                // RAW is writable caller storage.
+                let result = unsafe {
+                    libc::waitpid(
+                        self.pid as libc::pid_t,
+                        &mut raw,
+                        libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED,
+                    )
+                };
+                if result == 0 {
+                    return Ok(None);
+                }
+                if result < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                break raw;
+            }
+        };
+        if libc::WIFEXITED(raw) || libc::WIFSIGNALED(raw) {
+            self.status = Some(std::process::ExitStatus::from_raw(raw));
+            self.end_reported = true;
+            if let Some(slot) = self.slot.take() {
+                slot.release();
+            }
+        }
+        Ok(Some(raw))
+    }
+
+    /// process_send_signal's `if (p->alive) kill (PID, SIGNAL)'.
+    pub(crate) fn signal_while_alive(&self, pid: libc::pid_t, signal: libc::c_int) {
+        if self.unreaped() {
+            // SAFETY: a signal to this unreaped child's group or pid.
+            unsafe {
+                libc::kill(pid, signal);
+            }
+        }
+    }
+
+    /// Whether the pid is still this child's: not reaped, by this owner or
+    /// by handle_child_signal.
+    fn unreaped(&self) -> bool {
+        self.status.is_none() && !self.slot.is_some_and(ChildSlot::reaped)
     }
 
     /// A child std's `Command' started, reaped from here on by pid.
@@ -2454,15 +2775,38 @@ impl SpawnedChild {
         self.pid
     }
 
-    /// The status the process pump's own waitpid reaped.
-    pub(crate) fn record_exit(&mut self, status: std::process::ExitStatus) {
-        self.status = Some(status);
-    }
-
     fn reap(&mut self, options: libc::c_int) -> std::io::Result<Option<std::process::ExitStatus>> {
         use std::os::unix::process::ExitStatusExt;
         if let Some(status) = self.status {
             return Ok(Some(status));
+        }
+        if let Some(slot) = self.slot {
+            // handle_child_signal alone reaps a watched child; a blocking
+            // wait polls as a SIGCHLD would, in case none comes.
+            let mut pause = std::time::Duration::from_millis(1);
+            loop {
+                if slot.reaped() {
+                    let raw = slot.take(self.pid as i32);
+                    slot.release();
+                    self.slot = None;
+                    let Some(raw) =
+                        raw.filter(|raw| libc::WIFEXITED(*raw) || libc::WIFSIGNALED(*raw))
+                    else {
+                        return Err(std::io::Error::from_raw_os_error(libc::ECHILD));
+                    };
+                    let status = std::process::ExitStatus::from_raw(raw);
+                    self.status = Some(status);
+                    return Ok(Some(status));
+                }
+                if options & libc::WNOHANG != 0 {
+                    return Ok(None);
+                }
+                slot.poll();
+                if !slot.reaped() {
+                    std::thread::sleep(pause);
+                    pause = (pause * 2).min(std::time::Duration::from_millis(50));
+                }
+            }
         }
         loop {
             let mut raw = 0;
@@ -2489,6 +2833,17 @@ impl SpawnedChild {
         self.reap(libc::WNOHANG)
     }
 
+    /// try_wait for an owner tearing the child down, which no Lisp
+    /// observes: a watched child asked waitpid first, as a SIGCHLD would
+    /// have it asked, so a signal lost (one that came while another
+    /// library held SIGCHLD at its default) cannot leave it unreaped.
+    pub(crate) fn try_wait_polling(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        if let Some(slot) = self.slot {
+            slot.poll();
+        }
+        self.reap(libc::WNOHANG)
+    }
+
     /// Close the child's input, as `Child::wait' does, and wait for it.
     pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         drop(self.stdin.take());
@@ -2498,7 +2853,7 @@ impl SpawnedChild {
 
     /// SIGKILL, unless the child has been reaped (its pid may be reused).
     pub(crate) fn kill(&mut self) -> std::io::Result<()> {
-        if self.status.is_some() {
+        if !self.unreaped() {
             return Ok(());
         }
         // SAFETY: a signal to this unreaped child's pid.
@@ -2512,7 +2867,7 @@ impl SpawnedChild {
     /// process group the child leads (emacs_spawn's setsid), unless the
     /// child has been reaped (its pid may be reused).
     pub(crate) fn kill_group(&mut self) {
-        if self.status.is_none() {
+        if self.unreaped() {
             // SAFETY: a signal to the group of this unreaped child, which
             // leads it.
             unsafe {
@@ -2541,6 +2896,9 @@ pub(crate) struct RunningProcess {
     /// follow.
     pub(crate) stdout_at_end: bool,
     pub(crate) stderr_at_end: bool,
+    /// handle_child_signal found the child's end: p->alive is 0, and
+    /// delete_read_fd took its output out of the select mask.
+    pub(crate) child_ended: bool,
 }
 
 impl RunningProcess {
@@ -2624,7 +2982,11 @@ impl Drop for RunningProcess {
         }
         let _ = self.child.kill();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while let Ok(None) = self.child.try_wait() {
+        #[cfg(unix)]
+        let mut reaped = || self.child.try_wait_polling();
+        #[cfg(not(unix))]
+        let mut reaped = || self.child.try_wait();
+        while let Ok(None) = reaped() {
             if std::time::Instant::now() >= deadline {
                 break;
             }
@@ -2637,6 +2999,20 @@ impl std::fmt::Debug for RunningProcess {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RunningProcess").finish_non_exhaustive()
     }
+}
+
+/// process.c's process_tick: incremented for each change of a process's
+/// status, which then holds it as its tick.
+static PROCESS_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// ++process_tick.
+pub(crate) fn next_process_tick() -> u64 {
+    PROCESS_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+
+/// process_tick now.
+pub(crate) fn current_process_tick() -> u64 {
+    PROCESS_TICK.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// gnutls.h's gnutls_initstage_t stages.
@@ -2906,7 +3282,9 @@ impl Clone for ProcessState {
             status: self.status.clone(),
             filter: self.filter,
             sentinel: self.sentinel,
-            sentinel_notified: self.sentinel_notified,
+            tick: self.tick,
+            update_tick: self.update_tick,
+            pending_status: None,
             log: self.log,
             name: self.name,
             thread_id: self.thread_id,
@@ -2925,6 +3303,7 @@ impl Clone for ProcessState {
             stderr_process_id: self.stderr_process_id,
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
+            core_dumped: self.core_dumped,
             os_pid: self.os_pid,
             tty: self.tty.clone(),
             runtime: None,
@@ -2968,8 +3347,14 @@ struct ProcessState {
     status: ProcessStatus,
     filter: Option<Value>,
     sentinel: Option<Value>,
-    /// Whether the terminal subprocess status has already invoked SENTINEL.
-    sentinel_notified: bool,
+    /// p->tick: the process_tick of its last change of status.
+    tick: u64,
+    /// p->update_tick: the tick status_notify last reported.
+    update_tick: u64,
+    /// p->raw_status with p->raw_status_new: the change of the child's
+    /// status handle_child_signal recorded and update_status has not yet
+    /// made the status.
+    pending_status: Option<threads::ChildStatusEvent>,
     /// Network process :log function (server connection events).
     log: Option<Value>,
     /// p->name: the Lisp string `process-name' returns and Vprocess_alist
@@ -3016,6 +3401,9 @@ struct ProcessState {
     exit_code: Option<i32>,
     /// Fatal signal number when the OS reports signaled termination.
     exit_signal: Option<i32>,
+    /// WCOREDUMP of that termination: the third element of GNU's
+    /// (signal SIG CORE) status.
+    core_dumped: bool,
     /// OS pid retained after the Child handle is reaped; nil for pipe and
     /// network process records.
     os_pid: Option<u32>,
@@ -6430,6 +6818,9 @@ pub struct InterpreterState {
     /// buffer's `mode-name' starts as (reset_buffer_local_variables).
     pub(crate) fundamental_mode_name: Value,
     process_states: Vec<ProcessState>,
+    /// process.c's update_tick: process_tick when status_notify last
+    /// began, which its callers compare process_tick with.
+    process_update_tick: u64,
     pending_timers: Vec<ScheduledTimer>,
     /// Source-loaded callbacks stand in for GNU's byte-compiled Lisp.  Keep
     /// defsubst definitions removed by loadhist alive until the active timer
@@ -7105,6 +7496,7 @@ impl Interpreter {
             interval_insert_hooks: [Value::Nil, Value::Nil],
             fundamental_mode_name: Value::Nil,
             process_states: Vec::new(),
+            process_update_tick: 0,
             pending_timers: Vec::new(),
             timer_callback_depth: 0,
             deferred_defsubst_unbindings: Vec::new(),

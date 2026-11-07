@@ -5337,7 +5337,7 @@ fn process_spawn_waits_and_ends_are_gnu_s() {
   (list (accept-process-output p nil nil t) (reverse log) (accept-process-output p nil nil 0) (reverse log)))))
 (show "jto2" (lambda () (let* ((log nil)
        (q (make-process :name "q2" :command '("true") :sentinel (lambda (_p e) (push (list 'q e) log))))
-       (p (make-process :name "p2" :command '("sh" "-c" "sleep 0.3; echo hi") :filter (lambda (_p s) (push (list 'pout s) log)) :sentinel (lambda (_p e) (push (list 'p e) log)))))
+       (p (make-process :name "p2" :command '("sh" "-c" "sleep 0.3; echo hi; sleep 1") :filter (lambda (_p s) (push (list 'pout s) log)) :sentinel (lambda (_p e) (push (list 'p e) log)))))
   (busy 0.2)
   (list (accept-process-output p 2 nil t) (reverse log) (accept-process-output p 2 nil t) (reverse log)))))
 (show "stopped" (lambda () (let* ((log nil)
@@ -5346,6 +5346,297 @@ fn process_spawn_waits_and_ends_are_gnu_s() {
   (busy 0.3)
   (let ((t0 (float-time)))
     (prog1 (list (accept-process-output p 1) (process-status p) (< (- (float-time) t0) 0.5)) (delete-process p)))))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn status_notify_walks_the_processes_as_gnu_s() {
+    // process.c:status_notify's walk: no read for a filter of t, reads
+    // until one finds nothing, the changes handle_child_signal recorded
+    // for the other processes reported by continue-process and
+    // delete-process, a sentinel that deletes or continues another
+    // process cancelling that one's report, a JUST-THIS-ONE wait that
+    // leaves a stopped process's output and stop alone, a continued
+    // childless pty's "killed\n", and a sentinel's throw leaving the
+    // processes after it for the next change (update_tick).
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((log nil)
+       (p (make-process :name "s" :command '("sh" "-c" "sleep 0.3; echo hello; sleep 5") :connection-type 'pipe :noquery t
+                        :filter (lambda (_ s) (push (list 'out s) log))
+                        :sentinel (lambda (_ e) (push (list 'sen e) log)))))
+  (set-process-filter p t)
+  (busy 0.8)
+  (continue-process p)
+  (princ (format "paused %S %S\n" (process-status p) (reverse log)))
+  (set-process-filter p (lambda (_ s) (push (list 'out s) log)))
+  (accept-process-output nil 0.3)
+  (princ (format "resumed %S %S\n" (process-status p) (reverse log)))
+  (delete-process p))
+(let ((read-process-output-max 4096) (log nil))
+  (let ((p (make-process :name "s" :command '("sh" "-c" "head -c 20000 /dev/zero | tr '\\0' a; sleep 5") :connection-type 'pipe :noquery t
+                         :filter (lambda (_ s) (push (list 'out (length s)) log))
+                         :sentinel (lambda (_ e) (push (list 'sen e) log)))))
+    (busy 0.5)
+    (continue-process p)
+    (princ (format "chunks %S\n" (reverse log)))
+    (delete-process p)))
+(dolist (op '(continue delete))
+  (let* ((log nil)
+         (p (make-process :name "p" :command '("sleep" "5") :noquery t :connection-type 'pipe :sentinel (lambda (_ e) (push (list 'p e) log))))
+         (q (make-process :name "q" :command '("sh" "-c" "echo bye") :noquery t :connection-type 'pipe
+                          :filter (lambda (_ s) (push (list 'qout s) log))
+                          :sentinel (lambda (_ e) (push (list 'q e) log)))))
+    (busy 0.4)
+    (if (eq op 'continue) (continue-process p) (delete-process p))
+    (princ (format "%s others %S\n" op (reverse log)))
+    (delete-process p))))"##,
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(dolist (act '(delete continue))
+  (let* ((log nil) b
+         (b (make-process :name "b" :command '("sleep" "5") :noquery t :connection-type 'pipe :sentinel (lambda (_ e) (push (list 'b e) log))))
+         (a (make-process :name "a" :command '("sleep" "5") :noquery t :connection-type 'pipe
+                          :sentinel (lambda (_ e) (push (list 'a e) log)
+                                      (when (eq (process-status b) 'stop)
+                                        (if (eq act 'delete) (delete-process b) (continue-process b)))))))
+    (busy 0.2)
+    (signal-process b 'SIGSTOP) (signal-process a 'SIGSTOP)
+    (busy 0.3)
+    (accept-process-output nil 0.1)
+    (busy 0.3) (accept-process-output nil 0.1)
+    (princ (format "%s log %S\n" act (reverse log)))
+    (delete-process a) (delete-process b)))
+(let* ((log nil)
+       (p (make-process :name "p" :command '("sleep" "5") :noquery t :connection-type 'pipe :sentinel (lambda (_ e) (push (list 'p e) log))))
+       (q (make-process :name "q" :command '("sh" "-c" "echo hi; kill -STOP $$; sleep 5") :connection-type 'pipe :noquery t
+                        :filter (lambda (_ s) (push (list 'qout s) log))
+                        :sentinel (lambda (_ e) (push (list 'q e) log))))
+       (t0 (progn (busy 0.3) (float-time))))
+  (princ (format "jto %S %S %S\n" (accept-process-output p 0.6 nil t) (> (- (float-time) t0) 0.5) (reverse log)))
+  (accept-process-output nil 0.2)
+  (princ (format "after %S\n" (reverse log)))
+  (delete-process p) (delete-process q))
+(let* ((log nil)
+       (p (make-process :name "np" :command nil :connection-type 'pty :noquery t
+                        :sentinel (lambda (pp e) (push (list e (process-status pp)) log))))
+       (tty (process-tty-name p)))
+  (call-process "sh" nil nil nil "-c" (format "echo hi > %s" tty))
+  (accept-process-output nil 0.3) (accept-process-output nil 0.3)
+  (continue-process p)
+  (accept-process-output nil 0.1)
+  (delete-process p)
+  (princ (format "childless %S %S\n" (process-status p) (reverse log)))))"##,
+        r##"(progn
+(let* ((log nil)
+       (q (make-process :name "q" :command '("true") :connection-type 'pipe :sentinel (lambda (_p e) (push (list 'q e) log))))
+       (p (make-process :name "p" :command '("true") :connection-type 'pipe :sentinel (lambda (_p e) (push (list 'p e) log) (throw 'out 'thrown)))))
+
+  (let ((end (+ (float-time) 0.3))) (while (< (float-time) end)))
+  (message "c1=%S log=%S" (catch 'out (accept-process-output nil 0.1)) (reverse log))
+  (message "c2=%S log=%S" (catch 'out (accept-process-output nil 0.1)) (reverse log))
+  (message "c3=%S log=%S" (catch 'out (sit-for 0.1)) (reverse log))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn a_childs_end_waits_for_status_notify_as_gnu_s() {
+    // An ended child as GNU's handle_child_signal leaves it: its channel
+    // out of the wait set, so status_notify alone reads its output, newest
+    // process first, right before its sentinel; p->raw_status not decoded
+    // until update_status, so delete-process makes it "killed\n" and
+    // continue-process "run"; p->infd still open until the walk reports
+    // it, so a signal is sent and kill-buffer's SIGHUP spares a child a
+    // deleted pipe process's walk reported; a filter that deletes its own
+    // process; and a process locked to another thread, which the walk
+    // reports whatever thread waits.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(dolist (wait '(accept sit-for sleep-for accept-p))
+  (let* ((log nil)
+         (a (make-process :name "a" :command '("sh" "-c" "echo a") :noquery t :connection-type 'pipe
+                          :filter (lambda (_ s) (push (list 'a-out (string-trim s)) log))
+                          :sentinel (lambda (_ e) (push (list 'a-sen (string-trim e)) log))))
+         (b (make-process :name "b" :command '("sh" "-c" "echo b") :noquery t :connection-type 'pipe
+                          :filter (lambda (_ s) (push (list 'b-out (string-trim s)) log))
+                          :sentinel (lambda (_ e) (push (list 'b-sen (string-trim e)) log)))))
+    (busy 0.4)
+    (pcase wait
+      ('accept (accept-process-output nil 0.1))
+      ('sit-for (sit-for 0.1))
+      ('sleep-for (sleep-for 0.1))
+      ('accept-p (accept-process-output a 0.1)))
+    (princ (format "%s %S\n" wait (reverse log)))))
+(let* ((log nil)
+       (p (make-process :name "p" :command '("sh" "-c" "echo one; exit 2") :noquery t :connection-type 'pipe
+                        :filter (lambda (pr s) (push (list 'out (string-trim s)) log) (delete-process pr))
+                        :sentinel (lambda (pr e) (push (list 'sen (string-trim e) (process-status pr)) log)))))
+  (busy 0.4)
+  (accept-process-output nil 0.1)
+  (princ (format "self-filter %S\n" (reverse log))))
+(let* ((log nil)
+       (q (make-process :name "q" :command '("sh" "-c" "exit 4") :noquery t :connection-type 'pipe
+                        :sentinel (lambda (pr e) (push (list 'q (string-trim e) (process-status pr)) log))))
+       (p (make-process :name "p" :command '("sh" "-c" "echo one; exit 2") :noquery t :connection-type 'pipe
+                        :filter (lambda (_ s) (push (list 'out (string-trim s)) log) (delete-process q))
+                        :sentinel (lambda (pr e) (push (list 'p (string-trim e) (process-status pr)) log)))))
+  (busy 0.4)
+  (accept-process-output nil 0.1)
+  (princ (format "other-filter %S\n" (reverse log))))
+(let* ((log nil)
+       (z (make-process :name "z" :command '("sh" "-c" "exit 3") :noquery t :connection-type 'pipe
+                        :sentinel (lambda (pr e) (push (list 'z e (process-status pr) (process-exit-status pr)) log))))
+       (x (make-process :name "x" :command '("true") :noquery t :connection-type 'pipe
+                        :sentinel (lambda (_ e) (push (list 'x e) log) (delete-process z)))))
+  (busy 0.4)
+  (accept-process-output nil 0.1)
+  (princ (format "older-deleted %S\n" (reverse log)))))"##,
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(dolist (how '(process buffer))
+  (let* ((log nil)
+         (buf (generate-new-buffer "pb"))
+         (p (make-process :name "p" :buffer buf :command '("sh" "-c" "exit 3") :noquery t :connection-type 'pipe
+                          :sentinel (lambda (pr e) (push (list (string-trim e) (process-status pr) (process-exit-status pr)) log)))))
+    (busy 0.4)
+    (if (eq how 'process) (delete-process p) (delete-process buf))
+    (princ (format "delete-%s %S\n" how (reverse log)))
+    (kill-buffer buf)))
+(let* ((log nil)
+       (p (make-process :name "p" :command '("true") :noquery t :connection-type 'pipe
+                        :sentinel (lambda (pp e) (push (list e (process-status pp)) log)))))
+  (busy 0.4)
+  (continue-process p)
+  (princ (format "after-continue %S %S\n" (process-status p) (reverse log)))
+  (accept-process-output nil 0.3)
+  (princ (format "later %S listed=%S %S\n" (process-status p) (and (memq p (process-list)) t) (reverse log)))
+  (delete-process p)
+  (princ (format "deleted %S %S\n" (process-status p) (reverse log))))
+(dolist (op '(interrupt-process kill-process stop-process continue-process quit-process))
+  (let* ((log nil)
+         (p (make-process :name "p" :command '("true") :noquery t :connection-type 'pipe
+                          :sentinel (lambda (pr e) (push (list e (process-status pr)) log)))))
+    (busy 0.4)
+    (princ (format "%s status=%S r=%S log=%S" op (process-status p)
+                   (condition-case err (processp (funcall op p)) (error err)) (reverse log)))
+    (accept-process-output nil 0.1)
+    (princ (format " later=%S %S\n" (process-status p) (reverse log)))
+    (delete-process p)))
+(let* ((log nil)
+       (b (generate-new-buffer "b"))
+       (q (make-process :name "q" :buffer b :command '("true") :noquery t :connection-type 'pipe
+                        :sentinel (lambda (_ e) (push (list 'q e) log))))
+       (pp (make-pipe-process :name "pp" :buffer b :noquery t
+                              :sentinel (lambda (_ e) (push (list 'pp e) log)))))
+  (busy 0.4)
+  (princ (format "kill-buffer %S\n" (condition-case err (kill-buffer b) (error err))))
+  (princ (format "log %S live=%S\n" (reverse log) (buffer-live-p b)))))"##,
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((log nil) p
+       (m (make-mutex)) (cv (make-condition-variable m)) (go nil)
+       (th (make-thread
+            (lambda ()
+              (setq p (make-process :name "tp" :command '("sh" "-c" "echo x") :noquery t :connection-type 'pipe
+                                    :filter (lambda (_ s) (push (list 'out s (thread-name (current-thread))) log))
+                                    :sentinel (lambda (_ e) (push (list 'sen e (thread-name (current-thread))) log))))
+              (with-mutex m (while (not go) (condition-wait cv)))
+              (push 'thread-done log))
+            "T")))
+  (while (not p) (sleep-for 0.05))
+  (busy 0.4)
+  (accept-process-output nil 0.3)
+  (princ (format "main-wait %S %S\n" (reverse log) (memq p (process-list))))
+  (with-mutex m (setq go t) (condition-notify cv t))
+  (thread-join th)
+  (princ (format "after %S thread=%S\n" (reverse log) (process-thread p)))))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn every_change_of_a_childs_status_is_notified() {
+    // handle_child_signal's stop (WUNTRACED) and continue (WCONTINUED) as
+    // new ticks for status_notify: "stopped (signal)\n" with the stop
+    // signal as the exit status, "run" for a continue, changes between two
+    // notifications gathered into one; continue-process's own `run' and
+    // status_notify, then the kernel's WCONTINUED as another change; an
+    // accept-process-output on a stopped child ending at once; another
+    // process's stop notified during a wait on the first.  Then
+    // status_message of a signal's end that dumped core, and a continue
+    // `signal-process' sent, which GNU learns from the child's SIGCHLD.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(dolist (ct '(pipe pty))
+  (let* ((log nil)
+         (p (make-process :name "s" :command '("sh" "-c" "echo a; sleep 5") :connection-type ct :noquery t
+                          :filter (lambda (_p s) (push (list 'out s) log))
+                          :sentinel (lambda (pp e) (push (list 'sen e (process-status pp) (process-exit-status pp)) log)))))
+    (accept-process-output p 1)
+    (signal-process p 'SIGSTOP) (busy 0.3)
+    (princ (format "%s stopped %S %S %S\n" ct (process-status p) (process-exit-status p) (reverse log)))
+    (accept-process-output nil 0.1)
+    (princ (format "%s notified %S\n" ct (reverse log)))
+    (continue-process p)
+    (princ (format "%s continue-process %S\n" ct (reverse log)))
+    (busy 0.3) (accept-process-output nil 0.1)
+    (princ (format "%s wcontinued %S\n" ct (reverse log)))
+    (signal-process p 'SIGSTOP) (busy 0.1) (signal-process p 'SIGCONT) (busy 0.3)
+    (accept-process-output nil 0.1)
+    (princ (format "%s coalesced %S\n" ct (reverse log)))
+    (signal-process p 'SIGSTOP) (busy 0.3)
+    (princ (format "%s apo-on-stopped %S %S\n" ct (accept-process-output p 1) (reverse log)))
+    (delete-process p)
+    (princ (format "%s deleted %S\n" ct (reverse log)))))
+(let* ((log nil)
+       (p (make-process :name "p" :command '("sleep" "5") :noquery t :sentinel (lambda (_p e) (push (list 'p e) log))))
+       (q (make-process :name "q" :command '("sleep" "5") :noquery t :sentinel (lambda (_p e) (push (list 'q e) log)))))
+  (signal-process q 'SIGSTOP) (busy 0.3)
+  (princ (format "other %S %S\n" (accept-process-output p 0.1) (reverse log)))
+  (signal-process q 'SIGKILL) (busy 0.3) (accept-process-output nil 0.1)
+  (princ (format "other-killed %S\n" (reverse log)))
+  (delete-process p)))"##,
+        r##"(progn
+(let* ((log nil) (dir (expand-file-name "cores"))
+       (p (progn (make-directory dir t)
+                 (make-process :name "c" :command (list "sh" "-c" (concat "ulimit -c unlimited; cd " dir " && exec sleep 5")) :noquery t :connection-type 'pipe
+                               :sentinel (lambda (pp e) (push (list e (process-status pp) (process-exit-status pp)) log))))))
+  (sleep-for 0.3)
+  (signal-process p 'SIGQUIT)
+  (while (process-live-p p) (accept-process-output p 0.1))
+  (accept-process-output nil 0.1)
+  (mapc #'delete-file (directory-files dir t "^core"))
+  (princ (format "core %S\n" log)))
+(let* ((log nil)
+       (p (make-process :name "n" :command '("sh" "-c" "ulimit -c 0; exec sleep 5") :noquery t :connection-type 'pipe
+                        :sentinel (lambda (pp e) (push (list e (process-status pp) (process-exit-status pp)) log)))))
+  (sleep-for 0.3)
+  (signal-process p 'SIGQUIT)
+  (while (process-live-p p) (accept-process-output p 0.1))
+  (accept-process-output nil 0.1)
+  (princ (format "nocore %S\n" log))))"##,
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((log nil)
+       (p (make-process :name "s" :command '("sleep" "5") :connection-type 'pipe :noquery t
+                        :sentinel (lambda (_ e) (push e log)))))
+  (signal-process p 'SIGSTOP) (busy 0.3) (accept-process-output nil 0.1)
+  (princ (format "stopped %S %S\n" (process-status p) log))
+  (signal-process p 'SIGCONT)
+  (busy 0.3) (accept-process-output nil 0.1)
+  (princ (format "cont-later %S %S\n" (process-status p) log))
+  (delete-process p)))"##,
     ] {
         assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
     }

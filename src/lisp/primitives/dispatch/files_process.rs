@@ -2998,8 +2998,11 @@ define_dispatch!(
                 if interp.process_datagram_address(process_id)?.is_some() {
                     return Ok(process);
                 }
-                // Fprocess_send_eof: a coding that requires flushing is
-                // flushed first.
+                // "Make sure the process is really alive", then a coding
+                // that requires flushing is flushed.
+                interp.refresh_process_id(process_id)?;
+                interp.update_process_status(process_id);
+                interp.process_send_check(process_id)?;
                 crate::lisp::primitives::processes::flush_process_encoder(interp, process_id, env)?;
                 if interp.process_pty_in(process_id) {
                     // `if (p->pty_in) send_process (proc, "\004", 1, Qnil)':
@@ -3468,6 +3471,12 @@ define_dispatch!(
                 // kill_buffer_processes: the buffer's connections are
                 // deleted and its subprocesses hung up.
                 for (process_id, connection) in interp.buffer_processes(id) {
+                    // FOR_EACH_PROCESS's test as it reaches the process: a
+                    // sentinel run by an earlier deletion may have deleted
+                    // or deactivated it.
+                    if !interp.buffer_process_still_killable(process_id, id) {
+                        continue;
+                    }
                     if connection {
                         delete_process_notifying(interp, process_id, env)?;
                     } else {
@@ -3646,7 +3655,7 @@ pub(crate) fn get_process(
 /// process.c:process_send_signal with NOMSG false: a `real' process with
 /// its channel open; with CURRENT_GROUP non-nil and a pty input, the pty's
 /// character for SIGNAL (SIGNALS_VIA_CHARACTERS) sent down it, else the
-/// signal to the process group; SIGCONT's `run' then reaches the sentinel
+/// signal to the process group; SIGCONT's `run' then reaches the sentinels
 /// through status_notify.
 #[cfg(unix)]
 fn process_send_signal(
@@ -3667,9 +3676,17 @@ fn process_send_signal(
     {
         return send_process(interp, env, process_id, &[character]);
     }
-    if interp.signal_process_group(process_id, signal, &current_group)? && signal == libc::SIGCONT {
-        crate::lisp::primitives::processes::run_process_sentinel(interp, process_id, "run", env)?;
+    let Some(target) = interp.process_signal_target(process_id, &current_group)? else {
+        return Ok(());
+    };
+    // SIGCONT: the status `run' and a new tick, then status_notify (NULL,
+    // NULL), which reports every process whose status changed, before the
+    // signal goes while the child is alive.
+    if signal == libc::SIGCONT {
+        interp.record_process_continue(process_id);
+        crate::lisp::primitives::processes::status_notify(interp, env, None)?;
     }
+    interp.send_process_signal(process_id, &target, signal);
     Ok(())
 }
 

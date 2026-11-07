@@ -176,6 +176,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
+        "process_update_tick",
+        "process.c's static update_tick, a C integer that is 0 in the new process, as process_tick is",
+    ),
+    (
         "print_unreadable_callback_buffer",
         "print.c's print--unreadable-callback-buffer, specbound by print_prepare for the running print only",
     ),

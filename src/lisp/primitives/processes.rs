@@ -254,6 +254,17 @@ pub(crate) fn child_signal_init(interp: &Interpreter) -> Result<(), LispError> {
             emacs_perror("fcntl", &std::io::Error::last_os_error());
         }
     }
+    // handle_child_signal: every watched child asked waitpid for its
+    // change of status, before the pipe's write wakes a wait.
+    // SAFETY: the action calls waitpid and atomics alone, which are
+    // async-signal-safe, and keeps errno.
+    match unsafe {
+        signal_hook::low_level::register(libc::SIGCHLD, crate::lisp::eval::handle_child_signal)
+    } {
+        Ok(_) => crate::lisp::eval::CHILD_SIGNAL_HANDLED
+            .store(true, std::sync::atomic::Ordering::Release),
+        Err(error) => emacs_perror("sigaction", &error),
+    }
     // signal-hook's pipe handler is handle_child_signal's
     // child_signal_notify: one non-blocking write, its errors ignored.
     match signal_hook::low_level::pipe::register(libc::SIGCHLD, writer) {
@@ -1688,7 +1699,10 @@ pub(crate) fn spawn_persistent_process(
     drop(stderr_writer);
     close_stderr_process_output(interp, stderr_process_id);
     #[cfg(unix)]
-    let child = SpawnedChild::new(child.id(), stdin_write, stdout_read, None);
+    let mut child = SpawnedChild::new(child.id(), stdin_write, stdout_read, None);
+    // create_process's p->alive = 1, SIGCHLD held back until then.
+    #[cfg(unix)]
+    child.watch();
     // Put the child under RunningProcess's terminate-and-reap Drop guard
     // before any fallible post-spawn setup.  A failed fcntl must not leak a
     // subprocess whose runtime was never installed in the interpreter.
@@ -1700,6 +1714,7 @@ pub(crate) fn spawn_persistent_process(
         pty_slave_name,
         stdout_at_end: false,
         stderr_at_end: false,
+        child_ended: false,
     };
     finish_spawned_runtime(runtime)
 }
@@ -2273,7 +2288,10 @@ fn vfork_pty_process(
     drop((stdin_read, stdout_write));
     #[cfg(unix)]
     await_exec_monitor(exec_monitor);
-    let child = SpawnedChild::new(pid as u32, stdin_write, stdout_read, None);
+    let mut child = SpawnedChild::new(pid as u32, stdin_write, stdout_read, None);
+    // create_process's p->alive = 1, SIGCHLD held back until then.
+    #[cfg(unix)]
+    child.watch();
     Ok(Some(RunningProcess {
         child,
         terminate_on_drop: true,
@@ -2282,6 +2300,7 @@ fn vfork_pty_process(
         pty_slave_name: Some(pty_name.to_string_lossy().into_owned()),
         stdout_at_end: false,
         stderr_at_end: false,
+        child_ended: false,
     }))
 }
 
@@ -2437,7 +2456,10 @@ fn posix_spawn_process(
     drop((input_read, output_write));
     #[cfg(unix)]
     await_exec_monitor(exec_monitor);
-    let child = SpawnedChild::new(pid as u32, Some(input_write), Some(output_read), None);
+    let mut child = SpawnedChild::new(pid as u32, Some(input_write), Some(output_read), None);
+    // create_process's p->alive = 1, SIGCHLD held back until then.
+    #[cfg(unix)]
+    child.watch();
     Ok(Some(RunningProcess {
         child,
         terminate_on_drop: true,
@@ -2446,6 +2468,7 @@ fn posix_spawn_process(
         pty_slave_name: None,
         stdout_at_end: false,
         stderr_at_end: false,
+        child_ended: false,
     }))
 }
 
@@ -3661,40 +3684,92 @@ fn pump_external_process_output_for(
     env: &mut Env,
     only_process_id: Option<u64>,
 ) -> Result<bool, LispError> {
+    // handle_child_signal records every child's change as its SIGCHLD
+    // comes, whatever thread the process is locked to, an ended child's
+    // channel leaving the wait set before this pass reads it.
+    for process_id in interp.child_process_ids() {
+        interp.refresh_process_id(process_id)?;
+    }
     let ids = interp.live_external_process_ids();
     let mut progressed = false;
     for process_id in ids {
         if only_process_id.is_some_and(|id| process_id != id) {
             // JUST-THIS-ONE takes the other descriptors out of the wait
-            // set, not SIGCHLD: process.c status_notify still reads "any
-            // output that remains" from a process whose status changed and
-            // then runs its sentinel, whether or not it is wait_proc.  A
-            // process that stays alive keeps its output unread.
-            interp.refresh_process_id(process_id)?;
-            if interp.process_exit_awaits_notification(process_id) {
-                let (stdout, stderr) = interp.poll_process_output(process_id)?;
-                progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
-            }
+            // set, not SIGCHLD; status_notify reads what remains of a
+            // changed process's output, once no channel has input.
             continue;
         }
         if interp.process_output_paused(process_id) {
-            // Status changes still arrive while output is held.  GNU removes
-            // only the read descriptor, not SIGCHLD/status observation.
-            interp.refresh_process_id(process_id)?;
+            // A stopped process's channel leaves the wait set; its status
+            // changes still come by SIGCHLD.
+            continue;
+        }
+        // handle_child_signal's delete_read_fd: an ended child's output
+        // waits for status_notify, its `:stderr' pipe still read.
+        if interp.process_read_fd_deleted(process_id) {
+            let stderr = interp.poll_process_stderr(process_id)?;
+            progressed |= deliver_process_streams(interp, process_id, &[], &stderr, env)?;
             continue;
         }
         let (stdout, stderr) = interp.poll_process_output(process_id)?;
         progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
     }
-    // status_notify walks every process, so a JUST-THIS-ONE wait notifies
-    // the others' exits as well, once no channel has input left.
+    // Changes that came while this pass read; status_notify walks every
+    // process, so a wait notifies the others' changes as well, once no
+    // channel has input left.
+    for process_id in interp.child_process_ids() {
+        interp.refresh_process_id(process_id)?;
+    }
     if interp.any_process_exit_awaits_notification() && !interp.process_input_available() {
-        for (process_id, event) in interp.take_pending_subprocess_exit_events_for(None) {
-            run_process_sentinel(interp, process_id, &event, env)?;
-            progressed = true;
-        }
+        progressed |= status_notify(interp, env, None)?;
     }
     Ok(progressed)
+}
+
+/// process.c:status_notify (DELETING, NULL): each process of
+/// Vprocess_alist, newest first, whose status changed since status_notify
+/// last looked at it (p->tick != p->update_tick, asked as the walk reaches
+/// it, the changes handle_child_signal recorded taken first): unless its
+/// filter is t, it connects or listens, it is a stopped connection, it
+/// has no input channel or it is DELETING, its output read until a read
+/// finds nothing; status_message of its status then, a terminal status
+/// removing it (`delete-exited-processes') or deactivating it; and its
+/// sentinel.  True when any sentinel ran.
+pub(crate) fn status_notify(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    deleting: Option<u64>,
+) -> Result<bool, LispError> {
+    // handle_child_signal records every child's change as its SIGCHLD
+    // comes, whatever thread the process is locked to.
+    for process_id in interp.child_process_ids() {
+        interp.refresh_process_id(process_id)?;
+    }
+    interp.begin_status_notify();
+    let mut ran = false;
+    for process_id in interp.status_notify_order() {
+        if interp.child_process_ids().contains(&process_id) {
+            interp.refresh_process_id(process_id)?;
+        }
+        if !interp.take_process_status_change(process_id) {
+            continue;
+        }
+        // "If process is still active, read any output that remains."
+        while interp.status_notify_reads_output(process_id, deleting) {
+            let (stdout, stderr) = interp.poll_process_output(process_id)?;
+            let found = !stdout.is_empty() || !stderr.is_empty();
+            deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
+            if !found {
+                break;
+            }
+        }
+        let Some(message) = interp.status_notify_message(process_id) else {
+            continue;
+        };
+        run_process_sentinel(interp, process_id, &message, env)?;
+        ran = true;
+    }
+    Ok(ran)
 }
 
 // ── Network processes (GNU process.c make-network-process) ──
@@ -3763,11 +3838,15 @@ pub(crate) fn delete_process_notifying(
     process_id: u64,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let (event, notify_sentinel) = interp.delete_process(process_id)?;
-    if !notify_sentinel {
-        return Ok(());
-    }
-    match run_process_sentinel(interp, process_id, &event, env).map_err(LispError::into_kind) {
+    // Fdelete_process: status_notify (P, NULL) of the change it made, then
+    // remove_process.
+    let notified = if interp.delete_process(process_id)? {
+        status_notify(interp, env, Some(process_id)).map(|_| ())
+    } else {
+        Ok(())
+    };
+    interp.remove_process(process_id);
+    match notified.map_err(LispError::into_kind) {
         Ok(()) => Ok(()),
         Err(error @ LispErrorKind::Throw(_, _)) => Err(LispError::from(error)),
         Err(error) => {
@@ -5428,19 +5507,25 @@ pub(crate) fn wait_pumping_processes(
             crate::lisp::primitives::atimer::process_pending_signals_in_wait(interp, env)?;
         }
         let pass_start = std::time::Instant::now();
+        // process.c after its select: the channels it found ready are read
+        // (a connect's end handled among them) before the loop's top looks
+        // again, so what woke the wait is read even when WAIT_PROC has
+        // ended meanwhile.
+        let mut woke_progress = false;
+        if woke_early {
+            woke_progress |= pump_external_process_output_for(interp, env, only_process_id)?;
+            woke_progress |= pump_connection_processes_for(interp, env, only_process_id, true)?;
+        }
         if !std::mem::take(&mut first_pass)
             && deadline.is_some_and(|deadline| pass_start >= deadline)
         {
             // A select that waited out the time breaks the loop then and
             // there; one that returned for a descriptor at the deadline has
-            // what it saw handled (a connect's end among it), and the next
-            // iteration's asynchronous checks run before it sees the time
-            // is up.  The streams are read once more either way.
-            let mut final_progress = false;
+            // what it saw handled (read above), and the next iteration's
+            // asynchronous checks run before it sees the time is up.  The
+            // streams are read once more either way.
+            let mut final_progress = woke_progress;
             if woke_early {
-                final_progress |= pump_external_process_output_for(interp, env, only_process_id)?;
-                final_progress |=
-                    pump_connection_processes_for(interp, env, only_process_id, true)?;
                 final_progress |= check_async_connections(interp, env, target_process_id)?.0;
             }
             final_progress |= pump_external_process_output_for(interp, env, only_process_id)?;
@@ -5452,7 +5537,7 @@ pub(crate) fn wait_pumping_processes(
             || last_progressed
             || async_check_at.is_some_and(|at| pass_start >= at)
             || (run_timers && timer_check_at.is_some_and(|at| pass_start >= at));
-        let mut progressed = false;
+        let mut progressed = woke_progress;
         if iteration_top {
             let (checked, retry_for_async) =
                 check_async_connections(interp, env, target_process_id)?;
@@ -5474,21 +5559,30 @@ pub(crate) fn wait_pumping_processes(
             }
             // handle_child_signal has reaped every child whose status
             // changed, taking a terminated one's channel out of the mask.
-            for other_id in interp.live_external_process_ids() {
+            for other_id in interp.child_process_ids() {
                 interp.refresh_process_id(other_id)?;
             }
             if interp.any_process_exit_awaits_notification() && !interp.process_input_available() {
-                for (notified_id, event) in interp.take_pending_subprocess_exit_events_for(None) {
-                    // status_notify reads what remains before the sentinel.
-                    let (stdout, stderr) = interp.poll_process_output(notified_id)?;
-                    deliver_process_streams(interp, notified_id, &stdout, &stderr, env)?;
-                    run_process_sentinel(interp, notified_id, &event, env)?;
-                    delivered = true;
-                }
+                delivered |= status_notify(interp, env, None)?;
             }
-            let (stdout, stderr) = interp.poll_process_output(process_id)?;
-            delivered |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
-            break;
+            // `if (wait_proc->raw_status_new) update_status (wait_proc)'
+            // before its test: a continue status_notify reported, or one
+            // that came since, leaves WAIT_PROC running, and the wait goes
+            // on.
+            if interp.process_child_ended(process_id)? {
+                // "If data can be read from the process, do so until
+                // exhausted."
+                loop {
+                    let (stdout, stderr) = interp.poll_process_output(process_id)?;
+                    let found = !stdout.is_empty() || !stderr.is_empty();
+                    delivered |=
+                        deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
+                    if !found {
+                        break;
+                    }
+                }
+                break;
+            }
         }
         progressed |= pump_external_process_output_for(interp, env, only_process_id)?;
         progressed |= pump_connection_processes_for(interp, env, only_process_id, true)?;

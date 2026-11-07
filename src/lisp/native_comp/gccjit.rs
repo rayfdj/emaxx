@@ -1013,6 +1013,8 @@ impl Context {
 
     #[cfg(test)]
     pub(crate) fn compile(&self) -> Result<Compiled, String> {
+        #[cfg(unix)]
+        let _child_signal = crate::lisp::eval::ChildSignalGuard::new();
         // SAFETY: The context is complete and remains alive during compile.
         let raw = unsafe { (self.api.compile)(self.raw) };
         if raw.is_null() {
@@ -1025,9 +1027,18 @@ impl Context {
     }
 
     pub(crate) fn compile_to_file(&self, kind: OutputKind, path: &CStr) -> Result<(), String> {
-        // SAFETY: libgccjit copies/consumes PATH during this call; the context
-        // remains live for the complete compilation.
-        unsafe { (self.api.compile_to_file)(self.raw, kind as c_int, path.as_ptr()) };
+        {
+            // GCC's driver, which libgccjit runs in this process, sets
+            // SIGCHLD to SIG_DFL, as it does in GNU's Emacs, whose comp.el
+            // compiles in a child Emacs for that reason unless this is a
+            // batch or async compilation, and leaves it so; only the test
+            // binary, whose interpreters share one process, puts it back.
+            #[cfg(all(unix, test))]
+            let _child_signal = crate::lisp::eval::ChildSignalGuard::new();
+            // SAFETY: libgccjit copies/consumes PATH during this call; the
+            // context remains live for the complete compilation.
+            unsafe { (self.api.compile_to_file)(self.raw, kind as c_int, path.as_ptr()) };
+        }
         self.check_error()
     }
 

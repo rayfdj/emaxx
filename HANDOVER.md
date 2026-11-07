@@ -16107,6 +16107,127 @@ setup_process_coding_systems's check now refuses). A 13-form
   failing in GNU's own `batch_exit_terminates_owned_children_like_gnu',
   which then passed ten runs alone) and clippy with `--all-targets
   --all-features -D warnings' pass.
+- **Round 336: GNU's ticks, handle_child_signal's waitpid at the signal,
+  and status_notify's walk.** GNU's handle_child_signal records a stop
+  (WUNTRACED) and a continue (WCONTINUED) as it records an exit, a new
+  tick, and status_notify reports each to the sentinel with
+  status_message: "stopped (signal)\n" (strsignal of WSTOPSIG, its first
+  letter lowercased) for a stop, "run" for a continue; changes between
+  two notifications gather into one, of the status then. Emaxx recorded
+  the stop and the continue in the status alone, so no sentinel ran for
+  either, and `process-exit-status' of a stopped child was 0, not its
+  stop signal. Now every process has GNU's p->tick and p->update_tick,
+  process_tick incremented where process.c increments it
+  (handle_child_signal's change, a childless pty's EIO, a pipe process's
+  end, a write's EPIPE, `delete-process', process_send_signal's
+  SIGCONT), and a change is pending while the two differ; the notified
+  flag and the pending stop or continue it stood beside are gone, and a
+  process leaves Vprocess_alist where GNU's does (status_notify's
+  terminal status with `delete-exited-processes', `delete-process', a
+  connection's end). SIGCHLD's action is handle_child_signal: each
+  asynchronous child, watched from its spawn on (create_process's
+  p->alive, polled once at once for a change the blocked mask would have
+  held back), asked waitpid with WNOHANG | WUNTRACED | WCONTINUED at the
+  signal itself, its newest status kept until the interpreter takes it
+  and an end reaping it, through slots the handler walks without a lock;
+  a stop the kernel no longer reports once a SIGCONT followed is seen as
+  GNU sees it, its sentinel getting "stopped (signal)\n" and then "run",
+  where Emaxx asked waitpid at the next query and saw the continue alone
+  (whether the continue is seen before the next form depends, in GNU as
+  in Emaxx, on how soon the child runs). status_notify is process.c's
+  walk: the changes handle_child_signal recorded taken first, then each
+  process, newest first, checked when the walk reaches it, so a sentinel
+  that deletes or continues another process cancels that one's report;
+  unless its filter is t, it connects or listens, it is a stopped
+  connection, it has no input channel or it is being deleted, its output
+  is read until a read finds nothing, each read of p->readmax its own
+  filter call; status_message of its status then, a terminal status
+  removing or deactivating it; then its sentinel. `delete-process'
+  clears p->raw_status_new, makes the status (signal 9) of a child whose
+  channel is open (its end not yet reported counts as open) and runs
+  status_notify (P, NULL), which reports the others' changes as well,
+  then remove_process; a childless pty that failed and was continued
+  reports "killed\n". process_send_signal's SIGCONT makes the status
+  `run' with a new tick and runs status_notify before the signal goes,
+  and only while the child is alive; a JUST-THIS-ONE wait reads no other
+  process's output and a stopped child's channel stays in the input
+  mask, so another process's stop is not notified during it.
+  status_message of a signal's end that dumped core is "SIGNAL (core
+  dumped)\n", WCOREDUMP kept with the status. The round 335 parity probe
+  whose JUST-THIS-ONE wait raced its child's exit (the Rust gate of
+  round 335's head) keeps the child alive after its output, and the unit
+  test that holds SIGCHLD at its default for a call-process asks the
+  children as a SIGCHLD would once it puts the action back. A review
+  found five P2 and two P3 findings in the round's first form (output
+  read for a filter of t, one read where GNU reads until none, the
+  others' changes unreported by continue-process and delete-process,
+  waitpid asked late, a JUST-THIS-ONE wait reading a stopped process,
+  reports collected before any sentinel ran, a continued childless pty's
+  "killed\n" lost) and an ordering of SIGCONT's status and signal; all
+  are fixed, and a command-line comparison runs their probes against
+  GNU's. A second review, of the round's second form, found two P1, five
+  P2 and one P3: `kill-buffer' said "Process q is not active" and kept
+  the buffer when the status_notify of a pipe process it deleted had
+  reported the buffer's ended child before its SIGHUP; a process locked
+  to another thread was left out of the walk, its end unreported for
+  good once another walk had raised update_tick; every child's end was
+  taken before the walk, so a sentinel that deleted an older ended child
+  left it its exit where GNU's cleared raw_status_new makes it
+  "killed\n"; an ended child's output was read by the wait's own pass in
+  creation order, where handle_child_signal's delete_read_fd leaves it
+  to status_notify, newest first, just before its sentinel;
+  `continue-process' of an ended child kept its end, which GNU's
+  process_send_signal drops for good; p->infd was modelled as the child
+  still being held, so a signal to an ended child not yet reported said
+  "not active" and a filter that deleted its own process gave its
+  sentinel the exit, not "killed\n" twice; `get-buffer-process' asked
+  every child; and an EPIPE closed the output channel alone. Outside the
+  diff it found `process-send-eof' without update_status, a removed
+  process's thread cleared at its thread's death and a wakeup two
+  pollers of one child's slot could lose. Now update_status decodes
+  p->raw_status where process.c calls it (`process-status',
+  `process-exit-status', send_process, `process-send-eof', the wait's
+  WAIT_PROC check, the walk's visit) and nowhere else; p->infd stays
+  open until status_notify or `delete-process' deactivates the process,
+  an ended child's channel leaving the wait set; every wait records each
+  child's change whatever thread its process is locked to, and
+  status_notify walks every process, update_tick one count for all;
+  kill_buffer_processes checks each process as its walk reaches it; an
+  EPIPE deactivates the process, (exit 256) its status; a thread's death
+  walks Vprocess_alist alone, so a process already removed keeps its
+  dead thread as `process-thread'; and a poller that finds a slot busy
+  can no longer lose its wakeup to the one leaving it. GCC's driver,
+  which libgccjit runs in the compiling process, sets SIGCHLD to
+  SIG_DFL, in GNU's Emacs as in Emaxx, and GNU's comp.el compiles in a
+  child Emacs for that reason unless the compilation is a batch or an
+  async one; a process that compiled in place reports no later child's
+  end, in both, and only the test binary, whose interpreters share one
+  process, puts the action back after a compile. A wait that woke for
+  input reads what woke it before its next checks, as process.c reads
+  the channels its select found ready before the loop's top looks at
+  WAIT_PROC again (a gate under load saw a child's end first and left
+  its `:stderr' pipe's output unread); and the unit test that waits on a
+  child and then once more drains its `:stderr' pipe process, since a
+  wait on an ended WAIT_PROC reads it alone, in GNU as here. A
+  sentinel's error, which GNU's exec_sentinel catches and in batch
+  reports before killing Emacs, and the order in which one select pass
+  handles a connect and an accept are recorded. Local validation: the
+  grouped gate's 3,501 library tests (a first gate of the round's
+  second form hung in the a-l group, an earlier test's in-process
+  compile having left the test binary's SIGCHLD at its default; a second
+  stopped at the inventory of the interpreter's fields and at clippy's
+  `while_immutable_condition'; a third, run beside a release build,
+  failed `process_send_eof_keeps_linked_stderr_separate_from_stdout',
+  which the wait's order and the test's drained pipe answer; the fourth
+  passed), the integration targets (cli_parity's 76 included; cli's 30
+  in the foreground, its `batch_exit_terminates_owned_children_like_gnu'
+  failing in GNU's own run under nohup, whose ignored SIGHUP every child
+  inherits, Emaxx's as GNU's, which is round 335's failure of it too)
+  and clippy with `--all-targets --all-features -D warnings' pass; a
+  command-line comparison of the two reviews' probes and eleven earlier
+  process suites gives GNU's results, apart from timing races GNU's own
+  runs show, the GLib wakeup eventfd GNU holds and the
+  connect-and-accept order recorded.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -18873,7 +18994,47 @@ ert-tests as a whole 26,307 ms against 27,211.
   takes 0.77 to 0.90 s against GNU's 0.78 to 1.03, so the change is not
   reproduced here.
 
+**On `790cfc9`** (round 335): the frozen run (run 42303566681) passed at
+  its first attempt, 7,928 of 7,928 outcomes matching, on a runner like
+  round 334's (GNU's own setup 64.1 s against 65.7 s). Setup 78.1 s
+  against 64.1 s (1.217), test bodies 298.8 s against 263.1 s (1.136),
+  in all 1.128, with a per-file setup median of 116 ms against 98. The
+  widest body gaps are ert-tests (45,718 ms against 38,189), tramp-tests
+  (22,434 against 19,123), comp-tests (17,327 against 14,568),
+  eglot-tests (33,472 against 31,766), semantic-utest-ia (4,102 against
+  2,561) and mule-tests (3,194 against 2,017);
+  `ert-test-run-tests-batch-expensive' runs in 1.187 of GNU's time (44.6
+  s against 37.6 s). The full Rust gate (run 42303562946) failed in its
+  integration stage, every library group, the binaries and cli passing:
+  cli_parity's `process_spawn_waits_and_ends_are_gnu_s', whose
+  JUST-THIS-ONE probe waited on a child that printed and then exited,
+  its sentinel run or not according to whether the exit came before the
+  wait's pass that waits for nothing; Emaxx's runner missed it where
+  GNU's caught it, a race the probe itself made (GNU's wait reads
+  WAIT_PROC's output and then what else is ready without waiting, as
+  Emaxx's does). Round 336 keeps the child alive after its output, and
+  the probe answers the same in both on every run.
+
 **Findings recorded, not fixed:**
+- **A sentinel's error (round 336).** GNU's exec_sentinel runs a
+  sentinel under internal_condition_case_1, its handlers `error' unless
+  `debug-on-error', and exec_sentinel_error_handler passes the error to
+  cmd_error_internal with "error in process sentinel: ", which in batch
+  prints it with print_error_message and kills Emacs with status 255
+  (interactively, the echo area and `process-error-pause-time''s pause),
+  the walk of status_notify going on; Emaxx gives a sentinel's error
+  that status_notify ran to the code that waited, where `condition-case'
+  catches it and the walk stops, and `delete-process' messages it as
+  "error in process sentinel: %S" and carries on. To be made:
+  exec_sentinel's handler and read_process_output's (a filter's error)
+  as GNU's.
+- **A connect and an accept in one select pass (round 336's review).**
+  wait_reading_process_output handles the channels a select found ready
+  in descriptor order, so a `:nowait' client's connect that completes in
+  the pass that accepts it on a local server reports the server's "open
+  from" before the client's "open"; Emaxx checks the pending connects
+  before the servers' accepts, so the client's sentinel runs first. To
+  be made: the select pass's channels in descriptor order.
 - **The macOS spawn's copies of descriptors (round 335).** GNU's Darwin
   build forks for a pty and passes the tty it opened (forkin and
   forkout) and the `:stderr' pipe process's SUBPROCESS_STDOUT (forkerr)
@@ -18887,15 +19048,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   takes the vfork path and is not affected. To be made: the macOS fork
   with the child's descriptors given as they are, as emacs_spawn's fork
   does.
-- **A stopped child's sentinel (round 335).** GNU's handle_child_signal
-  records a child's stop (WUNTRACED) as a status change, and
-  status_notify runs the sentinel with status_message's "stopped
-  (signal)\n" (and so for a continue); Emaxx records the stop in the
-  status (`process-status' is `stop', and an `accept-process-output' on
-  the stopped child returns at once, as GNU's does) but queues no
-  notification, so no sentinel runs for a stop or a continue. To be
-  made: status_notify's p->tick / p->update_tick for every status
-  change, not only a terminal one.
 - **gnutls.c's verification and logging (round 334).**
   gnutls_verify_boot calls gnutls_certificate_verify_peers2 and then
   gnutls_x509_crt_check_hostname, keeping a host mismatch in

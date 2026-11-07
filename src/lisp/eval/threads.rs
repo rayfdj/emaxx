@@ -47,6 +47,7 @@ fn read_chunk<R: std::io::Read>(stream: &mut R, limit: usize) -> (Vec<u8>, bool)
     })
 }
 
+/// update_status of a child that ended: its status.
 fn record_child_exit(process: &mut ProcessState, status: std::process::ExitStatus) {
     #[cfg(unix)]
     {
@@ -56,12 +57,72 @@ fn record_child_exit(process: &mut ProcessState, status: std::process::ExitStatu
             process.status = ProcessStatus::Signal;
             process.exit_code = Some(signal);
             process.exit_signal = Some(signal);
+            process.core_dumped = status.core_dumped();
             return;
         }
     }
+    process.core_dumped = false;
     process.status = ProcessStatus::Exit;
     process.exit_code = status.code();
     process.exit_signal = None;
+}
+
+/// update_status of a stopped child: its status (stop SIGNAL).
+fn record_child_stop(process: &mut ProcessState, signal: i32) {
+    process.status = ProcessStatus::Stop;
+    process.exit_code = Some(signal);
+    process.exit_signal = Some(signal);
+}
+
+/// update_status of a continued child (WCONTINUED), and
+/// process_send_signal's SIGCONT: `run' again.
+fn record_child_continue(process: &mut ProcessState) {
+    process.status = ProcessStatus::Run;
+    process.exit_code = None;
+    process.exit_signal = None;
+}
+
+/// process.c:update_status: the change handle_child_signal recorded, if
+/// one is pending (p->raw_status_new), made the process's status.
+fn update_status(process: &mut ProcessState) {
+    match process.pending_status.take() {
+        Some(ChildStatusEvent::Stopped(signal)) => record_child_stop(process, signal),
+        Some(ChildStatusEvent::Continued) => record_child_continue(process),
+        Some(ChildStatusEvent::Exited(status)) => record_child_exit(process, status),
+        None => {}
+    }
+}
+
+/// p->infd >= 0: the process's input channel is open, which only
+/// deactivate_process closes (a child's end takes it out of the select
+/// mask alone, delete_read_fd).
+fn infd_open(process: &ProcessState) -> bool {
+    process
+        .runtime
+        .as_ref()
+        .is_some_and(|runtime| runtime.child.stdout.is_some() || runtime.pty_output.is_some())
+        || process.module_pipe.is_some()
+        || process.pipe_input.is_some()
+        || process.network.is_some()
+        || process.serial.is_some()
+}
+
+/// Whether the child of a process has ended (handle_child_signal's
+/// p->alive = 0 and delete_read_fd of its output): its output is read
+/// by status_notify alone from then on.
+fn child_ended(process: &ProcessState) -> bool {
+    process
+        .runtime
+        .as_ref()
+        .is_some_and(|runtime| runtime.child_ended)
+}
+
+/// What process_send_signal signals: a childless pty's process, which is
+/// never alive, or the process group GID.
+#[cfg(unix)]
+pub(crate) enum SignalTarget {
+    Childless,
+    Group(i32),
 }
 
 /// What a pass of the thread scheduler services besides the threads.
@@ -74,50 +135,30 @@ enum WaitEvents {
     All,
 }
 
-enum ChildStatusEvent {
-    Stopped,
+pub(super) enum ChildStatusEvent {
+    /// WIFSTOPPED, with WSTOPSIG.
+    Stopped(i32),
     Continued,
     Exited(std::process::ExitStatus),
 }
 
+/// The child's change of status that handle_child_signal recorded (or,
+/// with no handler, waitpid finds now): a stop, a continue or its end.
 #[cfg(unix)]
 fn poll_child_status(child: &mut SpawnedChild) -> std::io::Result<Option<ChildStatusEvent>> {
     use std::os::unix::process::ExitStatusExt;
-
-    let mut status = 0;
-    loop {
-        // Unlike `Child::try_wait', GNU observes job-control transitions as
-        // well as terminal exits.  WUNTRACED/WCONTINUED preserves that
-        // process.c contract while remaining nonblocking.
-        // SAFETY: CHILD owns this live pid and STATUS is initialized,
-        // writable caller storage for waitpid's result.
-        let result = unsafe {
-            libc::waitpid(
-                child.id() as libc::pid_t,
-                &mut status,
-                libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED,
-            )
-        };
-        if result == 0 {
-            return Ok(None);
-        }
-        if result < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        if libc::WIFSTOPPED(status) {
-            return Ok(Some(ChildStatusEvent::Stopped));
-        }
-        if libc::WIFCONTINUED(status) {
-            return Ok(Some(ChildStatusEvent::Continued));
-        }
-        let status = std::process::ExitStatus::from_raw(status);
-        child.record_exit(status);
-        return Ok(Some(ChildStatusEvent::Exited(status)));
+    let Some(status) = child.status_change()? else {
+        return Ok(None);
+    };
+    if libc::WIFSTOPPED(status) {
+        return Ok(Some(ChildStatusEvent::Stopped(libc::WSTOPSIG(status))));
     }
+    if libc::WIFCONTINUED(status) {
+        return Ok(Some(ChildStatusEvent::Continued));
+    }
+    Ok(Some(ChildStatusEvent::Exited(
+        std::process::ExitStatus::from_raw(status),
+    )))
 }
 
 #[cfg(not(unix))]
@@ -125,6 +166,17 @@ fn poll_child_status(child: &mut SpawnedChild) -> std::io::Result<Option<ChildSt
     child
         .try_wait()
         .map(|status| status.map(ChildStatusEvent::Exited))
+}
+
+/// status_message of (signal SIG CORE): strsignal's text, its first letter
+/// lowercased, and " (core dumped)\n" when CORE, else "\n".
+fn signal_status_message(signal: i32, core_dumped: bool) -> String {
+    let message = signal_event_message(signal);
+    if core_dumped {
+        format!("{} (core dumped)\n", message.trim_end_matches('\n'))
+    } else {
+        message
+    }
 }
 
 #[cfg(unix)]
@@ -373,13 +425,11 @@ impl Interpreter {
 
     /// GNU's `Vprocess_alist' membership: a process stays visible to
     /// `process-list', `get-process', and `get-buffer-process' after it
-    /// exits until status_notify processes the change — process.c:7853
+    /// exits until status_notify processes the change -- process.c:7853
     /// removes it there (`delete-exited-processes', default t) right
-    /// before the sentinel runs.  `sentinel_notified' marks exactly that
-    /// point, so an exited-but-unnotified process is still listed, and a
-    /// filter or hook running on its final output can still find it.
+    /// before the sentinel runs -- or `delete-process' removes it.
     fn in_process_alist(process: &ProcessState) -> bool {
-        process.in_alist && (process.status.is_live() || !process.sentinel_notified)
+        process.in_alist
     }
 
     /// process.c:remove_process: the process leaves Vprocess_alist and its
@@ -391,18 +441,28 @@ impl Interpreter {
     pub(crate) fn remove_process(&mut self, record_id: u64) {
         if let Some(process) = self.find_process_state_mut(record_id) {
             process.in_alist = false;
-            process.module_pipe = None;
-            process.pipe_input = None;
-            process.network = None;
-            process.null_output = None;
-            process.dns_request = None;
-            if let Some(runtime) = process.runtime.as_mut() {
-                runtime.child.stdin = None;
-                runtime.child.stdout = None;
-                runtime.child.stderr = None;
-                runtime.pty_input = None;
-                runtime.pty_output = None;
-            }
+            Self::deactivate_process_channels(process);
+        }
+    }
+
+    /// deactivate_process's closing of every channel the process holds (a
+    /// child that has ended goes with them).
+    fn deactivate_process_channels(process: &mut ProcessState) {
+        process.serial = None;
+        process.module_pipe = None;
+        process.pipe_input = None;
+        process.network = None;
+        process.null_output = None;
+        process.dns_request = None;
+        if let Some(runtime) = process.runtime.as_mut() {
+            runtime.child.stdin = None;
+            runtime.child.stdout = None;
+            runtime.child.stderr = None;
+            runtime.pty_input = None;
+            runtime.pty_output = None;
+        }
+        if child_ended(process) {
+            process.runtime = None;
         }
     }
 
@@ -489,16 +549,24 @@ impl Interpreter {
             .filter(|process| {
                 Self::in_process_alist(process) && process.buffer_id == Some(buffer_id)
             })
-            .filter_map(|process| match process.kind {
-                ProcessKind::Real => process
-                    .runtime
-                    .is_some()
-                    .then_some((process.record_id, false)),
-                ProcessKind::Pipe | ProcessKind::Network | ProcessKind::Serial => {
-                    Some((process.record_id, true))
-                }
+            .map(|process| {
+                (
+                    process.record_id,
+                    !matches!(process.kind, ProcessKind::Real),
+                )
             })
             .collect()
+    }
+
+    /// kill_buffer_processes's test as the walk reaches RECORD_ID: still on
+    /// Vprocess_alist, its buffer BUFFER_ID, and for a subprocess, its
+    /// input channel open (p->infd >= 0).
+    pub(crate) fn buffer_process_still_killable(&self, record_id: u64, buffer_id: u64) -> bool {
+        self.find_process_state(record_id).is_some_and(|process| {
+            Self::in_process_alist(process)
+                && process.buffer_id == Some(buffer_id)
+                && (process.kind != ProcessKind::Real || infd_open(process))
+        })
     }
 
     pub fn set_process_plist_value(&mut self, record_id: u64, plist: Value) -> bool {
@@ -798,6 +866,8 @@ impl Interpreter {
         if let Some(process) = self.find_process_state_mut(record_id)
             && process.kind == ProcessKind::Pipe
         {
+            // "Preserve status of processes already terminated."
+            process.tick = crate::lisp::eval::next_process_tick();
             process.module_pipe = None;
             process.pipe_input = None;
             process.null_output = None;
@@ -924,7 +994,9 @@ impl Interpreter {
             status: ProcessStatus::Run,
             filter: None,
             sentinel: None,
-            sentinel_notified: false,
+            tick: 0,
+            update_tick: 0,
+            pending_status: None,
             log: None,
             name,
             thread_id,
@@ -943,6 +1015,7 @@ impl Interpreter {
             stderr_process_id: None,
             exit_code: None,
             exit_signal: None,
+            core_dumped: false,
             os_pid: None,
             tty: None,
             runtime: None,
@@ -1036,7 +1109,9 @@ impl Interpreter {
             status,
             filter,
             sentinel,
-            sentinel_notified: false,
+            tick: 0,
+            update_tick: 0,
+            pending_status: None,
             log,
             name,
             thread_id,
@@ -1055,6 +1130,7 @@ impl Interpreter {
             stderr_process_id: None,
             exit_code: None,
             exit_signal: None,
+            core_dumped: false,
             os_pid: None,
             tty: None,
             runtime: None,
@@ -1126,7 +1202,9 @@ impl Interpreter {
             status: ProcessStatus::Open,
             filter,
             sentinel,
-            sentinel_notified: false,
+            tick: 0,
+            update_tick: 0,
+            pending_status: None,
             log: None,
             name,
             thread_id,
@@ -1145,6 +1223,7 @@ impl Interpreter {
             stderr_process_id: None,
             exit_code: None,
             exit_signal: None,
+            core_dumped: false,
             os_pid: None,
             tty: None,
             runtime: None,
@@ -1319,81 +1398,109 @@ impl Interpreter {
             .and_then(|process| process.stderr_process_id)
     }
 
-    /// Return child/pipe exit events that still need their one terminal
-    /// sentinel call.  GNU prepends every process to `Vprocess_alist' and
-    /// `status_notify' walks that alist in order, so a newer child is
-    /// notified before the older pipe supplied through its `:stderr' option.
-    /// A real or pipe process that has exited and whose sentinel has not
-    /// run yet: the "tick != update_tick" state process.c status_notify
-    /// drains and notifies.
-    /// Whether any of this thread's processes has an exit that awaits
-    /// status_notify.
+    /// update_tick != process_tick: a change of any process since
+    /// status_notify last began (a process a sentinel's throw left
+    /// unvisited waits for the next change).
     pub(crate) fn any_process_exit_awaits_notification(&self) -> bool {
-        self.process_states.iter().any(|process| {
-            matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
-                && matches!(
-                    process.status,
-                    ProcessStatus::Exit | ProcessStatus::Signal | ProcessStatus::Failed
-                )
-                && !process.sentinel_notified
-                && process
-                    .thread_id
-                    .is_none_or(|thread_id| thread_id == self.active_thread_id)
-        })
+        self.process_states
+            .iter()
+            .any(|process| process.tick > self.process_update_tick)
     }
 
-    pub fn process_exit_awaits_notification(&self, record_id: u64) -> bool {
-        self.find_process_state(record_id).is_some_and(|process| {
-            matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
-                && matches!(
-                    process.status,
-                    ProcessStatus::Exit | ProcessStatus::Signal | ProcessStatus::Failed
-                )
-                && !process.sentinel_notified
-        })
+    /// status_notify's `update_tick = process_tick', set before its walk
+    /// so that processes its sentinels change are walked again.
+    pub(crate) fn begin_status_notify(&mut self) {
+        self.process_update_tick = crate::lisp::eval::current_process_tick();
     }
 
-    /// Restricted form used by `accept-process-output's JUST-THIS-ONE mode.
-    /// Status changes remain recorded on every process, but only the selected
-    /// process may run its sentinel during that wait.
-    pub fn take_pending_subprocess_exit_events_for(
-        &mut self,
-        only_process_id: Option<u64>,
-    ) -> Vec<(u64, String)> {
-        let active_thread_id = self.active_thread_id;
-        let mut events = Vec::new();
-        // `process_states' is append-only creation order.  Reverse iteration
-        // mirrors GNU's newest-first `Vprocess_alist' status traversal.
-        for process in self.process_states.iter_mut().rev() {
-            if !matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
-                || !matches!(
-                    process.status,
-                    ProcessStatus::Exit | ProcessStatus::Signal | ProcessStatus::Failed
-                )
-                || process.sentinel_notified
-                || process
-                    .thread_id
-                    .is_some_and(|thread_id| thread_id != active_thread_id)
-                || only_process_id.is_some_and(|id| process.record_id != id)
-            {
-                continue;
-            }
-            process.sentinel_notified = true;
-            let event = match process.exit_code {
-                // A childless pty's EIO: status_message of `failed'.
-                code if matches!(process.status, ProcessStatus::Failed) => {
-                    format!("failed with code {}\n", code.unwrap_or(0))
-                }
-                _ if process.exit_signal.is_some() => {
-                    signal_event_message(process.exit_signal.expect("checked signal"))
-                }
-                Some(0) => "finished\n".to_string(),
-                Some(code) => format!("exited abnormally with code {code}\n"),
-                None => "killed\n".to_string(),
-            };
-            events.push((process.record_id, event));
+    /// p->tick != p->update_tick of a process on Vprocess_alist.
+    fn status_change_awaits_notification(process: &ProcessState) -> bool {
+        process.in_alist && process.tick != process.update_tick
+    }
+
+    /// status_notify's FOR_EACH_PROCESS: every process, whatever thread it
+    /// is locked to, newest first (`process_states' is creation order,
+    /// Vprocess_alist newest first).
+    pub(crate) fn status_notify_order(&self) -> Vec<u64> {
+        self.process_states
+            .iter()
+            .rev()
+            .map(|process| process.record_id)
+            .collect()
+    }
+
+    /// Every process with a child, whatever thread it is locked to:
+    /// handle_child_signal's walk.
+    pub(crate) fn child_process_ids(&self) -> Vec<u64> {
+        self.process_states
+            .iter()
+            .filter(|process| process.runtime.is_some())
+            .map(|process| process.record_id)
+            .collect()
+    }
+
+    /// status_notify's `if (p->tick != p->update_tick) { p->update_tick =
+    /// p->tick; ...': whether RECORD_ID, still on Vprocess_alist, has a
+    /// change to report, which is then taken.
+    pub(crate) fn take_process_status_change(&mut self, record_id: u64) -> bool {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return false;
+        };
+        if !Self::status_change_awaits_notification(process) {
+            return false;
         }
-        events
+        process.update_tick = process.tick;
+        true
+    }
+
+    /// status_notify's `while (...)' of whether to read RECORD_ID's
+    /// remaining output: not with a filter of t, connecting or listening,
+    /// a stopped connection (p->command t), no input channel
+    /// (p->infd < 0), or when it is DELETING_PROCESS.
+    pub(crate) fn status_notify_reads_output(&self, record_id: u64, deleting: Option<u64>) -> bool {
+        if deleting == Some(record_id) {
+            return false;
+        }
+        self.find_process_state(record_id).is_some_and(|process| {
+            !process
+                .filter
+                .as_ref()
+                .is_some_and(|filter| *filter == Value::T)
+                && !matches!(
+                    process.status,
+                    ProcessStatus::Connect(_) | ProcessStatus::Listen
+                )
+                && !process.traffic_stopped
+                && (infd_open(process)
+                    || !process.pending_stdout.is_empty()
+                    || !process.pending_stderr.is_empty())
+        })
+    }
+
+    /// status_notify past its reads: status_message of RECORD_ID's status
+    /// now; a terminal one (signal, exit or closed) removes it from
+    /// Vprocess_alist (`delete-exited-processes') or deactivates it; and
+    /// p->update_tick = p->tick again, for the changes those made.
+    pub(crate) fn status_notify_message(&mut self, record_id: u64) -> Option<String> {
+        let remove = self
+            .lookup_var_key(cached_symbol!("delete-exited-processes"), &Env::new())
+            .is_none_or(|value| value.is_truthy());
+        let process = self.find_process_state_mut(record_id)?;
+        // "Get the text to use for the message."
+        update_status(process);
+        let message = Self::process_status_message(process);
+        if matches!(
+            process.status,
+            ProcessStatus::Signal | ProcessStatus::Exit | ProcessStatus::Closed
+        ) {
+            gnutls_deinit(&mut process.gnutls);
+            Self::deactivate_process_channels(process);
+            if remove {
+                process.in_alist = false;
+            }
+        }
+        process.update_tick = process.tick;
+        Some(message)
     }
 
     pub fn process_log_function(&self, record_id: u64) -> Option<Value> {
@@ -1807,7 +1914,9 @@ impl Interpreter {
         process.network = None;
         process.serial = None;
         process.null_output = None;
-        process.sentinel_notified |= remove;
+        if remove {
+            process.in_alist = false;
+        }
         Self::process_status_message(process)
     }
 
@@ -1844,9 +1953,10 @@ impl Interpreter {
     /// process.c status_message for the process's status.
     fn process_status_message(process: &ProcessState) -> String {
         match process.status {
-            ProcessStatus::Signal => {
-                signal_event_message(process.exit_signal.or(process.exit_code).unwrap_or(9))
-            }
+            ProcessStatus::Signal => signal_status_message(
+                process.exit_signal.or(process.exit_code).unwrap_or(9),
+                process.core_dumped,
+            ),
             ProcessStatus::Stop => {
                 #[cfg(unix)]
                 let stop = libc::SIGSTOP;
@@ -1983,49 +2093,39 @@ impl Interpreter {
         (was, process.decoder.carryover.len())
     }
 
+    /// handle_child_signal for one process: the change of its child's
+    /// status that a SIGCHLD made waitpid report, recorded as
+    /// p->raw_status (update_status makes it the status) with a new tick,
+    /// and an end taking the child's output out of the select mask
+    /// (p->alive = 0, delete_read_fd).  A process off Vprocess_alist,
+    /// which the handler does not walk, has its child reaped and nothing
+    /// recorded.
     pub(super) fn refresh_process_state(process: &mut ProcessState) -> Result<(), LispError> {
-        if !process.status.is_live() {
-            return Ok(());
-        }
         let Some(runtime) = process.runtime.as_mut() else {
             return Ok(());
         };
-        if let Some(event) = poll_child_status(&mut runtime.child)
+        if runtime.child_ended {
+            return Ok(());
+        }
+        let Some(event) = poll_child_status(&mut runtime.child)
             .map_err(|error| LispError::Signal(error.to_string()))?
-        {
-            match event {
-                ChildStatusEvent::Stopped => process.status = ProcessStatus::Stop,
-                ChildStatusEvent::Continued => process.status = ProcessStatus::Run,
-                ChildStatusEvent::Exited(status) => {
-                    // Drain whatever the child wrote before exiting so the
-                    // next pump still delivers it to the filter (gpg's final
-                    // status lines arrive after `process-status' notices the
-                    // exit): status_notify's reads until one returns <= 0,
-                    // EAGAIN among them when a job the child left in the
-                    // background still holds the pipe, what was read kept.
-                    if let Some(pipe) = runtime.child.stdout.as_mut() {
-                        read_nonblocking_pipe(pipe, &mut process.pending_stdout, None)?;
-                    }
-                    if let Some(pipe) = runtime.child.stderr.as_mut() {
-                        read_nonblocking_pipe(pipe, &mut process.pending_stderr, None)?;
-                    }
-                    if let Some(mut pty) = runtime.pty_output.as_deref() {
-                        let mut tail = Vec::new();
-                        let _ = read_nonblocking_pipe(&mut pty, &mut tail, None);
-                        process.pending_stdout.extend(tail);
-                    }
-                    record_child_exit(process, status);
-                    process.runtime = None;
-                    process.null_output = None;
-                }
-            }
+        else {
+            return Ok(());
+        };
+        if matches!(event, ChildStatusEvent::Exited(_)) {
+            runtime.child_ended = true;
+        }
+        if process.in_alist {
+            process.pending_status = Some(event);
+            process.tick = crate::lisp::eval::next_process_tick();
         }
         Ok(())
     }
 
+    /// Fget_buffer_process: the newest process on Vprocess_alist whose
+    /// buffer it is, its status left as it is.
     pub fn process_value_for_buffer(&mut self, buffer_id: u64) -> Option<Value> {
-        let record_id = self.process_states.iter_mut().rev().find_map(|process| {
-            let _ = Self::refresh_process_state(process);
+        let record_id = self.process_states.iter().rev().find_map(|process| {
             (process.buffer_id == Some(buffer_id) && Self::in_process_alist(process))
                 .then_some(process.record_id)
         })?;
@@ -2037,6 +2137,10 @@ impl Interpreter {
     /// handler leaves it, ended, stopped or failed.
     pub(crate) fn process_child_ended(&mut self, record_id: u64) -> Result<bool, LispError> {
         self.refresh_process_id(record_id)?;
+        // `if (wait_proc->raw_status_new) update_status (wait_proc)'.
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            update_status(process);
+        }
         Ok(self.find_process_state(record_id).is_some_and(|process| {
             process.kind == ProcessKind::Real
                 && matches!(
@@ -2047,6 +2151,38 @@ impl Interpreter {
                         | ProcessStatus::Failed
                 )
         }))
+    }
+
+    /// Whether RECORD_ID's child has ended (its output out of the select
+    /// mask, read by status_notify alone).
+    pub(crate) fn process_read_fd_deleted(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id).is_some_and(child_ended)
+    }
+
+    /// One read of RECORD_ID's `:stderr' pipe alone, for a process whose
+    /// own output channel is out of the select mask.
+    pub(crate) fn poll_process_stderr(&mut self, record_id: u64) -> Result<Vec<u8>, LispError> {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return Ok(Vec::new());
+        };
+        let readmax = Some(process.readmax);
+        let mut stderr = std::mem::take(&mut process.pending_stderr);
+        if let Some(runtime) = process.runtime.as_mut()
+            && let Some(pipe) = runtime.child.stderr.as_mut()
+            && !runtime.stderr_at_end
+            && read_nonblocking_pipe(pipe, &mut stderr, readmax)?
+        {
+            process.stderr_eof = true;
+            runtime.stderr_at_end = true;
+        }
+        Ok(stderr)
+    }
+
+    /// update_status of RECORD_ID: its pending change made its status.
+    pub(crate) fn update_process_status(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            update_status(process);
+        }
     }
 
     pub(crate) fn refresh_process_id(&mut self, record_id: u64) -> Result<(), LispError> {
@@ -2092,8 +2228,10 @@ impl Interpreter {
             .map(|process| process.mark_marker_id)
     }
 
+    /// The process's status for Fprocess_status, after update_status.
     pub fn process_status_value(&mut self, record_id: u64) -> Option<Value> {
         let _ = self.refresh_process_id(record_id);
+        self.update_process_status(record_id);
         self.find_process_state(record_id).map(|process| {
             if process.traffic_stopped {
                 Value::symbol("stop")
@@ -2111,6 +2249,7 @@ impl Interpreter {
 
     pub fn process_exit_status_value(&mut self, record_id: u64) -> Option<Value> {
         let _ = self.refresh_process_id(record_id);
+        self.update_process_status(record_id);
         self.find_process_state(record_id).map(|process| {
             // XCAR (XCDR (status)) of a (failed DATA) status.
             if matches!(process.status, ProcessStatus::Failed) && !process.status_data.is_nil() {
@@ -2654,7 +2793,7 @@ impl Interpreter {
                 &[process.name],
             ));
         }
-        if process.runtime.is_none() && process.pipe_input.is_none() {
+        if !infd_open(process) {
             return Err(crate::lisp::primitives::values::doprnt_error_sdata(
                 None,
                 "Process {} is not active",
@@ -2704,18 +2843,15 @@ impl Interpreter {
         (character != 0).then_some(character)
     }
 
-    /// process_send_signal from its process group on: SIGNAL to the
-    /// child's group, or the pty's foreground group when CURRENT_GROUP is
-    /// non-nil (nothing when it is `lambda' and the child owns the
-    /// terminal, which returns false); SIGCONT makes the status `run'.  A
-    /// childless pty process is never alive, so nothing is killed.
+    /// process_send_signal past its checks: what SIGNAL goes to for
+    /// RECORD_ID (a `real' process, active), and None when CURRENT_GROUP is
+    /// `lambda' and the shell owns its terminal, which sends nothing.
     #[cfg(unix)]
-    pub fn signal_process_group(
-        &mut self,
+    pub(crate) fn process_signal_target(
+        &self,
         record_id: u64,
-        signal: i32,
         current_group: &Value,
-    ) -> Result<bool, LispError> {
+    ) -> Result<Option<SignalTarget>, LispError> {
         use std::os::fd::AsRawFd;
 
         let process = self
@@ -2733,14 +2869,9 @@ impl Interpreter {
             && process.pipe_input.is_some()
         {
             // create_pty's process: active (its pty is open), never alive.
-            if signal == libc::SIGCONT
-                && let Some(process) = self.find_process_state_mut(record_id)
-            {
-                process.status = ProcessStatus::Run;
-            }
-            return Ok(true);
+            return Ok(Some(SignalTarget::Childless));
         }
-        let Some(runtime) = process.runtime.as_ref() else {
+        let Some(runtime) = process.runtime.as_ref().filter(|_| infd_open(process)) else {
             return Err(crate::lisp::primitives::values::doprnt_error_sdata(
                 None,
                 "Process {} is not active",
@@ -2754,74 +2885,103 @@ impl Interpreter {
                 &[process.name],
             )
         })? as libc::pid_t;
-        let uses_input_pty = runtime.pty_input.is_some();
         let mut group = pid;
-        if uses_input_pty && current_group.is_truthy() {
-            if let Some(input) = runtime.pty_input.as_ref() {
-                let mut foreground_group: libc::pid_t = -1;
-                // SAFETY: input is a live PTY descriptor and ioctl writes one
-                // pid_t into initialized caller-owned storage.
-                if unsafe {
-                    libc::ioctl(
-                        input.as_raw_fd(),
-                        libc::TIOCGPGRP,
-                        &mut foreground_group as *mut libc::pid_t,
-                    )
-                } == 0
-                    && foreground_group >= 0
-                {
-                    group = foreground_group;
-                }
+        if current_group.is_truthy()
+            && let Some(input) = runtime.pty_input.as_ref()
+        {
+            let mut foreground_group: libc::pid_t = -1;
+            // SAFETY: input is a live PTY descriptor and ioctl writes one
+            // pid_t into initialized caller-owned storage.
+            if unsafe {
+                libc::ioctl(
+                    input.as_raw_fd(),
+                    libc::TIOCGPGRP,
+                    &mut foreground_group as *mut libc::pid_t,
+                )
+            } == 0
+                && foreground_group >= 0
+            {
+                group = foreground_group;
             }
             if crate::lisp::types::eq_symbol_named(current_group, "lambda") && group == pid {
-                return Ok(false);
+                return Ok(None);
             }
         }
-        // SAFETY: negative GROUP addresses the child-owned process group;
-        // spawn_persistent_process establishes that group before exec.
-        unsafe {
-            libc::kill(-group, signal);
+        Ok(Some(SignalTarget::Group(group)))
+    }
+
+    /// process_send_signal's SIGCONT: p->raw_status_new = 0, the status
+    /// `run' and a new tick (the kernel's WCONTINUED is another).
+    #[cfg(unix)]
+    pub(crate) fn record_process_continue(&mut self, record_id: u64) {
+        let _ = self.refresh_process_id(record_id);
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.pending_status = None;
+            record_child_continue(process);
+            process.tick = crate::lisp::eval::next_process_tick();
         }
-        if signal == libc::SIGCONT
-            && let Some(process) = self.find_process_state_mut(record_id)
+    }
+
+    /// process_send_signal's `if (p->alive) kill (- gid, signo)': nothing
+    /// for a childless pty's process, which is never alive.
+    #[cfg(unix)]
+    pub(crate) fn send_process_signal(&self, record_id: u64, target: &SignalTarget, signal: i32) {
+        let SignalTarget::Group(group) = *target else {
+            return;
+        };
+        if let Some(runtime) = self
+            .find_process_state(record_id)
+            .and_then(|process| process.runtime.as_ref())
         {
-            // GNU publishes `run' before the kernel's WCONTINUED event.
-            process.status = ProcessStatus::Run;
+            runtime.child.signal_while_alive(-group, signal);
         }
+    }
+
+    /// process_send_signal with NOMSG true: SIGNAL to RECORD_ID's process
+    /// group, a SIGCONT's `run' recorded first; false when CURRENT_GROUP is
+    /// `lambda' and the shell owns the terminal.
+    #[cfg(unix)]
+    pub fn signal_process_group(
+        &mut self,
+        record_id: u64,
+        signal: i32,
+        current_group: &Value,
+    ) -> Result<bool, LispError> {
+        let Some(target) = self.process_signal_target(record_id, current_group)? else {
+            return Ok(false);
+        };
+        if signal == libc::SIGCONT {
+            self.record_process_continue(record_id);
+        }
+        self.send_process_signal(record_id, &target, signal);
         Ok(true)
     }
 
-    /// process.c:Fdelete_process: a connection's status becomes (exit 0),
-    /// a child still running is killed, and status_notify reports the new
-    /// status to the sentinel -- of a process still on the process alist
-    /// only, as status_notify walks Vprocess_alist.  Returns the message
-    /// and whether to notify.
-    pub fn delete_process(&mut self, record_id: u64) -> Result<(String, bool), LispError> {
+    /// process.c:Fdelete_process up to its status_notify: p->raw_status_new
+    /// cleared; a connection's status (exit 0) and a new tick; for a
+    /// process with a child, the child killed while it is alive
+    /// (record_kill_process), and while its channel is open (p->infd >= 0,
+    /// which for a child whose end is not yet reported stays so until
+    /// status_notify deactivates it) its status (signal 9) unless it
+    /// already ended, and a new tick.  True when the caller is to run
+    /// status_notify (P, NULL); remove_process follows either way.
+    pub fn delete_process(&mut self, record_id: u64) -> Result<bool, LispError> {
+        // What handle_child_signal has recorded of the child by now.
+        self.refresh_process_id(record_id)?;
         let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         let kind = process.kind;
-        // `status_notify' claims a terminal transition before invoking its
-        // sentinel.  A sentinel such as `compilation-sentinel' may then call
-        // `delete-process' on itself; GNU removes the process from the
-        // notification registry first, so that nested deletion must not
-        // invoke the same sentinel recursively.
-        // A childless pty that went `failed' had that change reported;
-        // the (signal 9) below is a new one, which status_notify reports
-        // again.
-        let notify_sentinel = !process.sentinel_notified
-            || (kind == ProcessKind::Real && matches!(process.status, ProcessStatus::Failed));
         // GNU clears the connection flow-control marker while closing the
         // descriptor, so a stopped connection reports `closed' afterwards.
         process.traffic_stopped = false;
         gnutls_deinit(&mut process.gnutls);
+        // p->raw_status_new = 0: a change handle_child_signal recorded and
+        // update_status has not made the status is dropped.
+        process.pending_status = None;
         // p->infd >= 0: a channel still open.
-        let has_channel = process.runtime.is_some()
-            || process.module_pipe.is_some()
-            || process.pipe_input.is_some()
-            || process.network.is_some()
-            || process.serial.is_some();
+        let has_channel = infd_open(process);
         if let Some(runtime) = process.runtime.take() {
             terminate_child_without_blocking(runtime);
         }
@@ -2850,14 +3010,13 @@ impl Interpreter {
             process.status = ProcessStatus::Closed;
             process.exit_code = Some(0);
             process.exit_signal = None;
-        } else if process.childless_pid.is_some() && !has_channel {
-            // create_pty's process without a pty (p->infd < 0): no status
-            // change and no sentinel, only remove_process.
-            process.in_alist = false;
-            process.sentinel_notified = true;
-            return Ok((Self::process_status_message(process), false));
+        } else if !has_channel {
+            // p->infd < 0 (a childless pty without one, a process whose
+            // end status_notify reported): no status change.
+            return Ok(false);
         } else if !matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal) {
             process.status = ProcessStatus::Signal;
+            process.core_dumped = false;
             #[cfg(unix)]
             {
                 process.exit_code = Some(libc::SIGKILL);
@@ -2869,8 +3028,8 @@ impl Interpreter {
                 process.exit_signal = None;
             }
         }
-        process.sentinel_notified = true;
-        Ok((Self::process_status_message(process), notify_sentinel))
+        process.tick = crate::lisp::eval::next_process_tick();
+        Ok(true)
     }
 
     /// send_process's checks before its loop: the process must be running
@@ -2879,6 +3038,8 @@ impl Interpreter {
     /// when the caller is to write them with process_write_some.
     pub fn process_send_begin(&mut self, record_id: u64) -> Result<bool, LispError> {
         self.refresh_process_id(record_id)?;
+        // `if (p->raw_status_new) update_status (p)'.
+        self.update_process_status(record_id);
         let record_id_value = self.record_value(record_id);
         self.find_process_state(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
@@ -2979,20 +3140,17 @@ impl Interpreter {
                 let process = self
                     .find_process_state_mut(record_id)
                     .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
+                // p->raw_status_new = 0, (exit 256) and a new tick, then
+                // deactivate_process: every channel closed, the unread
+                // output with them.
+                process.pending_status = None;
                 process.status = ProcessStatus::Exit;
                 process.exit_code = Some(256);
                 process.exit_signal = None;
-                process.module_pipe = None;
-                process.pipe_input = None;
+                process.tick = crate::lisp::eval::next_process_tick();
                 gnutls_deinit(&mut process.gnutls);
-                process.network = None;
-                process.serial = None;
-                process.null_output = None;
                 process.non_blocking_connect_fd = false;
-                if let Some(runtime) = process.runtime.as_mut() {
-                    drop(runtime.child.stdin.take());
-                    runtime.pty_input = None;
-                }
+                Self::deactivate_process_channels(process);
                 Err(crate::lisp::primitives::values::doprnt_error_sdata(
                     None,
                     "process {} no longer connected to pipe; closed it",
@@ -3085,9 +3243,10 @@ impl Interpreter {
 
     pub fn process_send_eof(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
         let record_id_value = self.record_value(record_id);
-        // GNU reaps child status in its event loop.  Polling again here can
-        // invalidate Eshell's immediately preceding `process-live-p' check
-        // and turn normal pipeline teardown into a spurious race error.
+        // Fprocess_send_eof: `if (XPROCESS (proc)->raw_status_new)
+        // update_status', then the process must run.
+        self.refresh_process_id(record_id)?;
+        self.update_process_status(record_id);
         self.process_send_check(record_id)?;
         let process = self
             .find_process_state_mut(record_id)
@@ -3211,7 +3370,7 @@ impl Interpreter {
         only_process_id: Option<u64>,
         fds: &mut Vec<libc::pollfd>,
     ) -> bool {
-        self.process_wait_set_for(only_process_id, false, fds)
+        self.process_wait_set_for(only_process_id, fds)
     }
 
     /// process_wait_set, leaving out with SKIP_ENDED what a terminated
@@ -3222,7 +3381,6 @@ impl Interpreter {
     fn process_wait_set_for(
         &self,
         only_process_id: Option<u64>,
-        skip_ended: bool,
         fds: &mut Vec<libc::pollfd>,
     ) -> bool {
         use std::os::fd::AsRawFd;
@@ -3243,21 +3401,21 @@ impl Interpreter {
                     .filter
                     .as_ref()
                     .is_some_and(|filter| *filter == Value::T)
-                || (skip_ended
-                    && process.kind == ProcessKind::Real
-                    && matches!(
-                        process.status,
-                        ProcessStatus::Exit | ProcessStatus::Signal | ProcessStatus::Failed
-                    ))
             {
                 continue;
             }
-            if !process.pending_stdout.is_empty() || !process.pending_stderr.is_empty() {
+            // A child's end takes its output out of the mask
+            // (handle_child_signal's delete_read_fd); its `:stderr' pipe,
+            // another process's channel, stays.
+            let ended = child_ended(process);
+            if (!ended && !process.pending_stdout.is_empty()) || !process.pending_stderr.is_empty()
+            {
                 return true;
             }
             if let Some(runtime) = process.runtime.as_ref() {
                 if let Some(pipe) = runtime.child.stdout.as_ref()
                     && !runtime.stdout_at_end
+                    && !ended
                 {
                     watch(pipe.as_raw_fd(), libc::POLLIN);
                 }
@@ -3270,6 +3428,7 @@ impl Interpreter {
                 // (delete_read_fd).
                 if let Some(pty) = runtime.pty_output.as_ref()
                     && !runtime.stdout_at_end
+                    && !ended
                 {
                     watch(pty.as_raw_fd(), libc::POLLIN);
                 }
@@ -3325,15 +3484,14 @@ impl Interpreter {
         };
         if self.process_states.iter().filter(watched).any(|process| {
             process.status.is_live()
-                && process
-                    .runtime
-                    .as_ref()
-                    .is_some_and(|runtime| runtime.stdout_at_end && runtime.child.stdout.is_some())
+                && process.runtime.as_ref().is_some_and(|runtime| {
+                    runtime.stdout_at_end && runtime.child.stdout.is_some() && !runtime.child_ended
+                })
         }) {
             return true;
         }
         let mut fds = Vec::new();
-        if self.process_wait_set_for(None, true, &mut fds) {
+        if self.process_wait_set_for(None, &mut fds) {
             return true;
         }
         // SAFETY: FDS holds live descriptors this interpreter owns.
@@ -3404,6 +3562,7 @@ impl Interpreter {
                     // no SIGCHLD reports, pset_status (p, Qfailed).  The
                     // last other opener of the pty's tty closed it.
                     process.module_pipe = None;
+                    process.tick = crate::lisp::eval::next_process_tick();
                     process.status = ProcessStatus::Failed;
                     process.exit_code = None;
                     process.exit_signal = None;
@@ -3461,38 +3620,7 @@ impl Interpreter {
                 String::from_utf8_lossy(&stdout[before.0..stdout.len().min(before.0 + 120)])
             );
         }
-        if let Some(event) = poll_child_status(&mut runtime.child)
-            .map_err(|error| LispError::Signal(error.to_string()))?
-        {
-            match event {
-                ChildStatusEvent::Stopped => process.status = ProcessStatus::Stop,
-                ChildStatusEvent::Continued => process.status = ProcessStatus::Run,
-                ChildStatusEvent::Exited(status) => {
-                    // The child can exit between the non-blocking reads above
-                    // and status polling.  Drain once more after observing
-                    // exit: all pipe writers are closed now, so this owns the
-                    // final bytes before dropping the runtime.
-                    // status_notify then reads "any output that remains"
-                    // a read at a time; the caller delivers it so.
-                    if let Some(pipe) = runtime.child.stdout.as_mut()
-                        && read_nonblocking_pipe(pipe, &mut stdout, None)?
-                    {
-                        process.stdout_eof = true;
-                    }
-                    if let Some(pipe) = runtime.child.stderr.as_mut()
-                        && read_nonblocking_pipe(pipe, &mut stderr, None)?
-                    {
-                        process.stderr_eof = true;
-                    }
-                    if let Some(mut pty) = runtime.pty_output.as_deref() {
-                        read_nonblocking_pipe(&mut pty, &mut stdout, None)?;
-                    }
-                    record_child_exit(process, status);
-                    process.runtime = None;
-                    process.null_output = None;
-                }
-            }
-        }
+        Self::refresh_process_state(process)?;
         Ok((stdout, stderr))
     }
 
@@ -4795,8 +4923,10 @@ impl Interpreter {
     }
 
     fn unlock_processes_for_thread(&mut self, thread_id: u64) {
+        // update_processes_for_thread_death walks Vprocess_alist: a process
+        // already removed from it keeps the thread that locked it.
         for process in &mut self.process_states {
-            if process.thread_id == Some(thread_id) {
+            if Self::in_process_alist(process) && process.thread_id == Some(thread_id) {
                 process.thread_id = None;
             }
         }
