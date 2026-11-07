@@ -315,8 +315,7 @@ pub(crate) use dispatch::set_window_buffer;
 pub(crate) use dispatch::unibyte_doc_string;
 pub(crate) use dispatch::{
     EchoSpans, echo_area_message_tick, echo_area_print_logged, echo_display_message,
-    expire_echo_area_message, set_echo_area_message, set_echo_area_message_with_spans,
-    string_face_spans,
+    set_echo_area_message, string_face_spans,
 };
 pub(crate) use dispatch::{
     FACE_NO_UNDERLINE, FACE_TTY_DEFAULT_BG_COLOR, FACE_TTY_DEFAULT_COLOR,

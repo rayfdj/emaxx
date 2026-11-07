@@ -6371,6 +6371,166 @@ fn an_input_method_translates_what_read_char_reads() {
 
 #[cfg(unix)]
 #[test]
+fn keystrokes_echo_as_keyboard_c_echoes_them() {
+    // keyboard.c's echoing: read_char's echo timer shows a key sequence
+    // in progress (help.el's hint appended) once `echo-keystrokes'
+    // seconds pass with no input, a prefix command's echo comes from
+    // `internal-echo-keystrokes-prefix', a `read-event' inside a command
+    // (quoted-insert's) echoes the command's keys and then the key it
+    // read, and an error message wiped at the next key lets echoing start
+    // again.  An idle timer notes the echo area each time the session goes
+    // idle; the session waits out GNU's terminal query first.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "echo.el",
+        r#"(defvar echo-log nil)
+(run-with-idle-timer 1.6 t
+  (lambda ()
+    (when (> num-nonmacro-input-events 0)
+      (push (current-message) echo-log))
+    (when (= (length echo-log) 7)
+      (with-temp-file (expand-file-name "echo.out" command-line-default-directory)
+        (insert (format "%S\n" (reverse echo-log))))
+      (kill-emacs 0))))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x18"),
+        (2.4, b"\x07"),
+        (2.4, b"\x15"),
+        (2.4, b"8"),
+        (2.4, b"\x11"),
+        (2.4, b"a"),
+        (2.4, b"\x18"),
+        (0.3, b"4"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "echo.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "echo.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_echo_area_is_wiped_as_read_char_wipes_it() {
+    // read_char wipes the echo area for an event from the keyboard
+    // buffer, running `echo-area-clear-hook' first, and leaves it alone
+    // for a keyboard macro's events: a prefix argument's echo stays shown
+    // through the command it reads, and a message stays through the
+    // commands a macro runs.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "wipe.el",
+        r#"(defvar wipe-log nil)
+(add-hook 'pre-command-hook
+  (lambda () (push (list 'pre this-command (current-message)) wipe-log)))
+(add-hook 'post-command-hook
+  (lambda () (push (list 'post this-command (current-message)) wipe-log)))
+(add-hook 'echo-area-clear-hook
+  (lambda () (push (list 'clear (current-message)) wipe-log)))
+(defun wipe-macro () (interactive)
+  (message "kept")
+  (execute-kbd-macro "\C-f\C-f"))
+(defun wipe-done () (interactive)
+  (with-temp-file (expand-file-name "wipe.out" command-line-default-directory)
+    (insert (format "%S\n" (cdr (reverse wipe-log)))))
+  (kill-emacs 0))
+(global-set-key [f5] #'wipe-macro)
+(global-set-key [f6] #'wipe-done)"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x15"),
+        (2.4, b"8"),
+        (0.3, b"x"),
+        (0.5, b"\x1b[15~"),
+        (0.8, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "wipe.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "wipe.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_message_ends_echoing_and_times_out_over_the_minibuffer() {
+    // xdisp.c's message3 cancels echoing, so a command's message stays
+    // shown while the command waits after a key sequence that was being
+    // echoed; and command_loop_1 in a minibuffer shows a message over it
+    // for `minibuffer-message-timeout' seconds, then clears it and runs
+    // `echo-area-clear-hook'.  Timers note the echo area during the waits.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "msg.el",
+        r#"(defvar msg-log nil)
+(defun msg-note (tag) (push (list tag (current-message)) msg-log))
+(add-hook 'echo-area-clear-hook (lambda () (msg-note 'clear)))
+(global-set-key "\C-cM" (lambda () (interactive)
+  (message "hello")
+  (run-at-time 1.5 nil #'msg-note 'waiting)
+  (read-event)))
+(global-set-key "\C-cN" (lambda () (interactive)
+  (let ((set-message-function nil)) (message "hello there"))
+  (run-at-time 1.0 nil #'msg-note 'shown)
+  (run-at-time 2.8 nil #'msg-note 'timed-out)))
+(global-set-key [f6] (lambda () (interactive)
+  (with-temp-file (expand-file-name "msg.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse msg-log))))
+  (kill-emacs 0)))"#,
+    );
+    // GNU echoes nothing typed in its first seconds.
+    let input: Vec<(f64, &[u8])> = vec![
+        (9.0, b"\x03"),
+        (1.5, b"M"),
+        (2.2, b"a"),
+        (0.5, b"\x1bx"),
+        (0.4, b"abc"),
+        (0.4, b"\x03N"),
+        (3.5, b"\x07"),
+        (0.6, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "msg.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "msg.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_help_character_after_a_prefix_runs_prefix_help_command() {
+    // read_key_sequence's not_upcase step: an unbound key sequence of two
+    // or more keys whose last is the help character (or one of
+    // `help-event-list', F1) runs `prefix-help-command', its keys
+    // this-command-keys and its echo the sequence's.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "ph.el",
+        r#"(defvar ph-log nil)
+(defun ph-help () (interactive)
+  (push (list 'help (this-command-keys-vector) this-command (current-message)) ph-log))
+(setq prefix-help-command #'ph-help)
+(add-hook 'pre-command-hook (lambda () (push (list 'pre this-command) ph-log)))
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "ph.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse ph-log))))
+  (kill-emacs 0)))"#,
+    );
+    // The pause after C-x 4 is well past `echo-keystrokes' (1 s), so the
+    // prefix echoes before F1 arrives even under load.
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x18\x08"),
+        (0.5, b"\x184"),
+        (3.0, b"\x1bOP"),
+        (0.5, b"\x03\x08"),
+        (0.5, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "ph.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "ph.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
 fn a_minibuffer_read_and_a_macro_keep_what_the_command_loop_keeps() {
     // minibuf.c's minibuf_save_list gives the reading command back its
     // `current-prefix-arg' and this-command-keys when the read ends, and

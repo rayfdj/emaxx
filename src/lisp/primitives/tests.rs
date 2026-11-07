@@ -30812,7 +30812,7 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     // The frame-redraw hook runs once per minibuffer iteration; observing
     // the layout there sees the pop-up while the read is still live.
-    type LayoutSnapshots = Vec<(Option<String>, Vec<(String, usize, bool)>)>;
+    type LayoutSnapshots = Vec<(Option<String>, Vec<(String, usize, bool)>, Option<String>)>;
     let observed: std::rc::Rc<std::cell::RefCell<LayoutSnapshots>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = std::rc::Rc::clone(&observed);
@@ -30831,8 +30831,20 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
                 (name, info.height, info.selected)
             })
             .collect();
-        sink.borrow_mut()
-            .push((crate::lisp::primitives::echo_area_message(), windows));
+        let minibuffer = interp.active_minibuffer_buffer_id().and_then(|id| {
+            if id == interp.current_buffer_id() {
+                Some(interp.buffer.borrow().buffer_string())
+            } else {
+                interp
+                    .get_buffer_by_id(id)
+                    .map(|buffer| buffer.buffer_string())
+            }
+        });
+        sink.borrow_mut().push((
+            crate::lisp::primitives::echo_area_message(),
+            windows,
+            minibuffer,
+        ));
     })));
     let result = call(
         &mut interp,
@@ -30856,7 +30868,7 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     let observed = observed.borrow();
     let popped: Vec<_> = observed
         .iter()
-        .filter(|(_, windows)| windows.iter().any(|(name, _, _)| name == "*Completions*"))
+        .filter(|(_, windows, _)| windows.iter().any(|(name, _, _)| name == "*Completions*"))
         .collect();
     assert!(
         !popped.is_empty(),
@@ -30864,25 +30876,28 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     );
     // Content: two help lines, a blank, the count line, two candidates —
     // six lines plus the mode line, GNU's fit-window-to-buffer answer.
-    for (_, windows) in &popped {
+    for (_, windows, _) in &popped {
         let (_, height, _) = windows
             .iter()
             .find(|(name, _, _)| name == "*Completions*")
             .expect("completions window in snapshot");
         assert_eq!(*height, 7, "the pop-up stays fitted after selection");
     }
-    let (selected_echo, _) = popped
+    let (selected_echo, _, minibuffer) = popped
         .iter()
-        .find(|(_, windows)| {
+        .find(|(_, windows, _)| {
             windows
                 .iter()
                 .any(|(name, _, selected)| name == "*Completions*" && *selected)
         })
         .expect("M-v selects the completions window");
+    // No message: the mini window shows the active minibuffer, which
+    // still holds the read's prompt and input.
+    assert_eq!(selected_echo.as_deref(), None, "no echo area message");
     assert_eq!(
-        selected_echo.as_deref(),
+        minibuffer.as_deref(),
         Some("Pick: ambig"),
-        "selecting *Completions* keeps the active minibuffer in the echo area"
+        "selecting *Completions* keeps the active minibuffer's text"
     );
 
     let final_layout = crate::lisp::primitives::window_render_layout(&interp);

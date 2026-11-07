@@ -396,7 +396,7 @@ pub(crate) fn do_pending_atimers(interp: &mut Interpreter, env: &mut Env) {
                 // with_delayed_message_display's message3 (build_string
                 // of the copy taken at the start).
                 if let Ok(log) = string_text(&message) {
-                    let _ = dispatch::display::message3(interp, message, &log, env);
+                    let _ = dispatch::display::message3(interp, message, Some(&log), env);
                 }
             }
         }

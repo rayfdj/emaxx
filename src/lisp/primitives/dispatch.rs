@@ -53,8 +53,7 @@ pub(crate) use display::{
 };
 pub(crate) use display::{
     clear_message, echo_area_message, echo_area_message_tick, echo_area_print_logged,
-    echo_display_message, expire_echo_area_message, set_echo_area_message,
-    set_echo_area_message_with_spans,
+    echo_display_message, set_echo_area_message,
 };
 pub(crate) use lists::{
     event_array, next_kbd_macro_event, prepare_kbd_macro_minibuffer_entry,

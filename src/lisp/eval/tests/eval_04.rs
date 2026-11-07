@@ -1061,11 +1061,16 @@ fn skip_unless_records_skip_in_summary() {
 fn call_interactively_consumes_unread_events_for_k_specs() {
     assert_string_list(
         eval_str(
-            "(let ((unread-command-events '(?a ?b))) \
+            // read_key_sequence's prompt is echoed, and echo_update calls
+            // simple.el's `internal-echo-keystrokes-prefix', which the
+            // early Lisp lacks.
+            "(progn \
+               (fset 'internal-echo-keystrokes-prefix (lambda () nil)) \
+               (let ((unread-command-events '(?a ?b))) \
                    (call-interactively \
                      (lambda (a b) \
                        (interactive \"ka\0a: \nkb: \") \
-                       (list a b))))",
+                       (list a b)))))",
         ),
         &["a", "b"],
     );
@@ -1121,15 +1126,18 @@ fn prefix_argument_variables_are_dynamic_across_function_calls() {
 
 #[test]
 fn read_string_preserves_non_string_defaults_on_empty_input() {
+    // RET runs minibuffer.el's `exit-minibuffer'; ert-simulate-keys binds
+    // `executing-kbd-macro' so read_minibuf reads the queued keys in batch.
     assert_eq!(
-        eval_str(
-            "(list
-               (let ((unread-command-events '(?\\r)))
-                 (read-string \"Port: \" nil nil 6667))
-               (let ((unread-command-events '(?\\r)))
-                 (read-string \"Choice: \" nil nil '(answer fallback)))
-               (let ((unread-command-events '(?\\r)))
-                 (read-from-minibuffer \"Raw: \" nil nil nil nil 42)))"
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
+            r#"(list
+                 (ert-simulate-keys "\r"
+                   (read-string "Port: " nil nil 6667))
+                 (ert-simulate-keys "\r"
+                   (read-string "Choice: " nil nil '(answer fallback)))
+                 (ert-simulate-keys "\r"
+                   (read-from-minibuffer "Raw: " nil nil nil nil 42)))"#
         ),
         Value::list([
             Value::Integer(6667),

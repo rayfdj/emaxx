@@ -76,31 +76,6 @@ pub(crate) fn set_echo_area_message(text: Option<String>) {
     ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
 }
 
-/// A message carrying face spans (a propertized `message' — isearch's
-/// prompt); the frontend paints the spans on the echo row.
-pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
-    ECHO_FROM_PRINT.with(|flag| flag.set(false));
-    bump_echo_message_tick();
-    let len = text.chars().count();
-    let mut props = crate::lisp::types::string_data::StringProperties::default();
-    for (start, end, face) in &spans {
-        let _ = crate::intervals::add_string_text_properties(
-            &mut props,
-            len,
-            *start,
-            (*end).min(len),
-            Value::list([Value::symbol("face"), *face]),
-            crate::intervals::PropertySetType::Replace,
-            true,
-        );
-    }
-    let value = crate::lisp::primitives::strings::string_like_value(text.clone(), props.take());
-    ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = Some(value));
-    let message = Some((text, spans));
-    ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
-    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
-}
-
 pub(crate) fn set_echo_area_message_value(value: Value) -> Result<(), LispError> {
     let text = string_text(&value)?;
     let spans = string_face_spans(&value);
@@ -121,6 +96,47 @@ pub(crate) fn expire_echo_area_message() {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
     ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = None);
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = None);
+}
+
+/// xdisp.c:truncate_echo_area: no message for NCHARS 0 (echo_area_buffer
+/// nil, shown at the next redisplay); else, interactively and while there
+/// is a message, the message cut to its first NCHARS characters in place
+/// (truncate_message_1), none when that leaves it empty.
+pub(crate) fn truncate_echo_area(
+    interp: &mut Interpreter,
+    nchars: usize,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if nchars == 0 {
+        expire_echo_area_message();
+        return Ok(());
+    }
+    let noninteractive = interp
+        .forwarded_c_value("noninteractive", &Env::new())
+        .is_some_and(|value| value.is_truthy());
+    let executing_macro = interp
+        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .is_some_and(|value| value.is_truthy());
+    let Some(message) = echo_area_message_value() else {
+        return Ok(());
+    };
+    if noninteractive || executing_macro {
+        return Ok(());
+    }
+    if string_text(&message).map_or(0, |text| text.chars().count()) <= nchars {
+        return Ok(());
+    }
+    let cut = crate::lisp::primitives::call(
+        interp,
+        "substring",
+        &[message, Value::Integer(0), Value::Integer(nchars as i64)],
+        env,
+    )?;
+    let text = string_text(&cut)?;
+    let spans = string_face_spans(&cut);
+    ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = Some(cut));
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = Some((text, spans)));
+    Ok(())
 }
 
 /// GNU xdisp.c:clear_message. Clearing is not a new message emission and
@@ -353,25 +369,29 @@ fn message_with_string_1(
         return message3_nolog(interp, message, env);
     }
     let log = string_text(&message)?;
-    message3(interp, message, &log, env)
+    message3(interp, message, Some(&log), env)
 }
 
-/// xdisp.c:message3 of MESSAGE in the echo area, logged in *Messages* as
-/// LOG (print_error_message logs the signalling function before the text
-/// it shows).
+/// xdisp.c:message3 of MESSAGE in the echo area (none for nil), logged in
+/// *Messages* as LOG (print_error_message logs the signalling function
+/// before the text it shows): the echo area cleared and echoing cancelled
+/// first, and nothing shown under `inhibit-message'.
 pub(crate) fn message3(
     interp: &mut Interpreter,
     message: Value,
-    log: &str,
+    log: Option<&str>,
     env: &mut Env,
 ) -> Result<(), LispError> {
     // The interactive message3 path can run redisplay callbacks. Keep the
     // formatted object rooted across those calls using the existing stack roots.
     interp.with_lisp_stack_roots(&message, |interp| {
         clear_message(interp, env, true, true)?;
+        crate::lisp::primitives::cancel_echoing(interp);
         // First flush out any partial line written with print.
         message_log_maybe_newline(interp, env);
-        log_message_text(interp, log, env);
+        if let Some(log) = log {
+            log_message_text(interp, log, env);
+        }
         if interp
             .forwarded_c_value("inhibit-message", &Env::new())
             .is_some_and(|value| value.is_truthy())
@@ -414,7 +434,7 @@ pub(crate) fn vmessage(
     let message = crate::lisp::primitives::strings::make_string(bytes)
         .map_err(|error| crate::lisp::primitives::string_storage_error(interp, env, error))?;
     let log = crate::lisp::primitives::string_text(&message)?;
-    message3(interp, message, &log, env)
+    message3(interp, message, Some(&log), env)
 }
 
 /// xdisp.c:message3_nolog: MESSAGE in the echo area, neither logged nor
@@ -429,9 +449,21 @@ pub(crate) fn message3_nolog(
         .forwarded_c_value("noninteractive", &Env::new())
         .is_some_and(|value| value.is_truthy())
     {
-        return message_to_stderr(interp, Some(&message), env);
+        return message_to_stderr(interp, message.is_string().then_some(&message), env);
     }
-    interp.with_lisp_stack_roots(&message, |interp| set_message(interp, message, env))
+    // INTERACTIVE: nothing is shown while a keyboard macro executes.
+    if interp
+        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(());
+    }
+    // A string with characters is set; anything else clears the echo area.
+    if message.is_string() && string_text(&message).is_ok_and(|text| !text.is_empty()) {
+        interp.with_lisp_stack_roots(&message, |interp| set_message(interp, message, env))
+    } else {
+        clear_message(interp, env, true, true)
+    }
 }
 
 /// xdisp.c:set_message: `set-message-function' may replace MESSAGE or
@@ -4760,104 +4792,18 @@ define_dispatch!(
             "format-mode-line" => mode_line::format_mode_line(interp, args, env),
             // ── Output ──
             "message" => {
-                let (text, formatted) =
-                    if args.is_empty() || args.first().is_some_and(Value::is_nil) {
-                        (String::new(), None)
-                    } else {
-                        // editfns.c Fmessage formats through Fformat_message,
-                        // so grave quotes follow `text-quoting-style'.
-                        let formatted = super::call(interp, "format-message", args, env)?;
-                        (string_text(&formatted)?, Some(formatted))
-                    };
-                // Fmessage: `(message nil)' and `(message "")' clear the
-                // echo area (message1 (0)) without logging, which edebug
-                // relies on and the upstream capture advice ignores. Any
-                // other format logs, even when it formats to "".
-                let capturable = !args.is_empty()
-                    && !args.first().is_some_and(Value::is_nil)
-                    && args
-                        .first()
-                        .and_then(|format| with_string_text(format, |text| !text.is_empty()))
-                        .unwrap_or(true);
-                // message3: first flush out any partial line written with
-                // print, whatever the message.
-                message_log_maybe_newline(interp, env);
-                if capturable {
-                    log_message_text(interp, &text, env);
-                    interp.append_message_capture(&text, true, env);
+                // editfns.c:Fmessage: nil or an empty format string is
+                // message1 (0), clearing the echo area unlogged; anything
+                // else is message3 of `format-message''s string.
+                let first = args.first().copied().unwrap_or(Value::Nil);
+                if first.is_nil() || with_string_text(&first, str::is_empty).unwrap_or(false) {
+                    message3(interp, Value::Nil, None, env)?;
+                    return Ok(first);
                 }
-                // An interactive session shows the message in the echo area
-                // (an empty or nil MESSAGE clears it, GNU's documented way
-                // to wipe the echo line).
-                if interp
-                    .lookup_var_key(cached_symbol!("noninteractive"), env)
-                    .is_none_or(|value| value.is_nil())
-                {
-                    if text.is_empty() {
-                        // xdisp.c clear_message: `clear-message-function'
-                        // clears its own display first (the minibuffer's
-                        // transient overlay); `dont-clear-message' keeps
-                        // the echo area untouched.
-                        let kept = interp
-                            .lookup_var_key(cached_symbol!("clear-message-function"), env)
-                            .filter(|function| !function.is_nil())
-                            .and_then(|function| {
-                                interp.call_function_value(function, None, &[], env).ok()
-                            })
-                            .is_some_and(|result| {
-                                crate::lisp::types::eq_symbol_named(result, "dont-clear-message")
-                            });
-                        if !kept {
-                            set_echo_area_message(None);
-                        }
-                    } else {
-                        // xdisp.c set_message: `set-message-function' may
-                        // replace the string or consume it entirely
-                        // (set-minibuffer-message displays it inside the
-                        // active minibuffer instead of the echo area).
-                        let mut display = formatted;
-                        if let Some(function) = interp
-                            .lookup_var_key(cached_symbol!("set-message-function"), env)
-                            .filter(|function| !function.is_nil())
-                        {
-                            let string =
-                                formatted.unwrap_or_else(|| Value::String(text.clone().into()));
-                            if let Ok(result) =
-                                interp.call_function_value(function, None, &[string], env)
-                            {
-                                if result.is_string() {
-                                    display = Some(result);
-                                } else if result.is_truthy() {
-                                    display = None;
-                                }
-                            }
-                        }
-                        if let Some(value) = display {
-                            set_echo_area_message_value(value)?;
-                        }
-                    }
-                }
-                // There is no echo area in batch mode.  GNU writes messages to
-                // the process stderr instead (xdisp.c message_to_stderr),
-                // including the newline used to clear an empty message, and
-                // first a newline of its own when stdout was written since
-                // the previous message (`noninteractive_need_newline').
-                // Message capture remains independent of `inhibit-message',
-                // matching the advice used by ERT.
-                if interp
-                    .lookup_var_key(cached_symbol!("noninteractive"), env)
-                    .is_some_and(|value| value.is_truthy())
-                    && interp
-                        .lookup_var_key(cached_symbol!("inhibit-message"), env)
-                        .is_none_or(|value| value.is_nil())
-                {
-                    message_to_stderr(interp, formatted.as_ref(), env)?;
-                }
-                if args.first().is_some_and(Value::is_nil) {
-                    Ok(Value::Nil)
-                } else {
-                    Ok(formatted.unwrap_or_else(|| Value::String(text.into())))
-                }
+                let formatted = super::call(interp, "format-message", args, env)?;
+                let log = string_text(&formatted)?;
+                message3(interp, formatted, Some(&log), env)?;
+                Ok(formatted)
             }
             "message-box" => {
                 if args.is_empty() {

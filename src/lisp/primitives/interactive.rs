@@ -2,13 +2,20 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
+mod echo;
 mod kbd_input;
 mod key_sequence;
+pub(crate) use echo::{
+    cancel_echoing, echo_after_command, echo_after_event, echo_before_wait, echo_dash,
+    echo_keystrokes_p, echo_length, echo_now, echo_timer, echo_timer_expired, echo_truncate,
+    echo_update, set_echo_prompt,
+};
 pub(crate) use kbd_input::{
     KbdWait, KeyboardTerminal, clear_keyboard_waiting_thread, clear_waiting_for_input,
     detect_input_pending, detect_input_pending_run_timers, get_input_pending, gobble_input,
     kbd_buffer_get_event_wait, kbd_buffer_store_event, kbd_is_ours, keyboard_wait_descriptors,
-    redisplay_preserve_echo_area, set_keyboard_terminal, set_waiting_for_input, swallow_events,
+    redisplay_preserve_echo_area, requeued_events_pending_p, set_keyboard_terminal,
+    set_waiting_for_input, sit_for, swallow_events,
 };
 #[cfg(unix)]
 pub(crate) use kbd_input::{
@@ -21,7 +28,8 @@ pub(crate) use kbd_input::{
     set_tty_input_modes, stuff_buffered_input, sys_suspend, take_frame_garbaged,
     take_window_change_signal, tty_input_modes, unread_command_events_pending,
 };
-pub(crate) use key_sequence::{KeySequenceReader, read_key_sequence_events};
+use kbd_input::{quit_throw_to_read_char_outside_signal, waiting_for_input};
+pub(crate) use key_sequence::{KeySequenceReader, read_key_sequence_vs};
 
 #[cfg(unix)]
 use std::sync::atomic::{AtomicUsize, Ordering as UserSignalOrdering};
@@ -1367,7 +1375,7 @@ pub(crate) fn parse_interactive_string(
                     Value::T,
                     env,
                 )?;
-                let events = read_key_sequence_events(interp, message, code == 'K', env);
+                let events = read_key_sequence_vs(interp, message, false, code == 'K', false, env);
                 interp.restore_special_binding(cursor, env)?;
                 let events = events?;
                 let keys = crate::lisp::primitives::dispatch::event_array(&events, code == 'K');
@@ -1653,96 +1661,6 @@ fn command_loop_call(
     interp.call_function_value(Value::Symbol(name.into()), None, args, env)
 }
 
-// GNU's kboard->echo_string for the frontend: the echo of a key
-// sequence that is still pending while its read blocks (the mouse-menu
-// popup).  The blocking reader displays it once `echo-keystrokes' idle
-// seconds pass, exactly as read_char's echo timer does.
-thread_local! {
-    static PENDING_KEYSTROKE_ECHO: std::cell::RefCell<
-        Option<(String, crate::lisp::primitives::EchoSpans)>,
-    > = const { std::cell::RefCell::new(None) };
-}
-
-pub(crate) fn set_pending_keystroke_echo(
-    echo: Option<(String, crate::lisp::primitives::EchoSpans)>,
-) {
-    PENDING_KEYSTROKE_ECHO.with_borrow_mut(|slot| *slot = echo);
-}
-
-pub(crate) fn take_pending_keystroke_echo() -> Option<(String, crate::lisp::primitives::EchoSpans)>
-{
-    PENDING_KEYSTROKE_ECHO.with_borrow_mut(|slot| slot.take())
-}
-
-/// keyboard.c's echo pipeline for a pending key sequence: echo_add_key
-/// renders each event space-separated (a composite event echoes its
-/// bare head symbol name, a character its key description), echo_dash
-/// appends the trailing dash, and — when `echo-keystrokes-help' is on —
-/// help.el's own `help--append-keystrokes-help' decides whether the C-h
-/// hint follows, reading `this-single-command-keys' against the active
-/// maps and propertizing the key through substitute-command-keys.
-pub(crate) fn pending_keystroke_echo(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    pending: &[Value],
-) -> (String, crate::lisp::primitives::EchoSpans) {
-    let mut text = String::new();
-    for event in pending {
-        if !text.is_empty() {
-            text.push(' ');
-        }
-        let head = match event.kind() {
-            Kind::Cons(_) => event.car().unwrap_or(Value::Nil),
-            other => other.value(),
-        };
-        match head.kind() {
-            Kind::Symbol(name) => text.push_str(name.as_str()),
-            other => {
-                let description = super::call(
-                    interp,
-                    "single-key-description",
-                    std::slice::from_ref(&other.value()),
-                    env,
-                )
-                .ok()
-                .and_then(|value| crate::lisp::primitives::string_text(&value).ok());
-                match description {
-                    Some(description) => text.push_str(&description),
-                    None => text.push_str(&format!("{other}")),
-                }
-            }
-        }
-    }
-    // echo_dash: the temporary trailing dash of an unfinished sequence.
-    text.push('-');
-    let help_wanted = interp
-        .lookup_var_key(cached_symbol!("echo-keystrokes-help"), env)
-        .is_none_or(|value| value.is_truthy());
-    if help_wanted
-        && interp
-            .lookup_function_key(cached_symbol!("help--append-keystrokes-help"), env)
-            .is_ok()
-    {
-        // The Lisp side reads this-single-command-keys, exactly what
-        // read_key_sequence has accumulated at this point.
-        interp.keyboard_input.command_keys = pending.to_vec();
-        interp.keyboard_input.single_command_start = 0;
-        // help.el's function is interpreted Lisp: route through the
-        // full function channel, not the builtin dispatch.
-        if let Ok(appended) = interp.call_function_value(
-            Value::Symbol("help--append-keystrokes-help".into()),
-            Some("help--append-keystrokes-help"),
-            &[Value::String(text.clone().into())],
-            env,
-        ) && let Ok(appended_text) = crate::lisp::primitives::string_text(&appended)
-        {
-            let spans = crate::lisp::primitives::string_face_spans(&appended);
-            return (appended_text, spans);
-        }
-    }
-    (text, Vec::new())
-}
-
 /// keyboard.c:EVENT_HEAD_KIND reads the live symbol property. A mouse
 /// event need not have "mouse" in its name, including after translation.
 fn mouse_event_head(interp: &Interpreter, event: &Value) -> Option<Value> {
@@ -1790,8 +1708,11 @@ fn resolve_read_key_binding(
         if !has_tty_menu_executor() {
             return Ok(KeyResolution::Prefix);
         }
-        let echo = pending_keystroke_echo(interp, env, keys);
-        set_pending_keystroke_echo(Some(echo));
+        // read_char for the next key, PREV_EVENT the click: the echo
+        // area's test, and echoing at once after an event with parameters
+        // (a menu is about to show); then read_char_x_menu_prompt.
+        echo_before_wait(interp, env)?;
+        echo_timer(interp, env, *event)?;
         roots[1] = super::call(interp, "x-popup-menu", &[*event, map], env)?;
         let path = roots[1].to_vec()?;
         if path.is_empty() {
@@ -1901,12 +1822,6 @@ fn execute_command_binding_inner(
     record_keys: bool,
 ) -> Result<(), LispError> {
     add_command_undo_boundary(interp, env)?;
-    // keyboard.c read_char wipes a lingering message when the next input
-    // event arrives: the channel empties before the command runs, but the
-    // glass only catches up at the next redisplay — so a command that
-    // blocks with redisplay frozen (the F10 menu) keeps the old message
-    // visible until an explicit `message' repaints the row.
-    crate::lisp::primitives::expire_echo_area_message();
     interp.set_variable_key(cached_symbol!("last-command-event"), last_event, env);
     interp.set_variable_key(cached_symbol!("last-input-event"), last_event, env);
     if !mouse_event_on_menu_bar(&last_event) {
@@ -2407,7 +2322,7 @@ pub(crate) fn pop_unread_command_event_value(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    read_command_event(interp, env, false)
+    read_command_event(interp, env, false, Value::Nil)
 }
 
 /// read_char under read_key_sequence: handle_interrupt's longjmp makes
@@ -2415,17 +2330,21 @@ pub(crate) fn pop_unread_command_event_value(
 /// `quit-flag' after each key it reads (KeySequenceReader::read_event,
 /// once the input method has had the event), so C-g is looked up like any
 /// key (`keyboard-quit', the minibuffer's `abort-minibuffers').
+/// PREV_EVENT is read_key_sequence's last_nonmenu_event, the key read
+/// before this one.
 pub(crate) fn read_key_sequence_event(
     interp: &mut Interpreter,
     env: &mut Env,
+    prev_event: Value,
 ) -> Result<Value, LispError> {
-    read_command_event(interp, env, true)
+    read_command_event(interp, env, true, prev_event)
 }
 
 fn read_command_event(
     interp: &mut Interpreter,
     env: &mut Env,
     quit_char_is_event: bool,
+    prev_event: Value,
 ) -> Result<Value, LispError> {
     if let Some(event) = pop_pending_input_event_value(interp, env)? {
         return Ok(event);
@@ -2444,13 +2363,19 @@ fn read_command_event(
             Some(event) if event != Value::Integer(7) || quit_char_is_event => {
                 interp.keyboard_input.last_event_reread = false;
                 record_external_input_event(interp, &event, env);
-                note_input_method_previous_message(interp, &event, env);
+                read_char_non_reread(interp, &event, env)?;
                 Ok(event)
             }
             _ => Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
         };
     }
+    // read_char before it waits: the echo area's test, and its echo timer
+    // (sit_for `echo-keystrokes', then echo_now) once the idle timers
+    // have started.
+    echo_before_wait(interp, env)?;
     tty_note_idle_start(interp, env);
+    let mut echo_deadline = echo_timer(interp, env, prev_event)?
+        .and_then(|seconds| std::time::Instant::now().checked_add(seconds));
     let result = (|| loop {
         // kbd_buffer_get_event: `unread-command-events' before the
         // keyboard buffer.
@@ -2464,16 +2389,26 @@ fn read_command_event(
                 Some(Some(event)) => {
                     interp.keyboard_input.last_event_reread = false;
                     record_external_input_event(interp, &event, env);
-                    note_input_method_previous_message(interp, &event, env);
+                    read_char_non_reread(interp, &event, env)?;
                     return Ok(event);
                 }
                 Some(None) => {}
             }
         }
-        match kbd_input::kbd_buffer_get_event_wait(interp, env, None, true)? {
+        match kbd_input::kbd_buffer_get_event_wait(interp, env, echo_deadline, true)? {
             kbd_input::KbdWait::Quit => {
                 if let Some(event) = read_char_quit(interp, env)? {
                     return Ok(event);
+                }
+            }
+            kbd_input::KbdWait::TimedOut if echo_deadline.is_some() => {
+                // sit_for's t: no input arrived (none is pending) in
+                // `echo-keystrokes' seconds; the echo shows on the glass
+                // at once (message3_nolog's echo_area_display).
+                echo_deadline = None;
+                if !kbd_input::detect_input_pending(interp, env)? {
+                    echo_timer_expired(interp, env)?;
+                    run_tty_frame_redraw(interp, env);
                 }
             }
             kbd_input::KbdWait::Ready | kbd_input::KbdWait::TimedOut => {}
@@ -2503,6 +2438,8 @@ fn read_char_quit(interp: &mut Interpreter, env: &mut Env) -> Result<Option<Valu
     interp.keyboard_input.last_event_reread = false;
     let event = Value::Integer(kbd_input::quit_char());
     record_external_input_event(interp, &event, env);
+    // The quit character goes on as read_char's non_reread event.
+    read_char_non_reread(interp, &event, env)?;
     Ok(Some(event))
 }
 
@@ -3104,12 +3041,103 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// read_char's non_reread step for a keyboard event: a character an input
-/// method could take has the echo area's message kept as
-/// `input-method-previous-message' before the echo area is wiped.
-fn note_input_method_previous_message(interp: &mut Interpreter, event: &Value, env: &mut Env) {
+/// command_loop_1 at the top of each cycle in a minibuffer: a message in
+/// the echo area over it (the mini window is the echo area's) shows for
+/// `minibuffer-message-timeout' seconds, or until input comes, with
+/// `inhibit-quit' bound so a C-g is read; then the echo area is cleared
+/// (message1 (0)), `echo-area-clear-hook' runs, and a C-g that came is
+/// read as input.
+pub(crate) fn minibuffer_message_timeout(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if interp.minibuffer_depth() == 0
+        || crate::lisp::primitives::dispatch::display::echo_area_message_value().is_none()
+    {
+        return Ok(());
+    }
+    let timeout = interp
+        .lookup_var_key(cached_symbol!("minibuffer-message-timeout"), env)
+        .unwrap_or(Value::Nil);
+    if !matches!(
+        timeout.kind(),
+        Kind::Integer(_) | Kind::Float(_) | Kind::BigInteger(_)
+    ) {
+        return Ok(());
+    }
+    let count = interp.specpdl_index();
+    interp.specbind_symbol(&"inhibit-quit".into(), Value::T, env)?;
+    let result = (|| {
+        sit_for(interp, env, timeout, false, 2)?;
+        crate::lisp::primitives::dispatch::display::message3(interp, Value::Nil, None, env)?;
+        crate::lisp::primitives::safe_run_hooks(
+            interp,
+            &cached_symbol!("echo-area-clear-hook").symbol(),
+            env,
+        )
+    })();
+    interp.unbind_to(count, env)?;
+    result?;
+    if !interp.quit_flag_is_nil() {
+        interp.set_c_variable("quit-flag", Value::Nil);
+        interp.set_variable_key(
+            cached_symbol!("unread-command-events"),
+            Value::list([Value::Integer(quit_char())]),
+            env,
+        );
+    }
+    Ok(())
+}
+
+/// read_char's non_reread step for an event from the keyboard buffer: a
+/// character an input method could take has the echo area's message kept
+/// as `input-method-previous-message', then the echo area is wiped.
+fn read_char_non_reread(
+    interp: &mut Interpreter,
+    event: &Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
     if input_method_takes(interp, event, env) {
         save_input_method_previous_message(interp, env);
+    }
+    read_char_wipe_echo_area(interp, event, env)
+}
+
+/// keyboard.c:read_char's wipe of the echo area for an event from the
+/// keyboard buffer (a reread, macro or input method event is not one), but
+/// for the help-echo, switch-frame and select-window events, which do
+/// their own echo area work: with a message, `echo-area-clear-hook' runs
+/// and clear_message (1, 0) clears it, the mini window resized over an
+/// active minibuffer at the next redisplay; without one, clear_message
+/// when `clear-message-function' is a function.
+pub(crate) fn read_char_wipe_echo_area(
+    interp: &mut Interpreter,
+    event: &Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if let Some((head, _)) = event.cons_values()
+        && (crate::lisp::types::eq_symbol_named(head, "help-echo")
+            || crate::lisp::types::eq_symbol_named(head, "switch-frame")
+            || crate::lisp::types::eq_symbol_named(head, "select-window"))
+    {
+        return Ok(());
+    }
+    if crate::lisp::primitives::dispatch::display::echo_area_message_value().is_some() {
+        crate::lisp::primitives::safe_run_hooks(
+            interp,
+            &cached_symbol!("echo-area-clear-hook").symbol(),
+            env,
+        )?;
+        crate::lisp::primitives::dispatch::display::clear_message(interp, env, true, false)
+    } else {
+        let function = interp
+            .forwarded_c_value("clear-message-function", &Env::new())
+            .unwrap_or(Value::Nil);
+        if crate::lisp::primitives::function_value_p(interp, &function, env) {
+            crate::lisp::primitives::dispatch::display::clear_message(interp, env, true, false)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -3174,10 +3202,17 @@ pub(crate) fn read_char_input_method(
         Value::Nil
     };
     // The echo status and this_command_keys, saved.
-    let saved_echo = PENDING_KEYSTROKE_ECHO.with_borrow(Clone::clone);
+    let saved_immediate_echo = interp.keyboard_input.immediate_echo;
+    let saved_ok_to_echo = interp.keyboard_input.ok_to_echo_at_next_pause;
+    let saved_echo_string = interp.keyboard_input.echo_string;
+    let saved_echo_prompt = interp.keyboard_input.echo_prompt;
     let saved_keys = std::mem::take(&mut interp.keyboard_input.command_keys);
     let saved_start = std::mem::replace(&mut interp.keyboard_input.single_command_start, 0);
-    let call = (|| -> Result<Value, LispError> {
+    let roots = [
+        saved_echo_string.unwrap_or(Value::Nil),
+        saved_echo_prompt.unwrap_or(Value::Nil),
+    ];
+    let call = interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
         // Wipe the echo area.
         if crate::lisp::primitives::dispatch::display::echo_area_message_value().is_some() {
             crate::lisp::primitives::safe_run_hooks(
@@ -3187,7 +3222,7 @@ pub(crate) fn read_char_input_method(
             )?;
         }
         crate::lisp::primitives::dispatch::display::clear_message(interp, env, true, false)?;
-        set_pending_keystroke_echo(None);
+        echo_truncate(interp, 0, env)?;
         let count = interp.specpdl_index();
         if read == InputMethodRead::NoKeymap {
             interp.specbind_symbol(&"input-method-use-echo-area".into(), Value::T, env)?;
@@ -3200,11 +3235,17 @@ pub(crate) fn read_char_input_method(
         READ_RECORDED.set(recorded);
         interp.unbind_to(count, env)?;
         result
-    })();
+    });
     // The echoing and this_command_keys state, restored.
     interp.keyboard_input.command_keys = saved_keys;
     interp.keyboard_input.single_command_start = saved_start;
-    set_pending_keystroke_echo(saved_echo);
+    cancel_echoing(interp);
+    interp.keyboard_input.ok_to_echo_at_next_pause = saved_ok_to_echo;
+    interp.keyboard_input.echo_string = saved_echo_string;
+    interp.keyboard_input.echo_prompt = saved_echo_prompt;
+    if saved_immediate_echo {
+        echo_now(interp, env)?;
+    }
     let events = call?;
     let Some((first, rest)) = events.cons_values() else {
         // No event: the previous message back, if any.
@@ -3239,11 +3280,17 @@ pub(crate) fn read_char_input_method(
 /// keyboard.c:read_char's add_command_key for an event it returned: the
 /// event joins this-command-keys, one reread from `unread-command-events'
 /// only as their first.
-pub(crate) fn add_read_event_to_command_keys(interp: &mut Interpreter, event: Value) {
+pub(crate) fn add_read_event_to_command_keys(
+    interp: &mut Interpreter,
+    event: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
     let reread = std::mem::take(&mut interp.keyboard_input.last_event_reread);
     if !reread || interp.keyboard_input.command_keys.is_empty() {
         interp.keyboard_input.command_keys.push(event);
+        echo_after_event(interp, event, env)?;
     }
+    Ok(())
 }
 
 // keyboard.c's Fdiscard_input empties the keyboard buffer (kbd_fetch_ptr =
@@ -3278,9 +3325,15 @@ pub(crate) fn read_tty_event_with_timeout(
     env: &mut Env,
     end_time: Option<std::time::Instant>,
 ) -> Result<Option<Value>, LispError> {
+    let mut before_wait = true;
     loop {
         if let Some(event) = pop_pending_input_event_value(interp, env)? {
             return Ok(Some(event));
+        }
+        // read_char before it waits: the echo area's test (a read with an
+        // end time runs no echo timer).
+        if std::mem::take(&mut before_wait) {
+            echo_before_wait(interp, env)?;
         }
         let cursor_in_echo_area = interp
             .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
@@ -3291,7 +3344,7 @@ pub(crate) fn read_tty_event_with_timeout(
                 Some(Some(event)) => {
                     interp.keyboard_input.last_event_reread = false;
                     record_external_input_event(interp, &event, env);
-                    note_input_method_previous_message(interp, &event, env);
+                    read_char_non_reread(interp, &event, env)?;
                     return Ok(Some(event));
                 }
                 Some(None) => {}
@@ -3549,6 +3602,7 @@ pub(crate) fn command_loop_entry(interp: &mut Interpreter, env: &mut Env) -> Res
     interp.set_variable_key(cached_symbol!("last-prefix-arg"), Value::Nil, env);
     interp.set_variable_key(cached_symbol!("deactivate-mark"), Value::Nil, env);
     clear_waiting_for_input();
+    cancel_echoing(interp);
     clear_command_keys(interp);
     run_post_command_hooks(interp, env)?;
     let this_command = interp
@@ -3635,6 +3689,7 @@ pub(crate) fn cmd_error(
     };
     interp.set_variable_key(cached_symbol!("prefix-arg"), Value::Nil, env);
     interp.set_variable_key(cached_symbol!("last-prefix-arg"), Value::Nil, env);
+    cancel_echoing(interp);
     // Avoid unquittable loop if data contains a circular list.
     let reported = interp.with_lisp_stack_roots(&data, |interp| {
         crate::lisp::primitives::with_cmd_error_print_limits(interp, |interp| {

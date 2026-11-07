@@ -3430,7 +3430,10 @@ impl Interpreter {
     /// `if (wait_proc->raw_status_new) update_status (wait_proc)': its
     /// status `run' (a connection's open one) or connecting_status.
     pub(crate) fn wait_proc_running(&mut self, record_id: u64) -> bool {
-        let _ = self.refresh_process_id(record_id);
+        // Only what handle_child_signal has recorded (raw_status_new): a
+        // child found ended here, after the loop's look at the status
+        // changes, would end the wait before status_notify ran its
+        // sentinel.
         let Some(process) = self.find_process_state_mut(record_id) else {
             return false;
         };

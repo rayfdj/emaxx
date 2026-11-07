@@ -500,6 +500,19 @@ pub(crate) fn clear_waiting_for_input() {
     WAITING_FOR_INPUT.set(false);
 }
 
+/// keyboard.c's waiting_for_input.
+pub(crate) fn waiting_for_input() -> bool {
+    WAITING_FOR_INPUT.get()
+}
+
+/// quit_throw_to_read_char (0), outside a signal handler.
+pub(crate) fn quit_throw_to_read_char_outside_signal(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    quit_throw_to_read_char(interp, env, false)
+}
+
 /// Whether quit_throw_to_read_char was called since read_char last took
 /// it: the read returns quit_char.
 pub(crate) fn take_quit_thrown_to_read_char() -> bool {
@@ -675,6 +688,72 @@ pub(crate) fn detect_input_pending_run_timers(
     Ok(pending)
 }
 
+/// dispnew.c:sit_for: TIMEOUT seconds (an integer or a float, t for a
+/// pass that does not wait) or until input is pending, at once nil when
+/// input is pending (after the ripe timers) or a keyboard macro executes;
+/// READING waits as a read of the keyboard would (`throw-on-input' t),
+/// DISPLAY_OPTION 1 redisplays as timers and output arrive, 2 also
+/// first.  t when it waited the whole time.
+pub(crate) fn sit_for(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    timeout: Value,
+    reading: bool,
+    display_option: u8,
+) -> Result<bool, LispError> {
+    let do_display = display_option > 0;
+    swallow_events(interp, env, do_display)?;
+    if detect_input_pending_run_timers(interp, env, do_display)?
+        || interp
+            .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+            .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(false);
+    }
+    if display_option > 1 {
+        redisplay_preserve_echo_area(interp, env);
+    }
+    let (sec, nsec) = match timeout.kind() {
+        Kind::Integer(seconds) => {
+            if seconds <= 0 {
+                return Ok(true);
+            }
+            (seconds, 0)
+        }
+        Kind::Float(seconds) => {
+            let seconds = seconds.get();
+            // ! (0 < seconds), a NaN included.
+            if seconds.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+                return Ok(true);
+            }
+            // min (t.tv_sec, WAIT_READING_MAX): that maximum is time_t's
+            // own here, so the seconds are taken as they are.
+            crate::lisp::primitives::processes::dtotimespec(seconds)
+        }
+        Kind::T => (0, 0),
+        _ => return Err(LispError::WrongTypeArgument("numberp".into(), timeout)),
+    };
+    let count = interp.specpdl_index();
+    if reading {
+        interp.specbind_symbol(&"throw-on-input".into(), Value::T, env)?;
+    }
+    let waited = crate::lisp::primitives::processes::wait_reading_process_output(
+        interp,
+        env,
+        crate::lisp::primitives::processes::WaitRequest {
+            time_limit: sec,
+            nsecs: nsec,
+            read_kbd: if reading { -1 } else { 1 },
+            do_display,
+            wait_proc: None,
+            just_wait_proc: 0,
+        },
+    );
+    interp.unbind_to(count, env)?;
+    waited?;
+    Ok(!detect_input_pending(interp, env)?)
+}
+
 /// keyboard.c:swallow_events: process_special_events (the selection
 /// requests a terminal frame has none of), then get_input_pending with
 /// the timers run, a redisplay after those that ran when no input came.
@@ -701,8 +780,7 @@ pub(crate) fn redisplay_preserve_echo_area(interp: &mut Interpreter, env: &mut E
 /// third request in a row giving up `inhibit-quit', and make a waiting
 /// read_char return the quit character.
 pub(crate) fn handle_interrupt(interp: &mut Interpreter, env: &mut Env, in_signal_handler: bool) {
-    // cancel_echoing: the keys echoed so far are echoed no more.
-    super::set_pending_keystroke_echo(None);
+    super::cancel_echoing(interp);
     if !interp.quit_flag_is_nil() && dev_tty_terminal() {
         // A quit not yet taken: the emergency escape.
         emergency_escape(interp, env, in_signal_handler);
@@ -719,7 +797,9 @@ pub(crate) fn handle_interrupt(interp: &mut Interpreter, env: &mut Env, in_signa
         }
         interp.set_c_variable("quit-flag", Value::T);
     }
-    if WAITING_FOR_INPUT.get() {
+    // Not while echo_now displays (`echoing'): it throws itself once the
+    // echo is shown.
+    if WAITING_FOR_INPUT.get() && !interp.keyboard_input.echoing {
         // `quit-flag' is t, so no `kill-emacs' to run.
         let _ = quit_throw_to_read_char(interp, env, in_signal_handler);
     }

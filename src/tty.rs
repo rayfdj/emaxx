@@ -374,13 +374,6 @@ struct TtyState {
     other_terminals: std::collections::HashMap<u64, Box<TtyState>>,
     /// Per-window display anchors, keyed by window record id.
     views: std::collections::HashMap<u64, WindowView>,
-    /// A `C-u' sequence is accumulating: digits and `-' extend the prefix
-    /// argument instead of dispatching (GNU's universal-argument--mode).
-    prefix_active: bool,
-    /// Events of the in-progress (multi-key) sequence.
-    /// Frontend-owned echo text (key-sequence progress, command errors);
-    /// when empty, the session's `message' echo line shows instead.
-    echo: String,
     /// The frame as last painted: every row above the echo area, the echo
     /// row, and the terminal size they were painted for.  Redraw emits
     /// only rows that differ — GNU's dispnew current-matrix idea, one
@@ -457,8 +450,6 @@ impl TtyState {
             terminal_id: 0,
             other_terminals: Default::default(),
             views: std::collections::HashMap::new(),
-            prefix_active: false,
-            echo: String::new(),
             painted_rows: Vec::new(),
             painted_echo: Vec::new(),
             painted_faces: None,
@@ -727,6 +718,9 @@ fn run_owned(
 #[derive(Clone)]
 enum QueuedInput {
     Lisp(Value),
+    /// An error read_char raised while it waited (its echo), which ends
+    /// the key sequence as read_key_sequence's error.
+    Error(LispError),
 }
 
 impl QueuedInput {
@@ -734,6 +728,7 @@ impl QueuedInput {
     fn into_lisp(self, _interpreter: &mut Interpreter) -> Option<Value> {
         match self {
             Self::Lisp(event) => Some(event),
+            Self::Error(_) => None,
         }
     }
 }
@@ -1284,17 +1279,11 @@ fn draw_echo_row_composed(
     if state.minibuffer_owns_echo {
         return;
     }
-    let frontend_echo = state.echo.clone();
     let cols = usize::from(cols.max(1));
     let rows = usize::from(rows.max(1));
     let max_rows = state.echo_max_rows.max(1);
-    let (long, _, echo_cursor) = compose_echo_row(
-        interpreter,
-        env,
-        &frontend_echo,
-        cols * max_rows,
-        &mut state.face_cache,
-    );
+    let (long, _, echo_cursor) =
+        compose_echo_row(interpreter, env, cols * max_rows, &mut state.face_cache);
     let mut echo_paint = wrap_echo_paint(&long, cols, max_rows);
     let mut mini_rows = state.echo_rows.max(1);
     if echo_paint.len() > mini_rows {
@@ -1376,6 +1365,40 @@ fn command_loop(
             redraw_at_command_boundary(interpreter, env, &mut state)
                 .map_err(|error| error.to_string())?;
         }
+        // read_char, with no requeued event to give it one at once: a
+        // message in the echo area turns echoing off (or the dash goes
+        // after the echo), and in the middle of a key sequence echoing
+        // starts once `echo-keystrokes' seconds pass with no input
+        // (sit_for, then echo_now).  An error there is read_key_sequence's,
+        // reported by command_loop_2's handler.
+        let mut echo_deadline = None;
+        if !crate::lisp::primitives::requeued_events_pending_p(interpreter, env) {
+            let prev_event = reader.as_ref().map_or(
+                Value::Nil,
+                crate::lisp::primitives::KeySequenceReader::prev_event,
+            );
+            let prelude = crate::lisp::primitives::echo_before_wait(interpreter, env)
+                .and_then(|()| crate::lisp::primitives::echo_timer(interpreter, env, prev_event));
+            match prelude.map_err(LispError::into_kind) {
+                Ok(delay) => {
+                    echo_deadline =
+                        delay.and_then(|seconds| std::time::Instant::now().checked_add(seconds));
+                }
+                Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
+                Err(error) => {
+                    reader = None;
+                    match settle_command_error(interpreter, env, error) {
+                        Ok(text) => {
+                            if let Some(text) = text {
+                                crate::lisp::primitives::set_echo_area_message(Some(text));
+                            }
+                        }
+                        Err(termination) => return Ok(termination.exit_code),
+                    }
+                    continue;
+                }
+            }
+        }
         // GNU fires ripe timers while the loop waits for input
         // (keyboard.c's timer_check): isearch's lazy highlight and every
         // other timer-driven update land between keystrokes.  A timer
@@ -1410,9 +1433,33 @@ fn command_loop(
             // (0, 0, -1, do_display, ...) until the keyboard buffer has an
             // event.  Timers, filters and sentinels run inside it, each
             // delivery repainting the glass (redisplay_preserve_echo_area).
-            match crate::lisp::primitives::kbd_buffer_get_event_wait(interpreter, env, None, true)
-                .map_err(LispError::into_kind)
+            match crate::lisp::primitives::kbd_buffer_get_event_wait(
+                interpreter,
+                env,
+                echo_deadline,
+                true,
+            )
+            .map_err(LispError::into_kind)
             {
+                Ok(crate::lisp::primitives::KbdWait::TimedOut) if echo_deadline.is_some() => {
+                    // sit_for's t: no input arrived in `echo-keystrokes'
+                    // seconds; message3_nolog shows the echo at once.
+                    echo_deadline = None;
+                    if !queue.input_pending() {
+                        if let Err(error) =
+                            crate::lisp::primitives::echo_timer_expired(interpreter, env)
+                        {
+                            match error.into_kind() {
+                                LispErrorKind::Terminate(termination) => {
+                                    return Ok(termination.exit_code);
+                                }
+                                error => break QueuedInput::Error(LispError::from(error)),
+                            }
+                        }
+                        let mut state = shared_state.borrow_mut();
+                        let _ = redraw(interpreter, env, &mut state);
+                    }
+                }
                 Ok(crate::lisp::primitives::KbdWait::Quit) => {
                     // read_char's setjmp: the quit character, and under
                     // `inhibit-quit' the quit not reported again.
@@ -1437,6 +1484,20 @@ fn command_loop(
         };
         // Input arrived: the idle period is over (timer_stop_idle).
         crate::lisp::primitives::tty_note_idle_end();
+        // The echo's error leaves read_key_sequence for command_loop_2's
+        // cmd_error, and command_loop_1 is entered again.
+        if let QueuedInput::Error(error) = event {
+            reader = None;
+            match settle_command_error(interpreter, env, error.into_kind()) {
+                Ok(text) => {
+                    if let Some(text) = text {
+                        crate::lisp::primitives::set_echo_area_message(Some(text));
+                    }
+                }
+                Err(termination) => return Ok(termination.exit_code),
+            }
+            continue;
+        }
         shared_state.borrow_mut().note_input();
         // Typed mouse input becomes GNU's click event now that the frame
         // state is in reach; motion and wheel produce nothing.
@@ -1465,13 +1526,31 @@ fn command_loop(
             if crate::lisp::primitives::input_method_takes(interpreter, &event, env) {
                 crate::lisp::primitives::save_input_method_previous_message(interpreter, env);
             }
+            // Then wipes the echo area, as it does for every event from
+            // the keyboard buffer but a help event (not a reread one); the
+            // glass catches up at the next redisplay.
+            if let Err(error) =
+                crate::lisp::primitives::read_char_wipe_echo_area(interpreter, &event, env)
+            {
+                match error.into_kind() {
+                    LispErrorKind::Terminate(termination) => return Ok(termination.exit_code),
+                    error => {
+                        reader = None;
+                        match settle_command_error(interpreter, env, error) {
+                            Ok(text) => {
+                                if let Some(text) = text {
+                                    crate::lisp::primitives::set_echo_area_message(Some(text));
+                                }
+                            }
+                            Err(termination) => return Ok(termination.exit_code),
+                        }
+                        continue;
+                    }
+                }
+            }
         } else {
             crate::lisp::primitives::count_read_event(interpreter);
         }
-        // read_char wipes a lingering message the moment any input event
-        // arrives — sequences and silently-discarded button-downs
-        // included; the glass catches up at the next redisplay.
-        crate::lisp::primitives::expire_echo_area_message();
         if event
             .car()
             .ok()
@@ -1486,19 +1565,13 @@ fn command_loop(
                 .activate_terminal(interpreter.selected_terminal_id());
             continue;
         }
-        // The state borrow is scoped: `execute_binding' below may re-enter
-        // redisplay through the minibuffer's frame-redraw hook, and
-        // resolution itself can run the whole dropdown executor (a
-        // keymap-bound mouse click pops it), both of which borrow the
-        // same cell.
-        if reader.is_none() {
-            let state = &mut *shared_state.borrow_mut();
-            if !state.prefix_active {
-                state.echo.clear();
-            }
-        }
+        // `execute_binding' below may re-enter redisplay through the
+        // minibuffer's frame-redraw hook, and resolution itself can run
+        // the whole dropdown executor (a keymap-bound mouse click pops
+        // it), both of which borrow the state cell: no borrow is held.
         let resolution = (|| {
             if reader.is_none() {
+                crate::lisp::primitives::clear_command_keys(interpreter);
                 reader = Some(crate::lisp::primitives::KeySequenceReader::new(
                     interpreter,
                     Value::Nil,
@@ -1533,27 +1606,32 @@ fn command_loop(
         ));
         let binding = match resolution {
             Resolution::Command(binding) => binding,
-            Resolution::Prefix => {
-                let mut state = shared_state.borrow_mut();
-                if active.keys().is_empty() {
-                    state.echo.clear();
-                } else {
-                    state.echo = format!("{}-", describe_keys(active.keys()));
-                }
-                continue;
-            }
+            Resolution::Prefix => continue,
             // An undefined key sequence is a nil command, which
             // command_loop_1 runs as `undefined' once `pre-command-hook'
             // has run.
             Resolution::Undefined => Value::Nil,
         };
-        if !shared_state.borrow().prefix_active {
-            shared_state.borrow_mut().echo.clear();
-        }
-        let keys = reader
+        let keys = match reader
             .take()
             .expect("completed key reader")
-            .finish(interpreter, false, env);
+            .finish(interpreter, false, env)
+            .map_err(LispError::into_kind)
+        {
+            Ok(keys) => keys,
+            Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
+            Err(error) => {
+                match settle_command_error(interpreter, env, error) {
+                    Ok(text) => {
+                        if let Some(text) = text {
+                            crate::lisp::primitives::set_echo_area_message(Some(text));
+                        }
+                    }
+                    Err(termination) => return Ok(termination.exit_code),
+                }
+                continue;
+            }
+        };
         let last_event = keys.last().cloned().unwrap_or(Value::Nil);
         let command_error = match crate::lisp::primitives::execute_read_key_command_binding(
             interpreter,
@@ -1587,31 +1665,27 @@ fn command_loop(
         if let Some(termination) = interpreter.take_pending_termination() {
             return Ok(termination.exit_code);
         }
-        // command_loop_1 after the command: no this-command-keys.
+        // command_loop_1 after the command: this-command-keys emptied, and
+        // with echoing on a prefix command's echo shown afresh (simple.el's
+        // universal-argument family describing its argument), else no
+        // echoing.
         crate::lisp::primitives::clear_command_keys(interpreter);
-        // A prefix command (simple.el's universal-argument family) left
-        // an accumulating prefix-arg behind: keep echoing the chain,
-        // GNU's echo_keystrokes display of the pending prefix keys.
-        // Any other command consumes the chain and its echo.
-        let prefix_pending = interpreter
-            .lookup_var_key(cached_symbol!("prefix-arg"), env)
-            .is_some_and(|prefix| prefix.is_truthy());
+        let command_error = match crate::lisp::primitives::echo_after_command(interpreter, env)
+            .map_err(LispError::into_kind)
         {
-            let state = &mut *shared_state.borrow_mut();
-            if prefix_pending {
-                state.echo = append_prefix_echo(&state.echo, &describe_keys(&keys));
-                state.prefix_active = true;
-            } else {
-                state.prefix_active = false;
-                state.echo.clear();
-            }
-            if let Some(text) = command_error {
-                state.echo = text;
-            }
-            // A blocking reader may have painted the echo row outside the
-            // matrix; repaint it against fresh state next frame.
-            state.painted_echo = Vec::new();
+            Ok(()) => command_error,
+            Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
+            Err(error) => match settle_command_error(interpreter, env, error) {
+                Ok(text) => text,
+                Err(termination) => return Ok(termination.exit_code),
+            },
+        };
+        if let Some(text) = command_error {
+            crate::lisp::primitives::set_echo_area_message(Some(text));
         }
+        // A blocking reader may have painted the echo row outside the
+        // matrix; repaint it against fresh state next frame.
+        shared_state.borrow_mut().painted_echo = Vec::new();
     }
 }
 
@@ -1691,15 +1765,6 @@ fn execute_binding(
     last_event: Value,
 ) -> Result<(), LispError> {
     crate::lisp::primitives::execute_command_binding(interpreter, env, binding, keys, last_event)
-}
-
-/// Extend the echoed `C-u' sequence: "C-u-" then "C-u 8-", GNU's prefix
-/// echo shape.
-fn append_prefix_echo(echo: &str, key: &str) -> String {
-    match echo.strip_suffix('-') {
-        Some(base) if !base.is_empty() => format!("{base} {key}-"),
-        _ => format!("{key}-"),
-    }
 }
 
 /// The echo-area text for a command's error, GNU's
@@ -4605,11 +4670,9 @@ fn redraw_with_echo_policy(
     // window tree above it (GNU's resize_mini_window, grow-only policy).
     let max_mini = max_mini_window_rows(interpreter, rows - menu_lines, rows);
     state.echo_max_rows = max_mini.max(1);
-    let frontend_echo_early = state.echo.clone();
     let (echo_long, echo_from_minibuffer, echo_cursor) = compose_echo_row(
         interpreter,
         env,
-        &frontend_echo_early,
         cols * max_mini.max(1),
         &mut state.face_cache,
     );
@@ -6333,10 +6396,13 @@ fn redraw_with_echo_policy(
         }
         state.painted_echo = echo_paint;
     }
+    // update_frame_1's cursor: in the echo area with `cursor-in-echo-area'
+    // or a message shown over the selected active minibuffer; otherwise
+    // the selected window's, echoing included.
     if (minibuffer_echo_owns_hardware_cursor(interpreter, echo_from_minibuffer)
         || (!echo_from_minibuffer
-            && frontend_echo_early.is_empty()
-            && interpreter.active_minibuffer_buffer_id().is_some()))
+            && interpreter.active_minibuffer_buffer_id().is_some()
+            && interpreter.selected_window_id() == interpreter.minibuffer_window_id()))
         && let Some(position) = echo_cursor
     {
         let (row, col) = wrapped_echo_cursor(&echo_long, position, cols, state.echo_rows);
@@ -6347,8 +6413,8 @@ fn redraw_with_echo_policy(
     } else if interpreter
         .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
         .is_some_and(|value| value.is_truthy())
-        && !frontend_echo_early.is_empty()
     {
+        // At the end of the echo row's text, its first column when empty.
         let (row, col) =
             wrapped_echo_cursor(&echo_long, echo_cursor.unwrap_or(0), cols, state.echo_rows);
         cursor_position = (
@@ -6433,13 +6499,12 @@ fn minibuffer_echo_owns_hardware_cursor(
 fn compose_echo_row(
     interpreter: &mut Interpreter,
     env: &mut Env,
-    frontend_echo: &str,
     cols: usize,
     face_cache: &mut std::collections::HashMap<String, CellAttrs>,
 ) -> (PaintRow, bool, Option<usize>) {
     let mut row;
     let mut message_cursor = None;
-    let minibuffer_id = if frontend_echo.is_empty() {
+    let minibuffer_id = {
         interpreter
             .active_minibuffer_buffer_id()
             .filter(|id| interpreter.has_buffer_id(*id))
@@ -6451,12 +6516,12 @@ fn compose_echo_row(
                         .get_buffer_by_id(id)
                         .unwrap_or(interpreter.buffer.borrow())
                 };
-                // The minibuffer command loop mirrors its prompt text into
-                // the echo channel before blocking.  A different live value
-                // is an intentional transient message (notably the value
-                // printed by eval-expression after a nested read) and owns
-                // the echo area until the next input event.  Printing to the
-                // echo stream leaves the hardware cursor after that value.
+                // A message in the echo area shows over the active
+                // minibuffer until read_char wipes it at the next input
+                // event (the bare-runtime minibuffer reader, which mirrors
+                // its prompt and contents into the echo area, shows them as
+                // the minibuffer).  Printing to the echo stream leaves the
+                // hardware cursor after the message.
                 match crate::lisp::primitives::echo_area_message() {
                     Some(message) if message != buffer.buffer_string() => {
                         message_cursor = Some(message.chars().count());
@@ -6465,8 +6530,6 @@ fn compose_echo_row(
                     _ => Some(id),
                 }
             })
-    } else {
-        None
     };
     if let Some(buffer_id) = minibuffer_id {
         // The minibuffer's row renders like any window line in GNU:
@@ -6650,11 +6713,7 @@ fn compose_echo_row(
         );
         return (row, true, cursor);
     }
-    let (echo, spans) = if frontend_echo.is_empty() {
-        crate::lisp::primitives::echo_display_message().unwrap_or_default()
-    } else {
-        (frontend_echo.to_string(), Vec::new())
-    };
+    let (echo, spans) = crate::lisp::primitives::echo_display_message().unwrap_or_default();
     let output_cols = cols;
     let cols = echo.chars().count();
     row = PaintRow::blank(cols);
@@ -7552,8 +7611,8 @@ mod tests {
           (aset standard-display-table ?y []))",
         );
         let mut cache = std::collections::HashMap::new();
-        let (row, mini, cursor) =
-            compose_echo_row(&mut interpreter, &mut env, "yyyxZ", 3, &mut cache);
+        crate::lisp::primitives::set_echo_area_message(Some("yyyxZ".into()));
+        let (row, mini, cursor) = compose_echo_row(&mut interpreter, &mut env, 3, &mut cache);
         assert!(!mini);
         assert_eq!(row.text.iter().collect::<String>(), "ABZ");
         assert_eq!(cursor, Some(3));
@@ -7566,7 +7625,7 @@ mod tests {
         )
         .expect("display test minibuffer activates");
         crate::lisp::primitives::set_echo_area_message(None);
-        let (row, mini, cursor) = compose_echo_row(&mut interpreter, &mut env, "", 8, &mut cache);
+        let (row, mini, cursor) = compose_echo_row(&mut interpreter, &mut env, 8, &mut cache);
         crate::lisp::primitives::unwind_active_minibuffer(&mut interpreter, active, &mut env)
             .expect("unwind the read");
         assert!(mini);
@@ -8979,7 +9038,6 @@ mod tests {
         let (row, from_minibuffer, cursor) = compose_echo_row(
             &mut interpreter,
             &mut env,
-            "",
             80,
             &mut std::collections::HashMap::new(),
         );
@@ -9018,7 +9076,6 @@ mod tests {
         let (row, from_minibuffer, _) = compose_echo_row(
             &mut interpreter,
             &mut env,
-            "",
             80,
             &mut std::collections::HashMap::new(),
         );
@@ -9733,14 +9790,6 @@ mod tests {
         assert!(merged.bold && merged.reverse && merged.underline == 0);
     }
 
-    #[test]
-    fn prefix_echo_accumulates_like_gnu() {
-        assert_eq!(append_prefix_echo("", "C-u"), "C-u-");
-        assert_eq!(append_prefix_echo("C-u-", "8"), "C-u 8-");
-        assert_eq!(append_prefix_echo("C-u 8-", "2"), "C-u 8 2-");
-        assert_eq!(append_prefix_echo("C-u-", "C-u"), "C-u C-u-");
-    }
-
     fn prefixed_test_line(
         line: &str,
         line_prefix: Option<&str>,
@@ -10222,7 +10271,9 @@ gamma word three
         };
         assert_eq!(binding, Value::symbol("forward-char"));
         assert_eq!(
-            reader.finish(&mut interpreter, false, &mut env),
+            reader
+                .finish(&mut interpreter, false, &mut env)
+                .expect("finish"),
             vec![Value::symbol("a"), Value::symbol("b")]
         );
         assert_eq!(
@@ -10376,30 +10427,6 @@ fn make_menu_executor(
             let disabled_attrs = resolve_face("tty-menu-disabled-face");
             let enabled_attrs = resolve_face("tty-menu-enabled-face");
             let selected_raw = resolve_face("tty-menu-selected-face");
-            // read_char's echo timer: a sequence still pending while
-            // this menu blocks (kboard->echo_string, computed by the
-            // resolver through the real echo machinery) is displayed
-            // after `echo-keystrokes' idle seconds; 0 or nil disables
-            // echoing entirely, as in GNU.
-            let mut pending_keystroke_echo = crate::lisp::primitives::take_pending_keystroke_echo();
-            let echo_keystrokes = interpreter
-                .lookup_var_key(cached_symbol!("echo-keystrokes"), env)
-                .map(|value| match value.kind() {
-                    Kind::Integer(seconds) => seconds as f64,
-                    Kind::Float(seconds) => seconds.get(),
-                    _ => 0.0,
-                })
-                .unwrap_or(1.0);
-            if echo_keystrokes <= 0.0 {
-                pending_keystroke_echo = None;
-            }
-            // The idle window opens when the read starts waiting with
-            // the sequence pending — one shared deadline, not one per
-            // inner read (consuming the click's release must not push
-            // the echo out).
-            let pending_echo_deadline = pending_keystroke_echo.as_ref().map(|_| {
-                std::time::Instant::now() + std::time::Duration::from_secs_f64(echo_keystrokes)
-            });
             // GNU derives the selected face over the enabled one
             // (lookup_derived_face with faces[1] as its base).
             let selected_attrs = merge_cell_attrs(enabled_attrs, selected_raw);
@@ -10537,60 +10564,16 @@ fn make_menu_executor(
                             draw_echo_row_composed(interpreter, env, &state);
                             place_cursor(selected_row);
                         }
-                        // A sequence still pending while this menu blocks
-                        // echoes after the shared idle window expires
-                        // (echo_now through the frozen redisplay); the read
-                        // then blocks normally.
-                        let event = match (&pending_keystroke_echo, pending_echo_deadline) {
-                            (Some(_), Some(deadline)) => {
-                                let timed = 'timed: loop {
-                                    if let Some(QueuedInput::Lisp(event)) = queue.pop() {
-                                        break 'timed Some(QueuedInput::Lisp(queue.decode_event(
-                                            interpreter,
-                                            env,
-                                            event,
-                                        )));
-                                    }
-                                    if TERMINAL_GONE.get() {
-                                        break 'timed None;
-                                    }
-                                    let now = std::time::Instant::now();
-                                    if now >= deadline {
-                                        let (text, spans) = pending_keystroke_echo
-                                            .take()
-                                            .expect("pending echo present in this arm");
-                                        crate::lisp::primitives::set_echo_area_message_with_spans(
-                                            text, spans,
-                                        );
-                                        draw_echo_row_composed(interpreter, env, &state);
-                                        place_cursor(selected_row);
-                                        break 'timed None;
-                                    }
-                                    // kbd_buffer_get_event with an end time.
-                                    if crate::lisp::primitives::kbd_buffer_get_event_wait(
-                                        interpreter,
-                                        env,
-                                        Some(deadline),
-                                        true,
-                                    )? == crate::lisp::primitives::KbdWait::Quit
-                                    {
-                                        interpreter.set_c_variable("quit-flag", Value::Nil);
-                                        break 'timed Some(QueuedInput::Lisp(Value::Integer(7)));
-                                    }
-                                };
-                                match timed {
-                                    Some(event) => Some(event),
-                                    // Echo shown (or terminal gone): a plain
-                                    // read takes over either way.
-                                    None => menu_read_event(interpreter, env, &queue)?,
-                                }
-                            }
-                            _ => menu_read_event(interpreter, env, &queue)?,
-                        };
+                        // read_menu_command binds `echo-keystrokes' to 0: no
+                        // echoing while navigating the menu.
+                        let event = menu_read_event(interpreter, env, &queue)?;
                         let Some(event) = event else {
                             break Value::T;
                         };
-                        let QueuedInput::Lisp(event) = event;
+                        let event = match event {
+                            QueuedInput::Lisp(event) => event,
+                            QueuedInput::Error(error) => return Err(error),
+                        };
                         if event == Value::Integer(7) {
                             break Value::T;
                         }

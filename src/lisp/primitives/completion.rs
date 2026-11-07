@@ -2834,9 +2834,6 @@ pub(crate) fn interactive_minibuffer_command_loop(
     interp.push_active_catch_tag(Value::Symbol("exit".into()));
     let loop_outcome = (|interp: &mut Interpreter, env: &mut Env| -> Result<Value, LispError> {
         let mut reader: Option<super::KeySequenceReader> = None;
-        // A command error or an undefined key echoes its message until
-        // the next keystroke, GNU's transient echo.
-        let mut hold_echo = false;
         // read_minibuf's recursive_edit_1 enters command_loop_1, whose entry
         // runs the post-command hooks once before the first input wait
         // (Vertico computes and displays its first candidate set there)
@@ -2844,32 +2841,25 @@ pub(crate) fn interactive_minibuffer_command_loop(
         crate::lisp::primitives::command_loop_entry(interp, env)?;
         loop {
             if reader.is_none() {
-                if !hold_echo {
-                    let minibuffer_text = interp
-                        .active_minibuffer_buffer_id()
-                        .and_then(|id| {
-                            if id == interp.current_buffer_id() {
-                                Some(interp.buffer.borrow().buffer_string())
-                            } else {
-                                interp
-                                    .get_buffer_by_id(id)
-                                    .map(|buffer| buffer.buffer_string())
-                            }
-                        })
-                        .unwrap_or_else(|| interp.buffer.borrow().buffer_string());
-                    super::set_echo_area_message(Some(minibuffer_text));
-                }
+                super::minibuffer_message_timeout(interp, env)?;
                 // Window-configuration changes made mid-read (the
                 // completion help pop-up) reach the glass before the next
-                // key blocks.
+                // key blocks.  The mini window shows the minibuffer unless
+                // the echo area has a message, which read_char wipes at the
+                // next key.
                 crate::lisp::primitives::run_tty_frame_redraw(interp, env);
+                // command_loop_1 before each key sequence.
+                crate::lisp::primitives::clear_this_command(interp, env);
                 super::init_raw_keybuf_count(interp);
             }
             // read_key_sequence reads C-g as a key: the minibuffer's maps
             // bind it to `abort-minibuffers'.
-            let event = crate::lisp::primitives::read_key_sequence_event(interp, env)?;
-            hold_echo = false;
+            let prev_event = reader
+                .as_ref()
+                .map_or(Value::Nil, super::KeySequenceReader::prev_event);
+            let event = crate::lisp::primitives::read_key_sequence_event(interp, env, prev_event)?;
             if reader.is_none() {
+                super::clear_command_keys(interp);
                 reader = Some(super::KeySequenceReader::new(interp, Value::Nil, env)?);
             }
             match reader
@@ -2892,16 +2882,20 @@ pub(crate) fn interactive_minibuffer_command_loop(
                     let keys = reader
                         .take()
                         .expect("completed key reader")
-                        .finish(interp, false, env);
+                        .finish(interp, false, env)?;
                     let last_event = keys.last().cloned().unwrap_or(Value::Nil);
                     match crate::lisp::primitives::execute_recorded_input_command_binding(
                         interp, env, original, binding, &keys, last_event,
                     )
                     .map_err(LispError::into_kind)
                     {
-                        // command_loop_1 after the command: no
-                        // this-command-keys.
-                        Ok(()) => super::clear_command_keys(interp),
+                        Ok(()) => {
+                            // command_loop_1 after the command: no
+                            // this-command-keys, and a prefix command's echo
+                            // shown afresh or no echoing.
+                            super::clear_command_keys(interp);
+                            super::echo_after_command(interp, env)?;
+                        }
                         Err(LispErrorKind::Throw(tag, value))
                             if crate::lisp::types::eq_symbol_named(tag, "exit") =>
                         {
@@ -2919,12 +2913,10 @@ pub(crate) fn interactive_minibuffer_command_loop(
                             // The recursive edit's command_loop_2 handler,
                             // cmd_error, reports the error in the echo area,
                             // and command_loop_1 is entered again; reading
-                            // goes on, and any input restores the
-                            // minibuffer display.
+                            // goes on, the next key wiping the message.
                             let error = LispError::from(error);
                             crate::lisp::primitives::cmd_error(interp, env, &error)?;
                             crate::lisp::primitives::command_loop_entry(interp, env)?;
-                            hold_echo = true;
                         }
                     }
                 }
@@ -2942,12 +2934,8 @@ pub(crate) fn interactive_minibuffer_command_loop(
     // The contents are read before read_minibuf unwinds: the caller's
     // `run_active_minibuffer' then runs the exit hook, erases the
     // minibuffer and restores the window configuration, on every exit
-    // path, quits included.
-    if let Err(error) = loop_outcome {
-        super::set_echo_area_message(None);
-        return Err(error);
-    }
-    super::set_echo_area_message(None);
+    // path, quits included.  A message shown at the exit stays shown.
+    loop_outcome?;
     // "Make minibuffer contents into a string": read_minibuf sets the
     // minibuffer current first (the exiting command may have run in
     // *Completions*).

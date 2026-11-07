@@ -1204,6 +1204,15 @@ pub(crate) struct KeyboardInputState {
     // `unread-command-events' (not as (t . EVENT)), so it joins
     // this-command-keys only as their first.  The consumer clears it.
     pub(crate) last_event_reread: bool,
+    // The kboard's echo_string_ and echo_prompt_ (None for nil) and
+    // immediate_echo, and keyboard.c's echoing, ok_to_echo_at_next_pause
+    // and echo_kboard (whether they are this kboard).
+    pub(crate) echo_string: Option<Value>,
+    pub(crate) echo_prompt: Option<Value>,
+    pub(crate) immediate_echo: bool,
+    pub(crate) echoing: bool,
+    pub(crate) ok_to_echo_at_next_pause: bool,
+    pub(crate) echo_kboard: bool,
     // minibuf.c's minibuf_save_list, the values each active minibuffer
     // read saved for read_minibuf_unwind to restore: MINIBUF_SAVE_SLOTS
     // per level, the outermost first.
@@ -5685,6 +5694,14 @@ impl Interpreter {
         if let Some(value) = &self.keyboard_input.internal_last_event_frame {
             mark(value);
         }
+        for value in self
+            .keyboard_input
+            .echo_string
+            .iter()
+            .chain(&self.keyboard_input.echo_prompt)
+        {
+            mark(value);
+        }
         for frame in &self.frame_states {
             mark(&Value::Frame(*frame));
         }
@@ -6171,6 +6188,10 @@ impl Interpreter {
             }
             for event in &mut clone.keyboard_input.command_keys {
                 *event = c.copy(event);
+            }
+            let input = &mut clone.keyboard_input;
+            for value in input.echo_string.iter_mut().chain(&mut input.echo_prompt) {
+                *value = c.copy(value);
             }
             for event in &mut clone.keyboard_input.raw_keys {
                 *event = c.copy(event);

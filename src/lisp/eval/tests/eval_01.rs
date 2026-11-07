@@ -10512,9 +10512,16 @@ fn lookup_key_converts_lucid_event_lists_but_not_event_conses() {
 }
 
 #[test]
-fn pending_keystroke_echo_renders_event_heads_with_the_dash() {
+fn echo_renders_event_heads_with_the_dash() {
     let mut interp = Interpreter::new();
     let mut env: Env = crate::lisp::types::Env::new();
+    // simple.el's prefix echo, which echo_update consults, describes no
+    // prefix command here, and help.el's keystroke hint is off.
+    eval_str_with(
+        &mut interp,
+        "(progn (fset 'internal-echo-keystrokes-prefix '(lambda () nil)) \
+                (setq echo-keystrokes-help nil))",
+    );
     let click = Value::list([
         Value::Symbol("C-down-mouse-3".into()),
         Value::list([
@@ -10524,13 +10531,22 @@ fn pending_keystroke_echo_renders_event_heads_with_the_dash() {
             Value::Integer(0),
         ]),
     ]);
-    let (text, spans) =
-        crate::lisp::primitives::pending_keystroke_echo(&mut interp, &mut env, &[click]);
-    // echo_add_key renders a composite event's bare head symbol and
-    // echo_dash appends the dash; without help.el loaded the C-h hint
-    // machinery has no Lisp owner to consult, so no suffix appears.
-    assert_eq!(text, "C-down-mouse-3-");
-    assert!(spans.is_empty());
+    interp.keyboard_input.command_keys = vec![Value::Integer(24), click];
+    crate::lisp::primitives::echo_now(&mut interp, &mut env).expect("echo");
+    // echo_add_key renders a character by its key description and a
+    // composite event by its bare head symbol, space-separated, and
+    // echo_dash appends the dash; with `echo-keystrokes-help' nil no
+    // help suffix follows.
+    let echo = interp.keyboard_input.echo_string.expect("echo string");
+    assert_eq!(
+        crate::lisp::primitives::string_text(&echo).expect("text"),
+        "C-x C-down-mouse-3-"
+    );
+    assert!(interp.keyboard_input.immediate_echo);
+    assert!(interp.keyboard_input.echo_kboard);
+    crate::lisp::primitives::cancel_echoing(&mut interp);
+    assert!(interp.keyboard_input.echo_string.is_none());
+    assert!(!interp.keyboard_input.immediate_echo);
 }
 
 #[test]

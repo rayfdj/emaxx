@@ -28,6 +28,11 @@ pub(crate) struct KeySequenceReader {
     omitted: Vec<usize>,
     // Whether the event just read is one of those.
     fresh_omitted: bool,
+    // read_key_sequence's keys_start and echo_start: this-command-keys'
+    // length and the echo's when the sequence began, which a replay
+    // returns to.
+    keys_start: usize,
+    echo_start: usize,
 }
 
 impl KeySequenceReader {
@@ -61,12 +66,51 @@ impl KeySequenceReader {
             shift_translated: false,
             omitted: Vec::new(),
             fresh_omitted: false,
+            keys_start: 0,
+            echo_start: 0,
         };
-        reader.replay(interp, env)?;
+        // read_key_sequence, interactively: PROMPT begins the echo string
+        // and is shown at once (echo_now), echoing going on only with
+        // `echo-keystrokes'; without one, `cursor-in-echo-area' with
+        // `echo-keystrokes' has the dash put after what is echoed.
+        let interactive = interactive_p(interp, env);
+        if interactive {
+            if !prompt.is_nil() {
+                super::set_echo_prompt(interp, prompt);
+                interp.keyboard_input.immediate_echo = false;
+                super::echo_now(interp, env)?;
+                if !super::echo_keystrokes_p(interp, env) {
+                    interp.keyboard_input.immediate_echo = false;
+                }
+            } else if interp
+                .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
+                .is_some_and(|value| value.is_truthy())
+                && super::echo_keystrokes_p(interp, env)
+            {
+                super::echo_dash(interp, env)?;
+            }
+        }
+        // The initial state of the echo area and this_command_keys, which
+        // a replayed sequence returns to.
+        if interactive {
+            reader.echo_start = super::echo_length(interp);
+        }
+        reader.keys_start = interp.keyboard_input.command_keys.len();
+        interp.keyboard_input.single_command_start = reader.keys_start;
+        reader.replay(interp, env, false)?;
         Ok(reader)
     }
 
-    fn replay(&mut self, interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    /// read_key_sequence's replay_sequence: the active maps again and the
+    /// keys read so far (MOCK_INPUT, when there are any) looked up anew,
+    /// this-command-keys back to where the sequence began and, with mock
+    /// input, the echo too.
+    fn replay(
+        &mut self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        mock_input: bool,
+    ) -> Result<(), LispError> {
         // keyboard.c:active_maps: the EVENT_START of a first event with
         // parameters, or of the second when the first is the fake prefix
         // (`mode-line' and the like) its POSN_POSN names.
@@ -91,8 +135,10 @@ impl KeySequenceReader {
         self.first_unbound = READ_KEY_ELTS + 1;
         self.omitted.clear();
         self.fresh_omitted = false;
-        interp.keyboard_input.command_keys.clear();
-        interp.keyboard_input.single_command_start = 0;
+        interp.keyboard_input.command_keys.truncate(self.keys_start);
+        if mock_input && interactive_p(interp, env) {
+            super::echo_truncate(interp, self.echo_start, env)?;
+        }
         Ok(())
     }
 
@@ -181,7 +227,7 @@ impl KeySequenceReader {
     fn translate(&mut self, interp: &mut Interpreter, env: &mut Env) -> Result<bool, LispError> {
         while self.remaps[0].end < self.read {
             if self.step(0, true, interp, env)?.is_some() {
-                self.replay(interp, env)?;
+                self.replay(interp, env, true)?;
                 return Ok(true);
             }
         }
@@ -196,7 +242,7 @@ impl KeySequenceReader {
                     && self.binding_is_undefined(interp, env)?;
                 if let Some(diff) = self.step(1, doit, interp, env)? {
                     self.shift(0, diff);
-                    self.replay(interp, env)?;
+                    self.replay(interp, env, true)?;
                     return Ok(true);
                 }
             }
@@ -205,7 +251,7 @@ impl KeySequenceReader {
             if let Some(diff) = self.step(2, true, interp, env)? {
                 self.shift(0, diff);
                 self.shift(1, diff);
-                self.replay(interp, env)?;
+                self.replay(interp, env, true)?;
                 return Ok(true);
             }
         }
@@ -320,7 +366,7 @@ impl KeySequenceReader {
             self.reset_remap(1, 0);
             self.reset_remap(2, 0);
         }
-        self.replay(interp, env)?;
+        self.replay(interp, env, true)?;
         Ok(true)
     }
 
@@ -329,7 +375,7 @@ impl KeySequenceReader {
         interp: &mut Interpreter,
         dont_downcase_last: bool,
         env: &mut Env,
-    ) -> Vec<Value> {
+    ) -> Result<Vec<Value>, LispError> {
         // GNU returns all generated events, even if lookup finished before
         // their end. Only that unread suffix is appended to command keys:
         // restoring the returned last event's case does not rewrite the
@@ -352,7 +398,9 @@ impl KeySequenceReader {
                 env,
             );
         }
-        self.keys.to_vec()
+        // ...and echo_update.
+        super::echo_update(interp, env)?;
+        Ok(self.keys.to_vec())
     }
 
     fn needs_input(&self, interp: &Interpreter, env: &Env) -> bool {
@@ -361,6 +409,12 @@ impl KeySequenceReader {
         } else {
             self.remaps[2].start < self.read
         }
+    }
+
+    /// read_key_sequence's last_nonmenu_event as read_char is called
+    /// for the next key: the last key read, nil before the first.
+    pub(crate) fn prev_event(&self) -> Value {
+        self.keys.last().copied().unwrap_or(Value::Nil)
     }
 
     pub(crate) fn command_binding(&self) -> Value {
@@ -417,7 +471,11 @@ impl KeySequenceReader {
         // read_char added the event to this-command-keys unless it was
         // reread with keys already there.
         let reread = std::mem::take(&mut interp.keyboard_input.last_event_reread);
-        let omit = reread && self.read > 0 && !interp.keyboard_input.command_keys.is_empty();
+        let omit = reread && !interp.keyboard_input.command_keys.is_empty();
+        // read_char then lets echoing start at the next pause.
+        if !omit && !super::echo::mouse_movement_p(interp, &event) {
+            interp.keyboard_input.ok_to_echo_at_next_pause = true;
+        }
         self.keys.push(event);
         // keyboard.c copies only the event spine before remapping. The
         // unchanged mouse.el translator can mutate its head in place;
@@ -452,7 +510,13 @@ impl KeySequenceReader {
             expanded = true;
         }
         if self.read == 0 || expanded {
-            self.replay(interp, env)?;
+            // The sequence's first event looks the maps up again where
+            // read_key_sequence had them before reading it; anything else
+            // is a replay of mock input.
+            self.replay(interp, env, expanded || self.keys.len() > 1)?;
+            // A reread first key after CONTINUE-ECHO's keys is not added
+            // either.
+            self.fresh_omitted = omit && !expanded;
         } else {
             self.fresh_omitted = omit;
         }
@@ -470,7 +534,7 @@ impl KeySequenceReader {
                 for index in 0..self.remaps.len() {
                     self.reset_remap(index, self.remaps[index].start - discarded);
                 }
-                self.replay(interp, env)?;
+                self.replay(interp, env, true)?;
             }
             if self.read >= READ_KEY_ELTS {
                 return Err(LispError::Signal("Key sequence too long".into()));
@@ -518,7 +582,7 @@ impl KeySequenceReader {
             if binding.is_nil() && is_mouse_down_event(&event) {
                 self.discard_event(real_start);
                 if real_start != self.read {
-                    self.replay(interp, env)?;
+                    self.replay(interp, env, true)?;
                 }
                 continue;
             }
@@ -529,14 +593,54 @@ impl KeySequenceReader {
             }
             self.fresh_omitted = false;
             self.read += 1;
-            let added = self.keys[..self.read]
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| !self.omitted.contains(index))
-                .map(|(_, key)| *key)
-                .collect();
+            let start = self
+                .keys_start
+                .min(interp.keyboard_input.command_keys.len());
+            let mut added = interp.keyboard_input.command_keys[..start].to_vec();
+            added.extend(
+                self.keys[..self.read]
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| !self.omitted.contains(index))
+                    .map(|(_, key)| *key),
+            );
             set_command_key_state(interp, added, self.raw.to_vec(), env);
-            if self.translate(interp, env)? || self.downcase_current(interp, env)? {
+            // "Record what part of this_command_keys is the current key
+            // sequence": its last T keys, none before the start.
+            interp.keyboard_input.single_command_start = interp
+                .keyboard_input
+                .command_keys
+                .len()
+                .saturating_sub(self.read);
+            // read_char's add_command_key and echo_update (and, for mock
+            // input, read_key_sequence's echo_now while echoing).
+            super::echo_update(interp, env)?;
+            if self.translate(interp, env)? {
+                continue;
+            }
+            // An unbound key: an upper-case character retried in lower
+            // case; else (not_upcase) a help character after a prefix runs
+            // `prefix-help-command'; else a shifted function key retried
+            // unshifted.
+            let character = matches!(self.keys[self.read - 1].kind(), Kind::Integer(_));
+            if character && self.downcase_current(interp, env)? {
+                continue;
+            }
+            if self.roots[6].is_nil() && self.read > 1 {
+                let key = self.keys[self.read - 1];
+                let head = key.cons_values().map_or(key, |(head, _)| head);
+                if super::echo::help_char_p(interp, head, env) {
+                    let command = interp
+                        .lookup_var_key(cached_symbol!("prefix-help-command"), env)
+                        .unwrap_or(Value::Nil);
+                    return if command.is_nil() || command.is_symbol() {
+                        resolve_read_key_binding(interp, env, command, &self.keys)
+                    } else {
+                        Ok(KeyResolution::Command(command))
+                    };
+                }
+            }
+            if !character && self.downcase_current(interp, env)? {
                 continue;
             }
             if !self.needs_input(interp, env)
@@ -571,8 +675,48 @@ fn at_end_of_macro_p(interp: &mut Interpreter, env: &mut Env) -> Result<bool, Li
 
 // read_key_sequence's read_char: kbd_buffer_get_event's wait runs the
 // timers, idle ones included, until an event arrives.
-fn wait_for_sequence_event(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
-    read_key_sequence_event(interp, env)
+fn wait_for_sequence_event(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    prev_event: Value,
+) -> Result<Value, LispError> {
+    read_key_sequence_event(interp, env, prev_event)
+}
+
+/// keyboard.c's INTERACTIVE: no keyboard macro executing, and not
+/// `noninteractive'.
+fn interactive_p(interp: &Interpreter, env: &Env) -> bool {
+    interp
+        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .is_none_or(|value| value.is_nil())
+        && !interp
+            .forwarded_c_value("noninteractive", &Env::new())
+            .is_some_and(|value| value.is_truthy())
+}
+
+/// keyboard.c:read_key_sequence_vs: outside the command loop (CMD_LOOP
+/// false) an input method stops at the first character and uses the echo
+/// area; without CONTINUE_ECHO the sequence starts this-command-keys
+/// afresh; the raw keys start empty.
+pub(crate) fn read_key_sequence_vs(
+    interp: &mut Interpreter,
+    prompt: Value,
+    continue_echo: bool,
+    dont_downcase_last: bool,
+    cmd_loop: bool,
+    env: &mut Env,
+) -> Result<Vec<Value>, LispError> {
+    let flag = if cmd_loop { Value::Nil } else { Value::T };
+    let count = interp.specpdl_index();
+    interp.specbind_symbol(&"input-method-exit-on-first-char".into(), flag, env)?;
+    interp.specbind_symbol(&"input-method-use-echo-area".into(), flag, env)?;
+    if !continue_echo {
+        super::clear_command_keys(interp);
+    }
+    super::init_raw_keybuf_count(interp);
+    let events = read_key_sequence_events(interp, prompt, dont_downcase_last, env);
+    interp.unbind_to(count, env)?;
+    events
 }
 
 pub(crate) fn read_key_sequence_events(
@@ -592,12 +736,12 @@ pub(crate) fn read_key_sequence_events(
         {
             return Ok(Vec::new());
         }
-        let event = wait_for_sequence_event(interp, env)?;
+        let event = wait_for_sequence_event(interp, env, reader.prev_event())?;
         if !matches!(
             reader.read_event(interp, event, env)?,
             KeyResolution::Prefix
         ) {
-            return Ok(reader.finish(interp, dont_downcase_last, env));
+            return reader.finish(interp, dont_downcase_last, env);
         }
     }
 }
