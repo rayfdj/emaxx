@@ -4,6 +4,17 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 use std::io::{Read, Write};
 
+/// subr.el's `ignore', which a bare interpreter has not loaded: a
+/// sentinel given it must find a function, or exec_sentinel's handler
+/// reports the void function as GNU's would.
+fn define_subr_ignore(interp: &mut Interpreter, env: &mut crate::lisp::types::Env) {
+    let form = Reader::new("(defalias 'ignore #'(lambda (&rest _arguments) nil))")
+        .read()
+        .expect("read ignore's definition")
+        .expect("ignore's definition is a form");
+    interp.eval(&form, env).expect("define ignore");
+}
+
 fn upstream_emacs_repo() -> PathBuf {
     crate::compat::canonicalize_path(&crate::compat::configured_gnu_source_root())
         .expect("canonical configured GNU checkout")
@@ -16692,7 +16703,8 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
                (progn
                  (process-send-string process "encrypted round trip\n")
                  (accept-process-output process 2)
-                 (with-current-buffer buffer (buffer-string)))
+                 (equal (with-current-buffer buffer (buffer-string))
+                        "encrypted round trip\n"))
                (gnutls-bye process t)
                (gnutls-deinit process)
                (gnutls-get-initstage process))
@@ -16708,7 +16720,14 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
     let actual = interp
         .eval(&form, &mut env)
         .expect("GnuTLS transport program should evaluate");
-    let expected = Reader::new("(t 9 (t t t t nil) \"encrypted round trip\\n\" t t 3)")
+    // GNU's answer: gnutls_verify_boot's gnutls_certificate_verify_peers2
+    // fails for anonymous credentials (GNUTLS_E_INVALID_REQUEST), so a
+    // boot that completes its negotiation never sets p->gnutls_p, and the
+    // process reads and writes its socket as it is: the server's alert
+    // comes back, gnutls_bye fails, and emacs_gnutls_deinit has nothing to
+    // free.  The `:nowait' client below sets p->gnutls_p in
+    // gnutls_try_handshake and goes through the session.
+    let expected = Reader::new("(-50 9 (t t t t nil) nil -53 nil 9)")
         .read()
         .expect("GnuTLS transport expectation should parse")
         .expect("GnuTLS transport expectation should contain a form");
@@ -16985,7 +17004,12 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
         .expect("X.509 verification result should be a list");
     assert_eq!(items.first(), Some(&Value::T));
     assert_eq!(items.get(1), Some(&Value::T));
-    assert_eq!(items.get(2), Some(&Value::Nil));
+    // Fgnutls_peer_status: `:self-signed' for a host certificate that is
+    // its own issuer, trusted or not.
+    assert_eq!(
+        items.get(2),
+        Some(&Value::list([Value::symbol(":self-signed")]))
+    );
     assert_eq!(
         items.get(3),
         Some(&Value::list(std::iter::repeat_n(Value::T, 13)))
@@ -23787,6 +23811,7 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    define_subr_ignore(&mut interp, &mut env);
     let (buffer_id, _) = interp.create_buffer(" *native-process-audit*");
     interp
         .switch_to_buffer_id_preserving_window_history(buffer_id)
@@ -27010,6 +27035,7 @@ fn native_serial_speed_nil_preserves_the_unconfigured_gnu_contract() {
     let (_emaxx_master, emaxx_path) = serial_test_pty();
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    define_subr_ignore(&mut interp, &mut env);
     let form = Reader::new(&program(&emaxx_path))
         .read()
         .expect("unconfigured serial contract should parse")
@@ -27795,6 +27821,7 @@ fn native_process_window_and_foreground_queries_follow_pty_ownership() {
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    define_subr_ignore(&mut interp, &mut env);
     let make_process =
         |interp: &mut Interpreter, env: &mut Env, name: &str, connection_type: &str| {
             call(

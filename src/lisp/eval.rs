@@ -3016,7 +3016,12 @@ pub(crate) fn current_process_tick() -> u64 {
 }
 
 /// gnutls.h's gnutls_initstage_t stages.
+pub(crate) const GNUTLS_STAGE_EMPTY: i64 = 0;
+pub(crate) const GNUTLS_STAGE_CRED_ALLOC: i64 = 1;
+pub(crate) const GNUTLS_STAGE_FILES: i64 = 2;
+pub(crate) const GNUTLS_STAGE_CALLBACKS: i64 = 3;
 pub(crate) const GNUTLS_STAGE_INIT: i64 = 4;
+pub(crate) const GNUTLS_STAGE_PRIORITY: i64 = 5;
 pub(crate) const GNUTLS_STAGE_CRED_SET: i64 = 6;
 pub(crate) const GNUTLS_STAGE_TRANSPORT_POINTERS_SET: i64 = 7;
 pub(crate) const GNUTLS_STAGE_HANDSHAKE_TRIED: i64 = 8;
@@ -3026,6 +3031,8 @@ const GNUTLS_E_AGAIN: std::ffi::c_int = -28;
 const GNUTLS_E_LARGE_PACKET: std::ffi::c_int = -7;
 const GNUTLS_E_PUSH_ERROR: std::ffi::c_int = -53;
 const GNUTLS_E_PREMATURE_TERMINATION: std::ffi::c_int = -110;
+const GNUTLS_E_WARNING_ALERT_RECEIVED: std::ffi::c_int = -16;
+const GNUTLS_E_FATAL_ALERT_RECEIVED: std::ffi::c_int = -12;
 /// GNUTLS_E_INTERRUPTED and GNUTLS_E_UNEXPECTED_PACKET_LENGTH as
 /// gnutls_record_recv and gnutls_record_send return them (ssize_t).
 const GNUTLS_E_INTERRUPTED_LEN: isize = -52;
@@ -3041,6 +3048,103 @@ pub(crate) type GnuTlsHandshake = unsafe extern "C" fn(*mut std::ffi::c_void) ->
 pub(crate) type GnuTlsBye =
     unsafe extern "C" fn(*mut std::ffi::c_void, std::ffi::c_int) -> std::ffi::c_int;
 pub(crate) type GnuTlsErrorIsFatal = unsafe extern "C" fn(std::ffi::c_int) -> std::ffi::c_int;
+pub(crate) type GnuTlsStrerror = unsafe extern "C" fn(std::ffi::c_int) -> *const std::ffi::c_char;
+pub(crate) type GnuTlsAlertGet = unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_int;
+
+/// A gnutls.c `message' made where no Lisp may run (in a GnuTLS
+/// callback, or in a session's read, write or handshake), which
+/// flush_gnutls_log shows before any Lisp runs next.
+pub(crate) enum GnuTlsLogEntry {
+    /// One whose level was weighed as it was made.
+    Shown(Vec<u8>),
+    /// emacs_gnutls_handle_error's: its level against
+    /// `gnutls-log-level', which no Lisp has changed since.
+    AtGlobalLevel(i32, Vec<u8>),
+    /// gnutls_audit_log_function's: shown when `gnutls-log-level' is at
+    /// least 1.
+    Audit(Vec<u8>),
+}
+
+static GNUTLS_LOG: std::sync::Mutex<Vec<GnuTlsLogEntry>> = std::sync::Mutex::new(Vec::new());
+static GNUTLS_LOG_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn push_gnutls_log(entry: GnuTlsLogEntry) {
+    let mut log = GNUTLS_LOG
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    log.push(entry);
+    GNUTLS_LOG_PENDING.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// The messages pushed since the last take, oldest first.
+pub(crate) fn take_gnutls_log() -> Vec<GnuTlsLogEntry> {
+    if !GNUTLS_LOG_PENDING.load(std::sync::atomic::Ordering::Acquire) {
+        return Vec::new();
+    }
+    let mut log = GNUTLS_LOG
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    GNUTLS_LOG_PENDING.store(false, std::sync::atomic::Ordering::Release);
+    std::mem::take(&mut *log)
+}
+
+/// gnutls.c:gnutls_log_function2's "gnutls.c: [LEVEL] (Emacs) STRING
+/// EXTRA", as GNUTLS_LOG2 makes it.
+fn gnutls_log2_text(level: i32, string: &str, extra: &[u8]) -> Vec<u8> {
+    let mut text = format!("gnutls.c: [{level}] (Emacs) {string} ").into_bytes();
+    text.extend_from_slice(extra);
+    text
+}
+
+/// gnutls.h:GNUTLS_LOG: gnutls_log_function's "gnutls.c: [LEVEL]
+/// (Emacs) STRING" when LEVEL is at most MAX.
+pub(crate) fn gnutls_log(level: i32, max: i32, string: &str) {
+    if level <= max {
+        push_gnutls_log(GnuTlsLogEntry::Shown(
+            format!("gnutls.c: [{level}] (Emacs) {string}").into_bytes(),
+        ));
+    }
+}
+
+/// gnutls.h:GNUTLS_LOG2: gnutls_log_function2 of STRING and EXTRA when
+/// LEVEL is at most MAX.
+pub(crate) fn gnutls_log2(level: i32, max: i32, string: &str, extra: &[u8]) {
+    if level <= max {
+        push_gnutls_log(GnuTlsLogEntry::Shown(gnutls_log2_text(
+            level, string, extra,
+        )));
+    }
+}
+
+/// gnutls.h:GNUTLS_LOG2i: "gnutls.c: [LEVEL] STRING EXTRA" when LEVEL is
+/// at most MAX.
+pub(crate) fn gnutls_log2i(level: i32, max: i32, string: &str, extra: i32) {
+    if level <= max {
+        push_gnutls_log(GnuTlsLogEntry::Shown(
+            format!("gnutls.c: [{level}] {string} {extra}").into_bytes(),
+        ));
+    }
+}
+
+/// GNUTLS_LOG2 against `gnutls-log-level', emacs_gnutls_handle_error's
+/// MAX_LOG_LEVEL.
+fn gnutls_log2_global(level: i32, string: &str, extra: &[u8]) {
+    push_gnutls_log(GnuTlsLogEntry::AtGlobalLevel(
+        level,
+        gnutls_log2_text(level, string, extra),
+    ));
+}
+
+fn gnutls_c_text(pointer: *const std::ffi::c_char) -> Option<Vec<u8>> {
+    // SAFETY: GnuTLS's names and error strings are null or static
+    // NUL-terminated strings.
+    (!pointer.is_null()).then(|| {
+        unsafe { std::ffi::CStr::from_ptr(pointer) }
+            .to_bytes()
+            .to_vec()
+    })
+}
 
 pub(crate) struct GnuTlsSessionApi {
     pub(crate) session_deinit: GnuTlsDeinit,
@@ -3051,6 +3155,9 @@ pub(crate) struct GnuTlsSessionApi {
     pub(crate) handshake: GnuTlsHandshake,
     pub(crate) bye: GnuTlsBye,
     pub(crate) error_is_fatal: GnuTlsErrorIsFatal,
+    pub(crate) strerror: GnuTlsStrerror,
+    pub(crate) alert_get: GnuTlsAlertGet,
+    pub(crate) alert_get_name: GnuTlsStrerror,
 }
 
 pub(crate) struct ProcessGnuTlsSession {
@@ -3059,8 +3166,49 @@ pub(crate) struct ProcessGnuTlsSession {
     _library: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     state: *mut std::ffi::c_void,
     credential: *mut std::ffi::c_void,
+    /// Whether CREDENTIAL is p->gnutls_x509_cred, not p->gnutls_anon_cred.
+    credential_is_x509: bool,
     api: GnuTlsSessionApi,
     ready: bool,
+}
+
+/// p->gnutls_certificates: the peer's chain gnutls_verify_boot imported,
+/// each handle (null where gnutls_x509_crt_init failed) freed with the
+/// chain, as gnutls_deinit_certificates frees it.
+pub(crate) struct GnuTlsCertificates {
+    _library: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    handles: Vec<*mut std::ffi::c_void>,
+    deinit: GnuTlsDeinit,
+}
+
+impl GnuTlsCertificates {
+    pub(crate) fn new(
+        library: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+        handles: Vec<*mut std::ffi::c_void>,
+        deinit: GnuTlsDeinit,
+    ) -> Self {
+        Self {
+            _library: library,
+            handles,
+            deinit,
+        }
+    }
+
+    pub(crate) fn handles(&self) -> &[*mut std::ffi::c_void] {
+        &self.handles
+    }
+}
+
+impl Drop for GnuTlsCertificates {
+    fn drop(&mut self) {
+        for handle in self.handles.drain(..) {
+            if !handle.is_null() {
+                // SAFETY: Each handle was initialized by gnutls_x509_crt_init
+                // and is uniquely owned by this chain.
+                unsafe { (self.deinit)(handle) };
+            }
+        }
+    }
 }
 
 impl ProcessGnuTlsSession {
@@ -3068,6 +3216,7 @@ impl ProcessGnuTlsSession {
         library: std::sync::Arc<dyn std::any::Any + Send + Sync>,
         state: *mut std::ffi::c_void,
         credential: *mut std::ffi::c_void,
+        credential_is_x509: bool,
         api: GnuTlsSessionApi,
         ready: bool,
     ) -> Self {
@@ -3075,6 +3224,7 @@ impl ProcessGnuTlsSession {
             _library: library,
             state,
             credential,
+            credential_is_x509,
             api,
             ready,
         }
@@ -3088,14 +3238,18 @@ impl ProcessGnuTlsSession {
     }
 
     /// One gnutls_handshake: 0 once the negotiation is done, which makes
-    /// the session READY, else GnuTLS's error.
-    pub(crate) fn handshake_step(&mut self) -> std::ffi::c_int {
+    /// the session READY, else GnuTLS's error, which
+    /// emacs_gnutls_handle_error reports; and whether that was fatal.
+    pub(crate) fn handshake_step(&mut self) -> (std::ffi::c_int, bool) {
         // SAFETY: STATE is live until this owner is dropped.
         let result = unsafe { (self.api.handshake)(self.state) };
         if result == 0 {
             self.ready = true;
         }
-        result
+        if result < 0 {
+            return (result, self.handle_error(result).0);
+        }
+        (result, false)
     }
 
     /// gnutls_error_is_fatal.
@@ -3104,20 +3258,57 @@ impl ProcessGnuTlsSession {
         unsafe { (self.api.error_is_fatal)(code) != 0 }
     }
 
-    /// gnutls.c emacs_gnutls_handle_error's errno for CODE: EAGAIN for
-    /// GNUTLS_E_AGAIN, EMSGSIZE for a large packet or a push error,
-    /// ECONNRESET for a premature termination (each when not fatal), else
-    /// EINVAL.
-    fn handle_error_errno(&self, code: std::ffi::c_int) -> i32 {
-        if self.error_is_fatal(code) {
-            return libc::EINVAL;
+    /// gnutls.c:emacs_gnutls_handle_error of CODE: its report against
+    /// `gnutls-log-level' ("fatal error:" at 1, at 3 for a premature
+    /// termination; else "retry:" at 3 for GNUTLS_E_AGAIN, then
+    /// "non-fatal error:" at 1; and a received alert's name at 0 when it
+    /// was fatal, else at 1); whether CODE is fatal (its 0), and the
+    /// errno it sets: EAGAIN for GNUTLS_E_AGAIN, EMSGSIZE for a large
+    /// packet or a push error, ECONNRESET for a premature termination
+    /// (each when not fatal), else EINVAL.
+    fn handle_error(&self, code: std::ffi::c_int) -> (bool, i32) {
+        // SAFETY: gnutls_strerror takes any code.
+        let text = gnutls_c_text(unsafe { (self.api.strerror)(code) })
+            .unwrap_or_else(|| b"unknown".to_vec());
+        let fatal = self.error_is_fatal(code);
+        let mut errno = libc::EINVAL;
+        if fatal {
+            let level = if code == GNUTLS_E_PREMATURE_TERMINATION {
+                3
+            } else {
+                1
+            };
+            gnutls_log2_global(level, "fatal error:", &text);
+        } else {
+            if code == GNUTLS_E_AGAIN {
+                gnutls_log2_global(3, "retry:", &text);
+            }
+            gnutls_log2_global(1, "non-fatal error:", &text);
+            errno = match code {
+                GNUTLS_E_AGAIN => libc::EAGAIN,
+                GNUTLS_E_LARGE_PACKET | GNUTLS_E_PUSH_ERROR => libc::EMSGSIZE,
+                GNUTLS_E_PREMATURE_TERMINATION => libc::ECONNRESET,
+                _ => libc::EINVAL,
+            };
         }
-        match code {
-            GNUTLS_E_AGAIN => libc::EAGAIN,
-            GNUTLS_E_LARGE_PACKET | GNUTLS_E_PUSH_ERROR => libc::EMSGSIZE,
-            GNUTLS_E_PREMATURE_TERMINATION => libc::ECONNRESET,
-            _ => libc::EINVAL,
+        if code == GNUTLS_E_WARNING_ALERT_RECEIVED || code == GNUTLS_E_FATAL_ALERT_RECEIVED {
+            // SAFETY: STATE is live; alert names are static or null.
+            let alert = unsafe { (self.api.alert_get)(self.state) };
+            let name = gnutls_c_text(unsafe { (self.api.alert_get_name)(alert) })
+                .unwrap_or_else(|| b"unknown".to_vec());
+            let level = if code == GNUTLS_E_FATAL_ALERT_RECEIVED {
+                0
+            } else {
+                1
+            };
+            gnutls_log2_global(level, "Received alert: ", &name);
         }
+        (fatal, errno)
+    }
+
+    /// p->gnutls_x509_cred rather than p->gnutls_anon_cred.
+    pub(crate) fn credential_is_x509(&self) -> bool {
+        self.credential_is_x509
     }
 
     /// gnutls.c emacs_gnutls_read: one gnutls_record_recv of at most
@@ -3151,10 +3342,8 @@ impl ProcessGnuTlsSession {
                     // error, else -1 with its errno, which only EAGAIN
                     // leaves to the next read; wait_reading_process_output
                     // takes any other as the connection's end.
-                    let code = error as std::ffi::c_int;
-                    let closed =
-                        self.error_is_fatal(code) || self.handle_error_errno(code) != libc::EAGAIN;
-                    return Ok((Vec::new(), closed));
+                    let (fatal, errno) = self.handle_error(error as std::ffi::c_int);
+                    return Ok((Vec::new(), fatal || errno != libc::EAGAIN));
                 }
             }
         }
@@ -3185,7 +3374,7 @@ impl ProcessGnuTlsSession {
                 }
             };
             if result < 0 {
-                return (written, self.handle_error_errno(result as std::ffi::c_int));
+                return (written, self.handle_error(result as std::ffi::c_int).1);
             }
             written += result as usize;
         }
@@ -3217,15 +3406,17 @@ impl Drop for ProcessGnuTlsSession {
 /// Clone panics on a live TLS session (image-template semantics).
 impl Clone for ProcessGnuTlsState {
     fn clone(&self) -> Self {
-        if self.session.is_some() {
+        if self.session.is_some() || self.certificates.is_some() {
             panic!("image-template clone with a live gnutls session");
         }
         Self {
             boot_parameters: self.boot_parameters,
             initstage: self.initstage,
             session: None,
+            certificates: None,
             peer_verification: self.peer_verification,
-            peer_is_x509: self.peer_is_x509,
+            extra_peer_verification: self.extra_peer_verification,
+            log_level: self.log_level,
             gnutls_p: self.gnutls_p,
             complete_negotiation_p: self.complete_negotiation_p,
             handshakes_tried: self.handshakes_tried,
@@ -3237,8 +3428,18 @@ struct ProcessGnuTlsState {
     boot_parameters: Value,
     initstage: i64,
     session: Option<ProcessGnuTlsSession>,
+    /// p->gnutls_certificates, which gnutls_verify_boot stores and
+    /// emacs_gnutls_deinit and `gnutls-bye' free.
+    certificates: Option<GnuTlsCertificates>,
+    /// p->gnutls_peer_verification, which only gnutls_verify_boot sets.
     peer_verification: u32,
-    peer_is_x509: bool,
+    /// p->gnutls_extra_peer_verification: CERTIFICATE_NOT_MATCHING once
+    /// a gnutls_verify_boot found the host certificate not matching,
+    /// never cleared.
+    extra_peer_verification: u32,
+    /// p->gnutls_log_level: an integer `:loglevel' of the last
+    /// `gnutls-boot' that had one, clipped to an int.
+    log_level: i32,
     /// p->gnutls_p: reads and sends go through the session, set by a
     /// non-blocking gnutls_try_handshake or a gnutls_verify_boot that
     /// passed, cleared by emacs_gnutls_deinit.
@@ -3255,8 +3456,10 @@ impl Default for ProcessGnuTlsState {
             boot_parameters: Value::Nil,
             initstage: 0,
             session: None,
+            certificates: None,
             peer_verification: 0,
-            peer_is_x509: false,
+            extra_peer_verification: 0,
+            log_level: 0,
             gnutls_p: false,
             complete_negotiation_p: false,
             handshakes_tried: 0,

@@ -3109,7 +3109,7 @@ pub(crate) fn cmd_error(
 
 /// keyboard.c cmd_error_internal: `command-error-function' with DATA,
 /// CONTEXT (empty or ASCII) and the function that signalled.
-fn cmd_error_internal(
+pub(crate) fn cmd_error_internal(
     interp: &mut Interpreter,
     env: &mut Env,
     data: Value,

@@ -2934,6 +2934,59 @@ fn run_asynch_code(
     result.and(restored).and(unbound)
 }
 
+/// process.c's internal_condition_case_1 around a filter's or a
+/// sentinel's call: its handlers `error' unless `debug-on-error' is
+/// non-nil (then none, every signal passing on).  A caught error's data
+/// (made a cons first for a sentinel, as exec_sentinel_error_handler does)
+/// goes to cmd_error_internal with CONTEXT, which in batch prints it and
+/// kills Emacs; then `inhibit-quit' is t and, while
+/// `process-error-pause-time' is positive, that many seconds pass.
+/// Handlers `error' catch every signal, a quit with them; a throw passes
+/// on.
+fn call_catching_process_errors(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    context: &str,
+    sentinel: bool,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<(), LispError>,
+) -> Result<(), LispError> {
+    if interp
+        .lookup_var_key(cached_symbol!("debug-on-error"), env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return body(interp, env);
+    }
+    let handlers = interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::Error);
+    let result = body(interp, env);
+    interp.pop_handler_bindings(handlers);
+    let error = match result {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    // find_handler_clause: handlers `error' catch every signal, as t does.
+    if matches!(
+        error.kind(),
+        LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+    ) {
+        return Err(error);
+    }
+    interp.clear_batch_error_backtrace();
+    let mut data = crate::lisp::eval::error_condition_value(&error);
+    if sentinel && data.cons_ref().is_none() {
+        data = Value::cons(Value::symbol("error"), data);
+    }
+    crate::lisp::primitives::interactive::cmd_error_internal(interp, env, data, context)?;
+    interp.set_c_variable("inhibit-quit", Value::T);
+    let pause = interp
+        .lookup_var_key(cached_symbol!("process-error-pause-time"), env)
+        .and_then(|value| value.integer_value())
+        .unwrap_or(0);
+    if pause > 0 {
+        call(interp, "sleep-for", &[Value::Integer(pause)], env)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn deliver_process_output_decoded(
     interp: &mut Interpreter,
     process_id: u64,
@@ -2943,9 +2996,32 @@ pub(crate) fn deliver_process_output_decoded(
     if string_like(&output).is_none_or(|text| text.text.is_empty()) {
         return Ok(());
     }
+    // What the read logged (emacs_gnutls_read's), shown before the filter
+    // runs, as read_process_output's messages are.
+    crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
     interp.note_process_output_delivery(process_id);
+    // read_and_dispose_of_process_output: with `fast-read-process-output'
+    // and the default filter, read_and_insert_process_output, outside any
+    // condition case, so its errors (an after-change function's) reach
+    // the code that waited.
+    let default_filter = interp.process_filter(process_id).is_none_or(|filter| {
+        crate::lisp::types::eq_symbol_named(filter, "internal-default-process-filter")
+    });
+    let fast = default_filter
+        && interp
+            .lookup_var_key(cached_symbol!("fast-read-process-output"), env)
+            .is_some_and(|value| value.is_truthy());
     run_asynch_code(interp, env, |interp, env| {
-        dispose_of_process_output(interp, process_id, output, env)
+        if fast {
+            return dispose_of_process_output(interp, process_id, output, env);
+        }
+        call_catching_process_errors(
+            interp,
+            env,
+            "error in process filter: ",
+            false,
+            |interp, env| dispose_of_process_output(interp, process_id, output, env),
+        )
     })
 }
 
@@ -3606,6 +3682,9 @@ pub(crate) fn deliver_process_streams(
     stderr: &[u8],
     env: &mut Env,
 ) -> Result<bool, LispError> {
+    // The messages a read made (emacs_gnutls_read's), shown before the
+    // filter runs.
+    crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
     let stderr_process_id = interp.process_stderr(process_id).unwrap_or(process_id);
     let mut delivered = deliver_process_reads(interp, process_id, stdout, env)?;
     delivered |= deliver_process_reads(interp, stderr_process_id, stderr, env)?;
@@ -3828,46 +3907,22 @@ fn plist_items_put(items: &mut Vec<Value>, key: &str, value: Value) {
     items.push(value);
 }
 
-/// GNU Fdelete_process runs status notification synchronously for every
-/// process kind.  Marking the sentinel notified before this call prevents
-/// the ordinary event pump from delivering the same terminal transition a
-/// second time.  Sentinel errors are demoted to a message unless
-/// debug-on-error asks for the debugger (exec_sentinel).
+/// process.c:Fdelete_process after get_process: the change it makes to
+/// PROCESS_ID notified by status_notify (P, NULL), whose sentinels catch
+/// their own errors (exec_sentinel), then remove_process; a throw out of
+/// a sentinel, or an error `debug-on-error' let through, leaves the
+/// process where the walk left it.
 pub(crate) fn delete_process_notifying(
     interp: &mut Interpreter,
     process_id: u64,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    // Fdelete_process: status_notify (P, NULL) of the change it made, then
-    // remove_process.
-    let notified = if interp.delete_process(process_id)? {
-        status_notify(interp, env, Some(process_id)).map(|_| ())
-    } else {
-        Ok(())
-    };
-    interp.remove_process(process_id);
-    match notified.map_err(LispError::into_kind) {
-        Ok(()) => Ok(()),
-        Err(error @ LispErrorKind::Throw(_, _)) => Err(LispError::from(error)),
-        Err(error) => {
-            if interp
-                .lookup_var_key(cached_symbol!("debug-on-error"), env)
-                .is_some_and(|value| value.is_truthy())
-            {
-                return Err(LispError::from(error));
-            }
-            let _ = crate::lisp::primitives::call(
-                interp,
-                "message",
-                &[
-                    Value::String("error in process sentinel: %S".into()),
-                    crate::lisp::eval::error_condition_value(&LispError::from(error.clone())),
-                ],
-                env,
-            );
-            Ok(())
-        }
+    if interp.delete_process(process_id)? {
+        status_notify(interp, env, Some(process_id))?;
     }
+    interp.remove_process(process_id);
+    // remove_process's deactivate_process: emacs_gnutls_deinit's message.
+    crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)
 }
 
 /// gnutls.h GNUTLS_EMACS_HANDSHAKES_LIMIT: the handshakes
@@ -4989,6 +5044,9 @@ fn finish_after_tls_connection(
     env: &mut Env,
     process_id: u64,
 ) -> Result<(), LispError> {
+    // Fgnutls_boot's and gnutls_verify_boot's messages, made before
+    // `nsm-verify-connection' runs.
+    crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
     let contact = interp
         .process_contact_plist(process_id)
         .unwrap_or(Value::Nil);
@@ -5413,21 +5471,37 @@ pub(crate) fn run_process_sentinel(
     event: &str,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    // What deactivate_process's emacs_gnutls_deinit and the walk's reads
+    // logged, shown before the sentinel runs.
+    crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
     run_asynch_code(interp, env, |interp, env| {
-        if let Some(sentinel) = interp.process_sentinel(process_id) {
-            call_function_value(
-                interp,
-                &sentinel,
-                &[
-                    interp.record_value(process_id),
-                    Value::String(event.to_string().into()),
-                ],
-                env,
-            )?;
-        } else {
-            internal_default_process_sentinel(interp, process_id, Value::string(event), env)?;
-        }
-        Ok(())
+        call_catching_process_errors(
+            interp,
+            env,
+            "error in process sentinel: ",
+            true,
+            |interp, env| {
+                if let Some(sentinel) = interp.process_sentinel(process_id) {
+                    call_function_value(
+                        interp,
+                        &sentinel,
+                        &[
+                            interp.record_value(process_id),
+                            Value::String(event.to_string().into()),
+                        ],
+                        env,
+                    )?;
+                } else {
+                    internal_default_process_sentinel(
+                        interp,
+                        process_id,
+                        Value::string(event),
+                        env,
+                    )?;
+                }
+                Ok(())
+            },
+        )
     })
 }
 
@@ -5506,6 +5580,9 @@ pub(crate) fn wait_pumping_processes(
         if crate::lisp::primitives::atimer::signals_pending() {
             crate::lisp::primitives::atimer::process_pending_signals_in_wait(interp, env)?;
         }
+        // What the last pass's handshakes and checks logged, shown before
+        // anything else runs Lisp.
+        crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
         let pass_start = std::time::Instant::now();
         // process.c after its select: the channels it found ready are read
         // (a connect's end handled among them) before the loop's top looks
@@ -5608,6 +5685,8 @@ pub(crate) fn wait_pumping_processes(
             delivery_grace_deadline =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(10));
         }
+        // This pass's reads' messages, before a timer or another thread runs.
+        crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
         if run_timers {
             let check_timers = progressed
                 || woke_early
@@ -5714,6 +5793,7 @@ pub(crate) fn wait_pumping_processes(
             woke_early = interp.wait_current_thread_for_process_input(env, only_process_id, nap)?;
         }
     }
+    crate::lisp::primitives::dispatch::gnutls::flush_gnutls_log(interp, env)?;
     let result = if let Some(process_id) = target_process_id {
         interp.process_output_delivery_count(process_id) != target_start
     } else {

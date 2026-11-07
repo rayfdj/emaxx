@@ -3720,7 +3720,10 @@ pub(crate) fn send_process(
             .unwrap_or_default();
         let mut offset = 0;
         while offset < batch.len() {
-            match interp.process_write_some(process_id, &batch[offset..])? {
+            let written = interp.process_write_some(process_id, &batch[offset..])?;
+            // emacs_gnutls_write's messages, shown as it makes them.
+            super::gnutls::flush_gnutls_log(interp, env)?;
+            match written {
                 Some(written) => offset += written,
                 None => {
                     interp.write_queue_push(process_id, batch[offset..].to_vec(), true);

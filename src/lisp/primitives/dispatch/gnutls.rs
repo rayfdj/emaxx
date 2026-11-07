@@ -78,17 +78,28 @@ type GlobalSetLogLevel = unsafe extern "C" fn(c_int);
 type DhSetPrimeBits = unsafe extern "C" fn(*mut c_void, c_uint);
 type AnonAllocate = unsafe extern "C" fn(*mut *mut c_void) -> c_int;
 type AnonFree = unsafe extern "C" fn(*mut c_void);
-type CertificateVerifyPeers =
-    unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_uint) -> c_int;
+type CertificateVerifyPeers2 = unsafe extern "C" fn(*mut c_void, *mut c_uint) -> c_int;
+type CertificateTypeGet = unsafe extern "C" fn(*mut c_void) -> c_int;
+type X509CrtCheckHostname = unsafe extern "C" fn(*mut c_void, *const c_char) -> c_uint;
+type X509CrtCheckIssuer = unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_uint;
+type X509CrtGetUniqueId = unsafe extern "C" fn(*mut c_void, *mut c_char, *mut usize) -> c_int;
+type X509CrtGetKeyId = unsafe extern "C" fn(*mut c_void, c_uint, *mut u8, *mut usize) -> c_int;
+type X509CrtGetFingerprint =
+    unsafe extern "C" fn(*mut c_void, c_int, *mut c_void, *mut usize) -> c_int;
+type X509CrtExport = unsafe extern "C" fn(*mut c_void, c_int, *mut c_void, *mut usize) -> c_int;
+type SessionStatus = unsafe extern "C" fn(*mut c_void) -> c_uint;
+type LogFunction = unsafe extern "C" fn(c_int, *const c_char);
+type AuditLogFunction = unsafe extern "C" fn(*mut c_void, *const c_char);
+type GlobalSetLogFunction = unsafe extern "C" fn(Option<LogFunction>);
+type GlobalSetAuditLogFunction = unsafe extern "C" fn(Option<AuditLogFunction>);
 type CertificateGetPeers = unsafe extern "C" fn(*mut c_void, *mut c_uint) -> *const GnuTlsDatum;
 type SessionAlgorithm = unsafe extern "C" fn(*mut c_void) -> c_int;
 type X509CrtGetDn = unsafe extern "C" fn(*mut c_void, *mut c_char, *mut usize) -> c_int;
-type X509CrtGetVersion = unsafe extern "C" fn(*mut c_void) -> c_uint;
+type X509CrtGetVersion = unsafe extern "C" fn(*mut c_void) -> c_int;
 type X509CrtGetSerial = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut usize) -> c_int;
 type X509CrtGetTime = unsafe extern "C" fn(*mut c_void) -> libc::time_t;
 type X509CrtGetPkAlgorithm = unsafe extern "C" fn(*mut c_void, *mut c_uint) -> c_int;
 type X509CrtGetSignatureAlgorithm = unsafe extern "C" fn(*mut c_void) -> c_int;
-type X509CrtExport2 = unsafe extern "C" fn(*mut c_void, c_int, *mut GnuTlsDatum) -> c_int;
 type PkBitsToSecParam = unsafe extern "C" fn(c_int, c_uint) -> c_int;
 
 /// gnutls.h's codes gnutls-boot tells apart.
@@ -96,7 +107,13 @@ const GNUTLS_CLIENT: c_uint = 1 << 1;
 const GNUTLS_NONBLOCK: c_uint = 1 << 3;
 const GNUTLS_E_INTERRUPTED: c_int = -52;
 const GNUTLS_E_INVALID_SESSION: c_int = -10;
-const GNUTLS_CERT_UNEXPECTED_OWNER: c_uint = 1 << 14;
+const GNUTLS_E_SHORT_MEMORY_BUFFER: c_int = -51;
+const GNUTLS_CRT_X509: c_int = 1;
+const GNUTLS_TLS1_2: c_int = 4;
+const GNUTLS_DIG_SHA1: c_int = 3;
+const GNUTLS_KEYID_USE_SHA256: c_uint = 1;
+/// gnutls.c's extra_peer_verification_t.
+const CERTIFICATE_NOT_MATCHING: u32 = 2;
 
 #[repr(C)]
 struct GnuTlsDatum {
@@ -135,8 +152,23 @@ struct GnuTlsApi {
     dh_set_prime_bits: DhSetPrimeBits,
     anon_allocate: AnonAllocate,
     anon_free: AnonFree,
-    certificate_verify_peers: CertificateVerifyPeers,
+    certificate_verify_peers2: CertificateVerifyPeers2,
     certificate_get_peers: CertificateGetPeers,
+    certificate_type_get: CertificateTypeGet,
+    dh_get_prime_bits: SessionAlgorithm,
+    session_etm_status: Option<SessionStatus>,
+    safe_renegotiation_status: SessionStatus,
+    alert_get: SessionAlgorithm,
+    alert_get_name: AlgorithmName,
+    global_set_log_function: GlobalSetLogFunction,
+    global_set_audit_log_function: Option<GlobalSetAuditLogFunction>,
+    x509_crt_check_hostname: X509CrtCheckHostname,
+    x509_crt_check_issuer: X509CrtCheckIssuer,
+    x509_crt_get_issuer_unique_id: X509CrtGetUniqueId,
+    x509_crt_get_subject_unique_id: X509CrtGetUniqueId,
+    x509_crt_get_key_id: X509CrtGetKeyId,
+    x509_crt_get_fingerprint: X509CrtGetFingerprint,
+    x509_crt_export: X509CrtExport,
     protocol_get: SessionAlgorithm,
     protocol_name: AlgorithmName,
     key_exchange_get: SessionAlgorithm,
@@ -183,7 +215,6 @@ struct GnuTlsApi {
     x509_crt_get_expiration_time: X509CrtGetTime,
     x509_crt_get_pk_algorithm: X509CrtGetPkAlgorithm,
     x509_crt_get_signature_algorithm: X509CrtGetSignatureAlgorithm,
-    x509_crt_export2: X509CrtExport2,
     pk_algorithm_name: AlgorithmName,
     sign_algorithm_name: AlgorithmName,
     pk_bits_to_sec_param: PkBitsToSecParam,
@@ -347,11 +378,43 @@ fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
                 dh_set_prime_bits: load_symbol(&library, b"gnutls_dh_set_prime_bits")?,
                 anon_allocate: load_symbol(&library, b"gnutls_anon_allocate_client_credentials")?,
                 anon_free: load_symbol(&library, b"gnutls_anon_free_client_credentials")?,
-                certificate_verify_peers: load_symbol(
+                certificate_verify_peers2: load_symbol(
                     &library,
-                    b"gnutls_certificate_verify_peers3",
+                    b"gnutls_certificate_verify_peers2",
                 )?,
                 certificate_get_peers: load_symbol(&library, b"gnutls_certificate_get_peers")?,
+                certificate_type_get: load_symbol(&library, b"gnutls_certificate_type_get")?,
+                dh_get_prime_bits: load_symbol(&library, b"gnutls_dh_get_prime_bits")?,
+                // HAVE_GNUTLS_ETM_STATUS.
+                session_etm_status: load_optional_symbol(&library, b"gnutls_session_etm_status"),
+                safe_renegotiation_status: load_symbol(
+                    &library,
+                    b"gnutls_safe_renegotiation_status",
+                )?,
+                alert_get: load_symbol(&library, b"gnutls_alert_get")?,
+                alert_get_name: load_symbol(&library, b"gnutls_alert_get_name")?,
+                global_set_log_function: load_symbol(&library, b"gnutls_global_set_log_function")?,
+                // HAVE_GNUTLS3.
+                global_set_audit_log_function: load_optional_symbol(
+                    &library,
+                    b"gnutls_global_set_audit_log_function",
+                ),
+                x509_crt_check_hostname: load_symbol(&library, b"gnutls_x509_crt_check_hostname")?,
+                x509_crt_check_issuer: load_symbol(&library, b"gnutls_x509_crt_check_issuer")?,
+                x509_crt_get_issuer_unique_id: load_symbol(
+                    &library,
+                    b"gnutls_x509_crt_get_issuer_unique_id",
+                )?,
+                x509_crt_get_subject_unique_id: load_symbol(
+                    &library,
+                    b"gnutls_x509_crt_get_subject_unique_id",
+                )?,
+                x509_crt_get_key_id: load_symbol(&library, b"gnutls_x509_crt_get_key_id")?,
+                x509_crt_get_fingerprint: load_symbol(
+                    &library,
+                    b"gnutls_x509_crt_get_fingerprint",
+                )?,
+                x509_crt_export: load_symbol(&library, b"gnutls_x509_crt_export")?,
                 protocol_get: load_symbol(&library, b"gnutls_protocol_get_version")?,
                 protocol_name: load_symbol(&library, b"gnutls_protocol_get_name")?,
                 key_exchange_get: load_symbol(&library, b"gnutls_kx_get")?,
@@ -415,7 +478,6 @@ fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
                     &library,
                     b"gnutls_x509_crt_get_signature_algorithm",
                 )?,
-                x509_crt_export2: load_symbol(&library, b"gnutls_x509_crt_export2")?,
                 pk_algorithm_name: load_symbol(&library, b"gnutls_pk_algorithm_get_name")?,
                 sign_algorithm_name: load_symbol(&library, b"gnutls_sign_get_name")?,
                 pk_bits_to_sec_param: load_symbol(&library, b"gnutls_pk_bits_to_sec_param")?,
@@ -1178,36 +1240,6 @@ fn fcdr(value: Value) -> Result<Value, LispError> {
     }
 }
 
-/// SSDATA (VALUE) as GnuTLS reads it: a C string, ending at its first
-/// NUL.
-fn c_parameter(value: &str) -> std::ffi::CString {
-    let bytes = value.as_bytes();
-    let end = bytes
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(bytes.len());
-    std::ffi::CString::new(&bytes[..end]).unwrap_or_default()
-}
-
-/// The strings of a `:trustfiles' or `:crlfiles' list, walked while its
-/// tail is a cons; None for an element that is no string.
-fn gnutls_files(mut value: Value) -> Option<Vec<String>> {
-    let mut files = Vec::new();
-    while let Some((file, rest)) = value.cons_values() {
-        files.push(string_like(&file)?.text);
-        value = rest;
-    }
-    Some(files)
-}
-
-fn contains_symbol(value: &Value, wanted: &str) -> bool {
-    value.to_vec().is_ok_and(|items| {
-        items
-            .iter()
-            .any(|item| matches!(item.kind(), Kind::Symbol(symbol) if symbol.is_named(wanted)))
-    })
-}
-
 fn plist_has_key(value: &Value, wanted: &str) -> bool {
     value.to_vec().is_ok_and(|items| {
         items
@@ -1260,273 +1292,335 @@ fn key_file_flags(value: &Value) -> c_uint {
     })
 }
 
-fn x509_distinguished_name(get_name: X509CrtGetDn, certificate: *mut c_void) -> Option<String> {
+/// The bytes of a GnuTLS size-probed getter, as gnutls.c reads them: a
+/// first call with no buffer that must answer
+/// GNUTLS_E_SHORT_MEMORY_BUFFER, then one into a buffer of the size it
+/// gave, whose success leaves the size it wrote; None otherwise.
+fn size_probed(mut get: impl FnMut(*mut c_void, &mut usize) -> c_int) -> Option<Vec<u8>> {
     let mut size = 0;
-    // SAFETY: A null output buffer is GnuTLS's documented size probe.
-    let _ = unsafe { get_name(certificate, std::ptr::null_mut(), &mut size) };
-    if size == 0 {
+    if get(std::ptr::null_mut(), &mut size) != GNUTLS_E_SHORT_MEMORY_BUFFER {
         return None;
     }
-    let mut output = vec![0_u8; size];
-    // SAFETY: OUTPUT is writable for SIZE bytes and CERTIFICATE is live.
-    let result = unsafe { get_name(certificate, output.as_mut_ptr().cast(), &mut size) };
-    if result < 0 {
+    let mut buffer = vec![0_u8; size];
+    if get(buffer.as_mut_ptr().cast(), &mut size) < 0 {
         return None;
     }
-    output.truncate(size.min(output.len()));
-    while output.last() == Some(&0) {
-        output.pop();
-    }
-    Some(String::from_utf8_lossy(&output).into_owned())
+    buffer.truncate(size);
+    Some(buffer)
 }
 
-fn x509_serial_number(api: &GnuTlsApi, certificate: *mut c_void) -> Option<String> {
-    let mut size = 0;
-    // SAFETY: A null output pointer is GnuTLS's documented size probe.
-    let _ = unsafe { (api.x509_crt_get_serial)(certificate, std::ptr::null_mut(), &mut size) };
-    if size == 0 {
-        return None;
+/// gnutls.c:gnutls_hex_string: PREFIX, then each byte as two hex digits,
+/// the bytes separated by colons.
+fn gnutls_hex_string(bytes: &[u8], prefix: &str) -> Vec<u8> {
+    let mut text = prefix.as_bytes().to_vec();
+    for (index, byte) in bytes.iter().enumerate() {
+        if index > 0 {
+            text.push(b':');
+        }
+        text.extend_from_slice(format!("{byte:02x}").as_bytes());
     }
-    let mut serial = vec![0_u8; size];
-    // SAFETY: SERIAL is writable for SIZE bytes and CERTIFICATE is live.
-    if unsafe { (api.x509_crt_get_serial)(certificate, serial.as_mut_ptr().cast(), &mut size) } < 0
-    {
-        return None;
-    }
-    serial.truncate(size.min(serial.len()));
-    Some(
-        serial
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<Vec<_>>()
-            .join(":"),
-    )
+    text
 }
 
+/// alloc.c:make_string of BYTES (build_string of a C string's).
+fn gnutls_string(interp: &Interpreter, bytes: Vec<u8>) -> Result<Value, LispError> {
+    crate::lisp::primitives::strings::make_string(bytes).map_err(|error| {
+        crate::lisp::primitives::strings::string_storage_error_shared(interp, error)
+    })
+}
+
+/// build_string of a GnuTLS name (static NUL-terminated text), None for
+/// a null one.
+fn gnutls_name(interp: &Interpreter, pointer: *const c_char) -> Result<Option<Value>, LispError> {
+    if pointer.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: GnuTLS names are static NUL-terminated strings.
+    let bytes = unsafe { CStr::from_ptr(pointer) }.to_bytes().to_vec();
+    gnutls_string(interp, bytes).map(Some)
+}
+
+/// gnutls.c: gmtime_r and strftime "%Y-%m-%d" of a certificate time.
 fn x509_date(get_time: X509CrtGetTime, certificate: *mut c_void) -> Option<String> {
     // SAFETY: CERTIFICATE is a live imported X.509 handle.
     let timestamp = unsafe { get_time(certificate) };
     DateTime::<Utc>::from_timestamp(timestamp, 0).map(|date| date.format("%Y-%m-%d").to_string())
 }
 
-fn x509_pem(api: &GnuTlsApi, certificate: *mut c_void) -> Option<String> {
-    let mut output = GnuTlsDatum {
-        data: std::ptr::null_mut(),
-        size: 0,
+/// gnutls.c:emacs_gnutls_certificate_export_pem: the PEM text before its
+/// NUL, nil when the probe asks for no buffer, an error for a failed
+/// export.
+fn x509_pem(
+    interp: &Interpreter,
+    api: &GnuTlsApi,
+    certificate: *mut c_void,
+) -> Result<Value, LispError> {
+    let mut size = 0;
+    // GNUTLS_X509_FMT_PEM = 1.
+    // SAFETY: A null buffer is GnuTLS's size probe; CERTIFICATE is live.
+    let error = unsafe { (api.x509_crt_export)(certificate, 1, std::ptr::null_mut(), &mut size) };
+    let export_error = |error: c_int| {
+        // SAFETY: gnutls_strerror takes any code.
+        let text =
+            unsafe { c_string((api.error_string)(error)) }.unwrap_or_else(|| "unknown".into());
+        LispError::Signal(format!("GnuTLS certificate export error: {text}"))
     };
-    // GNUTLS_X509_FMT_PEM = 1.  GnuTLS allocates OUTPUT through its public
-    // allocator and transfers ownership to the caller on success.
-    // SAFETY: CERTIFICATE is live and OUTPUT is writable.
-    if unsafe { (api.x509_crt_export2)(certificate, 1, &mut output) } < 0 || output.data.is_null() {
-        return None;
+    if error == GNUTLS_E_SHORT_MEMORY_BUFFER {
+        let mut buffer = vec![0_u8; size];
+        // SAFETY: BUFFER holds SIZE writable bytes.
+        let error =
+            unsafe { (api.x509_crt_export)(certificate, 1, buffer.as_mut_ptr().cast(), &mut size) };
+        if error < 0 {
+            return Err(export_error(error));
+        }
+        let end = buffer
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(buffer.len());
+        buffer.truncate(end);
+        return gnutls_string(interp, buffer);
     }
-    // SAFETY: Successful export returned OUTPUT.SIZE initialized bytes.
-    let bytes = unsafe { std::slice::from_raw_parts(output.data, output.size as usize) };
-    let pem = String::from_utf8_lossy(bytes)
-        .trim_end_matches('\0')
-        .to_string();
-    // SAFETY: GnuTLS allocated OUTPUT.DATA and requires its matching free.
-    unsafe { (api.free)(output.data.cast()) };
-    Some(pem)
+    if error < 0 {
+        return Err(export_error(error));
+    }
+    Ok(Value::Nil)
 }
 
-fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
-    let mut count = 0;
-    // SAFETY: STATE is a successfully handshaken session; GnuTLS owns the
-    // returned certificate datum array for the session's lifetime.
-    let peers = unsafe { (api.certificate_get_peers)(state, &mut count) };
-    if peers.is_null() || count == 0 {
-        return Vec::new();
+/// gnutls.c:emacs_gnutls_certificate_details of CERTIFICATE, in its
+/// order: `:version' (when not an error), `:serial-number', `:issuer',
+/// `:valid-from', `:valid-to', `:subject', `:public-key-algorithm' and
+/// `:certificate-security-level', `:issuer-unique-id',
+/// `:subject-unique-id', `:signature-algorithm', `:public-key-id',
+/// `:public-key-id-sha256', `:certificate-id' and `:pem'.
+fn certificate_details(
+    interp: &Interpreter,
+    api: &GnuTlsApi,
+    certificate: *mut c_void,
+) -> Result<Value, LispError> {
+    let mut details = Vec::new();
+    // SAFETY (each GnuTLS call below): CERTIFICATE is a live imported
+    // X.509 handle; size-probed buffers are as long as GnuTLS asked.
+    let version = unsafe { (api.x509_crt_get_version)(certificate) };
+    if version >= 0 {
+        details.extend([
+            Value::symbol(":version"),
+            Value::Integer(i64::from(version)),
+        ]);
     }
-    // SAFETY: GnuTLS returned COUNT consecutive datum records.
-    let peers = unsafe { std::slice::from_raw_parts(peers, count as usize) };
-    peers
-        .iter()
-        .filter_map(|peer| {
-            let mut certificate = std::ptr::null_mut();
-            // SAFETY: GnuTLS initializes one opaque certificate handle.
-            if unsafe { (api.x509_crt_init)(&mut certificate) } < 0 {
-                return None;
-            }
-            let certificate = ForeignHandle {
-                pointer: certificate,
-                free: api.x509_crt_deinit,
-            };
-            // Peer certificates are DER-encoded (GNUTLS_X509_FMT_DER = 0).
-            // SAFETY: PEER is borrowed from the live session and CERTIFICATE
-            // is an initialized X.509 handle.
-            if unsafe { (api.x509_crt_import)(certificate.pointer, peer, 0) } < 0 {
-                return None;
-            }
-            let mut details = vec![
-                Value::symbol(":version"),
-                Value::Integer(i64::from(unsafe {
-                    // SAFETY: CERTIFICATE is a live imported X.509 handle.
-                    (api.x509_crt_get_version)(certificate.pointer)
-                })),
-            ];
-            if let Some(serial) = x509_serial_number(api, certificate.pointer) {
-                details.extend([
-                    Value::symbol(":serial-number"),
-                    string_like_value(serial, None),
-                ]);
-            }
-            if let Some(issuer) =
-                x509_distinguished_name(api.x509_crt_get_issuer_dn, certificate.pointer)
-            {
-                details.extend([Value::symbol(":issuer"), string_like_value(issuer, None)]);
-            }
-            if let Some(valid_from) =
-                x509_date(api.x509_crt_get_activation_time, certificate.pointer)
-            {
-                details.extend([
-                    Value::symbol(":valid-from"),
-                    string_like_value(valid_from, None),
-                ]);
-            }
-            if let Some(valid_to) = x509_date(api.x509_crt_get_expiration_time, certificate.pointer)
-            {
-                details.extend([
-                    Value::symbol(":valid-to"),
-                    string_like_value(valid_to, None),
-                ]);
-            }
-            if let Some(subject) = x509_distinguished_name(api.x509_crt_get_dn, certificate.pointer)
-            {
-                details.extend([Value::symbol(":subject"), string_like_value(subject, None)]);
-            }
-            let mut public_key_bits = 0;
-            // SAFETY: CERTIFICATE is live and PUBLIC_KEY_BITS is writable.
-            let public_key = unsafe {
-                (api.x509_crt_get_pk_algorithm)(certificate.pointer, &mut public_key_bits)
-            };
-            // SAFETY: Algorithm-name functions return library-owned static strings.
-            if let Some(name) = unsafe { c_string((api.pk_algorithm_name)(public_key)) } {
-                details.extend([
-                    Value::symbol(":public-key-algorithm"),
-                    string_like_value(name, None),
-                ]);
-            }
-            // SAFETY: PUBLIC_KEY and PUBLIC_KEY_BITS came from this certificate;
-            // the security-parameter name is library-owned static storage.
-            let security_parameter =
-                unsafe { (api.pk_bits_to_sec_param)(public_key, public_key_bits) };
-            if let Some(name) = unsafe { c_string((api.sec_param_name)(security_parameter)) } {
-                details.extend([
-                    Value::symbol(":certificate-security-level"),
-                    string_like_value(name, None),
-                ]);
-            }
-            // SAFETY: CERTIFICATE is live and the name pointer is static.
-            let signature = unsafe { (api.x509_crt_get_signature_algorithm)(certificate.pointer) };
-            if let Some(name) = unsafe { c_string((api.sign_algorithm_name)(signature)) } {
-                details.extend([
-                    Value::symbol(":signature-algorithm"),
-                    string_like_value(name, None),
-                ]);
-            }
-            if let Some(pem) = x509_pem(api, certificate.pointer) {
-                details.extend([Value::symbol(":pem"), string_like_value(pem, None)]);
-            }
-            Some(Value::list(details))
-        })
-        .collect()
+    if let Some(serial) =
+        size_probed(|buffer, size| unsafe { (api.x509_crt_get_serial)(certificate, buffer, size) })
+    {
+        details.extend([
+            Value::symbol(":serial-number"),
+            gnutls_string(interp, gnutls_hex_string(&serial, ""))?,
+        ]);
+    }
+    if let Some(issuer) = size_probed(|buffer, size| unsafe {
+        (api.x509_crt_get_issuer_dn)(certificate, buffer.cast(), size)
+    }) {
+        details.extend([Value::symbol(":issuer"), gnutls_string(interp, issuer)?]);
+    }
+    if let Some(valid_from) = x509_date(api.x509_crt_get_activation_time, certificate) {
+        details.extend([
+            Value::symbol(":valid-from"),
+            gnutls_string(interp, valid_from.into_bytes())?,
+        ]);
+    }
+    if let Some(valid_to) = x509_date(api.x509_crt_get_expiration_time, certificate) {
+        details.extend([
+            Value::symbol(":valid-to"),
+            gnutls_string(interp, valid_to.into_bytes())?,
+        ]);
+    }
+    if let Some(subject) = size_probed(|buffer, size| unsafe {
+        (api.x509_crt_get_dn)(certificate, buffer.cast(), size)
+    }) {
+        details.extend([Value::symbol(":subject"), gnutls_string(interp, subject)?]);
+    }
+    let mut bits = 0;
+    let public_key = unsafe { (api.x509_crt_get_pk_algorithm)(certificate, &mut bits) };
+    if public_key >= 0 {
+        if let Some(name) = gnutls_name(interp, unsafe { (api.pk_algorithm_name)(public_key) })? {
+            details.extend([Value::symbol(":public-key-algorithm"), name]);
+        }
+        let parameter = unsafe { (api.pk_bits_to_sec_param)(public_key, bits) };
+        if let Some(name) = gnutls_name(interp, unsafe { (api.sec_param_name)(parameter) })? {
+            details.extend([Value::symbol(":certificate-security-level"), name]);
+        }
+    }
+    if let Some(id) = size_probed(|buffer, size| unsafe {
+        (api.x509_crt_get_issuer_unique_id)(certificate, buffer.cast(), size)
+    }) {
+        details.extend([
+            Value::symbol(":issuer-unique-id"),
+            gnutls_string(interp, id)?,
+        ]);
+    }
+    if let Some(id) = size_probed(|buffer, size| unsafe {
+        (api.x509_crt_get_subject_unique_id)(certificate, buffer.cast(), size)
+    }) {
+        details.extend([
+            Value::symbol(":subject-unique-id"),
+            gnutls_string(interp, id)?,
+        ]);
+    }
+    let signature = unsafe { (api.x509_crt_get_signature_algorithm)(certificate) };
+    if signature >= 0
+        && let Some(name) = gnutls_name(interp, unsafe { (api.sign_algorithm_name)(signature) })?
+    {
+        details.extend([Value::symbol(":signature-algorithm"), name]);
+    }
+    if let Some(id) = size_probed(|buffer, size| unsafe {
+        (api.x509_crt_get_key_id)(certificate, 0, buffer.cast(), size)
+    }) {
+        details.extend([
+            Value::symbol(":public-key-id"),
+            gnutls_string(interp, gnutls_hex_string(&id, "sha1:"))?,
+        ]);
+    }
+    if let Some(id) = size_probed(|buffer, size| unsafe {
+        (api.x509_crt_get_key_id)(certificate, GNUTLS_KEYID_USE_SHA256, buffer.cast(), size)
+    }) {
+        details.extend([
+            Value::symbol(":public-key-id-sha256"),
+            gnutls_string(interp, gnutls_hex_string(&id, "sha256:"))?,
+        ]);
+    }
+    if let Some(fingerprint) = size_probed(|buffer, size| unsafe {
+        (api.x509_crt_get_fingerprint)(certificate, GNUTLS_DIG_SHA1, buffer, size)
+    }) {
+        details.extend([
+            Value::symbol(":certificate-id"),
+            gnutls_string(interp, gnutls_hex_string(&fingerprint, "sha1:"))?,
+        ]);
+    }
+    details.extend([Value::symbol(":pem"), x509_pem(interp, api, certificate)?]);
+    Ok(Value::list(details))
 }
 
+/// Fgnutls_peer_status's warnings, in the order its list holds them:
+/// each consed on as its bit of VERIFICATION is found (`:invalid' first),
+/// then `:no-host-match' for CERTIFICATE_NOT_MATCHING in EXTRA and
+/// `:self-signed' for a host certificate that is its own issuer.
+fn peer_status_warnings(
+    api: &GnuTlsApi,
+    verification: c_uint,
+    extra: u32,
+    certificates: &[*mut c_void],
+) -> Vec<&'static str> {
+    let warning_bits = [
+        (1 << 1, ":invalid"),
+        (1 << 5, ":revoked"),
+        (1 << 6, ":unknown-ca"),
+        (1 << 7, ":not-ca"),
+        (1 << 8, ":insecure"),
+        (1 << 9, ":not-activated"),
+        (1 << 10, ":expired"),
+        (1 << 11, ":signature-failure"),
+        (1 << 12, ":revocation-data-superseded"),
+        (1 << 15, ":revocation-data-issued-in-future"),
+        (1 << 16, ":signer-constraints-failure"),
+        (1 << 18, ":purpose-mismatch"),
+        (1 << 19, ":missing-ocsp-status"),
+        (1 << 20, ":invalid-ocsp-status"),
+    ];
+    let mut warnings = Vec::new();
+    for (bit, warning) in warning_bits {
+        if verification & bit != 0 {
+            warnings.push(warning);
+        }
+    }
+    if extra & CERTIFICATE_NOT_MATCHING != 0 {
+        warnings.push(":no-host-match");
+    }
+    // SAFETY: The stored host certificate is live while the process
+    // holds it.
+    if let Some(&host) = certificates.first()
+        && unsafe { (api.x509_crt_check_issuer)(host, host) } != 0
+    {
+        warnings.push(":self-signed");
+    }
+    warnings.reverse();
+    warnings
+}
+
+/// gnutls.c:Fgnutls_peer_status past its stage check: `:warnings' (each
+/// warning consed on as its bit of p->gnutls_peer_verification is found,
+/// then `:no-host-match' for p->gnutls_extra_peer_verification and
+/// `:self-signed' for a host certificate that is its own issuer), the
+/// stored certificates as `:certificates' and the first as
+/// `:certificate', `:diffie-hellman-prime-bits' when positive,
+/// `:key-exchange', `:protocol', `:cipher', `:mac', `:encrypt-then-mac'
+/// (HAVE_GNUTLS_ETM_STATUS) and, up to TLS 1.2, `:safe-renegotiation'.
 fn negotiated_peer_status(
+    interp: &Interpreter,
     api: &GnuTlsApi,
     state: *mut c_void,
     verification: c_uint,
-    is_x509: bool,
-) -> Value {
-    let warning_bits = [
-        (1 << 20, ":invalid-ocsp-status"),
-        (1 << 19, ":missing-ocsp-status"),
-        (1 << 18, ":purpose-mismatch"),
-        (1 << 16, ":signer-constraints-failure"),
-        (1 << 15, ":revocation-data-issued-in-future"),
-        (1 << 12, ":revocation-data-superseded"),
-        (1 << 11, ":signature-failure"),
-        (1 << 10, ":expired"),
-        (1 << 9, ":not-activated"),
-        (1 << 8, ":insecure"),
-        (1 << 7, ":not-ca"),
-        (1 << 6, ":unknown-ca"),
-        (1 << 5, ":revoked"),
-        (1 << 1, ":invalid"),
-    ];
+    extra_verification: u32,
+    certificates: &[*mut c_void],
+) -> Result<Value, LispError> {
+    let mut warnings = Value::Nil;
+    for warning in peer_status_warnings(api, verification, extra_verification, certificates)
+        .into_iter()
+        .rev()
+    {
+        warnings = Value::cons(Value::symbol(warning), warnings);
+    }
     let mut result = Vec::new();
-    let mut warnings = Vec::new();
-    if verification & (1 << 14) != 0 {
-        warnings.push(Value::symbol(":no-host-match"));
+    if !warnings.is_nil() {
+        result.extend([Value::symbol(":warnings"), warnings]);
     }
-    warnings.extend(
-        warning_bits
-            .into_iter()
-            .filter(|(bit, _)| verification & bit != 0)
-            .map(|(_, warning)| Value::symbol(warning)),
-    );
-    if !warnings.is_empty() {
-        result.extend([Value::symbol(":warnings"), Value::list(warnings)]);
+    if !certificates.is_empty() {
+        let details = certificates
+            .iter()
+            .map(|&certificate| certificate_details(interp, api, certificate))
+            .collect::<Result<Vec<_>, _>>()?;
+        let host = details[0];
+        result.extend([
+            Value::symbol(":certificates"),
+            Value::list(details),
+            Value::symbol(":certificate"),
+            host,
+        ]);
     }
-    if is_x509 {
-        let certificates = peer_certificates(api, state);
-        if let Some(certificate) = certificates.first().cloned() {
-            result.extend([
-                Value::symbol(":certificates"),
-                Value::list(certificates),
-                Value::symbol(":certificate"),
-                certificate,
-            ]);
-        }
+    // SAFETY (each call below): STATE is a live, successfully handshaken
+    // session; the algorithm-name functions return static strings.
+    let bits = unsafe { (api.dh_get_prime_bits)(state) };
+    if bits > 0 {
+        result.extend([
+            Value::symbol(":diffie-hellman-prime-bits"),
+            Value::Integer(i64::from(bits)),
+        ]);
     }
+    let protocol = unsafe { (api.protocol_get)(state) };
     let algorithms = [
-        (":key-exchange", api.key_exchange_get, api.key_exchange_name),
-        (":protocol", api.protocol_get, api.protocol_name),
-        (":cipher", api.session_cipher_get, api.cipher_name),
-        (":mac", api.session_mac_get, api.mac_name),
+        (":key-exchange", unsafe {
+            (api.key_exchange_name)((api.key_exchange_get)(state))
+        }),
+        (":protocol", unsafe { (api.protocol_name)(protocol) }),
+        (":cipher", unsafe {
+            (api.cipher_name)((api.session_cipher_get)(state))
+        }),
+        (":mac", unsafe {
+            (api.mac_name)((api.session_mac_get)(state))
+        }),
     ];
-    for (key, get, name) in algorithms {
-        // SAFETY: STATE is a live, successfully handshaken session and the
-        // algorithm-name functions return static strings.
-        let value = unsafe { c_string(name(get(state))) };
-        if let Some(value) = value {
-            // gnutls.c builds fresh mutable strings for each report. Host
-            // text would make subsequent Lisp `aset' silently ineffective.
-            result.extend([Value::symbol(key), string_like_value(value, None)]);
+    for (key, name) in algorithms {
+        // gnutls.c builds fresh mutable strings for each report.
+        if let Some(name) = gnutls_name(interp, name)? {
+            result.extend([Value::symbol(key), name]);
         }
     }
-    Value::list(result)
-}
-
-enum PeerVerification {
-    Ready(c_uint),
-    GnuTlsError(c_int),
-}
-
-/// The peer's verification code, gnutls_certificate_verify_peers3 with
-/// the host for an X.509 session (its GNUTLS_CERT_UNEXPECTED_OWNER bit
-/// standing for gnutls_x509_crt_check_hostname's mismatch), 0 for an
-/// anonymous one.
-fn completed_peer_verification(
-    api: &GnuTlsApi,
-    state: *mut c_void,
-    is_x509: bool,
-    hostname: &str,
-) -> PeerVerification {
-    let mut verification = 0;
-    if is_x509 {
-        let hostname_c = c_parameter(hostname);
-        // SAFETY: The session completed its handshake, HOSTNAME is
-        // NUL-terminated, and VERIFICATION is writable output storage.
-        let result = unsafe {
-            (api.certificate_verify_peers)(state, hostname_c.as_ptr(), &mut verification)
-        };
-        if result < 0 {
-            return PeerVerification::GnuTlsError(result);
-        }
+    if let Some(etm_status) = api.session_etm_status {
+        let etm = unsafe { etm_status(state) } != 0;
+        result.extend([Value::symbol(":encrypt-then-mac"), Value::from_bool(etm)]);
     }
-    PeerVerification::Ready(verification)
+    if protocol <= GNUTLS_TLS1_2 {
+        let safe = unsafe { (api.safe_renegotiation_status)(state) } != 0;
+        result.extend([Value::symbol(":safe-renegotiation"), Value::from_bool(safe)]);
+    }
+    Ok(Value::list(result))
 }
 
 /// gnutls.c:boot_error: a non-blocking client's status (failed MESSAGE)
@@ -1550,15 +1644,129 @@ fn boot_error(
     Err(LispError::Signal(message))
 }
 
+/// gnutls.c:gnutls_log_function, GnuTLS's log function once a
+/// `:loglevel' was given: "gnutls.c: [LEVEL] STRING".
+unsafe extern "C" fn gnutls_log_function(level: c_int, string: *const c_char) {
+    let mut text = format!("gnutls.c: [{level}] ").into_bytes();
+    if !string.is_null() {
+        // SAFETY: GnuTLS passes a NUL-terminated message.
+        text.extend_from_slice(unsafe { CStr::from_ptr(string) }.to_bytes());
+    }
+    crate::lisp::eval::push_gnutls_log(crate::lisp::eval::GnuTlsLogEntry::Shown(text));
+}
+
+/// gnutls.c:gnutls_audit_log_function: "gnutls.c: [audit] STRING" when
+/// `gnutls-log-level' is at least 1.
+unsafe extern "C" fn gnutls_audit_log_function(_session: *mut c_void, string: *const c_char) {
+    let mut text = b"gnutls.c: [audit] ".to_vec();
+    if !string.is_null() {
+        // SAFETY: GnuTLS passes a NUL-terminated message.
+        text.extend_from_slice(unsafe { CStr::from_ptr(string) }.to_bytes());
+    }
+    crate::lisp::eval::push_gnutls_log(crate::lisp::eval::GnuTlsLogEntry::Audit(text));
+}
+
+/// The gnutls.c `message's made where no Lisp could run, each shown as
+/// vmessage shows it, in order: those weighed against
+/// `gnutls-log-level' (clipped to an int) weighed now, as no Lisp has
+/// changed it since.
+pub(crate) fn flush_gnutls_log(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    use crate::lisp::eval::GnuTlsLogEntry;
+    let entries = crate::lisp::eval::take_gnutls_log();
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let global = interp
+        .lookup_var_key(cached_symbol!("gnutls-log-level"), env)
+        .and_then(|value| value.integer_value())
+        .unwrap_or(0);
+    let max = global.clamp(i64::from(c_int::MIN), i64::from(c_int::MAX)) as c_int;
+    for entry in entries {
+        let bytes = match entry {
+            GnuTlsLogEntry::Shown(bytes) => bytes,
+            GnuTlsLogEntry::AtGlobalLevel(level, bytes) if level <= max => bytes,
+            GnuTlsLogEntry::Audit(bytes) if global >= 1 => bytes,
+            GnuTlsLogEntry::AtGlobalLevel(..) | GnuTlsLogEntry::Audit(_) => continue,
+        };
+        super::display::vmessage(interp, bytes, env)?;
+    }
+    Ok(())
+}
+
+/// SSDATA of a Lisp string up to its first NUL, as a C string.
+fn c_bytes(bytes: &[u8]) -> std::ffi::CString {
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    std::ffi::CString::new(&bytes[..end]).unwrap_or_default()
+}
+
+/// ENCODE_FILE of the Lisp string NAME, its SSDATA as a C string.
+fn encoded_file_name(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: Value,
+) -> Result<std::ffi::CString, LispError> {
+    let encoded = crate::lisp::primitives::system::encode_file_value(interp, env, name)?;
+    Ok(c_bytes(&crate::lisp::primitives::font::string_sdata(
+        &encoded,
+    )?))
+}
+
+/// gnutls.c:gnutls_ip_address_p: whether HOST holds only dots, colons
+/// and digits.
+fn gnutls_ip_address_p(host: &[u8]) -> bool {
+    host.iter()
+        .all(|byte| *byte == b'.' || *byte == b':' || byte.is_ascii_digit())
+}
+
+/// Fmember of the keyword NAME in LIST: FOR_EACH_TAIL, an element `eq'
+/// to it the answer, CHECK_LIST_END of the tail it ends on.
+fn member_keyword(list: Value, name: &str) -> Result<bool, LispError> {
+    let mut tail = list;
+    let mut slow = list;
+    let mut steps = 0_u64;
+    while let Some((item, rest)) = tail.cons_values() {
+        if matches!(item.kind(), Kind::Symbol(symbol) if symbol.is_named(name)) {
+            return Ok(true);
+        }
+        tail = rest;
+        steps += 1;
+        if steps.is_multiple_of(2) {
+            slow = safe_cdr(&slow);
+            if slow == tail {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("circular-list"),
+                    list,
+                ])));
+            }
+        }
+    }
+    if !tail.is_nil() {
+        return Err(wrong_type_argument("listp", list));
+    }
+    Ok(false)
+}
+
 /// gnutls.c:Fgnutls_boot in its order: CHECK_PROCESS, CHECK_SYMBOL of
 /// TYPE, CHECK_LIST of PROPLIST; boot_error for no GnuTLS, a TYPE but
-/// `gnutls-x509pki' or `gnutls-anon', a `:hostname' that is no string;
-/// the log level; the global init, whose error is the answer;
-/// emacs_gnutls_deinit; the credentials and their files (boot_error for
-/// a file that is no string); gnutls_init (GNUTLS_NONBLOCK for a
-/// non-blocking client), the priority, the prime bits, the credentials,
-/// the server name; `:complete-negotiation'; emacs_gnutls_handshake,
-/// whose error is the answer; then gnutls_verify_boot.
+/// `gnutls-x509pki' or `gnutls-anon', a `:hostname' that is no string; an
+/// integer `:loglevel' made GnuTLS's log level, with its log and audit
+/// functions, and p->gnutls_log_level, which the boot's logging is
+/// weighed against (else 0); "connecting to host:"; the global init,
+/// whose error is the answer; emacs_gnutls_deinit, then the process
+/// marked GNUTLS_STAGE_EMPTY; the credentials (GNUTLS_STAGE_CRED_ALLOC),
+/// for X.509 with `:verify-flags', the system trust and each
+/// `:trustfiles', `:crlfiles' and `:keylist' entry in turn, logged and
+/// ENCODE_FILE'd (boot_error for one that is no string, a GnuTLS error
+/// the answer); GNUTLS_STAGE_FILES and CALLBACKS; gnutls_init
+/// (GNUTLS_NONBLOCK for a non-blocking client) and GNUTLS_STAGE_INIT; the
+/// priority and GNUTLS_STAGE_PRIORITY; the prime bits, the credentials
+/// and, for a host that is no IP address (gnutls_ip_address_p), the
+/// server name; `:complete-negotiation' and GNUTLS_STAGE_CRED_SET;
+/// emacs_gnutls_handshake, whose error is the answer; then
+/// gnutls_verify_boot.
 #[cfg(unix)]
 pub(crate) fn gnutls_boot(
     interp: &mut Interpreter,
@@ -1567,6 +1775,11 @@ pub(crate) fn gnutls_boot(
     credential_type: &Value,
     parameters: &Value,
 ) -> Result<Value, LispError> {
+    use crate::lisp::eval::{
+        GNUTLS_STAGE_CALLBACKS, GNUTLS_STAGE_CRED_ALLOC, GNUTLS_STAGE_FILES, GNUTLS_STAGE_INIT,
+        GNUTLS_STAGE_PRIORITY, gnutls_log, gnutls_log2, gnutls_log2i,
+    };
+    use crate::lisp::primitives::font::string_sdata;
     let process_id = interp.resolve_process_id(process)?;
     let Kind::Symbol(credential_type) = credential_type.kind() else {
         return Err(wrong_type_argument("symbolp", *credential_type));
@@ -1583,23 +1796,32 @@ pub(crate) fn gnutls_boot(
         _ => return boot_error(interp, process_id, "Invalid GnuTLS credential type".into()),
     };
     let hostname_value = contact_plist_get(parameters, ":hostname");
-    let Some(hostname) = string_like(&hostname_value).map(|string| string.text) else {
+    if string_like(&hostname_value).is_none() {
         return boot_error(
             interp,
             process_id,
             "gnutls-boot: invalid :hostname parameter (not a string)".into(),
         );
-    };
-    let priority = string_like(&contact_plist_get(parameters, ":priority"))
-        .map(|string| string.text)
-        .unwrap_or_else(|| "NORMAL".into());
+    }
+    let hostname = c_bytes(&string_sdata(&hostname_value)?);
     let transport = interp.network_socket_fd(process_id).unwrap_or(-1);
     let api = library.api;
 
+    let mut max_log_level = 0;
     if let Some(level) = log_level(&contact_plist_get(parameters, ":loglevel")) {
-        // SAFETY: The global log level is an unconstrained C integer.
-        unsafe { (api.global_set_log_level)(level) };
+        // SAFETY: the functions are plain C callbacks and the level an
+        // unconstrained C integer.
+        unsafe {
+            (api.global_set_log_function)(Some(gnutls_log_function));
+            if let Some(set_audit_log_function) = api.global_set_audit_log_function {
+                set_audit_log_function(Some(gnutls_audit_log_function));
+            }
+            (api.global_set_log_level)(level);
+        }
+        max_log_level = level;
+        interp.set_process_gnutls_log_level(process_id, level);
     }
+    gnutls_log2(1, max_log_level, "connecting to host:", hostname.as_bytes());
 
     let result = library.initialize();
     if result < 0 {
@@ -1608,15 +1830,19 @@ pub(crate) fn gnutls_boot(
     // Before allocating new credentials, deallocate any credentials
     // that PROC might already have.
     let _ = interp.deinit_process_gnutls(process_id);
+    // Mark PROC as a GnuTLS process.
+    interp.reset_process_gnutls(process_id);
 
+    gnutls_log(1, max_log_level, "allocating credentials");
     let mut credential_pointer = std::ptr::null_mut();
-    // SAFETY: The selected allocator initializes CREDENTIAL_POINTER on success.
-    let result = unsafe {
-        if is_x509 {
-            (api.certificate_allocate)(&mut credential_pointer)
-        } else {
-            (api.anon_allocate)(&mut credential_pointer)
-        }
+    let result = if is_x509 {
+        gnutls_log(2, max_log_level, "allocating x509 credentials");
+        // SAFETY: the allocator initializes CREDENTIAL_POINTER on success.
+        unsafe { (api.certificate_allocate)(&mut credential_pointer) }
+    } else {
+        gnutls_log(2, max_log_level, "allocating anon credentials");
+        // SAFETY: as above.
+        unsafe { (api.anon_allocate)(&mut credential_pointer) }
     };
     if result < 0 {
         return Ok(gnutls_result(result));
@@ -1630,39 +1856,77 @@ pub(crate) fn gnutls_boot(
         pointer: credential_pointer,
         free: credential_free,
     };
+    if is_x509 {
+        let verify_flags = contact_plist_get(parameters, ":verify-flags");
+        // GNUTLS_VERIFY_ALLOW_X509_V1_CA_CRT, 0 on current GnuTLS.
+        let flags = match verify_flags.kind() {
+            Kind::Integer(flags) if (0..=i64::from(c_uint::MAX)).contains(&flags) => {
+                gnutls_log(2, max_log_level, "setting verification flags");
+                flags as c_uint
+            }
+            _ if verify_flags.is_nil() => {
+                gnutls_log(2, max_log_level, "using default verification flags");
+                0
+            }
+            _ => {
+                gnutls_log(2, max_log_level, "ignoring invalid verify-flags");
+                0
+            }
+        };
+        // SAFETY: CREDENTIAL is a live X.509 credential handle.
+        unsafe { (api.certificate_verify_flags)(credential.pointer, flags) };
+    }
+    interp.set_process_gnutls_initstage(process_id, GNUTLS_STAGE_CRED_ALLOC);
 
     if is_x509 {
-        let verify_flags = match contact_plist_get(parameters, ":verify-flags").kind() {
-            Kind::Integer(flags) => c_uint::try_from(flags).unwrap_or(0),
-            _ => 0,
-        };
-        // SAFETY: CREDENTIAL is a live X.509 credential handle.  Zero is
-        // GNU's default GNUTLS_VERIFY_ALLOW_X509_V1_CA_CRT value on current
-        // GnuTLS, and invalid Lisp values intentionally select that default.
-        unsafe { (api.certificate_verify_flags)(credential.pointer, verify_flags) };
         if let Some(system_trust) = api.certificate_system_trust {
             // SAFETY: CREDENTIAL is a live X.509 credential handle.
-            let _ = unsafe { system_trust(credential.pointer) };
+            let result = unsafe { system_trust(credential.pointer) };
+            if result < 0 {
+                gnutls_log2i(
+                    4,
+                    max_log_level,
+                    "setting system trust failed with code ",
+                    result,
+                );
+            }
         }
-        let Some(trustfiles) = gnutls_files(contact_plist_get(parameters, ":trustfiles")) else {
-            let _ = interp.deinit_process_gnutls(process_id);
-            return boot_error(interp, process_id, "Invalid trustfile".into());
-        };
-        for trustfile in trustfiles {
-            let trustfile = c_parameter(&trustfile);
-            // SAFETY: CREDENTIAL is live and TRUSTFILE is NUL-terminated.
+        let mut tail = contact_plist_get(parameters, ":trustfiles");
+        while let Some((trustfile, rest)) = tail.cons_values() {
+            tail = rest;
+            if string_like(&trustfile).is_none() {
+                let _ = interp.deinit_process_gnutls(process_id);
+                return boot_error(interp, process_id, "Invalid trustfile".into());
+            }
+            gnutls_log2(
+                1,
+                max_log_level,
+                "setting the trustfile: ",
+                c_bytes(&string_sdata(&trustfile)?).as_bytes(),
+            );
+            let trustfile = encoded_file_name(interp, env, trustfile)?;
+            // SAFETY: CREDENTIAL is live and TRUSTFILE is NUL-terminated;
+            // GNUTLS_X509_FMT_PEM is 1.
             let result =
                 unsafe { (api.certificate_trust_file)(credential.pointer, trustfile.as_ptr(), 1) };
             if result < 0 {
                 return Ok(gnutls_result(result));
             }
         }
-        let Some(crlfiles) = gnutls_files(contact_plist_get(parameters, ":crlfiles")) else {
-            let _ = interp.deinit_process_gnutls(process_id);
-            return boot_error(interp, process_id, "Invalid CRL file".into());
-        };
-        for crlfile in crlfiles {
-            let crlfile = c_parameter(&crlfile);
+        let mut tail = contact_plist_get(parameters, ":crlfiles");
+        while let Some((crlfile, rest)) = tail.cons_values() {
+            tail = rest;
+            if string_like(&crlfile).is_none() {
+                let _ = interp.deinit_process_gnutls(process_id);
+                return boot_error(interp, process_id, "Invalid CRL file".into());
+            }
+            gnutls_log2(
+                1,
+                max_log_level,
+                "setting the CRL file: ",
+                c_bytes(&string_sdata(&crlfile)?).as_bytes(),
+            );
+            let crlfile = encoded_file_name(interp, env, crlfile)?;
             // SAFETY: CREDENTIAL is live and CRLFILE is NUL-terminated.
             let result =
                 unsafe { (api.certificate_crl_file)(credential.pointer, crlfile.as_ptr(), 1) };
@@ -1671,8 +1935,11 @@ pub(crate) fn gnutls_boot(
             }
         }
         let pass_present = plist_has_key(parameters, ":pass");
-        let pass = string_like(&contact_plist_get(parameters, ":pass"))
-            .map(|pass| c_parameter(&pass.text));
+        let pass_value = contact_plist_get(parameters, ":pass");
+        let pass = match string_like(&pass_value) {
+            Some(_) => Some(c_bytes(&string_sdata(&pass_value)?)),
+            None => None,
+        };
         let flags = key_file_flags(&contact_plist_get(parameters, ":flags"));
         let mut keylist = contact_plist_get(parameters, ":keylist");
         while let Some((pair, rest)) = keylist.cons_values() {
@@ -1680,8 +1947,7 @@ pub(crate) fn gnutls_boot(
             // Fcar (XCAR (tail)) and Fcar (Fcdr (XCAR (tail))).
             let keyfile = fcar(pair)?;
             let certfile = fcar(fcdr(pair)?)?;
-            let (Some(keyfile), Some(certfile)) = (string_like(&keyfile), string_like(&certfile))
-            else {
+            if string_like(&keyfile).is_none() || string_like(&certfile).is_none() {
                 let message = if string_like(&keyfile).is_some() {
                     "Invalid client cert file"
                 } else {
@@ -1689,9 +1955,21 @@ pub(crate) fn gnutls_boot(
                 };
                 let _ = interp.deinit_process_gnutls(process_id);
                 return boot_error(interp, process_id, message.into());
-            };
-            let keyfile = c_parameter(&keyfile.text);
-            let certfile = c_parameter(&certfile.text);
+            }
+            gnutls_log2(
+                1,
+                max_log_level,
+                "setting the client key file: ",
+                c_bytes(&string_sdata(&keyfile)?).as_bytes(),
+            );
+            gnutls_log2(
+                1,
+                max_log_level,
+                "setting the client cert file: ",
+                c_bytes(&string_sdata(&certfile)?).as_bytes(),
+            );
+            let keyfile = encoded_file_name(interp, env, keyfile)?;
+            let certfile = encoded_file_name(interp, env, certfile)?;
             // SAFETY: CREDENTIAL is live, both paths are NUL-terminated, and
             // PASS (when non-null) remains live for this call.
             let result = unsafe {
@@ -1719,13 +1997,16 @@ pub(crate) fn gnutls_boot(
         }
     }
 
-    let mut state_pointer = std::ptr::null_mut();
-    // gnutls_init with GNUTLS_CLIENT, and GNUTLS_NONBLOCK for a
-    // non-blocking client.
+    interp.set_process_gnutls_initstage(process_id, GNUTLS_STAGE_FILES);
+    gnutls_log(1, max_log_level, "gnutls callbacks");
+    interp.set_process_gnutls_initstage(process_id, GNUTLS_STAGE_CALLBACKS);
+
+    gnutls_log(1, max_log_level, "gnutls_init");
     let mut gnutls_flags = GNUTLS_CLIENT;
     if interp.network_setup(process_id).non_blocking_client {
         gnutls_flags |= GNUTLS_NONBLOCK;
     }
+    let mut state_pointer = std::ptr::null_mut();
     // SAFETY: SESSION_INIT initializes STATE_POINTER as a client session.
     let result = unsafe { (api.session_init)(&mut state_pointer, gnutls_flags) };
     if result < 0 {
@@ -1735,7 +2016,28 @@ pub(crate) fn gnutls_boot(
         pointer: state_pointer,
         free: api.session_deinit,
     };
-    let priority = c_parameter(&priority);
+    interp.set_process_gnutls_initstage(process_id, GNUTLS_STAGE_INIT);
+
+    let priority_value = contact_plist_get(parameters, ":priority");
+    let priority = if string_like(&priority_value).is_some() {
+        let priority = c_bytes(&string_sdata(&priority_value)?);
+        gnutls_log2(
+            1,
+            max_log_level,
+            "got non-default priority string:",
+            priority.as_bytes(),
+        );
+        priority
+    } else {
+        gnutls_log2(
+            1,
+            max_log_level,
+            "using default priority string:",
+            b"NORMAL",
+        );
+        c_bytes(b"NORMAL")
+    };
+    gnutls_log(1, max_log_level, "setting the priority string");
     // SAFETY: STATE is live and PRIORITY is NUL-terminated.
     let result = unsafe {
         (api.priority_set_direct)(state.pointer, priority.as_ptr(), std::ptr::null_mut())
@@ -1743,13 +2045,15 @@ pub(crate) fn gnutls_boot(
     if result < 0 {
         return Ok(gnutls_result(result));
     }
+    interp.set_process_gnutls_initstage(process_id, GNUTLS_STAGE_PRIORITY);
+
     if let Kind::Integer(bits) = contact_plist_get(parameters, ":min-prime-bits").kind() {
-        // GNU accepts only a fixnum and lets C narrow it to unsigned int.
+        // XUFIXNUM, narrowed to unsigned int as C narrows it.
         // SAFETY: STATE is a live initialized session.
         unsafe { (api.dh_set_prime_bits)(state.pointer, bits as c_uint) };
     }
     // SAFETY: Both handles are live and the credential type matches its
-    // allocator (certificate=1, anonymous=2).
+    // allocator (GNUTLS_CRD_CERTIFICATE 1, GNUTLS_CRD_ANON 2).
     let result = unsafe {
         (api.credentials_set)(
             state.pointer,
@@ -1760,13 +2064,12 @@ pub(crate) fn gnutls_boot(
     if result < 0 {
         return Ok(gnutls_result(result));
     }
-    if hostname.parse::<std::net::IpAddr>().is_err() {
-        let hostname = c_parameter(&hostname);
-        let hostname = hostname.as_bytes();
-        // SAFETY: STATE is live and HOSTNAME remains borrowed for this call.
-        let result = unsafe {
-            (api.server_name_set)(state.pointer, 1, hostname.as_ptr().cast(), hostname.len())
-        };
+    if !gnutls_ip_address_p(hostname.as_bytes()) {
+        let name = hostname.as_bytes();
+        // SAFETY: STATE is live and NAME remains borrowed for this call;
+        // GNUTLS_NAME_DNS is 1.
+        let result =
+            unsafe { (api.server_name_set)(state.pointer, 1, name.as_ptr().cast(), name.len()) };
         if result < 0 {
             return Ok(gnutls_result(result));
         }
@@ -1775,6 +2078,7 @@ pub(crate) fn gnutls_boot(
         library.clone(),
         state.into_raw(),
         credential.into_raw(),
+        is_x509,
         GnuTlsSessionApi {
             session_deinit: api.session_deinit,
             credential_deinit: credential_free,
@@ -1784,11 +2088,14 @@ pub(crate) fn gnutls_boot(
             handshake: api.handshake,
             bye: api.bye,
             error_is_fatal: api.error_is_fatal,
+            strerror: api.error_string,
+            alert_get: api.alert_get,
+            alert_get_name: api.alert_get_name,
         },
         false,
     );
     let complete = !contact_plist_get(parameters, ":complete-negotiation").is_nil();
-    interp.install_process_gnutls(process_id, session, is_x509, complete)?;
+    interp.install_process_gnutls(process_id, session, complete)?;
     // emacs_gnutls_handshake: the socket as the transport (and, for a
     // non-blocking client, emacs_gnutls_nonblock_errno), then
     // gnutls_try_handshake.
@@ -1846,6 +2153,7 @@ pub(crate) fn gnutls_try_handshake(
         if result >= 0 || fatal {
             break result;
         }
+        flush_gnutls_log(interp, env)?;
         interp.maybe_quit(env)?;
         if non_blocking && result != GNUTLS_E_INTERRUPTED {
             break result;
@@ -1865,19 +2173,29 @@ pub(crate) fn gnutls_try_handshake(
 
 /// gnutls.c:gnutls_verify_boot: PROPLIST, nil meaning the cdr of the
 /// contact's `:tls-parameters'; boot_error for a `:verify-error' that is
-/// neither t nor a list and a `:hostname' that is no string; the peer's
-/// verification, whose error is the answer, kept as the process's; a
-/// failed one that `:verify-error' (t or a list with `:trustfiles')
-/// rejects is emacs_gnutls_deinit and boot_error ("Certificate validation
-/// failed HOST, verification code HEX"), as an X.509 certificate not
-/// matching the host is when `:verify-error' names `:hostname' ("The
-/// x509 certificate does not match \"HOST\""); else p->gnutls_p and t.
+/// neither t nor a list and a `:hostname' that is no string; then
+/// gnutls_certificate_verify_peers2, whose error is the answer, kept as
+/// p->gnutls_peer_verification; each warning `gnutls-peer-status' gives
+/// logged ("verification:"); a failed verification that `:verify-error'
+/// rejects (t, or a list with `:trustfiles') is emacs_gnutls_deinit and
+/// boot_error ("Certificate validation failed HOST, verification code
+/// HEX"), else logged; for an X.509 session the peer's chain ("No x509
+/// certificate was found\n" when there is none) imported, the last
+/// first, and kept as p->gnutls_certificates (a failed import the
+/// answer, the chain freed), the host certificate checked against HOST,
+/// a mismatch CERTIFICATE_NOT_MATCHING in
+/// p->gnutls_extra_peer_verification, which `:verify-error' rejects (t,
+/// or a list with `:hostname'; "The x509 certificate does not match
+/// \"HOST\""), else logged; then p->gnutls_p, and gnutls_make_error of
+/// the last result.
 #[cfg(unix)]
 pub(crate) fn gnutls_verify_boot(
     interp: &mut Interpreter,
     process_id: u64,
     proplist: Value,
 ) -> Result<Value, LispError> {
+    use crate::lisp::eval::gnutls_log2;
+    let max_log_level = interp.process_gnutls_log_level(process_id);
     let proplist = if proplist.is_nil() {
         let contact = interp
             .process_contact_plist(process_id)
@@ -1887,53 +2205,145 @@ pub(crate) fn gnutls_verify_boot(
         proplist
     };
     let verify_error = contact_plist_get(&proplist, ":verify-error");
-    let hostname = contact_plist_get(&proplist, ":hostname");
-    if verify_error != Value::T && !verify_error.is_list() {
+    let hostname_value = contact_plist_get(&proplist, ":hostname");
+    let verify_error_all = verify_error == Value::T;
+    if !verify_error_all && !verify_error.is_list() {
         return boot_error(
             interp,
             process_id,
             "gnutls-boot: invalid :verify_error parameter (not a list)".into(),
         );
     }
-    let Some(hostname) = string_like(&hostname).map(|string| string.text) else {
+    let Some(host_text) = string_like(&hostname_value).map(|string| string.text) else {
         return boot_error(
             interp,
             process_id,
             "gnutls-boot: invalid :hostname parameter (not a string)".into(),
         );
     };
+    // c_hostname, SSDATA as C reads it: up to its first NUL.
+    let host_text = host_text.split('\0').next().unwrap_or_default().to_string();
+    let hostname = c_bytes(&crate::lisp::primitives::font::string_sdata(
+        &hostname_value,
+    )?);
     let library = gnutls_library()?;
+    let api = library.api;
     let Some(state) = interp.process_gnutls_raw_state(process_id) else {
         return Ok(gnutls_result(GNUTLS_E_INVALID_SESSION));
     };
-    let is_x509 = interp.process_gnutls_peer_is_x509(process_id);
-    let verification = match completed_peer_verification(&library.api, state, is_x509, &hostname) {
-        PeerVerification::Ready(verification) => verification,
-        PeerVerification::GnuTlsError(error) => return Ok(gnutls_result(error)),
-    };
-    interp.set_process_gnutls_peer_verification(process_id, verification);
-    let reject_trust = verify_error == Value::T || contains_symbol(&verify_error, ":trustfiles");
-    let reject_hostname = verify_error == Value::T || contains_symbol(&verify_error, ":hostname");
-    let trust = verification & !GNUTLS_CERT_UNEXPECTED_OWNER;
-    if trust != 0 && reject_trust {
-        let _ = interp.deinit_process_gnutls(process_id);
-        return boot_error(
-            interp,
-            process_id,
-            format!("Certificate validation failed {hostname}, verification code {trust:x}"),
+    let mut peer_verification = 0;
+    // SAFETY: STATE is the process's live session and the status writable.
+    let mut ret = unsafe { (api.certificate_verify_peers2)(state, &mut peer_verification) };
+    if ret < 0 {
+        return Ok(gnutls_result(ret));
+    }
+    interp.set_process_gnutls_peer_verification(process_id, peer_verification);
+    // warnings = plist_get (Fgnutls_peer_status (proc), QCwarnings).
+    if let Some((_, verification, extra, certificates)) =
+        interp.process_gnutls_peer_state(process_id)
+    {
+        for warning in peer_status_warnings(&api, verification, extra, &certificates) {
+            if let Some(message) = peer_status_warning_description(warning) {
+                gnutls_log2(1, max_log_level, "verification:", message.as_bytes());
+            }
+        }
+    }
+    if peer_verification != 0 {
+        if verify_error_all || member_keyword(verify_error, ":trustfiles")? {
+            let _ = interp.deinit_process_gnutls(process_id);
+            return boot_error(
+                interp,
+                process_id,
+                format!(
+                    "Certificate validation failed {host_text}, verification code {peer_verification:x}"
+                ),
+            );
+        }
+        gnutls_log2(
+            1,
+            max_log_level,
+            "certificate validation failed:",
+            hostname.as_bytes(),
         );
     }
-    if is_x509 && verification & GNUTLS_CERT_UNEXPECTED_OWNER != 0 && reject_hostname {
-        let _ = interp.deinit_process_gnutls(process_id);
-        return boot_error(
-            interp,
+    // Up to here the process is the same for X.509 certificates and
+    // OpenPGP keys.
+    // SAFETY: STATE is live.
+    if unsafe { (api.certificate_type_get)(state) } == GNUTLS_CRT_X509 {
+        let mut count = 0;
+        // SAFETY: STATE completed its handshake; GnuTLS owns the datum
+        // array for the session's lifetime.
+        let peers = unsafe { (api.certificate_get_peers)(state, &mut count) };
+        if peers.is_null() {
+            let _ = interp.deinit_process_gnutls(process_id);
+            return boot_error(interp, process_id, "No x509 certificate was found\n".into());
+        }
+        // SAFETY: GnuTLS returned COUNT consecutive datum records.
+        let peers = unsafe { std::slice::from_raw_parts(peers, count as usize) };
+        // "Check only the first certificate in the given chain, but store
+        // them all."
+        let mut handles = vec![std::ptr::null_mut(); peers.len()];
+        let mut failed_import = 0;
+        for index in (0..peers.len()).rev() {
+            let mut certificate = std::ptr::null_mut();
+            // SAFETY: GnuTLS initializes one certificate handle (its
+            // result unchecked, as gnutls.c leaves it).
+            unsafe { (api.x509_crt_init)(&mut certificate) };
+            if ret < 0 {
+                failed_import = ret;
+            } else {
+                // GNUTLS_X509_FMT_DER is 0.
+                // SAFETY: the datum is the session's and CERTIFICATE live.
+                ret = unsafe { (api.x509_crt_import)(certificate, &peers[index], 0) };
+                if ret < 0 {
+                    failed_import = ret;
+                }
+            }
+            handles[index] = certificate;
+        }
+        let host_certificate = handles.first().copied();
+        interp.set_process_gnutls_certificates(
             process_id,
-            format!("The x509 certificate does not match \"{hostname}\""),
+            Some(crate::lisp::eval::GnuTlsCertificates::new(
+                library.clone(),
+                handles,
+                api.x509_crt_deinit,
+            )),
         );
+        if failed_import != 0 {
+            interp.set_process_gnutls_certificates(process_id, None);
+            return Ok(gnutls_result(failed_import));
+        }
+        if let Some(host_certificate) = host_certificate {
+            // SAFETY: the host certificate is live while the process holds
+            // the chain; HOSTNAME is NUL-terminated.
+            let matched =
+                unsafe { (api.x509_crt_check_hostname)(host_certificate, hostname.as_ptr()) };
+            if matched == 0 {
+                interp.add_process_gnutls_extra_peer_verification(
+                    process_id,
+                    CERTIFICATE_NOT_MATCHING,
+                );
+                if verify_error_all || member_keyword(verify_error, ":hostname")? {
+                    let _ = interp.deinit_process_gnutls(process_id);
+                    return boot_error(
+                        interp,
+                        process_id,
+                        format!("The x509 certificate does not match \"{host_text}\""),
+                    );
+                }
+                gnutls_log2(
+                    1,
+                    max_log_level,
+                    "x509 certificate does not match:",
+                    hostname.as_bytes(),
+                );
+            }
+        }
     }
     // Set this flag only if the whole initialization succeeded.
     interp.set_process_gnutls_p(process_id, true);
-    Ok(Value::T)
+    Ok(gnutls_result(ret))
 }
 
 #[cfg(not(unix))]
@@ -2018,14 +2428,20 @@ define_dispatch!(
             }
             "gnutls-boot" => {
                 need_args(name, args, 3)?;
-                gnutls_boot(interp, env, &args[0], &args[1], &args[2])
+                let result = gnutls_boot(interp, env, &args[0], &args[1], &args[2]);
+                #[cfg(unix)]
+                flush_gnutls_log(interp, env)?;
+                result
             }
             "gnutls-bye" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                interp
+                let result = interp
                     .process_gnutls_bye(process_id, args[1].is_truthy())
-                    .map(gnutls_result)
+                    .map(gnutls_result);
+                #[cfg(unix)]
+                flush_gnutls_log(interp, env)?;
+                result
             }
             "gnutls-ciphers" => {
                 need_args(name, args, 0)?;
@@ -2037,11 +2453,10 @@ define_dispatch!(
             "gnutls-deinit" => {
                 need_args(name, args, 1)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                Ok(if interp.deinit_process_gnutls(process_id) == Some(true) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                let deinit = interp.deinit_process_gnutls(process_id) == Some(true);
+                #[cfg(unix)]
+                flush_gnutls_log(interp, env)?;
+                Ok(Value::from_bool(deinit))
             }
             "gnutls-digests" => {
                 need_args(name, args, 0)?;
@@ -2168,7 +2583,7 @@ define_dispatch!(
             "gnutls-peer-status" => {
                 need_args(name, args, 1)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let Some((state, verification, is_x509)) =
+                let Some((state, verification, extra, certificates)) =
                     interp.process_gnutls_peer_state(process_id)
                 else {
                     return Ok(Value::Nil);
@@ -2177,12 +2592,18 @@ define_dispatch!(
                 // from the session on each call. No report is a process root,
                 // and a caller's mutation cannot change a later query.
                 let library = gnutls_library()?;
-                Ok(negotiated_peer_status(
+                let status = negotiated_peer_status(
+                    interp,
                     &library.api,
                     state,
                     verification,
-                    is_x509,
-                ))
+                    extra,
+                    &certificates,
+                );
+                // What GnuTLS logged while the report was made.
+                #[cfg(unix)]
+                flush_gnutls_log(interp, env)?;
+                status
             }
             "gnutls-peer-status-warning-describe" => {
                 need_args(name, args, 1)?;
@@ -2195,7 +2616,10 @@ define_dispatch!(
             }
             "gnutls-format-certificate" => {
                 need_args(name, args, 1)?;
-                gnutls_format_certificate(&args[0])
+                let formatted = gnutls_format_certificate(&args[0]);
+                #[cfg(unix)]
+                flush_gnutls_log(interp, env)?;
+                formatted
             }
             "gnutls-symmetric-decrypt" | "gnutls-symmetric-encrypt" => {
                 need_arg_range(name, args, 4, 5)?;

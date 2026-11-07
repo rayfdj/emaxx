@@ -16228,6 +16228,90 @@ setup_process_coding_systems's check now refuses). A 13-form
   process suites gives GNU's results, apart from timing races GNU's own
   runs show, the GLib wakeup eventfd GNU holds and the
   connect-and-accept order recorded.
+- **Round 337: gnutls.c's verification and logging, and exec_sentinel's
+  error handler.** gnutls_verify_boot now asks
+  gnutls_certificate_verify_peers2 and keeps its status as
+  p->gnutls_peer_verification, then, for an X.509 session, imports the
+  peer's chain ("No x509 certificate was found\n" when there is none),
+  the last certificate first, keeps it as p->gnutls_certificates and
+  checks the host certificate with gnutls_x509_crt_check_hostname, a
+  mismatch CERTIFICATE_NOT_MATCHING in
+  p->gnutls_extra_peer_verification; `:verify-error' rejects either as
+  GNU's does, with GNU's messages. Emaxx asked
+  gnutls_certificate_verify_peers3 with the host and read its
+  GNUTLS_CERT_UNEXPECTED_OWNER (and GNUTLS_CERT_INVALID) bits as the
+  mismatch, so a certificate that did not match the host gave
+  `gnutls-peer-status' a verification code with those bits and
+  `:invalid' beside the `:no-host-match' that GNU's alone has.
+  Fgnutls_peer_status gives GNU's warnings in GNU's order (each bit's
+  warning consed on, then `:no-host-match' and, for a host certificate
+  that is its own issuer, `:self-signed'), the stored chain as
+  `:certificates' and its first as `:certificate' with gnutls.c's
+  details of each (version, serial number, issuer, validity, subject,
+  public key and signature, `:public-key-id-sha256', `:certificate-id',
+  `:pem'), `:diffie-hellman-prime-bits', `:encrypt-then-mac' and, up to
+  TLS 1.2, `:safe-renegotiation'. GNUTLS_LOG, GNUTLS_LOG2 and
+  GNUTLS_LOG2i write gnutls.c's "gnutls.c: [LEVEL] (Emacs) ..." messages
+  against p->gnutls_log_level or `gnutls-log-level', GnuTLS's own log
+  and audit functions are set at a `:loglevel', and
+  emacs_gnutls_handle_error reports "fatal error:", "retry:", "non-fatal
+  error:" and a received alert's name, where Emaxx wrote none of them;
+  made where no Lisp may run, they are shown before Lisp runs next
+  (before a filter or a sentinel, at each wait's passes, after each
+  write and after `delete-process'). emacs_gnutls_deinit, with its
+  "Deallocating x509 credentials" (or anon) log, is
+  deactivate_process's, not `delete-process''s first step. The trust,
+  CRL and key files are ENCODE_FILE'd. A sentinel's or a filter's error
+  is caught as exec_sentinel's and read_process_output's
+  internal_condition_case_1 catch it: handlers `error', which catch
+  every signal, a quit among them (none while `debug-on-error' is set,
+  the error then reaching the code that waited), the data given to
+  cmd_error_internal with "error in process sentinel: " or "error in
+  process filter: ", which in batch prints it and kills Emacs with
+  status 255, then `inhibit-quit' t and `process-error-pause-time''s
+  pause; Emaxx gave the error to the code that waited, where
+  `condition-case' caught it and the walk stopped, and `delete-process'
+  messaged "error in process sentinel: %S" and went on. A throw out of a
+  sentinel `delete-process' ran leaves the process where the walk left
+  it, as Fdelete_process's remove_process is not reached. A review found
+  one P1 and four P2 findings in the round's first form: every wait pass
+  read every TLS connection, so an idle one logged
+  emacs_gnutls_handle_error's "non-fatal error" each pass (55 lines in
+  half a second where GNU, which reads a channel its select found ready
+  or whose session holds decrypted records, logs 2); a network
+  connection's read logs were shown after its filter ran, the boot's and
+  the verification's after `nsm-verify-connection', and those of
+  `gnutls-peer-status', `gnutls-bye' and `gnutls-format-certificate' at
+  the next wait; and output for the default filter with
+  `fast-read-process-output' set was caught, where
+  read_and_insert_process_output runs outside the condition case and an
+  after-change function's error reaches the code that waited. All are
+  fixed, a TLS channel being read only when its socket is ready or its
+  session has records pending. The early gate of the round showed three
+  unit tests whose bare interpreters gave a sentinel subr.el's `ignore',
+  which they had not loaded (the error the old code dropped now reached
+  cmd_error_internal; the tests load GNU's definition), and two whose
+  expectations were Emaxx's former answers: `:self-signed' for a trusted
+  self-signed certificate, which GNU's Fgnutls_peer_status gives, and a
+  completed anonymous negotiation, for which GNU's gnutls-boot answers
+  -50 (gnutls_certificate_verify_peers2's GNUTLS_E_INVALID_REQUEST) and
+  leaves p->gnutls_p unset, so the process reads and writes its socket
+  as it is; both now hold GNU's answers. TLS over a process that is no
+  network connection, whose transport GNU makes p->infd and p->outfd,
+  and the processes at exit, which shut_down_emacs gives
+  kill_buffer_processes, are recorded. Local validation: the grouped
+  gate's 3,501 library tests (an early gate of the round's first
+  form failed the five unit tests above), the integration targets
+  (cli_parity's 78 included, its round 333 test given a child that lives
+  through its listing of the processes, which a child running `true'
+  raced in GNU's run and Emaxx's; cli's 30) and clippy with
+  `--all-targets --all-features -D warnings' pass (clippy's
+  `manual_is_multiple_of' answered after the gate by `is_multiple_of',
+  the library otherwise as gated); a command-line comparison of the
+  review's 35 probes, the round's own TLS and error probes and round
+  336's process probes gives GNU's results, apart from GnuTLS's own
+  shuffled extension order and session keys, the races GNU's runs show,
+  the connect-and-accept order and the exit recorded.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -19015,19 +19099,36 @@ ert-tests as a whole 26,307 ms against 27,211.
   Emaxx's does). Round 336 keeps the child alive after its output, and
   the probe answers the same in both on every run.
 
+**On `710a6b6`** (round 336): the frozen run (run 42340078015) passed at
+  its first attempt, 7,928 of 7,928 outcomes matching, on a faster
+  runner than round 335's (GNU's own setup 53.7 s against 64.1 s). Setup
+  62.8 s against 53.7 s (1.169), test bodies 259.1 s against 243.6 s
+  (1.063), in all 1.096, with a per-file setup median of 95 ms against
+  83. The widest body gaps are ert-tests (36,441 ms against 34,252),
+  tramp-tests (17,051 against 15,035), comp-tests (13,853 against
+  12,035), process-tests (2,794 against 1,769), semantic-utest-ia (3,343
+  against 2,338) and mule-tests (2,501 against 1,606). The full Rust
+  gate (run 42340075847) passed in every stage, cli_parity's 76 among
+  them.
+
 **Findings recorded, not fixed:**
-- **A sentinel's error (round 336).** GNU's exec_sentinel runs a
-  sentinel under internal_condition_case_1, its handlers `error' unless
-  `debug-on-error', and exec_sentinel_error_handler passes the error to
-  cmd_error_internal with "error in process sentinel: ", which in batch
-  prints it with print_error_message and kills Emacs with status 255
-  (interactively, the echo area and `process-error-pause-time''s pause),
-  the walk of status_notify going on; Emaxx gives a sentinel's error
-  that status_notify ran to the code that waited, where `condition-case'
-  catches it and the walk stops, and `delete-process' messages it as
-  "error in process sentinel: %S" and carries on. To be made:
-  exec_sentinel's handler and read_process_output's (a filter's error)
-  as GNU's.
+- **TLS over a process that is no network connection (round 337).**
+  gnutls-boot on a pipe process or a subprocess gives GnuTLS the
+  process's p->infd and p->outfd as its transport
+  (gnutls_transport_set_ptr2), and send_process and read_process_output
+  then go through emacs_gnutls_write and emacs_gnutls_read for it; Emaxx
+  hands GnuTLS descriptor -1 for such a process and reads and writes its
+  channels as they are. To be made: p->infd and p->outfd as the
+  transport and the session's reads and writes for every process kind.
+- **The processes at exit (round 337's review).** shut_down_emacs sets
+  inhibit_sentinels and runs kill_buffer_processes (Qnil): each network,
+  serial or pipe connection goes to Fdelete_process
+  (deactivate_process's emacs_gnutls_deinit logging "Deallocating x509
+  credentials" at a `:loglevel' of 2), and each subprocess whose channel
+  is open gets process_send_signal's SIGHUP; Emaxx's exit sends SIGHUP
+  to each child it holds and deletes no connection, so that message is
+  never shown. To be made: kill_buffer_processes at the batch exit,
+  sentinels inhibited.
 - **A connect and an accept in one select pass (round 336's review).**
   wait_reading_process_output handles the channels a select found ready
   in descriptor order, so a `:nowait' client's connect that completes in
@@ -19048,24 +19149,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   takes the vfork path and is not affected. To be made: the macOS fork
   with the child's descriptors given as they are, as emacs_spawn's fork
   does.
-- **gnutls.c's verification and logging (round 334).**
-  gnutls_verify_boot calls gnutls_certificate_verify_peers2 and then
-  gnutls_x509_crt_check_hostname, keeping a host mismatch in
-  p->gnutls_extra_peer_verification (CERTIFICATE_NOT_MATCHING); Emaxx
-  calls gnutls_certificate_verify_peers3 with the host, whose
-  GNUTLS_CERT_UNEXPECTED_OWNER bit (and GNUTLS_CERT_INVALID with it) it
-  reads as the mismatch, so a certificate that does not match the host
-  gives `gnutls-peer-status' a verification code with those bits where
-  GNU's has none, and `:invalid' among its warnings beside the
-  `:no-host-match' that GNU's alone has. GNUTLS_LOG and GNUTLS_LOG2
-  write nothing at any `gnutls-log-level' (GNU's `message' "gnutls.c:
-  [LEVEL] ..."); the trust, CRL and key file names are given to GnuTLS
-  as their text, where GNU gives ENCODE_FILE's bytes; gnutls-boot on a
-  process that is no network connection hands GnuTLS descriptor -1 where
-  GNU hands it the process's p->infd (a pipe process's pipe); and the
-  X.509 certificate chain is not imported and checked for "No x509
-  certificate was found". To be made: gnutls_verify_boot's own calls,
-  the log function, and the transport of p->infd.
 - **A `:nowait' TLS client left connecting with no socket (round 334).**
   One run of the primitives' m–z group, made while the integration
   targets ran beside it, stopped in

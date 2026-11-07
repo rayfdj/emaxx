@@ -4710,7 +4710,7 @@ fn the_review_of_round_333_is_answered_as_gnu_answers() {
 (show "a2" (lambda () (make-process :name "a2" :command nil :coding 'no-such-cs :noquery t)))
 ;; :stderr given as a string naming an existing process
 (show "a3" (lambda () (let ((q (make-process :name "a3q" :command '("sleep" "3") :noquery t)))
-   (let ((p (make-process :name "a3" :command '("true") :stderr "a3q" :noquery t)))
+   (let ((p (make-process :name "a3" :command '("sleep" "3") :stderr "a3q" :noquery t)))
      (list (process-name p) (mapcar #'process-name (process-list)))))))
 ;; :stderr given as a buffer that has a process
 (show "a4" (lambda () (let ((q (make-process :name "a4q" :command '("sleep" "3") :buffer "a4b" :noquery t)))
@@ -5561,6 +5561,97 @@ fn a_childs_end_waits_for_status_notify_as_gnu_s() {
     ] {
         assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
     }
+}
+
+#[test]
+fn a_sentinels_or_a_filters_error_is_caught_as_exec_sentinel_does() {
+    // exec_sentinel's and read_process_output's internal_condition_case_1
+    // with handlers `error' (none when `debug-on-error' is set, the error
+    // then reaching the caller's condition-case): every signal caught, a
+    // quit with them, given to cmd_error_internal with "error in process
+    // sentinel: " or "error in process filter: ", which in batch prints it
+    // and kills Emacs with status 255; delete-process's own status_notify
+    // as well.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((debug-on-error t)
+       (p (make-process :name "a" :command '("true") :noquery t :connection-type 'pipe :sentinel (lambda (_ e) (error "boom %s" e)))))
+  (busy 0.3)
+  (princ (format "debug %S\n" (condition-case err (accept-process-output nil 0.2) (error (list 'caught err))))))
+(let* ((p (make-process :name "q" :command '("sh" "-c" "echo x; sleep 1") :noquery t :connection-type 'pipe
+                        :filter (lambda (_ s) (signal 'quit nil)))))
+  (busy 0.3)
+  (princ (format "quit %S\n" (condition-case err (accept-process-output nil 0.2) (quit (list 'quit err)))))
+  (delete-process p))
+(let* ((p (make-process :name "b" :command '("true") :noquery t :connection-type 'pipe :sentinel (lambda (_ e) (princ (format "b %S\n" e)))))
+       (q (make-process :name "c" :command '("sh" "-c" "echo y") :noquery t :connection-type 'pipe
+                        :filter (lambda (_ s) (error "fboom %s" s)))))
+  (busy 0.3)
+  (accept-process-output nil 0.2)
+  (princ "after\n")))"##,
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((p (make-process :name "a" :command '("sleep" "5") :noquery t :connection-type 'pipe :sentinel (lambda (_ e) (error "boom2 %s" e)))))
+  (princ (format "del %S\n" (condition-case err (delete-process p) (error (list 'caught err)))))
+  (princ "after\n")))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn gnutls_boot_verifies_and_logs_as_gnutls_c_does() {
+    // gnutls.c:gnutls_verify_boot against a gnutls-serv holding GNU's own
+    // test certificate: gnutls_certificate_verify_peers2's status and
+    // gnutls_x509_crt_check_hostname's mismatch kept apart
+    // (p->gnutls_extra_peer_verification), each `:verify-error' choice,
+    // the boot's error codes and init stages, `gnutls-peer-status''s
+    // warnings and certificate, and the "gnutls.c: [LEVEL] (Emacs) ..."
+    // messages GNUTLS_LOG makes at `:loglevel' 1, emacs_gnutls_deinit's
+    // among them.
+    let resources = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../emacs/test/lisp/net/network-stream-resources");
+    let program = r##"(progn
+(require 'gnutls)
+(defun show (tag form) (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "44391"))
+(sleep-for 1)
+(dolist (host '("localhost" "example.org"))
+  (dolist (ve '(nil t (:hostname) (:trustfiles)))
+    (show (format "%s %S" host ve)
+          (lambda ()
+            (let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+              (prog1 (condition-case e
+                         (progn (gnutls-negotiate :process c :hostname host :verify-error ve :trustfiles '("CERTFILE"))
+                                (let ((st (gnutls-peer-status c)))
+                                  (list (plist-get st :warnings) (gnutls-peer-status-warning-describe :no-host-match)
+                                        (plist-get (plist-get st :certificate) :subject))))
+                       (error (list 'ERR e)))
+                (delete-process c)))))))
+(dolist (params (list '(:hostname "localhost" :trustfiles ("/nonexistent/ca.pem"))
+                      '(:hostname "localhost" :trustfiles (5))
+                      '(:hostname "localhost" :crlfiles ("/nonexistent/crl.pem"))
+                      '(:hostname "localhost" :priority "BOGUS")
+                      '(:hostname "localhost" :keylist (("/nonexistent/k" "/nonexistent/c")))
+                      '(:hostname "localhost" :verify-error t)
+                      '(:hostname "example.org" :verify-error (:hostname) :trustfiles ("CERTFILE"))))
+  (let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+    (princ (format "%S -> %S stage %S\n" params
+                   (condition-case e (gnutls-boot c 'gnutls-x509pki params) (error (list 'ERR e)))
+                   (gnutls-get-initstage c)))
+    (princ (format "   status %S\n" (plist-get (gnutls-peer-status c) :warnings)))
+    (delete-process c)))
+(let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+  (princ (format "boot1 %S\n" (condition-case e (gnutls-boot c 'gnutls-x509pki (list :hostname "example.org" :trustfiles '("CERTFILE") :loglevel 1 :verify-flags 'bogus)) (error (list 'ERR e)))))
+  (princ (format "deinit %S\n" (gnutls-deinit c)))
+  (delete-process c))
+(delete-process srv))"##
+        .replace("KEYFILE", &resources.join("key.pem").display().to_string())
+        .replace("CERTFILE", &resources.join("cert.pem").display().to_string());
+    let corpus = Corpus::new();
+    assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
 }
 
 #[test]

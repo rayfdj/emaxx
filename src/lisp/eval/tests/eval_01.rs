@@ -33,12 +33,19 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     unsafe extern "C" fn check_pending(_: *mut c_void) -> usize {
         0
     }
+    unsafe extern "C" fn strerror(_: c_int) -> *const std::ffi::c_char {
+        c"Resource temporarily unavailable, try again.".as_ptr()
+    }
+    unsafe extern "C" fn alert_get(_: *mut c_void) -> c_int {
+        0
+    }
 
     let mut transport = Transport::default();
     let mut session = ProcessGnuTlsSession::new(
         std::sync::Arc::new(()),
         std::ptr::from_mut(&mut transport).cast(),
         std::ptr::null_mut(),
+        false,
         GnuTlsSessionApi {
             session_deinit: deinit,
             credential_deinit: deinit,
@@ -48,6 +55,9 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
             handshake,
             bye,
             error_is_fatal,
+            strerror,
+            alert_get,
+            alert_get_name: strerror,
         },
         false,
     );
@@ -56,7 +66,7 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     // behind process.c's back when ordinary output polling asks for bytes.
     assert_eq!(session.receive(65_536).unwrap(), (Vec::new(), false));
     assert_eq!((transport.handshakes, transport.reads), (0, 0));
-    assert_eq!(session.handshake_step(), 0);
+    assert_eq!(session.handshake_step(), (0, false));
     assert_eq!(session.receive(65_536).unwrap(), (Vec::new(), false));
     assert_eq!((transport.handshakes, transport.reads), (1, 1));
 }

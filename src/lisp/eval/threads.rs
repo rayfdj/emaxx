@@ -96,6 +96,20 @@ fn update_status(process: &mut ProcessState) {
 /// p->infd >= 0: the process's input channel is open, which only
 /// deactivate_process closes (a child's end takes it out of the select
 /// mask alone, delete_read_fd).
+/// Whether a select on FD alone, with no wait, would find it ready to
+/// read (or at its end, or failed, which a read reports).
+#[cfg(unix)]
+fn descriptor_ready(fd: std::os::fd::RawFd) -> bool {
+    let mut entry = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: ENTRY is one valid pollfd and the timeout is zero.
+    let ready = unsafe { libc::poll(&mut entry, 1, 0) };
+    ready > 0 && entry.revents != 0
+}
+
 fn infd_open(process: &ProcessState) -> bool {
     process
         .runtime
@@ -321,15 +335,30 @@ fn fd_write_sig(fd: std::os::fd::RawFd, input: &[u8]) -> std::io::Result<usize> 
 
 /// gnutls.c:emacs_gnutls_deinit of a process's TLS state: false (nil)
 /// while p->gnutls_p is false, which leaves the session as it is; else
-/// the session freed, the stage put below GNUTLS_STAGE_INIT, gnutls_p
-/// cleared, and true.
+/// the credentials ("Deallocating x509 credentials" or "Deallocating
+/// anon credentials" logged at 2 against p->gnutls_log_level) and the
+/// session freed, the stage put below GNUTLS_STAGE_INIT, the
+/// certificates freed, gnutls_p cleared, and true.
 fn gnutls_deinit(tls: &mut ProcessGnuTlsState) -> bool {
     if !tls.gnutls_p {
         return false;
     }
-    if tls.session.take().is_some() && tls.initstage >= GNUTLS_STAGE_INIT {
-        tls.initstage = GNUTLS_STAGE_INIT - 1;
+    if let Some(session) = tls.session.take() {
+        crate::lisp::eval::gnutls_log(
+            2,
+            tls.log_level,
+            if session.credential_is_x509() {
+                "Deallocating x509 credentials"
+            } else {
+                "Deallocating anon credentials"
+            },
+        );
+        drop(session);
+        if tls.initstage >= GNUTLS_STAGE_INIT {
+            tls.initstage = GNUTLS_STAGE_INIT - 1;
+        }
     }
+    tls.certificates = None;
     tls.gnutls_p = false;
     true
 }
@@ -448,6 +477,7 @@ impl Interpreter {
     /// deactivate_process's closing of every channel the process holds (a
     /// child that has ended goes with them).
     fn deactivate_process_channels(process: &mut ProcessState) {
+        gnutls_deinit(&mut process.gnutls);
         process.serial = None;
         process.module_pipe = None;
         process.pipe_input = None;
@@ -618,7 +648,6 @@ impl Interpreter {
         &mut self,
         record_id: u64,
         session: ProcessGnuTlsSession,
-        peer_is_x509: bool,
         complete_negotiation: bool,
     ) -> Result<(), LispError> {
         let record_id_value = self.record_value(record_id);
@@ -627,10 +656,52 @@ impl Interpreter {
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.gnutls.session = Some(session);
         process.gnutls.initstage = GNUTLS_STAGE_CRED_SET;
-        process.gnutls.peer_verification = 0;
-        process.gnutls.peer_is_x509 = peer_is_x509;
         process.gnutls.complete_negotiation_p = complete_negotiation;
         Ok(())
+    }
+
+    /// Fgnutls_boot's "Mark PROC as a GnuTLS process": its session
+    /// forgotten (a session whose gnutls_p emacs_gnutls_deinit left set
+    /// aside), the stage GNUTLS_STAGE_EMPTY.
+    pub(crate) fn reset_process_gnutls(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.session = None;
+            process.gnutls.initstage = GNUTLS_STAGE_EMPTY;
+        }
+    }
+
+    /// p->gnutls_log_level of RECORD_ID.
+    pub(crate) fn process_gnutls_log_level(&self, record_id: u64) -> i32 {
+        self.find_process_state(record_id)
+            .map_or(0, |process| process.gnutls.log_level)
+    }
+
+    pub(crate) fn set_process_gnutls_log_level(&mut self, record_id: u64, level: i32) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.log_level = level;
+        }
+    }
+
+    /// p->gnutls_certificates of RECORD_ID: CERTIFICATES, or none.
+    pub(crate) fn set_process_gnutls_certificates(
+        &mut self,
+        record_id: u64,
+        certificates: Option<GnuTlsCertificates>,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.certificates = certificates;
+        }
+    }
+
+    /// p->gnutls_extra_peer_verification |= FLAGS.
+    pub(crate) fn add_process_gnutls_extra_peer_verification(
+        &mut self,
+        record_id: u64,
+        flags: u32,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.extra_peer_verification |= flags;
+        }
     }
 
     pub(crate) fn set_process_gnutls_initstage(&mut self, record_id: u64, stage: i64) {
@@ -665,8 +736,9 @@ impl Interpreter {
         })
     }
 
-    /// One gnutls_handshake of RECORD_ID's session, and
-    /// gnutls_error_is_fatal of its result; None with no session.
+    /// One gnutls_handshake of RECORD_ID's session, and whether
+    /// emacs_gnutls_handle_error found its error fatal; None with no
+    /// session.
     pub(crate) fn process_gnutls_handshake_step(
         &mut self,
         record_id: u64,
@@ -676,8 +748,7 @@ impl Interpreter {
             .gnutls
             .session
             .as_mut()?;
-        let result = session.handshake_step();
-        Some((result, result < 0 && session.error_is_fatal(result)))
+        Some(session.handshake_step())
     }
 
     /// The raw state of RECORD_ID's session, which gnutls_verify_boot
@@ -692,12 +763,6 @@ impl Interpreter {
         )
     }
 
-    /// Whether RECORD_ID's session takes X.509 certificates.
-    pub(crate) fn process_gnutls_peer_is_x509(&self, record_id: u64) -> bool {
-        self.find_process_state(record_id)
-            .is_some_and(|process| process.gnutls.peer_is_x509)
-    }
-
     /// p->gnutls_peer_verification, which gnutls_verify_boot sets.
     pub(crate) fn set_process_gnutls_peer_verification(
         &mut self,
@@ -709,20 +774,27 @@ impl Interpreter {
         }
     }
 
-    /// The caller may query the session without invoking Lisp or yielding.
-    /// It remains owned by this process throughout that synchronous query.
+    /// What Fgnutls_peer_status reads of RECORD_ID at GNUTLS_STAGE_READY:
+    /// its session, p->gnutls_peer_verification,
+    /// p->gnutls_extra_peer_verification and p->gnutls_certificates.  The
+    /// caller queries them without invoking Lisp or yielding; they remain
+    /// owned by this process throughout that synchronous query.
     pub(crate) fn process_gnutls_peer_state(
         &self,
         record_id: u64,
-    ) -> Option<(*mut std::ffi::c_void, u32, bool)> {
+    ) -> Option<(*mut std::ffi::c_void, u32, u32, Vec<*mut std::ffi::c_void>)> {
         let tls = &self.find_process_state(record_id)?.gnutls;
-        if tls.initstage != 9 {
+        if tls.initstage != GNUTLS_STAGE_READY {
             return None;
         }
         Some((
             tls.session.as_ref()?.raw_state(),
             tls.peer_verification,
-            tls.peer_is_x509,
+            tls.extra_peer_verification,
+            tls.certificates
+                .as_ref()
+                .map(|certificates| certificates.handles().to_vec())
+                .unwrap_or_default(),
         ))
     }
 
@@ -735,6 +807,8 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
+        // Fgnutls_bye: gnutls_deinit_certificates, then gnutls_bye.
+        process.gnutls.certificates = None;
         let session = process
             .gnutls
             .session
@@ -1818,6 +1892,24 @@ impl Interpreter {
         if process.gnutls.gnutls_p
             && let Some(session) = process.gnutls.session.as_mut()
         {
+            // wait_reading_process_output reads a channel its select found
+            // ready, or one whose session holds records already decrypted
+            // (emacs_gnutls_record_check_pending); emacs_gnutls_read on an
+            // idle socket would report a GNUTLS_E_AGAIN that GNU never
+            // asks for.
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                let socket = match process.network.as_ref() {
+                    Some(NetworkRuntime::Stream(stream)) => Some(stream.as_raw_fd()),
+                    Some(NetworkRuntime::UnixStream(stream)) => Some(stream.as_raw_fd()),
+                    _ => None,
+                };
+                if !session.has_pending_records() && socket.is_some_and(|fd| !descriptor_ready(fd))
+                {
+                    return Ok((Vec::new(), false));
+                }
+            }
             return session.receive(readmax);
         }
         Ok(match process.network.as_mut() {
@@ -2976,7 +3068,6 @@ impl Interpreter {
         // GNU clears the connection flow-control marker while closing the
         // descriptor, so a stopped connection reports `closed' afterwards.
         process.traffic_stopped = false;
-        gnutls_deinit(&mut process.gnutls);
         // p->raw_status_new = 0: a change handle_child_signal recorded and
         // update_status has not made the status is dropped.
         process.pending_status = None;
