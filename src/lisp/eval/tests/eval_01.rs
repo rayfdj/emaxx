@@ -8781,7 +8781,7 @@ fn tty_face_attrs_resolve_through_the_face_machinery() {
         "unspecified attributes merge from the :inherit parent"
     );
     assert!(attrs.bold && attrs.extend);
-    assert!(!attrs.reverse && !attrs.underline);
+    assert!(!attrs.reverse && attrs.underline == crate::lisp::primitives::FACE_NO_UNDERLINE);
 }
 
 #[test]
@@ -8806,7 +8806,7 @@ fn tty_face_attrs_apply_buffer_local_face_remapping() {
         &Value::Symbol("sample-base-face".into()),
     );
     assert_eq!(attrs.foreground, Some(6));
-    assert!(attrs.bold && attrs.underline);
+    assert!(attrs.bold && attrs.underline == crate::lisp::primitives::FACE_UNDERLINE_SINGLE);
 }
 
 #[test]

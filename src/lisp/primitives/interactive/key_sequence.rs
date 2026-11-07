@@ -390,6 +390,30 @@ impl KeySequenceReader {
             }
             _ => event,
         };
+        // read_char's input method step for the sequence's first event,
+        // read with PREV_EVENT (last_nonmenu_event) nil; read_char reads
+        // again when the input method gives no event.
+        let event = if self.keys.is_empty() {
+            match super::input_method_for_last_event(
+                interp,
+                env,
+                event,
+                super::InputMethodRead::KeySequence,
+            )? {
+                Some(event) => event,
+                None => return Ok(KeyResolution::Prefix),
+            }
+        } else {
+            event
+        };
+        // read_key_sequence after each read_char, its input method step
+        // included: a quit the read reported as the quit character is
+        // reported no more (while-no-input's `throw-on-input' has thrown
+        // at that step's funcall, or is lost).
+        interp.set_c_variable("quit-flag", Value::Nil);
+        // read_char past the input method: an unread or macro event not yet
+        // recorded is recorded as the input method left it.
+        super::record_unrecorded_event(interp, &event, env);
         // read_char added the event to this-command-keys unless it was
         // reread with keys already there.
         let reread = std::mem::take(&mut interp.keyboard_input.last_event_reread);
@@ -526,6 +550,25 @@ impl KeySequenceReader {
     }
 }
 
+/// macros.c:at_end_of_macro_p: a macro executes and has no event left
+/// (or is t, an early exit).
+fn at_end_of_macro_p(interp: &mut Interpreter, env: &mut Env) -> Result<bool, LispError> {
+    let macro_value = interp
+        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .unwrap_or(Value::Nil);
+    if macro_value.is_nil() {
+        return Ok(false);
+    }
+    if crate::lisp::types::eq(macro_value, Value::T) {
+        return Ok(true);
+    }
+    let index = interp
+        .lookup_var_key(cached_symbol!("executing-kbd-macro-index"), env)
+        .unwrap_or(Value::Integer(0));
+    let length = super::call(interp, "length", &[macro_value], env)?;
+    Ok(index.as_integer()? >= length.as_integer()?)
+}
+
 // read_key_sequence's read_char: kbd_buffer_get_event's wait runs the
 // timers, idle ones included, until an event arrives.
 fn wait_for_sequence_event(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
@@ -542,6 +585,13 @@ pub(crate) fn read_key_sequence_events(
     let _decoded = super::RawEventRead::enter(false);
     let mut reader = KeySequenceReader::new(interp, prompt, env)?;
     loop {
+        // At the end of an executing macro, with no unread events, the
+        // sequence ends empty (t = 0), whatever it has read.
+        if at_end_of_macro_p(interp, env)?
+            && !super::kbd_input::requeued_events_pending_p(interp, env)
+        {
+            return Ok(Vec::new());
+        }
         let event = wait_for_sequence_event(interp, env)?;
         if !matches!(
             reader.read_event(interp, event, env)?,

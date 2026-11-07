@@ -239,6 +239,8 @@ pub(crate) fn next_kbd_macro_event(
     );
     interp.keyboard_input.num_input_events += 1;
     interp.keyboard_input.last_event_reread = false;
+    crate::lisp::primitives::note_event_source(crate::lisp::primitives::EventSource::Macro);
+    crate::lisp::primitives::note_macro_event_read();
     Ok(Some(event))
 }
 
@@ -383,7 +385,13 @@ fn read_minibuffer_queued_commands(
     // recursive_edit_1 enters command_loop_1.
     crate::lisp::primitives::command_loop_entry(interp, env)?;
     let mut reader: Option<KeySequenceReader> = None;
-    while let Some(event) = next_kbd_command_event(interp, env)? {
+    loop {
+        if reader.is_none() {
+            crate::lisp::primitives::init_raw_keybuf_count(interp);
+        }
+        let Some(event) = next_kbd_command_event(interp, env)? else {
+            break;
+        };
         if reader.is_none() {
             reader = Some(KeySequenceReader::new(interp, Value::Nil, env)?);
         }
@@ -404,7 +412,8 @@ fn read_minibuffer_queued_commands(
         let dispatch = execute_kbd_macro_resolved_command(interp, original, command, &events, env);
         interp.pop_catch_tag();
         match dispatch.map_err(LispError::into_kind) {
-            Ok(()) => {}
+            // command_loop_1 after the command: no this-command-keys.
+            Ok(()) => crate::lisp::primitives::clear_command_keys(interp),
             Err(LispErrorKind::Throw(tag, value))
                 if crate::lisp::types::eq(tag, Value::symbol("exit")) =>
             {
@@ -756,11 +765,13 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         }
         if reader.is_none() {
             crate::lisp::primitives::clear_this_command(interp, env);
+            crate::lisp::primitives::init_raw_keybuf_count(interp);
         }
         let event = next_kbd_command_event(interp, env)?;
+        // read_key_sequence's end of the macro (i = 0): command_loop_1
+        // returns, this-command-keys holding what the sequence read.
         let Some(event) = event else {
             increment_num_input_keys(interp, env);
-            set_command_key_state(interp, Vec::new(), Vec::new(), env);
             return Ok(());
         };
         if reader.is_none() {
@@ -779,6 +790,8 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             .expect("completed macro key reader")
             .finish(interp, false, env);
         execute_kbd_macro_resolved_command(interp, original, command, &events, env)?;
+        // command_loop_1 after the command: no this-command-keys.
+        crate::lisp::primitives::clear_command_keys(interp);
     }
 }
 
@@ -1857,20 +1870,33 @@ define_dispatch!(
             }
             "set--this-command-keys" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
-                let keys = string
-                    .text
-                    .chars()
-                    .map(|character| {
-                        if character as u32 == 248 {
+                // keyboard.c:Fset__this_command_keys: KEYS's characters as
+                // fetch_string_char_advance reads them (a unibyte string's
+                // bytes), an eight-bit one as its byte, the first 248
+                // ("\M-x") as M-x for novice.el.
+                let Kind::StringObject(string) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let codes = string.borrow().codes();
+                let keys = codes
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, code)| {
+                        let code = if (0x3fff80..=0x3fffff).contains(&code) {
+                            code - 0x3fff00
+                        } else {
+                            code
+                        };
+                        if index == 0 && code == 248 {
                             Value::Integer(i64::from(b'x') | KEY_DESCRIPTION_META_BIT)
                         } else {
-                            Value::Integer(character as i64)
+                            Value::Integer(i64::from(code))
                         }
                     })
                     .collect::<Vec<_>>();
-                set_command_key_state(interp, keys, Vec::new(), env);
+                // The raw keys stay what read_key_sequence read.
+                let raw = interp.keyboard_input.raw_keys.clone();
+                set_command_key_state(interp, keys, raw, env);
                 Ok(Value::Nil)
             }
             "clear-this-command-keys" => {
@@ -1904,13 +1930,27 @@ define_dispatch!(
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
                 }
                 ensure_interaction_allowed(interp, env)?;
+                // read_key_sequence_vs: an input method, outside the
+                // command loop (CMD-LOOP nil), stops at the first character
+                // and uses the echo area.
+                let in_command_loop = args.get(4).is_some_and(Value::is_truthy);
+                let flag = if in_command_loop {
+                    Value::Nil
+                } else {
+                    Value::T
+                };
+                let count = interp.specpdl_index();
+                interp.specbind_symbol(&"input-method-exit-on-first-char".into(), flag, env)?;
+                interp.specbind_symbol(&"input-method-use-echo-area".into(), flag, env)?;
+                crate::lisp::primitives::init_raw_keybuf_count(interp);
                 let events = read_key_sequence_events(
                     interp,
                     args[0],
                     args.get(2).is_some_and(Value::is_truthy),
                     env,
-                )?;
-                Ok(event_array(&events, name == "read-key-sequence-vector"))
+                );
+                interp.unbind_to(count, env)?;
+                Ok(event_array(&events?, name == "read-key-sequence-vector"))
             }
             "read-event" | "read-char" | "read-char-exclusive" => {
                 ensure_interaction_allowed(interp, env)?;
@@ -1963,17 +2003,41 @@ define_dispatch!(
                             // changes a command made before reading (rmc's
                             // help pop-up, y-or-n-p's prompt context) reach
                             // the glass while the read waits.
-                            let event = match pop_pending_input_event_value(interp, env)? {
+                            match pop_pending_input_event_value(interp, env)? {
                                 Some(event) => event,
                                 None => {
                                     crate::lisp::primitives::run_tty_frame_redraw(interp, env);
                                     pop_unread_command_event_value(interp, env)?
                                 }
-                            };
-                            crate::lisp::primitives::add_read_event_to_command_keys(interp, event);
-                            event
+                            }
                         }
                     };
+                    // read_filtered_event's read_char with PREV_EVENT nil
+                    // and no keymap when it inherits the input method,
+                    // which may give no event: read again (nothing added
+                    // to this-command-keys).
+                    let event = if args.get(1).is_some_and(Value::is_truthy) {
+                        match crate::lisp::primitives::input_method_for_last_event(
+                            interp,
+                            env,
+                            event,
+                            crate::lisp::primitives::InputMethodRead::NoKeymap,
+                        )? {
+                            Some(event) => event,
+                            None => continue,
+                        }
+                    } else {
+                        event
+                    };
+                    // Past the input method: an unread or macro event is
+                    // recorded now, the event (as the input method left
+                    // it) joins this-command-keys unless the read had an
+                    // end time, and it is `last-input-event'.
+                    crate::lisp::primitives::record_unrecorded_event(interp, &event, env);
+                    if deadline.is_none() {
+                        crate::lisp::primitives::add_read_event_to_command_keys(interp, event);
+                    }
+                    interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
                     if read_event {
                         return normalize_input_event_value(event);
                     }
@@ -2065,6 +2129,12 @@ define_dispatch!(
                     }
                     return Ok(value);
                 }
+                // INHERIT-INPUT-METHOD: read-from-minibuffer's seventh
+                // argument, read-string's fifth.
+                let inherit = args
+                    .get(if name == "read-from-minibuffer" { 6 } else { 4 })
+                    .is_some_and(Value::is_truthy);
+                crate::lisp::primitives::inherit_minibuffer_input_method(interp, env, inherit);
                 let mut contents = None;
                 if !batch_stdin {
                     contents = read_minibuffer_text_from_unread_events(

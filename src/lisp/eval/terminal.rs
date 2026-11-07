@@ -9,7 +9,17 @@ pub(crate) struct TerminalState {
     pub live: bool,
     pub name: String,
     pub kind: Option<String>,
-    pub colors: i64,
+    /// term.c's color support of the terminal's tty_display_info.
+    pub colors: TtyColors,
+    /// Its appearance strings.
+    pub appearance: TtyAppearance,
+    /// tty->previous_color_mode: the `tty-color-mode' set_tty_color_mode
+    /// last set up (0, the entry's own, at first).
+    pub previous_color_mode: i64,
+    /// tty->previous_frame: the frame redisplay last showed on the
+    /// terminal, by identity (none after store_frame_param changed its
+    /// `tty-color-mode').
+    pub previous_frame: Option<usize>,
     pub terminal_coding: Option<String>,
     /// The coding system whose charsets t->charset_list holds: the
     /// characters produce_glyphs draws rather than shows as glyphless.
@@ -34,7 +44,10 @@ impl TerminalState {
             live: true,
             name: "initial_terminal".into(),
             kind: None,
-            colors: 0,
+            colors: TtyColors::default(),
+            appearance: TtyAppearance::default(),
+            previous_color_mode: 0,
+            previous_frame: None,
             terminal_coding: None,
             charset_list_coding: None,
             keyboard_coding: Some("no-conversion".into()),
@@ -46,12 +59,281 @@ impl TerminalState {
     }
 }
 
+/// term.c's color fields of a tty_display_info: TN_max_colors, the
+/// TS_orig_pair, TS_set_foreground and TS_set_background strings (None
+/// where there is none), and TN_no_color_video (NC).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TtyColors {
+    pub max_colors: i64,
+    pub orig_pair: Option<Vec<u8>>,
+    pub set_foreground: Option<Vec<u8>>,
+    pub set_background: Option<Vec<u8>>,
+    pub no_color_video: i64,
+}
+
+thread_local! {
+    /// term.c's default_max_colors, default_orig_pair, default_set_foreground,
+    /// default_set_background and default_no_color_video: one set, which
+    /// the last init_tty saved.
+    static DEFAULT_TTY_COLORS: std::cell::RefCell<TtyColors> =
+        std::cell::RefCell::new(TtyColors::default());
+}
+
+/// term.c's enum no_color_bit: the appearances NC says not to combine
+/// with colors.
+pub(crate) const NC_UNDERLINE: i64 = 1 << 1;
+pub(crate) const NC_REVERSE: i64 = 1 << 2;
+pub(crate) const NC_BOLD: i64 = 1 << 5;
+
+impl TtyColors {
+    /// tty_default_color_capabilities (TTY, true): these become the
+    /// defaults mode 0 returns to.
+    pub(crate) fn save_default(&self) {
+        DEFAULT_TTY_COLORS.with_borrow_mut(|defaults| *defaults = self.clone());
+    }
+
+    /// tty_setup_colors: MODE -1 (or less) turns colors off, 8 sets up
+    /// the 8 ANSI colors, any other the defaults init_tty saw.
+    pub(crate) fn setup(&mut self, mode: i64) {
+        match mode.max(-1) {
+            -1 => {
+                self.max_colors = 0;
+                self.no_color_video = 0;
+                self.set_foreground = None;
+                self.set_background = None;
+                self.orig_pair = None;
+            }
+            8 => {
+                self.orig_pair = Some(b"\x1b[0m".to_vec());
+                self.set_foreground = Some(b"\x1b[3%p1%dm".to_vec());
+                self.set_background = Some(b"\x1b[4%p1%dm".to_vec());
+                self.max_colors = 8;
+                self.no_color_video = 0;
+            }
+            _ => *self = DEFAULT_TTY_COLORS.with_borrow(Clone::clone),
+        }
+    }
+
+    /// MAY_USE_WITH_COLORS_P: appearance ATTR (NC_ bits) may be shown.
+    pub(crate) fn may_use_with_colors(&self, attr: i64) -> bool {
+        self.max_colors <= 0 || self.no_color_video & attr == 0
+    }
+}
+
+/// term.c's appearance strings of a tty_display_info as init_tty leaves
+/// them (None where there is none): TS_standout_mode and
+/// TS_end_standout_mode (so and se; none for a magic-cookie standout, sg;
+/// the underline strings where there is no so; me where there is no se,
+/// and no standout when there is neither; no standout on a teleray, xt),
+/// TS_enter_underline_mode and TS_exit_underline_mode (us and ue; none
+/// for magic-cookie underlining, ug; no us after `tty-no-underline'),
+/// TF_set_underline_style (Smulx, else the kitty sequence for the Su
+/// flag) and with it TF_set_underline_color, TS_enter_bold_mode (md),
+/// TS_enter_dim_mode (mh), TS_enter_italic_mode (ZH),
+/// TS_enter_strike_through_mode (smxx) and TS_exit_attribute_mode (me).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TtyAppearance {
+    pub standout_mode: Option<Vec<u8>>,
+    pub end_standout_mode: Option<Vec<u8>>,
+    pub enter_underline_mode: Option<Vec<u8>>,
+    pub exit_underline_mode: Option<Vec<u8>>,
+    pub set_underline_style: Option<Vec<u8>>,
+    pub set_underline_color: Option<Vec<u8>>,
+    pub enter_bold_mode: Option<Vec<u8>>,
+    pub enter_dim_mode: Option<Vec<u8>>,
+    pub enter_italic_mode: Option<Vec<u8>>,
+    pub enter_strike_through_mode: Option<Vec<u8>>,
+    pub exit_attribute_mode: Option<Vec<u8>>,
+}
+
+/// cm.h:emacs_tputs (OUTPUT1): the library's tputs of STRING with one
+/// line affected, its padding as the library sends it (pad characters for
+/// the output speed, none under xon/xoff); where there is no library,
+/// STRING with its `$<...>' delays left out.
+pub(crate) fn tputs(string: &[u8]) -> Vec<u8> {
+    #[cfg(unix)]
+    if let Some(output) = library_tputs(string) {
+        return output;
+    }
+    strip_padding(string)
+}
+
+thread_local! {
+    /// What the library's tputs hands its output function.
+    static TPUTS_OUTPUT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// term.c's cmputc, collecting the bytes instead of writing them.
+#[cfg(unix)]
+extern "C" fn collect_tputs_byte(c: libc::c_int) -> libc::c_int {
+    TPUTS_OUTPUT.with_borrow_mut(|output| output.push(c as u8));
+    c
+}
+
+#[cfg(unix)]
+fn library_tputs(string: &[u8]) -> Option<Vec<u8>> {
+    let library = terminfo_library()?;
+    let string = std::ffi::CString::new(string).ok()?;
+    let _guard = TERMCAP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // SAFETY: tputs is the library's documented function; STRING lives
+    // through the call, and the output function only appends to a
+    // thread-local buffer.
+    unsafe {
+        let tputs = library
+            .get::<unsafe extern "C" fn(
+                *const libc::c_char,
+                libc::c_int,
+                extern "C" fn(libc::c_int) -> libc::c_int,
+            ) -> libc::c_int>(b"tputs\0")
+            .ok()?;
+        TPUTS_OUTPUT.with_borrow_mut(Vec::clear);
+        tputs(string.as_ptr(), 1, collect_tputs_byte);
+    }
+    Some(TPUTS_OUTPUT.with_borrow_mut(std::mem::take))
+}
+
+/// STRING without its `$<...>' padding delays.
+fn strip_padding(string: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(string.len());
+    let mut at = 0;
+    while at < string.len() {
+        if string[at] == b'$' && string.get(at + 1) == Some(&b'<') {
+            let mut end = at + 2;
+            while end < string.len()
+                && (string[end].is_ascii_digit() || matches!(string[end], b'.' | b'*' | b'/'))
+            {
+                end += 1;
+            }
+            if string.get(end) == Some(&b'>') && end > at + 2 {
+                at = end + 1;
+                continue;
+            }
+        }
+        out.push(string[at]);
+        at += 1;
+    }
+    out
+}
+
+/// term.c's no_color_bit for italic, dim and strike-through.
+pub(crate) const NC_ITALIC: i64 = 1 << 3;
+pub(crate) const NC_DIM: i64 = 1 << 4;
+pub(crate) const NC_STRIKE_THROUGH: i64 = 1 << 6;
+
+/// dispextern.h's TTY_CAP_ bits, the capabilities tty_capable_p tests.
+pub(crate) const TTY_CAP_INVERSE: u32 = 0x01;
+pub(crate) const TTY_CAP_UNDERLINE: u32 = 0x02;
+pub(crate) const TTY_CAP_BOLD: u32 = 0x04;
+pub(crate) const TTY_CAP_DIM: u32 = 0x08;
+pub(crate) const TTY_CAP_ITALIC: u32 = 0x10;
+pub(crate) const TTY_CAP_STRIKE_THROUGH: u32 = 0x20;
+/// (0x32 & TTY_CAP_UNDERLINE): the underline bit itself, so plain
+/// underlining needs the styled-underline string as well.
+pub(crate) const TTY_CAP_UNDERLINE_STYLED: u32 = 0x32 & TTY_CAP_UNDERLINE;
+
+/// term.c:tty_capable_p: every capability in CAPS has its string and may
+/// be shown with the terminal's colors (MAY_USE_WITH_COLORS_P).
+pub(crate) fn tty_capable_p(appearance: &TtyAppearance, colors: &TtyColors, caps: u32) -> bool {
+    [
+        (TTY_CAP_INVERSE, &appearance.standout_mode, NC_REVERSE),
+        (
+            TTY_CAP_UNDERLINE,
+            &appearance.enter_underline_mode,
+            NC_UNDERLINE,
+        ),
+        (
+            TTY_CAP_UNDERLINE_STYLED,
+            &appearance.set_underline_style,
+            NC_UNDERLINE,
+        ),
+        (TTY_CAP_BOLD, &appearance.enter_bold_mode, NC_BOLD),
+        (TTY_CAP_DIM, &appearance.enter_dim_mode, NC_DIM),
+        (TTY_CAP_ITALIC, &appearance.enter_italic_mode, NC_ITALIC),
+        (
+            TTY_CAP_STRIKE_THROUGH,
+            &appearance.enter_strike_through_mode,
+            NC_STRIKE_THROUGH,
+        ),
+    ]
+    .into_iter()
+    .all(|(cap, string, no_color_bit)| {
+        caps & cap == 0 || (string.is_some() && colors.may_use_with_colors(no_color_bit))
+    })
+}
+
+/// The terminal capability library, loaded once (the termcap and
+/// terminfo functions init_tty and tparam call), with the lock its
+/// static buffers need.
+#[cfg(unix)]
+fn terminfo_library() -> Option<&'static libloading::Library> {
+    static LIBRARY: std::sync::OnceLock<Option<libloading::Library>> = std::sync::OnceLock::new();
+    LIBRARY
+        .get_or_init(|| {
+            [
+                "libtinfo.so.6",
+                "libtinfo.so.5",
+                "libncursesw.so.6",
+                "/usr/lib/libncurses.dylib",
+            ]
+            .iter()
+            // SAFETY: loading the system terminal capability library runs
+            // no initialization with preconditions.
+            .find_map(|path| unsafe { libloading::Library::new(path) }.ok())
+        })
+        .as_ref()
+}
+
+#[cfg(unix)]
+static TERMCAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// terminfo.c:tparam: STRING with ARG through the library's tparm, the
+/// bytes copied out of its static buffer; none where it cannot be.
+#[cfg(unix)]
+pub(crate) fn tparam(string: &[u8], arg: i64) -> Vec<u8> {
+    let Some(library) = terminfo_library() else {
+        return Vec::new();
+    };
+    let Ok(string) = std::ffi::CString::new(string) else {
+        return Vec::new();
+    };
+    let _guard = TERMCAP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // SAFETY: tparm is the library's documented varargs function; STRING
+    // lives through the call and its result is copied before the lock
+    // is released.
+    unsafe {
+        let Ok(tparm) = library
+            .get::<unsafe extern "C" fn(*const libc::c_char, ...) -> *mut libc::c_char>(b"tparm\0")
+        else {
+            return Vec::new();
+        };
+        let arg = arg as libc::c_long;
+        let result = tparm(
+            string.as_ptr(),
+            arg,
+            0 as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+        );
+        if result.is_null() {
+            Vec::new()
+        } else {
+            std::ffi::CStr::from_ptr(result).to_bytes().to_vec()
+        }
+    }
+}
+
 /// The parts of a terminal type's termcap entry term.c:init_tty takes.
 #[cfg(unix)]
 pub(crate) struct Termcap {
     pub width: i64,
     pub height: i64,
-    pub colors: i64,
+    pub colors: TtyColors,
+    pub appearance: TtyAppearance,
     /// tty_set_terminal_modes's output (TS_termcap_modes, TS_keypad_mode)
     /// and the clear a new frame starts from.
     pub enter: Vec<u8>,
@@ -155,21 +437,12 @@ to do 'unset TERMINFO' (C-shell: 'unsetenv TERMINFO') as well."
 #[cfg(unix)]
 pub(crate) fn read_termcap(kind: &str, fd: libc::c_int) -> Result<Termcap, TermcapError> {
     use std::ffi::{CStr, CString};
-    static TERMCAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = TERMCAP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // SAFETY: these are the system terminal capability library and its
     // documented C functions; all input strings and output buffers live
     // through the calls. We retain copied bytes, never library pointers.
     let termcap = unsafe {
-        let library = [
-            "libtinfo.so.6",
-            "libtinfo.so.5",
-            "libncursesw.so.6",
-            "/usr/lib/libncurses.dylib",
-        ]
-        .iter()
-        .find_map(|path| libloading::Library::new(path).ok())
-        .ok_or(TermcapError::NoDatabase)?;
+        let library = terminfo_library().ok_or(TermcapError::NoDatabase)?;
         let getent = library
             .get::<unsafe extern "C" fn(*mut libc::c_char, *const libc::c_char) -> libc::c_int>(
                 b"tgetent\0",
@@ -323,10 +596,120 @@ pub(crate) fn read_termcap(kind: &str, fd: libc::c_int) -> Result<Termcap, Termc
         } else {
             i64::from(getnum(c"li".as_ptr()))
         };
+        // init_tty's SVr4/ANSI color support: none without "op" (no way
+        // back to the default colors); else AF and AB (or SVr4's Sf and
+        // Sb) and Co (tgetnum's -1 when the entry has none), with the
+        // terminfo 24-bit forms taking precedence: setf24 and setb24, the
+        // RGB flag, or the Tc flag or COLORTERM=truecolor's xterm+direct
+        // strings; and NC.
+        let cap_opt = |key: &CStr| {
+            let value = getstr(key.as_ptr(), std::ptr::null_mut());
+            (!value.is_null()).then(|| CStr::from_ptr(value).to_bytes().to_vec())
+        };
+        let tigetstr = library
+            .get::<unsafe extern "C" fn(*const libc::c_char) -> *mut libc::c_char>(b"tigetstr\0")
+            .ok();
+        let tigetflag = library
+            .get::<unsafe extern "C" fn(*const libc::c_char) -> libc::c_int>(b"tigetflag\0")
+            .ok();
+        // tigetstr's (char *) -1 is "not a string capability".
+        let string_cap = |name: &CStr| {
+            let value = tigetstr
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |get| get(name.as_ptr()));
+            (!value.is_null() && value as isize != -1)
+                .then(|| CStr::from_ptr(value).to_bytes().to_vec())
+        };
+        let flag = |name: &CStr| tigetflag.as_ref().map_or(0, |get| get(name.as_ptr()));
+        // The appearance strings, with init_tty's adjustments: magic-cookie
+        // standout and underlining are not used, underlining stands in for
+        // a missing standout, a standout nothing ends is not used, and a
+        // teleray has none.
+        let mut standout_mode = cap_opt(c"so");
+        let mut end_standout_mode = cap_opt(c"se");
+        let mut enter_underline_mode = cap_opt(c"us");
+        let mut exit_underline_mode = cap_opt(c"ue");
+        if standout_mode.is_some() && getnum(c"sg".as_ptr()) >= 0 {
+            standout_mode = None;
+            end_standout_mode = None;
+        }
+        if enter_underline_mode.is_some() && getnum(c"ug".as_ptr()) >= 0 {
+            enter_underline_mode = None;
+            exit_underline_mode = None;
+        }
+        if standout_mode.is_none() {
+            standout_mode = enter_underline_mode.clone();
+            end_standout_mode = exit_underline_mode.clone();
+        }
+        let exit_attribute_mode = cap_opt(c"me");
+        if end_standout_mode.is_none() {
+            end_standout_mode = exit_attribute_mode.clone();
+            if end_standout_mode.is_none() {
+                standout_mode = None;
+            }
+        }
+        if getflag(c"xt".as_ptr()) != 0 {
+            standout_mode = None;
+        }
+        let set_underline_style = string_cap(c"Smulx")
+            .or_else(|| (getflag(c"Su".as_ptr()) != 0).then(|| b"\x1b[4:%p1%dm".to_vec()));
+        let appearance = TtyAppearance {
+            standout_mode,
+            end_standout_mode,
+            enter_underline_mode,
+            exit_underline_mode,
+            set_underline_color: set_underline_style.is_some().then(|| {
+                b"\x1b[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%dm".to_vec()
+            }),
+            set_underline_style,
+            enter_bold_mode: cap_opt(c"md"),
+            enter_dim_mode: cap_opt(c"mh"),
+            enter_italic_mode: cap_opt(c"ZH"),
+            enter_strike_through_mode: string_cap(c"smxx"),
+            exit_attribute_mode,
+        };
+        let mut colors = TtyColors {
+            orig_pair: cap_opt(c"op"),
+            ..TtyColors::default()
+        };
+        if colors.orig_pair.is_some() {
+            colors.set_foreground = cap_opt(c"AF");
+            colors.set_background = cap_opt(c"AB");
+            if colors.set_foreground.is_none() {
+                colors.set_foreground = cap_opt(c"Sf");
+                colors.set_background = cap_opt(c"Sb");
+            }
+            colors.max_colors = i64::from(getnum(c"Co".as_ptr()));
+            if let (Some(fg), Some(bg)) = (string_cap(c"setf24"), string_cap(c"setb24")) {
+                colors.set_foreground = Some(fg);
+                colors.set_background = Some(bg);
+                colors.max_colors = 16_777_216;
+            } else if flag(c"RGB") > 0 {
+                colors.max_colors = 16_777_216;
+            } else if flag(c"Tc") > 0
+                || std::env::var_os("COLORTERM")
+                    .is_some_and(|value| value.eq_ignore_ascii_case("truecolor"))
+            {
+                colors.set_foreground = Some(
+                    b"\x1b[%?%p1%{8}%<%t3%p1%d%e38;2;%p1%{65536}%/%d;%p1%{256}%/%{255}%&%d;%p1%{255}%&%d%;m"
+                        .to_vec(),
+                );
+                colors.set_background = Some(
+                    b"\x1b[%?%p1%{8}%<%t4%p1%d%e48;2;%p1%{65536}%/%d;%p1%{256}%/%{255}%&%d;%p1%{255}%&%d%;m"
+                        .to_vec(),
+                );
+                colors.max_colors = 16_777_216;
+            }
+            colors.no_color_video = match getnum(c"NC".as_ptr()) {
+                -1 => 0,
+                n => i64::from(n),
+            };
+        }
         Termcap {
             width,
             height,
-            colors: i64::from(getnum(c"Co".as_ptr())).max(0),
+            colors,
+            appearance,
             enter: [cap(c"ti"), cap(c"ks"), cap(c"cl")].concat(),
             exit: [cap(c"ve"), cap(c"ke"), cap(c"te")].concat(),
             keys,
@@ -421,7 +804,8 @@ pub(crate) struct TtyDevice {
     pub file: crate::file_system::File,
     pub width: i64,
     pub height: i64,
-    pub colors: i64,
+    pub colors: TtyColors,
+    pub appearance: TtyAppearance,
     #[cfg(unix)]
     original: Option<libc::termios>,
     exit: Vec<u8>,
@@ -450,12 +834,15 @@ impl TtyDevice {
             width,
             height,
             colors,
+            appearance,
             enter,
             exit,
             keys,
             cursor_motion,
             ..
         } = read_termcap(kind, fd)?;
+        // init_tty's tty_default_color_capabilities (tty, 1).
+        colors.save_default();
         // sysdep.c:init_sys_modes: disable canonical input and echo; the
         // editor reads input bytes itself. Retain the original mode for close.
         let original = unsafe {
@@ -490,6 +877,7 @@ impl TtyDevice {
             width,
             height,
             colors,
+            appearance,
             keys,
             original: interactive.then_some(original),
             exit: if interactive { exit } else { Vec::new() },
@@ -689,7 +1077,10 @@ impl Interpreter {
                     live: true,
                     name: name.into(),
                     kind: Some(kind.into()),
-                    colors: device.colors,
+                    colors: device.colors.clone(),
+                    appearance: device.appearance.clone(),
+                    previous_color_mode: 0,
+                    previous_frame: None,
                     terminal_coding: None,
                     charset_list_coding: None,
                     keyboard_coding: Some("no-conversion".into()),
@@ -1239,6 +1630,18 @@ pub(crate) fn controlling_additional_strings(symbol: Value) -> Vec<u8> {
             .and_then(|output| output.as_ref().map(|output| output.terminal))
             .map(|terminal| tty_additional_strings(terminal, symbol))
             .unwrap_or_default()
+    })
+}
+
+/// The controlling terminal's TS_orig_pair as its color mode has it now
+/// (empty without one), for tty_reset_terminal_modes; None without the
+/// terminal's record (or while it is being changed).
+pub(crate) fn controlling_orig_pair() -> Option<Vec<u8>> {
+    CONTROLLING_OUTPUT.with(|output| {
+        let output = output.try_borrow().ok()?;
+        let terminal = output.as_ref()?.terminal;
+        let state = terminal.try_borrow().ok()?;
+        Some(state.colors.orig_pair.clone().unwrap_or_default())
     })
 }
 

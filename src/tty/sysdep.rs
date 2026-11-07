@@ -171,7 +171,11 @@ impl TtyModes {
         out.extend_from_slice(&self.strings.end_keypad_mode);
         out.extend_from_slice(&self.strings.cursor_normal);
         out.extend_from_slice(&self.strings.end_termcap_modes);
-        out.extend_from_slice(&self.strings.orig_pair);
+        // TS_orig_pair as the terminal's color mode now has it.
+        match crate::lisp::eval::terminal::controlling_orig_pair() {
+            Some(orig_pair) => out.extend_from_slice(&orig_pair),
+            None => out.extend_from_slice(&self.strings.orig_pair),
+        }
         out.push(b'\r');
         out
     }

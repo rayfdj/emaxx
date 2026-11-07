@@ -798,7 +798,7 @@ pub(crate) fn echo_area_message() -> Option<String> {
     ECHO_AREA_MESSAGE.with_borrow(|slot| slot.as_ref().map(|(text, _)| text.clone()))
 }
 
-fn echo_area_message_value() -> Option<Value> {
+pub(crate) fn echo_area_message_value() -> Option<Value> {
     ECHO_AREA_MESSAGE_VALUE.with_borrow(|slot| *slot)
 }
 
@@ -1690,158 +1690,164 @@ pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo
         .collect()
 }
 
-/// A face's realized tty attributes, the frontend's paint unit: ANSI
-/// color indexes plus the boolean attributes a terminal can show.
+/// dispextern.h's FACE_TTY_DEFAULT_COLOR, FACE_TTY_DEFAULT_FG_COLOR and
+/// FACE_TTY_DEFAULT_BG_COLOR: the pixels of no color, the terminal's own
+/// foreground and its own background (face_tty_specified_color is a
+/// pixel of none of them).
+pub(crate) const FACE_TTY_DEFAULT_COLOR: i64 = -1;
+pub(crate) const FACE_TTY_DEFAULT_FG_COLOR: i64 = -2;
+pub(crate) const FACE_TTY_DEFAULT_BG_COLOR: i64 = -3;
+
+/// dispextern.h's enum face_underline_type.
+pub(crate) const FACE_NO_UNDERLINE: u8 = 0;
+pub(crate) const FACE_UNDERLINE_SINGLE: u8 = 1;
+const FACE_UNDERLINE_DOUBLE_LINE: u8 = 2;
+const FACE_UNDERLINE_WAVE: u8 = 3;
+const FACE_UNDERLINE_DOTS: u8 = 4;
+const FACE_UNDERLINE_DASHES: u8 = 5;
+
+/// A face's tty attributes, the frontend's paint unit, as
+/// xfaces.c:realize_tty_face maps them: the colors' pixels (map_tty_color:
+/// the terminal's color index, or one of the FACE_TTY_DEFAULT_ pixels;
+/// None where the face leaves the color to the default face),
+/// tty_bold_p (a weight above medium), tty_italic_p (a slant other than
+/// normal), the underline's type and color pixel (0: none),
+/// tty_reverse_p and tty_strike_through_p.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(crate) struct TtyFaceAttrs {
-    pub(crate) foreground: Option<u8>,
-    pub(crate) background: Option<u8>,
+    pub(crate) foreground: Option<i64>,
+    pub(crate) background: Option<i64>,
     pub(crate) bold: bool,
-    pub(crate) underline: bool,
+    pub(crate) italic: bool,
+    pub(crate) underline: u8,
+    pub(crate) underline_color: i64,
     pub(crate) reverse: bool,
+    pub(crate) strike_through: bool,
     /// GNU's `:extend': the face keeps painting past the end of line to
     /// the window edge (the region's whole-row highlight).
     pub(crate) extend: bool,
+    /// The FACE_OFF_* attributes the face specifies as off (`:weight
+    /// normal', `:underline nil'...), which merging over a face that has
+    /// them on turns off; the ones neither on nor off are unspecified,
+    /// the underlying face's.
+    pub(crate) off: u8,
 }
 
-/// xfaces.c tty_supports_face_attributes_p: whether the requested
-/// attributes both render differently from the default face and lie
-/// within the terminal's capabilities.  The capability set mirrors GNU
-/// on the frontend's terminal class (TERM=xterm family): bold, italic,
-/// inverse video, and strike-through pass; dim and underline fail the
-/// capability test there; family, foundry, stipple, height, width,
-/// overline, and box never exist on a tty.  Color names must resolve
-/// on the terminal's palette and differ from the default face's.
-fn tty_supports_face_attributes(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    attributes: &Value,
-) -> Result<Value, LispError> {
-    let mut pairs: Vec<(String, Value)> = Vec::new();
-    // merge_face_ref accepts both a bare plist and a precedence-ordered
-    // list of face references.  `supports' display conditions pass their
-    // cdr verbatim, so the widespread `(supports (:box t))' spelling
-    // arrives here as the one-element face-reference list `((:box t))'.
-    // Walk those lists just as merge_face_ref does instead of mistaking an
-    // empty top-level plist for "every requested attribute is supported".
-    let mut pending = vec![*attributes];
-    while let Some(reference) = pending.pop() {
-        let Ok(items) = reference.to_vec() else {
-            continue;
-        };
-        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.as_str().starts_with(':'))
-        {
-            pending.extend(items.into_iter().rev());
-            continue;
-        }
-        for pair in items.as_chunks::<2>().0 {
-            if let Kind::Symbol(key) = pair[0].kind() {
-                pairs.push((key.to_string(), pair[1]));
-            }
-        }
-    }
-    let lookup = |wanted: &str| {
-        pairs
-            .iter()
-            .find(|(key, _)| key == wanted)
-            .map(|(_, value)| *value)
-    };
-    for (key, _) in &pairs {
-        if matches!(
-            key.as_str(),
-            ":family" | ":foundry" | ":stipple" | ":height" | ":width" | ":overline" | ":box"
-        ) {
-            return Ok(Value::Nil);
-        }
-    }
-    if let Some(weight) = lookup(":weight") {
-        // FONT_WEIGHT_NAME_NUMERIC: heavier than normal needs bold
-        // (supported), lighter needs dim (not on this terminal), and
-        // normal weights are the default's own.
-        match weight.as_symbol().unwrap_or("") {
-            "semi-bold" | "bold" | "extra-bold" | "ultra-bold" | "heavy" | "ultra-heavy"
-            | "black" => {}
-            "thin" | "ultra-light" | "extra-light" | "light" | "semi-light" => {
-                return Ok(Value::Nil);
-            }
-            "normal" | "medium" | "regular" | "book" => return Ok(Value::Nil),
-            _ => {}
-        }
-    }
-    if let Some(slant) = lookup(":slant") {
-        // Italic and oblique differ from the default's normal slant and
-        // the terminal renders italics.
-        if matches!(slant.as_symbol().unwrap_or(""), "normal") {
-            return Ok(Value::Nil);
-        }
-    }
-    if lookup(":underline").is_some() {
-        // The capability test fails for underline on this terminal
-        // class, styled variants included.
-        return Ok(Value::Nil);
-    }
-    for color_key in [":foreground", ":background"] {
-        if let Some(color) = lookup(color_key) {
-            if !color.is_string() {
-                return Ok(Value::Nil);
-            }
-            let default_color = interp
-                .call_function_value(
-                    Value::Symbol("face-attribute".into()),
-                    Some("face-attribute"),
-                    &[
-                        Value::Symbol("default".into()),
-                        Value::Symbol(color_key.into()),
-                    ],
-                    env,
+pub(crate) const FACE_OFF_BOLD: u8 = 1;
+pub(crate) const FACE_OFF_ITALIC: u8 = 2;
+pub(crate) const FACE_OFF_UNDERLINE: u8 = 4;
+pub(crate) const FACE_OFF_REVERSE: u8 = 8;
+pub(crate) const FACE_OFF_STRIKE_THROUGH: u8 = 16;
+pub(crate) const FACE_OFF_EXTEND: u8 = 32;
+
+impl TtyFaceAttrs {
+    fn from_options(options: TtyFaceAttrOptions) -> Self {
+        let (underline, underline_color) = options.underline.unwrap_or((FACE_NO_UNDERLINE, 0));
+        let off = |value: Option<bool>, bit: u8| if value == Some(false) { bit } else { 0 };
+        Self {
+            foreground: options.foreground,
+            background: options.background,
+            bold: options.bold.unwrap_or(false),
+            italic: options.italic.unwrap_or(false),
+            underline,
+            underline_color,
+            reverse: options.reverse.unwrap_or(false),
+            strike_through: options.strike_through.unwrap_or(false),
+            extend: options.extend.unwrap_or(false),
+            off: off(options.bold, FACE_OFF_BOLD)
+                | off(options.italic, FACE_OFF_ITALIC)
+                | off(
+                    options
+                        .underline
+                        .map(|(style, _)| style != FACE_NO_UNDERLINE),
+                    FACE_OFF_UNDERLINE,
                 )
-                .ok();
-            // face_attr_equal_p compares color strings case-insensitively.
-            let text_of = |value: &Value| -> Option<String> {
-                match value.kind() {
-                    Kind::StringObject(state) => Some(state.borrow().text()),
-                    _ => None,
-                }
-            };
-            if let (Some(default_text), Some(color_text)) =
-                (default_color.as_ref().and_then(text_of), text_of(&color))
-                && default_text.eq_ignore_ascii_case(&color_text)
-            {
-                return Ok(Value::Nil);
-            }
-            let index = interp
-                .call_function_value(
-                    Value::Symbol("tty-color-translate".into()),
-                    None,
-                    std::slice::from_ref(&color),
-                    env,
-                )?
-                .as_integer()
-                .unwrap_or(-1);
-            if index < 0 {
-                return Ok(Value::Nil);
-            }
+                | off(options.reverse, FACE_OFF_REVERSE)
+                | off(options.strike_through, FACE_OFF_STRIKE_THROUGH)
+                | off(options.extend, FACE_OFF_EXTEND),
         }
     }
-    Ok(Value::T)
+
+    /// merge_face_vectors for tty attributes: OVER's specified ones (on
+    /// or off) over BASE's, BASE's where OVER leaves them unspecified.
+    pub(crate) fn merged_over(base: &Self, over: &Self) -> Self {
+        let flag = |base_on: bool, over_on: bool, bit: u8| -> (bool, u8) {
+            if over_on {
+                (true, 0)
+            } else if over.off & bit != 0 {
+                (false, bit)
+            } else {
+                (base_on, base.off & bit)
+            }
+        };
+        let (bold, bold_off) = flag(base.bold, over.bold, FACE_OFF_BOLD);
+        let (italic, italic_off) = flag(base.italic, over.italic, FACE_OFF_ITALIC);
+        let (reverse, reverse_off) = flag(base.reverse, over.reverse, FACE_OFF_REVERSE);
+        let (strike_through, strike_off) = flag(
+            base.strike_through,
+            over.strike_through,
+            FACE_OFF_STRIKE_THROUGH,
+        );
+        let (extend, extend_off) = flag(base.extend, over.extend, FACE_OFF_EXTEND);
+        let (underline, underline_color, underline_off) = if over.underline != FACE_NO_UNDERLINE {
+            (over.underline, over.underline_color, 0)
+        } else if over.off & FACE_OFF_UNDERLINE != 0 {
+            (FACE_NO_UNDERLINE, 0, FACE_OFF_UNDERLINE)
+        } else {
+            (
+                base.underline,
+                base.underline_color,
+                base.off & FACE_OFF_UNDERLINE,
+            )
+        };
+        Self {
+            foreground: over.foreground.or(base.foreground),
+            background: over.background.or(base.background),
+            bold,
+            italic,
+            underline,
+            underline_color,
+            reverse,
+            strike_through,
+            extend,
+            off: bold_off | italic_off | underline_off | reverse_off | strike_off | extend_off,
+        }
+    }
 }
 
 /// Resolve FACE to its tty attributes through the runtime's own face
-/// machinery: `face-attribute' answers the realized (inherit-merged)
-/// attributes, and `tty-color-translate' maps color names onto the
-/// terminal's ANSI palette exactly as GNU's tty color support does.
+/// machinery: `face-attribute' answers the inherit-merged attributes,
+/// which realize_tty_face maps to the terminal's (map_tty_color for the
+/// colors), in the current buffer's `face-remapping-alist'.
+#[cfg(test)]
 pub(crate) fn resolve_tty_face_attrs(
     interp: &mut Interpreter,
     env: &mut Env,
     face: &Value,
+) -> TtyFaceAttrs {
+    let remapping = interp
+        .lookup_var_key(cached_symbol!("face-remapping-alist"), env)
+        .unwrap_or(Value::Nil);
+    resolve_tty_face_attrs_remapped(interp, env, face, remapping)
+}
+
+/// `resolve_tty_face_attrs' with REMAPPING the `face-remapping-alist' in
+/// effect: the displayed buffer's (redisplay_window makes a window's
+/// buffer current while it realizes the window's faces), nil for the
+/// frame's own faces.
+pub(crate) fn resolve_tty_face_attrs_remapped(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    face: &Value,
+    remapping: Value,
 ) -> TtyFaceAttrs {
     // face-remap.el installs buffer-local substitutions such as Magit's
     // `(header-line magit-header-line header-line)'.  Redisplay realizes
     // the cdr as the effective precedence-ordered face list; the trailing
     // base face is deliberately resolved without recursively remapping it.
     if let Kind::Symbol(requested) = face.kind()
-        && let Some(remapped) = interp
-            .lookup_var_key(cached_symbol!("face-remapping-alist"), env)
+        && let Some(remapped) = Some(remapping)
+            .filter(|alist| !alist.is_nil())
             .and_then(|alist| alist.to_vec().ok())
             .and_then(|entries| {
                 entries.into_iter().find_map(|entry| {
@@ -1851,15 +1857,9 @@ pub(crate) fn resolve_tty_face_attrs(
                 })
             })
     {
-        let options = resolve_tty_face_reference_options(interp, env, &remapped, 0);
-        return TtyFaceAttrs {
-            foreground: options.foreground,
-            background: options.background,
-            bold: options.bold.unwrap_or(false),
-            underline: options.underline.unwrap_or(false),
-            reverse: options.reverse.unwrap_or(false),
-            extend: options.extend.unwrap_or(false),
-        };
+        return TtyFaceAttrs::from_options(resolve_tty_face_reference_options(
+            interp, env, &remapped, 0,
+        ));
     }
     // xfaces.c merge_face_ref: a face reference may be a LIST of face
     // references, merged left to right with the entries nearer the
@@ -1868,44 +1868,11 @@ pub(crate) fn resolve_tty_face_attrs(
     // each member and fold, letting an earlier member's set attributes
     // override a later one's.
     if matches!(face.kind(), Kind::Cons(_)) {
-        let options = resolve_tty_face_reference_options(interp, env, face, 0);
-        return TtyFaceAttrs {
-            foreground: options.foreground,
-            background: options.background,
-            bold: options.bold.unwrap_or(false),
-            underline: options.underline.unwrap_or(false),
-            reverse: options.reverse.unwrap_or(false),
-            extend: options.extend.unwrap_or(false),
-        };
+        return TtyFaceAttrs::from_options(resolve_tty_face_reference_options(
+            interp, env, face, 0,
+        ));
     }
-    // `face-attribute' is GNU faces.el's; reach it through the ordinary
-    // function cell, never the native dispatcher.
-    let attribute = |interp: &mut Interpreter, env: &mut Env, name: &str| {
-        interp
-            .call_function_value(
-                Value::Symbol("face-attribute".into()),
-                Some("face-attribute"),
-                &[*face, Value::Symbol(name.into()), Value::Nil, Value::T],
-                env,
-            )
-            .ok()
-            .filter(|value| !crate::lisp::types::eq_symbol_named(value, "unspecified"))
-            .filter(|value| !value.is_nil())
-    };
-    let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
-        tty_face_color_index(interp, env, value.as_ref()?)
-    };
-    let foreground = attribute(interp, env, ":foreground");
-    let background = attribute(interp, env, ":background");
-    TtyFaceAttrs {
-        foreground: color_index(interp, env, foreground),
-        background: color_index(interp, env, background),
-        bold: attribute(interp, env, ":weight")
-            .is_some_and(|weight| matches!(weight.kind(), Kind::Symbol(s) if s.is_named("bold") || s.is_named("semi-bold") || s.is_named("extra-bold") || s.is_named("ultra-bold"))),
-        underline: attribute(interp, env, ":underline").is_some_and(|value| value.is_truthy()),
-        reverse: attribute(interp, env, ":inverse-video").is_some_and(|value| value.is_truthy()),
-        extend: attribute(interp, env, ":extend").is_some_and(|value| value.is_truthy()),
-    }
+    TtyFaceAttrs::from_options(resolve_tty_face_attr_options(interp, env, face))
 }
 
 /// One face member's tty attributes with per-attribute specificity: a
@@ -1914,11 +1881,13 @@ pub(crate) fn resolve_tty_face_attrs(
 /// a list merge can turn attributes off.
 #[derive(Default)]
 pub(crate) struct TtyFaceAttrOptions {
-    pub(crate) foreground: Option<u8>,
-    pub(crate) background: Option<u8>,
+    pub(crate) foreground: Option<i64>,
+    pub(crate) background: Option<i64>,
     pub(crate) bold: Option<bool>,
-    pub(crate) underline: Option<bool>,
+    pub(crate) italic: Option<bool>,
+    pub(crate) underline: Option<(u8, i64)>,
     pub(crate) reverse: Option<bool>,
+    pub(crate) strike_through: Option<bool>,
     pub(crate) extend: Option<bool>,
 }
 
@@ -1932,31 +1901,142 @@ fn merge_tty_face_options(base: &mut TtyFaceAttrOptions, overlay: TtyFaceAttrOpt
     if overlay.bold.is_some() {
         base.bold = overlay.bold;
     }
+    if overlay.italic.is_some() {
+        base.italic = overlay.italic;
+    }
     if overlay.underline.is_some() {
         base.underline = overlay.underline;
     }
     if overlay.reverse.is_some() {
         base.reverse = overlay.reverse;
     }
+    if overlay.strike_through.is_some() {
+        base.strike_through = overlay.strike_through;
+    }
     if overlay.extend.is_some() {
         base.extend = overlay.extend;
     }
 }
 
-/// Translate one realized tty face color through tty-colors.el's registered
-/// palette and approximation machinery.
-fn tty_face_color_index(interp: &mut Interpreter, env: &mut Env, value: &Value) -> Option<u8> {
-    string_text(value).ok()?;
-    interp
-        .call_function_value(
-            Value::Symbol("tty-color-translate".into()),
-            None,
-            std::slice::from_ref(value),
+/// xfaces.c:map_tty_color of a face's color VALUE (a foreground's or an
+/// underline's when FOREGROUND_P, else a background's): a string's index
+/// in `tty-color-alist' when `tty-defined-color-alist' is a list, else
+/// load_color's pixel (tty_defined_color's, the FACE_TTY_DEFAULT_ pixels
+/// for "unspecified-fg" and "unspecified-bg"), a color it cannot load
+/// logged ("Unable to load color") and given the frame's default pixel.
+/// None for a VALUE that is no string.
+fn map_tty_color(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    value: &Value,
+    foreground_p: bool,
+) -> Option<i64> {
+    if !value.is_string() {
+        return None;
+    }
+    let default_pixel = if foreground_p {
+        FACE_TTY_DEFAULT_FG_COLOR
+    } else {
+        FACE_TTY_DEFAULT_BG_COLOR
+    };
+    let mut pixel = default_pixel;
+    let frame = interp.selected_frame_value();
+    let defined = interp
+        .lookup_var_key(cached_symbol!("tty-defined-color-alist"), env)
+        .unwrap_or(Value::Nil);
+    if string_text(value).is_ok_and(|text| !text.is_empty())
+        && matches!(defined.kind(), Kind::Cons(_))
+        && let Ok(alist) = interp.call_function_value(
+            Value::Symbol("tty-color-alist".into()),
+            Some("tty-color-alist"),
+            &[frame],
             env,
         )
-        .ok()
-        .and_then(|index| index.integer_value())
-        .and_then(|index| u8::try_from(index).ok())
+        && let Ok(def) = crate::lisp::primitives::call(interp, "assoc", &[*value, alist], env)
+        && let Some((_, rest)) = def.cons_values()
+        && let Some((index, _)) = rest.cons_values()
+        && let Kind::Integer(index) = index.kind()
+    {
+        pixel = index;
+    }
+    if pixel == default_pixel {
+        let Kind::Frame(frame) = frame.kind() else {
+            return Some(pixel);
+        };
+        match super::faces::tty_defined_color_pixel(interp, env, frame, value) {
+            Ok(Some(loaded)) => pixel = loaded,
+            Ok(None) => {
+                let _ = add_to_log(interp, "Unable to load color \"%s\"", &[*value], env);
+            }
+            Err(_) => {}
+        }
+    }
+    Some(pixel)
+}
+
+/// realize_tty_face's underline of VALUE: (type, color pixel), nil none,
+/// t or a string (its color) a single line, and a (:color COLOR :style
+/// STYLE) list its style's line (a single one for an unknown style) and
+/// COLOR's pixel (none for `foreground-color').
+fn tty_underline(interp: &mut Interpreter, env: &mut Env, value: &Value) -> (u8, i64) {
+    match value.kind() {
+        Kind::Nil => (FACE_NO_UNDERLINE, 0),
+        Kind::T => (FACE_UNDERLINE_SINGLE, 0),
+        Kind::StringObject(_) => (
+            FACE_UNDERLINE_SINGLE,
+            map_tty_color(interp, env, value, true).unwrap_or(0),
+        ),
+        Kind::Cons(_) => {
+            let (mut kind, mut color) = (FACE_UNDERLINE_SINGLE, 0);
+            let mut tail = *value;
+            while let Some((keyword, rest)) = tail.cons_values() {
+                let Some((value, rest)) = rest.cons_values() else {
+                    break;
+                };
+                tail = rest;
+                if crate::lisp::types::eq_symbol_named(keyword, ":color") {
+                    if crate::lisp::types::eq_symbol_named(value, "foreground-color") {
+                        color = 0;
+                    } else if value.is_string() {
+                        color = map_tty_color(interp, env, &value, true).unwrap_or(0);
+                    }
+                } else if crate::lisp::types::eq_symbol_named(keyword, ":style") {
+                    kind = [
+                        ("line", FACE_UNDERLINE_SINGLE),
+                        ("double-line", FACE_UNDERLINE_DOUBLE_LINE),
+                        ("wave", FACE_UNDERLINE_WAVE),
+                        ("dots", FACE_UNDERLINE_DOTS),
+                        ("dashes", FACE_UNDERLINE_DASHES),
+                    ]
+                    .into_iter()
+                    .find(|(name, _)| crate::lisp::types::eq_symbol_named(value, name))
+                    .map_or(FACE_UNDERLINE_SINGLE, |(_, kind)| kind);
+                }
+            }
+            (kind, color)
+        }
+        _ => (FACE_NO_UNDERLINE, 0),
+    }
+}
+
+/// realize_tty_face's tty_bold_p and tty_italic_p: FONT_WEIGHT_NAME_NUMERIC
+/// above medium's 100, FONT_SLANT_NAME_NUMERIC other than normal's 100.
+fn tty_weight_bold(interp: &mut Interpreter, value: &Value) -> bool {
+    crate::lisp::primitives::font::style_name_numeric(
+        interp,
+        crate::lisp::primitives::font::FONT_WEIGHT_INDEX,
+        value,
+    )
+    .is_ok_and(|weight| weight > 100)
+}
+
+fn tty_slant_italic(interp: &mut Interpreter, value: &Value) -> bool {
+    crate::lisp::primitives::font::style_name_numeric(
+        interp,
+        crate::lisp::primitives::font::FONT_SLANT_INDEX,
+        value,
+    )
+    .is_ok_and(|slant| slant != 100)
 }
 
 /// Resolve the named, precedence-ordered list, and anonymous attribute
@@ -1997,7 +2077,6 @@ fn resolve_tty_face_reference_options(
     let mut merged = inherited
         .map(|value| resolve_tty_face_reference_options(interp, env, value, depth + 1))
         .unwrap_or_default();
-    let color_index = tty_face_color_index;
     for pair in pairs {
         let Kind::Symbol(name) = pair[0].kind() else {
             continue;
@@ -2007,17 +2086,13 @@ fn resolve_tty_face_reference_options(
             continue;
         }
         match name.as_ref() {
-            ":foreground" => merged.foreground = color_index(interp, env, value),
-            ":background" => merged.background = color_index(interp, env, value),
-            ":weight" => {
-                merged.bold = Some(matches!(value.kind(), Kind::Symbol(weight)
-                    if weight.is_named("bold")
-                        || weight.is_named("semi-bold")
-                        || weight.is_named("extra-bold")
-                        || weight.is_named("ultra-bold")));
-            }
-            ":underline" => merged.underline = Some(value.is_truthy()),
+            ":foreground" => merged.foreground = map_tty_color(interp, env, value, true),
+            ":background" => merged.background = map_tty_color(interp, env, value, false),
+            ":weight" => merged.bold = Some(tty_weight_bold(interp, value)),
+            ":slant" => merged.italic = Some(tty_slant_italic(interp, value)),
+            ":underline" => merged.underline = Some(tty_underline(interp, env, value)),
             ":inverse-video" => merged.reverse = Some(value.is_truthy()),
+            ":strike-through" => merged.strike_through = Some(value.is_truthy()),
             ":extend" => merged.extend = Some(value.is_truthy()),
             _ => {}
         }
@@ -2041,20 +2116,19 @@ fn resolve_tty_face_attr_options(
             .ok()
             .filter(|value| !crate::lisp::types::eq_symbol_named(value, "unspecified"))
     };
-    let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
-        tty_face_color_index(interp, env, value.as_ref()?)
-    };
-    let foreground = attribute(interp, env, ":foreground").filter(|value| !value.is_nil());
-    let background = attribute(interp, env, ":background").filter(|value| !value.is_nil());
+    let foreground = attribute(interp, env, ":foreground");
+    let background = attribute(interp, env, ":background");
+    let weight = attribute(interp, env, ":weight");
+    let slant = attribute(interp, env, ":slant");
+    let underline = attribute(interp, env, ":underline");
     TtyFaceAttrOptions {
-        foreground: color_index(interp, env, foreground),
-        background: color_index(interp, env, background),
-        bold: attribute(interp, env, ":weight").map(|weight| {
-            matches!(weight.kind(), Kind::Symbol(ref s)
-                if s.is_named("bold") || s.is_named("semi-bold") || s.is_named("extra-bold") || s.is_named("ultra-bold"))
-        }),
-        underline: attribute(interp, env, ":underline").map(|value| value.is_truthy()),
+        foreground: foreground.and_then(|value| map_tty_color(interp, env, &value, true)),
+        background: background.and_then(|value| map_tty_color(interp, env, &value, false)),
+        bold: weight.map(|weight| tty_weight_bold(interp, &weight)),
+        italic: slant.map(|slant| tty_slant_italic(interp, &slant)),
+        underline: underline.map(|value| tty_underline(interp, env, &value)),
         reverse: attribute(interp, env, ":inverse-video").map(|value| value.is_truthy()),
+        strike_through: attribute(interp, env, ":strike-through").map(|value| value.is_truthy()),
         extend: attribute(interp, env, ":extend").map(|value| value.is_truthy()),
     }
 }
@@ -5520,10 +5594,13 @@ define_dispatch!(
                 });
                 Ok(if controlling { Value::T } else { Value::Nil })
             }
+            // decode_tty_terminal: TERMINAL's TN_max_colors where it is a
+            // tty, else none.
             "tty-display-color-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                require_live_terminal(interp, args.first())?;
-                Ok(if interp.tty_display_color_cells() > 0 {
+                let terminal = require_live_terminal(interp, args.first())?;
+                let state = terminal.borrow();
+                Ok(if state.kind.is_some() && state.colors.max_colors > 0 {
                     Value::T
                 } else {
                     Value::Nil
@@ -5531,12 +5608,23 @@ define_dispatch!(
             }
             "tty-display-color-cells" => {
                 need_arg_range(name, args, 0, 1)?;
-                require_live_terminal(interp, args.first())?;
-                Ok(Value::Integer(interp.tty_display_color_cells()))
+                let terminal = require_live_terminal(interp, args.first())?;
+                let state = terminal.borrow();
+                Ok(Value::Integer(if state.kind.is_some() {
+                    state.colors.max_colors
+                } else {
+                    0
+                }))
             }
+            // term.c Ftty_no_underline: a tty terminal's
+            // TS_enter_underline_mode is no more.
             "tty-no-underline" => {
                 need_arg_range(name, args, 0, 1)?;
-                require_live_terminal(interp, args.first())?;
+                let terminal = require_live_terminal(interp, args.first())?;
+                let mut state = terminal.borrow_mut();
+                if state.kind.is_some() {
+                    state.appearance.enter_underline_mode = None;
+                }
                 Ok(Value::Nil)
             }
             "suspend-tty" | "resume-tty" => {
@@ -5566,17 +5654,14 @@ define_dispatch!(
                     "Attempt to suspend a non-text terminal device".into(),
                 ))
             }
-            // Batch sessions have no color support (GNU: nil / 0).
-
-            // xfaces.c Fdisplay_supports_face_attributes_p: batch gives
-            // up before frames exist (noninteractive -> nil); a live tty
-            // frame dispatches to tty_supports_face_attributes_p.
             "display-supports-face-attributes-p" => {
                 need_arg_range(name, args, 1, 2)?;
-                if interp.tty_display_color_cells() <= 0 {
-                    return Ok(Value::Nil);
-                }
-                tty_supports_face_attributes(interp, env, &args[0])
+                super::faces::display_supports_face_attributes_p(
+                    interp,
+                    env,
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                )
             }
             "internal-char-font" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -6920,15 +7005,18 @@ define_dispatch!(
             "redraw-frame" => {
                 need_arg_range(name, args, 0, 1)?;
                 decode_live_frame(interp, args.first(), true)?;
-                // dispnew.c:redraw_frame clears the glyph matrices, which
-                // Emaxx does not keep between batch evaluations, and marks
-                // every window's display inaccurate.
+                // dispnew.c:redraw_frame: the terminal cleared and the
+                // current matrices with it (the frame garbaged, which the
+                // next redisplay draws from a cleared screen), every
+                // window's display inaccurate.
+                crate::lisp::primitives::set_frame_garbaged();
                 mark_overlay_arrows_inaccurate(interp, env);
                 Ok(Value::Nil)
             }
             "redraw-display" => {
                 need_args(name, args, 0)?;
                 // redraw_frame on each visible frame; every live frame is.
+                crate::lisp::primitives::set_frame_garbaged();
                 mark_overlay_arrows_inaccurate(interp, env);
                 Ok(Value::Nil)
             }
@@ -7038,17 +7126,7 @@ define_dispatch!(
                         env,
                     );
                 }
-                let (r, g, b) = (
-                    i64::from(left[0]) - i64::from(right[0]),
-                    i64::from(left[1]) - i64::from(right[1]),
-                    i64::from(left[2]) - i64::from(right[2]),
-                );
-                let r_mean = (i64::from(left[0]) + i64::from(right[0])) >> 1;
-                let distance = ((((2 * 65536 + r_mean) * r * r) >> 16)
-                    + 4 * g * g
-                    + (((2 * 65536 + 65535 - r_mean) * b * b) >> 16))
-                    >> 16;
-                Ok(Value::Integer(distance))
+                Ok(Value::Integer(super::faces::color_distance(left, right)))
             }
             "color-values-from-color-spec" => {
                 need_args(name, args, 1)?;

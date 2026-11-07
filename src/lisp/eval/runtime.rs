@@ -1156,12 +1156,36 @@ impl Interpreter {
         self.selected_frame_id.borrow().height.max(1)
     }
 
-    /// Adopt the live terminal's display capabilities: color count and
-    /// background class drive `defface' spec selection exactly as GNU's
-    /// terminal-init path does (an xterm-family tty answers 8 colors and
-    /// a light background).  Batch sessions keep GNU's dumb-terminal
-    /// answers (0 colors, dark, mono); only the terminal frontend calls
-    /// this.
+    /// init_tty's color support for the session's terminal (its entry's
+    /// op, AF/AB, Co, 24-bit forms and NC), which tty_default_color_capabilities
+    /// also saves as the defaults `tty-color-mode' 0 returns to.  Batch
+    /// sessions keep the initial terminal's none; only the terminal
+    /// frontend calls this.
+    pub(crate) fn set_tty_colors(&mut self, colors: crate::lisp::eval::terminal::TtyColors) {
+        colors.save_default();
+        let id = self.selected_terminal_id();
+        self.terminals
+            .iter_mut()
+            .find(|terminal| terminal.id == id)
+            .expect("decoded terminal has state")
+            .borrow_mut()
+            .colors = colors;
+    }
+
+    /// init_tty's appearance strings of the selected terminal (the
+    /// terminal frontend's).
+    pub(crate) fn set_tty_appearance(
+        &mut self,
+        appearance: crate::lisp::eval::terminal::TtyAppearance,
+    ) {
+        let id = self.selected_terminal_id();
+        if let Some(mut terminal) = self.terminal_state_mut(id) {
+            terminal.appearance = appearance;
+        }
+    }
+
+    /// A tty terminal of COLOR_CELLS colors, as a test's frame needs.
+    #[cfg(test)]
     pub fn set_tty_display_colors(&mut self, color_cells: i64) {
         let id = self.selected_terminal_id();
         self.terminals
@@ -1169,12 +1193,105 @@ impl Interpreter {
             .find(|terminal| terminal.id == id)
             .expect("decoded terminal has state")
             .borrow_mut()
-            .colors = color_cells.max(0);
+            .colors
+            .max_colors = color_cells;
     }
 
-    pub(crate) fn tty_display_color_cells(&self) -> i64 {
+    /// The selected terminal's color support and appearance strings
+    /// where it is a tty.
+    pub(crate) fn selected_terminal_output(
+        &self,
+    ) -> Option<(
+        crate::lisp::eval::terminal::TtyColors,
+        crate::lisp::eval::terminal::TtyAppearance,
+    )> {
         self.terminal_state(self.selected_terminal_id())
-            .map_or(0, |terminal| terminal.colors)
+            .filter(|terminal| terminal.kind.is_some())
+            .map(|terminal| (terminal.colors.clone(), terminal.appearance.clone()))
+    }
+
+    /// xdisp.c:redisplay_internal's check before it displays the selected
+    /// frame: a tty frame its terminal did not show last is garbaged
+    /// (frames on one terminal share its screen) and its `tty-color-mode'
+    /// set up (set_tty_color_mode), and becomes the terminal's
+    /// previous_frame.
+    pub(crate) fn note_tty_frame_displayed(&mut self, env: &mut Env) {
+        let frame = self.selected_frame_id;
+        let Some(terminal) = frame.borrow().terminal else {
+            return;
+        };
+        {
+            let state = terminal.borrow();
+            if state.kind.is_none() || state.previous_frame == Some(frame.identity()) {
+                return;
+            }
+        }
+        primitives::set_frame_garbaged();
+        self.set_tty_color_mode(terminal, frame, env);
+        terminal.borrow_mut().previous_frame = Some(frame.identity());
+    }
+
+    /// term.c:set_tty_color_mode: FRAME's `tty-color-mode' parameter, a
+    /// fixnum or a name `tty-color-mode-alist' maps to one (0 otherwise),
+    /// is TERMINAL's color mode; a change sets the colors up for it
+    /// (tty_setup_colors) and recomputes the faces
+    /// (safe_calln of `tty-set-up-initial-frame-faces').
+    fn set_tty_color_mode(
+        &mut self,
+        terminal: crate::lisp::types::TerminalRef,
+        frame: crate::lisp::types::FrameRef,
+        env: &mut Env,
+    ) {
+        let param = Value::Symbol(cached_symbol!("tty-color-mode").symbol());
+        let mut tail = frame.borrow().param_alist;
+        let mut val = Value::Nil;
+        while let Some((entry, rest)) = tail.cons_values() {
+            if let Some((key, value)) = entry.cons_values()
+                && crate::lisp::types::eq(key, param)
+            {
+                val = value;
+                break;
+            }
+            tail = rest;
+        }
+        let color_mode = if matches!(val.kind(), Kind::Integer(_)) {
+            val
+        } else {
+            // Fintern_soft of the name: nil when it is not interned, whose
+            // value is nil.
+            let alist = self
+                .standard_obarray_symbol("tty-color-mode-alist")
+                .and_then(|symbol| self.symbol_value_symbol(&symbol))
+                .unwrap_or(Value::Nil);
+            let mut tail = alist;
+            let mut mode = Value::Nil;
+            while let Some((entry, rest)) = tail.cons_values() {
+                if let Some((key, value)) = entry.cons_values()
+                    && crate::lisp::types::eq(key, val)
+                {
+                    mode = value;
+                    break;
+                }
+                tail = rest;
+            }
+            mode
+        };
+        let mode = match color_mode.kind() {
+            Kind::Integer(mode) if i32::try_from(mode).is_ok() => mode,
+            _ => 0,
+        };
+        if mode != terminal.borrow().previous_color_mode {
+            {
+                let mut state = terminal.borrow_mut();
+                state.previous_color_mode = mode;
+                state.colors.setup(mode);
+            }
+            let _ = self.safe_funcall(
+                Value::Symbol(cached_symbol!("tty-set-up-initial-frame-faces").symbol()),
+                &[],
+                env,
+            );
+        }
     }
 
     /// term.c keeps the terminal's type string (tty->type, from $TERM);

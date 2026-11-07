@@ -66,9 +66,12 @@ thread_local! {
     static DEV_TTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// SIGINT or SIGQUIT arrived (deliver_interrupt_signal); the main thread's
-/// next process_pending_signals runs handle_interrupt_signal.
-static PENDING_INTERRUPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// How many SIGINTs or SIGQUITs arrived (deliver_interrupt_signal) since
+/// the main thread's last process_pending_signals, which runs
+/// handle_interrupt_signal once for each, as GNU's handler runs it once
+/// per signal: a second with `quit-flag' still set is the emergency
+/// escape.
+static PENDING_INTERRUPTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// SIGWINCH arrived (handle_window_change_signal); dispnew.c's
 /// do_pending_window_change takes it.
@@ -358,7 +361,7 @@ pub(crate) fn dev_tty_terminal() -> bool {
 /// deliver_interrupt_signal's handler for SIGINT and SIGQUIT: the main
 /// thread's next quit check takes it.  Async-signal-safe.
 pub(crate) fn note_interrupt_signal() {
-    PENDING_INTERRUPT.store(true, std::sync::atomic::Ordering::Relaxed);
+    PENDING_INTERRUPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     crate::lisp::primitives::atimer::note_pending_signal();
 }
 
@@ -408,21 +411,22 @@ pub(crate) fn stuff_buffered_input(stuffstring: Option<&[u8]>) {
 /// handle_interrupt.  A Lisp thread other than the main one leaves it
 /// pending, as deliver_process_signal hands it to the main thread.
 pub(crate) fn process_interrupt_signal(interp: &mut Interpreter, env: &mut Env) {
-    if !interp.current_thread_is_main()
-        || !PENDING_INTERRUPT.swap(false, std::sync::atomic::Ordering::Relaxed)
-    {
+    if !interp.current_thread_is_main() {
         return;
     }
-    if !dev_tty_terminal() {
-        interp.set_c_variable("quit-flag", Value::symbol("kill-emacs"));
-        return;
+    let signals = PENDING_INTERRUPTS.swap(0, std::sync::atomic::Ordering::Relaxed);
+    for _ in 0..signals {
+        if !dev_tty_terminal() {
+            interp.set_c_variable("quit-flag", Value::symbol("kill-emacs"));
+            continue;
+        }
+        handle_interrupt(interp, env, true);
     }
-    handle_interrupt(interp, env, true);
 }
 
 /// Whether a SIGINT awaits the main thread.
 pub(crate) fn interrupt_signal_pending() -> bool {
-    PENDING_INTERRUPT.load(std::sync::atomic::Ordering::Relaxed)
+    PENDING_INTERRUPTS.load(std::sync::atomic::Ordering::Relaxed) > 0
 }
 
 /// term.c's init_tty: the terminal's hooks, and add_keyboard_wait_descriptor
@@ -591,6 +595,23 @@ fn terminal_buffer_nonempty() -> bool {
 /// stored for the main thread, or a pending user signal's.
 fn special_events_pending(interp: &Interpreter) -> bool {
     !interp.pending_thread_events.is_empty() || super::user_signals_pending()
+}
+
+/// keyboard.c:requeued_events_pending_p: an event in
+/// `unread-command-events' (CONSP) or a non-nil
+/// `unread-post-input-method-events' or `unread-input-method-events'.
+pub(crate) fn requeued_events_pending_p(interp: &Interpreter, env: &Env) -> bool {
+    unread_command_events_pending(interp, env)
+        || [
+            cached_symbol!("unread-post-input-method-events"),
+            cached_symbol!("unread-input-method-events"),
+        ]
+        .into_iter()
+        .any(|list| {
+            interp
+                .lookup_var_key(list, env)
+                .is_some_and(|value| !value.is_nil())
+        })
 }
 
 /// CONSP (Vunread_command_events): any value but a cons holds no event.

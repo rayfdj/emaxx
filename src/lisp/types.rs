@@ -1102,6 +1102,15 @@ impl TerminalRef {
         self.state.borrow()
     }
 
+    pub(crate) fn try_borrow(
+        &self,
+    ) -> Result<
+        std::cell::Ref<'_, crate::lisp::eval::terminal::TerminalState>,
+        std::cell::BorrowError,
+    > {
+        self.state.try_borrow()
+    }
+
     pub(crate) fn borrow_mut(
         &self,
     ) -> std::cell::RefMut<'_, crate::lisp::eval::terminal::TerminalState> {

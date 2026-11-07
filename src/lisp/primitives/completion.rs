@@ -1493,6 +1493,8 @@ pub(crate) fn completing_read(
     }
 
     check_recursive_minibuffer(interp, env)?;
+    // completing-read-default's INHERIT-INPUT-METHOD, its eighth argument.
+    inherit_minibuffer_input_method(interp, env, args.get(7).is_some_and(Value::is_truthy));
     if executing_kbd_macro_p(interp, env) {
         crate::lisp::primitives::dispatch::prepare_kbd_macro_minibuffer_entry(interp, env)?;
     }
@@ -1500,6 +1502,25 @@ pub(crate) fn completing_read(
     run_active_minibuffer(interp, env, minibuffer, |interp, env| {
         completing_read_contents(interp, args, env)
     })
+}
+
+thread_local! {
+    /// read_minibuf's INPUT_METHOD: `current-input-method' of the buffer a
+    /// read inheriting the input method began in, for the next minibuffer
+    /// run to turn on.
+    static MINIBUFFER_INPUT_METHOD: std::cell::Cell<Option<Value>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// read_minibuf with INHERIT-INPUT-METHOD: `current-input-method' as the
+/// current buffer has it (it is buffer-local), remembered before the
+/// minibuffer is entered; nothing without INHERIT.
+pub(crate) fn inherit_minibuffer_input_method(interp: &Interpreter, env: &Env, inherit: bool) {
+    MINIBUFFER_INPUT_METHOD.set(inherit.then(|| {
+        interp
+            .lookup_var_key(cached_symbol!("current-input-method"), env)
+            .unwrap_or(Value::Nil)
+    }));
 }
 
 pub(crate) fn run_active_minibuffer<T>(
@@ -1511,6 +1532,7 @@ pub(crate) fn run_active_minibuffer<T>(
     // The recursive command loop leaves `this-command' and its companions
     // as its last command set them; call-interactively, not read_minibuf,
     // restores the outer command's once its arguments are read.
+    let input_method = MINIBUFFER_INPUT_METHOD.take();
     let result = (|| {
         // GNU minibuf.c:read_minibuf runs `minibuffer-setup-hook' with the
         // minibuffer already current (the next statement there is
@@ -1518,6 +1540,28 @@ pub(crate) fn run_active_minibuffer<T>(
         // minibuffer's buffer-local state, including the completion table.
         if interp.has_buffer_id(minibuffer.buffer_id) {
             interp.set_current_buffer_id(minibuffer.buffer_id)?;
+        }
+        // The input method of the buffer the read began in, when the
+        // reader inherits it (a string, and `activate-input-method'
+        // defined), is turned on in the minibuffer first.
+        if let Some(method) = input_method.filter(|method| method.is_string())
+            && super::call(
+                interp,
+                "fboundp",
+                &[Value::Symbol(
+                    cached_symbol!("activate-input-method").symbol(),
+                )],
+                env,
+            )?
+            .is_truthy()
+        {
+            // call1 (Qactivate_input_method, input_method): Lisp's own.
+            interp.call_function_value(
+                Value::Symbol(cached_symbol!("activate-input-method").symbol()),
+                Some("activate-input-method"),
+                &[method],
+                env,
+            )?;
         }
         run_hook(
             interp,
@@ -1556,6 +1600,57 @@ pub(crate) struct ActiveMinibuffer {
     saved_selected_window_id: u64,
     previous_minibuffer_selected_window_id: Option<u64>,
     previous_runtime: crate::lisp::eval::MinibufferRuntimeState,
+    /// Where this read's entries start in minibuf_save_list.
+    save_list_start: usize,
+}
+
+/// minibuf_save_list's entries for one read, in the order
+/// read_minibuf_unwind restores them: Fthis_command_keys_vector (the keys
+/// of the command that read), `help-form', `current-prefix-arg',
+/// `minibuffer-history-position', `minibuffer-history-variable' and
+/// `overriding-local-map'.  The prompt, its width and the windows are the
+/// minibuffer runtime's and the window state's.
+const MINIBUF_SAVE_VARIABLES: [&str; 5] = [
+    "help-form",
+    "current-prefix-arg",
+    "minibuffer-history-position",
+    "minibuffer-history-variable",
+    "overriding-local-map",
+];
+
+fn push_minibuf_save_list(interp: &mut Interpreter, env: &Env) -> usize {
+    let start = interp.keyboard_input.minibuf_save_list.len();
+    // Fthis_command_keys_vector, kept as a list of the same events.
+    let keys = Value::list(interp.keyboard_input.command_keys.iter().copied());
+    interp.keyboard_input.minibuf_save_list.push(keys);
+    for name in MINIBUF_SAVE_VARIABLES {
+        let value = interp
+            .lookup_var_key(crate::lisp::types::symbols::SymbolKey::new(name), env)
+            .unwrap_or(Value::Nil);
+        interp.keyboard_input.minibuf_save_list.push(value);
+    }
+    start
+}
+
+/// read_minibuf_unwind's "Restore prompt, etc, from outer minibuffer
+/// level": this-command-keys and the saved variables.
+fn pop_minibuf_save_list(interp: &mut Interpreter, start: usize, env: &mut Env) {
+    let list = &mut interp.keyboard_input.minibuf_save_list;
+    let saved = list.split_off(start.min(list.len()));
+    let mut saved = saved.into_iter();
+    if let Some(keys) = saved.next() {
+        interp.keyboard_input.command_keys = keys.to_vec().unwrap_or_default();
+    }
+    let roots: Vec<Value> = saved.collect();
+    interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
+        for (name, value) in MINIBUF_SAVE_VARIABLES.into_iter().zip(roots.iter()) {
+            interp.set_variable_key(
+                crate::lisp::types::symbols::SymbolKey::new(name),
+                *value,
+                env,
+            );
+        }
+    });
 }
 
 fn activate_completing_read_minibuffer(
@@ -1800,6 +1895,21 @@ pub(crate) fn activate_minibuffer(
         }
     }
 
+    // read_minibuf arranges to restore a number of minibuffer-related
+    // variables (minibuf_save_list), then starts changing them: `help-form'
+    // is `minibuffer-help-form' for the read.
+    let save_list_start = push_minibuf_save_list(interp, env);
+    let help_form = interp
+        .lookup_var_key(
+            crate::lisp::types::symbols::SymbolKey::new("minibuffer-help-form"),
+            env,
+        )
+        .unwrap_or(Value::Nil);
+    interp.set_variable_key(
+        crate::lisp::types::symbols::SymbolKey::new("help-form"),
+        help_form,
+        env,
+    );
     let previous_runtime =
         interp.begin_minibuffer_runtime(buffer_id, interp.selected_window_id(), prompt_string.text);
 
@@ -1810,6 +1920,7 @@ pub(crate) fn activate_minibuffer(
         saved_selected_window_id,
         previous_minibuffer_selected_window_id,
         previous_runtime,
+        save_list_start,
     };
     // GNU minibuf.c:read_minibuf has already selected/activated the
     // minibuffer when clear_message runs, but has not installed its map.
@@ -2139,6 +2250,8 @@ fn read_minibuf_unwind(interp: &mut Interpreter, state: ActiveMinibuffer, env: &
     let expired = interp.has_buffer_id(state.buffer_id)
         && interp.set_current_buffer_id(state.buffer_id).is_ok();
     interp.restore_minibuffer_runtime(state.previous_runtime);
+    // "Restore prompt, etc, from outer minibuffer level".
+    pop_minibuf_save_list(interp, state.save_list_start, env);
     if expired {
         let _ = erase_expired_minibuffer(interp, env);
         if interp
@@ -2682,28 +2795,34 @@ pub(crate) fn interactive_minibuffer_command_loop(
     env: &mut Env,
     history_spec: &Value,
 ) -> Result<String, LispError> {
-    // C's read_minibuf seeds the buffer-local history bookkeeping that
-    // simple.el's history commands read.
+    // read_minibuf's Vminibuffer_history_variable and
+    // Vminibuffer_history_position, which simple.el's history commands
+    // read: HIST's car and cdr (a bare HIST the variable), nil being
+    // `minibuffer-history' and 0.  minibuf_save_list restores them.
     let buffer_id = interp.current_buffer_id();
-    let history_variable = match history_spec.kind() {
-        Kind::Nil => Value::Symbol("minibuffer-history".into()),
-        Kind::Cons(_) => history_spec.car().unwrap_or(Value::Nil),
-        other => other.value(),
+    let (history_variable, history_position) = match history_spec.cons_values() {
+        Some((variable, position)) => (variable, position),
+        None => (*history_spec, Value::Nil),
     };
-    let history_position = history_spec
-        .cdr()
-        .ok()
-        .and_then(|position| position.integer_value())
-        .unwrap_or(0);
-    interp.set_buffer_local_value_key(
-        buffer_id,
+    let history_variable = if history_variable.is_nil() {
+        Value::symbol("minibuffer-history")
+    } else {
+        history_variable
+    };
+    let history_position = if history_position.is_nil() {
+        Value::Integer(0)
+    } else {
+        history_position
+    };
+    interp.set_variable_key(
         cached_symbol!("minibuffer-history-variable"),
         history_variable,
+        env,
     );
-    interp.set_buffer_local_value_key(
-        buffer_id,
+    interp.set_variable_key(
         cached_symbol!("minibuffer-history-position"),
-        Value::Integer(history_position),
+        history_position,
+        env,
     );
     if let Some(variable) = history_variable_name(history_spec) {
         ensure_history_variable_bound(interp, env, &variable);
@@ -2744,6 +2863,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
                 // completion help pop-up) reach the glass before the next
                 // key blocks.
                 crate::lisp::primitives::run_tty_frame_redraw(interp, env);
+                super::init_raw_keybuf_count(interp);
             }
             // read_key_sequence reads C-g as a key: the minibuffer's maps
             // bind it to `abort-minibuffers'.
@@ -2779,7 +2899,9 @@ pub(crate) fn interactive_minibuffer_command_loop(
                     )
                     .map_err(LispError::into_kind)
                     {
-                        Ok(()) => {}
+                        // command_loop_1 after the command: no
+                        // this-command-keys.
+                        Ok(()) => super::clear_command_keys(interp),
                         Err(LispErrorKind::Throw(tag, value))
                             if crate::lisp::types::eq_symbol_named(tag, "exit") =>
                         {
@@ -2893,6 +3015,7 @@ fn drive_interactive_minibuffer(
                 return Err(error);
             }
         };
+        crate::lisp::primitives::record_unrecorded_event(interp, &event, env);
         let Some(ch) = crate::lisp::primitives::translated_unread_event_char(&event) else {
             continue;
         };
@@ -2937,6 +3060,7 @@ fn drive_interactive_minibuffer(
                             return Err(error);
                         }
                     };
+                crate::lisp::primitives::record_unrecorded_event(interp, &follow, env);
                 let follow = crate::lisp::primitives::translated_unread_event_char(&follow);
                 if let Some(variable) = history_variable.as_deref() {
                     let entries = history_entries(interp, env, variable);
@@ -3045,6 +3169,7 @@ fn simulated_completing_read(
     let mut cursor = 0usize;
     let mut accepted = None;
     while let Ok(event) = crate::lisp::primitives::pop_unread_command_event_value(interp, env) {
+        crate::lisp::primitives::record_unrecorded_event(interp, &event, env);
         let Some(ch) = crate::lisp::primitives::translated_unread_event_char(&event) else {
             continue;
         };

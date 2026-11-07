@@ -309,6 +309,8 @@ pub(crate) use dispatch::native_elisp_load;
 #[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
 pub(crate) use dispatch::replace_buffer_in_windows_safely;
+#[cfg(test)]
+pub(crate) use dispatch::resolve_tty_face_attrs;
 pub(crate) use dispatch::set_window_buffer;
 pub(crate) use dispatch::unibyte_doc_string;
 pub(crate) use dispatch::{
@@ -317,12 +319,14 @@ pub(crate) use dispatch::{
     string_face_spans,
 };
 pub(crate) use dispatch::{
-    LineNumberLayout, LineNumberMode, ModeLineCells, TtyFaceAttrs, WindowRenderInfo,
-    adjust_frame_size, apply_staged_root_window_height, change_frame_size,
-    do_pending_window_change, frame_top_margin, render_window_header_line, render_window_mode_line,
-    render_window_tab_line, resolve_tty_face_attrs, run_window_change_functions,
-    store_window_hscroll_state, window_face_spans, window_hscroll_state, window_line_number_layout,
-    window_render_layout, window_text_area_columns, window_total_columns,
+    FACE_NO_UNDERLINE, FACE_TTY_DEFAULT_BG_COLOR, FACE_TTY_DEFAULT_COLOR,
+    FACE_TTY_DEFAULT_FG_COLOR, FACE_UNDERLINE_SINGLE, LineNumberLayout, LineNumberMode,
+    ModeLineCells, TtyFaceAttrs, WindowRenderInfo, adjust_frame_size,
+    apply_staged_root_window_height, change_frame_size, do_pending_window_change, frame_top_margin,
+    render_window_header_line, render_window_mode_line, render_window_tab_line,
+    resolve_tty_face_attrs_remapped, run_window_change_functions, store_window_hscroll_state,
+    window_face_spans, window_hscroll_state, window_line_number_layout, window_render_layout,
+    window_text_area_columns, window_total_columns,
 };
 pub use dispatch::{call, is_builtin};
 pub(crate) use dispatch::{call_with_facts, call_with_facts_arity_checked};

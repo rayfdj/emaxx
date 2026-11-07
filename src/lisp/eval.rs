@@ -1204,6 +1204,10 @@ pub(crate) struct KeyboardInputState {
     // `unread-command-events' (not as (t . EVENT)), so it joins
     // this-command-keys only as their first.  The consumer clears it.
     pub(crate) last_event_reread: bool,
+    // minibuf.c's minibuf_save_list, the values each active minibuffer
+    // read saved for read_minibuf_unwind to restore: MINIBUF_SAVE_SLOTS
+    // per level, the outermost first.
+    pub(crate) minibuf_save_list: Vec<Value>,
 }
 
 // One active `ert-with-message-capture` scope.  When the capture variable is
@@ -5674,6 +5678,7 @@ impl Interpreter {
             .iter()
             .chain(&self.keyboard_input.raw_keys)
             .chain(&self.keyboard_input.recent_keys)
+            .chain(&self.keyboard_input.minibuf_save_list)
         {
             mark(event);
         }
@@ -6172,6 +6177,9 @@ impl Interpreter {
             }
             for event in &mut clone.keyboard_input.recent_keys {
                 *event = c.copy(event);
+            }
+            for value in &mut clone.keyboard_input.minibuf_save_list {
+                *value = c.copy(value);
             }
             if let Some(frame) = &clone.keyboard_input.internal_last_event_frame {
                 clone.keyboard_input.internal_last_event_frame = Some(c.copy(frame));

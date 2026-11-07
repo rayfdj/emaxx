@@ -107,32 +107,11 @@ impl Corpus {
         locale: &str,
         input: &[(f64, &[u8])],
     ) -> Option<String> {
-        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::os::fd::AsRawFd;
         use std::os::unix::process::CommandExt;
         let out = self.directory.join(out);
         let _ = std::fs::remove_file(&out);
-        let mut master = -1;
-        let mut slave = -1;
-        let size = libc::winsize {
-            ws_row: 24,
-            ws_col: 80,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: the out-pointers are valid; NAME and TERMP may be null.
-        let opened = unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                &size,
-            )
-        };
-        assert_eq!(opened, 0, "openpty");
-        // SAFETY: openpty returned these descriptors open and ours.
-        let (master, slave) =
-            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        let (master, slave) = open_pty(24, 80);
         let slave_fd = slave.as_raw_fd();
         let mut command = Command::new(binary);
         command
@@ -229,30 +208,9 @@ impl Corpus {
         cols: u16,
         input: &[(f64, &[u8])],
     ) -> (String, Option<i32>) {
-        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::os::fd::AsRawFd;
         use std::os::unix::process::CommandExt;
-        let mut master = -1;
-        let mut slave = -1;
-        let size = libc::winsize {
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: the out-pointers are valid; NAME and TERMP may be null.
-        let opened = unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                &size,
-            )
-        };
-        assert_eq!(opened, 0, "openpty");
-        // SAFETY: openpty returned these descriptors open and ours.
-        let (master, slave) =
-            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        let (master, slave) = open_pty(rows, cols);
         let slave_fd = slave.as_raw_fd();
         let mut command = Command::new(binary);
         command
@@ -354,6 +312,52 @@ impl Drop for Corpus {
 /// from both outputs before they are compared: that difference is the
 /// evaluator's, not the command line's.  Which frame names are
 /// primitives, the oracle itself says.
+/// A pseudo-terminal of ROWS by COLS whose descriptors are close-on-exec
+/// from the moment they open (openpty's are not), so a child another test
+/// spawns meanwhile inherits neither: the atimer test reads which file a
+/// fresh editor's descriptor 3 names.
+fn open_pty(rows: u16, cols: u16) -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
+    use std::os::fd::FromRawFd;
+    // SAFETY: posix_openpt, grantpt, unlockpt and ptsname take the
+    // descriptor it returns; ptsname's static buffer is copied at once.
+    let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+    assert!(master >= 0, "posix_openpt");
+    // SAFETY: MASTER is open and ours.
+    let master = unsafe { std::os::fd::OwnedFd::from_raw_fd(master) };
+    use std::os::fd::AsRawFd;
+    // SAFETY: MASTER is a pty master.
+    assert_eq!(unsafe { libc::grantpt(master.as_raw_fd()) }, 0, "grantpt");
+    // SAFETY: as above.
+    assert_eq!(unsafe { libc::unlockpt(master.as_raw_fd()) }, 0, "unlockpt");
+    let mut name = [0 as libc::c_char; 128];
+    // SAFETY: NAME is writable for its length.
+    let named = unsafe { libc::ptsname_r(master.as_raw_fd(), name.as_mut_ptr(), name.len()) };
+    assert_eq!(named, 0, "ptsname_r");
+    // SAFETY: ptsname_r left NAME a terminated string.
+    let slave = unsafe {
+        libc::open(
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    assert!(slave >= 0, "open the pty slave");
+    // SAFETY: SLAVE is open and ours.
+    let slave = unsafe { std::os::fd::OwnedFd::from_raw_fd(slave) };
+    let size = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: SIZE is a valid winsize.
+    assert_eq!(
+        unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCSWINSZ, &size) },
+        0,
+        "TIOCSWINSZ"
+    );
+    (master, slave)
+}
+
 fn without_primitive_frames(texts: &mut [String]) {
     let names = texts
         .iter()
@@ -6283,6 +6287,129 @@ fn a_terminal_session_starts_only_where_init_display_does() {
     assert_same(&corpus, &args);
 }
 
+#[test]
+fn read_char_gives_the_input_method_what_keyboard_c_gives_it() {
+    // keyboard.c:read_char: `unread-post-input-method-events' first, not
+    // given to the input method again; `unread-command-events' and
+    // `unread-input-method-events' through `input-method-function' when
+    // PREV_EVENT is nil (a key sequence's first event, a `read-event'
+    // that inherits it), a character from SPC to 255 but DEL; no event
+    // back reads again.  Each list keeps events to spare: a read past
+    // them would wait on standard input in GNU too.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+ (setq input-method-function (lambda (c) (if (eq c ?a) (list ?X c) (if (eq c ?n) nil (list c)))))
+ (setq unread-command-events (list ?a ?b ?q ?q ?q))
+ (prin1 (list (read-key-sequence nil) unread-post-input-method-events (read-key-sequence nil) (read-key-sequence nil)))
+ (terpri)
+ (setq unread-command-events (list ?n ?c ?q))
+ (prin1 (read-key-sequence nil)) (terpri)
+ (setq unread-command-events nil unread-input-method-events (list ?a ?q ?q ?q) unread-post-input-method-events (list ?z))
+ (prin1 (list (read-key-sequence nil) (read-key-sequence nil) (read-key-sequence nil))) (terpri)
+ (setq unread-input-method-events nil unread-post-input-method-events nil unread-command-events (list ?a ?q))
+ (prin1 (list (read-event) unread-command-events unread-post-input-method-events)) (terpri)
+ (setq unread-post-input-method-events nil unread-command-events (list ?a ?q))
+ (prin1 (list (read-event nil t) (read-event))) (terpri)
+ (setq unread-post-input-method-events nil unread-command-events (list ?\s ?\C-a ?\x7f 200 ?q))
+ (prin1 (list (read-key-sequence nil) (read-key-sequence nil) (read-key-sequence nil) (read-key-sequence nil))) (terpri))"#,
+        ],
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_input_method_translates_what_read_char_reads() {
+    // keyboard.c:read_char gives a key sequence's first event (and a
+    // `read-event' that inherits the input method) to
+    // `input-method-function': quail's latin-1-prefix makes ' e an e with
+    // acute; the rest of what it returns comes back through
+    // `unread-post-input-method-events', not translated again.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "im.el",
+        r#"(defvar im-log nil)
+(defun im-read () (interactive)
+  (push (list 'inherit (read-event nil t)) im-log)
+  (push (list 'plain (read-event)) im-log))
+(defun im-done () (interactive)
+  (push (list 'buffer (buffer-substring-no-properties (point-min) (point-max))
+              current-input-method unread-post-input-method-events)
+        im-log)
+  (with-temp-file (expand-file-name "im.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse im-log))))
+  (kill-emacs 0))
+(global-set-key [f5] #'im-read)
+(global-set-key [f6] #'im-done)
+(switch-to-buffer "im")
+(set-input-method "latin-1-prefix")"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"'"),
+        (0.3, b"e"),
+        (0.3, b"a"),
+        (0.3, b"'"),
+        (0.3, b" "),
+        (0.3, b"\"o"),
+        (0.5, b"\x1b[15~"),
+        (0.5, b"'"),
+        (0.3, b"a"),
+        (0.3, b"'"),
+        (0.3, b"a"),
+        (0.5, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "im.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "im.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_minibuffer_read_and_a_macro_keep_what_the_command_loop_keeps() {
+    // minibuf.c's minibuf_save_list gives the reading command back its
+    // `current-prefix-arg' and this-command-keys when the read ends, and
+    // command_loop_1 and read_key_sequence_vs start each sequence's raw
+    // keys empty, so a keyboard macro whose last key begins a Quail
+    // translation ends instead of reading its previous keys again.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "mb.el",
+        r#"(defvar mb-log nil)
+(defun mb-read (s) (interactive (list (read-string "s: ")))
+  (push (list 'read s current-prefix-arg (this-command-keys-vector)) mb-log))
+(defun mb-macro () (interactive)
+  (execute-kbd-macro "ae")
+  (push (list 'macro (buffer-string) (this-single-command-raw-keys)) mb-log))
+(defun mb-done () (interactive)
+  (with-temp-file (expand-file-name "mb.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse mb-log))))
+  (kill-emacs 0))
+(global-set-key [f5] #'mb-read)
+(global-set-key [f6] #'mb-macro)
+(global-set-key [f7] #'mb-done)
+(switch-to-buffer "mb")
+(set-input-method "german-postfix")"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"\x15"),
+        (0.3, b"\x1b[15~"),
+        (0.3, b"ab"),
+        (0.3, b"\r"),
+        (0.5, b"\x1b[17~"),
+        (0.8, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "mb.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "mb.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_quit_reaches_emacs_alone_not_the_shell_it_runs_under() {
@@ -6327,6 +6454,7 @@ fn while_no_input_takes_the_key_that_ends_it() {
         r#"(defvar w-log nil)
 (defun w-1 () (interactive) (push (list 'timed (while-no-input (read-event nil nil 3) 'finished)) w-log))
 (defun w-2 () (interactive) (push (list 'read (while-no-input (list (read-event) 'after))) w-log))
+(defun w-3 () (interactive) (push (list 'key (while-no-input (read-key))) w-log))
 (defun w-done () (interactive)
   (push (list 'buffer (buffer-string)) w-log)
   (with-temp-file (expand-file-name "wni.out" command-line-default-directory)
@@ -6334,6 +6462,7 @@ fn while_no_input_takes_the_key_that_ends_it() {
   (kill-emacs 0))
 (global-set-key [f5] #'w-1)
 (global-set-key [f6] #'w-2)
+(global-set-key [f7] #'w-3)
 (global-set-key "Q" #'w-done)
 (switch-to-buffer "w")"#,
     );
@@ -6342,6 +6471,8 @@ fn while_no_input_takes_the_key_that_ends_it() {
         (0.5, b"d"),
         (1.0, b"\x1b[17~"),
         (0.5, b"e"),
+        (1.0, b"\x1b[18~"),
+        (0.5, b"f"),
         (1.0, b"Q"),
     ];
     let expected = corpus.run_tty(&oracle(), &probe, "wni.out", "C", &input);
@@ -6458,7 +6589,7 @@ fn a_small_terminal_s_frame_keeps_the_terminal_s_size() {
     );
     let args = ["-nw", "-Q", "-l", &probe];
     let out = corpus.directory.join("small.out");
-    for (rows, cols) in [(3, 3), (5, 24), (3, 80)] {
+    for (rows, cols) in [(3, 3), (24, 5), (5, 24), (3, 80), (24, 9)] {
         let _ = std::fs::remove_file(&out);
         let (_, expected_status) = corpus.run_pty(&oracle(), &args, Some("xterm"), rows, cols);
         let expected = std::fs::read_to_string(&out).ok();
@@ -6474,6 +6605,128 @@ fn a_small_terminal_s_frame_keeps_the_terminal_s_size() {
             "Emaxx (left) and GNU (right) differ at {rows}x{cols}"
         );
         assert_eq!(actual_status, expected_status, "at {rows}x{cols}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_terminal_supports_the_face_attributes_its_entry_and_nc_allow() {
+    // xfaces.c:tty_supports_face_attributes_p on a tty frame, whatever its
+    // colors: the attributes a tty never shows, a weight, slant,
+    // underline, inverse video or strike-through the default face lacks
+    // (term.c:tty_capable_p of the entry's strings and NC, a plain
+    // underline needing the styled one too), and colors near what they
+    // name, apart from the default's and from each other as their standard
+    // values are; under each `tty-color-mode'.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "supports.el",
+        r##"(defvar sup-attrs
+  '((:underline t) (:weight bold) (:inverse-video t) (:slant italic) (:foreground "red") (:weight light)
+    (:strike-through t) (:underline (:style wave)) (:underline (:style foo)) (:underline "red")
+    (:background "blue") (:foreground "red" :background "blue") (:weight bold :inverse-video t)
+    (:slant oblique) (:slant normal) (:weight normal) (:family "x") (:box t) (:overline t) (:height 2.0)
+    (:foreground "#ff0001") (:foreground "#123456") (:foreground "white") (:background "black")
+    (:foreground "nosuchcolor") (:weight semi-bold) (:weight ultra-light) (:inverse-video nil)
+    (:underline nil) (:foreground "red" :background "red") (:foreground "yellow" :background "white")
+    bold italic underline (:inherit bold) (:weight bold :underline t) (:foreground "unspecified-fg")))
+(defun sup-note (tag)
+  (list tag (tty-display-color-cells)
+        (mapcar (lambda (a) (if (display-supports-face-attributes-p a) 1 0)) sup-attrs)))
+(run-with-timer 1 nil
+  (lambda ()
+    (let ((r (list (sup-note 'start))))
+      (dolist (mode '(never 8 nil))
+        (set-frame-parameter nil 'tty-color-mode mode)
+        (redisplay t)
+        (push (sup-note mode) r))
+      (tty-no-underline)
+      (push (sup-note 'no-underline) r)
+      (with-temp-file (expand-file-name "supports.out" command-line-default-directory)
+        (insert (format "%S\n" (nreverse r)))))
+    (kill-emacs 0)))
+"##,
+    );
+    let args = ["-nw", "-Q", "-l", &probe];
+    let out = corpus.directory.join("supports.out");
+    for term in [
+        "vt100",
+        "xterm-256color",
+        "linux",
+        "cons25",
+        "screen",
+        "xterm",
+    ] {
+        let _ = std::fs::remove_file(&out);
+        let (_, expected_status) = corpus.run_pty(&oracle(), &args, Some(term), 24, 80);
+        let expected = std::fs::read_to_string(&out).ok();
+        let _ = std::fs::remove_file(&out);
+        let (_, actual_status) = corpus.run_pty(emaxx(), &args, Some(term), 24, 80);
+        let actual = std::fs::read_to_string(&out).ok();
+        assert!(
+            expected.is_some(),
+            "GNU's session wrote nothing under TERM={term}"
+        );
+        assert_eq!(
+            actual, expected,
+            "Emaxx (left) and GNU (right) differ under TERM={term}"
+        );
+        assert_eq!(actual_status, expected_status, "TERM={term}");
+    }
+}
+
+#[test]
+fn a_terminal_s_colors_are_its_terminfo_entry_s_and_its_color_mode_s() {
+    // init_tty takes the colors from the entry: none without op, else Co
+    // (or the 24-bit forms); `tty-color-mode' is set up by the redisplay
+    // that next shows the frame (set_tty_color_mode), `never' turning
+    // colors off, 8 the ANSI eight, nil the entry's again, each change
+    // recomputing the faces.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "colors.el",
+        r#"(run-with-timer 1 nil
+  (lambda ()
+    (let ((r (list (display-color-cells) (tty-display-color-p)
+                   (face-attribute 'font-lock-comment-face :foreground nil t))))
+      (dolist (mode '(never 8 ansi8 nil 256 always no))
+        (set-frame-parameter nil 'tty-color-mode mode)
+        (push (list mode (display-color-cells)) r)
+        (redisplay t)
+        (push (list mode (display-color-cells) (tty-display-color-p)
+                    (face-attribute 'font-lock-comment-face :foreground nil t))
+              r))
+      (with-temp-file (expand-file-name "colors.out" command-line-default-directory)
+        (insert (format "%S\n" (nreverse r)))))
+    (kill-emacs 0)))
+"#,
+    );
+    let args = ["-nw", "-Q", "-l", &probe];
+    let out = corpus.directory.join("colors.out");
+    for term in [
+        "xterm",
+        "xterm-256color",
+        "vt100",
+        "linux",
+        "screen",
+        "ansi",
+        "tmux-256color",
+    ] {
+        let _ = std::fs::remove_file(&out);
+        let (_, expected_status) = corpus.run_pty(&oracle(), &args, Some(term), 24, 80);
+        let expected = std::fs::read_to_string(&out).ok();
+        let _ = std::fs::remove_file(&out);
+        let (_, actual_status) = corpus.run_pty(emaxx(), &args, Some(term), 24, 80);
+        let actual = std::fs::read_to_string(&out).ok();
+        assert!(
+            expected.is_some(),
+            "GNU's session wrote nothing under TERM={term}"
+        );
+        assert_eq!(
+            actual, expected,
+            "Emaxx (left) and GNU (right) differ under TERM={term}"
+        );
+        assert_eq!(actual_status, expected_status, "TERM={term}");
     }
 }
 

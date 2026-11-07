@@ -25707,6 +25707,21 @@ fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
             r#"(("ab" [97 98] [97 98]) "" [])"#,
         ),
         (
+            // keyboard.c's Fset__this_command_keys: a raw byte is its
+            // byte, and only a first 248 is M-x.
+            r#"(list
+                (progn
+                  (set--this-command-keys "\M-xa\M-x")
+                  (list (this-command-keys-vector) (this-single-command-keys)))
+                (progn
+                  (set--this-command-keys (string-to-multibyte "\377b\370"))
+                  (this-command-keys-vector))
+                (condition-case error-data
+                    (set--this-command-keys 'a)
+                  (error error-data)))"#,
+            "(([134217848 97 248] [134217848 97 248]) [255 98 248] (wrong-type-argument stringp a))",
+        ),
+        (
             r#"(let ((unread-command-events '(97)))
                  (list
                   (read-key-sequence nil)

@@ -89,20 +89,6 @@ struct WindowView {
     deferred_mode_line_point: Option<usize>,
 }
 
-/// The terminal's color capability, GNU's terminfo Co# in miniature:
-/// xterm-family terminals answer 8 colors, 256-color variants 256, and
-/// anything unrecognizably dumb stays colorless.
-fn terminal_color_cells() -> i64 {
-    let term = std::env::var("TERM").unwrap_or_default();
-    if term.is_empty() || term == "dumb" {
-        0
-    } else if term.contains("256color") {
-        256
-    } else {
-        8
-    }
-}
-
 fn terminal_output() -> Box<dyn Write> {
     struct FailedOutput(io::Error);
     impl Write for FailedOutput {
@@ -122,14 +108,53 @@ type CellAttrs = crate::lisp::primitives::TtyFaceAttrs;
 /// keep the base's — GNU's face merging for spans drawn inside an
 /// already-faced area (the mode line's buffer name over the mode line).
 fn merge_cell_attrs(base: CellAttrs, over: CellAttrs) -> CellAttrs {
-    CellAttrs {
-        foreground: over.foreground.or(base.foreground),
-        background: over.background.or(base.background),
-        bold: base.bold || over.bold,
-        underline: base.underline || over.underline,
-        reverse: base.reverse || over.reverse,
-        extend: base.extend || over.extend,
-    }
+    CellAttrs::merged_over(&base, &over)
+}
+
+/// The `face-remapping-alist' a buffer's display realizes faces with
+/// (redisplay_window makes the window's buffer current, and
+/// lookup_named_face and lookup_basic_face consult it), and the printed
+/// form those faces are cached under apart from the frame's own: none
+/// (nil) for the echo area, the menu bar and the other frame parts.
+struct FaceRemapping {
+    alist: Value,
+    key: String,
+}
+
+fn face_remapping(interpreter: &Interpreter, buffer_id: Option<u64>) -> FaceRemapping {
+    let alist = buffer_id
+        .and_then(|id| {
+            interpreter
+                .buffer_local_value_key(id, cached_symbol!("face-remapping-alist"))
+                .or_else(|| interpreter.global_binding_value("face-remapping-alist"))
+        })
+        .unwrap_or(Value::Nil);
+    let key = if alist.is_nil() {
+        String::new()
+    } else {
+        format!("{alist}\u{1}")
+    };
+    FaceRemapping { alist, key }
+}
+
+/// FACE realized as REMAPPING has it, cached by face and remapping.
+fn realized_face(
+    cache: &mut std::collections::HashMap<String, CellAttrs>,
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    remapping: &FaceRemapping,
+    face: &Value,
+) -> CellAttrs {
+    *cache
+        .entry(format!("{}{face}", remapping.key))
+        .or_insert_with(|| {
+            crate::lisp::primitives::resolve_tty_face_attrs_remapped(
+                interpreter,
+                env,
+                face,
+                remapping.alist,
+            )
+        })
 }
 
 /// A padding glyph: a cell after the first of a wide character (term.c
@@ -328,7 +353,7 @@ impl PaintRow {
     /// turn_on_face emits no SGR color at all when
     /// `face_tty_specified_color' (dispextern.h) rejects the default
     /// sentinel.
-    fn force_foreground(&mut self, from: usize, to: usize, foreground: Option<u8>) {
+    fn force_foreground(&mut self, from: usize, to: usize, foreground: Option<i64>) {
         for at in from..to.min(self.attrs.len()) {
             self.attrs[at].foreground = foreground;
         }
@@ -362,6 +387,10 @@ struct TtyState {
     /// line deep.
     painted_rows: Vec<PaintRow>,
     painted_echo: Vec<PaintRow>,
+    /// The default face, `inverse-video' and
+    /// `tty-suppress-bold-inverse-default-colors' the rows were painted
+    /// with.
+    painted_faces: Option<(CellAttrs, bool, bool)>,
     /// `max-mini-window-height' as resolved at the last full redisplay,
     /// so the interpreter-less painter can grow the echo area too.
     echo_max_rows: usize,
@@ -432,6 +461,7 @@ impl TtyState {
             echo: String::new(),
             painted_rows: Vec::new(),
             painted_echo: Vec::new(),
+            painted_faces: None,
             echo_rows: 1,
             echo_max_rows: 6,
             painted_size: (0, 0),
@@ -504,7 +534,8 @@ fn run_owned(
     }
     // init_display_interactive: the initial frame on the terminal, given
     // its size at once, then the frame's faces.
-    interpreter.set_tty_display_colors(terminal_color_cells());
+    interpreter.set_tty_colors(termcap.colors.clone());
+    interpreter.set_tty_appearance(termcap.appearance.clone());
     interpreter.set_tty_terminal_type(Some(terminal_type));
     interpreter.set_tty_frame_size(termcap.width, termcap.height);
     batch::initialize_initial_frame_faces(&mut interpreter)?;
@@ -1215,22 +1246,26 @@ fn wrapped_echo_cursor(
     )
 }
 
-/// The mini window's height ceiling, GNU's `max-mini-window-height'
-/// (default 0.25 of the frame).
-fn max_mini_window_rows(interpreter: &Interpreter, rows: usize) -> usize {
-    match interpreter
+/// The mini window's height ceiling, resize_mini_window's max_height:
+/// `max-mini-window-height' of a float times FRAME_INNER_HEIGHT (the rows
+/// below the menu and tab bars, INNER_ROWS), of an integer that many
+/// lines, else a quarter of the inner height, clipped to between one
+/// line and the inner height; the window tree above keeps two rows of
+/// the frame's ROWS.
+fn max_mini_window_rows(interpreter: &Interpreter, inner_rows: usize, rows: usize) -> usize {
+    let max_height = match interpreter
         .lookup_var_key(
             cached_symbol!("max-mini-window-height"),
             &crate::lisp::types::Env::new(),
         )
         .map(|v| v.kind())
     {
-        Some(Kind::Integer(lines)) if lines > 0 => (lines as usize).min(rows.saturating_sub(2)),
-        Some(Kind::Float(fraction)) if fraction.get() > 0.0 => {
-            (((rows as f64) * fraction.get()) as usize).clamp(1, rows.saturating_sub(2))
-        }
-        _ => ((rows as f64 * 0.25) as usize).clamp(1, rows.saturating_sub(2)),
-    }
+        Some(Kind::Float(fraction)) => (fraction.get() * inner_rows as f64) as i64,
+        Some(Kind::Integer(lines)) => lines,
+        _ => (inner_rows / 4) as i64,
+    };
+    let max_height = max_height.clamp(1, (inner_rows as i64).max(1)) as usize;
+    max_height.min(rows.saturating_sub(2)).max(1)
 }
 
 /// Paint the echo area through the same character and face translation as
@@ -1332,6 +1367,7 @@ fn command_loop(
         select_command_loop_buffer(interpreter).map_err(|error| error.to_string())?;
         if reader.is_none() {
             crate::lisp::primitives::clear_this_command(interpreter, env);
+            crate::lisp::primitives::init_raw_keybuf_count(interpreter);
         }
         // GNU redisplays only when the input queue is quiet; a key burst
         // paints once at the end.
@@ -1401,18 +1437,37 @@ fn command_loop(
         };
         // Input arrived: the idle period is over (timer_stop_idle).
         crate::lisp::primitives::tty_note_idle_end();
-        // read_key_sequence after each read_char: a quit the read
-        // reported as the quit character is reported no more.
-        interpreter.set_c_variable("quit-flag", Value::Nil);
         shared_state.borrow_mut().note_input();
         // Typed mouse input becomes GNU's click event now that the frame
         // state is in reach; motion and wheel produce nothing.
         let Some(event) = event.into_lisp(interpreter) else {
             continue;
         };
-        // read_char's record_char: every event it returns is in the
-        // lossage.
-        crate::lisp::primitives::record_external_input_event(interpreter, &event, env);
+        // read_key_sequence after each read_char: a quit the read
+        // reported as the quit character is reported no more.  An event
+        // read_char gives the input method first keeps `quit-flag' for
+        // that step's funcall (KeySequenceReader::read_event clears it).
+        if !(reader.is_none()
+            && crate::lisp::primitives::input_method_takes(interpreter, &event, env))
+        {
+            interpreter.set_c_variable("quit-flag", Value::Nil);
+        }
+        // read_char's record_char of a keyboard event as it is read; one
+        // from the unread lists is recorded past the input method
+        // (KeySequenceReader::read_event).
+        if crate::lisp::primitives::last_event_source()
+            == crate::lisp::primitives::EventSource::Keyboard
+        {
+            crate::lisp::primitives::record_external_input_event(interpreter, &event, env);
+            // read_char keeps the echo area's message for an input method
+            // before wiping it, for every character an input method could
+            // take, whether or not this read gives it one.
+            if crate::lisp::primitives::input_method_takes(interpreter, &event, env) {
+                crate::lisp::primitives::save_input_method_previous_message(interpreter, env);
+            }
+        } else {
+            crate::lisp::primitives::count_read_event(interpreter);
+        }
         // read_char wipes a lingering message the moment any input event
         // arrives — sequences and silently-discarded button-downs
         // included; the glass catches up at the next redisplay.
@@ -1532,6 +1587,8 @@ fn command_loop(
         if let Some(termination) = interpreter.take_pending_termination() {
             return Ok(termination.exit_code);
         }
+        // command_loop_1 after the command: no this-command-keys.
+        crate::lisp::primitives::clear_command_keys(interpreter);
         // A prefix command (simple.el's universal-argument family) left
         // an accumulating prefix-arg behind: keep echoing the chain,
         // GNU's echo_keystrokes display of the pending prefix keys.
@@ -4506,6 +4563,11 @@ fn redraw_with_echo_policy(
     exact_echo: bool,
 ) -> io::Result<()> {
     state.activate_terminal(interpreter.selected_terminal_id());
+    // redisplay_internal: a frame the terminal did not show last is
+    // garbaged and its `tty-color-mode' set up; it paints with its
+    // terminal's colors.
+    interpreter.note_tty_frame_displayed(env);
+    set_paint_terminal(interpreter.selected_terminal_output());
     // What a fatal signal resets the terminal with follows its size and
     // `tty-mode-reset-strings' as of this update.
     crate::lisp::primitives::refresh_emergency_reset();
@@ -4541,7 +4603,7 @@ fn redraw_with_echo_policy(
         .clamp(0, (rows as i64 - 2).max(0)) as usize;
     // The mini window's height comes first: a tall message shrinks the
     // window tree above it (GNU's resize_mini_window, grow-only policy).
-    let max_mini = max_mini_window_rows(interpreter, rows);
+    let max_mini = max_mini_window_rows(interpreter, rows - menu_lines, rows);
     state.echo_max_rows = max_mini.max(1);
     let frontend_echo_early = state.echo.clone();
     let (echo_long, echo_from_minibuffer, echo_cursor) = compose_echo_row(
@@ -4643,6 +4705,41 @@ fn redraw_with_echo_policy(
         state.face_cache.clear();
         state.face_cache_generation = face_generation;
     }
+    // The frame's default face (realize_basic_faces's DEFAULT_FACE_ID, no
+    // buffer's remapping), which every glyph's face is merged over, and
+    // the variables turn_on_face and realize_tty_face read.  A window
+    // whose buffer remaps `default' has its text merged over that.
+    let frame_faces = face_remapping(interpreter, None);
+    let default_face = realized_face(
+        &mut state.face_cache,
+        interpreter,
+        env,
+        &frame_faces,
+        &Value::symbol("default"),
+    );
+    let inverse_video = interpreter
+        .lookup_var_key(cached_symbol!("inverse-video"), env)
+        .is_some_and(|value| value.is_truthy());
+    set_paint_faces(
+        default_face,
+        inverse_video,
+        interpreter.tty_suppress_bold_inverse_default_colors,
+    );
+    // free_realized_faces's clear_current_matrices: a face definition,
+    // `inverse-video' or the bold suppression changing has every row
+    // written again, the unchanged text in its new appearance.
+    let paint_faces = (
+        default_face,
+        inverse_video,
+        interpreter.tty_suppress_bold_inverse_default_colors,
+    );
+    if face_changed || state.painted_faces != Some(paint_faces) {
+        state.painted_faces = Some(paint_faces);
+        for row in &mut state.painted_rows {
+            *row = PaintRow::unpainted();
+        }
+        state.painted_echo = Vec::new();
+    }
 
     let mut layout = crate::lisp::primitives::window_render_layout(interpreter);
     // The Lisp window records assume a one-row echo area; when the mini
@@ -4690,16 +4787,13 @@ fn redraw_with_echo_policy(
     // GNU's tty vertical border draws in the vertical-border face (its
     // inherit chain reaches mode-line-inactive's reverse video).
     let divider_attrs = if layout.iter().any(|info| info.left + info.width < cols) {
-        *state
-            .face_cache
-            .entry("vertical-border".into())
-            .or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(
-                    interpreter,
-                    env,
-                    &Value::Symbol("vertical-border".into()),
-                )
-            })
+        realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &frame_faces,
+            &Value::symbol("vertical-border"),
+        )
     } else {
         CellAttrs::default()
     };
@@ -4789,6 +4883,9 @@ fn redraw_with_echo_policy(
         rows: Vec<(usize, usize, usize, usize)>,
     }
     let mut text_face_jobs: Vec<TextFaceJob> = Vec::new();
+    // Each window's text area (top, rows, left, width) and buffer, whose
+    // `default' remapping its glyphs' faces are merged over.
+    let mut window_default_jobs: Vec<(usize, usize, usize, usize, u64)> = Vec::new();
     // A window with `display-line-numbers' paints its number column
     // after the text lands, exactly like the face spans: resolving the
     // line-number faces evaluates Lisp.
@@ -4811,6 +4908,7 @@ fn redraw_with_echo_policy(
     // lives in an overlay before-string; the displayed payload and its
     // faces paint into the reserved margin rather than the text body.
     struct MarginStringJob {
+        buffer_id: u64,
         row: usize,
         left: usize,
         width: usize,
@@ -4846,6 +4944,7 @@ fn redraw_with_echo_policy(
         let header_rows = usize::from(has_header_line && info.height > 2 + tab_rows);
         let text_top = info.top + tab_rows + header_rows;
         let text_rows = info.height - 1 - tab_rows - header_rows;
+        window_default_jobs.push((text_top, text_rows, info.left, body_width, info.buffer_id));
         // `display-line-numbers': the column's width follows the
         // window's start line, which planning itself may move
         // (recentering); iterate until the width the plan was laid out
@@ -5167,6 +5266,7 @@ fn redraw_with_echo_policy(
                         continue;
                     };
                     margin_string_jobs.push(MarginStringJob {
+                        buffer_id: info.buffer_id,
                         row: text_top + row,
                         left: margin_left,
                         width: margin_width,
@@ -5227,6 +5327,7 @@ fn redraw_with_echo_policy(
                         continue;
                     }
                     margin_string_jobs.push(MarginStringJob {
+                        buffer_id: info.buffer_id,
                         row: text_top + row,
                         left: margin_left + offset,
                         width: margin_width - offset,
@@ -5386,6 +5487,7 @@ fn redraw_with_echo_policy(
         if job.start >= job.window_end {
             continue;
         }
+        let remapping = face_remapping(interpreter, Some(job.buffer_id));
         let spans = crate::lisp::primitives::window_face_spans(
             interpreter,
             env,
@@ -5397,30 +5499,18 @@ fn redraw_with_echo_policy(
         let resolved: Vec<(usize, usize, CellAttrs)> = spans
             .iter()
             .map(|(begin, end, face)| {
-                let key = format!("{face}");
-                let attrs = *state.face_cache.entry(key).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
-                });
+                let attrs =
+                    realized_face(&mut state.face_cache, interpreter, env, &remapping, face);
                 (*begin, *end, attrs)
             })
             .collect();
-        let glyphless_attrs = *state
-            .face_cache
-            .entry("glyphless-char".into())
-            .or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(
-                    interpreter,
-                    env,
-                    &Value::Symbol("glyphless-char".into()),
-                )
-            });
-        state.face_cache.entry("default".into()).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(
-                interpreter,
-                env,
-                &Value::Symbol("default".into()),
-            )
-        });
+        let glyphless_attrs = realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &remapping,
+            &Value::symbol("glyphless-char"),
+        );
         let mut display_face_jobs = Vec::new();
         let mut ellipsis_jobs = Vec::new();
         let buffer = if job.buffer_id == interpreter.current_buffer_id() {
@@ -5676,12 +5766,7 @@ fn redraw_with_echo_policy(
         }
         drop(buffer);
         for (row_index, from, to, face) in display_face_jobs {
-            let attrs = *state
-                .face_cache
-                .entry(format!("{face}"))
-                .or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-                });
+            let attrs = realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
             let row = &mut frame[row_index];
             if crate::lisp::types::eq_symbol_named(face, "default") {
                 row.replace_attrs(from, to, attrs);
@@ -5715,13 +5800,14 @@ fn redraw_with_echo_policy(
         // A margin string is a separate glyph object.  Its unpropertized
         // cells carry the default foreground, while an extending face from
         // the buffer row remains the background beneath it.
-        let default = *state.face_cache.entry("default".into()).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(
-                interpreter,
-                env,
-                &Value::Symbol("default".into()),
-            )
-        });
+        let remapping = face_remapping(interpreter, Some(job.buffer_id));
+        let default = realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &remapping,
+            &Value::symbol("default"),
+        );
         // The margin string is its own glyph object realized over the
         // default face: its cells take the default foreground (the
         // terminal's own default when the face leaves it unspecified —
@@ -5733,10 +5819,7 @@ fn redraw_with_echo_policy(
             default.foreground,
         );
         for (from, to, face) in crate::lisp::primitives::string_face_spans(&job.value) {
-            let key = format!("{face}");
-            let attrs = *state.face_cache.entry(key).or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-            });
+            let attrs = realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
             frame[job.row].overlay(
                 job.left + from.min(job.width),
                 job.left + to.min(job.width),
@@ -5753,14 +5836,15 @@ fn redraw_with_echo_policy(
     for job in &line_number_jobs {
         use crate::lisp::primitives::LineNumberMode as LnMode;
         let layout = job.layout;
+        let remapping = face_remapping(interpreter, Some(job.buffer_id));
         let mut resolve = |name: &str| -> CellAttrs {
-            *state.face_cache.entry(name.to_string()).or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(
-                    interpreter,
-                    env,
-                    &Value::Symbol(name.into()),
-                )
-            })
+            realized_face(
+                &mut state.face_cache,
+                interpreter,
+                env,
+                &remapping,
+                &Value::symbol(name),
+            )
         };
         let number_attrs = resolve("line-number");
         let current_attrs = resolve("line-number-current-line");
@@ -5936,20 +6020,41 @@ fn redraw_with_echo_policy(
         }
     }
 
+    // A window whose buffer remaps `default': every glyph of its text area
+    // (blank rows and margins included, extend_face_to_end_of_line's
+    // spaces) realized over that default instead of the frame's.
+    for (top, rows, left, width, buffer_id) in window_default_jobs {
+        let remapping = face_remapping(interpreter, Some(buffer_id));
+        if remapping.alist.is_nil() {
+            continue;
+        }
+        let window_default = realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &remapping,
+            &Value::symbol("default"),
+        );
+        if window_default == default_face {
+            continue;
+        }
+        for row in frame.iter_mut().skip(top).take(rows) {
+            let end = (left + width).min(row.attrs.len());
+            for attrs in &mut row.attrs[left.min(end)..end] {
+                *attrs = merge_cell_attrs(window_default, *attrs);
+            }
+        }
+    }
+
     // Mode lines: each window's real `mode-line-format', rendered by the
     // interpreter's engine in that window's context and painted in the
     // realized mode-line face.
     // CURRENT_MODE_LINE_ACTIVE_FACE_ID: `mode-line-active' for the
     // selected window (and the window a selected minibuffer was entered
     // from), `mode-line-inactive' for the others.
-    let mut mode_line_face = |name: &str| {
-        *state.face_cache.entry(name.into()).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &Value::symbol(name))
-        })
-    };
-    let mode_line_active_attrs = mode_line_face("mode-line-active");
-    let mode_line_inactive_attrs = mode_line_face("mode-line-inactive");
+    // Each face as the window's buffer remaps it (lookup_basic_face).
     for job in &mode_line_jobs {
+        let remapping = face_remapping(interpreter, Some(job.buffer_id));
         let measure = ModeLineMeasure {
             buffer_id: job.buffer_id,
             window_id: job.window_id,
@@ -5993,19 +6098,22 @@ fn redraw_with_echo_policy(
         if cells > job.body_width {
             (mode_line, shown) = take_cells_padded(&mode_line, job.body_width, '-');
         }
-        let mode_line_attrs = if job.active {
-            mode_line_active_attrs
-        } else {
-            mode_line_inactive_attrs
-        };
+        let mode_line_attrs = realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &remapping,
+            &Value::symbol(if job.active {
+                "mode-line-active"
+            } else {
+                "mode-line-inactive"
+            }),
+        );
         frame[job.row].blit(job.left, &mode_line, mode_line_attrs);
         // The renderer's face spans (the buffer name's mode-line-buffer-id)
         // layer over the base mode-line face, clipped to the body.
         for (from, to, face) in spans {
-            let key = format!("{face}");
-            let attrs = *state.face_cache.entry(key).or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-            });
+            let attrs = realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
             let from = job.left + from.min(shown);
             let to = job.left + to.min(shown);
             frame[job.row].overlay(from, to, attrs);
@@ -6016,17 +6124,15 @@ fn redraw_with_echo_policy(
     // package can install an evaluated per-buffer format here without
     // enabling the global tab-bar UI (Flycheck's grouping controls do so).
     if !tab_line_jobs.is_empty() {
-        let tab_attrs = *state
-            .face_cache
-            .entry("tab-line".into())
-            .or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(
-                    interpreter,
-                    env,
-                    &Value::Symbol("tab-line".into()),
-                )
-            });
         for job in &tab_line_jobs {
+            let remapping = face_remapping(interpreter, Some(job.buffer_id));
+            let tab_attrs = realized_face(
+                &mut state.face_cache,
+                interpreter,
+                env,
+                &remapping,
+                &Value::symbol("tab-line"),
+            );
             let measure = ModeLineMeasure {
                 buffer_id: job.buffer_id,
                 window_id: job.window_id,
@@ -6059,10 +6165,8 @@ fn redraw_with_echo_policy(
             ));
             frame[job.row].blit(job.left, &padded, tab_attrs);
             for (from, to, face) in spans {
-                let key = format!("{face}");
-                let attrs = *state.face_cache.entry(key).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-                });
+                let attrs =
+                    realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
                 let from = job.left + from.min(shown);
                 let to = job.left + to.min(shown);
                 frame[job.row].overlay(from, to, attrs);
@@ -6074,17 +6178,15 @@ fn redraw_with_echo_policy(
     // `header-line' face, padded with spaces to the body (GNU's
     // display_mode_line for the header row).
     if !header_line_jobs.is_empty() {
-        let header_attrs = *state
-            .face_cache
-            .entry("header-line".into())
-            .or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(
-                    interpreter,
-                    env,
-                    &Value::Symbol("header-line".into()),
-                )
-            });
         for job in &header_line_jobs {
+            let remapping = face_remapping(interpreter, Some(job.buffer_id));
+            let header_attrs = realized_face(
+                &mut state.face_cache,
+                interpreter,
+                env,
+                &remapping,
+                &Value::symbol("header-line"),
+            );
             let measure = ModeLineMeasure {
                 buffer_id: job.buffer_id,
                 window_id: job.window_id,
@@ -6125,10 +6227,8 @@ fn redraw_with_echo_policy(
             ));
             frame[job.row].blit(job.left, &padded, header_attrs);
             for (from, to, face) in spans {
-                let key = format!("{face}");
-                let attrs = *state.face_cache.entry(key).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-                });
+                let attrs =
+                    realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
                 let from = job.left + from.min(shown);
                 let to = job.left + to.min(shown);
                 frame[job.row].overlay(from, to, attrs);
@@ -6171,13 +6271,13 @@ fn redraw_with_echo_policy(
             }
             state.menu_bar_row = Some((cache_key, text));
         }
-        let menu_attrs = *state.face_cache.entry("menu".into()).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(
-                interpreter,
-                env,
-                &Value::Symbol("menu".into()),
-            )
-        });
+        let menu_attrs = realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &frame_faces,
+            &Value::symbol("menu"),
+        );
         let text = state
             .menu_bar_row
             .as_ref()
@@ -6461,6 +6561,8 @@ fn compose_echo_row(
         let mut chars = text.chars();
         let mut cursor = None;
         let mut overlay_cursor = None;
+        // The minibuffer's faces as its buffer remaps them.
+        let remapping = face_remapping(interpreter, Some(buffer_id));
         let splice = |row: &mut PaintRow,
                       col: &mut usize,
                       string: &OverlayString,
@@ -6471,17 +6573,11 @@ fn compose_echo_row(
             row.blit(start, &string.text, CellAttrs::default());
             *col += string.text.chars().count();
             for face in &string.base_faces {
-                let key = format!("{face}");
-                let attrs = *face_cache.entry(key).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
-                });
+                let attrs = realized_face(face_cache, interpreter, env, &remapping, face);
                 row.overlay(start.min(cols), (*col).min(cols), attrs);
             }
             for (from, to, face) in &string.spans {
-                let key = format!("{face}");
-                let attrs = *face_cache.entry(key).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
-                });
+                let attrs = realized_face(face_cache, interpreter, env, &remapping, face);
                 row.overlay((start + from).min(cols), (start + to).min(cols), attrs);
             }
             string.cursor.map(|offset| start + offset)
@@ -6534,10 +6630,7 @@ fn compose_echo_row(
             }
         }
         for (from, to, face) in &face_spans {
-            let key = format!("{face}");
-            let attrs = *face_cache.entry(key).or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
-            });
+            let attrs = realized_face(face_cache, interpreter, env, &remapping, face);
             for position in *from..*to {
                 if let Some(&col) = column_of.get(&position) {
                     row.overlay(col.min(cols), (col + 1).min(cols), attrs);
@@ -6566,11 +6659,10 @@ fn compose_echo_row(
     let cols = echo.chars().count();
     row = PaintRow::blank(cols);
     row.blit(0, &echo, CellAttrs::default());
+    // An echo area message: the frame's faces.
+    let frame_faces = face_remapping(interpreter, None);
     for (from, to, face) in spans {
-        let key = format!("{face}");
-        let attrs = *face_cache.entry(key).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-        });
+        let attrs = realized_face(face_cache, interpreter, env, &frame_faces, &face);
         row.overlay(from.min(cols), to.min(cols), attrs);
     }
     let (row, cursor) = translate_echo_paint(
@@ -6595,6 +6687,9 @@ fn translate_echo_paint(
     face_cache: &mut std::collections::HashMap<String, CellAttrs>,
 ) -> (PaintRow, Option<usize>) {
     let text: String = source.text.iter().collect();
+    // The minibuffer's remapping; an echo area message's (BUFFER_ID 0)
+    // is the frame's.
+    let remapping = face_remapping(interpreter, (buffer_id != 0).then_some(buffer_id));
     let display =
         CharacterDisplayContext::new(interpreter, buffer_id, interpreter.minibuffer_window_id())
             .translate(&text);
@@ -6617,9 +6712,7 @@ fn translate_echo_paint(
             .into_iter()
             .map(|(from, to)| (from, to, Value::symbol("glyphless-char"))),
     ) {
-        let attrs = *face_cache.entry(format!("{face}")).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-        });
+        let attrs = realized_face(face_cache, interpreter, env, &remapping, &face);
         row.overlay(cell_of(from).min(cols), cell_of(to).min(cols), attrs);
     }
     (row, cursor)
@@ -6639,45 +6732,269 @@ fn tty_string_cursor_position(value: &Value) -> Option<usize> {
     })
 }
 
-/// The SGR sequence selecting ATTRS from a reset state.
-fn sgr_sequence(attrs: &CellAttrs) -> String {
-    // term.c selects colors through the opposite foreground/background
-    // capability while standout is active.  Once both colors are concrete,
-    // that is the same terminal state as swapping them without retaining the
-    // reverse flag; GNU's Magit highlight is a visible example.  A face with
-    // either terminal-default color still needs actual reverse video.
-    let (foreground, background, reverse) =
-        match (attrs.foreground, attrs.background, attrs.reverse) {
-            (Some(foreground), Some(background), true) => {
-                (Some(background), Some(foreground), false)
+thread_local! {
+    /// The terminal being painted (its tty_display_info's output side),
+    /// set by each redisplay; none where no terminal is (a test's rows).
+    static PAINT_TERMINAL: std::cell::RefCell<Option<PaintTerminal>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A terminal's color support and appearance strings, the frame's
+/// default face (the realized face of the glyphs no face names),
+/// `inverse-video' and `tty-suppress-bold-inverse-default-colors', with
+/// tparam's output for each string and argument it has sent.
+struct PaintTerminal {
+    colors: crate::lisp::eval::terminal::TtyColors,
+    appearance: crate::lisp::eval::terminal::TtyAppearance,
+    default_face: CellAttrs,
+    inverse_video: bool,
+    suppress_bold_inverse_default_colors: bool,
+    sent: std::collections::HashMap<(Vec<u8>, i64), Vec<u8>>,
+}
+
+impl PaintTerminal {
+    fn new(
+        colors: crate::lisp::eval::terminal::TtyColors,
+        appearance: crate::lisp::eval::terminal::TtyAppearance,
+    ) -> Self {
+        Self {
+            colors,
+            appearance,
+            default_face: CellAttrs::default(),
+            inverse_video: false,
+            suppress_bold_inverse_default_colors: false,
+            sent: std::collections::HashMap::new(),
+        }
+    }
+
+    /// tparam (STRING, ARG) as emacs_tputs sends it.
+    fn tparam(&mut self, string: &[u8], arg: i64) -> Vec<u8> {
+        self.sent
+            .entry((string.to_vec(), arg))
+            .or_insert_with(|| {
+                crate::lisp::eval::terminal::tputs(&crate::lisp::eval::terminal::tparam(
+                    string, arg,
+                ))
+            })
+            .clone()
+    }
+}
+
+/// Paint with the selected terminal's COLORS and APPEARANCE (none: no
+/// terminal, a test's rows), keeping what was sent while they stay.
+fn set_paint_terminal(
+    terminal: Option<(
+        crate::lisp::eval::terminal::TtyColors,
+        crate::lisp::eval::terminal::TtyAppearance,
+    )>,
+) {
+    PAINT_TERMINAL.with_borrow_mut(|paint| match (paint.as_mut(), terminal) {
+        (Some(paint), Some((colors, appearance)))
+            if paint.colors == colors && paint.appearance == appearance => {}
+        (_, terminal) => {
+            *paint = terminal.map(|(colors, appearance)| PaintTerminal::new(colors, appearance));
+        }
+    });
+}
+
+/// The frame's realized default face, `inverse-video' and
+/// `tty-suppress-bold-inverse-default-colors' for this redisplay.
+fn set_paint_faces(default_face: CellAttrs, inverse_video: bool, suppress_bold: bool) {
+    PAINT_TERMINAL.with_borrow_mut(|paint| {
+        if let Some(paint) = paint.as_mut() {
+            paint.default_face = default_face;
+            paint.inverse_video = inverse_video;
+            paint.suppress_bold_inverse_default_colors = suppress_bold;
+        }
+    });
+}
+
+/// realize_tty_face's face for a glyph of ATTRS: its attributes over the
+/// default face's (the merge lookup_face starts from), the colors
+/// swapped for inverse video (realize_tty_face's swap; a tty's colors are
+/// never defaulted), and bold left off inverse default colors when
+/// `tty-suppress-bold-inverse-default-colors' says so.
+fn realize_cell_face(
+    attrs: &CellAttrs,
+    default: &CellAttrs,
+    suppress_bold_inverse_default_colors: bool,
+) -> CellAttrs {
+    use crate::lisp::primitives::{
+        FACE_TTY_DEFAULT_BG_COLOR as DEFAULT_BG, FACE_TTY_DEFAULT_FG_COLOR as DEFAULT_FG,
+    };
+    // The attributes merged over the default face's (an attribute the
+    // glyph's face turns off is off), the colors filled in with the
+    // terminal's defaults, `:extend' the glyph's own.
+    let merged = CellAttrs::merged_over(default, attrs);
+    let mut face = CellAttrs {
+        foreground: Some(merged.foreground.unwrap_or(DEFAULT_FG)),
+        background: Some(merged.background.unwrap_or(DEFAULT_BG)),
+        extend: attrs.extend,
+        off: 0,
+        ..merged
+    };
+    if face.reverse {
+        std::mem::swap(&mut face.foreground, &mut face.background);
+    }
+    if suppress_bold_inverse_default_colors
+        && face.bold
+        && face.background == Some(DEFAULT_FG)
+        && face.foreground == Some(DEFAULT_BG)
+    {
+        face.bold = false;
+    }
+    face
+}
+
+/// emacs_tputs of STRING where there is one (OUTPUT_IF).
+fn output_if(out: &mut Vec<u8>, string: Option<&Vec<u8>>) {
+    if let Some(string) = string {
+        out.extend(crate::lisp::eval::terminal::tputs(string));
+    }
+}
+
+/// term.c's tty_turn_on_highlight and tty_turn_off_highlight: standout
+/// entered or left, STANDOUT its tty->standout_mode.
+fn turn_on_highlight(out: &mut Vec<u8>, paint: &PaintTerminal, standout: &mut bool) {
+    if !*standout {
+        output_if(out, paint.appearance.standout_mode.as_ref());
+    }
+    *standout = true;
+}
+
+fn turn_off_highlight(out: &mut Vec<u8>, paint: &PaintTerminal, standout: &mut bool) {
+    if *standout {
+        output_if(out, paint.appearance.end_standout_mode.as_ref());
+    }
+    *standout = false;
+}
+
+/// term.c's output around a run of glyphs of realized FACE in
+/// tty_write_glyphs: tty_highlight_if_desired and turn_on_face before
+/// the text (standout toggled for the default colors the other way round
+/// from `inverse-video', then bold, italic or else dim, the underline or
+/// its style, strike-through, each where NC allows it with colors, and
+/// the colors through the terminal's strings, the two swapped while
+/// standout is on), turn_off_face and tty_turn_off_highlight after it
+/// (me for an appearance, else ue, and op for a color of the face's own).
+fn face_run_output(
+    face: &CellAttrs,
+    paint: &mut PaintTerminal,
+    standout: &mut bool,
+) -> (Vec<u8>, Vec<u8>) {
+    use crate::lisp::eval::terminal::{
+        NC_BOLD, NC_ITALIC, NC_REVERSE, NC_STRIKE_THROUGH, NC_UNDERLINE,
+    };
+    use crate::lisp::primitives::{
+        FACE_NO_UNDERLINE, FACE_TTY_DEFAULT_BG_COLOR as DEFAULT_BG,
+        FACE_TTY_DEFAULT_COLOR as DEFAULT, FACE_TTY_DEFAULT_FG_COLOR as DEFAULT_FG,
+        FACE_UNDERLINE_SINGLE,
+    };
+    let fg = face.foreground.unwrap_or(DEFAULT_FG);
+    let bg = face.background.unwrap_or(DEFAULT_BG);
+    let mut on = Vec::new();
+    // tty_highlight_if_desired.
+    if paint.inverse_video {
+        turn_on_highlight(&mut on, paint, standout);
+    } else {
+        turn_off_highlight(&mut on, paint, standout);
+    }
+    let may_use = |paint: &PaintTerminal, attr: i64| paint.colors.may_use_with_colors(attr);
+    if may_use(paint, NC_REVERSE)
+        && if paint.inverse_video {
+            fg == DEFAULT_FG || bg == DEFAULT_BG
+        } else {
+            fg == DEFAULT_BG || bg == DEFAULT_FG
+        }
+    {
+        if *standout {
+            turn_off_highlight(&mut on, paint, standout);
+        } else {
+            turn_on_highlight(&mut on, paint, standout);
+        }
+    }
+    if face.bold && may_use(paint, NC_BOLD) {
+        output_if(&mut on, paint.appearance.enter_bold_mode.as_ref());
+    }
+    if face.italic && may_use(paint, NC_ITALIC) {
+        // Italics unavailable: dimmed text instead.
+        output_if(
+            &mut on,
+            paint
+                .appearance
+                .enter_italic_mode
+                .as_ref()
+                .or(paint.appearance.enter_dim_mode.as_ref()),
+        );
+    }
+    if face.underline != FACE_NO_UNDERLINE && may_use(paint, NC_UNDERLINE) {
+        match paint.appearance.set_underline_style.clone() {
+            Some(style) if face.underline != FACE_UNDERLINE_SINGLE => {
+                let sequence = paint.tparam(&style, i64::from(face.underline));
+                on.extend(sequence);
             }
-            _ => (attrs.foreground, attrs.background, attrs.reverse),
+            _ => output_if(&mut on, paint.appearance.enter_underline_mode.as_ref()),
+        }
+    }
+    if face.strike_through && may_use(paint, NC_STRIKE_THROUGH) {
+        output_if(&mut on, paint.appearance.enter_strike_through_mode.as_ref());
+    }
+    if paint.colors.max_colors > 0 {
+        let (for_fg, for_bg) = if *standout {
+            (
+                paint.colors.set_background.clone(),
+                paint.colors.set_foreground.clone(),
+            )
+        } else {
+            (
+                paint.colors.set_foreground.clone(),
+                paint.colors.set_background.clone(),
+            )
         };
-    let mut codes: Vec<String> = vec!["0".into()];
-    if attrs.bold {
-        codes.push("1".into());
+        // face_tty_specified_color: a pixel none of the default ones.
+        if fg >= 0
+            && let Some(string) = for_fg
+        {
+            let sequence = paint.tparam(&string, fg);
+            on.extend(sequence);
+        }
+        if bg >= 0
+            && let Some(string) = for_bg
+        {
+            let sequence = paint.tparam(&string, bg);
+            on.extend(sequence);
+        }
+        if face.underline_color != 0
+            && let Some(string) = paint.appearance.set_underline_color.clone()
+        {
+            let sequence = paint.tparam(&string, face.underline_color);
+            on.extend(sequence);
+        }
     }
-    if attrs.underline {
-        codes.push("4".into());
+    // turn_off_face.
+    let mut off = Vec::new();
+    if let Some(exit) = paint.appearance.exit_attribute_mode.clone() {
+        if face.bold
+            || face.italic
+            || face.reverse
+            || face.underline != FACE_NO_UNDERLINE
+            || face.strike_through
+        {
+            output_if(&mut off, Some(&exit));
+            if paint.appearance.end_standout_mode.as_ref() == Some(&exit) {
+                *standout = false;
+            }
+        }
+    } else if face.underline != FACE_NO_UNDERLINE {
+        output_if(&mut off, paint.appearance.exit_underline_mode.as_ref());
     }
-    if reverse {
-        codes.push("7".into());
+    if paint.colors.max_colors > 0
+        && ((fg != DEFAULT && fg != DEFAULT_FG) || (bg != DEFAULT && bg != DEFAULT_BG))
+    {
+        output_if(&mut off, paint.colors.orig_pair.as_ref());
     }
-    if let Some(fg) = foreground {
-        codes.push(if fg < 8 {
-            format!("{}", 30 + fg)
-        } else {
-            format!("38;5;{fg}")
-        });
-    }
-    if let Some(bg) = background {
-        codes.push(if bg < 8 {
-            format!("{}", 40 + bg)
-        } else {
-            format!("48;5;{bg}")
-        });
-    }
-    format!("\x1b[{}m", codes.join(";"))
+    turn_off_highlight(&mut off, paint, standout);
+    (on, off)
 }
 
 /// term.c encode_terminal_code: a glyph the output coding (the
@@ -6722,15 +7039,29 @@ fn encode_terminal_cells(interpreter: &Interpreter, rows: &mut [PaintRow]) {
 /// cells print inside one SGR selection, and trailing blank
 /// default-attribute cells are cleared, not printed.
 fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Result<()> {
-    queue!(
-        out,
-        cursor::MoveTo(0, row as u16),
-        terminal::Clear(terminal::ClearType::CurrentLine),
-    )?;
+    queue!(out, cursor::MoveTo(0, row as u16))?;
     let cols = rendered.text.len();
     let default_attrs = CellAttrs::default();
+    // tty->standout_mode across the row's runs.
+    let mut standout = false;
+    // update_frame_line's write_spaces_p: a default face whose background
+    // is not the terminal's (colored_spaces_p) has the row's trailing
+    // default-face spaces written; otherwise they are left to
+    // clear_end_of_line.
+    let colored_spaces = PAINT_TERMINAL.with_borrow(|paint| {
+        paint.as_ref().is_some_and(|paint| {
+            realize_cell_face(
+                &default_attrs,
+                &paint.default_face,
+                paint.suppress_bold_inverse_default_colors,
+            )
+            .background
+                != Some(crate::lisp::primitives::FACE_TTY_DEFAULT_BG_COLOR)
+        })
+    });
     let mut end = cols;
-    while end > 0
+    while !colored_spaces
+        && end > 0
         && rendered.text[end - 1] == ' '
         && rendered.attrs[end - 1] == default_attrs
         && !rendered.marks.iter().any(|(cell, _)| *cell == end - 1)
@@ -6758,17 +7089,50 @@ fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Resul
                 text.push(*mark);
             }
         }
-        if attrs == default_attrs {
-            queue!(out, style::Print(&text))?;
-        } else {
-            queue!(
-                out,
-                style::Print(sgr_sequence(&attrs)),
-                style::Print(&text),
-                style::Print("\x1b[0m"),
-            )?;
+        // tty_write_glyphs's run: the face's appearances on, the text,
+        // the appearances off.
+        let around = PAINT_TERMINAL.with_borrow_mut(|paint| {
+            paint.as_mut().map(|paint| {
+                let face = realize_cell_face(
+                    &attrs,
+                    &paint.default_face,
+                    paint.suppress_bold_inverse_default_colors,
+                );
+                face_run_output(&face, paint, &mut standout)
+            })
+        });
+        match around {
+            Some((on, off)) => {
+                out.write_all(&on)?;
+                queue!(out, style::Print(&text))?;
+                out.write_all(&off)?;
+            }
+            None => queue!(out, style::Print(&text))?,
         }
         at = run_end;
+    }
+    if end < cols {
+        // tty_clear_end_of_line: tty_background_highlight (standout under
+        // `inverse-video', so the cleared cells are reversed too), the
+        // terminal's clear to end of line, and the highlight off again.
+        let (on, off) = PAINT_TERMINAL
+            .with_borrow_mut(|paint| {
+                paint.as_mut().map(|paint| {
+                    let mut on = Vec::new();
+                    if paint.inverse_video {
+                        turn_on_highlight(&mut on, paint, &mut standout);
+                    } else {
+                        turn_off_highlight(&mut on, paint, &mut standout);
+                    }
+                    let mut off = Vec::new();
+                    turn_off_highlight(&mut off, paint, &mut standout);
+                    (on, off)
+                })
+            })
+            .unwrap_or_default();
+        out.write_all(&on)?;
+        queue!(out, terminal::Clear(terminal::ClearType::UntilNewLine))?;
+        out.write_all(&off)?;
     }
     Ok(())
 }
@@ -9109,39 +9473,245 @@ mod tests {
         }
     }
 
+    /// xterm-256color's color and appearance strings, as terminfo has them.
+    fn xterm_256color() -> PaintTerminal {
+        use crate::lisp::eval::terminal::{TtyAppearance, TtyColors};
+        let some = |bytes: &[u8]| Some(bytes.to_vec());
+        PaintTerminal::new(
+            TtyColors {
+                max_colors: 256,
+                orig_pair: some(b"\x1b[39;49m"),
+                set_foreground: some(
+                    b"\x1b[%?%p1%{8}%<%t3%p1%d%e%p1%{16}%<%t9%p1%{8}%-%d%e38;5;%p1%d%;m",
+                ),
+                set_background: some(
+                    b"\x1b[%?%p1%{8}%<%t4%p1%d%e%p1%{16}%<%t10%p1%{8}%-%d%e48;5;%p1%d%;m",
+                ),
+                no_color_video: 0,
+            },
+            TtyAppearance {
+                standout_mode: some(b"\x1b[7m"),
+                end_standout_mode: some(b"\x1b[27m"),
+                enter_underline_mode: some(b"\x1b[4m"),
+                exit_underline_mode: some(b"\x1b[24m"),
+                enter_bold_mode: some(b"\x1b[1m"),
+                enter_dim_mode: some(b"\x1b[2m"),
+                enter_italic_mode: some(b"\x1b[3m"),
+                enter_strike_through_mode: some(b"\x1b[9m"),
+                exit_attribute_mode: some(b"\x1b(B\x1b[m"),
+                ..TtyAppearance::default()
+            },
+        )
+    }
+
+    /// The bytes around a run of ATTRS: realize_cell_face over PAINT's
+    /// default face, then face_run_output from standout off.
+    fn run_output(paint: &mut PaintTerminal, attrs: CellAttrs) -> (String, String) {
+        let face = realize_cell_face(&attrs, &paint.default_face, false);
+        let mut standout = false;
+        let (on, off) = face_run_output(&face, paint, &mut standout);
+        assert!(!standout, "each run ends with standout off");
+        (
+            String::from_utf8(on).expect("ASCII"),
+            String::from_utf8(off).expect("ASCII"),
+        )
+    }
+
     #[test]
-    fn sgr_sequences_reset_then_select_each_attribute() {
-        assert_eq!(sgr_sequence(&CellAttrs::default()), "\x1b[0m");
+    fn a_run_s_appearances_are_turn_on_face_s_and_turn_off_face_s() {
+        use crate::lisp::primitives::{
+            FACE_TTY_DEFAULT_BG_COLOR as DEFAULT_BG, FACE_TTY_DEFAULT_FG_COLOR as DEFAULT_FG,
+        };
+        let mut xterm = xterm_256color();
+        let mut run = |attrs: CellAttrs| run_output(&mut xterm, attrs);
         assert_eq!(
-            sgr_sequence(&CellAttrs {
-                foreground: Some(6),
-                background: Some(5),
-                ..CellAttrs::default()
-            }),
-            "\x1b[0;36;45m",
-            "the base ANSI palette uses the 30/40 ranges"
+            run(CellAttrs::default()),
+            (String::new(), String::new()),
+            "the default face's default colors send nothing"
         );
         assert_eq!(
-            sgr_sequence(&CellAttrs {
-                foreground: Some(250),
-                background: Some(238),
+            run(CellAttrs {
+                foreground: Some(1),
+                background: Some(9),
                 bold: true,
-                underline: true,
-                reverse: true,
-                extend: false,
+                ..CellAttrs::default()
             }),
-            "\x1b[0;1;4;38;5;238;48;5;250m",
-            "concrete inverse colors swap through the 38;5/48;5 channels"
+            (
+                "\x1b[1m\x1b[31m\x1b[101m".into(),
+                "\x1b(B\x1b[m\x1b[39;49m".into()
+            ),
+            "md, then setaf and setab by tparam; me and op after"
         );
         assert_eq!(
-            sgr_sequence(&CellAttrs {
-                foreground: Some(6),
+            run(CellAttrs {
                 reverse: true,
                 ..CellAttrs::default()
             }),
-            "\x1b[0;7;36m",
-            "inverse remains active while either color is terminal-default"
+            ("\x1b[7m".into(), "\x1b(B\x1b[m\x1b[39;49m\x1b[27m".into()),
+            "inverse default colors are standout, which se ends"
         );
+        assert_eq!(
+            run(CellAttrs {
+                foreground: Some(1),
+                reverse: true,
+                ..CellAttrs::default()
+            }),
+            (
+                "\x1b[7m\x1b[31m".into(),
+                "\x1b(B\x1b[m\x1b[39;49m\x1b[27m".into()
+            ),
+            "under standout the swapped background goes out as a foreground"
+        );
+        assert_eq!(
+            run(CellAttrs {
+                italic: true,
+                strike_through: true,
+                underline: crate::lisp::primitives::FACE_UNDERLINE_SINGLE,
+                ..CellAttrs::default()
+            }),
+            ("\x1b[3m\x1b[4m\x1b[9m".into(), "\x1b(B\x1b[m".into())
+        );
+        // -rv: the default face's colors are each other's sentinels, so
+        // every run of it, and of a face over it, is standout.
+        xterm.default_face = CellAttrs {
+            foreground: Some(DEFAULT_BG),
+            background: Some(DEFAULT_FG),
+            ..CellAttrs::default()
+        };
+        assert_eq!(
+            run_output(&mut xterm, CellAttrs::default()),
+            ("\x1b[7m".into(), "\x1b[39;49m\x1b[27m".into())
+        );
+        assert_eq!(
+            run_output(
+                &mut xterm,
+                CellAttrs {
+                    bold: true,
+                    ..CellAttrs::default()
+                }
+            ),
+            (
+                "\x1b[7m\x1b[1m".into(),
+                "\x1b(B\x1b[m\x1b[39;49m\x1b[27m".into()
+            )
+        );
+    }
+
+    #[test]
+    fn a_terminal_s_strings_and_nc_decide_what_goes_out() {
+        use crate::lisp::eval::terminal::{NC_BOLD, NC_REVERSE, NC_UNDERLINE};
+        // NC_REVERSE (cons25's): no standout with colors, so an inverse
+        // face's swapped color goes out as the background.
+        let mut cons25 = xterm_256color();
+        cons25.colors.no_color_video = NC_REVERSE;
+        assert_eq!(
+            run_output(
+                &mut cons25,
+                CellAttrs {
+                    foreground: Some(1),
+                    reverse: true,
+                    ..CellAttrs::default()
+                }
+            ),
+            ("\x1b[41m".into(), "\x1b(B\x1b[m\x1b[39;49m".into())
+        );
+        // No italic string: dim instead; NC underline left off.
+        let mut console = xterm_256color();
+        console.appearance.enter_italic_mode = None;
+        console.colors.no_color_video = NC_UNDERLINE;
+        assert_eq!(
+            run_output(
+                &mut console,
+                CellAttrs {
+                    italic: true,
+                    underline: crate::lisp::primitives::FACE_UNDERLINE_SINGLE,
+                    ..CellAttrs::default()
+                }
+            ),
+            ("\x1b[2m".into(), "\x1b(B\x1b[m".into())
+        );
+        // NC binds only where there are colors, and none are sent without
+        // them; tputs leaves a padding specification out.
+        let mut mono = xterm_256color();
+        mono.colors.max_colors = 0;
+        mono.colors.no_color_video = NC_BOLD;
+        mono.appearance.enter_bold_mode = Some(b"\x1b[1m$<2>".to_vec());
+        assert_eq!(
+            run_output(
+                &mut mono,
+                CellAttrs {
+                    foreground: Some(1),
+                    bold: true,
+                    ..CellAttrs::default()
+                }
+            ),
+            ("\x1b[1m".into(), "\x1b(B\x1b[m".into())
+        );
+        // Without me, only ue ends an appearance.
+        let mut no_me = xterm_256color();
+        no_me.appearance.exit_attribute_mode = None;
+        assert_eq!(
+            run_output(
+                &mut no_me,
+                CellAttrs {
+                    bold: true,
+                    underline: crate::lisp::primitives::FACE_UNDERLINE_SINGLE,
+                    ..CellAttrs::default()
+                }
+            ),
+            ("\x1b[1m\x1b[4m".into(), "\x1b[24m".into())
+        );
+        // A styled underline through Smulx; a 24-bit color through the
+        // xterm+direct strings.
+        let mut kitty = xterm_256color();
+        kitty.appearance.set_underline_style = Some(b"\x1b[4:%p1%dm".to_vec());
+        kitty.colors.max_colors = 16_777_216;
+        kitty.colors.set_foreground = Some(
+            b"\x1b[%?%p1%{8}%<%t3%p1%d%e38;2;%p1%{65536}%/%d;%p1%{256}%/%{255}%&%d;%p1%{255}%&%d%;m"
+                .to_vec(),
+        );
+        assert_eq!(
+            run_output(
+                &mut kitty,
+                CellAttrs {
+                    foreground: Some(0x12_34_56),
+                    underline: 3,
+                    ..CellAttrs::default()
+                }
+            ),
+            (
+                "\x1b[4:3m\x1b[38;2;18;52;86m".into(),
+                "\x1b(B\x1b[m\x1b[39;49m".into()
+            )
+        );
+    }
+
+    #[test]
+    fn color_modes_set_up_the_colors_as_tty_setup_colors() {
+        use crate::lisp::eval::terminal::TtyColors;
+        let entry = TtyColors {
+            max_colors: 256,
+            orig_pair: Some(b"\x1b[39;49m".to_vec()),
+            set_foreground: Some(b"F".to_vec()),
+            set_background: Some(b"B".to_vec()),
+            no_color_video: 3,
+        };
+        entry.save_default();
+        let mut colors = entry.clone();
+        colors.setup(-7);
+        assert_eq!(
+            colors,
+            TtyColors::default(),
+            "-1 and below: no colors at all"
+        );
+        colors.setup(8);
+        assert_eq!(colors.max_colors, 8);
+        assert_eq!(colors.set_foreground.as_deref(), Some(&b"\x1b[3%p1%dm"[..]));
+        assert_eq!(colors.orig_pair.as_deref(), Some(&b"\x1b[0m"[..]));
+        for mode in [0, 256, 16] {
+            colors.setup(mode);
+            assert_eq!(colors, entry, "mode {mode}: the capabilities init_tty saw");
+        }
     }
 
     #[test]
@@ -9160,7 +9730,7 @@ mod tests {
         let merged = merge_cell_attrs(base, over);
         assert_eq!(merged.foreground, Some(6), "the overlay's colors win");
         assert_eq!(merged.background, Some(4), "unspecified colors fall back");
-        assert!(merged.bold && merged.reverse && !merged.underline);
+        assert!(merged.bold && merged.reverse && merged.underline == 0);
     }
 
     #[test]
@@ -9794,13 +10364,14 @@ fn make_menu_executor(
             let (cols, rows) = (usize::from(cols.max(1)), usize::from(rows.max(1)));
             let mut resolve_face = |name: &str| {
                 let mut state = state.borrow_mut();
-                *state.face_cache.entry(name.into()).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(
-                        interpreter,
-                        env,
-                        &Value::Symbol(name.into()),
-                    )
-                })
+                // A tty menu's faces are the frame's.
+                realized_face(
+                    &mut state.face_cache,
+                    interpreter,
+                    env,
+                    &face_remapping(interpreter, None),
+                    &Value::symbol(name),
+                )
             };
             let disabled_attrs = resolve_face("tty-menu-disabled-face");
             let enabled_attrs = resolve_face("tty-menu-enabled-face");
@@ -9945,6 +10516,7 @@ fn make_menu_executor(
                     }
                     // One key sequence under the navigation map; prefixes keep
                     // reading, everything else maps per read_menu_input.
+                    crate::lisp::primitives::init_raw_keybuf_count(interpreter);
                     let mut reader = crate::lisp::primitives::KeySequenceReader::new(
                         interpreter,
                         Value::Nil,

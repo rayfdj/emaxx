@@ -743,6 +743,14 @@ pub(crate) fn clear_command_keys(interp: &mut Interpreter) {
     interp.keyboard_input.single_command_start = 0;
 }
 
+/// keyboard.c:init_raw_keybuf_count (`raw_keybuf_count = 0'), which
+/// command_loop_1, read_key_sequence_vs and read_menu_command do before
+/// read_key_sequence: this-single-command-raw-keys starts empty, even
+/// for a sequence that ends before reading a key.
+pub(crate) fn init_raw_keybuf_count(interp: &mut Interpreter) {
+    interp.keyboard_input.raw_keys.clear();
+}
+
 pub(crate) fn executing_kbd_macro_p(interp: &Interpreter, env: &Env) -> bool {
     interp
         .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
@@ -752,10 +760,31 @@ pub(crate) fn executing_kbd_macro_p(interp: &Interpreter, env: &Env) -> bool {
 /// keyboard.c:record_char for an event read_char got: the lossage
 /// (`recent-keys'), the input counts and the dribble file.
 pub(crate) fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &Env) {
+    count_read_event(interp);
+    READ_RECORDED.set(true);
+    record_char(interp, event, env);
+}
+
+/// read_char's `num_input_events++' for an event it returns, recorded or
+/// not.
+pub(crate) fn count_read_event(interp: &mut Interpreter) {
     interp.keyboard_input.num_input_events += 1;
-    if UNREAD_NO_RECORD.replace(false) {
-        return;
+}
+
+/// read_char past its input method step: an event taken from the unread
+/// lists or a macro, not recorded yet (`recorded' false), is recorded now
+/// as the input method left it (record_char); a keyboard event was
+/// recorded as it was read, and one from `unread-post-input-method-events'
+/// or a `(no-record . EVENT)' never is.
+pub(crate) fn record_unrecorded_event(interp: &mut Interpreter, event: &Value, env: &Env) {
+    if !READ_RECORDED.replace(true) {
+        record_char(interp, event, env);
     }
+}
+
+/// keyboard.c:record_char: EVENT into `recent-keys', the dribble file and
+/// the keyboard macro being defined; nothing while a macro executes.
+fn record_char(interp: &mut Interpreter, event: &Value, env: &Env) {
     if executing_kbd_macro_p(interp, env) {
         return;
     }
@@ -1975,6 +2004,13 @@ fn execute_command_binding_inner(
         LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
     ));
     if result.is_ok() {
+        // keyboard.c takes last-prefix-arg from current-prefix-arg after
+        // the command ran (command-execute moved prefix-arg there), before
+        // `post-command-hook'.
+        let last_prefix = interp
+            .lookup_var_key(cached_symbol!("current-prefix-arg"), env)
+            .unwrap_or(Value::Nil);
+        interp.set_variable_key(cached_symbol!("last-prefix-arg"), last_prefix, env);
         run_post_command_hooks(interp, env)?;
         // After post-command-hook GNU deactivates the mark when the command
         // asked for it (keyboard.c calls the real `deactivate-mark' so its
@@ -2050,10 +2086,12 @@ fn execute_command_binding_inner(
     // `last-command' nor `this-command' is touched (exit-minibuffer and
     // abort-minibuffers leave themselves in `this-command').
     result?;
+    // kset_last_command (current_kboard, Vthis_command): what the command
+    // left there, nil included (universal-argument's
+    // prefix-command-preserve-state puts back a nil `last-command').
     let last_command = interp
         .lookup_var_key(cached_symbol!("this-command"), env)
-        .filter(|command| !command.is_nil())
-        .unwrap_or(dispatched);
+        .unwrap_or(Value::Nil);
     interp.set_variable_key(cached_symbol!("last-command"), last_command, env);
     // keyboard.c:1585: real-last-command takes real-this-command after
     // the command ran (execute-extended-command sets real-this-command
@@ -2063,12 +2101,6 @@ fn execute_command_binding_inner(
         .lookup_var_key(cached_symbol!("real-this-command"), env)
         .unwrap_or(Value::Nil);
     interp.set_variable_key(cached_symbol!("real-last-command"), real_last, env);
-    // keyboard.c takes last-prefix-arg from current-prefix-arg after the
-    // command ran (command-execute moved prefix-arg there).
-    let last_prefix = interp
-        .lookup_var_key(cached_symbol!("current-prefix-arg"), env)
-        .unwrap_or(Value::Nil);
-    interp.set_variable_key(cached_symbol!("last-prefix-arg"), last_prefix, env);
     if interp
         .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
         .is_some_and(|value| value.is_truthy())
@@ -2353,12 +2385,12 @@ pub(crate) fn pop_pending_input_event_value(
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
     if let Some(event) = take_unread_command_event(interp, env) {
-        record_external_input_event(interp, &event, env);
+        count_read_event(interp);
         return Ok(Some(event));
     }
     run_pending_user_signal_events(interp, env)?;
     if let Some(event) = take_unread_command_event(interp, env) {
-        record_external_input_event(interp, &event, env);
+        count_read_event(interp);
         return Ok(Some(event));
     }
     // GNU's input readers consume the executing keyboard macro's
@@ -2380,15 +2412,14 @@ pub(crate) fn pop_unread_command_event_value(
 
 /// read_char under read_key_sequence: handle_interrupt's longjmp makes
 /// read_char return C-g as an event, and read_key_sequence clears
-/// `quit-flag' after each key it reads, so C-g is looked up like any key
-/// (`keyboard-quit', the minibuffer's `abort-minibuffers').
+/// `quit-flag' after each key it reads (KeySequenceReader::read_event,
+/// once the input method has had the event), so C-g is looked up like any
+/// key (`keyboard-quit', the minibuffer's `abort-minibuffers').
 pub(crate) fn read_key_sequence_event(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let event = read_command_event(interp, env, true)?;
-    interp.set_c_variable("quit-flag", Value::Nil);
-    Ok(event)
+    read_command_event(interp, env, true)
 }
 
 fn read_command_event(
@@ -2413,6 +2444,7 @@ fn read_command_event(
             Some(event) if event != Value::Integer(7) || quit_char_is_event => {
                 interp.keyboard_input.last_event_reread = false;
                 record_external_input_event(interp, &event, env);
+                note_input_method_previous_message(interp, &event, env);
                 Ok(event)
             }
             _ => Err(LispError::SignalValue(Value::list([Value::symbol("quit")]))),
@@ -2423,7 +2455,7 @@ fn read_command_event(
         // kbd_buffer_get_event: `unread-command-events' before the
         // keyboard buffer.
         if let Some(event) = take_unread_command_event(interp, env) {
-            record_external_input_event(interp, &event, env);
+            count_read_event(interp);
             return Ok(event);
         }
         if let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area, None) {
@@ -2432,6 +2464,7 @@ fn read_command_event(
                 Some(Some(event)) => {
                     interp.keyboard_input.last_event_reread = false;
                     record_external_input_event(interp, &event, env);
+                    note_input_method_previous_message(interp, &event, env);
                     return Ok(event);
                 }
                 Some(None) => {}
@@ -2900,16 +2933,70 @@ pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> us
     minors + usize::from(overriding)
 }
 
-/// Pop the first `unread-command-events' entry, unwrapping GNU's
-/// `(t . EVENT)' requeued-event form — read_char's front of the input
-/// stream, consulted before the terminal.
+/// read_char's events before the keyboard, in its order:
+/// `unread-post-input-method-events' (the rest of what an input method
+/// returned, not given to it again), `unread-command-events', then
+/// `unread-input-method-events', each reread; the source is noted (the
+/// keyboard's when none is there).  A one-element list (EVENT) from the
+/// input-method lists is EVENT (read_char_x_menu_prompt's unread keys).
 pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
+    let pop = |interp: &mut Interpreter,
+               env: &mut Env,
+               list: crate::lisp::types::symbols::SymbolKey| {
+        let (event, tail) = interp.lookup_var_key(list, env)?.cons_values()?;
+        interp.with_lisp_stack_roots(&event, |interp| {
+            interp.set_variable_key(list, tail, env);
+        });
+        Some(match event.cons_values() {
+            Some((head, rest))
+                if rest.is_nil() && matches!(head.kind(), Kind::Symbol(_) | Kind::Integer(_)) =>
+            {
+                head
+            }
+            _ => event,
+        })
+    };
+    // Each read starts with no previous echo area message kept.
+    PREVIOUS_ECHO_AREA_MESSAGE.set(None);
+    // read_char's `recorded' starts false at each read: a post-input-method
+    // event goes past recording (reread_first), a `(no-record . EVENT)'
+    // counts as recorded, the others are recorded after the input method.
+    if let Some(event) = pop(
+        interp,
+        env,
+        cached_symbol!("unread-post-input-method-events"),
+    ) {
+        interp.keyboard_input.last_event_reread = true;
+        note_event_source(EventSource::PostInputMethod);
+        READ_RECORDED.set(true);
+        return Some(event);
+    }
+    if let Some((event, no_record)) = take_from_unread_command_events(interp, env) {
+        note_event_source(EventSource::Unread);
+        READ_RECORDED.set(no_record);
+        return Some(event);
+    }
+    if let Some(event) = pop(interp, env, cached_symbol!("unread-input-method-events")) {
+        interp.keyboard_input.last_event_reread = true;
+        note_event_source(EventSource::Unread);
+        READ_RECORDED.set(false);
+        return Some(event);
+    }
+    note_event_source(EventSource::Keyboard);
+    None
+}
+
+/// Pop the first `unread-command-events' entry, unwrapping GNU's
+/// `(t . EVENT)' requeued-event form.
+fn take_from_unread_command_events(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Option<(Value, bool)> {
     let event = pop_unread_event_cell(interp, env)?;
-    UNREAD_NO_RECORD.set(false);
     match event.kind() {
         Kind::Cons(_) if matches!(event.car().map(|v| v.kind()), Ok(Kind::T)) => {
             interp.keyboard_input.last_event_reread = false;
-            event.cdr_if_list()
+            event.cdr_if_list().map(|event| (event, false))
         }
         // (no-record . EVENT): EVENT, reread and not recorded again.
         Kind::Cons(_)
@@ -2918,21 +3005,235 @@ pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env)
                 .is_ok_and(|head| crate::lisp::types::eq(head, Value::symbol("no-record"))) =>
         {
             interp.keyboard_input.last_event_reread = true;
-            UNREAD_NO_RECORD.set(true);
-            event.cdr_if_list()
+            event.cdr_if_list().map(|event| (event, true))
         }
         _ => {
             interp.keyboard_input.last_event_reread = true;
-            Some(event)
+            Some((event, false))
         }
     }
 }
 
 thread_local! {
-    /// read_char's `recorded' for the event just taken from
-    /// `unread-command-events' as (no-record . EVENT): record_char is not
-    /// to see it.
-    static UNREAD_NO_RECORD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// read_char's `recorded' for the event read last: false for one
+    /// taken from the unread lists or a macro until it is recorded past
+    /// the input method step (record_unrecorded_event).
+    static READ_RECORDED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// An event taken from the executing keyboard macro: recorded past the
+/// input method step, as an unread one is (record_char then records
+/// nothing while the macro executes).
+pub(crate) fn note_macro_event_read() {
+    READ_RECORDED.set(false);
+}
+
+/// read_char's PREV_EVENT, as its input method step sees it: nil with a
+/// keymap (a key sequence's first event), or nil with none (a
+/// `read-event' that inherits the input method, `input-method-use-echo-area'
+/// then t for the call).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum InputMethodRead {
+    KeySequence,
+    NoKeymap,
+}
+
+/// Where read_char took the event it is handing out: the keyboard,
+/// `unread-command-events' or `unread-input-method-events',
+/// `unread-post-input-method-events' (which the input method does not
+/// see again), or a keyboard macro.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum EventSource {
+    Keyboard,
+    Unread,
+    PostInputMethod,
+    Macro,
+}
+
+thread_local! {
+    static LAST_EVENT_SOURCE: std::cell::Cell<EventSource> =
+        const { std::cell::Cell::new(EventSource::Keyboard) };
+}
+
+/// The source of the event read last.
+pub(crate) fn last_event_source() -> EventSource {
+    LAST_EVENT_SOURCE.get()
+}
+
+pub(crate) fn note_event_source(source: EventSource) {
+    LAST_EVENT_SOURCE.set(source);
+}
+
+/// read_char's input method step for the event read last, read with
+/// PREV_EVENT nil as READ: none for an event from
+/// `unread-post-input-method-events'.
+pub(crate) fn input_method_for_last_event(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    c: Value,
+    read: InputMethodRead,
+) -> Result<Option<Value>, LispError> {
+    match last_event_source() {
+        EventSource::PostInputMethod => Ok(Some(c)),
+        source => {
+            let reread = interp.keyboard_input.last_event_reread;
+            let result =
+                read_char_input_method(interp, env, c, read, source == EventSource::Keyboard);
+            interp.keyboard_input.last_event_reread = reread;
+            result
+        }
+    }
+}
+
+/// Whether read_char would give EVENT, the first of a key sequence, to
+/// the input method: a character from SPC to 255 but DEL, with a non-nil
+/// `input-method-function' (an event from `unread-post-input-method-events'
+/// excepted).
+pub(crate) fn input_method_takes(interp: &Interpreter, event: &Value, env: &Env) -> bool {
+    matches!(event.kind(), Kind::Integer(code) if (0x20..0x100).contains(&code) && code != 0x7f)
+        && last_event_source() != EventSource::PostInputMethod
+        && interp
+            .lookup_var_key(cached_symbol!("input-method-function"), env)
+            .is_some_and(|function| !function.is_nil())
+}
+
+thread_local! {
+    /// read_char's previous_echo_area_message, kept by a reader that wipes
+    /// the echo area before the input method step.
+    static PREVIOUS_ECHO_AREA_MESSAGE: std::cell::Cell<Option<Value>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// read_char's non_reread step for a keyboard event: a character an input
+/// method could take has the echo area's message kept as
+/// `input-method-previous-message' before the echo area is wiped.
+fn note_input_method_previous_message(interp: &mut Interpreter, event: &Value, env: &mut Env) {
+    if input_method_takes(interp, event, env) {
+        save_input_method_previous_message(interp, env);
+    }
+}
+
+/// read_char for a keyboard character the input method will have:
+/// `Fcurrent_message' as `input-method-previous-message' (and its
+/// previous_echo_area_message) before the echo area is wiped.
+pub(crate) fn save_input_method_previous_message(interp: &mut Interpreter, env: &mut Env) {
+    let message =
+        crate::lisp::primitives::dispatch::display::echo_area_message_value().unwrap_or(Value::Nil);
+    interp.set_variable_key(
+        cached_symbol!("input-method-previous-message"),
+        message,
+        env,
+    );
+    PREVIOUS_ECHO_AREA_MESSAGE.set(Some(message));
+}
+
+/// keyboard.c:read_char's input method step for C, read with PREV_EVENT
+/// nil as READ: a character from SPC to 255 but DEL goes to a non-nil
+/// `input-method-function'.  The echo and `this-command-keys' state are
+/// saved around the call and the echo area wiped first (the message
+/// shown, for a C FROM_KEYBOARD, kept as `input-method-previous-message'
+/// and shown again when no event comes back); its first event is the
+/// read's, the rest go before `unread-post-input-method-events'.  None
+/// when it returns none: read_char reads again.
+pub(crate) fn read_char_input_method(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    c: Value,
+    read: InputMethodRead,
+    from_keyboard: bool,
+) -> Result<Option<Value>, LispError> {
+    let Kind::Integer(code) = c.kind() else {
+        return Ok(Some(c));
+    };
+    if !(0x20..0x100).contains(&code) || code == 0x7f {
+        return Ok(Some(c));
+    }
+    let function = interp
+        .lookup_var_key(cached_symbol!("input-method-function"), env)
+        .unwrap_or(Value::Nil);
+    if function.is_nil() {
+        return Ok(Some(c));
+    }
+    // A keyboard character: the echo area's message before it is wiped
+    // (kept by the command loop, which wipes it as the event is read).
+    let previous_message = if from_keyboard {
+        match PREVIOUS_ECHO_AREA_MESSAGE.take() {
+            Some(message) => message,
+            None => {
+                let message = crate::lisp::primitives::dispatch::display::echo_area_message_value()
+                    .unwrap_or(Value::Nil);
+                interp.set_variable_key(
+                    cached_symbol!("input-method-previous-message"),
+                    message,
+                    env,
+                );
+                message
+            }
+        }
+    } else {
+        Value::Nil
+    };
+    // The echo status and this_command_keys, saved.
+    let saved_echo = PENDING_KEYSTROKE_ECHO.with_borrow(Clone::clone);
+    let saved_keys = std::mem::take(&mut interp.keyboard_input.command_keys);
+    let saved_start = std::mem::replace(&mut interp.keyboard_input.single_command_start, 0);
+    let call = (|| -> Result<Value, LispError> {
+        // Wipe the echo area.
+        if crate::lisp::primitives::dispatch::display::echo_area_message_value().is_some() {
+            crate::lisp::primitives::safe_run_hooks(
+                interp,
+                &cached_symbol!("echo-area-clear-hook").symbol(),
+                env,
+            )?;
+        }
+        crate::lisp::primitives::dispatch::display::clear_message(interp, env, true, false)?;
+        set_pending_keystroke_echo(None);
+        let count = interp.specpdl_index();
+        if read == InputMethodRead::NoKeymap {
+            interp.specbind_symbol(&"input-method-use-echo-area".into(), Value::T, env)?;
+        }
+        // read_char's `recorded' is its own: the reads the input method
+        // makes record their events without changing whether this read's
+        // event has been.
+        let recorded = READ_RECORDED.get();
+        let result = interp.call_function_value(function, None, &[c], env);
+        READ_RECORDED.set(recorded);
+        interp.unbind_to(count, env)?;
+        result
+    })();
+    // The echoing and this_command_keys state, restored.
+    interp.keyboard_input.command_keys = saved_keys;
+    interp.keyboard_input.single_command_start = saved_start;
+    set_pending_keystroke_echo(saved_echo);
+    let events = call?;
+    let Some((first, rest)) = events.cons_values() else {
+        // No event: the previous message back, if any.
+        if !previous_message.is_nil() {
+            crate::lisp::primitives::dispatch::display::message_with_string_nolog(
+                interp,
+                "%s",
+                previous_message,
+                env,
+            )?;
+        }
+        return Ok(None);
+    };
+    // nconc2 (XCDR (tem), Vunread_post_input_method_events).
+    if rest.is_cons() {
+        let post = interp
+            .lookup_var_key(cached_symbol!("unread-post-input-method-events"), env)
+            .unwrap_or(Value::Nil);
+        let mut last = rest;
+        while let Some((_, next)) = last.cons_values() {
+            if !next.is_cons() {
+                break;
+            }
+            last = next;
+        }
+        last.set_cdr(post)?;
+        interp.set_variable_key(cached_symbol!("unread-post-input-method-events"), rest, env);
+    }
+    Ok(Some(first))
 }
 
 /// keyboard.c:read_char's add_command_key for an event it returned: the
@@ -2990,6 +3291,7 @@ pub(crate) fn read_tty_event_with_timeout(
                 Some(Some(event)) => {
                     interp.keyboard_input.last_event_reread = false;
                     record_external_input_event(interp, &event, env);
+                    note_input_method_previous_message(interp, &event, env);
                     return Ok(Some(event));
                 }
                 Some(None) => {}
@@ -3241,6 +3543,13 @@ pub(crate) fn run_post_command_hooks(
 /// run after commands that exited nonlocally, then `last-command' and
 /// its companions from the command that ran last.
 pub(crate) fn command_loop_entry(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    // No prefix argument, `deactivate-mark' nil, not waiting for input,
+    // and this-command-keys empty.
+    interp.set_variable_key(cached_symbol!("prefix-arg"), Value::Nil, env);
+    interp.set_variable_key(cached_symbol!("last-prefix-arg"), Value::Nil, env);
+    interp.set_variable_key(cached_symbol!("deactivate-mark"), Value::Nil, env);
+    clear_waiting_for_input();
+    clear_command_keys(interp);
     run_post_command_hooks(interp, env)?;
     let this_command = interp
         .lookup_var_key(cached_symbol!("this-command"), env)

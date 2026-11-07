@@ -16650,6 +16650,155 @@ setup_process_coding_systems's check now refuses). A 13-form
   the eight exit and crash signals and the earlier rounds' keyboard
   probes gives GNU's results, but for the stack overflow and `read-key'
   inside `while-no-input' (read_char's input method), both recorded.
+- **Round 341: read_char's input method, and a terminal's colors and
+  faces as term.c and xfaces.c have them.** read_char now has its input
+  method step: a character from SPC to 255 but DEL that starts a key
+  sequence (PREV_EVENT nil), or that a `read-event' or `read-char'
+  inheriting the input method reads, goes to a non-nil
+  `input-method-function' with the echo and this-command-keys state
+  saved around the call, the message shown kept as
+  `input-method-previous-message' and the echo area wiped first; the
+  call's first event is the read's, the rest go before
+  `unread-post-input-method-events', and an empty result reads again.
+  The events before the keyboard come in read_char's order,
+  `unread-post-input-method-events' (not given to the input method
+  again), `unread-command-events', then `unread-input-method-events'.
+  Recording is read_char's own per read (its `recorded'): a keyboard
+  event is recorded as it is read, an unread, `(t . EVENT)',
+  input-method-list or macro event past the input method step as the
+  input method left it, a `(no-record . EVENT)' or post-input-method
+  event never, and nothing while a macro executes; `last-input-event' is
+  set and this-command-keys gets the event unless the read had an end
+  time. `read-key-sequence' binds `input-method-exit-on-first-char' and
+  `input-method-use-echo-area' to t outside the command loop, ends empty
+  at the end of an executing macro when nothing is requeued, and the
+  minibuffer reads with INHERIT-INPUT-METHOD turn the calling buffer's
+  input method on in the minibuffer before `minibuffer-setup-hook'; the
+  quit check after each key is past the input method, so
+  `while-no-input''s throw ends a `read-key' as GNU's does. A terminal's
+  colors are init_tty's: none without op, else AF and AB (or Sf and Sb)
+  through tparm with Co colors (u32 indices), the terminfo 24-bit forms
+  taking precedence (setf24 and setb24, the RGB flag, Tc or
+  COLORTERM=truecolor's xterm+direct strings), and NC;
+  tty_default_color_capabilities keeps them as the defaults, and
+  `tty-color-mode' takes effect when redisplay next shows the frame
+  (set_tty_color_mode from redisplay_internal's previous_frame check,
+  tty_setup_colors's -1, 8 and default sets, the faces recomputed by
+  `tty-set-up-initial-frame-faces'). A face is realized as
+  realize_tty_face does (map_tty_color's pixels, `tty-color-alist' then
+  load_color, with the FACE_TTY_DEFAULT_COLOR, _FG and _BG sentinels;
+  bold above medium's weight, italic for a slant not normal, the
+  underline's style and color, inverse and strike-through), merged over
+  the default face of what it shows (each window's faces realized with
+  its buffer's `face-remapping-alist', so a buffer's `default' remapping
+  colors its windows alone; the menu bar and the echo area have the
+  frame's), its colors swapped for inverse video, and painted as
+  tty_write_glyphs paints a run: tty_highlight_if_desired and
+  turn_on_face (standout toggled for default colors the wrong way round,
+  so `-rv' and an inverse face with default colors are standout; md, ZH
+  or else mh, us or Smulx's style, smxx, each where NC allows it with
+  colors; the colors through the entry's strings, swapped under
+  standout), then turn_off_face (me or ue, op for a color of the face's
+  own) and tty_turn_off_highlight, every string through the terminfo
+  library's tputs (its pad characters included), where Emaxx sent fixed
+  ANSI SGR codes. A default face with a background of its own has each
+  row's end and the blank rows written in it (update_frame_line's
+  colored_spaces_p), a line's end is cleared in standout under
+  `inverse-video' (tty_background_highlight), a face that turns an
+  attribute off turns the default face's off, and a change to a face,
+  `inverse-video' or the bold suppression repaints every row, as
+  `redraw-display' and `redraw-frame' do.
+  `display-supports-face-attributes-p' is
+  Fdisplay_supports_face_attributes_p over merge_face_ref and
+  tty_supports_face_attributes_p on any tty frame (it answered nil on a
+  terminal without colors): no family, foundry, stipple, height, width,
+  overline or box, a weight, slant, underline, inverse or strike-through
+  the default face lacks, colors near what they name and apart from the
+  default's (TTY_SAME_COLOR_THRESHOLD), then term.c's tty_capable_p of
+  the entry's so (with its us fallback), us, Smulx or Su, md, mh, ZH and
+  smxx against NC; `tty-no-underline' takes the terminal's us away.
+  command_loop_1's entry empties this-command-keys and clears the prefix
+  arguments and `deactivate-mark', and after each command empties
+  this-command-keys, `last-prefix-arg' set before `post-command-hook'
+  and `last-command' the `this-command' the command left;
+  this-single-command-raw-keys starts empty for each key sequence read,
+  and the end of a macro leaves this-command-keys holding what the
+  sequence read. read_minibuf saves this-command-keys, `help-form',
+  `current-prefix-arg', the history position and variable and
+  `overriding-local-map' (minibuf_save_list) and restores them when the
+  read ends, `help-form' being `minibuffer-help-form' and the history
+  variable and position global during the read. The mini window's
+  greatest height is `max-mini-window-height' of the frame's inner
+  height, as resize_mini_window takes it. `set--this-command-keys' is
+  keyboard.c's: the string's characters are the keys, an eight-bit raw
+  byte as that byte, and a first key of 248 is M-x (its kludge for
+  `execute-extended-command''s `\M-x'), the raw keys kept, where Emaxx
+  gave that M-x back as 57592. Two adversarial reviews checked the round
+  against GNU in a pseudo-terminal. The first found
+  `display-supports-face-attributes-p' answering from Emaxx's own table,
+  `-rv' painting nothing reversed, the read-key-sequence prompt not
+  echoed, the mini window's height taken from the whole frame, and P3s;
+  all fixed but the prompt's echo, which is round 342's keyboard echo.
+  The second, against the rebuilt binary, found 33 of the first review's
+  53 input-method and recording probes now matching GNU, the painting
+  byte-for-byte GNU's on eleven terminal types and custom entries, and
+  five P1s, all fixed: a minibuffer read inheriting the input method
+  called `activate-input-method' through the builtin dispatcher (now
+  through its function cell, minibuf.c's call1); a keyboard macro whose
+  last key starts a Quail translation looped forever,
+  `this-single-command-raw-keys' keeping the previous read's keys for a
+  sequence that ends at the macro's end (command_loop_1,
+  read_key_sequence_vs and read_menu_command now empty them first,
+  init_raw_keybuf_count); a buffer-local `default' remapping painted
+  every window, the menu bar and the echo area, the painter caching
+  faces realized in the current buffer frame-wide (each window's faces
+  are now realized with its buffer's `face-remapping-alist' and cached
+  apart, its text area merged over its own default, the frame parts with
+  the frame's faces); a default face with a background of its own
+  painted only text cells (update_frame_line's colored_spaces_p now
+  writes the row's trailing spaces, and tty_clear_end_of_line clears in
+  standout under `inverse-video'); and `current-prefix-arg' lost across
+  a minibuffer read (minibuf_save_list now saves and restores
+  `help-form', `current-prefix-arg', the history position and variable
+  and `overriding-local-map' with this-command-keys, on a stack the
+  collector marks, and `help-form' is `minibuffer-help-form' and the
+  history variable and position are set globally for the read). Its P2s
+  and P3s were fixed too: rows not repainted when a face definition,
+  `inverse-video' or the bold suppression changed (free_realized_faces's
+  clear_current_matrices) or after `redraw-display' and `redraw-frame'
+  (the frame is now garbaged); a read's `recorded' overwritten by the
+  input method's own reads; a face's `:weight normal', `:underline nil',
+  `:slant normal', `:strike-through nil' or `:inverse-video nil' not
+  turning the default face's attribute off (attributes merge as
+  specified or unspecified); padding left out where ncurses sends pad
+  characters (tputs is the library's); `input-method-previous-message'
+  set only when the input method ran (now for every character an input
+  method could take); the end of a macro inside a prefix emptying
+  this-command-keys; `last-prefix-arg' set after `post-command-hook';
+  and `last-command' falling back to the command when it left
+  `this-command' nil. Recorded: `recursive-edit' inside a command
+  reading only queued events, a tall message showing its first lines
+  rather than resize_mini_window's last, an F-key's `last-input-event',
+  Quail's `this-single-command-raw-keys', an extra `post-command-hook'
+  when a macro enters the minibuffer, and the region in a non-selected
+  window, the second terminal's redraw and escape echo, and tab-bar-mode
+  on a tty, all present before the round. Local validation: the grouped
+  gate's 3,513 library tests pass on the round's source, every group on
+  its first run, and with the last change (keyboard.c's
+  `set--this-command-keys') rebuilt, its 58 keyboard, command-keys and
+  minibuffer tests pass again; the integration targets (cli_parity's 92
+  included, cli's 30) and clippy with `--all-targets --all-features -D
+  warnings' pass. cli_parity's terminal sessions now open their
+  pseudo-terminal close-on-exec (posix_openpt, and the slave opened with
+  O_CLOEXEC), as openpty's descriptors leaked into the child another
+  test spawned meanwhile: the atimer test, which reads the file a fresh
+  editor's descriptor 3 names, found GNU's to be that session's
+  /dev/ptmx. A pty comparison with GNU of the reviews' 96 input-method,
+  recording, echo, macro and minibuffer probes gives GNU's results on
+  90; the six others are the recorded ones, `read-key-sequence''s prompt
+  and Quail's echo-area guidance (round 342's keyboard echo), an F-key's
+  `last-input-event' and Quail's raw keys, and help's description of a
+  key the input method translated, which reads those raw keys.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -19488,12 +19637,25 @@ ert-tests as a whole 26,307 ms against 27,211.
   (`suspended_bytecode_observes_live_constant_vector_mutation' found `(2
   t 0)'), and passed in every stage at its second attempt.
 
+**On `7eb0cb1`** (round 340): the frozen run (run 42392293359) passed at
+  its first attempt, 7,928 of 7,928 outcomes matching (GNU's own setup
+  64.4 s). Setup 78.3 s against 64.4 s (1.216), test bodies 301.4 s
+  against 266.1 s (1.133), in all 1.128, with a per-file setup median of
+  119 ms against 100. The widest body gaps are ert-tests (45,722 ms
+  against 38,082), tramp-tests (22,308 against 19,317), comp-tests
+  (17,506 against 15,203), eglot-tests (34,195 against 32,587),
+  semantic-utest-ia (3,987 against 2,471), mule-tests (3,302 against
+  2,003), package-tests (7,063 against 6,115) and process-tests (2,634
+  against 1,958). The full Rust gate (run 42392291090) passed in every
+  stage at its first attempt.
+
 **Findings recorded, not fixed:**
-- **The terminal session's remaining keyboard differences (round 340).**
-  The secondary terminals `make-terminal-frame' opens read their bytes
-  through Emaxx's own decoder into `unread-command-events', with no quit
-  character and no `throw-on-input', where GNU's tty_read_avail_input
-  stores them in the keyboard buffer as the controlling terminal's;
+- **The terminal session's remaining keyboard and display differences
+  (rounds 340-341).** The secondary terminals `make-terminal-frame'
+  opens read their bytes through Emaxx's own decoder into
+  `unread-command-events', with no quit character and no
+  `throw-on-input', where GNU's tty_read_avail_input stores them in the
+  keyboard buffer as the controlling terminal's;
   `set-output-flow-control' and `set-input-meta-mode' change only the
   controlling terminal's modes; and a SIGWINCH resizes only its frames.
   `suspend-emacs' with `cannot-suspend' stops the job where GNU's
@@ -19504,17 +19666,10 @@ ert-tests as a whole 26,307 ms against 27,211.
   already in the buffer, where GNU's keyboard buffer keeps arrival
   order. `suspend-tty' and `resume-tty' signal that every terminal is a
   non-text one ("Attempt to suspend a non-text terminal device"), and
-  `tty--output-buffer-size' that it is not a tty, as on the batch frame;
-  and the terminal's color count is a guess from TERM's name (8, 256 for
-  a name with 256color, none for dumb), its color and attribute escapes
-  ANSI's SGR codes, and the face capabilities
-  tty_supports_face_attributes_p tests an xterm's (bold, italic, inverse
-  and strike-through; not dim or underline), where init_tty takes Co#,
-  the 24-bit setf24/setb24, RGB, Tc and COLORTERM=truecolor, the entry's
-  AF and AB through tparm, and md, us, so, mr, mh, ZH, smxx and NC. A C
-  stack overflow (unbounded recursion with `max-lisp-eval-depth' raised)
-  kills Emaxx with signal 11 after resetting the terminal, where GNU's
-  handle_sigsegv sees the fault in the stack's guard region and
+  `tty--output-buffer-size' that it is not a tty, as on the batch frame.
+  A C stack overflow (unbounded recursion with `max-lisp-eval-depth'
+  raised) kills Emaxx with signal 11 after resetting the terminal, where
+  GNU's handle_sigsegv sees the fault in the stack's guard region and
   stack_overflow's siglongjmp returns to the top level ("Re-entering top
   level after C stack overflow"), Emacs still running; unwinding Rust
   frames from a signal handler is not sound, so Emaxx needs its own
@@ -19528,29 +19683,48 @@ ert-tests as a whole 26,307 ms against 27,211.
   handle_interrupt in the signal itself (the second, with `quit-flag'
   still set, the emergency escape); and a background thread runs
   process_pending_signals at each of its quit checks while an interrupt
-  waits for the main thread. read_char never calls
-  `input-method-function' nor takes `unread-input-method-events' and
-  `unread-post-input-method-events', so an input method's keys go in
-  unconverted (with `latin-1-prefix', ' e inserts "'e" where GNU inserts
-  "é"); the default `list' call's quit check is also where GNU's
-  `while-no-input' throw ends a `read-key' that a printing key
-  interrupts, which Emaxx's read returns the key from. A `(no-record .
-  EVENT)' a keyboard macro's command loop takes from
-  `unread-command-events', which records nothing, leaves its
-  not-recorded mark for the next event read, so the next key typed is
-  missing from `recent-keys' and from a macro being defined, where
-  read_char's `recorded' is its own call's. The mini window's greatest
-  height is `max-mini-window-height' of the terminal's rows, where
-  resize_mini_window takes it of the frame's inner height (the root and
-  mini windows' lines), so a long message on a tall narrow terminal
-  (24x5, 24x9) gets one row more than GNU's. To be made: the C stack
-  overflow's return to the top level, the no-record mark per read, the
-  mini window's height limit, input polling, read_char's input method,
-  the secondary terminals' input, modes and sizes as the controlling
-  terminal's, sys_subshell, the special events in the keyboard buffer's
-  order, handle_interrupt in the signal handler, suspend-tty and
-  resume-tty with the output buffer size as term.c's, and the colors and
-  face capabilities as init_tty's.
+  waits for the main thread. Emaxx has no keyboard echo of its own:
+  there is no kboard echo_string, echo_prompt or immediate_echo, so
+  `read-key-sequence''s PROMPT is never shown (echo_now) and
+  `current-message' is nil while it waits, an input method's echo-area
+  guidance from `read-key-sequence' (quail's, with
+  `input-method-use-echo-area') is not seen, the keys of a pending
+  sequence are echoed by the frontend's own approximation after
+  `echo-keystrokes', and command_loop_1's cancel_echoing has nothing to
+  cancel. A face's tty attributes come from faces.el's `face-attribute'
+  and the frontend's merge of realized attributes, where GNU merges the
+  face's Lisp attributes over the default face's (merge_face_ref) and
+  realizes the result once in the face cache, and
+  `display-supports-face-attributes-p' reads the frame's `default'
+  definition where GNU reads its realized default face, which differs
+  between a change to the default face and the next redisplay. The
+  frontend moves the cursor, clears and scrolls with fixed ANSI
+  sequences where term.c sends the entry's cm, ce, cd and cl (with their
+  padding), which matters on a terminal that is not ANSI.
+  `recursive-edit' inside a command reads only queued and macro events,
+  where GNU's recursive_edit_1 runs a command loop on the terminal (the
+  debugger, edebug and query-replace's C-r wait in it). A message taller
+  than `max-mini-window-height' shows its first lines, where
+  resize_mini_window starts the mini window so that its last lines show.
+  An F-key's `last-input-event' is its symbol where GNU's is the
+  sequence's last byte, Quail's `this-single-command-raw-keys' lacks the
+  key it translated, and a keyboard macro entering the minibuffer runs
+  `post-command-hook' once more than GNU. The region is highlighted in a
+  non-selected window showing the same buffer, frames on a second
+  terminal are not redrawn when the selected one changes their buffer,
+  the second terminal echoes escape sequences as keys, and
+  `tab-bar-mode' draws nothing on a tty. To be made: the keyboard echo
+  as keyboard.c's (echo_string, echo_prompt, echo_now, echo_dash,
+  echo_update, read_char's echo timer and cancel_echoing), the C stack
+  overflow's return to the top level, input polling, the secondary
+  terminals' input, modes and sizes as the controlling terminal's,
+  sys_subshell, the special events in the keyboard buffer's order,
+  handle_interrupt in the signal handler, suspend-tty and resume-tty
+  with the output buffer size as term.c's, faces realized from their
+  merged Lisp attributes in a face cache as xfaces.c's, the entry's
+  cursor motion and clear strings, recursive_edit_1's command loop on
+  the terminal, resize_mini_window's window start for a tall message,
+  and the remaining keyboard and display details above.
 - **TLS over a process that is no network connection (round 337).**
   gnutls-boot on a pipe process or a subprocess gives GnuTLS the
   process's p->infd and p->outfd as its transport

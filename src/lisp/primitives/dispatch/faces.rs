@@ -1668,10 +1668,31 @@ pub(crate) fn tty_defined_color(
     frame: crate::lisp::types::FrameRef,
     color: &Value,
 ) -> Result<Option<[u16; 3]>, LispError> {
+    Ok(tty_defined_color_1(interp, env, frame, color)?.map(|(_, rgb)| rgb))
+}
+
+/// tty_defined_color's pixel of COLOR (the FACE_TTY_DEFAULT_ pixels
+/// included), None for a false status: load_color's lookup.
+pub(crate) fn tty_defined_color_pixel(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    frame: crate::lisp::types::FrameRef,
+    color: &Value,
+) -> Result<Option<i64>, LispError> {
+    Ok(tty_defined_color_1(interp, env, frame, color)?.map(|(pixel, _)| pixel))
+}
+
+fn tty_defined_color_1(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    frame: crate::lisp::types::FrameRef,
+    color: &Value,
+) -> Result<Option<(i64, [u16; 3])>, LispError> {
     // dispextern.h: FACE_TTY_DEFAULT_COLOR, _FG_COLOR and _BG_COLOR.
-    const DEFAULT: i64 = -1;
-    const DEFAULT_FG: i64 = -2;
-    const DEFAULT_BG: i64 = -3;
+    use super::display::{
+        FACE_TTY_DEFAULT_BG_COLOR as DEFAULT_BG, FACE_TTY_DEFAULT_COLOR as DEFAULT,
+        FACE_TTY_DEFAULT_FG_COLOR as DEFAULT_FG,
+    };
     let name = crate::lisp::primitives::sdata_c_string(color);
     let mut pixel = DEFAULT;
     let mut rgb = [0u16; 3];
@@ -1679,7 +1700,7 @@ pub(crate) fn tty_defined_color(
     if !name.is_empty() {
         let lisp_color = crate::lisp::primitives::strings::make_string(name.clone())
             .map_err(|_| LispError::Signal("Memory exhausted".into()))?;
-        status = tty_lookup_color(interp, env, frame, lisp_color, &mut pixel, &mut rgb)?;
+        status = tty_lookup_color(interp, env, frame, lisp_color, &mut pixel, &mut rgb, None)?;
     }
     if pixel == DEFAULT && !name.is_empty() {
         if name == b"unspecified-fg" {
@@ -1691,25 +1712,46 @@ pub(crate) fn tty_defined_color(
     if pixel != DEFAULT {
         status = true;
     }
-    Ok(status.then_some(rgb))
+    Ok(status.then_some((pixel, rgb)))
 }
 
-/// xfaces.c:tty_lookup_color without a STD_COLOR: `tty-color-desc' of
-/// COLOR and FRAME, whose (NAME INDEX R G B) sets the pixel to INDEX and
-/// the channels as parse_rgb_list reads them (each fixnum stored into an
-/// unsigned short, until one is missing); a nil `tty-defined-color-alist'
-/// is "colors not set up yet", a success.
+/// xfaces.c:parse_rgb_list: the (R G B) fixnums of LIST into COLOR's
+/// channels, each stored into an unsigned short as it is read, until one
+/// is missing (false).
+fn parse_rgb_list(mut list: Value, color: &mut [u16; 3]) -> bool {
+    for field in color.iter_mut() {
+        let Kind::Cons(cell) = list.kind() else {
+            return false;
+        };
+        let Kind::Integer(channel) = cell.car.get().kind() else {
+            return false;
+        };
+        *field = channel as u16;
+        list = cell.cdr.get();
+    }
+    true
+}
+
+/// xfaces.c:tty_lookup_color: for a string COLOR, when `tty-color-desc'
+/// is fbound, its (NAME INDEX R G B) of COLOR and FRAME sets the pixel to
+/// INDEX and TTY_COLOR's channels (parse_rgb_list); STD_COLOR, when
+/// asked for, starts as TTY_COLOR and, unless NAME is a string
+/// `string-equal' to COLOR, is `tty-color-standard-values' of COLOR where
+/// that is fbound.  A nil `tty-defined-color-alist' is "colors not set up
+/// yet", a success that sets nothing.
 fn tty_lookup_color(
     interp: &mut Interpreter,
     env: &mut Env,
     frame: crate::lisp::types::FrameRef,
     color: Value,
     pixel: &mut i64,
-    rgb: &mut [u16; 3],
+    tty_color: &mut [u16; 3],
+    std_color: Option<&mut [u16; 3]>,
 ) -> Result<bool, LispError> {
-    if interp
-        .lookup_function_key(cached_symbol!("tty-color-desc"), env)
-        .is_err()
+    if !color.is_string()
+        || interp
+            .lookup_function_key(cached_symbol!("tty-color-desc"), env)
+            .is_err()
     {
         return Ok(false);
     }
@@ -1726,21 +1768,333 @@ fn tty_lookup_color(
             return Ok(false);
         };
         *pixel = index;
-        // parse_rgb_list.
-        let mut list = rest.cdr.get();
-        for field in rgb.iter_mut() {
-            let Kind::Cons(cell) = list.kind() else {
-                return Ok(false);
-            };
-            let Kind::Integer(channel) = cell.car.get().kind() else {
-                return Ok(false);
-            };
-            *field = channel as u16;
-            list = cell.cdr.get();
+        if !parse_rgb_list(rest.cdr.get(), tty_color) {
+            return Ok(false);
+        }
+        if let Some(std_color) = std_color {
+            *std_color = *tty_color;
+            let name = desc.car.get();
+            let exact = name.is_string()
+                && crate::lisp::primitives::call(interp, "string-equal", &[color, name], env)?
+                    .is_truthy();
+            if !exact
+                && interp
+                    .lookup_function_key(cached_symbol!("tty-color-standard-values"), env)
+                    .is_ok()
+            {
+                let rgb = interp.call_function_value(
+                    Value::Symbol("tty-color-standard-values".into()),
+                    Some("tty-color-standard-values"),
+                    &[color],
+                    env,
+                )?;
+                if !parse_rgb_list(rgb, std_color) {
+                    return Ok(false);
+                }
+            }
         }
         return Ok(true);
     }
     Ok(interp
         .lookup_var_key(cached_symbol!("tty-defined-color-alist"), env)
         .is_none_or(|alist| alist.is_nil()))
+}
+
+/// xfaces.c:color_distance, Riemersma's metric.
+pub(crate) fn color_distance(x: [u16; 3], y: [u16; 3]) -> i64 {
+    let [x_red, x_green, x_blue] = x.map(i64::from);
+    let [y_red, y_green, y_blue] = y.map(i64::from);
+    let (r, g, b) = (x_red - y_red, x_green - y_green, x_blue - y_blue);
+    let r_mean = (x_red + y_red) >> 1;
+    ((((2 * 65536 + r_mean) * r * r) >> 16)
+        + 4 * g * g
+        + (((2 * 65536 + 65535 - r_mean) * b * b) >> 16))
+        >> 16
+}
+
+/// xfaces.c:TTY_SAME_COLOR_THRESHOLD.
+const TTY_SAME_COLOR_THRESHOLD: i64 = 10000;
+
+/// xfaces.c:face_attr_equal_p: objects of one Lisp type, `eq', or two
+/// strings of the same bytes, or (not fixnums or symbols) `equal'.
+fn face_attr_equal_p(interp: &Interpreter, v1: Value, v2: Value) -> Result<bool, LispError> {
+    // XTYPE: the symbols (nil and t among them), the fixnums, the
+    // strings, the conses, the floats, and the vectorlike rest.
+    let xtype = |value: &Value| match value.kind() {
+        Kind::Nil | Kind::T | Kind::Symbol(_) => 0,
+        Kind::Integer(_) => 1,
+        Kind::StringObject(_) => 2,
+        Kind::Cons(_) => 3,
+        Kind::Float(_) => 4,
+        _ => 5,
+    };
+    if xtype(&v1) != xtype(&v2) {
+        return Ok(false);
+    }
+    if crate::lisp::types::eq(v1, v2) {
+        return Ok(true);
+    }
+    match (v1.kind(), v2.kind()) {
+        (Kind::StringObject(left), Kind::StringObject(right)) => {
+            Ok(left.borrow().bytes() == right.borrow().bytes())
+        }
+        (Kind::Integer(_), _) | (Kind::Nil | Kind::T | Kind::Symbol(_), _) => Ok(false),
+        _ => values_equal(interp, &v1, &v2),
+    }
+}
+
+/// xfaces.c:Fdisplay_supports_face_attributes_p: nil when
+/// `noninteractive'; else ATTRIBUTES merged (merge_face_ref, its errors
+/// logged) onto unspecified attributes for DISPLAY's frame (the selected
+/// one for nil, the frame itself, or the first in the frame list whose
+/// `display' parameter is `equal' to DISPLAY, the list's last when none
+/// is) and, on a text frame, tty_supports_face_attributes_p against the
+/// frame's realized default face.
+pub(crate) fn display_supports_face_attributes_p(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    attributes: Value,
+    display: Value,
+) -> Result<Value, LispError> {
+    if interp
+        .forwarded_c_value("noninteractive", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(Value::Nil);
+    }
+    let frame = if display.is_nil() {
+        interp.selected_frame_value()
+    } else if matches!(display.kind(), Kind::Frame(_)) {
+        display
+    } else {
+        // FOR_EACH_FRAME, which leaves the last frame when nothing breaks.
+        let mut found = Value::Nil;
+        let frames: Vec<_> = interp
+            .frame_states
+            .iter()
+            .filter(|frame| frame.is_live())
+            .copied()
+            .collect();
+        for candidate in frames {
+            found = Value::Frame(candidate);
+            let parameter = super::frames::get_frame_param(candidate, Value::symbol("display"));
+            if values_equal(interp, &parameter, &display)? {
+                break;
+            }
+        }
+        found
+    };
+    let frame = match frame.kind() {
+        Kind::Frame(id) if id.is_live() => id,
+        _ => return Err(wrong_type_argument("frame-live-p", frame)),
+    };
+    let mut attrs: LfaceAttrs = std::array::from_fn(|_| Value::symbol("unspecified"));
+    merge_face_ref(
+        interp,
+        frame,
+        attributes,
+        &mut attrs,
+        true,
+        &mut Vec::new(),
+        env,
+    )?;
+    // FACE_FROM_ID_OR_NULL (f, DEFAULT_FACE_ID), realize_basic_faces when
+    // there is none.
+    let default = Value::symbol("default");
+    let lface = match interp.lisp_face_vector_on(default, Some(frame)) {
+        Some(lface) => lface,
+        None => {
+            super::frames::realize_basic_faces(interp, frame)?;
+            interp
+                .lisp_face_vector_on(default, Some(frame))
+                .ok_or_else(|| LispError::Signal("Cannot realize default face".into()))?
+        }
+    };
+    let mut def_attrs: LfaceAttrs = std::array::from_fn(|_| Value::Nil);
+    for (index, attr) in def_attrs.iter_mut().enumerate() {
+        *attr = vector_slot_value(&lface, index)?;
+    }
+    let termcap = frame
+        .borrow()
+        .terminal
+        .is_some_and(|terminal| terminal.borrow().kind.is_some());
+    let supports =
+        termcap && tty_supports_face_attributes_p(interp, env, frame, &attrs, &def_attrs)?;
+    Ok(if supports { Value::T } else { Value::Nil })
+}
+
+/// xfaces.c:tty_supports_face_attributes_p: whether a face of ATTRS,
+/// merged with the default face DEF_ATTRS, displays differently from it
+/// on FRAME's terminal and close to what ATTRS ask.  No family, foundry,
+/// stipple, height, width, overline or box; a weight or slant the
+/// default's (FONT_*_NAME_NUMERIC) does not have needs bold, dim or
+/// italic; an underline (styled for a string or a known :style), inverse
+/// video or strike-through the default does not have needs its
+/// capability; a color must differ from the default's, be one the
+/// terminal shows, near its standard value and not near the default's
+/// (TTY_SAME_COLOR_THRESHOLD), and the two colors as far apart as their
+/// standard values are; then tty_capable_p of the capabilities.
+fn tty_supports_face_attributes_p(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    frame: crate::lisp::types::FrameRef,
+    attrs: &LfaceAttrs,
+    def_attrs: &LfaceAttrs,
+) -> Result<bool, LispError> {
+    use crate::lisp::eval::terminal::{
+        TTY_CAP_BOLD, TTY_CAP_DIM, TTY_CAP_INVERSE, TTY_CAP_ITALIC, TTY_CAP_STRIKE_THROUGH,
+        TTY_CAP_UNDERLINE, TTY_CAP_UNDERLINE_STYLED,
+    };
+    if [
+        LFACE_FAMILY_INDEX,
+        LFACE_FOUNDRY_INDEX,
+        LFACE_STIPPLE_INDEX,
+        LFACE_HEIGHT_INDEX,
+        LFACE_SWIDTH_INDEX,
+        LFACE_OVERLINE_INDEX,
+        LFACE_BOX_INDEX,
+    ]
+    .iter()
+    .any(|&index| !unspecifiedp(&attrs[index]))
+    {
+        return Ok(false);
+    }
+    let mut test_caps = 0u32;
+    // Font weight (bold/dim).
+    let val = attrs[LFACE_WEIGHT_INDEX];
+    if !unspecifiedp(&val) {
+        let weight = font::style_name_numeric(interp, font::FONT_WEIGHT_INDEX, &val)?;
+        if weight >= 0 {
+            let def_weight = font::style_name_numeric(
+                interp,
+                font::FONT_WEIGHT_INDEX,
+                &def_attrs[LFACE_WEIGHT_INDEX],
+            )?;
+            if weight > 100 {
+                if def_weight > 100 {
+                    return Ok(false);
+                }
+                test_caps = TTY_CAP_BOLD;
+            } else if weight < 100 {
+                if def_weight < 100 {
+                    return Ok(false);
+                }
+                test_caps = TTY_CAP_DIM;
+            } else if def_weight == 100 {
+                return Ok(false);
+            }
+        }
+    }
+    // Font slant.
+    let val = attrs[LFACE_SLANT_INDEX];
+    if !unspecifiedp(&val) {
+        let slant = font::style_name_numeric(interp, font::FONT_SLANT_INDEX, &val)?;
+        if slant >= 0 {
+            let def_slant = font::style_name_numeric(
+                interp,
+                font::FONT_SLANT_INDEX,
+                &def_attrs[LFACE_SLANT_INDEX],
+            )?;
+            if slant == 100 || slant == def_slant {
+                return Ok(false);
+            }
+            test_caps |= TTY_CAP_ITALIC;
+        }
+    }
+    // Underlining.
+    let val = attrs[LFACE_UNDERLINE_INDEX];
+    if !unspecifiedp(&val) {
+        let car = |value: Value| value.cons_values().map_or(Value::Nil, |(car, _)| car);
+        let cdr = |value: Value| value.cons_values().map_or(Value::Nil, |(_, cdr)| cdr);
+        if val.is_string() {
+            test_caps |= TTY_CAP_UNDERLINE_STYLED;
+        } else if crate::lisp::types::eq_symbol_named(car(val), ":style") {
+            let style = car(cdr(val));
+            if !["line", "double-line", "wave", "dots", "dashes"]
+                .iter()
+                .any(|name| crate::lisp::types::eq_symbol_named(style, name))
+            {
+                return Ok(false);
+            }
+            test_caps |= TTY_CAP_UNDERLINE_STYLED;
+        } else if face_attr_equal_p(interp, val, def_attrs[LFACE_UNDERLINE_INDEX])? {
+            return Ok(false);
+        } else {
+            test_caps |= TTY_CAP_UNDERLINE;
+        }
+    }
+    // Inverse video and strike-through.
+    for (index, cap) in [
+        (LFACE_INVERSE_INDEX, TTY_CAP_INVERSE),
+        (LFACE_STRIKE_THROUGH_INDEX, TTY_CAP_STRIKE_THROUGH),
+    ] {
+        let val = attrs[index];
+        if !unspecifiedp(&val) {
+            if face_attr_equal_p(interp, val, def_attrs[index])? {
+                return Ok(false);
+            }
+            test_caps |= cap;
+        }
+    }
+    // The colors: close enough to what they name, and really different
+    // from the default's.
+    let mut colors = [([0u16; 3], [0u16; 3]); 2];
+    for (slot, index) in [LFACE_FOREGROUND_INDEX, LFACE_BACKGROUND_INDEX]
+        .into_iter()
+        .enumerate()
+    {
+        let color = attrs[index];
+        if !color.is_string() {
+            continue;
+        }
+        let default_color = def_attrs[index];
+        if face_attr_equal_p(interp, color, default_color)? {
+            return Ok(false);
+        }
+        let (tty_color, std_color) = &mut colors[slot];
+        let mut pixel = 0;
+        if !tty_lookup_color(
+            interp,
+            env,
+            frame,
+            color,
+            &mut pixel,
+            tty_color,
+            Some(std_color),
+        )? {
+            return Ok(false);
+        }
+        if color_distance(*tty_color, *std_color) > TTY_SAME_COLOR_THRESHOLD {
+            return Ok(false);
+        }
+        let mut def_color = [0u16; 3];
+        if tty_lookup_color(
+            interp,
+            env,
+            frame,
+            default_color,
+            &mut pixel,
+            &mut def_color,
+            None,
+        )? && color_distance(*tty_color, def_color) <= TTY_SAME_COLOR_THRESHOLD
+        {
+            return Ok(false);
+        }
+    }
+    if attrs[LFACE_FOREGROUND_INDEX].is_string() && attrs[LFACE_BACKGROUND_INDEX].is_string() {
+        let [(fg_tty, fg_std), (bg_tty, bg_std)] = colors;
+        let delta_delta = color_distance(fg_std, bg_std) - color_distance(fg_tty, bg_tty);
+        if !(-TTY_SAME_COLOR_THRESHOLD..=TTY_SAME_COLOR_THRESHOLD).contains(&delta_delta) {
+            return Ok(false);
+        }
+    }
+    let Some(terminal) = frame.borrow().terminal else {
+        return Ok(false);
+    };
+    let state = terminal.borrow();
+    Ok(crate::lisp::eval::terminal::tty_capable_p(
+        &state.appearance,
+        &state.colors,
+        test_caps,
+    ))
 }
