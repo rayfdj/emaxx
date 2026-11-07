@@ -828,10 +828,10 @@ fn process_send_eof_keeps_linked_stderr_separate_from_stdout() {
                     (process-send-eof child)
                     (while (process-live-p child)
                       (accept-process-output child 0.1))
-                    ;; `process-live-p' can observe exit while moving final
-                    ;; bytes into the pending queues; pump once more to run
-                    ;; both filters.
-                    (accept-process-output child 0.1)
+                    ;; A wait on CHILD that finds it ended reads CHILD alone
+                    ;; and returns, in GNU as here, so the `:stderr' pipe
+                    ;; process is read until it has nothing more.
+                    (while (accept-process-output stderr 0.1))
                     (list stdout stderr-output))"#,
             ),
             Value::list([
