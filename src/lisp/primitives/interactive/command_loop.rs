@@ -313,6 +313,10 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
     // = 0, then the post-command hooks, so they run after commands that
     // left with an error or a throw to top level, and `last-command'.
     command_loop_entry(interp, env)?;
+    // command_loop_1's prev_buffer and prev_modiff and the static
+    // last_point_position, as the last command left them (a rejected
+    // menu's finalize reads them).
+    let mut carried: Option<(u64, crate::buffer::ModCount, usize)> = None;
     loop {
         // Make sure the current window's buffer is selected.
         select_window_buffer(interp)?;
@@ -326,7 +330,8 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         let read = super::key_sequence::read_key_sequence(interp, Value::Nil, false, true, env)?;
         // read_key_sequence_cmd, read_key_sequence_remapped and the last
         // key, held across what runs before the command does.
-        let end_of_input = read.keys.is_empty();
+        let end_of_input = read.keys.is_empty() && !read.menu_rejected;
+        let menu_rejected = read.menu_rejected;
         let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![
             read.cmd,
             read.remapped,
@@ -339,6 +344,16 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         // End of file -- happens only in a kbd macro, at the end.
         if end_of_input {
             return Ok(());
+        }
+        // -1 means read_key_sequence got a menu that was rejected.  Just
+        // loop around and read another command.
+        if menu_rejected {
+            super::echo::cancel_echoing(interp);
+            clear_command_keys(interp);
+            if let Some((prev_buffer, prev_modiff, last_point_position)) = carried {
+                finalize_command(interp, env, prev_buffer, prev_modiff, last_point_position)?;
+            }
+            continue;
         }
         interp.set_variable_key(cached_symbol!("last-command-event"), roots[2], env);
         if interp
@@ -355,6 +370,7 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         let prev_buffer = interp.current_buffer_id();
         let prev_modiff = interp.buffer.borrow().modified_tick();
         let last_point_position = interp.buffer.borrow().point();
+        carried = Some((prev_buffer, prev_modiff, last_point_position));
         interp.set_variable_key(cached_symbol!("disable-point-adjustment"), Value::Nil, env);
         // Process filters and timers may have messed with
         // deactivate-mark; reset it before we execute the command.

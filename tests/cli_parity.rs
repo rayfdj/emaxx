@@ -7901,8 +7901,9 @@ fn reads_keep_their_own_stacks_and_end_as_read0_ends() {
       (if ch (setq i (1- i))
         (thread-yield)
         (when (< i (length s)) (prog1 (aref s i) (setq i (1+ i))))))))
-(let ((th (make-thread (lambda () (read (ystream "[a b c]"))))))
-  (princ (format "main: %S\n" (read (ystream "[x y z]"))))
+(let ((th (make-thread (lambda () (read (ystream "[a (b c) #s(r d) e]"))))))
+  (garbage-collect)
+  (princ (format "main: %S\n" (read "[x y z]")))
   (princ (format "thread: %S\n" (thread-join th))))"##,
         ),
         (
@@ -7945,4 +7946,270 @@ fn reads_keep_their_own_stacks_and_end_as_read0_ends() {
         let program = corpus.write(name, text);
         assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
     }
+}
+
+#[test]
+fn menus_parse_their_items_as_parse_menu_item_and_menu_c_do() {
+    // x-popup-menu parses MENU into menu_items as menu.c does even where
+    // no menu can show (a batch session's initial frame): each item's
+    // :visible, name, :enable, :filter, :keys and :button forms and a
+    // command's `menu-enable' property are evaluated, errors in them
+    // ignored, `x-pre-popup-menu-hook' run, a menu inside a menu entry
+    // refused; old-fashioned menus, lists of keymaps and POSITION are
+    // checked as list_of_panes and x_popup_menu_1 check them, and
+    // x-popup-dialog emulates its dialog with a menu.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "menus.el",
+        r##"(defvar log nil)
+(defun note (x) (push x log) t)
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(setq x-pre-popup-menu-hook (list (lambda () (note 'hook))))
+(defvar m (make-sparse-keymap "Title"))
+(define-key m [a] (list 'menu-item "A" 'ignore :visible '(note 'vis-a)))
+(define-key m [b] (list 'menu-item '(progn (note 'name-b) "B") 'ignore :enable '(note 'en-b)))
+(define-key m [c] (list 'menu-item "C" 'forward-char :keys (lambda () (note 'keys-c) "K")))
+(define-key m [d] (list 'menu-item "D" 'ignore :filter (lambda (d) (note (list 'filter d)) 'backward-char)))
+(define-key m [e] (list 'menu-item "E" 'ignore :visible '(error "boom")))
+(define-key m [f] (list 'menu-item "F" 'ignore :button '(:toggle . (note 'sel-f))))
+(define-key m [g] '("Old" "help" . ignore))
+(put 'my-cmd 'menu-enable '(note 'menu-enable))
+(define-key m [h] '("H" . my-cmd))
+(show "t" (lambda () (x-popup-menu t m)))
+(show "log" (lambda () (reverse log)))
+(setq log nil)
+(show "list" (lambda () (x-popup-menu t (list m (make-sparse-keymap "Two")))))
+(show "log2" (lambda () (reverse log)))
+(setq log nil)
+(show "old" (lambda () (x-popup-menu t '("T" ("P" ("a" . 1) "s" nil ("b" . 2))))))
+(show "log3" (lambda () (reverse log)))
+(show "bad1" (lambda () (x-popup-menu t '("T" (1 ("a" . 1))))))
+(show "bad2" (lambda () (x-popup-menu t '("T" ("P")))))
+(show "bad3" (lambda () (x-popup-menu t '("T" ("P" (1 . 1))))))
+(show "bad4" (lambda () (x-popup-menu t '(1 ("P" ("a" . 1))))))
+(show "bad5" (lambda () (x-popup-menu t 'foo)))
+(show "bad6" (lambda () (x-popup-menu t (list m 'foo))))
+(show "pos1" (lambda () (x-popup-menu '((1 2) foo) m)))
+(show "pos2" (lambda () (x-popup-menu '((1.5 2) nil) m)))
+(show "pos3" (lambda () (x-popup-menu (list (list 1 2) (selected-frame)) m)))
+(show "pos4" (lambda () (x-popup-menu (list (list (expt 2 40) 2) (selected-frame)) m)))
+(show "pos5" (lambda () (x-popup-menu (list (list 1 2) (selected-window)) m)))
+(show "pos6" (lambda () (x-popup-menu 'sym m)))
+(show "pos7" (lambda () (x-popup-menu nil 'foo)))
+(show "reent" (lambda () (let ((mm (make-sparse-keymap "R")))
+   (define-key mm [z] (list 'menu-item "Z" 'ignore :visible '(progn (x-popup-menu t (make-sparse-keymap "In")) t)))
+   (x-popup-menu t mm))))
+(show "reent2" (lambda () (let ((mm (make-sparse-keymap "R")))
+   (define-key mm [z] (list 'menu-item "Z" 'ignore :visible '(condition-case e (x-popup-menu t (make-sparse-keymap "In")) (error (note e)))))
+   (x-popup-menu t mm))))
+(show "log4" (lambda () (reverse log)))
+(show "dialog" (lambda () (x-popup-dialog t '("Q" ("Yes" . y) ("No" . n)))))
+(show "dialog2" (lambda () (x-popup-dialog 'foo '("Q" ("Yes" . y)))))
+(show "event" (lambda () (x-popup-menu (list 'mouse-1 (list (selected-window) 1 '(0 . 0) 0)) m)))
+"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn call_interactively_reads_keys_as_callint_c_reads_them() {
+    // callint.c checks KEYS as a vector before anything else (before the
+    // interactive form, so a non-command with a bad KEYS signals
+    // `vectorp'), and the `e' code takes the first event with
+    // parameters from KEYS or, with none, from the command's keys.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "callint.el",
+        r##"(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun pick (&rest events) (interactive "e\ne") events)
+(show "str" (lambda () (call-interactively 'car nil "x")))
+(show "list" (lambda () (call-interactively 'forward-char nil (list 1))))
+(show "none" (lambda () (call-interactively (lambda (e) (interactive "e") e) nil [a b])))
+(show "one" (lambda () (call-interactively (lambda (e) (interactive "e") e) nil [a (mouse-1 (nil)) (b)])))
+(show "two" (lambda () (call-interactively 'pick nil [a (down-mouse-1 (nil)) b (mouse-1 (nil))])))
+(show "short" (lambda () (call-interactively 'pick nil [(mouse-1 (nil))])))
+(show "inhibit" (lambda () (let ((inhibit-mouse-event-check t)) (call-interactively 'pick nil [a b]))))
+(show "cmdkeys" (lambda () (call-interactively (lambda (e) (interactive "e") e))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_mouse_command_gets_its_event_as_callint_c_gives_it() {
+    // A click the terminal reports (xt-mouse's translation) runs its
+    // `mouse-1' binding with the click, the command's keys giving the
+    // `e' code its event; a click on the menu bar runs
+    // `menu-bar-open-mouse', whose menu C-g cancels.  post-command-hook
+    // notes each command and its keys.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "mouse.el",
+        r#"(xterm-mouse-mode 1)
+(defvar ms-log nil)
+(global-set-key [mouse-1]
+  (lambda (e) (interactive "e")
+    (push (list 'click (car e) (posn-point (event-start e))) ms-log)))
+(define-key global-map [down-mouse-1] nil)
+(add-hook 'post-command-hook
+  (lambda ()
+    (push (list (if (symbolp this-command) this-command 'lambda)
+                (mapcar (lambda (k) (if (consp k) (car k) k)) (this-command-keys-vector)))
+          ms-log)))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "mouse.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse ms-log))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"\x1b[<0;5;3M"),
+        (0.1, b"\x1b[<0;5;3m"),
+        (1.0, b"\x1b[<0;2;1M"),
+        (0.1, b"\x1b[<0;2;1m"),
+        (1.5, b"\x07"),
+        (1.0, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "mouse.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "mouse.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_click_on_a_prompting_keymap_menus_as_read_char_x_menu_prompt_does() {
+    // read_char after a click (an event with parameters) echoes the keys
+    // at once, then pops up the keymap's menu (read_char_x_menu_prompt):
+    // C-g refuses it, so read_key_sequence returns -1 and no command runs;
+    // a choice is recorded as record_menu_key records it, after the keys
+    // the menu read, and echoed.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "menu.el",
+        r#"(xterm-mouse-mode 1)
+(defvar ms-log nil)
+(defvar pick-map (make-sparse-keymap "Pick"))
+(defun pick-b () (interactive) (push 'ran-b ms-log))
+(defun pick-a () (interactive) (push 'ran-a ms-log))
+(define-key pick-map [b] '(menu-item "Bee" pick-b))
+(define-key pick-map [a] '(menu-item "Ay" pick-a))
+(global-set-key [mouse-3] pick-map)
+(global-set-key [down-mouse-3] nil)
+(add-hook 'pre-command-hook
+  (lambda () (push (list 'pre (if (symbolp this-command) this-command 'lambda)) ms-log)))
+(add-hook 'post-command-hook
+  (lambda ()
+    (push (list 'post (if (symbolp this-command) this-command 'lambda) this-original-command
+                (mapcar (lambda (k) (if (consp k) (car k) k)) (this-command-keys-vector))
+                (if (consp last-nonmenu-event) (car last-nonmenu-event) last-nonmenu-event)
+                (current-message))
+          ms-log)))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "menu.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse ms-log))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"\x1b[<2;5;3M"),
+        (0.1, b"\x1b[<2;5;3m"),
+        (1.5, b"\x07"),
+        (1.0, b"\x1b[<2;5;3M"),
+        (0.1, b"\x1b[<2;5;3m"),
+        (1.5, b"\x1b[B"),
+        (0.3, b"\r"),
+        (1.0, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "menu.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "menu.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn unread_events_unwrap_as_read_char_unwraps_them() {
+    // read_char takes `(t . EVENT)' as not reread, `(no-record . EVENT)'
+    // as reread and already recorded, then undoes read_char_x_menu_prompt's
+    // `(EVENT . disabled)' for a symbol or fixnum, which counts as a menu
+    // event for `last-nonmenu-event'; x_popup_menu_1 measures a list of
+    // keymaps with list_length before reading any of them.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "unread.el",
+        r##"(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun rks (events)
+  (let ((unread-command-events events))
+    (list (read-key-sequence nil) (this-command-keys-vector)
+          last-input-event last-nonmenu-event unread-command-events)))
+(define-key global-map "\C-cz" 'ignore)
+(show "plain" (lambda () (rks (list ?\C-c ?z))))
+(show "dis" (lambda () (rks (list '(3 . disabled) '(122 . disabled)))))
+(show "dis1" (lambda () (rks (list 3 '(122 . disabled)))))
+(show "t-dis" (lambda () (rks (list '(t . (3 . disabled)) '(no-record . (122 . disabled))))))
+(show "t" (lambda () (rks (list '(t . 3) '(t . 122)))))
+(show "norec" (lambda () (rks (list '(no-record . 3) '(no-record . 122)))))
+(show "dis-str" (lambda () (rks (list '("x" . disabled)))))
+(show "menu-bar" (lambda () (let ((last-nonmenu-event 'before)) (rks (list 'menu-bar ?\C-c ?z)))))
+(show "recent" (lambda () (let ((unread-command-events (list '(no-record . 97) '(t . 98) 99)))
+   (list (read-event) (read-event) (read-event) (append (last (append (recent-keys) nil) 3) nil)))))
+(defvar m (make-sparse-keymap "Title"))
+(define-key m [a] '(menu-item "A" ignore))
+(setq x-pre-popup-menu-hook (list (lambda () (princ "hook\n"))))
+(show "dotted-maps" (lambda () (x-popup-menu t (cons m 5))))
+(show "circ-maps" (lambda () (let ((l (list m m))) (setcdr (cdr l) l) (x-popup-menu t l))))
+(show "maps-2" (lambda () (x-popup-menu t (list m (make-sparse-keymap "Two")))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tty_menu_tracks_the_mouse_and_holds_off_collection_as_term_c_does() {
+    // read_menu_input sets `track-mouse' to t around read_menu_command, so
+    // xt-mouse reports the pointer's motion and the item under it is the
+    // one RET picks; a timer run inside the menu sees `track-mouse' t,
+    // `inhibit-redisplay' t and `garbage-collect' returning nil, since
+    // tty_menu_show inhibits collection while the menu shows; both are as
+    // they were once the menu is gone.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "track.el",
+        r#"(xterm-mouse-mode 1)
+(defvar ms-log nil)
+(defvar mm-map (make-sparse-keymap "MousePick"))
+(define-key mm-map [three] '(menu-item "Three" (lambda () (interactive) (push 'three ms-log))))
+(define-key mm-map [two] '(menu-item "Two" (lambda () (interactive) (push 'two ms-log))))
+(define-key mm-map [one] '(menu-item "One" (lambda () (interactive) (push 'one ms-log))))
+(global-set-key [mouse-3] mm-map)
+(global-set-key [down-mouse-3] nil)
+(defvar mp-a (make-sparse-keymap "PA"))
+(define-key mp-a [b] '(menu-item "Bee" ignore))
+(define-key mp-a [a] '(menu-item "Ay" ignore))
+(global-set-key [f5] (lambda () (interactive)
+  (run-at-time 0.5 nil (lambda () (push (list 'timer track-mouse inhibit-redisplay (and (garbage-collect) t)) ms-log)))
+  (push (list 'menu (x-popup-menu t mp-a) track-mouse) ms-log)))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "track.out" command-line-default-directory)
+      (insert (format "%S\n" (list (reverse ms-log) track-mouse (and (garbage-collect) t)))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"\x1b[<2;5;3M"),
+        (0.1, b"\x1b[<2;5;3m"),
+        (1.5, b"\x1b[<35;6;5M"),
+        (0.5, b"\r"),
+        (1.0, b"\x1b[15~"),
+        (1.5, b"\x1b[B"),
+        (0.3, b"\r"),
+        (1.0, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "track.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "track.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }

@@ -30457,9 +30457,22 @@ fn tty_menu_key_hints_follow_preferred_binding_and_live_removal() {
             )
             .expect("add symbolic binding");
         }
-        let pane = tty_menu_pane_from_keymap(&mut interp, &mut env, &menu, "Sample");
-        assert_eq!(pane.items.len(), 1);
-        assert_eq!(pane.items[0].text, expected);
+        // parse_menu_item's key equivalent, two blanks before the
+        // `where-is-internal' first key's description.
+        assert!(
+            crate::lisp::primitives::menu::parse_menu_item(&mut interp, item, 0, &mut env)
+                .expect("parse")
+        );
+        let keyeq = crate::lisp::primitives::menu::item_property(
+            &interp,
+            crate::lisp::primitives::menu::ITEM_PROPERTY_KEYEQ,
+        );
+        let text = if keyeq.is_nil() {
+            "Action".to_string()
+        } else {
+            format!("Action{}", string_text(&keyeq).expect("keyeq"))
+        };
+        assert_eq!(text, expected);
     }
 }
 

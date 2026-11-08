@@ -1203,6 +1203,7 @@ impl Interpreter {
                 // frame.c:make_frame: `list1 (buf)', its root window's.
                 buffer_list: vec![buffer_id],
                 buried_buffer_list: Vec::new(),
+                menu_bar_items: Value::Nil,
             },
         );
         self.frame_states.insert(0, frame);

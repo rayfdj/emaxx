@@ -17451,6 +17451,117 @@ setup_process_coding_systems's check now refuses). A 13-form
   times of three.  clippy with `--all-targets --all-features -D
   warnings' passes, and the review's probes give GNU's results on the
   rebuilt binary but for the reader state recorded above.
+- **Round 347: menus as keyboard.c, menu.c and term.c make them.**
+  Emaxx's menus were its own: the tty menu bar's captions and items came
+  from a Rust walk of the menu-bar keymaps, a dropdown's panes and items
+  from another, and its executor ran the chosen binding, so none of
+  parse_menu_item's evaluations happened as GNU's do, x-popup-menu took
+  no menu apart as menu.c does, and read_char's menu prompting did not
+  exist.  Now keyboard.c's parse_menu_item fills item_properties for
+  every item, evaluating its :visible form during the property walk and
+  then its name, :filter, :enable (or a command's `menu-enable'),
+  :button and :keys through menu_item_eval_property, errors in them
+  ignored; menu_bar_items, menu_bar_one_keymap and menu_bar_item build
+  the frame's menu_bar_items vector, `menu-bar-final-items' last, under
+  `inhibit-quit'; update_menu_bar recomputes it before redisplay when
+  windows or buffers changed or the selected buffer, mode or active maps
+  did, running `activate-menubar-hook' and `menu-bar-update-hook' as GNU
+  does; and the tty's menu-bar row is drawn from that vector, its
+  columns recorded for menu-bar-menu-at-x-y, which reads the item at X
+  from it.  menu.c's menu_items is the interpreter's own vector (marked,
+  reset after a dump's load): init_menu_items refuses a menu inside a
+  menu entry, single_keymap_panes walks a keymap through
+  `keymap-canonicalize', single_menu_item and list_of_panes push panes
+  and items, and Fx_popup_menu (after init_raw_keybuf_count) decodes its
+  POSITION as x_popup_menu_1 does, a window's edges, left margin, tab
+  and header lines added to a text-area position before
+  check_integer_range, runs `x-pre-popup-menu-hook' and hands the menu
+  to the terminal; Fx_popup_dialog emulates its dialog with a menu, as
+  emulate_dialog_with_menu does.  term.c's tty_menu_show builds the
+  tty_menu from menu_items (the names padded to the widest's bytes, a
+  submenu's name followed by \" >\", a toggle or radio's [X] or (*)
+  prefix lining up the rest), and tty_menu_activate runs it as GNU's
+  does: the menu faces, the title in tty-menu-selected-face, the
+  \"Buffers 1\" kludge, the one-pane case, scrolling, submenus opened
+  and dropped as the item under the pointer changes, the help callback
+  with `inhibit-redisplay' bound so that no help echo reaches the glass,
+  `tty-menu-navigation-map' as `overriding-terminal-local-map', and the
+  cursor hidden where tty_menu_display's update_frame_with_menu leaves
+  it (the item under the pointer, else where the tty's cursor already
+  was); keys and selections come back as tty_menu_new_item_coords and
+  tty_menu_last_menubar_item make them.  read_char prompts with a
+  keymap's menu as read_char_x_menu_prompt and
+  read_char_minibuf_menu_prompt do (the latter's toggle and radio marks
+  inverted, as GNU's are), record_menu_key records the choice in
+  `this-command-keys' and the echo, a menu's events after the first are
+  unread as (EVENT . disabled), `last-nonmenu-event' is left at the last
+  event not from a menu, and a menu refused makes read_key_sequence
+  return -1, so that command_loop_1 cancels the echo and runs no
+  command.  xdisp.c's message3_nolog calls echo_area_display (true) as
+  GNU's does, a message, or its clearing, reaching the glass when made
+  unless redisplay is inhibited or running, so that `popup-menu''s
+  `(message \"\")' between two menu-bar menus clears the echo row as
+  GNU's does; and the frontend records the cursor each frame update
+  leaves, which tty menus start from.  callint.c's `e' code takes its
+  event from call-interactively's KEYS, checked as a vector before
+  anything else, or from the command's keys, where Emaxx bound a
+  variable for KEYS and read nothing without one, so a mouse command run
+  from the command loop (`menu-bar-open-mouse' for a click on the menu
+  bar) signalled \"must be bound to an event with parameters\".  The
+  Rust menu walks, the executor and their captions are gone.  Two
+  differences in a pseudo-terminal comparison are the GNU builds'
+  configuration, not Emaxx's: GNU here is an X build, whose dump loads
+  x-win.el (binding <XF86WakeUp> to `ignore', which a menu's key hints
+  then show for `ignore') and whose xsettings.c provides
+  `system-font-setting' (the Options menu's \"Use System Font\"); with
+  those two taken out of GNU, every screen of the comparison is the
+  same.  One adversarial review of the round's diff, in batch and a
+  pseudo-terminal against GNU's, found 3 P1, 4 P2 and 5 P3, all fixed
+  but one recorded.  A message made after the minibuffer had exited (an
+  M-x command's) or over an active minibuffer waited for the next
+  redisplay: the echo row decided from the last redisplay's minibuffer
+  flag, where echo_area_display decides from echo_area_buffer[0] and
+  minibuf_level as they are, and update_frame_1 puts the cursor at the
+  frame's selected window's own cursor (now kept per window as its last
+  display computed it).  A tty menu did not follow the mouse:
+  read_menu_input sets do_mouse_tracking (`track-mouse', set and
+  restored, not bound) and the tty's showing_menu (no redisplay while
+  the menu's read waits) around read_menu_command, and neither was
+  Emaxx's.  The menu's keys bypassed read_char, so unread events and
+  keyboard macros never reached it.  A message needing more echo rows
+  painted the echo area alone, where echo_area_display runs
+  redisplay_internal with `redisplay-dont-pause' bound.  A tty menu
+  stopped above a multi-line echo area, and the screen saved behind it
+  left the echo rows out.  A click's menu opened before read_char's
+  echo.  The menu's keys were missing from `this-command-keys' and the
+  raw keys; and the minibuffer menu prompt's own read_char now records
+  and adds the keys it reads (a continuation's SPC among them), the
+  prompting read_char going to its exit, so `this-single-command-keys'
+  counts back from them as GNU's does.  `unread-command-events'' (t .
+  X), (no-record . X) and (EVENT . disabled) were not unwrapped in
+  read_char's order.  read_char_minibuf_menu_prompt's continuation lines
+  did not start from the strings its Fnreverse relinks into
+  prompt_strings.  x_popup_menu_1 did not measure a list of keymaps with
+  list_length (a dotted list's listp, a circular one's circular-list).
+  tty_menu_show did not inhibit garbage collection while it builds and
+  shows the menu (`garbage-collect' returns nil inside it).  Recorded:
+  the menu bar's recomputation as update_mode_lines and
+  windows_or_buffers_changed drive it.  Found while fixing these: the
+  frontend's redisplay paused for pending input where GNU's update_frame
+  does not under `redisplay-dont-pause' (recorded with read_char's
+  auto-saves, the same COMMANDFLAG block); a tty posn's glyph was one
+  row high and an appended end-of-line space none wide, where GNU's
+  terminal glyphs have no ascent or descent (fixed); and two older
+  display differences recorded below, a composition in posn-at-x-y and a
+  character the terminal cannot encode.  The grouped gate passed its
+  3,508 library tests; the integration suites passed (two tty
+  comparisons whose GNU run fell behind its input under the parallel
+  run's load, prefix help's echo and while-no-input's key, passed alone
+  three times each), cli_parity with two new comparisons (read_char's
+  unread-event unwrapping and the list of keymaps' length in batch, a
+  tty menu following the mouse with a timer inside it seeing
+  `track-mouse' t and collection inhibited); clippy is clean; and the
+  pseudo-terminal comparisons of each finding's probe match GNU's.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -20372,7 +20483,76 @@ ert-tests as a whole 26,307 ms against 27,211.
   against 2.37), mule-tests (1.98 against 1.33), process-tests (2.19
   against 1.76) and electric-tests (0.70 against 0.39). The Rust gate (run 42447668332) passed.
 
+**On `6d3e986`** (round 346): the frozen run (run 42452286349) matched
+  all 7,928 outcomes at its first attempt. Setup 79.3 s against 67.1 s
+  (1.182), test bodies 302.1 s against 266.9 s (1.132), in all 1.125,
+  on a runner slower for both than round 345's (GNU's bodies 266.9 s
+  against 224.8). The widest body gaps are ert-tests (45.1 s against
+  37.9), tramp-tests (22.5 against 19.5), comp-tests (17.7 against
+  14.9), eglot-tests (34.4 against 32.3), semantic-utest-ia (4.16
+  against 2.70), mule-tests (3.23 against 2.02) and process-tests (2.81
+  against 1.62). The Rust gate (run 42452284831) failed one cli_parity
+  comparison, of two threads each reading from a stream that yields:
+  GNU's own run read `main: []' and `thread: [a b x y z c]' where
+  Emaxx's reads each kept their own elements. lread.c's rdstack is
+  one static stack, so GNU's two suspended reads push into each other's
+  entries as its threads happen to switch (locally 9 runs in 10 kept
+  them apart and one ended in end-of-file); the comparison compared a
+  race. Round 347 replaces it with a read suspended in a thread across a
+  collection while the main thread reads a string through without
+  yielding, the same in every GNU run, and records the per-reader stack
+  round 346 gave Emaxx.
+
 **Findings recorded, not fixed:**
+- **Reads in two Lisp threads and the read stack (round 347).**
+  lread.c's rdstack is one static stack: reads suspended in two Lisp
+  threads (a function stream's callback yielding) push and pop it alike,
+  so as GNU's threads happen to switch one read's elements go into the
+  other's entries or a read ends at end-of-file early. Since round 346
+  each Emaxx reader keeps its own stack, so such reads keep their
+  elements apart. To be made: the read stack as rdstack, one for every
+  read, each read0 working down to its base_sp and each entry holding
+  its own values as mark_lread marks them.
+- **callint's `e' code after a key read in the middle of a command
+  (round 347).** GNU's this_command_keys is one vector that a key
+  sequence read while a command reads its arguments (a `k' argument, the
+  minibuffer's commands) writes over from its start, while the `e' code
+  reads its entries at the indices it found when Fcall_interactively
+  began, so an `e' after such a read can get what that read left in the
+  slot.  Emaxx's `e' walks the keys as they were when the call began.
+- **read_char's COMMANDFLAG block (round 347).** Before it waits,
+  read_char redisplays while `!(input_pending && (input_was_pending ||
+  !redisplay_dont_pause))', twice at most, and update_frame pauses for
+  pending input only without `redisplay-dont-pause'; Emaxx's frontend
+  redisplay skips painting whenever input is pending,
+  `redisplay-dont-pause' or not, and read_char has no input_was_pending.
+  read_char also auto-saves (Fdo_auto_save, then redisplay) once
+  `auto-save-interval' keystrokes have come since the last auto-save,
+  and, idle with no input, after `auto-save-timeout' seconds scaled up
+  for a large current buffer, then asks for a collection (maybe_gc); and
+  its COMMANDFLAG keeps both from reads that must not (0, and
+  read_menu_command's -2).  Emaxx's read_char does neither and has no
+  COMMANDFLAG.  To be made: the redisplay loop with keyboard.c's
+  input_pending, update_frame's pause, both auto-saves and maybe_gc,
+  with COMMANDFLAG.
+- **When the menu bar is recomputed (round 347).** update_menu_bar
+  recomputes a frame's menu_bar_items when windows_or_buffers_changed,
+  update_mode_lines or the frame's window_buffer_changed asks; Emaxx has
+  no update_mode_lines and does not set windows_or_buffers_changed at
+  all of GNU's sites, so it recomputes also when the selected buffer,
+  its major mode or the number of active maps changed since the last
+  redisplay.  To be made: xdisp.c's update_mode_lines and
+  windows_or_buffers_changed as GNU sets them, and update_menu_bar on
+  them alone.
+- **A tty's glyphless characters and compositions in positions (round
+  347).** With a terminal that cannot encode a character (LC_ALL=C), GNU
+  displays it as produce_glyphless_glyph's acronym (`?'), where Emaxx
+  shows a `\u4E2D' escape; and posn-at-x-y finds the glyph under a
+  column through compositions (a combining mark composed with the
+  character before it covers the base's columns), where Emaxx's motion
+  gives the mark a zero-width column of its own.  To be made: glyphless
+  characters as term.c's produce_glyphs and produce_glyphless_glyph, and
+  compositions in buffer_posn_from_coords.
 - **The reader's state between nested reads (round 346).** GNU's read0
   keeps its label maps and `read-from-string''s index in globals, which
   a `read' run in the middle of another read (a function stream's
@@ -20456,22 +20636,14 @@ ert-tests as a whole 26,307 ms against 27,211.
   non-selected window showing the same buffer, frames on a second
   terminal are not redrawn when the selected one changes their buffer,
   the second terminal echoes escape sequences as keys, and
-  `tab-bar-mode' draws nothing on a tty. read_char's mouse-menu
-  prompting is not GNU's: a menu cancelled with C-g runs `ignore' with
-  the command hooks and leaves the echo shown, where read_key_sequence
-  returns -1 and command_loop_1 runs no command, and a chosen item is
-  not recorded (record_menu_key's this-command-keys and echo); an
-  unbound down-mouse event after an echoed prefix is not echoed before
-  it is dropped; and the cursor after a minibuffer's read-only error is
-  one column right of GNU's. A menu chosen on a terminal leaves
-  `this-original-command' the menu's keymap, where GNU's read_char
-  returns the chosen event to read_key_sequence and the command is the
-  binding found; command_loop_1 runs the command hooks without the
+  `tab-bar-mode' draws nothing on a tty. An unbound down-mouse event
+  after an echoed prefix is not echoed before it is dropped, and the
+  cursor after a minibuffer's read-only error is one column right of
+  GNU's. command_loop_1 runs the command hooks without the
   long-line narrowing of safe_run_hooks_maybe_narrowed; and a quit
   check's quit is never continuable, where eval.c's quit () is
   signal_or_quit with CONTINUABLE, a debugger `debug-on-quit' entered
-  returning to the check. To be made: the reader's nested data on an
-  explicit stack as read0's, read_char's menu prompting, input polling,
+  returning to the check. To be made: input polling,
   the secondary terminals' input, modes and sizes as the controlling
   terminal's, sys_subshell, the special events in the keyboard buffer's
   order, handle_interrupt in the signal handler, suspend-tty and

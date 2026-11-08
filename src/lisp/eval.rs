@@ -3952,6 +3952,10 @@ pub(crate) struct FrameState {
     /// (frames_discard_buffer).
     pub(crate) buffer_list: Vec<u64>,
     pub(crate) buried_buffer_list: Vec<u64>,
+    /// frame.h's menu_bar_items: keyboard.c:menu_bar_items' vector of
+    /// (KEY NAME DEFS COLUMN) quadruples, the columns display_menu_bar
+    /// placed them at (nil before the first update_menu_bar).
+    pub(crate) menu_bar_items: Value,
 }
 
 impl FrameState {
@@ -4199,6 +4203,7 @@ impl ImageGraphCopier {
                     state.face_hash_table = Some(self.copy(&table));
                 }
                 state.param_alist = self.copy(&state.param_alist);
+                state.menu_bar_items = self.copy(&state.menu_bar_items);
                 value
             }
             Kind::Terminal(terminal) => {
@@ -4937,6 +4942,7 @@ impl LispReachability {
                     self.enqueue(&table);
                 }
                 self.enqueue(&state.param_alist);
+                self.enqueue(&state.menu_bar_items);
             }
             Kind::HashTable(table) => {
                 // alloc.c traces strong arrays in place and defers weak
@@ -5382,6 +5388,7 @@ impl Interpreter {
                 was_invisible: false,
                 buffer_list: Vec::new(),
                 buried_buffer_list: Vec::new(),
+                menu_bar_items: Value::Nil,
             },
         )
     }
@@ -5645,6 +5652,7 @@ impl Interpreter {
         mark(&self.unicode_menu_case_table);
         mark(&self.where_is_cache);
         mark(&self.where_is_cache_keymaps);
+        self.menu.mark(&mut mark);
         mark(&self.font_style_table);
         mark(&self.fontset_table);
         mark(&Value::CharTable(self.standard_syntax_table_id));
@@ -6143,6 +6151,8 @@ impl Interpreter {
             // A reverse-map cache is rebuilt on demand.
             clone.where_is_cache = Value::Nil;
             clone.where_is_cache_keymaps = Value::T;
+            // No menu is being built or shown in the image.
+            clone.menu = Default::default();
             clone.font_style_table = c.copy(&clone.font_style_table);
             clone.fontset_table = c.copy(&clone.fontset_table);
             clone.standard_syntax_table_id = copy_table(c, clone.standard_syntax_table_id);
@@ -7060,6 +7070,9 @@ pub struct InterpreterState {
     /// being filled).
     pub(crate) where_is_cache: Value,
     pub(crate) where_is_cache_keymaps: Value,
+    /// keyboard.c's item_properties and menu_bar_items' vector, and
+    /// menu.c's menu_items with its bookkeeping (staticpro'd there).
+    pub(crate) menu: crate::lisp::primitives::menu::MenuState,
     /// font.c's staticpro'd font_style_table: a vector of the weight,
     /// slant and width tables, at first the values of `font-weight-table',
     /// `font-slant-table' and `font-width-table' themselves (nil until a
@@ -7345,6 +7358,7 @@ impl Interpreter {
                 // window shows (*scratch*, buffer 0).
                 buffer_list: vec![0],
                 buried_buffer_list: Vec::new(),
+                menu_bar_items: Value::Nil,
             },
         );
         initial_terminal.borrow_mut().top_frame = Some(initial_frame);
@@ -7747,6 +7761,7 @@ impl Interpreter {
             unicode_menu_case_table: Value::Nil,
             where_is_cache: Value::Nil,
             where_is_cache_keymaps: Value::T,
+            menu: Default::default(),
             font_style_table: Value::Nil,
             standard_syntax_table_id,
             load_path: Value::Nil,

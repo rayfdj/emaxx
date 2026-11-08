@@ -38,6 +38,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "composite.c's staticpro'd gstring_hash_table, gstring_work and gstring_work_headers: loadup composes no text, so the dumped table is empty (a session's first cached glyph-string gets id 0) and the work vectors hold nothing a call reads before refilling them; the image starts them fresh, as syms_of_composite makes them",
     ),
     (
+        "menu",
+        "keyboard.c's item_properties and menu_bar_items_vector and menu.c's menu_items are scratch vectors staticpro'd for the menu being built or shown, which loadup builds none of, so their dumped contents are never read: init_menu_items and parse_menu_item refill them before any read; the image starts them empty",
+    ),
+    (
         "where_is_cache_keymaps",
         "the keymaps where_is_cache was built for (t while none is complete); reset with where_is_cache",
     ),

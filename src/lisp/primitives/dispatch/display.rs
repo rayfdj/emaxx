@@ -462,10 +462,45 @@ pub(crate) fn message3_nolog(
     }
     // A string with characters is set; anything else clears the echo area.
     if message.is_string() && string_text(&message).is_ok_and(|text| !text.is_empty()) {
-        interp.with_lisp_stack_roots(&message, |interp| set_message(interp, message, env))
+        interp.with_lisp_stack_roots(&message, |interp| set_message(interp, message, env))?;
     } else {
-        clear_message(interp, env, true, true)
+        clear_message(interp, env, true, true)?;
     }
+    echo_area_display(interp, env);
+    Ok(())
+}
+
+/// The terminal frontend's xdisp.c:echo_area_display (true): the echo
+/// area displayed and the frame updated now, unless redisplay is
+/// inhibited or running.
+pub(crate) type EchoAreaDisplay = Box<dyn FnMut(&mut Interpreter, &mut Env)>;
+
+thread_local! {
+    static ECHO_AREA_DISPLAY: std::cell::RefCell<Option<EchoAreaDisplay>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn set_echo_area_display(display: Option<EchoAreaDisplay>) {
+    ECHO_AREA_DISPLAY.with_borrow_mut(|slot| *slot = display);
+}
+
+/// message3_nolog's echo_area_display (true): with a current message, or
+/// no minibuffer active, the echo area shown on the glass at once; an
+/// active minibuffer without a message waits for the next redisplay
+/// (wset_redisplay of the mini-window).
+fn echo_area_display(interp: &mut Interpreter, env: &mut Env) {
+    if echo_area_message_value().is_none() && interp.minibuffer_depth() > 0 {
+        return;
+    }
+    let Some(mut display) = ECHO_AREA_DISPLAY.with_borrow_mut(Option::take) else {
+        return;
+    };
+    display(interp, env);
+    ECHO_AREA_DISPLAY.with_borrow_mut(|slot| {
+        if slot.is_none() {
+            *slot = Some(display);
+        }
+    });
 }
 
 /// xdisp.c:set_message: `set-message-function' may replace MESSAGE or
@@ -1528,15 +1563,19 @@ fn position_at_coordinates(
         let motion = super::buffer_edit::display_motion(interp, env, &motion_args, true)?;
         let dx = text_x - motion.hpos;
         let dy = text_y - motion.vpos;
-        // dispnew.c obtains dimensions from a realized glyph matrix.
-        // Batch has no such matrix, even though position traversal works.
+        // dispnew.c obtains dimensions from a realized glyph matrix:
+        // the glyph's pixel_width and its ascent plus descent, which a
+        // terminal's glyphs leave at 0 (term.c's append_glyph sets neither),
+        // the space display_line appends at a line's end or the buffer's
+        // being one column wide.  Batch has no such matrix, even though
+        // position traversal works.
         let realized = interactive_window_metrics().is_some();
         let width = if realized {
             interp
                 .buffer
                 .borrow()
                 .char_at(motion.position)
-                .map_or(0, |character| {
+                .map_or(1, |character| {
                     if character == '\t' || character == '\n' {
                         1
                     } else {
@@ -1560,7 +1599,7 @@ fn position_at_coordinates(
             ),
             Value::Nil,
             Value::cons(Value::Integer(dx), Value::Integer(dy)),
-            Value::cons(Value::Integer(width), Value::Integer(i64::from(realized))),
+            Value::cons(Value::Integer(width), Value::Integer(0)),
         ]))
     })();
     interp.with_lisp_stack_roots(&result, |interp| interp.set_current_buffer_id(old_buffer))?;

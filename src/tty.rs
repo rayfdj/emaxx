@@ -87,6 +87,10 @@ struct WindowView {
     /// The point GNU's incremental mode-line matrix keeps displaying until
     /// the next input event after a folded same-row motion.
     deferred_mode_line_point: Option<usize>,
+    /// The window's `w->cursor' as its last display left it, in frame
+    /// cells (column, row): update_frame_1 puts the terminal's one cursor
+    /// there while the window is the frame's selected one.
+    frame_cursor: Option<(u16, u16)>,
 }
 
 fn terminal_output() -> Box<dyn Write> {
@@ -402,11 +406,6 @@ struct TtyState {
     /// generation is unchanged (GNU's face_change flag).
     face_cache: std::collections::HashMap<String, CellAttrs>,
     face_cache_generation: u64,
-    /// The composed echo row currently belongs to an active minibuffer:
-    /// the interpreter-less blocking-read repaint must not overwrite it
-    /// with the plain message channel (the composed paint carries the
-    /// prompt face and overlay strings).
-    minibuffer_owns_echo: bool,
     /// Identity of the read whose grow-only minibuffer height is retained.
     /// Minibuffer buffers are reused, so the buffer id alone cannot detect
     /// entry into a fresh read.
@@ -415,12 +414,20 @@ struct TtyState {
     /// window's buffer, major mode, and active keymap set are unchanged
     /// — GNU recomputes menu_bar_items on buffer, window, or mode-line
     /// changes (isearch entering is one), not per key.
-    menu_bar_row: Option<((u64, String, usize), String)>,
-    /// The message-emission count the glass reflects.  A menu's modal
-    /// loop repaints the echo row only when this falls behind — GNU's
-    /// message3 paints through a frozen redisplay while read_char's
+    /// The selected buffer, major mode and live minor-mode map count the
+    /// menu bar was last computed for.
+    menu_bar_key: Option<(u64, String, usize)>,
+    /// The message-emission count the glass reflects: a wait for input
+    /// repaints the echo row only when this falls behind, as read_char's
     /// input-arrival wipe waits for the next redisplay.
     painted_message_tick: u64,
+    /// The selected window's cursor the last redisplay computed:
+    /// update_frame_1's cursor on a terminal frame when it is not in the
+    /// echo area.
+    window_cursor: (u16, u16),
+    /// Where the last frame update left the cursor (the tty's curX and
+    /// curY after update_frame_1's cursor_to).
+    update_cursor: (u16, u16),
     /// The window layout the last redisplay showed (each window's id and
     /// edges) and each shown buffer's modification count then: a change
     /// in either is a windows_or_buffers_changed event (fset_redisplay,
@@ -430,6 +437,23 @@ struct TtyState {
 }
 
 impl TtyState {
+    /// The frame's row Y as last painted: a window row, or below them one
+    /// of the echo area's (the frame's current matrix, all its lines).
+    fn screen_row(&self, y: usize) -> Option<&PaintRow> {
+        match y.checked_sub(self.painted_rows.len()) {
+            None => self.painted_rows.get(y),
+            Some(echo) => self.painted_echo.get(echo),
+        }
+    }
+
+    /// Record ROW as painted at the frame's row Y (see `screen_row').
+    fn set_screen_row(&mut self, y: usize, row: PaintRow) {
+        match y.checked_sub(self.painted_rows.len()) {
+            None => self.painted_rows[y] = row,
+            Some(echo) => self.painted_echo[echo] = row,
+        }
+    }
+
     fn activate_terminal(&mut self, id: u64) {
         if id == self.terminal_id {
             return;
@@ -459,10 +483,11 @@ impl TtyState {
             terminal_size: None,
             face_cache: std::collections::HashMap::new(),
             face_cache_generation: 0,
-            minibuffer_owns_echo: false,
             minibuffer_activation_id: None,
-            menu_bar_row: None,
+            menu_bar_key: None,
             painted_message_tick: 0,
+            window_cursor: (0, 0),
+            update_cursor: (0, 0),
             last_layout: Vec::new(),
             buffer_modiffs: std::collections::HashMap::new(),
         }
@@ -650,10 +675,15 @@ fn run_owned(
             let _ = interpreter.unbind_to(count, env);
         }
     })));
+    // message3_nolog's echo_area_display (true): a message, or its
+    // clearing, reaches the glass when it is made.
+    crate::lisp::primitives::set_echo_area_display(Some(Box::new({
+        let state = std::rc::Rc::clone(&state);
+        move |interpreter, env| draw_echo_row_composed(interpreter, env, &state)
+    })));
     // term.c's menu_show_hook: the dropdown executor F10's popup path
     // reaches through x-popup-menu.
-    crate::lisp::primitives::set_tty_menu_executor(Some(make_menu_executor(
-        queue.clone(),
+    crate::lisp::primitives::menu::set_tty_menu_activate(Some(make_menu_activate(
         std::rc::Rc::clone(&state),
     )));
     // term.c:init_tty's terminal: its read_socket_hook
@@ -711,7 +741,8 @@ fn run_owned(
     crate::lisp::primitives::set_tty_input_modes(None, false, None);
     drop(tty_modes);
     crate::lisp::primitives::set_tty_input_discard(None);
-    crate::lisp::primitives::set_tty_menu_executor(None);
+    crate::lisp::primitives::menu::set_tty_menu_activate(None);
+    crate::lisp::primitives::set_echo_area_display(None);
     crate::lisp::primitives::set_interactive_window_metrics(None);
     // Fkill_emacs's exit leaves each child as shut_down_emacs left it
     // (hung up, not killed), as the batch exit does.
@@ -1081,36 +1112,6 @@ fn make_event_poller(
     })
 }
 
-/// A tty menu's read_menu_input: the keyboard buffer's next event, read
-/// as read_key_sequence's read_char waits for it, in kbd_buffer_get_event
-/// with DO_DISPLAY false (tty->showing_menu).  A quit is the quit
-/// character, `quit-flag' cleared as read_key_sequence clears it; None
-/// when the terminal is gone.
-fn menu_read_event(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    queue: &SharedEventQueue,
-) -> Result<Option<QueuedInput>, LispError> {
-    loop {
-        if let Some(QueuedInput::Lisp(event)) = queue.pop() {
-            return Ok(Some(QueuedInput::Lisp(queue.decode_event(
-                interpreter,
-                env,
-                event,
-            ))));
-        }
-        if TERMINAL_GONE.get() {
-            return Ok(None);
-        }
-        if crate::lisp::primitives::kbd_buffer_get_event_wait(interpreter, env, None, false)?
-            == crate::lisp::primitives::KbdWait::Quit
-        {
-            interpreter.set_c_variable("quit-flag", Value::Nil);
-            return Ok(Some(QueuedInput::Lisp(Value::Integer(7))));
-        }
-    }
-}
-
 /// Slice one unbounded echo paint into mini-window rows exactly as the
 /// GNU tty displays a tall message: embedded newlines break rows, a
 /// wider line continues with the `\' marker in the last column, and the
@@ -1284,34 +1285,55 @@ fn draw_echo_row_composed(
     state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) {
     // echo_area_display updates the frame only `if (update_frame_p &&
-    // !redisplaying_p)'.
-    if crate::lisp::primitives::redisplaying_p() {
+    // !redisplaying_p)', and displays nothing while redisplay is
+    // inhibited (a tty menu's activation sets `inhibit-redisplay').
+    if crate::lisp::primitives::redisplaying_p()
+        || interpreter
+            .forwarded_c_value("inhibit-redisplay", env)
+            .is_some_and(|value| value.is_truthy())
+    {
         return;
     }
     let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
         return;
     };
+    // `if (!NILP (echo_area_buffer[0]) || minibuf_level == 0)': with no
+    // message an active minibuffer's row is redisplay's, as it is now,
+    // not as the last redisplay found it.
+    if crate::lisp::primitives::echo_area_message_value().is_none()
+        && interpreter.minibuffer_depth() > 0
+    {
+        return;
+    }
     let Ok(mut state) = state.try_borrow_mut() else {
         return;
     };
-    if state.minibuffer_owns_echo {
-        return;
-    }
     let cols = usize::from(cols.max(1));
     let rows = usize::from(rows.max(1));
     let max_rows = state.echo_max_rows.max(1);
     let (long, _, echo_cursor) =
         compose_echo_row(interpreter, env, cols * max_rows, &mut state.face_cache);
     let mut echo_paint = wrap_echo_paint(&long, cols, max_rows);
-    let mut mini_rows = state.echo_rows.max(1);
+    let mini_rows = state.echo_rows.max(1);
     if echo_paint.len() > mini_rows {
-        for row in rows.saturating_sub(echo_paint.len())..rows {
-            if row < state.painted_rows.len() {
-                state.painted_rows[row] = PaintRow::unpainted();
-            }
+        // display_echo_area's resize_mini_window changed the mini window's
+        // height: "Must update other windows", a redisplay_internal that
+        // pending input does not interrupt (`redisplay-dont-pause' bound
+        // to t), in place of the echo area's own update_frame.
+        drop(state);
+        let count = interpreter.specpdl_index();
+        if interpreter
+            .specbind_symbol(
+                &cached_symbol!("redisplay-dont-pause").with(|symbol| *symbol),
+                Value::T,
+                env,
+            )
+            .is_ok()
+        {
+            crate::lisp::primitives::run_tty_frame_redraw(interpreter, env);
         }
-        state.echo_rows = echo_paint.len();
-        mini_rows = echo_paint.len();
+        let _ = interpreter.unbind_to(count, env);
+        return;
     }
     echo_paint.resize(mini_rows, PaintRow::blank(cols));
     encode_terminal_cells(interpreter, &mut echo_paint);
@@ -1320,20 +1342,35 @@ fn draw_echo_row_composed(
     for (index, echo_row) in echo_paint.iter().enumerate() {
         let _ = paint_row(&mut out, base + index, echo_row);
     }
-    if interpreter
+    // update_frame_1's cursor: in the echo area with `cursor-in-echo-area'
+    // or a message shown over the selected minibuffer; otherwise the frame's
+    // selected window's own, as its last display computed it (none kept,
+    // where the last frame update left the terminal's).
+    let cursor_position = if interpreter
         .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
         .is_some_and(|value| value.is_truthy())
+        || (interpreter.active_minibuffer_buffer_id().is_some()
+            && interpreter.selected_window_id() == interpreter.minibuffer_window_id()
+            && crate::lisp::primitives::echo_area_message_value().is_some())
     {
         let (row, col) = wrapped_echo_cursor(&long, echo_cursor.unwrap_or(0), cols, mini_rows);
-        let _ = queue!(
-            out,
-            cursor::MoveTo(
-                col.min(cols.saturating_sub(1)) as u16,
-                (base + row).min(rows.saturating_sub(1)) as u16,
-            ),
-            cursor::Show,
-        );
-    }
+        (
+            col.min(cols.saturating_sub(1)) as u16,
+            (base + row).min(rows.saturating_sub(1)) as u16,
+        )
+    } else {
+        state
+            .views
+            .get(&interpreter.selected_window_id())
+            .and_then(|view| view.frame_cursor)
+            .unwrap_or(state.window_cursor)
+    };
+    state.update_cursor = cursor_position;
+    let _ = queue!(
+        out,
+        cursor::MoveTo(cursor_position.0, cursor_position.1),
+        cursor::Show,
+    );
     let _ = out.flush();
     state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
     state.painted_echo = echo_paint;
@@ -1345,9 +1382,8 @@ fn draw_echo_row(interpreter: &mut Interpreter, state: &std::rc::Rc<std::cell::R
     let Ok(current) = state.try_borrow() else {
         return;
     };
-    if current.minibuffer_owns_echo
-        || (current.painted_message_tick == crate::lisp::primitives::echo_area_message_tick()
-            && !crate::lisp::primitives::tty_cursor_in_echo_area())
+    if current.painted_message_tick == crate::lisp::primitives::echo_area_message_tick()
+        && !crate::lisp::primitives::tty_cursor_in_echo_area()
     {
         return;
     }
@@ -1355,6 +1391,7 @@ fn draw_echo_row(interpreter: &mut Interpreter, state: &std::rc::Rc<std::cell::R
     draw_echo_row_composed(interpreter, &mut Env::new(), state);
 }
 
+#[cfg(test)]
 use crate::lisp::primitives::KeyResolution as Resolution;
 
 #[cfg(test)]
@@ -1473,6 +1510,9 @@ struct WindowPlan {
     /// Cursor cell within the window body (including any line-number gutter),
     /// for the selected window.
     cursor: Option<(usize, usize)>,
+    /// The same cell for any window showing its point: the window's own
+    /// `w->cursor', which update_frame_1 uses once the window is selected.
+    point_cursor: Option<(usize, usize)>,
 }
 
 /// GNU's `truncate-partial-width-windows' default: windows narrower than
@@ -3805,6 +3845,7 @@ fn plan_window_text(
             top_pos,
             window_end,
             cursor: selected.then_some((point_row, cursor_col)),
+            point_cursor: chosen.cursor_row.map(|_| (point_row, cursor_col)),
         },
         chosen,
         consumed,
@@ -4240,6 +4281,35 @@ fn redraw_with_echo_policy(
     let cols = cols.min(interpreter.frame_width().max(1) as usize);
     let rows = rows.min(interpreter.frame_height().max(1) as usize);
     run_pre_redisplay_function(interpreter, env);
+    // prepare_menu_bars: the selected frame's update_menu_bar after
+    // `pre-redisplay-function'.  It recomputes when the windows or buffers
+    // changed, or else -- Emaxx tracking no update_mode_lines -- when the
+    // selected buffer, its major mode or its live minor-mode maps changed.
+    {
+        let mode = interpreter
+            .lookup_var_key(cached_symbol!("major-mode"), env)
+            .map(|mode| format!("{mode}"))
+            .unwrap_or_default();
+        let key = (
+            interpreter.current_buffer_id(),
+            mode,
+            crate::lisp::primitives::active_keymap_count(interpreter, env),
+        );
+        let changed =
+            interpreter.windows_or_buffers_changed || state.menu_bar_key.as_ref() != Some(&key);
+        let frame = interpreter.selected_frame_id;
+        match crate::lisp::primitives::menu::update_menu_bar(
+            interpreter,
+            frame,
+            true,
+            false,
+            changed,
+            env,
+        ) {
+            Ok(_) => state.menu_bar_key = Some(key),
+            Err(error) => debug_log(&format!("update_menu_bar: {error:?}")),
+        }
+    }
     // Rows above the window tree belong to the frame's menu and tab bars.
     let menu_lines = crate::lisp::primitives::frame_top_margin(interpreter.selected_frame_id)
         .clamp(0, (rows as i64 - 2).max(0)) as usize;
@@ -5031,17 +5101,22 @@ fn redraw_with_echo_policy(
             text_height: text_rows,
             window_end: plan.window_end,
         };
+        let to_frame = |(row, col): (usize, usize)| {
+            (
+                (info.left + left_margin + col).min(cols - 1) as u16,
+                (text_top + row).min(frame_rows - 1) as u16,
+            )
+        };
+        let frame_cursor = plan.point_cursor.map(to_frame);
         if info.selected {
-            if let Some((row, col)) = plan.cursor {
-                cursor_position = (
-                    (info.left + left_margin + col).min(cols - 1) as u16,
-                    (text_top + row).min(frame_rows - 1) as u16,
-                );
+            if let Some(position) = plan.cursor.map(to_frame) {
+                cursor_position = position;
             }
             selected_sync = Some(metrics);
         }
         {
             let view = state.views.entry(info.window_id).or_default();
+            view.frame_cursor = frame_cursor;
             view.last_start = Some(info.start);
             view.last_restriction = Some(restriction);
             view.last_modiff = Some(modiff);
@@ -5876,41 +5951,10 @@ fn redraw_with_echo_policy(
         }
     }
 
-    // The menu bar row (GNU's display_menu_bar): every active keymap's
-    // top-level captions one space apart, the whole row in the `menu'
-    // face.  Recomputed — after menu-bar-update-hook, like GNU's
-    // update_menu_bar — when the selected buffer or its major mode
-    // changed, not per keystroke.
+    // The menu bar row (GNU's display_menu_bar): FRAME_MENU_BAR_ITEMS'
+    // names, each padded with one space and drawn over the `menu' face
+    // with its own face properties, their columns recorded on the frame.
     if menu_lines > 0 && !frame.is_empty() {
-        let mode = interpreter
-            .lookup_var_key(cached_symbol!("major-mode"), env)
-            .map(|mode| format!("{mode}"))
-            .unwrap_or_default();
-        let cache_key = (
-            interpreter.current_buffer_id(),
-            mode,
-            crate::lisp::primitives::active_keymap_count(interpreter, env),
-        );
-        if state
-            .menu_bar_row
-            .as_ref()
-            .is_none_or(|(key, _)| *key != cache_key)
-        {
-            // update_menu_bar: safe_run_hooks of each, quits inhibited.
-            for hook in ["activate-menubar-hook", "menu-bar-update-hook"] {
-                let _ = batch::safe_run_hooks(
-                    interpreter,
-                    &crate::lisp::types::symbols::SymbolKey::new(hook).symbol(),
-                );
-            }
-            let captions = crate::lisp::primitives::menu_bar_row_captions(interpreter, env);
-            let mut text = String::new();
-            for caption in &captions {
-                text.push_str(caption);
-                text.push(' ');
-            }
-            state.menu_bar_row = Some((cache_key, text));
-        }
         let menu_attrs = realized_face(
             &mut state.face_cache,
             interpreter,
@@ -5918,14 +5962,31 @@ fn redraw_with_echo_policy(
             &frame_faces,
             &Value::symbol("menu"),
         );
-        let text = state
-            .menu_bar_row
-            .as_ref()
-            .map(|(_, text)| text.clone())
-            .unwrap_or_default();
         let mut row = PaintRow::blank(cols);
         row.attrs = vec![menu_attrs; cols];
-        row.blit(0, &text, menu_attrs);
+        let items = crate::lisp::primitives::menu::display_menu_bar_items(
+            interpreter,
+            interpreter.selected_frame_id,
+        );
+        for (string, column) in items {
+            let Some(text) = crate::lisp::primitives::string_like(&string) else {
+                continue;
+            };
+            row.blit(column, &text.text, menu_attrs);
+            if let Some(props) = &text.props {
+                for (from, to, plist) in props.iter() {
+                    let face = crate::intervals::plist_get(plist, Value::symbol("face"));
+                    if face.is_nil() {
+                        continue;
+                    }
+                    let attrs = merge_cell_attrs(
+                        menu_attrs,
+                        realized_face(&mut state.face_cache, interpreter, env, &frame_faces, &face),
+                    );
+                    row.overlay((column + from).min(cols), (column + to).min(cols), attrs);
+                }
+            }
+        }
         frame[0] = row;
     }
 
@@ -5960,7 +6021,6 @@ fn redraw_with_echo_policy(
     // active minibuffer's row comes from its buffer with the text
     // properties read_minibuf applied — the prompt's face reaches the
     // glass.
-    state.minibuffer_owns_echo = echo_from_minibuffer;
     // Full redisplay reflects the message channel; the glass is caught
     // up with every emission made so far.
     state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
@@ -5976,6 +6036,7 @@ fn redraw_with_echo_policy(
     // update_frame_1's cursor: in the echo area with `cursor-in-echo-area'
     // or a message shown over the selected active minibuffer; otherwise
     // the selected window's, echoing included.
+    state.window_cursor = cursor_position;
     if (minibuffer_echo_owns_hardware_cursor(interpreter, echo_from_minibuffer)
         || (!echo_from_minibuffer
             && interpreter.active_minibuffer_buffer_id().is_some()
@@ -5999,6 +6060,7 @@ fn redraw_with_echo_policy(
             (frame_rows + row).min(rows.saturating_sub(1)) as u16,
         );
     }
+    state.update_cursor = cursor_position;
     queue!(
         out,
         cursor::MoveTo(cursor_position.0, cursor_position.1),
@@ -9895,25 +9957,66 @@ fn tty_differential_end_to_end() {
     assert!(status.success(), "TTY differential gate failed");
 }
 
-/// term.c's tty_menu_activate: draw the dropdown over the glass, run a
-/// modal key loop under tty-menu-navigation-map (bound by the caller),
-/// and restore the screen behind on exit.  Keyboard navigation drives a
-/// virtual selection row exactly as GNU drives its virtual mouse.
-fn make_menu_executor(
-    queue: SharedEventQueue,
+/// term.c's tty_menu_activate for the frontend: MENU drawn over the glass
+/// at X0, Y0 (its first item's cell, one-based) and run modally under
+/// `tty-menu-navigation-map' (bound by tty_menu_show), keyboard
+/// navigation driving GNU's virtual mouse, submenus opening beside their
+/// pane; the screen behind restored on exit.
+fn make_menu_activate(
     state: std::rc::Rc<std::cell::RefCell<TtyState>>,
-) -> crate::lisp::primitives::TtyMenuExecutor {
-    use crate::lisp::primitives::{TtyMenuOutcome, TtyMenuPane};
+) -> crate::lisp::primitives::menu::TtyMenuActivate {
+    use crate::lisp::primitives::menu::{
+        TTYM_IA_SELECT, TTYM_NEXT, TTYM_NO_SELECT, TTYM_PREV, TTYM_SUCCESS, TtyMenu,
+        TtyMenuActivation,
+    };
+    // tty_menu_state: a shown menu (its path of submenu indices from the
+    // root), its pane number, its origin and the screen behind it.
+    struct MenuLevel {
+        path: Vec<usize>,
+        pane: i32,
+        x: i64,
+        y: i64,
+        screen_behind: Vec<(usize, PaintRow)>,
+    }
+    fn menu_at<'a>(root: &'a TtyMenu, path: &[usize]) -> &'a TtyMenu {
+        let mut menu = root;
+        for &index in path {
+            menu = menu.submenu[index].as_deref().expect("menu path");
+        }
+        menu
+    }
+    // read_menu_input's results.
+    #[derive(PartialEq)]
+    enum MiResult {
+        QuitMenu,
+        Continue,
+        ItemSelected,
+        NextItem,
+        PrevItem,
+        ScrollForward,
+        ScrollBack,
+    }
     Box::new(
         move |interpreter: &mut Interpreter,
               env: &mut Env,
-              pane: &TtyMenuPane,
-              x0: usize,
-              y0: usize| {
+              menu: &mut TtyMenu,
+              x0: i64,
+              y0: i64,
+              kbd_navigation: bool| {
             let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
-                return Ok(TtyMenuOutcome::Quit);
+                return Ok(TtyMenuActivation {
+                    status: crate::lisp::primitives::menu::TTYM_FAILURE,
+                    pane: 0,
+                    selidx: 0,
+                });
             };
             let (cols, rows) = (usize::from(cols.max(1)), usize::from(rows.max(1)));
+            let total_lines = interpreter.frame_height().max(1);
+            let sf = interpreter.selected_frame_id;
+            // Don't allow non-positive x0 and y0, lest the menu will wrap
+            // around the display.
+            let x0 = x0.max(1);
+            let y0 = y0.max(1);
             let mut resolve_face = |name: &str| {
                 let mut state = state.borrow_mut();
                 // A tty menu's faces are the frame's.
@@ -9925,233 +10028,639 @@ fn make_menu_executor(
                     &Value::symbol(name),
                 )
             };
-            let disabled_attrs = resolve_face("tty-menu-disabled-face");
-            let enabled_attrs = resolve_face("tty-menu-enabled-face");
-            let selected_raw = resolve_face("tty-menu-selected-face");
-            // GNU derives the selected face over the enabled one
-            // (lookup_derived_face with faces[1] as its base).
-            let selected_attrs = merge_cell_attrs(enabled_attrs, selected_raw);
-
-            let left = x0.saturating_sub(1).min(cols.saturating_sub(1));
-            let box_width = (pane.width + 2).min(cols - left);
-            let title_row = y0.saturating_sub(1);
-            let max_items = pane
-                .items
-                .len()
-                .min(rows.saturating_sub(1) - y0.min(rows - 2));
-            if max_items == 0 {
-                return Ok(TtyMenuOutcome::Quit);
-            }
-
-            // The screen behind the menu, restored on the way out
-            // (save_and_enable_current_matrix / screen_update).
-            let saved: Vec<(usize, PaintRow)> = {
-                let state = state.borrow();
-                std::iter::once(title_row)
-                    .chain(y0..y0 + max_items)
-                    .filter(|row| *row < state.painted_rows.len())
-                    .map(|row| (row, state.painted_rows[row].clone()))
+            let disabled = resolve_face("tty-menu-disabled-face");
+            let enabled = resolve_face("tty-menu-enabled-face");
+            let selected = resolve_face("tty-menu-selected-face");
+            // faces[2] and faces[3]: the selected face derived from the
+            // disabled and the enabled one.
+            let faces = [
+                disabled,
+                enabled,
+                merge_cell_attrs(disabled, selected),
+                merge_cell_attrs(enabled, selected),
+            ];
+            // Make sure the menu title is always displayed with
+            // `tty-menu-selected-face', no matter where the mouse pointer
+            // is.
+            let title_faces = [faces[3]; 4];
+            // save_and_enable_current_matrix: every line of the frame, the
+            // echo area's included.
+            let save_rows = |state: &TtyState| -> Vec<(usize, PaintRow)> {
+                state
+                    .painted_rows
+                    .iter()
+                    .chain(state.painted_echo.iter())
+                    .cloned()
+                    .enumerate()
                     .collect()
             };
-
-            let menu_cell = |text: &str, width: usize, attrs: CellAttrs, base: &PaintRow| {
-                let mut row = base.clone();
-                let mut painted = String::from(" ");
-                painted.push_str(text);
-                while painted.chars().count() < width {
-                    painted.push(' ');
-                }
-                let painted: String = painted.chars().take(width).collect();
-                row.blit(left, &painted, attrs);
-                row
-            };
-            // The title cell: the pane name with the " >" submenu marker,
-            // in the selected face — ' File > ' clobbering the bar.
-            let title_width = pane.title.chars().count() + 4;
-            let draw = |state: &mut TtyState, selected_row: usize, first_item: usize| {
-                let mut out = terminal_output();
-                let _ = queue!(out, cursor::Hide);
-                if title_row < state.painted_rows.len() {
-                    let cell = menu_cell(
-                        &format!("{} >", pane.title),
-                        title_width.min(cols - left),
-                        selected_attrs,
-                        &state.painted_rows[title_row],
-                    );
-                    let _ = paint_row(&mut out, title_row, &cell);
-                    state.painted_rows[title_row] = cell;
-                }
-                // tty_menu_display starts at FIRST_ITEM: a pane taller
-                // than the glass shows a window of itself and scrolls.
-                for (index, item) in pane
-                    .items
-                    .iter()
-                    .skip(first_item)
-                    .take(max_items)
-                    .enumerate()
-                {
-                    let row = y0 + index;
-                    if row >= state.painted_rows.len() {
-                        break;
-                    }
-                    let attrs = if index == selected_row {
-                        if item.enabled {
-                            selected_attrs
-                        } else {
-                            merge_cell_attrs(disabled_attrs, selected_raw)
-                        }
-                    } else if item.enabled {
-                        enabled_attrs
-                    } else {
-                        disabled_attrs
-                    };
-                    let cell = menu_cell(&item.text, box_width, attrs, &state.painted_rows[row]);
-                    let _ = paint_row(&mut out, row, &cell);
-                    state.painted_rows[row] = cell;
-                }
-                let _ = queue!(
-                    out,
-                    cursor::MoveTo(
-                        left.min(cols.saturating_sub(1)) as u16,
-                        (y0 + selected_row).min(rows.saturating_sub(1)) as u16,
-                    ),
-                    cursor::Show,
-                );
-                let _ = out.flush();
-            };
-            let place_cursor = |selected_row: usize| {
-                let mut out = terminal_output();
-                let _ = queue!(
-                    out,
-                    cursor::MoveTo(
-                        left.min(cols.saturating_sub(1)) as u16,
-                        (y0 + selected_row).min(rows.saturating_sub(1)) as u16,
-                    ),
-                    cursor::Show,
-                );
-                let _ = out.flush();
-            };
-
-            // GNU's virtual mouse: a visible row plus the scroll base
-            // (tty_menu_activate's y and first_item).
-            let mut selected_row = 0usize;
-            let mut first_item = 0usize;
-            let outcome = (|| -> Result<TtyMenuOutcome, LispError> {
-                Ok(loop {
-                    {
-                        let mut state = state.borrow_mut();
-                        draw(&mut state, selected_row, first_item);
-                    }
-                    // One key sequence under the navigation map; prefixes keep
-                    // reading, everything else maps per read_menu_input.
-                    crate::lisp::primitives::init_raw_keybuf_count(interpreter);
-                    let mut reader = crate::lisp::primitives::KeySequenceReader::new(
-                        interpreter,
-                        Value::Nil,
-                        env,
-                    )?;
-                    let command = loop {
-                        // Live echo under the menu, but only for messages
-                        // emitted since the glass was last painted: GNU's
-                        // message3 repaints through a frozen redisplay (the
-                        // `(message "")' between cycled menus), while
-                        // read_char's input-arrival wipe leaves the old
-                        // pixels alone until the next full redisplay.
-                        let emitted = crate::lisp::primitives::echo_area_message_tick();
-                        if state
-                            .try_borrow()
-                            .is_ok_and(|state| state.painted_message_tick != emitted)
-                        {
-                            draw_echo_row_composed(interpreter, env, &state);
-                            place_cursor(selected_row);
-                        }
-                        // read_menu_command binds `echo-keystrokes' to 0: no
-                        // echoing while navigating the menu.
-                        let event = menu_read_event(interpreter, env, &queue)?;
-                        let Some(event) = event else {
-                            break Value::T;
-                        };
-                        let QueuedInput::Lisp(event) = event;
-                        if event == Value::Integer(7) {
-                            break Value::T;
-                        }
-                        interpreter.keyboard_input.last_event_reread = false;
-                        match reader.read_event(interpreter, event, env)? {
-                            Resolution::Command(binding) => break binding,
-                            Resolution::Prefix => {}
-                            Resolution::Undefined => break Value::Nil,
-                        }
-                    };
-                    let name = match command.kind() {
-                        Kind::Symbol(_) => command.as_symbol().expect("symbol command"),
-                        Kind::T => "tty-menu-exit",
-                        _ => "",
-                    };
-                    match name {
-                        "tty-menu-exit" => break TtyMenuOutcome::Quit,
-                        // MI_NEXT_ITEM and MI_PREV_ITEM leave only under
-                        // KBD_NAVIGATION; otherwise the menu stays up.
-                        "tty-menu-next-menu" if pane.kbd_navigation => {
-                            break TtyMenuOutcome::NextMenu;
-                        }
-                        "tty-menu-prev-menu" if pane.kbd_navigation => {
-                            break TtyMenuOutcome::PrevMenu;
-                        }
-                        "tty-menu-next-item" => {
-                            // Below the last visible row GNU scrolls forward
-                            // (MI_SCROLL_FORWARD): the window advances until
-                            // the selection sits on the final item, and one
-                            // more step wraps to the top of the whole menu.
-                            if selected_row + 1 < max_items {
-                                selected_row += 1;
-                            } else if selected_row + first_item + 1 == pane.items.len() {
-                                selected_row = 0;
-                                first_item = 0;
-                            } else {
-                                first_item += 1;
-                            }
-                        }
-                        "tty-menu-prev-item" => {
-                            // MI_SCROLL_BACK: above the first visible row the
-                            // window retreats; at the very top it wraps to
-                            // the menu's last window with the final item
-                            // selected.
-                            if selected_row > 0 {
-                                selected_row -= 1;
-                            } else if first_item == 0 {
-                                selected_row = max_items - 1;
-                                first_item = pane.items.len() - max_items;
-                            } else {
-                                first_item -= 1;
-                            }
-                        }
-                        "tty-menu-select" => {
-                            // A separator or disabled item answers no selection
-                            // (TTYM_IA_SELECT), like GNU.
-                            let selection = selected_row + first_item;
-                            if pane.items[selection].enabled {
-                                break TtyMenuOutcome::Selected(selection);
-                            }
-                            break TtyMenuOutcome::NoSelect;
-                        }
-                        _ => {}
-                    }
-                })
-            })();
-
-            // screen_update: put back what the menu covered.
-            {
-                let mut state = state.borrow_mut();
+            // screen_update: the saved rows restored by
+            // update_frame_with_menu (f, -1, -1), which leaves the cursor
+            // where a frame update puts it.
+            let screen_update = |state: &mut TtyState, saved: &[(usize, PaintRow)]| -> (i64, i64) {
                 let mut out = terminal_output();
                 for (row, cell) in saved {
-                    let _ = paint_row(&mut out, row, &cell);
-                    if row < state.painted_rows.len() {
-                        state.painted_rows[row] = cell;
+                    if state
+                        .screen_row(*row)
+                        .is_some_and(|painted| painted != cell)
+                    {
+                        let _ = paint_row(&mut out, *row, cell);
+                        state.set_screen_row(*row, cell.clone());
                     }
                 }
+                let (col, row) = state.update_cursor;
+                let _ = queue!(out, cursor::MoveTo(col, row));
+                let _ = out.flush();
+                (i64::from(col), i64::from(row))
+            };
+            // display_tty_menu_item: ITEM_TEXT at X, Y in FACE, a blank
+            // before it, padded to WIDTH, " >" after a submenu's name,
+            // clipped before the frame's last column.
+            let display_item = |state: &mut TtyState,
+                                interpreter: &Interpreter,
+                                text: &[u8],
+                                width: usize,
+                                face: CellAttrs,
+                                x: usize,
+                                y: usize,
+                                submenu: bool| {
+                let Some(painted) = state.screen_row(y) else {
+                    return;
+                };
+                let mut row = painted.clone();
+                let last_visible_x = cols.saturating_sub(1);
+                let mut cells = String::from(" ");
+                let item = menu_item_display_text(interpreter, text);
+                if submenu {
+                    cells.push_str(&item);
+                    let used = 1 + text.len();
+                    cells.push_str(" >");
+                    let mut count = cell_count(&cells);
+                    while count < width.max(used) {
+                        cells.push(' ');
+                        count += 1;
+                    }
+                } else {
+                    cells.push_str(&item);
+                    let mut count = cell_count(&cells);
+                    while count < width {
+                        cells.push(' ');
+                        count += 1;
+                    }
+                }
+                let room = last_visible_x.saturating_sub(x);
+                let (cells, _) = take_cells_padded(&cells, room.min(cell_count(&cells)), ' ');
+                if row.text.len() < cols {
+                    row = PaintRow::blank(cols);
+                }
+                row.blit(x, &cells, face);
+                let mut out = terminal_output();
+                let _ = paint_row(&mut out, y, &row);
+                state.set_screen_row(y, row);
+            };
+            // menu_help_message and prev_menu_help_message, as the item
+            // whose help text they point at (none for a null pointer),
+            // with the pane and item numbers it was shown for.
+            let mut prev_help: Option<(Vec<usize>, usize)> = None;
+            let mut help_message: Option<(Vec<usize>, usize)> = None;
+            let mut help_paneno = 0i32;
+            let mut help_itemno = 0i32;
+            // tty_menu_display: MENU at X, Y from FIRST_ITEM, the item
+            // under (MX, MY) in its selected face, its help noted when
+            // DISP_HELP; update_frame_with_menu's cursor at that item, or
+            // where the tty's cursor (CURSOR) already was.
+            let menu_display = |state: &mut TtyState,
+                                interpreter: &Interpreter,
+                                cursor: (i64, i64),
+                                root: &TtyMenu,
+                                path: &[usize],
+                                x: i64,
+                                y: i64,
+                                pn: i32,
+                                faces: &[CellAttrs; 4],
+                                mx: i64,
+                                my: i64,
+                                first_item: usize,
+                                disp_help: bool,
+                                help: &mut Option<(Vec<usize>, usize)>,
+                                help_paneno: &mut i32,
+                                help_itemno: &mut i32,
+                                title_cut: Option<usize>|
+             -> (i64, i64) {
+                let menu = menu_at(root, path);
+                // Don't try to display more menu items than the console
+                // can display using the available screen lines.  Exclude
+                // the echo area line, as it will be overwritten by the
+                // help-echo anyway.
+                let max_items = (menu.count() as i64 - first_item as i64)
+                    .min(total_lines - 1 - y)
+                    .max(0) as usize;
+                *help = None;
+                let width = menu.width;
+                let (mut col, mut row) = cursor;
+                for i in 0..max_items {
+                    // +2 for padding blanks on each side.
+                    let mut max_width = width + 2;
+                    let j = i + first_item;
+                    let submenu = menu.submenu[j].is_some();
+                    if submenu {
+                        // for displaying " >" after the item
+                        max_width += 2;
+                    }
+                    let enabled = usize::from((!submenu && menu.panenumber[j] != 0) || submenu);
+                    let mousehere = y + i as i64 == my && x <= mx && mx < x + max_width as i64;
+                    let face = faces[enabled + usize::from(mousehere) * 2];
+                    // Display the menu help string for the i-th menu item
+                    // even if the menu item is currently disabled.
+                    if disp_help && enabled + usize::from(mousehere) * 2 >= 2 {
+                        *help = menu.help_text[j].as_ref().map(|_| (path.to_vec(), j));
+                        *help_paneno = pn - 1;
+                        *help_itemno = j as i32;
+                    }
+                    // Take note of the coordinates of the active menu
+                    // item, to display the cursor there.
+                    if mousehere {
+                        row = y + i as i64;
+                        col = x;
+                    }
+                    let mut text = menu.text[j].clone();
+                    if j == 0
+                        && let Some(cut) = title_cut
+                    {
+                        text.truncate(cut);
+                    }
+                    display_item(
+                        state,
+                        interpreter,
+                        &text,
+                        max_width,
+                        face,
+                        x.max(0) as usize,
+                        (y + i as i64).max(0) as usize,
+                        submenu,
+                    );
+                }
+                let mut out = terminal_output();
+                let _ = queue!(
+                    out,
+                    cursor::MoveTo(
+                        (col.max(0) as usize).min(cols.saturating_sub(1)) as u16,
+                        (row.max(0) as usize).min(rows.saturating_sub(1)) as u16,
+                    ),
+                );
+                let _ = out.flush();
+                (col, row)
+            };
+            // cursor_to: the (hidden) cursor at COL, ROW.
+            let cursor_to = |col: i64, row: i64| {
+                let mut out = terminal_output();
+                let _ = queue!(
+                    out,
+                    cursor::MoveTo(
+                        (col.max(0) as usize).min(cols.saturating_sub(1)) as u16,
+                        (row.max(0) as usize).min(rows.saturating_sub(1)) as u16,
+                    ),
+                );
+                let _ = out.flush();
+            };
+            let hide_cursor = || {
+                let mut out = terminal_output();
+                let _ = queue!(out, cursor::Hide);
+                let _ = out.flush();
+            };
+
+            // Don't let the title for the "Buffers" popup menu include a
+            // digit (which is ugly).
+            let buffers_num_deleted = menu.count() > 0 && menu.text[0].starts_with(b"Buffers 1");
+            // Inhibit redisplay for as long as the menu is active, to avoid
+            // messing the screen if some timer calls sit-for or a similar
+            // function.
+            let prev_inhibit_redisplay = interpreter
+                .lookup_var_key(cached_symbol!("inhibit-redisplay"), env)
+                .unwrap_or(Value::Nil);
+            interpreter.set_variable_key(cached_symbol!("inhibit-redisplay"), Value::T, env);
+            let mut levels: Vec<MenuLevel> = Vec::new();
+            // Force update of the current frame, so that the desired and
+            // the current matrices are identical: the cursor where a frame
+            // update leaves it.
+            let (update_col, update_row) = state.borrow().update_cursor;
+            cursor_to(i64::from(update_col), i64::from(update_row));
+            let mut cur = (i64::from(update_col), i64::from(update_row));
+            let screen_behind = save_rows(&state.borrow());
+            // Display the menu title.  We subtract 1 from x0 and y0
+            // because we want to interpret them as zero-based column and
+            // row coordinates, and also because we want the first item of
+            // the menu, not its title, to appear at x0,y0.
+            cur = {
+                let mut state = state.borrow_mut();
+                menu_display(
+                    &mut state,
+                    interpreter,
+                    cur,
+                    menu,
+                    &[],
+                    x0 - 1,
+                    y0 - 1,
+                    1,
+                    &title_faces,
+                    x0 - 1,
+                    y0 - 1,
+                    0,
+                    false,
+                    &mut None,
+                    &mut 0,
+                    &mut 0,
+                    buffers_num_deleted.then_some(7),
+                )
+            };
+            // Turn off the cursor.  Otherwise it shows through the menu
+            // panes, which is ugly.
+            let (mut col, mut row) = cur;
+            hide_cursor();
+            let onepane = menu.count() == 1 && menu.submenu[0].is_some();
+            if onepane {
+                menu.width = menu.submenu[0].as_ref().map_or(0, |sub| sub.width);
+            }
+            levels.push(MenuLevel {
+                path: if onepane { vec![0] } else { Vec::new() },
+                pane: i32::from(onepane),
+                x: x0 - 1,
+                y: y0,
+                screen_behind,
+            });
+            let mut x = levels[0].x;
+            let mut y = levels[0].y;
+            let mut first_time = true;
+            let mut mouse_moved = false;
+            let mut first_item = 0usize;
+            let mut pane = 0i32;
+            let mut selidx = 0i32;
+            let mut result = TTYM_IA_SELECT;
+            let mut leave = false;
+            let outcome = (|| -> Result<(), LispError> {
+                while !leave {
+                    let min_y = levels[0].y;
+                    let count0 = menu_at(menu, &levels[0].path).count() as i64;
+                    let max_y = (min_y + count0).min(total_lines - 1) - 1;
+                    // read_menu_input.
+                    let input_status = if first_time {
+                        first_time = false;
+                        mouse_moved = true;
+                        MiResult::Continue
+                    } else {
+                        // term.c:read_menu_input.  Signal the keyboard
+                        // reading routines we are displaying a menu on
+                        // this terminal, and have mouse movements reported
+                        // by read_menu_command (do_mouse_tracking, the C
+                        // variable of `track-mouse', set as it is, not
+                        // bound; a nonlocal exit leaves both as they are).
+                        let saved_mouse_tracking = interpreter
+                            .symbol_value_cell("track-mouse")
+                            .unwrap_or(Value::Nil);
+                        crate::lisp::primitives::set_tty_showing_menu(true);
+                        interpreter.set_symbol_value_cell("track-mouse", Value::T);
+                        let command = loop {
+                            let command = read_menu_command(interpreter, env)?;
+                            if !command.is_nil() {
+                                break command;
+                            }
+                        };
+                        crate::lisp::primitives::set_tty_showing_menu(false);
+                        interpreter.set_symbol_value_cell("track-mouse", saved_mouse_tracking);
+                        let name = match command.kind() {
+                            Kind::Symbol(_) => command.as_symbol().unwrap_or(""),
+                            Kind::T => "tty-menu-exit",
+                            _ => "",
+                        };
+                        let mut usable_input = true;
+                        let mut st = MiResult::Continue;
+                        if name == "tty-menu-exit"
+                            // If some input switched frames under our
+                            // feet, exit the menu, since the menu faces
+                            // are no longer valid, and the menu is no
+                            // longer relevant anyway.
+                            || interpreter.selected_frame_id != sf
+                        {
+                            st = MiResult::QuitMenu;
+                            usable_input = false;
+                        } else if name == "tty-menu-mouse-movement" {
+                            mouse_get_xy(interpreter, env, &mut x, &mut y)?;
+                        } else if name == "tty-menu-next-menu" {
+                            usable_input = false;
+                            st = MiResult::NextItem;
+                        } else if name == "tty-menu-prev-menu" {
+                            usable_input = false;
+                            st = MiResult::PrevItem;
+                        } else if name == "tty-menu-next-item" {
+                            if y < max_y {
+                                y += 1;
+                            } else {
+                                st = MiResult::ScrollForward;
+                            }
+                        } else if name == "tty-menu-prev-item" {
+                            if y > min_y {
+                                y -= 1;
+                            } else {
+                                st = MiResult::ScrollBack;
+                            }
+                        } else if name == "tty-menu-select" {
+                            st = MiResult::ItemSelected;
+                        } else if name != "tty-menu-ignore" {
+                            usable_input = false;
+                        }
+                        if usable_input {
+                            mouse_moved = true;
+                        }
+                        st
+                    };
+                    if input_status != MiResult::Continue {
+                        leave = true;
+                        match input_status {
+                            MiResult::QuitMenu => {
+                                // Remove the last help-echo, so that it
+                                // doesn't re-appear after "Quit".
+                                crate::lisp::primitives::menu::show_help_echo(
+                                    interpreter,
+                                    Value::Nil,
+                                    Value::Nil,
+                                    Value::Nil,
+                                    Value::Nil,
+                                    env,
+                                )?;
+                                result = TTYM_NO_SELECT;
+                            }
+                            MiResult::NextItem => {
+                                if kbd_navigation {
+                                    result = TTYM_NEXT;
+                                } else {
+                                    leave = false;
+                                }
+                            }
+                            MiResult::PrevItem => {
+                                if kbd_navigation {
+                                    result = TTYM_PREV;
+                                } else {
+                                    leave = false;
+                                }
+                            }
+                            MiResult::ScrollForward => {
+                                if y - min_y == count0 - 1 - first_item as i64 {
+                                    y = min_y;
+                                    first_item = 0;
+                                } else {
+                                    first_item += 1;
+                                }
+                                leave = false;
+                            }
+                            MiResult::ScrollBack => {
+                                if first_item == 0 {
+                                    y = max_y;
+                                    first_item = (count0 - 1 - (y - min_y)).max(0) as usize;
+                                } else {
+                                    first_item -= 1;
+                                }
+                                leave = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if mouse_moved && input_status != MiResult::QuitMenu {
+                        mouse_moved = false;
+                        result = TTYM_IA_SELECT;
+                        let mut i = 0usize;
+                        while i < levels.len() {
+                            let level_menu = menu_at(menu, &levels[i].path);
+                            if levels[i].x <= x && x < levels[i].x + level_menu.width as i64 + 2 {
+                                let dy = y - levels[i].y + first_item as i64;
+                                if 0 <= dy && (dy as usize) < level_menu.count() {
+                                    let dy = dy as usize;
+                                    let has_submenu = level_menu.submenu[dy].is_some();
+                                    if !has_submenu {
+                                        result = if level_menu.panenumber[dy] != 0 {
+                                            TTYM_SUCCESS
+                                        } else {
+                                            TTYM_IA_SELECT
+                                        };
+                                    }
+                                    pane = levels[i].pane - 1;
+                                    selidx = dy as i32;
+                                    // We hit some part of a menu, so drop
+                                    // extra menus that have been opened.
+                                    // That does not include an open and
+                                    // active submenu.
+                                    let mut sub_path = levels[i].path.clone();
+                                    sub_path.push(dy);
+                                    let active_submenu = i + 2 == levels.len()
+                                        && has_submenu
+                                        && levels[i + 1].path == sub_path;
+                                    if !active_submenu {
+                                        while i + 1 < levels.len() {
+                                            let level = levels.pop().expect("open level");
+                                            cur = screen_update(
+                                                &mut state.borrow_mut(),
+                                                &level.screen_behind,
+                                            );
+                                        }
+                                    }
+                                    if i + 1 == levels.len() && has_submenu {
+                                        let level_x = levels[i].x;
+                                        let level_y = levels[i].y;
+                                        let level_pane = levels[i].pane;
+                                        let width = level_menu.width as i64;
+                                        let sub_pane = level_menu.panenumber[dy];
+                                        let path = levels[i].path.clone();
+                                        let mut state_ref = state.borrow_mut();
+                                        cur = menu_display(
+                                            &mut state_ref,
+                                            interpreter,
+                                            cur,
+                                            menu,
+                                            &path,
+                                            level_x,
+                                            level_y,
+                                            level_pane,
+                                            &faces,
+                                            x,
+                                            y,
+                                            first_item,
+                                            true,
+                                            &mut help_message,
+                                            &mut help_paneno,
+                                            &mut help_itemno,
+                                            None,
+                                        );
+                                        let behind = save_rows(&state_ref);
+                                        drop(state_ref);
+                                        levels.push(MenuLevel {
+                                            path: sub_path,
+                                            pane: sub_pane,
+                                            screen_behind: behind,
+                                            x: level_x + width + 2,
+                                            y,
+                                        });
+                                    }
+                                }
+                            }
+                            i += 1;
+                        }
+                        let top = levels.last().expect("a shown menu");
+                        let (path, top_x, top_y, top_pane) =
+                            (top.path.clone(), top.x, top.y, top.pane);
+                        // The call to display help-echo below will move the
+                        // cursor, so remember its current position as
+                        // computed by tty_menu_display.
+                        cur = menu_display(
+                            &mut state.borrow_mut(),
+                            interpreter,
+                            cur,
+                            menu,
+                            &path,
+                            top_x,
+                            top_y,
+                            top_pane,
+                            &faces,
+                            x,
+                            y,
+                            first_item,
+                            true,
+                            &mut help_message,
+                            &mut help_paneno,
+                            &mut help_itemno,
+                            None,
+                        );
+                        (col, row) = cur;
+                    } else {
+                        help_message = prev_help.clone();
+                    }
+                    // Display the help-echo message for the
+                    // currently-selected menu item.
+                    if (help_message.is_some() || prev_help.is_some()) && help_message != prev_help
+                    {
+                        let text = help_message
+                            .as_ref()
+                            .and_then(|(path, j)| menu_at(menu, path).help_text[*j].clone());
+                        // Its message waits for redisplay, which the menu
+                        // inhibits.
+                        crate::lisp::primitives::menu::tty_menu_help_callback(
+                            interpreter,
+                            text.as_deref(),
+                            help_paneno,
+                            help_itemno,
+                            env,
+                        )?;
+                        // Move the cursor to the beginning of the current
+                        // menu item, so that screen readers and other
+                        // accessibility aids know where the active region
+                        // is.
+                        cursor_to(col, row);
+                        prev_help = help_message.clone();
+                    }
+                }
+                Ok(())
+            })();
+            // Restore what the menus covered, all the way down, and turn
+            // the cursor back on where the frame update leaves it.
+            let first = levels.into_iter().next().expect("the menu's own level");
+            screen_update(&mut state.borrow_mut(), &first.screen_behind);
+            {
+                let mut out = terminal_output();
+                let _ = queue!(out, cursor::Show);
                 let _ = out.flush();
             }
-            outcome
+            interpreter.set_variable_key(
+                cached_symbol!("inhibit-redisplay"),
+                prev_inhibit_redisplay,
+                env,
+            );
+            outcome?;
+            Ok(TtyMenuActivation {
+                status: result,
+                pane,
+                selidx,
+            })
         },
     )
+}
+
+/// The display text of a tty menu item's C string: its characters, each
+/// wide one followed by its padding cells.
+fn menu_item_display_text(interpreter: &Interpreter, bytes: &[u8]) -> String {
+    let env = Env::new();
+    let mut text = String::new();
+    let mut p = 0;
+    while p < bytes.len() && bytes[p] != 0 {
+        let (code, len) = crate::lisp::primitives::syntax::string_char_and_length(&bytes[p..]);
+        p += len;
+        let character = char::from_u32(code as u32).unwrap_or('\u{FFFD}');
+        text.push(character);
+        let width = crate::lisp::primitives::character_width(interpreter, code as u32, &env);
+        for _ in 1..width {
+            text.push(PADDING_GLYPH);
+        }
+    }
+    text
+}
+
+/// term.c:mouse_get_xy: the mouse's position on the selected frame
+/// (mouse_position, calling `mouse-position-function' when
+/// `tty-menu-calls-mouse-position-function' says so) into X and Y.
+fn mouse_get_xy(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    x: &mut i64,
+    y: &mut i64,
+) -> Result<(), LispError> {
+    let frame = interpreter.selected_frame_value();
+    let mut mouse = Value::cons(frame, Value::cons(Value::Nil, Value::Nil));
+    let call_function = interpreter
+        .lookup_var_key(
+            cached_symbol!("tty-menu-calls-mouse-position-function"),
+            env,
+        )
+        .is_some_and(|value| value.is_truthy());
+    let function = interpreter
+        .lookup_var_key(cached_symbol!("mouse-position-function"), env)
+        .unwrap_or(Value::Nil);
+    if call_function && !function.is_nil() {
+        mouse = interpreter.call_function_value(function, None, &[mouse], env)?;
+    }
+    if let Some((head, rest)) = mouse.cons_values()
+        && crate::lisp::types::eq(head, frame)
+        && let Some((lmx, lmy)) = rest.cons_values()
+        && !lmx.is_nil()
+    {
+        *x = lmx.as_integer().unwrap_or(*x);
+        *y = lmy.as_integer().unwrap_or(*y);
+    }
+    Ok(())
+}
+
+/// keyboard.c:read_menu_command: a key sequence read in the menu's
+/// navigation map without echoing its keys, t for none (an end of input
+/// or a menu rejected), else its command (nil for an undefined key);
+/// Emacs killed if the selected frame died meanwhile.
+fn read_menu_command(interpreter: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
+    let count = interpreter.specpdl_index();
+    // We don't want to echo the keystrokes while navigating the menus.
+    interpreter.specbind_symbol(
+        &cached_symbol!("echo-keystrokes").with(|symbol| *symbol),
+        Value::Integer(0),
+        env,
+    )?;
+    let read =
+        crate::lisp::primitives::read_key_sequence(interpreter, Value::Nil, false, true, env);
+    let unbound = match &read {
+        Err(error) => interpreter
+            .with_lisp_stack_roots(error, |interpreter| interpreter.unbind_to(count, env)),
+        Ok(_) => interpreter.unbind_to(count, env),
+    };
+    unbound?;
+    let read = read?;
+    if !interpreter.frame_is_live(interpreter.selected_frame_id) {
+        crate::lisp::primitives::call(interpreter, "kill-emacs", &[], env)?;
+    }
+    if read.menu_rejected || read.keys.is_empty() {
+        return Ok(Value::T);
+    }
+    Ok(read.cmd)
 }

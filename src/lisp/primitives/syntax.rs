@@ -128,7 +128,7 @@ fn syntax_spec_code(letter: u8) -> u8 {
 /// whatever they are (a unibyte string's raw byte decodes as GNU's
 /// formula makes it, reading the bytes after it); bytes past P's end
 /// read as the NULs a C string ends with.
-fn string_char_and_length(p: &[u8]) -> (i64, usize) {
+pub(crate) fn string_char_and_length(p: &[u8]) -> (i64, usize) {
     let byte = |index: usize| i64::from(p.get(index).copied().unwrap_or(0));
     let c = byte(0);
     if c & 0x80 == 0 {

@@ -34,6 +34,9 @@ pub(crate) struct KeySequenceReader {
     // returns to.
     keys_start: usize,
     echo_start: usize,
+    // read_key_sequence's used_mouse_menu_history: whether the key read
+    // into each position came from a mouse menu.
+    menu_keys: [bool; READ_KEY_ELTS + 1],
 }
 
 impl KeySequenceReader {
@@ -70,6 +73,7 @@ impl KeySequenceReader {
             fresh_omitted: false,
             keys_start: 0,
             echo_start: 0,
+            menu_keys: [false; READ_KEY_ELTS + 1],
         };
         // read_key_sequence, interactively: PROMPT begins the echo string
         // and is shown at once (echo_now), echoing going on only with
@@ -416,9 +420,18 @@ impl KeySequenceReader {
     }
 
     /// read_key_sequence's last_nonmenu_event as read_char is called
-    /// for the next key: the last key read, nil before the first.
-    pub(crate) fn prev_event(&self) -> Value {
-        self.keys.last().copied().unwrap_or(Value::Nil)
+    /// for the next key: the last key read not from a mouse menu, nil
+    /// before the first.
+    pub(crate) fn prev_event(&self, interp: &Interpreter, env: &Env) -> Value {
+        interp
+            .lookup_var_key(cached_symbol!("last-nonmenu-event"), env)
+            .unwrap_or(Value::Nil)
+    }
+
+    /// read_key_sequence's current_binding, the keymap read_char is
+    /// given for the next key.
+    pub(crate) fn current_binding(&self) -> Value {
+        self.roots[6]
     }
 
     /// read_key_sequence_cmd: the binding the sequence ended with, or
@@ -473,20 +486,31 @@ impl KeySequenceReader {
         // read_char added the event to this-command-keys unless it was
         // reread with keys already there.
         let reread = std::mem::take(&mut interp.keyboard_input.last_event_reread);
-        let omit = reread && !interp.keyboard_input.command_keys.is_empty();
+        let omit = (reread && !interp.keyboard_input.command_keys.is_empty())
+            || super::take_read_menu_exit();
         // read_char then lets echoing start at the next pause.
         if !omit && !super::echo::mouse_movement_p(interp, &event) {
             interp.keyboard_input.ok_to_echo_at_next_pause = true;
         }
         self.keys.push(event);
+        // used_mouse_menu_history[t] = used_mouse_menu.
+        let position = self.keys.len() - 1;
+        let used_mouse_menu = super::take_read_used_mouse_menu();
+        if position < self.menu_keys.len() {
+            self.menu_keys[position] = used_mouse_menu;
+        }
         // keyboard.c copies only the event spine before remapping. The
         // unchanged mouse.el translator can mutate its head in place;
         // raw keys retain the original head and share the position data.
-        self.raw.push(if event.is_cons() {
+        // raw_keybuf gets the key after whatever a read in the middle of
+        // the sequence (a menu's) added, until init_raw_keybuf_count.
+        let raw = if event.is_cons() {
             copy_sequence_value(interp, &event)?
         } else {
             event
-        });
+        };
+        self.raw.push(raw);
+        interp.keyboard_input.raw_keys.push(raw);
         interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
         let mut expanded = false;
         if mouse_event_head(interp, &event).is_none()
@@ -595,24 +619,28 @@ impl KeySequenceReader {
             }
             self.fresh_omitted = false;
             self.read += 1;
-            // keybuf[t++] = key, and last_nonmenu_event the key read.
-            interp.set_variable_key(
-                cached_symbol!("last-nonmenu-event"),
-                self.keys[self.read - 1],
-                env,
-            );
-            let start = self
-                .keys_start
-                .min(interp.keyboard_input.command_keys.len());
-            let mut added = interp.keyboard_input.command_keys[..start].to_vec();
-            added.extend(
-                self.keys[..self.read]
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| !self.omitted.contains(index))
-                    .map(|(_, key)| *key),
-            );
-            set_command_key_state(interp, added, self.raw.to_vec(), env);
+            // keybuf[t++] = key.  Normally, last_nonmenu_event gets the
+            // previous key we read.  But when a mouse popup menu is being
+            // used, we don't update last_nonmenu_event; it continues to
+            // hold the mouse event that preceded the first level of menu.
+            if !self.menu_keys.get(self.read - 1).copied().unwrap_or(false) {
+                interp.set_variable_key(
+                    cached_symbol!("last-nonmenu-event"),
+                    self.keys[self.read - 1],
+                    env,
+                );
+            }
+            // read_char's add_command_key for a key read, or
+            // read_key_sequence's for mock input after a replay (which
+            // returned this_command_keys to the sequence's start): the key
+            // joins this-command-keys after whatever a read in the middle
+            // of the sequence (a menu's, a help character's) recorded.
+            if !self.omitted.contains(&(self.read - 1)) {
+                interp
+                    .keyboard_input
+                    .command_keys
+                    .push(self.keys[self.read - 1]);
+            }
             // "Record what part of this_command_keys is the current key
             // sequence": its last T keys, none before the start.
             interp.keyboard_input.single_command_start = interp
@@ -652,11 +680,7 @@ impl KeySequenceReader {
             if !character && self.downcase_current(interp, env)? {
                 continue;
             }
-            if !self.needs_input(interp, env)
-                || (has_tty_menu_executor()
-                    && mouse_event_head(interp, &event).is_some()
-                    && keymap_reference_map(interp, &self.roots[6], env).is_some())
-            {
+            if !self.needs_input(interp, env) {
                 self.roots[10] = self.roots[6];
                 return resolve_read_key_binding(interp, env, self.roots[6], &self.keys);
             }
@@ -689,8 +713,9 @@ fn wait_for_sequence_event(
     interp: &mut Interpreter,
     env: &mut Env,
     prev_event: Value,
+    map: Value,
 ) -> Result<Value, LispError> {
-    read_key_sequence_event(interp, env, prev_event)
+    read_key_sequence_event(interp, env, prev_event, map)
 }
 
 /// keyboard.c's INTERACTIVE: no keyboard macro executing, and not
@@ -725,16 +750,21 @@ pub(crate) fn read_key_sequence_vs(
         super::clear_command_keys(interp);
     }
     super::init_raw_keybuf_count(interp);
-    let events = read_key_sequence(
+    let read = read_key_sequence(
         interp,
         prompt,
         dont_downcase_last,
         can_return_switch_frame,
         env,
-    )
-    .map(|read| read.keys);
+    );
     interp.unbind_to(count, env)?;
-    events
+    let read = read?;
+    // A rejected menu (read_key_sequence's -1) quits.
+    if read.menu_rejected {
+        interp.set_c_variable("quit-flag", Value::T);
+        interp.maybe_quit(env)?;
+    }
+    Ok(read.keys)
 }
 
 /// keyboard.c:read_key_sequence's result: the keys (none at a keyboard
@@ -744,6 +774,8 @@ pub(crate) struct ReadKeySequence {
     pub(crate) keys: Vec<Value>,
     pub(crate) cmd: Value,
     pub(crate) remapped: Value,
+    /// read_key_sequence's -1: a menu read_char showed was rejected.
+    pub(crate) menu_rejected: bool,
 }
 
 /// keyboard.c:read_key_sequence: read_char's events looked up in the
@@ -771,7 +803,13 @@ pub(crate) fn read_key_sequence(
         {
             return Ok(None);
         }
-        let event = wait_for_sequence_event(interp, env, reader.prev_event())?;
+        let prev_event = reader.prev_event(interp, env);
+        let event = wait_for_sequence_event(interp, env, prev_event, reader.current_binding())?;
+        // read_char returns t when it shows a menu and the user rejects
+        // it.  Just return -1.
+        if crate::lisp::types::eq(event, Value::T) {
+            return Ok(Some(KeyResolution::MenuRejected));
+        }
         // read_char returns -1 at the end of input: t = 0.
         if matches!(event.kind(), Kind::Integer(-1)) {
             return Ok(None);
@@ -802,8 +840,17 @@ pub(crate) fn read_key_sequence(
             keys: Vec::new(),
             cmd: Value::Nil,
             remapped: Value::Nil,
+            menu_rejected: false,
         });
     };
+    if matches!(resolution, KeyResolution::MenuRejected) {
+        return Ok(ReadKeySequence {
+            keys: Vec::new(),
+            cmd: Value::Nil,
+            remapped: Value::Nil,
+            menu_rejected: true,
+        });
+    }
     let cmd = reader.read_key_sequence_cmd();
     let remapped = match resolution {
         KeyResolution::Command(command) if !crate::lisp::types::eq(command, cmd) => command,
@@ -814,5 +861,6 @@ pub(crate) fn read_key_sequence(
         keys,
         cmd,
         remapped,
+        menu_rejected: false,
     })
 }

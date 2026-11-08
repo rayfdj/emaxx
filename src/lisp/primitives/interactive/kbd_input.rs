@@ -61,6 +61,10 @@ thread_local! {
     /// dispnew.c's frame_garbaged: a size change (SIGWINCH's) the frame
     /// has not been redisplayed for yet.
     static FRAME_GARBAGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// termchar.h's tty_display_info showing_menu: the terminal is
+    /// displaying a tty menu (term.c's read_menu_input sets it around its
+    /// read_menu_command loop), so a wait for input must not redisplay.
+    static TTY_SHOWING_MENU: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// xdisp.c's redisplaying_p: a redisplay is running, cleared by its
     /// unwind_redisplay record.
     static REDISPLAYING_P: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -937,6 +941,11 @@ pub(crate) enum KbdWait {
     TimedOut,
 }
 
+/// Set or clear the tty's showing_menu (term.c:read_menu_input).
+pub(crate) fn set_tty_showing_menu(showing: bool) {
+    TTY_SHOWING_MENU.set(showing);
+}
+
 /// keyboard.c:kbd_buffer_get_event's loop "until there is input
 /// available": an unread command event or a stored one ends it, a set
 /// `quit-flag' is quit_throw_to_read_char, gobble_input reads what SIGIO
@@ -996,11 +1005,16 @@ pub(crate) fn kbd_buffer_get_event_wait(
                 just_wait_proc: 0,
             }
         } else {
+            // When this TTY is displaying a menu, we must prevent any
+            // redisplay, because we modify the frame's glyph matrix behind
+            // the back of the display engine.
+            let showing_menu = TTY_SHOWING_MENU.get()
+                && crate::lisp::primitives::menu::frame_termcap_p(interp.selected_frame_value());
             WaitRequest {
                 time_limit: 0,
                 nsecs: 0,
                 read_kbd: -1,
-                do_display,
+                do_display: do_display && !showing_menu,
                 wait_proc: None,
                 just_wait_proc: 0,
             }
