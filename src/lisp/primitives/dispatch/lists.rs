@@ -505,10 +505,7 @@ fn string_to_object(
 fn read_char_after_help(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
     let event = match pop_pending_input_event_value(interp, env)? {
         Some(event) => event,
-        None => {
-            crate::lisp::primitives::run_tty_frame_redraw(interp, env);
-            pop_unread_command_event_value(interp, env)?
-        }
+        None => pop_unread_command_event_value(interp, env)?,
     };
     crate::lisp::primitives::record_unrecorded_event(interp, &event, env);
     crate::lisp::primitives::add_read_event_to_command_keys(interp, event, env)?;
@@ -532,9 +529,6 @@ fn read_event_within(
     if let Some(event) = pop_pending_input_event_value(interp, env)? {
         return Ok(Some(event));
     }
-    // read_char's redisplay when no input is pending (COMMANDFLAG 0),
-    // END_TIME or not.
-    crate::lisp::primitives::run_tty_frame_redraw(interp, env);
     // kbd_buffer_get_event with END_TIME: until an event comes or the
     // time is up, wait_reading_process_output (the time left, -1, 1, Qnil,
     // NULL, 0) with the keyboard in its select.
@@ -1547,17 +1541,12 @@ define_dispatch!(
                         }
                         None => {
                             // read_char takes an unread or keyboard-macro
-                            // event at once; else it redisplays before
-                            // blocking for input: window-configuration
-                            // changes a command made before reading (rmc's
-                            // help pop-up, y-or-n-p's prompt context) reach
-                            // the glass while the read waits.
+                            // event at once; else its COMMANDFLAG 0 read
+                            // redisplays (as input_pending lets it) before
+                            // blocking for input.
                             match pop_pending_input_event_value(interp, env)? {
                                 Some(event) => event,
-                                None => {
-                                    crate::lisp::primitives::run_tty_frame_redraw(interp, env);
-                                    pop_unread_command_event_value(interp, env)?
-                                }
+                                None => pop_unread_command_event_value(interp, env)?,
                             }
                         }
                     };

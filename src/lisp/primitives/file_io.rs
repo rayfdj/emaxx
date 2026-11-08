@@ -3662,6 +3662,8 @@ pub(crate) fn do_auto_save(
                 }
             }
         }
+        // Prevent another auto save till enough input events come in.
+        super::record_auto_save(interp);
         Ok(auto_saved)
     })();
     // do_auto_save_unwind.
@@ -3672,8 +3674,9 @@ pub(crate) fn do_auto_save(
     if auto_saved && !no_message {
         if old_message_p {
             // If we are going to restore an old message, give time to
-            // read ours.
-            call_named_function(interp, "sit-for", &[Value::Integer(1)], env)?;
+            // read ours: dispnew.c's sit_for (1, 0, 0), which neither
+            // reads events nor redisplays.
+            crate::lisp::primitives::sit_for(interp, env, Value::Integer(1), false, 0)?;
             // restore_message: message3_nolog of the old message.
             super::dispatch::display::set_echo_area_message_value(old_message)?;
         } else if !AUTO_SAVE_ERROR_OCCURRED.get() {

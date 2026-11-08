@@ -1509,7 +1509,7 @@ define_dispatch!(
                     Some(elapsed) => {
                         let secs = elapsed.as_secs();
                         let usec = elapsed.subsec_micros();
-                        let psec = (elapsed.subsec_nanos() % 1_000) * 1_000_000;
+                        let psec = (elapsed.subsec_nanos() % 1_000) * 1_000;
                         Ok(Value::list([
                             Value::Integer((secs >> 16) as i64),
                             Value::Integer((secs & 0xffff) as i64),

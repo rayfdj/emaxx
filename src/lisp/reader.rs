@@ -494,18 +494,9 @@ pub(crate) fn apply_symbol_shorthands_to_token(
     token
 }
 
-/// An entry of read0's read stack: the syntactic context the next object
-/// read goes into, the innermost entry last, so nested data takes heap
-/// rather than Rust frames, as lread.c's rdstack does.  The values an
-/// entry holds stay rooted on the read root stack from its BASE, as
-/// mark_lread marks rdstack's entries: a list's first cons, a sequence's
-/// elements, a label's placeholder.
-struct ReadFrame {
-    entry: ReadEntry,
-    base: usize,
-}
-
-/// lread.c's read_entry_type, with each type's data.
+/// An entry of lread.c's rdstack, read_stack_entry: the syntactic
+/// context the next object read goes into, with its read_entry_type's
+/// data.  Nested data takes heap rather than Rust frames.
 enum ReadEntry {
     /// RE_list_start (no cons yet), RE_list and, once DOTTED, RE_list_dot:
     /// the list's first and last conses.
@@ -514,18 +505,58 @@ enum ReadEntry {
         dotted: bool,
     },
     /// RE_vector, RE_record, RE_char_table, RE_sub_char_table,
-    /// RE_byte_code and RE_string_props: the elements are the read roots
-    /// from the entry's base on; OLD_LOCATE is the locate_syms the opener
-    /// saved.
+    /// RE_byte_code and RE_string_props: ELEMS, the elements read so far
+    /// in reverse order; OLD_LOCATE is the locate_syms the opener saved.
     Sequence {
         syntax: SequenceSyntax,
         old_locate: bool,
+        elems: Value,
     },
     /// RE_special: `'', `#'', `\`', `,' or `,@', the object read making
     /// (SYMBOL OBJECT).
     Special { symbol: &'static str },
     /// RE_numbered: `#N=', with the label's placeholder.
     Numbered { id: u64, placeholder: Value },
+}
+
+thread_local! {
+    /// lread.c's rdstack: the one read stack of every read, reads
+    /// suspended in different Lisp threads (a function stream's callback
+    /// yielding) included, as GNU's static rdstack is; each read0 works
+    /// on the entries above the depth it found (its base_sp).  The
+    /// buffer is scanned for the values the entries hold, as mark_lread
+    /// marks them.
+    static RDSTACK: std::cell::RefCell<crate::lisp::alloc::RootedVec<ReadEntry>> =
+        const { std::cell::RefCell::new(crate::lisp::alloc::RootedVec::new()) };
+}
+
+/// rdstack.sp.
+fn read_stack_sp() -> usize {
+    RDSTACK.with_borrow(|stack| stack.len())
+}
+
+/// read_stack_push.
+fn read_stack_push(entry: ReadEntry) {
+    RDSTACK.with_borrow_mut(|stack| stack.push(entry));
+}
+
+/// read_stack_pop.
+fn read_stack_pop() -> Option<ReadEntry> {
+    RDSTACK.with_borrow_mut(|stack| stack.pop())
+}
+
+/// read_stack_reset: the stack back to SP.
+fn read_stack_reset(sp: usize) {
+    RDSTACK.with_borrow_mut(|stack| {
+        if stack.len() > sp {
+            stack.truncate(sp);
+        }
+    });
+}
+
+/// F of read_stack_top.
+fn with_read_stack_top<R>(f: impl FnOnce(&mut ReadEntry) -> R) -> Option<R> {
+    RDSTACK.with_borrow_mut(|stack| stack.last_mut().map(f))
 }
 
 /// The bracketed syntaxes whose elements read0 collects.
@@ -1111,45 +1142,45 @@ impl<'a> Reader<'a> {
         self.emitted_reader_forms
     }
 
-    /// read0: one object, the data nested in it read on the read stack.
-    /// None at the end of the input before any object.
+    /// read0: one object, the data nested in it read on the read stack
+    /// above the depth it finds there (base_sp), which a nonlocal exit
+    /// returns it to (read_stack_reset).  None at the end of the input
+    /// before any object.
     fn read_datum(&mut self) -> Result<Option<Value>, LispError> {
-        let mut stack = Vec::new();
+        let base_sp = read_stack_sp();
         let locate_symbols = self.locate_symbols;
-        let result = self.read_object(&mut stack);
+        let result = self.read_object(base_sp);
         // The entries an error leaves go, and the locate_syms they saved
         // with them (read0's locals).
         if result.is_err() {
+            read_stack_reset(base_sp);
             self.locate_symbols = locate_symbols;
         }
         result
     }
 
     /// read0's loop: read_obj reads an object or pushes an entry for the
-    /// objects that follow it, and each object read goes into the
-    /// innermost entry, an entry it completes giving the object for the
-    /// next, until the stack is empty.
-    fn read_object(&mut self, stack: &mut Vec<ReadFrame>) -> Result<Option<Value>, LispError> {
+    /// objects that follow it, and each object read goes into the entry
+    /// on top of the read stack, an entry it completes giving the object
+    /// for the next, until the stack is down to BASE_SP.  The entry on
+    /// top is whichever read pushed last, as in GNU.
+    fn read_object(&mut self, base_sp: usize) -> Result<Option<Value>, LispError> {
         // Whether read0 has consumed syntax yet (a `#!' line or a `#@'
         // skip): from then on the end of the input is end_of_file_error,
         // as it is inside any entry.
         let mut consumed = false;
         loop {
-            let mut obj = match self.read_step(stack)? {
+            let mut obj = match self.read_step(base_sp)? {
                 ReadStep::Object(obj) => obj,
                 ReadStep::Open(entry) => {
-                    let base = self.roots_depth();
-                    if let ReadEntry::Numbered { placeholder, .. } = entry {
-                        self.root_read_result(base, Some(placeholder));
-                    }
-                    stack.push(ReadFrame { entry, base });
+                    read_stack_push(entry);
                     continue;
                 }
                 ReadStep::Again => {
                     consumed = true;
                     continue;
                 }
-                ReadStep::End if stack.is_empty() && !consumed => return Ok(None),
+                ReadStep::End if read_stack_sp() <= base_sp && !consumed => return Ok(None),
                 ReadStep::End => return Err(LispError::EndOfInput()),
             };
             // We have read an object in OBJ: the stack decides what to do
@@ -1160,22 +1191,23 @@ impl<'a> Reader<'a> {
                 if matches!(obj.kind(), Kind::ReaderForm(_)) {
                     self.emitted_reader_forms = true;
                 }
-                let Some(frame) = stack.last_mut() else {
+                if read_stack_sp() <= base_sp {
                     return Ok(Some(obj));
-                };
-                let base = frame.base;
-                // OBJ stays rooted until its entry holds it: a sequence's
-                // element until the sequence is complete.
-                self.roots.push(obj);
-                match &mut frame.entry {
+                }
+                enum Next {
+                    ReadOn,
+                    Dot(Value, Value),
+                    Special(&'static str),
+                    Numbered(u64, Value),
+                }
+                let next = with_read_stack_top(|entry| match entry {
                     ReadEntry::List {
                         cells: cells @ None,
                         ..
                     } => {
                         let cell = Value::cons(obj, Value::Nil);
                         *cells = Some((cell, cell));
-                        self.root_read_result(base, Some(cell));
-                        break;
+                        Next::ReadOn
                     }
                     ReadEntry::List {
                         cells: Some((_, tail)),
@@ -1184,15 +1216,23 @@ impl<'a> Reader<'a> {
                         let cell = Value::cons(obj, Value::Nil);
                         tail.cons_cells().expect("a list cell").1.set(cell);
                         *tail = cell;
-                        // The list's first cons holds it.
-                        self.root_read_result(base + 1, None);
-                        break;
+                        Next::ReadOn
                     }
                     ReadEntry::List {
                         cells: Some((head, tail)),
                         dotted: true,
-                    } => {
-                        let (head, tail) = (*head, *tail);
+                    } => Next::Dot(*head, *tail),
+                    ReadEntry::Sequence { elems, .. } => {
+                        *elems = Value::cons(obj, *elems);
+                        Next::ReadOn
+                    }
+                    ReadEntry::Special { symbol } => Next::Special(symbol),
+                    ReadEntry::Numbered { id, placeholder } => Next::Numbered(*id, *placeholder),
+                })
+                .expect("an entry above base_sp");
+                match next {
+                    Next::ReadOn => break,
+                    Next::Dot(head, tail) => {
                         // RE_list_dot: skip_space_and_comments, which
                         // signals at the end, then the character read.
                         self.skip_whitespace_and_comments()?;
@@ -1205,30 +1245,25 @@ impl<'a> Reader<'a> {
                             }
                         }
                         tail.cons_cells().expect("a list cell").1.set(obj);
-                        stack.pop();
+                        read_stack_pop();
                         obj = self.list_dot_result(head)?;
                     }
-                    ReadEntry::Sequence { .. } => break,
-                    ReadEntry::Special { symbol } => {
-                        let symbol = *symbol;
-                        stack.pop();
+                    Next::Special(symbol) => {
+                        read_stack_pop();
                         obj = Value::list([Value::symbol(symbol), obj]);
                     }
-                    ReadEntry::Numbered { id, placeholder } => {
-                        let (id, placeholder) = (*id, *placeholder);
-                        stack.pop();
+                    Next::Numbered(id, placeholder) => {
+                        read_stack_pop();
                         obj = self.complete_numbered(id, placeholder, obj)?;
                     }
                 }
-                // The completed entry's object takes its roots' place.
-                self.root_read_result(base, None);
             }
         }
     }
 
     /// read_obj: the syntax at point, after the whitespace and comments
     /// before it.
-    fn read_step(&mut self, stack: &mut Vec<ReadFrame>) -> Result<ReadStep, LispError> {
+    fn read_step(&mut self, base_sp: usize) -> Result<ReadStep, LispError> {
         self.skip_whitespace_and_comments()?;
         Ok(match self.peek()? {
             None => ReadStep::End,
@@ -1246,7 +1281,7 @@ impl<'a> Reader<'a> {
             // read0 reads the closer before it looks at the stack.
             Some(close @ (b')' | b']')) => {
                 self.advance()?;
-                ReadStep::Object(self.close_entry(stack, close)?)
+                ReadStep::Object(self.close_entry(base_sp, close)?)
             }
             Some(b'"') => ReadStep::of(self.read_string()?),
             // lread.c: the heads are the symbols named "`", "," and ",@".
@@ -1280,50 +1315,67 @@ impl<'a> Reader<'a> {
                 // A separate dot after a list's element starts its tail
                 // (RE_list becomes RE_list_dot); anywhere else it is
                 // invalid syntax.
-                match stack.last_mut() {
-                    Some(ReadFrame {
-                        entry:
-                            ReadEntry::List {
-                                cells: Some(_),
-                                dotted,
-                            },
-                        ..
-                    }) if !*dotted => {
-                        *dotted = true;
-                        ReadStep::Again
-                    }
-                    _ => return Err(LispError::ReadError(".".into())),
+                let list = read_stack_sp() > base_sp
+                    && with_read_stack_top(|entry| match entry {
+                        ReadEntry::List {
+                            cells: Some(_),
+                            dotted,
+                        } if !*dotted => {
+                            *dotted = true;
+                            true
+                        }
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if !list {
+                    return Err(LispError::ReadError(".".into()));
                 }
+                ReadStep::Again
             }
             _ => ReadStep::of(self.read_atom()?),
         })
     }
 
-    /// read0's `)' and `]': the object of the innermost entry they close,
-    /// popped, its roots back to its base; for any other entry, or none,
-    /// invalid syntax.
-    fn close_entry(&mut self, stack: &mut Vec<ReadFrame>, close: u8) -> Result<Value, LispError> {
+    /// read0's `)' and `]': the object of the entry on top of the read
+    /// stack they close, popped before the object is made of it; for any
+    /// other entry, or none above BASE_SP, invalid syntax.
+    fn close_entry(&mut self, base_sp: usize, close: u8) -> Result<Value, LispError> {
         let invalid = || LispError::ReadError(if close == b')' { ")" } else { "]" }.into());
-        let Some(frame) = stack.last() else {
+        if read_stack_sp() <= base_sp {
             return Err(invalid());
-        };
-        let base = frame.base;
-        let obj = match frame.entry {
-            ReadEntry::List { cells: None, .. } if close == b')' => Value::Nil,
-            ReadEntry::List {
-                cells: Some((head, _)),
-                dotted: false,
-            } if close == b')' => head,
-            ReadEntry::Sequence { syntax, old_locate } if syntax.closer() == close => {
+        }
+        let closes = with_read_stack_top(|entry| match entry {
+            ReadEntry::List { dotted: false, .. } => close == b')',
+            ReadEntry::Sequence { syntax, .. } => syntax.closer() == close,
+            _ => false,
+        })
+        .unwrap_or(false);
+        if !closes {
+            return Err(invalid());
+        }
+        match read_stack_pop().expect("the entry closed") {
+            ReadEntry::List { cells, .. } => Ok(cells.map_or(Value::Nil, |(head, _)| head)),
+            ReadEntry::Sequence {
+                syntax,
+                old_locate,
+                elems,
+            } => {
                 self.locate_symbols = old_locate;
-                let elements = self.roots[base..].to_vec();
-                self.sequence_object(syntax, elements)?
+                let mut elements = Vec::new();
+                let mut tail = elems;
+                while let Some((element, rest)) = tail.cons_values() {
+                    elements.push(element);
+                    tail = rest;
+                }
+                elements.reverse();
+                // ELEMS stays on this frame, which the collector scans,
+                // while the object is made of it.
+                let object = self.sequence_object(syntax, elements);
+                std::hint::black_box(elems);
+                object
             }
-            _ => return Err(invalid()),
-        };
-        stack.pop();
-        self.root_read_result(base, None);
-        Ok(obj)
+            _ => unreachable!("only lists and sequences close"),
+        }
     }
 
     /// A sequence's read stack entry, the locate_syms it saves, which each
@@ -1333,7 +1385,11 @@ impl<'a> Reader<'a> {
         if !matches!(syntax, SequenceSyntax::Vector) {
             self.locate_symbols = false;
         }
-        ReadStep::Open(ReadEntry::Sequence { syntax, old_locate })
+        ReadStep::Open(ReadEntry::Sequence {
+            syntax,
+            old_locate,
+            elems: Value::Nil,
+        })
     }
 
     /// The object a sequence's ELEMENTS make: vector_from_rev_list,

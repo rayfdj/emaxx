@@ -1220,6 +1220,11 @@ pub(crate) struct KeyboardInputState {
     // keyboard.c's unread_switch_frame: the switch-frame event
     // read_key_sequence delayed, which read_char returns next.
     pub(crate) unread_switch_frame: Option<Value>,
+    // The kboard's kbd_queue, the events read_key_sequence puts back
+    // when read_char returns -2, and kbd_queue_has_data, without which
+    // read_char does not read them (no one sets it with one kboard).
+    pub(crate) kbd_queue: Vec<Value>,
+    pub(crate) kbd_queue_has_data: bool,
 }
 
 // One active `ert-with-message-capture` scope.  When the capture variable is
@@ -5693,6 +5698,7 @@ impl Interpreter {
             .chain(&self.keyboard_input.raw_keys)
             .chain(&self.keyboard_input.recent_keys)
             .chain(&self.keyboard_input.minibuf_save_list)
+            .chain(&self.keyboard_input.kbd_queue)
         {
             mark(event);
         }
@@ -6207,6 +6213,9 @@ impl Interpreter {
             }
             for value in &mut clone.keyboard_input.minibuf_save_list {
                 *value = c.copy(value);
+            }
+            for event in &mut clone.keyboard_input.kbd_queue {
+                *event = c.copy(event);
             }
             if let Some(frame) = &clone.keyboard_input.internal_last_event_frame {
                 clone.keyboard_input.internal_last_event_frame = Some(c.copy(frame));

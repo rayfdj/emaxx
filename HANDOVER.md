@@ -17562,6 +17562,90 @@ setup_process_coding_systems's check now refuses). A 13-form
   tty menu following the mouse with a timer inside it seeing
   `track-mouse' t and collection inhibited); clippy is clean; and the
   pseudo-terminal comparisons of each finding's probe match GNU's.
+- **Round 348: the read stack and read_char's COMMANDFLAG as GNU has
+  them.** Since round 346 each Emaxx reader kept its own read stack,
+  where lread.c's rdstack is one static stack for every read, reads
+  suspended in different Lisp threads included: each read0 works on the
+  entries above the depth it found (base_sp), and a nonlocal exit
+  returns the stack to that depth (read_stack_reset).  Emaxx's read
+  stack is that one stack now (Lisp threads are continuations on one OS
+  thread, so a thread-local stack is GNU's static), a read working above
+  its base and resetting to it on error, and each entry holding its own
+  values, a sequence's elements as the reversed list read0 keeps, which
+  the collector finds in the stack's buffer as mark_lread marks rdstack.
+  read_char takes keyboard.c's COMMANDFLAG: 1 for a key sequence the
+  command loop reads, 0 with a prompt and for `read-event' and its kin
+  and the help character's next read, -2 for read_menu_command
+  (read_key_sequence's prevent_redisplay), passed on to the minibuffer
+  menu prompt's own read.  With it come read_char's blocks that use it:
+  its redisplay only with COMMANDFLAG >= 0, swallowing the events no one
+  sees, then redisplaying unless input is pending and either was pending
+  when read_char last returned (input_was_pending) or
+  `redisplay-dont-pause' is nil, again while input that arrives during a
+  redisplay is all swallowed; the auto-save once more than
+  `auto-save-interval' (and 20) input events have come since the last
+  (keyboard.c's last_auto_save, which Fdo_auto_save's record_auto_save
+  sets) and no input is pending; and, for a read with COMMANDFLAG
+  neither 0 nor -2, the auto-save once `auto-save-timeout' seconds,
+  times the delay level of the last buffer current outside the
+  minibuffer over four, pass without input, then maybe_gc if there is
+  still none, both with `auto-save-no-message'.  The frontend's
+  redisplay pauses for pending input only when `redisplay-dont-pause' is
+  nil, as update_frame does; Emaxx's frontend skipped every paint while
+  input was pending, which read_char's loop now decides.  dispnew.c's
+  sit_for no longer binds `throw-on-input' when it reads (GNU's does
+  not), takes a bignum timeout as GNU does, reads the keyboard first
+  (gobble_input), makes the selected window's buffer current again after
+  a reading wait if it was before, and is nil when process output came
+  in; Fredisplay swallows the events no one sees and returns nil with
+  nothing redisplayed when input is pending without FORCE or
+  `redisplay-dont-pause', or a keyboard macro executes, binding
+  `redisplay-dont-pause' for FORCE.  A pseudo-terminal comparison found
+  GNU's idle auto-save cut short in its first seconds: the oracle build
+  compiles the Lisp it loaded natively in subprocesses whose output ends
+  sit_for's wait, so the comparison types after them.  One adversarial
+  review of the round's diff, in batch and a pseudo-terminal against
+  GNU's, found 5 P2 and 2 P3 and two incidental differences, all fixed
+  but one already recorded, with two more recorded.  The keystroke
+  auto-save came before the echo-keystrokes wait, where read_char waits
+  first, with sit_for (Vecho_keystrokes, 1, 1), which process output
+  cuts short: Emaxx's wait was a deadline of its own, and the echo it
+  ended in redisplayed the frame where GNU's updates the echo area
+  alone.  do-auto-save's pause to let its message be read called the
+  Lisp `sit-for', where GNU calls the C sit_for (1, 0, 0).  A special
+  event's binding ran inside the wait without read_char's `goto retry',
+  so neither read_char's redisplay nor a second idle auto-save followed
+  it.  The wait now hands each event back once its binding has run,
+  read_char retrying, or returning -2 when the binding left another
+  buffer current: read_key_sequence then puts the keys read so far on
+  the kboard's side queue (kbd_queue, which with one kboard read_char
+  never reads, kbd_queue_has_data staying false) and reads the sequence
+  from its start in the new keymaps.  A special event also stops Emacs
+  being idle, as non_reread's timer_stop_idle does, resuming
+  (timer_resume_idle) for one `while-no-input-ignore-events' names.
+  `read-event', `read-char' and `read-char-exclusive' redisplayed before
+  read_char whatever its loop decided.  The redisplay loop looked for
+  input again after a redisplay, so input arriving during one under
+  `redisplay-dont-pause' redisplayed twice, where GNU's loop goes on
+  from the input_pending the redisplay left.  `current-idle-time''s
+  picoseconds were a thousand times too large.  Recorded already: a
+  string read inside another clobbers the outer read's index in GNU
+  (D75).  Recorded: redisplay of a buffer whose one line holds 100,000
+  characters takes 1.3 s against GNU's few milliseconds, which delayed
+  an idle auto-save; and comp.c's deferred native compilation
+  (maybe_defer_native_compilation, from defalias while a .elc file
+  loads), whose subprocesses' output redisplays and cuts GNU's waits
+  short, which Emaxx, answering t to `native-comp-available-p', does not
+  do.  The grouped gate passed its 3,508 library tests; the
+  integration suites passed (two tty comparisons whose GNU run fell
+  behind its input under the parallel run's load, prefix help's echo and
+  while-no-input's key, passed alone three times each), cli_parity with
+  the renamed read stack comparison and two new ones (a session's
+  keystroke and idle auto-saves and `redisplay' under pending input, and
+  a special event leaving another buffer current in the middle of a key
+  sequence); clippy is clean; and the pseudo-terminal comparisons of
+  each finding's probe match GNU's, but for the redisplays GNU makes for
+  its native compilation's subprocesses.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -20503,16 +20587,41 @@ ert-tests as a whole 26,307 ms against 27,211.
   yielding, the same in every GNU run, and records the per-reader stack
   round 346 gave Emaxx.
 
+**On `6609b37`** (round 347): the frozen run (run 42461016805) matched
+  all 7,928 outcomes at its second attempt. The first attempt differed
+  in one outcome, eglot-test-rust-completion-exit-function, which GNU's
+  own oracle run failed with a jsonrpc-error and Emaxx passed: the
+  oracle flake rounds 296, 317, 321 and 327 met. Setup 84.7 s against
+  59.8 s (1.416), test bodies 296.3 s against 252.7 s (1.173), in all
+  1.219, on a runner faster than round 346's for GNU (setup median 91
+  ms against 103) and slower for Emaxx (130 against 120). The code did
+  not change the cost: the setup of cl-lib-tests counts 743.4 million
+  instructions under callgrind at round 347 against 743.7 million at
+  round 346. The widest body gaps are ert-tests (43.1 s against 35.8),
+  comp-tests (18.0 against 13.5), tramp-tests (19.2 against 16.2),
+  eglot-tests (33.7 against 31.9), mule-tests (3.48 against 1.92),
+  semantic-utest-ia (4.11 against 2.66), process-tests (3.14 against
+  1.77) and simple-tests (4.67 against 3.35). The Rust gate (run
+  42461015027) passed.
+
 **Findings recorded, not fixed:**
-- **Reads in two Lisp threads and the read stack (round 347).**
-  lread.c's rdstack is one static stack: reads suspended in two Lisp
-  threads (a function stream's callback yielding) push and pop it alike,
-  so as GNU's threads happen to switch one read's elements go into the
-  other's entries or a read ends at end-of-file early. Since round 346
-  each Emaxx reader keeps its own stack, so such reads keep their
-  elements apart. To be made: the read stack as rdstack, one for every
-  read, each read0 working down to its base_sp and each entry holding
-  its own values as mark_lread marks them.
+- **Deferred native compilation (round 348).** In GNU's native-comp
+  build, defalias of a byte-compiled definition while a .elc file
+  loads (maybe_defer_native_compilation) queues `native--compile-async'
+  for the file's source, whose subprocesses compile it into the
+  eln-cache while the session runs; their output redisplays
+  (wait_reading_process_output's redisplay_preserve_echo_area) and ends
+  a sit_for, an idle auto-save's wait among them, and the first change
+  to their log buffer starts the undo boundary timer.  Emaxx answers t
+  to `native-comp-available-p' but defers nothing: in a pseudo-terminal
+  session GNU spawns eight compilations at startup (cl-lib, time-date,
+  rx, ring, ansi-color, ansi-osc, subr-x, comint) and redisplays 21
+  times in its first ten seconds where Emaxx redisplays three.
+- **Redisplay of a long line (round 348).** A buffer whose one line
+  holds 100,000 multibyte characters takes Emaxx's tty redisplay about
+  1.3 s, where GNU's takes a few milliseconds, which delays what waits
+  on it (an idle auto-save came 8.2 s after the last key against GNU's
+  3.0 s).
 - **callint's `e' code after a key read in the middle of a command
   (round 347).** GNU's this_command_keys is one vector that a key
   sequence read while a command reads its arguments (a `k' argument, the
@@ -20520,21 +20629,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   reads its entries at the indices it found when Fcall_interactively
   began, so an `e' after such a read can get what that read left in the
   slot.  Emaxx's `e' walks the keys as they were when the call began.
-- **read_char's COMMANDFLAG block (round 347).** Before it waits,
-  read_char redisplays while `!(input_pending && (input_was_pending ||
-  !redisplay_dont_pause))', twice at most, and update_frame pauses for
-  pending input only without `redisplay-dont-pause'; Emaxx's frontend
-  redisplay skips painting whenever input is pending,
-  `redisplay-dont-pause' or not, and read_char has no input_was_pending.
-  read_char also auto-saves (Fdo_auto_save, then redisplay) once
-  `auto-save-interval' keystrokes have come since the last auto-save,
-  and, idle with no input, after `auto-save-timeout' seconds scaled up
-  for a large current buffer, then asks for a collection (maybe_gc); and
-  its COMMANDFLAG keeps both from reads that must not (0, and
-  read_menu_command's -2).  Emaxx's read_char does neither and has no
-  COMMANDFLAG.  To be made: the redisplay loop with keyboard.c's
-  input_pending, update_frame's pause, both auto-saves and maybe_gc,
-  with COMMANDFLAG.
 - **When the menu bar is recomputed (round 347).** update_menu_bar
   recomputes a frame's menu_bar_items when windows_or_buffers_changed,
   update_mode_lines or the frame's window_buffer_changed asks; Emaxx has

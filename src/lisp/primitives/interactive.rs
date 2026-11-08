@@ -21,8 +21,8 @@ pub(crate) use kbd_input::{
     KbdWait, KeyboardTerminal, clear_keyboard_waiting_thread, clear_waiting_for_input,
     detect_input_pending, detect_input_pending_run_timers, get_input_pending, gobble_input,
     kbd_buffer_get_event_wait, kbd_buffer_store_event, kbd_is_ours, keyboard_wait_descriptors,
-    redisplay_preserve_echo_area, set_keyboard_terminal, set_tty_showing_menu,
-    set_waiting_for_input, sit_for, swallow_events,
+    note_redisplay_input_pending, record_auto_save, redisplay_preserve_echo_area,
+    set_keyboard_terminal, set_tty_showing_menu, set_waiting_for_input, sit_for, swallow_events,
 };
 #[cfg(unix)]
 pub(crate) use kbd_input::{
@@ -690,7 +690,39 @@ pub(crate) fn run_pending_user_signal_events(
     env: &mut Env,
 ) -> Result<bool, LispError> {
     let mut handled = false;
-    loop {
+    while let Some(outcome) = run_one_special_event(interp, env, false)? {
+        handled = true;
+        if matches!(outcome, SpecialEvent::Unread) {
+            // Keep later signals behind this unread event, matching the
+            // main keyboard queue's ordering.
+            break;
+        }
+    }
+    Ok(handled)
+}
+
+/// What read_char did with a special event.
+pub(crate) enum SpecialEvent {
+    /// Its `special-event-map' binding ran, BUFFER_CHANGED when the
+    /// binding left another buffer current.
+    Ran { buffer_changed: bool },
+    /// Unbound, the event is left to be read.
+    Unread,
+}
+
+/// read_char's processing of one special event from the keyboard buffer:
+/// its `special-event-map' binding run with `command-execute', or,
+/// unbound, the event left to be read; None when no user signal or
+/// thread event is pending.  With STOP_IDLE (a read_char without
+/// END_TIME), Emacs stops being idle for the event (non_reread's
+/// timer_stop_idle), and resumes for one `while-no-input-ignore-events'
+/// names once its binding has run.
+pub(crate) fn run_one_special_event(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    stop_idle: bool,
+) -> Result<Option<SpecialEvent>, LispError> {
+    {
         // User signals first (one occurrence at a time), then the THREAD_EVENTs
         // `thread-signal' stored for the main thread, in arrival order.
         let event = match take_pending_user_signal() {
@@ -698,9 +730,8 @@ pub(crate) fn run_pending_user_signal_events(
             None if !interp.pending_thread_events.is_empty() => {
                 interp.pending_thread_events.remove(0)
             }
-            None => break,
+            None => return Ok(None),
         };
-        handled = true;
         let keymap = interp
             .lookup_var_key(cached_symbol!("special-event-map"), env)
             .unwrap_or(Value::Nil);
@@ -710,14 +741,15 @@ pub(crate) fn run_pending_user_signal_events(
         let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![event, keymap]);
         let binding = keymap_access_event(interp, keymap, event, false, env)?.unwrap_or(Value::Nil);
         roots.push(binding);
-        interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
+        if stop_idle {
+            tty_note_idle_end();
+        }
         if binding.is_nil() {
             append_unread_command_events(interp, env, [event]);
-            // Keep later signals behind this unread event, matching the main
-            // keyboard queue's ordering.
-            break;
+            return Ok(Some(SpecialEvent::Unread));
         }
-
+        let prev_buffer = interp.current_buffer_id();
+        interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
         let keys = Value::vector([event]);
         interp.call_function_value(
             Value::Symbol("command-execute".into()),
@@ -725,8 +757,21 @@ pub(crate) fn run_pending_user_signal_events(
             &[binding, Value::Nil, keys, Value::T],
             env,
         )?;
+        // We stopped being idle for this event; undo that.  This prevents
+        // automatic window selection (under mouse-autoselect-window) from
+        // acting as a real input event (timer_resume_idle).
+        if stop_idle && let Some((head, _)) = event.cons_values() {
+            let ignored = interp
+                .lookup_var_key(cached_symbol!("while-no-input-ignore-events"), env)
+                .unwrap_or(Value::Nil);
+            if !super::dispatch::lists::direct_memq(interp, &[head, ignored], env)?.is_nil() {
+                tty_resume_idle();
+            }
+        }
+        Ok(Some(SpecialEvent::Ran {
+            buffer_changed: interp.current_buffer_id() != prev_buffer,
+        }))
     }
-    Ok(handled)
 }
 
 pub(crate) fn set_command_key_state(
@@ -1765,18 +1810,24 @@ pub(crate) fn add_command_undo_boundary(
 thread_local! {
     static TTY_IDLE_START: std::cell::Cell<Option<std::time::Instant>> =
         const { std::cell::Cell::new(None) };
+    // keyboard.c's timer_last_idleness_start_time.
+    static TTY_LAST_IDLE_START: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
 }
 
 // keyboard.c timer_start_idle: on entering the idle state (and only on
 // entering it), every idle timer becomes a candidate again -- GNU calls
 // timer.el's `internal-timer-start-idle' to clear the triggered flags,
-// and so do we.  The recorded instant backs `current-idle-time'.
+// and so do we.  The recorded instant backs `current-idle-time', and is
+// kept as timer_last_idleness_start_time for timer_resume_idle.
 pub(crate) fn tty_note_idle_start(interp: &mut Interpreter, env: &mut Env) {
     let already_idle = TTY_IDLE_START.with(|cell| cell.get().is_some());
     if already_idle {
         return;
     }
-    TTY_IDLE_START.with(|cell| cell.set(Some(std::time::Instant::now())));
+    let now = std::time::Instant::now();
+    TTY_IDLE_START.with(|cell| cell.set(Some(now)));
+    TTY_LAST_IDLE_START.set(Some(now));
     if interp
         .lookup_function_key(cached_symbol!("internal-timer-start-idle"), env)
         .is_ok()
@@ -1793,6 +1844,14 @@ pub(crate) fn tty_note_idle_start(interp: &mut Interpreter, env: &mut Env) {
 // keyboard.c timer_stop_idle: input ends the idle period.
 pub(crate) fn tty_note_idle_end() {
     TTY_IDLE_START.with(|cell| cell.set(None));
+}
+
+// keyboard.c timer_resume_idle: idle again since the idle period that
+// was stopped began, unless Emacs is idle already.
+fn tty_resume_idle() {
+    if TTY_IDLE_START.get().is_none() {
+        TTY_IDLE_START.set(TTY_LAST_IDLE_START.get());
+    }
 }
 
 // Fcurrent_idle_time's backing state: the elapsed idle span, when idle.
@@ -1952,6 +2011,11 @@ fn timer_check(
 // window-configuration changes made mid-read — a *Completions* pop-up —
 // reach the glass before the next key blocks.
 thread_local! {
+    /// read_char's `goto retry' after a special event's binding ran.
+    static READ_CHAR_RETRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+thread_local! {
     static TTY_FRAME_REDRAW: std::cell::RefCell<Option<TtyFrameRedraw>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -2029,7 +2093,7 @@ pub(crate) fn pop_unread_command_event_value(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    read_command_event(interp, env, false, Value::Nil, Value::Nil)
+    read_command_event(interp, env, 0, false, Value::Nil, Value::Nil)
 }
 
 /// read_char under read_key_sequence: handle_interrupt's longjmp makes
@@ -2042,10 +2106,11 @@ pub(crate) fn pop_unread_command_event_value(
 pub(crate) fn read_key_sequence_event(
     interp: &mut Interpreter,
     env: &mut Env,
+    commandflag: i32,
     prev_event: Value,
     map: Value,
 ) -> Result<Value, LispError> {
-    read_command_event(interp, env, true, prev_event, map)
+    read_command_event(interp, env, commandflag, true, prev_event, map)
 }
 
 /// read_char (COMMANDFLAG, Qnil, Qt, 0, NULL) as
@@ -2054,9 +2119,17 @@ pub(crate) fn read_key_sequence_event(
 pub(crate) fn read_menu_prompt_char(
     interp: &mut Interpreter,
     env: &mut Env,
+    commandflag: i32,
     quit_char_is_event: bool,
 ) -> Result<Value, LispError> {
-    read_command_event(interp, env, quit_char_is_event, Value::T, Value::Nil)
+    read_command_event(
+        interp,
+        env,
+        commandflag,
+        quit_char_is_event,
+        Value::T,
+        Value::Nil,
+    )
 }
 
 /// Whether the event read_char returned last came from a mouse menu
@@ -2073,17 +2146,37 @@ pub(crate) fn take_read_menu_exit() -> bool {
 
 /// read_char: MAP is the keymap the key sequence has reached (nil
 /// outside one), whose prompt read_char_minibuf_menu_prompt or
-/// read_char_x_menu_prompt may show a menu of.
+/// read_char_x_menu_prompt may show a menu of.  COMMANDFLAG is 1 when
+/// read_key_sequence reads for the command loop (redisplay and auto-save
+/// both), 0 when anything else reads (redisplay, no auto-save), -2 when
+/// read_menu_command does (neither).
 fn read_command_event(
     interp: &mut Interpreter,
     env: &mut Env,
+    commandflag: i32,
     quit_char_is_event: bool,
     prev_event: Value,
     map: Value,
 ) -> Result<Value, LispError> {
     READ_USED_MOUSE_MENU.set(false);
     READ_MENU_EXIT.set(false);
-    let event = read_command_event_1(interp, env, quit_char_is_event, prev_event, map)?;
+    let event = loop {
+        let event = read_command_event_1(
+            interp,
+            env,
+            commandflag,
+            quit_char_is_event,
+            prev_event,
+            map,
+        )?;
+        // retry: a special event processed, read_char starts again.
+        if !READ_CHAR_RETRY.take() {
+            break event;
+        }
+    };
+    // exit: input_was_pending = input_pending, which kbd_buffer_get_event
+    // left as readable_events.
+    kbd_input::note_input_was_pending(interp);
     read_char_help_form(interp, env, quit_char_is_event, event)
 }
 
@@ -2107,7 +2200,7 @@ fn read_char_help_form(
     add_read_event_to_command_keys(interp, event, env)?;
     interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
     run_help_form(interp, env, &mut |interp, env| {
-        read_command_event(interp, env, quit_char_is_event, Value::Nil, Value::Nil)
+        read_command_event(interp, env, 0, quit_char_is_event, Value::Nil, Value::Nil)
     })
 }
 
@@ -2174,6 +2267,7 @@ pub(crate) fn run_help_form(
 fn read_command_event_1(
     interp: &mut Interpreter,
     env: &mut Env,
+    commandflag: i32,
     quit_char_is_event: bool,
     prev_event: Value,
     map: Value,
@@ -2186,10 +2280,10 @@ fn read_command_event_1(
     let cursor_in_echo_area = interp
         .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
         .is_some_and(|value| value.is_truthy());
-    // Redisplay if no pending input (COMMANDFLAG >= 0): the frontend
-    // paints unless input is pending, when redisplay_internal runs only
-    // the window change functions.
-    run_tty_frame_redraw(interp, env);
+    // If redisplay was requested.
+    if commandflag >= 0 {
+        kbd_input::read_char_redisplay(interp, env)?;
+    }
     // An embedder's (or a test's) event feed without a keyboard buffer
     // hands over its events one at a time, None ending the feed.
     if !has_tty_event_poller()
@@ -2235,6 +2329,7 @@ fn read_command_event_1(
     {
         let c = crate::lisp::primitives::menu::read_char_minibuf_menu_prompt(
             interp,
+            commandflag,
             quit_char_is_event,
             map,
             env,
@@ -2250,9 +2345,28 @@ fn read_command_event_1(
     tty_note_idle_start(interp, env);
     // If in middle of key sequence and minibuffer not active, start
     // echoing if enough time elapses -- at once after a mouse event, as a
-    // menu is probably about to show.
-    let mut echo_deadline = echo_timer(interp, env, prev_event)?
-        .and_then(|seconds| std::time::Instant::now().checked_add(seconds));
+    // menu is probably about to show: sit_for (Vecho_keystrokes, 1, 1),
+    // which process output also ends, then the echo unless events are to
+    // be reread.
+    if echo_timer(interp, env, prev_event)?.is_some() {
+        let timeout = interp
+            .lookup_var_key(cached_symbol!("echo-keystrokes"), env)
+            .unwrap_or(Value::Nil);
+        if kbd_input::sit_for(interp, env, timeout, true, 1)? {
+            echo_timer_expired(interp, env)?;
+        }
+    }
+    // Maybe auto save due to number of keystrokes.
+    if commandflag != 0
+        && commandflag != -2
+        && kbd_input::keystroke_auto_save_due(interp, env)
+        && !kbd_input::detect_input_pending_run_timers(interp, env, false)?
+    {
+        let no_message = kbd_input::auto_save_no_message(interp, env);
+        crate::lisp::primitives::file_io::do_auto_save(interp, env, no_message, Value::Nil)?;
+        // Hooks can actually change some buffers in auto save.
+        run_tty_frame_redraw(interp, env);
+    }
     // Try reading using an X menu.  This is never confused with reading
     // using the minibuf because the recursive call of read_char in
     // read_char_minibuf_menu_prompt does not pass on any keymaps.
@@ -2283,11 +2397,22 @@ fn read_command_event_1(
         tty_note_idle_end();
         return Ok(c);
     }
+    // Whether read_char's idle step (its auto-save after
+    // `auto-save-timeout' and maybe_gc) has run: once, after the echo's
+    // own wait.
+    let mut idle_done = false;
     let result = (|| loop {
         // kbd_buffer_get_event: `unread-command-events' before the
         // keyboard buffer.
         if let Some(event) = take_unread_command_event(interp, env) {
             count_read_event(interp);
+            return Ok(event);
+        }
+        // Read something from current KBOARD's side queue, if possible.
+        if let Some(event) = take_kbd_queue_event(interp, env) {
+            interp.keyboard_input.last_event_reread = false;
+            record_external_input_event(interp, &event, env);
+            read_char_non_reread(interp, &event, env)?;
             return Ok(event);
         }
         if let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area, None) {
@@ -2304,21 +2429,31 @@ fn read_command_event_1(
                 Some(None) => {}
             }
         }
-        match kbd_input::kbd_buffer_get_event_wait(interp, env, echo_deadline, true)? {
+        // Maybe autosave and/or garbage collect due to idleness
+        // (INTERACTIVE, and no event read yet).
+        if !idle_done {
+            idle_done = true;
+            if interactive {
+                kbd_input::read_char_idle(interp, env, commandflag)?;
+                continue;
+            }
+        }
+        match kbd_input::kbd_buffer_get_event_wait(interp, env, None, true)? {
             kbd_input::KbdWait::Quit => {
                 if let Some(event) = read_char_quit(interp, env)? {
                     return Ok(event);
                 }
             }
-            kbd_input::KbdWait::TimedOut if echo_deadline.is_some() => {
-                // sit_for's t: no input arrived (none is pending) in
-                // `echo-keystrokes' seconds; the echo shows on the glass
-                // at once (message3_nolog's echo_area_display).
-                echo_deadline = None;
-                if !kbd_input::detect_input_pending(interp, env)? {
-                    echo_timer_expired(interp, env)?;
-                    run_tty_frame_redraw(interp, env);
+            // A special event's binding ran: read_char's goto retry, or,
+            // when the binding left another buffer current (which may have
+            // changed the keymaps), -2, as if there were input in another
+            // keyboard, for read_key_sequence to recalculate them.
+            kbd_input::KbdWait::Special { buffer_changed } => {
+                if buffer_changed {
+                    return Ok(Value::Integer(-2));
                 }
+                READ_CHAR_RETRY.set(true);
+                return Ok(Value::Nil);
             }
             kbd_input::KbdWait::Ready | kbd_input::KbdWait::TimedOut => {}
         }
@@ -2328,6 +2463,30 @@ fn read_command_event_1(
     // The quit character's quit, if `quit-flag' still holds it, comes at
     // the next quit check after the read returns.
     result
+}
+
+/// read_char's read from the kboard's side queue, kbd_queue: its first
+/// event while kbd_queue_has_data, a switch-frame event's frame becoming
+/// internal_last_event_frame, which `last-event-frame' is set to.
+fn take_kbd_queue_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
+    let input = &mut interp.keyboard_input;
+    if !input.kbd_queue_has_data || input.kbd_queue.is_empty() {
+        return None;
+    }
+    let event = input.kbd_queue.remove(0);
+    if input.kbd_queue.is_empty() {
+        input.kbd_queue_has_data = false;
+    }
+    if key_sequence::switch_frame_event_p(interp, event) {
+        interp.keyboard_input.internal_last_event_frame =
+            event.cons_values().and_then(|(_, tail)| tail.car_if_list());
+    }
+    let frame = interp
+        .keyboard_input
+        .internal_last_event_frame
+        .unwrap_or(Value::Nil);
+    interp.set_variable_key(cached_symbol!("last-event-frame"), frame, env);
+    Some(event)
 }
 
 /// read_char's setjmp for quit_throw_to_read_char: the quit character,
@@ -3048,9 +3207,11 @@ pub(crate) fn read_tty_event_with_timeout(
         if let Some(event) = pop_pending_input_event_value(interp, env)? {
             return Ok(Some(event));
         }
-        // read_char before it waits: the echo area's test (a read with an
-        // end time runs no echo timer).
+        // read_char before it waits: its redisplay (COMMANDFLAG 0), then
+        // the echo area's test (a read with an end time runs no echo
+        // timer).
         if std::mem::take(&mut before_wait) {
+            kbd_input::read_char_redisplay(interp, env)?;
             echo_before_wait(interp, env)?;
         }
         let cursor_in_echo_area = interp
@@ -3078,6 +3239,14 @@ pub(crate) fn read_tty_event_with_timeout(
                 if let Some(event) = read_char_quit(interp, env)? {
                     return Ok(Some(event));
                 }
+            }
+            // A special event's binding ran: read_char's goto retry, or its
+            // -2 when the binding left another buffer current.
+            kbd_input::KbdWait::Special { buffer_changed } => {
+                if buffer_changed {
+                    return Ok(Some(Value::Integer(-2)));
+                }
+                before_wait = true;
             }
             kbd_input::KbdWait::Ready => {}
         }

@@ -37,6 +37,9 @@ pub(crate) struct KeySequenceReader {
     // read_key_sequence's used_mouse_menu_history: whether the key read
     // into each position came from a mouse menu.
     menu_keys: [bool; READ_KEY_ELTS + 1],
+    // The COMMANDFLAG its read_char gets: -2 with PREVENT_REDISPLAY,
+    // else 1 without a prompt and 0 with one.
+    commandflag: i32,
 }
 
 impl KeySequenceReader {
@@ -74,6 +77,7 @@ impl KeySequenceReader {
             keys_start: 0,
             echo_start: 0,
             menu_keys: [false; READ_KEY_ELTS + 1],
+            commandflag: i32::from(prompt.is_nil()),
         };
         // read_key_sequence, interactively: PROMPT begins the echo string
         // and is shown at once (echo_now), echoing going on only with
@@ -148,6 +152,17 @@ impl KeySequenceReader {
             super::echo_truncate(interp, self.echo_start, env)?;
         }
         Ok(())
+    }
+
+    /// read_key_sequence's replay_entire_sequence with no mock input: the
+    /// translation maps back to their roots from the sequence's start, and
+    /// the sequence read anew (replay_sequence).
+    fn replay_entire(&mut self, interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+        for index in 0..self.remaps.len() {
+            self.reset_remap(index, 0);
+        }
+        self.keys.clear();
+        self.replay(interp, env, false)
     }
 
     fn reset_remap(&mut self, index: usize, position: usize) {
@@ -712,10 +727,11 @@ fn at_end_of_macro_p(interp: &mut Interpreter, env: &mut Env) -> Result<bool, Li
 fn wait_for_sequence_event(
     interp: &mut Interpreter,
     env: &mut Env,
+    commandflag: i32,
     prev_event: Value,
     map: Value,
 ) -> Result<Value, LispError> {
-    read_key_sequence_event(interp, env, prev_event, map)
+    read_key_sequence_event(interp, env, commandflag, prev_event, map)
 }
 
 /// keyboard.c's INTERACTIVE: no keyboard macro executing, and not
@@ -755,6 +771,7 @@ pub(crate) fn read_key_sequence_vs(
         prompt,
         dont_downcase_last,
         can_return_switch_frame,
+        false,
         env,
     );
     interp.unbind_to(count, env)?;
@@ -765,6 +782,16 @@ pub(crate) fn read_key_sequence_vs(
         interp.maybe_quit(env)?;
     }
     Ok(read.keys)
+}
+
+/// EVENT_HAS_PARAMETERS with EVENT_HEAD_KIND switch-frame: a
+/// `switch-frame' or a `select-window' event.
+pub(crate) fn switch_frame_event_p(interp: &Interpreter, event: Value) -> bool {
+    event.cons_values().is_some_and(|(head, _)| {
+        interp
+            .get_property_of_symbol_value(head, "event-kind")
+            .is_some_and(|kind| crate::lisp::types::eq_symbol_named(kind, "switch-frame"))
+    })
 }
 
 /// keyboard.c:read_key_sequence's result: the keys (none at a keyboard
@@ -783,17 +810,22 @@ pub(crate) struct ReadKeySequence {
 /// after the first key, or as the first when CAN_RETURN_SWITCH_FRAME is
 /// false, is delayed until the sequence ends (unread_switch_frame); an
 /// end of input (read_char's -1) or of the executing macro ends the read
-/// with no keys.
+/// with no keys.  PREVENT_REDISPLAY (read_menu_command's) gives read_char
+/// a COMMANDFLAG of -2: no redisplay, no auto-save.
 pub(crate) fn read_key_sequence(
     interp: &mut Interpreter,
     prompt: Value,
     dont_downcase_last: bool,
     can_return_switch_frame: bool,
+    prevent_redisplay: bool,
     env: &mut Env,
 ) -> Result<ReadKeySequence, LispError> {
     // read_key_sequence's read_char decodes the terminal's bytes.
     let _decoded = super::RawEventRead::enter(false);
     let mut reader = KeySequenceReader::new(interp, prompt, env)?;
+    if prevent_redisplay {
+        reader.commandflag = -2;
+    }
     let mut delayed_switch_frame = RootedVec::from_vec(vec![Value::Nil]);
     let result: Result<Option<KeyResolution>, LispError> = (|| loop {
         // At the end of an executing macro, with no unread events, the
@@ -804,7 +836,14 @@ pub(crate) fn read_key_sequence(
             return Ok(None);
         }
         let prev_event = reader.prev_event(interp, env);
-        let event = wait_for_sequence_event(interp, env, prev_event, reader.current_binding())?;
+        let interrupted_frame = interp.selected_frame_value();
+        let event = wait_for_sequence_event(
+            interp,
+            env,
+            reader.commandflag,
+            prev_event,
+            reader.current_binding(),
+        )?;
         // read_char returns t when it shows a menu and the user rejects
         // it.  Just return -1.
         if crate::lisp::types::eq(event, Value::T) {
@@ -814,13 +853,32 @@ pub(crate) fn read_key_sequence(
         if matches!(event.kind(), Kind::Integer(-1)) {
             return Ok(None);
         }
-        // EVENT_HAS_PARAMETERS with EVENT_HEAD_KIND switch-frame: a
-        // `switch-frame' or a `select-window' event.
-        if event.cons_values().is_some_and(|(head, _)| {
-            interp
-                .get_property_of_symbol_value(head, "event-kind")
-                .is_some_and(|kind| crate::lisp::types::eq_symbol_named(kind, "switch-frame"))
-        }) && (!reader.keys.is_empty() || !can_return_switch_frame)
+        // read_char's -2 (wrong_kboard_jmpbuf): a special event's binding
+        // left another buffer current, so the keymaps may have changed.
+        // The keys read so far go back on the kboard's side queue, before
+        // the delayed switch-frame event, a switch-frame event for the
+        // frame selected before the read going first, and the sequence is
+        // read again from the start (replay_entire_sequence).
+        if matches!(event.kind(), Kind::Integer(-2)) {
+            let mut front: Vec<Value> = reader.keys.iter().copied().collect();
+            if !delayed_switch_frame[0].is_nil() {
+                front.push(delayed_switch_frame[0]);
+                delayed_switch_frame[0] = Value::Nil;
+            }
+            let queue = &mut interp.keyboard_input.kbd_queue;
+            queue.splice(0..0, front);
+            if let Some(&first) = interp.keyboard_input.kbd_queue.first()
+                && !switch_frame_event_p(interp, first)
+            {
+                // make_lispy_switch_frame.
+                let switch = Value::list([Value::symbol("switch-frame"), interrupted_frame]);
+                interp.keyboard_input.kbd_queue.insert(0, switch);
+            }
+            reader.replay_entire(interp, env)?;
+            continue;
+        }
+        if switch_frame_event_p(interp, event)
+            && (!reader.keys.is_empty() || !can_return_switch_frame)
         {
             delayed_switch_frame[0] = event;
             continue;

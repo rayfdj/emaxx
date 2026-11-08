@@ -327,7 +327,8 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         clear_this_command(interp, env);
         // Read next key sequence; i gets its length.
         init_raw_keybuf_count(interp);
-        let read = super::key_sequence::read_key_sequence(interp, Value::Nil, false, true, env)?;
+        let read =
+            super::key_sequence::read_key_sequence(interp, Value::Nil, false, true, false, env)?;
         // read_key_sequence_cmd, read_key_sequence_remapped and the last
         // key, held across what runs before the command does.
         let end_of_input = read.keys.is_empty() && !read.menu_rejected;

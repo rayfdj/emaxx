@@ -7883,9 +7883,11 @@ fn nested_data_reads_on_the_read_stack_as_read0_s() {
 }
 
 #[test]
-fn reads_keep_their_own_stacks_and_end_as_read0_ends() {
-    // Each reader's read stack and roots are its own, so reads suspended in
-    // two Lisp threads keep their elements apart; the end of the input after
+fn reads_share_the_read_stack_and_end_as_read0_ends() {
+    // Every read works on the one read stack (lread.c's rdstack), from the
+    // depth it finds there: a read the main thread makes through while a
+    // thread's read is suspended in a collection pushes above the thread's
+    // entries and leaves them as it found them; the end of the input after
     // a `#!' line or a `#@' skip at the top level, or inside a datum from a
     // function stream, is end_of_file_error; and a label naming a symbol
     // with position signals in the substitution while
@@ -8210,6 +8212,93 @@ fn a_tty_menu_tracks_the_mouse_and_holds_off_collection_as_term_c_does() {
     ];
     let expected = corpus.run_tty(&oracle(), &probe, "track.out", "C", &input);
     let actual = corpus.run_tty(emaxx(), &probe, "track.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn read_char_auto_saves_and_redisplays_as_keyboard_c_does() {
+    // read_char auto-saves when more than `auto-save-interval' (and 20)
+    // input events have come since the last auto-save and no input is
+    // pending, and, for a key sequence the command loop reads, once
+    // `auto-save-timeout' seconds (a quarter of it times the buffer's
+    // delay level, four for a small one) pass without input; Fredisplay
+    // with input pending and `redisplay-dont-pause' nil does nothing.
+    // GNU's first seconds compile what it loaded, whose output would cut
+    // the idle wait short, so the keys come after them.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "autosave.el",
+        r#"(defvar as-log nil)
+(setq auto-save-interval 20 auto-save-timeout 1000)
+(find-file (expand-file-name "f.txt" (make-temp-file "as" t)))
+(add-hook 'auto-save-hook (lambda () (push (list 'save num-nonmacro-input-events) as-log)))
+(global-set-key [f5] (lambda () (interactive)
+  (push (list 'f5 (buffer-size) (and buffer-auto-save-file-name (file-exists-p buffer-auto-save-file-name))) as-log)))
+(global-set-key [f7] (lambda () (interactive) (setq auto-save-interval 0 auto-save-timeout 1)))
+(global-set-key [f6] (lambda () (interactive)
+  (sleep-for 1.5)
+  (push (list 'redisplay (let ((redisplay-dont-pause nil)) (redisplay)) (input-pending-p)) as-log)))
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "autosave.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse as-log))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (9.0, b"aaaaaaaaaaaaaaaaaaaaaaaaa"),
+        (1.0, b"\x1b[15~"),
+        (0.5, b"\x1b[18~"),
+        (0.5, b"bbb"),
+        (2.5, b"\x1b[15~"),
+        (0.5, b"\x1b[17~"),
+        (0.3, b"xyz"),
+        (2.5, b"\x1b[19~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "autosave.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "autosave.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn special_event_leaving_another_buffer_current_replays_the_key_sequence() {
+    // read_char runs a special event's `special-event-map' binding and,
+    // when the binding leaves another buffer current, returns -2: the
+    // keymaps may have changed, so read_key_sequence puts the keys read so
+    // far on the kboard's side queue (which, with one kboard, read_char
+    // does not read) and reads the sequence from its start.  The C-x typed
+    // before SIGUSR1 is gone, and the b after it inserts itself.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "sigbuf.el",
+        r#"(switch-to-buffer "t")
+(get-buffer-create "other")
+(defvar sb-cmds nil)
+(add-hook 'pre-command-hook
+  (lambda () (push (list (key-description (this-command-keys)) (buffer-name)) sb-cmds)))
+(define-key special-event-map [sigusr1] (lambda () (interactive) (set-buffer "other")))
+(global-set-key [f5] (lambda () (interactive)
+  (run-at-time 1 nil (lambda () (signal-process (emacs-pid) 'sigusr1)))))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (let ((out (list (with-current-buffer "t" (buffer-string))
+                     (with-current-buffer "other" (buffer-string))
+                     (reverse sb-cmds))))
+      (with-temp-file (expand-file-name "sigbuf.out" command-line-default-directory)
+        (insert (format "%S\n" out))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (9.0, b"\x1b[15~"),
+        (0.2, b"\x18"),
+        (2.0, b"b"),
+        (1.0, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "sigbuf.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "sigbuf.out", "C", &input);
     assert!(expected.is_some(), "GNU's session wrote nothing");
     assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }

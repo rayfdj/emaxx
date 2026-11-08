@@ -2306,6 +2306,7 @@ pub(crate) fn read_char_x_menu_prompt(
 /// MAP has no prompt or without `menu-prompting'.
 pub(crate) fn read_char_minibuf_menu_prompt(
     interp: &mut Interpreter,
+    commandflag: i32,
     quit_char_is_event: bool,
     map: Value,
     env: &mut Env,
@@ -2473,10 +2474,11 @@ pub(crate) fn read_char_minibuf_menu_prompt(
         // That read_char records the key (record_char, with no macro being
         // defined) and adds it to this-command-keys (add_command_key and
         // echo_update), where the read_char that prompts adds nothing.
-        let obj = super::read_menu_prompt_char(interp, env, quit_char_is_event).and_then(|obj| {
-            super::record_unrecorded_event(interp, &obj, env);
-            super::add_read_event_to_command_keys(interp, obj, env).map(|()| obj)
-        });
+        let obj = super::read_menu_prompt_char(interp, env, commandflag, quit_char_is_event)
+            .and_then(|obj| {
+                super::record_unrecorded_event(interp, &obj, env);
+                super::add_read_event_to_command_keys(interp, obj, env).map(|()| obj)
+            });
         interp.set_variable_key(cached_symbol!("defining-kbd-macro"), orig_defn_macro, env);
         let obj = obj?;
         let more = interp

@@ -659,7 +659,15 @@ fn run_owned(
             // backtraces": record_in_backtrace with no arguments, popped by
             // the unbind_to.
             interpreter.push_backtrace_frame(Value::symbol("redisplay_internal (C function)"), &[]);
-            if queue.input_pending() {
+            // update_frame pauses for pending input only without
+            // `redisplay-dont-pause' (redisplay_dont_pause forces it).
+            let dont_pause = interpreter
+                .lookup_var_key(cached_symbol!("redisplay-dont-pause"), env)
+                .is_some_and(|value| value.is_truthy());
+            if !dont_pause && queue.input_pending() {
+                // update_frame's detect_input_pending_ignore_squeezables
+                // sets input_pending.
+                crate::lisp::primitives::note_redisplay_input_pending();
                 // Painting yields to the input, but redisplay_internal
                 // runs the window change functions before any update.
                 let _ = crate::lisp::primitives::run_window_change_functions(interpreter, env);
@@ -1002,6 +1010,7 @@ impl SharedEventQueue {
                 true,
             ) {
                 Ok(crate::lisp::primitives::KbdWait::Ready) if self.input_pending() => {}
+                Ok(crate::lisp::primitives::KbdWait::Special { .. }) => {}
                 Ok(crate::lisp::primitives::KbdWait::Quit) => return RawNext::Quit,
                 _ => return RawNext::Ended,
             }
@@ -10648,7 +10657,7 @@ fn read_menu_command(interpreter: &mut Interpreter, env: &mut Env) -> Result<Val
         env,
     )?;
     let read =
-        crate::lisp::primitives::read_key_sequence(interpreter, Value::Nil, false, true, env);
+        crate::lisp::primitives::read_key_sequence(interpreter, Value::Nil, false, true, true, env);
     let unbound = match &read {
         Err(error) => interpreter
             .with_lisp_stack_roots(error, |interpreter| interpreter.unbind_to(count, env)),

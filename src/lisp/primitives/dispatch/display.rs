@@ -6969,19 +6969,40 @@ define_dispatch!(
             }
             "redisplay" => {
                 need_arg_range(name, args, 0, 1)?;
-                // `sit-for 0' redisplays instead of entering read-event, but
-                // GNU still dispatches timers that were already ripe.
-                interp.run_pending_timer_events(env)?;
-                // A live frontend repaints through its redraw hook
-                // (sit-for redisplays before waiting); the cache-free
-                // batch renderer cannot be preempted by pending terminal
-                // input, so redisplay always completes.  Fredisplay is
-                // redisplay_preserve_echo_area: a message wiped by input
-                // arrival but still last-displayed shows again instead
-                // of clearing the row (menu-bar-open relies on it).
+                // dispnew.c:Fredisplay: the events no one sees and the
+                // ripe timers first; nil, with no redisplay, when input is
+                // pending (unless FORCE or `redisplay-dont-pause') or a
+                // keyboard macro executes.
+                let force = args.first().copied().unwrap_or(Value::Nil);
+                crate::lisp::primitives::swallow_events(interp, env, true)?;
+                let dont_pause = interp
+                    .lookup_var_key(cached_symbol!("redisplay-dont-pause"), env)
+                    .is_some_and(|value| value.is_truthy());
+                if (crate::lisp::primitives::detect_input_pending_run_timers(interp, env, true)?
+                    && force.is_nil()
+                    && !dont_pause)
+                    || interp
+                        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+                        .is_some_and(|value| value.is_truthy())
+                {
+                    return Ok(Value::Nil);
+                }
+                let count = interp.specpdl_index();
+                if !force.is_nil() && !dont_pause {
+                    interp.specbind_symbol(
+                        &cached_symbol!("redisplay-dont-pause").with(|symbol| *symbol),
+                        Value::T,
+                        env,
+                    )?;
+                }
+                // redisplay_preserve_echo_area (2): a message wiped by
+                // input arrival but still last-displayed shows again
+                // instead of clearing the row (menu-bar-open relies on
+                // it).
                 with_preserved_echo_redisplay(|| {
                     crate::lisp::primitives::run_tty_frame_redraw(interp, env)
                 });
+                interp.unbind_to(count, env)?;
                 Ok(Value::T)
             }
             "redraw-frame" => {
