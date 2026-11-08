@@ -8,21 +8,33 @@
 //! is row arithmetic here.
 
 use super::{
-    CharacterDisplayContext, glyphless_visual_line_at, layout, position_of_visual_row,
+    CharacterDisplayContext, VisualLine, glyphless_visual_line_at, layout,
     wrap_glyphless_visual_line, wrapped_position_of_column,
 };
 use crate::buffer::Buffer;
 use crate::lisp::primitives::{InvisibilitySpec, invisible_class_at, visual_line_first_line};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// One glyph row: segment SEG of the display line that begins at raw
-/// line LINE.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// line LINE, laid out from the line's start, or with ORIGIN non-zero
+/// from that position inside it, where a window's display starts
+/// (start_display).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Row {
     pub(super) line: usize,
     pub(super) seg: usize,
+    pub(super) origin: usize,
 }
+
+/// A per-plan cache keyed by a display line's raw line and the origin it
+/// is laid out from.
+type LineCache<T> = RefCell<HashMap<(usize, usize), T>>;
+
+/// A display line's rows, the raw lines it spans, and whether it is a
+/// wholly invisible tail that produces no row.
+type LineInfo = (usize, usize, bool);
 
 /// A window's rows over its buffer under its wrap geometry, walked the
 /// way move_it_by_lines walks them.
@@ -34,9 +46,18 @@ pub(super) struct Rows<'a, 'c> {
     truncate: bool,
     first_line: usize,
     last_line: usize,
-    /// Per display line: its rows, the raw lines it spans, and whether it
-    /// is a wholly invisible tail that produces no row.
-    lines: RefCell<HashMap<usize, (usize, usize, bool)>>,
+    /// Per display line and origin: its rows, the raw lines it spans, and
+    /// whether it is a wholly invisible tail that produces no row.
+    lines: LineCache<LineInfo>,
+    /// Per display line: the line as the window shows it, laid out once
+    /// for every question the plan asks of it (the buffer cannot change
+    /// while the plan borrows it).
+    visuals: RefCell<HashMap<usize, Rc<VisualLine>>>,
+    /// Per display line and origin: where each of its rows starts.
+    row_starts: LineCache<Rc<Vec<usize>>>,
+    /// Per display line and origin: its layout continued at the window's
+    /// width.
+    layouts: LineCache<Rc<layout::LineLayout>>,
 }
 
 impl<'a, 'c> Rows<'a, 'c> {
@@ -56,14 +77,124 @@ impl<'a, 'c> Rows<'a, 'c> {
             first_line: buffer.line_number_at_pos(buffer.point_min()),
             last_line: buffer.line_number_at_pos(buffer.point_max()),
             lines: RefCell::new(HashMap::new()),
+            visuals: RefCell::new(HashMap::new()),
+            row_starts: RefCell::new(HashMap::new()),
+            layouts: RefCell::new(HashMap::new()),
         }
     }
 
-    fn line_info(&self, line: usize) -> (usize, usize, bool) {
-        if let Some(info) = self.lines.borrow().get(&line) {
+    /// handle_line_prefix on a row past ZV, where display_line still
+    /// starts each row of the window: the `line-prefix' there.
+    pub(super) fn prefix_past_zv(&self) -> Option<String> {
+        let context = self.glyphless?;
+        context.prefix_glyphs(&context.prefix_value_at(self.buffer, self.buffer.point_max(), false))
+    }
+
+    /// The display line beginning at raw line LINE laid out continued at
+    /// the window's width from ORIGIN (0: from its start), made once.
+    pub(super) fn laid_at(&self, line: usize, origin: usize) -> Rc<layout::LineLayout> {
+        if let Some(laid) = self.layouts.borrow().get(&(line, origin)) {
+            return Rc::clone(laid);
+        }
+        let visual = self.visual(line);
+        let laid = Rc::new(if origin == 0 {
+            layout::lay_out_visual_line(&visual, self.body_width, false)
+        } else {
+            layout::lay_out_visual_line_from(
+                &visual,
+                self.body_width,
+                false,
+                visual.start_index(
+                    origin.saturating_sub(self.buffer.display_line_start_of(line)),
+                    !self.at_line_beg(origin),
+                ),
+                !self.at_line_beg(origin),
+            )
+        });
+        self.layouts
+            .borrow_mut()
+            .insert((line, origin), Rc::clone(&laid));
+        laid
+    }
+
+    /// The display index of buffer position POS in VISUAL, the display
+    /// line beginning at raw line LINE.
+    fn index_of(&self, line: usize, visual: &VisualLine, pos: usize) -> usize {
+        let offset = pos.saturating_sub(self.buffer.display_line_start_of(line));
+        visual
+            .map
+            .get(offset)
+            .copied()
+            .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0))
+    }
+
+    /// The display line beginning at raw line LINE as the window shows it.
+    pub(super) fn visual(&self, line: usize) -> Rc<VisualLine> {
+        if let Some(visual) = self.visuals.borrow().get(&line) {
+            return Rc::clone(visual);
+        }
+        let visual = Rc::new(glyphless_visual_line_at(
+            self.buffer,
+            self.spec,
+            line,
+            self.glyphless,
+        ));
+        self.visuals.borrow_mut().insert(line, Rc::clone(&visual));
+        visual
+    }
+
+    /// Where each row of the display line beginning at raw line LINE
+    /// starts: the line's start, then the position each continuation
+    /// row's first glyph comes from, the line wrapped USABLE + 1 wide.
+    fn row_starts(&self, line: usize, origin: usize) -> Rc<Vec<usize>> {
+        if let Some(starts) = self.row_starts.borrow().get(&(line, origin)) {
+            return Rc::clone(starts);
+        }
+        let start = self.buffer.display_line_start_of(line);
+        let visual = self.visual(line);
+        let raw_at = |index: usize| {
+            visual
+                .raw_of_display
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| visual.raw_of_display.last().copied().unwrap_or(0))
+        };
+        let usable = self.body_width.saturating_sub(1).max(1);
+        // At any width but one column that is the plan's own layout.
+        let laid =
+            (usable + 1 == self.body_width || origin != 0).then(|| self.laid_at(line, origin));
+        let other;
+        let segments = match &laid {
+            Some(laid) => &laid.rows,
+            None => {
+                other = wrap_glyphless_visual_line(&visual, usable + 1);
+                &other
+            }
+        };
+        let first = if origin == 0 { start } else { origin };
+        let starts: Vec<usize> = segments
+            .iter()
+            .enumerate()
+            .map(|(seg, segment)| {
+                if seg == 0 {
+                    first
+                } else {
+                    start + raw_at(segment.start_index)
+                }
+            })
+            .collect();
+        let starts = Rc::new(starts);
+        self.row_starts
+            .borrow_mut()
+            .insert((line, origin), Rc::clone(&starts));
+        starts
+    }
+
+    fn line_info(&self, line: usize, origin: usize) -> LineInfo {
+        if let Some(info) = self.lines.borrow().get(&(line, origin)) {
             return *info;
         }
-        let visual = glyphless_visual_line_at(self.buffer, self.spec, line, self.glyphless);
+        let visual = self.visual(line);
         let line_start = self.buffer.display_line_start_of(line);
         let point_max = self.buffer.point_max();
         let invisible_tail = visual.text.is_empty()
@@ -73,80 +204,107 @@ impl<'a, 'c> Rows<'a, 'c> {
         let segs = if self.truncate {
             1
         } else {
-            wrap_glyphless_visual_line(&visual, self.body_width)
-                .len()
-                .max(1)
+            self.laid_at(line, origin).rows.len().max(1)
         };
         let info = (segs, visual.lines_spanned.max(1), invisible_tail);
-        self.lines.borrow_mut().insert(line, info);
+        self.lines.borrow_mut().insert((line, origin), info);
         info
     }
 
     fn produces_row(&self, line: usize) -> bool {
-        line <= self.last_line && !self.line_info(line).2
+        line <= self.last_line && !self.line_info(line, 0).2
     }
 
     pub(super) fn next(&self, row: Row) -> Option<Row> {
-        let (segs, spanned, _) = self.line_info(row.line);
+        let (segs, spanned, _) = self.line_info(row.line, row.origin);
         if row.seg + 1 < segs {
             return Some(Row {
-                line: row.line,
                 seg: row.seg + 1,
+                ..row
             });
         }
         let line = row.line + spanned;
-        self.produces_row(line).then_some(Row { line, seg: 0 })
+        self.produces_row(line).then_some(Row {
+            line,
+            ..Row::default()
+        })
     }
 
+    /// The row above ROW.  Moving back from a display starting inside a
+    /// line walks that line's own rows (move_it_vertically_backward
+    /// measures from the line's start to the position): the row above a
+    /// start's is the one above the line's own row holding the start.
     pub(super) fn prev(&self, row: Row) -> Option<Row> {
         if row.seg > 0 {
             return Some(Row {
-                line: row.line,
                 seg: row.seg - 1,
+                ..row
             });
+        }
+        if row.origin != 0 {
+            return self.prev(self.row_of(row.origin));
         }
         if row.line <= self.first_line {
             return None;
         }
         let line =
             visual_line_first_line(self.buffer, self.spec, row.line - 1).max(self.first_line);
-        let (segs, _, _) = self.line_info(line);
+        let (segs, _, _) = self.line_info(line, 0);
         Some(Row {
             line,
             seg: segs - 1,
+            origin: 0,
         })
+    }
+
+    /// Buffer position where ROW begins under the window's wrap geometry:
+    /// where its first glyph comes from.
+    pub(super) fn row_start(&self, row: Row) -> usize {
+        let start = self.buffer.display_line_start_of(row.line);
+        if row.seg == 0 {
+            return if row.origin == 0 { start } else { row.origin };
+        }
+        self.row_starts(row.line, row.origin)
+            .get(row.seg)
+            .copied()
+            .unwrap_or_else(|| {
+                start
+                    + self
+                        .visual(row.line)
+                        .raw_of_display
+                        .last()
+                        .copied()
+                        .unwrap_or(0)
+            })
     }
 
     /// MATRIX_ROW_START_CHARPOS of ROW.
     pub(super) fn start_pos(&self, row: Row) -> usize {
-        position_of_visual_row(
-            self.buffer,
-            self.spec,
-            self.glyphless,
-            row.line,
-            row.seg,
-            self.body_width.saturating_sub(1).max(1),
-        )
-        .max(self.buffer.point_min())
+        self.row_start(row).max(self.buffer.point_min())
     }
 
-    /// The row showing POS.
+    /// The row showing POS, its line laid out from its start.
     pub(super) fn row_of(&self, pos: usize) -> Row {
         let buffer = self.buffer;
         let pos = pos.clamp(buffer.point_min(), buffer.point_max());
         let line = visual_line_first_line(buffer, self.spec, buffer.line_number_at_pos(pos))
             .max(self.first_line);
+        let row = Row {
+            line,
+            ..Row::default()
+        };
         if self.truncate {
-            return Row { line, seg: 0 };
+            return row;
         }
-        let visual = glyphless_visual_line_at(buffer, self.spec, line, self.glyphless);
-        let offset = pos.saturating_sub(buffer.display_line_start_of(line));
-        let index = visual
-            .map
-            .get(offset)
-            .copied()
-            .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
-        let laid = layout::lay_out_visual_line(&visual, self.body_width, false);
+        self.row_in_layout(row, pos)
+    }
+
+    /// The row of the display line ROW is on (laid out from ROW's origin)
+    /// showing POS.
+    fn row_in_layout(&self, row: Row, pos: usize) -> Row {
+        let visual = self.visual(row.line);
+        let index = self.index_of(row.line, &visual, pos);
+        let laid = self.laid_at(row.line, row.origin);
         let column = laid.columns[index.min(laid.columns.len() - 1)];
         let (seg, _) = wrapped_position_of_column(
             &laid.rows,
@@ -156,7 +314,35 @@ impl<'a, 'c> Rows<'a, 'c> {
                 .iter()
                 .any(|(from, _)| *from == index),
         );
-        Row { line, seg }
+        Row { seg, ..row }
+    }
+
+    /// start_display: the first row of a display starting at START,
+    /// which begins at START wherever it falls in its line.  A start a
+    /// row of the line's own layout begins at is that row.
+    pub(super) fn top_row(&self, start: usize) -> Row {
+        let start = start.clamp(self.buffer.point_min(), self.buffer.point_max());
+        let row = self.row_of(start);
+        if self.row_start(row) == start {
+            return row;
+        }
+        Row {
+            line: row.line,
+            seg: 0,
+            origin: start,
+        }
+    }
+
+    /// The row showing POS in a display whose first row is TOP.
+    pub(super) fn row_in(&self, top: Row, pos: usize) -> Row {
+        let row = self.row_of(pos);
+        if top.origin == 0 || row.line != top.line || pos < top.origin {
+            return row;
+        }
+        if self.truncate {
+            return top;
+        }
+        self.row_in_layout(top, pos)
     }
 
     /// Rows from FROM down to TO, when TO lies within LIMIT rows.
@@ -164,7 +350,7 @@ impl<'a, 'c> Rows<'a, 'c> {
         if to < from {
             return None;
         }
-        if to.line == from.line {
+        if to.line == from.line && to.origin == from.origin {
             return Some(to.seg - from.seg);
         }
         if !self.spec.active && to.line - from.line > limit {
@@ -211,7 +397,7 @@ impl<'a, 'c> Rows<'a, 'c> {
         pos > 1 && self.buffer.char_at(pos - 1) == Some('\n')
     }
 
-    fn at_line_beg(&self, pos: usize) -> bool {
+    pub(super) fn at_line_beg(&self, pos: usize) -> bool {
         pos <= self.buffer.point_min() || self.char_before_is_newline(pos)
     }
 }
@@ -262,6 +448,11 @@ pub(super) struct StartState {
     /// Tab and header rows above the text (their y precedes the text's).
     pub(super) top_rows: usize,
     pub(super) scroll: ScrollParams,
+    /// redisplay_window's beg_unchanged and end_unchanged as positions:
+    /// BEG + BEG_UNCHANGED and Z - END_UNCHANGED.
+    pub(super) changed_region: (i64, i64),
+    /// `track-mouse' is non-nil (a down-mouse drag in progress).
+    pub(super) track_mouse: bool,
     /// Resume at a stage with the start the scroll functions left, and
     /// whether the way there already had the mode line redisplayed.
     pub(super) resume: Option<(Stage, usize, bool)>,
@@ -345,7 +536,9 @@ pub(super) fn decide(rows: &Rows, state: &StartState, text_rows: usize) -> (Deci
     }
     let mut start = state.start;
     if state.windows_or_buffers_changed {
-        start = planner.continuation_line_start(start);
+        start = planner
+            .continuation_line_start(start, state.buffer_point)
+            .unwrap_or(start);
     }
     let mut force = state.force_start;
     if state.optional_new_start && planner.in_range(start) {
@@ -383,16 +576,16 @@ impl Planner<'_, '_, '_> {
         if self.point < start || !self.in_range(start) {
             return None;
         }
-        let top = self.rows.row_of(start);
+        let top = self.rows.top_row(start);
         self.rows
-            .distance(top, self.point_row, self.height)
+            .distance(top, self.rows.row_in(top, self.point), self.height)
             .filter(|row| *row < self.height)
     }
 
     fn done(&self, start: usize, cursor_row: Option<usize>, point: Option<usize>) -> Decision {
         Decision::Display(Chosen {
             start,
-            top: self.rows.row_of(start),
+            top: self.rows.top_row(start),
             cursor_row,
             point,
             start_at_line_beg: self.rows.at_line_beg(start),
@@ -437,7 +630,7 @@ impl Planner<'_, '_, '_> {
                 // new_vpos (half the window) reaches, row bottoms
                 // counting the tab and header rows above the text.
                 let target = (self.height / 2).saturating_sub(self.state.top_rows + 1);
-                let (row, moved) = self.rows.forward(self.rows.row_of(start), target);
+                let (row, moved) = self.rows.forward(self.rows.top_row(start), target);
                 self.done(start, Some(moved), Some(self.rows.start_pos(row)))
             }
             Some(row) => {
@@ -471,6 +664,27 @@ impl Planner<'_, '_, '_> {
             && self.point >= start
             && (start < self.zv || start == self.begv || !state.window_outdated)
         {
+            // A first window line continuing a line the first change
+            // comes before, the start inside the changed text: a new
+            // start in that line, forced when point shows from it.
+            let (first_changed, last_changed) = state.changed_region;
+            if !state.start_at_line_beg
+                && !state.track_mouse
+                && start > self.begv
+                && start as i64 > first_changed
+                && start as i64 <= last_changed
+                && let Some(new_start) = self.continuation_line_start(start, self.point)
+                && self.visible_row(new_start).is_some()
+            {
+                if state.scroll_functions {
+                    return Decision::Hook {
+                        stage: Stage::ForceStart,
+                        start: new_start,
+                        update_mode_line: true,
+                    };
+                }
+                return self.forced(new_start);
+            }
             if !self.acceptable(start) {
                 return self.recenter(start);
             }
@@ -548,7 +762,7 @@ impl Planner<'_, '_, '_> {
             }
             dy + amount
         };
-        let start_row = self.rows.row_of(start);
+        let start_row = self.rows.top_row(start);
         let mut dy = 0i64;
         let mut scroll_down = false;
         if self.point > start {
@@ -559,7 +773,8 @@ impl Planner<'_, '_, '_> {
             if reached == stop && self.point > self.rows.start_pos(stop_row) {
                 let slack = scroll_max.max(10) as usize;
                 let limit = self.height + slack;
-                let to_point = match self.rows.distance(start_row, self.point_row, limit) {
+                let point_row = self.rows.row_in(start_row, self.point);
+                let to_point = match self.rows.distance(start_row, point_row, limit) {
                     Some(rows) => rows,
                     None => limit,
                 };
@@ -613,12 +828,11 @@ impl Planner<'_, '_, '_> {
             }
             let y_to_move = (self.state.top_rows + self.height).max(scroll_max.max(10) as usize);
             let allowed = y_to_move.saturating_sub(self.state.top_rows);
-            let target = if scroll_margin_pos == self.zv {
-                self.rows.row_of(self.zv)
-            } else {
-                margin_row
-            };
-            let rows_up = self.rows.distance(self.point_row, target, allowed)? as i64;
+            // start_display at PT, then move_it_to the scroll margin's
+            // position: the rows of a display starting at point.
+            let from = self.rows.top_row(self.point);
+            let target = self.rows.row_in(from, scroll_margin_pos);
+            let rows_up = self.rows.distance(from, target, allowed)? as i64;
             if rows_up > scroll_max {
                 return None;
             }
@@ -646,7 +860,7 @@ impl Planner<'_, '_, '_> {
         let height = self.height as i64;
         let mut margin = self.margin as i64;
         let margin_pos = if margin > 0 && self.in_range(start) {
-            let (row, moved) = self.rows.forward(self.rows.row_of(start), self.margin);
+            let (row, moved) = self.rows.forward(self.rows.top_row(start), self.margin);
             if moved < self.margin && self.rows.next(row).is_none() {
                 self.zv
             } else {
@@ -709,16 +923,15 @@ impl Planner<'_, '_, '_> {
     /// compute_window_start_on_continuation_line: a start inside a
     /// continued line moves to the row start nearest it, not after the
     /// buffer's point.
-    fn continuation_line_start(&self, start: usize) -> usize {
+    fn continuation_line_start(&self, start: usize, pt: usize) -> Option<usize> {
         let rows = self.rows;
         if start <= self.begv || rows.char_before_is_newline(start) {
-            return start;
+            return None;
         }
         let start = start.clamp(self.begv, self.zv);
-        let pt = self.state.buffer_point;
         let mut row = Row {
             line: rows.row_of(start).line,
-            seg: 0,
+            ..Row::default()
         };
         // reseat_at_previous_visible_line_start: past what handle_stop
         // skips there, so a start move_it_by_lines reseated stays.
@@ -726,7 +939,7 @@ impl Planner<'_, '_, '_> {
             crate::lisp::primitives::move_it::reseat(rows.buffer, rows.spec, rows.start_pos(row))
                 .pos;
         if line_start > pt || start.saturating_sub(line_start) >= self.state.total_cells {
-            return start;
+            return None;
         }
         let mut it = line_start;
         let mut pos = line_start;
@@ -750,6 +963,6 @@ impl Planner<'_, '_, '_> {
                 None => it = self.zv,
             }
         }
-        if pos > pt { pos_before_pt } else { pos }
+        Some(if pos > pt { pos_before_pt } else { pos })
     }
 }

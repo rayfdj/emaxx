@@ -8956,10 +8956,7 @@ fn header_line_glass_honors_propertized_align_to_columns() {
         &mut env,
         window_id,
         1,
-        crate::lisp::primitives::InteractiveWindowMetrics {
-            text_height: 10,
-            window_end: 1,
-        },
+        crate::lisp::primitives::InteractiveWindowMetrics { window_end: 1 },
         80,
         &measure,
     )
@@ -8992,10 +8989,7 @@ fn header_line_glass_keeps_partial_sort_column_face() {
         &mut env,
         window_id,
         1,
-        crate::lisp::primitives::InteractiveWindowMetrics {
-            text_height: 10,
-            window_end: 1,
-        },
+        crate::lisp::primitives::InteractiveWindowMetrics { window_end: 1 },
         80,
         &measure,
     )
@@ -9036,10 +9030,7 @@ fn tab_line_glass_evaluates_per_buffer_format() {
         &mut env,
         window_id,
         1,
-        crate::lisp::primitives::InteractiveWindowMetrics {
-            text_height: 10,
-            window_end: 1,
-        },
+        crate::lisp::primitives::InteractiveWindowMetrics { window_end: 1 },
         80,
         &measure,
     )

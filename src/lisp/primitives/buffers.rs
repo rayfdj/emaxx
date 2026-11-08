@@ -1196,9 +1196,13 @@ pub(crate) fn scan_for_column(
     // window = Fget_buffer_window (Fcurrent_buffer (), Qnil), whose error
     // is scan_for_column's: the composition iterator's W (none: static
     // compositions only).
-    let windowed =
-        dispatch::display::buffer_window(interp, interp.current_buffer_id(), &Value::Nil)?
-            .is_some();
+    let window = dispatch::display::buffer_window(interp, interp.current_buffer_id(), &Value::Nil)?;
+    let windowed = window.is_some();
+    if interp.buffer.borrow().long_line_optimizations_p()
+        && let Some(scan) = truncated_long_line_column(interp, env, window, line_start, end, goal)?
+    {
+        return Ok(scan);
+    }
     let mut cmp_it = dispatch::CompositionIterator::for_window(windowed);
     cmp_it.compute_stop_pos(interp, env, scan, end);
     'scan: while scan < end {
@@ -1294,6 +1298,80 @@ pub(crate) fn scan_for_column(
         prev_pos,
         prev_col,
     })
+}
+
+/// scan_for_column's special optimization for buffers with long and
+/// truncated lines (`truncate-lines', or a window narrower than its
+/// frame under `truncate-partial-width-windows'), which assumes each
+/// character is a single column: the scan from BOLPOS reaches GOAL, END
+/// or the end of point's line, and when that column is past
+/// `large-hscroll-threshold' it is the scan's result.  None when the
+/// lines are not truncated or the column is not that large.
+fn truncated_long_line_column(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window: Option<Value>,
+    bolpos: usize,
+    end: usize,
+    goal: usize,
+) -> Result<Option<ColumnScan>, LispError> {
+    let mut lines_truncated = interp
+        .lookup_var_key(cached_symbol!("truncate-lines"), env)
+        .is_some_and(|value| !value.is_nil());
+    if !lines_truncated {
+        let partial = interp
+            .lookup_var_key(cached_symbol!("truncate-partial-width-windows"), env)
+            .unwrap_or(Value::Nil);
+        // `w->total_cols < FRAME_COLS (XFRAME (WINDOW_FRAME (w)))'.
+        if !partial.is_nil()
+            && let Some(window) = window
+            && let Some(window_id) = super::window::window_record(&window).map(|record| record.id)
+            && let Some(frame) = interp.window_frame_id(window_id)
+        {
+            let total_cols = super::window::window_char_geometry(interp, window_id).0;
+            let frame_cols = frame.borrow().width;
+            if total_cols < frame_cols {
+                // XFIXNAT of a fixnum, a negative one included.
+                lines_truncated = match partial.kind() {
+                    Kind::Integer(threshold) => total_cols < threshold,
+                    _ => true,
+                };
+            }
+        }
+    }
+    if !lines_truncated {
+        return Ok(None);
+    }
+    // The newline which ends point's line, or ZV.
+    let (point, zv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point(), buffer.point_max())
+    };
+    let newline = interp.buffer.borrow().find_before_next_newline(point, zv);
+    let eolpos = if newline < zv { newline + 1 } else { zv };
+    let mut scan = bolpos.saturating_add(goal).min(end);
+    if scan > eolpos {
+        scan = if eolpos == zv { zv } else { eolpos - 1 };
+    }
+    let col = scan - bolpos;
+    let threshold = match interp
+        .lookup_var_key(cached_symbol!("large-hscroll-threshold"), env)
+        .map(|value| value.kind())
+    {
+        Some(Kind::Integer(threshold)) => threshold,
+        _ => 0,
+    };
+    if (col as i64) > threshold {
+        return Ok(Some(ColumnScan {
+            col,
+            pos: scan,
+            prev_pos: scan - 1,
+            // GNU's col - 1, which is -1 with a negative threshold and
+            // then read by nothing.
+            prev_col: col.wrapping_sub(1),
+        }));
+    }
+    Ok(None)
 }
 
 /// MULTIBYTE_BYTES_WIDTH: a display table's glyph count for the

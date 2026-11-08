@@ -218,6 +218,50 @@ pub(crate) fn safe_run_hooks(
     safe_run_hooks_with_args(interp, hook, &[], env)
 }
 
+/// keyboard.c:safe_run_hooks_maybe_narrowed: `safe_run_hooks', the
+/// hook run in a buffer with long lines (long_line_optimizations_p and a
+/// positive `long-line-optimizations-region-size') under the large
+/// narrowing around point, labeled `long-line-optimizations-in-command-hooks',
+/// when that narrowing restricts the buffer.
+pub(crate) fn safe_run_hooks_maybe_narrowed(
+    interp: &mut Interpreter,
+    hook: &SymbolName,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let count = interp.specpdl_index();
+    let result = interp
+        .specbind_symbol(
+            &cached_symbol!("inhibit-quit").with(|symbol| *symbol),
+            Value::T,
+            env,
+        )
+        .and_then(|()| {
+            if interp.buffer.borrow().long_line_optimizations_p()
+                && super::long_lines::region_size(interp) > 0
+            {
+                let point = interp.buffer.borrow().point();
+                let begv = super::long_lines::large_narrowing_begv(interp, point);
+                let zv = super::long_lines::large_narrowing_zv(interp, point);
+                let z = interp.buffer.borrow().size_total() + 1;
+                if begv != 1 || zv != z {
+                    super::long_lines::labeled_narrow_to_region(
+                        interp,
+                        begv,
+                        zv,
+                        cached_symbol!("long-line-optimizations-in-command-hooks")
+                            .with(|symbol| Value::Symbol(*symbol)),
+                        env,
+                    )?;
+                }
+            }
+            run_hook_with_args(interp, hook, env, |interp, function, env| {
+                safe_run_hook_funcall(interp, hook, function, &[], env).map(|()| Value::Nil)
+            })
+        });
+    let unbound = interp.unbind_to(count, env);
+    result.and(unbound).map(drop)
+}
+
 /// keyboard.c:safe_run_hooks_2 and the like: `safe_run_hooks' calling
 /// each function with ARGS.
 pub(crate) fn safe_run_hooks_with_args(

@@ -29469,7 +29469,8 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
     }
     let point_max = interp.buffer.borrow().point_max();
 
-    // Batch sessions answer like GNU --batch: the whole buffer shows.
+    // Batch sessions answer like GNU --batch: the whole buffer shows, and
+    // pos_visible_p, which posn-at-point asks, sees the initial frame.
     let end = call(&mut interp, "window-end", &[], &mut env).expect("window-end");
     assert_eq!(end, Value::Integer(point_max as i64));
     let posn = call(&mut interp, "posn-at-point", &[], &mut env).expect("posn-at-point");
@@ -29477,10 +29478,7 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
 
     // A frontend publishing live geometry changes both answers: its
     // redisplay records the window's end (w->window_end_pos).
-    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        text_height: 22,
-        window_end: 199,
-    }));
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics { window_end: 199 }));
     let window_id = interp.selected_window_id();
     let buffer_id = interp.current_buffer_id();
     let point = interp.buffer.borrow().point();
@@ -29488,20 +29486,11 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
     let end = call(&mut interp, "window-end", &[], &mut env).expect("window-end");
     assert_eq!(end, Value::Integer(199), "window-end reads the glass state");
 
+    // posn-at-point asks pos_visible_p, which answers nothing on the
+    // initial frame whatever the frontend published.
     call(&mut interp, "goto-char", &[Value::Integer(10)], &mut env).expect("goto-char");
     let posn = call(&mut interp, "posn-at-point", &[], &mut env).expect("posn-at-point");
-    let items = posn.to_vec().expect("posn is a list");
-    assert_eq!(items[1], Value::Integer(10), "posn carries the position");
-    assert_eq!(
-        items[2],
-        Value::cons(Value::Integer(0), Value::Integer(1)),
-        "line 2 column 0 sits at x=0 y=1"
-    );
-
-    // Positions beyond the displayed extent answer nil, GNU's contract.
-    call(&mut interp, "goto-char", &[Value::Integer(300)], &mut env).expect("goto-char");
-    let posn = call(&mut interp, "posn-at-point", &[], &mut env).expect("posn-at-point");
-    assert_eq!(posn, Value::Nil, "off-window positions have no posn");
+    assert_eq!(posn, Value::Nil, "the initial frame shows nothing");
 
     set_interactive_window_metrics(None);
 }
@@ -29579,7 +29568,6 @@ fn interactive_recenter_uses_the_live_shrunken_window_height() {
     // Model the stale pre-minibuffer glyph publication that used to win over
     // the live 15-row body while Consult temporarily selected this window.
     set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        text_height: 21,
         window_end: interp.buffer.borrow().point_max(),
     }));
     call(&mut interp, "goto-char", &[Value::Integer(161)], &mut env).expect("line 21");
@@ -29702,7 +29690,6 @@ fn interactive_vertical_motion_and_recenter_reseat_past_what_a_line_start_hides(
     );
 
     set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        text_height: 31,
         window_end: interp.buffer.borrow().point_max(),
     }));
     let recentered =
@@ -29876,10 +29863,7 @@ fn format_mode_line_follows_display_mode_element() {
     .expect("setup parses")
     .expect("setup exists");
     interp.eval(&setup, &mut env).expect("setup runs");
-    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        text_height: 22,
-        window_end: 19,
-    }));
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics { window_end: 19 }));
     let cases = [
         ("(format-mode-line nil)", "\"\""),
         ("(format-mode-line \"x\" t)", "#(\"x\" 0 1 (face t))"),
@@ -30000,10 +29984,7 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
         &mut env,
     )
     .expect("insert");
-    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        text_height: 22,
-        window_end: 7,
-    }));
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics { window_end: 7 }));
     let text = call(
         &mut interp,
         "format-mode-line",
@@ -30060,7 +30041,6 @@ fn mode_line_line_number_is_relative_to_the_accessible_region() {
     call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env)
         .expect("move to accessible start");
     set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        text_height: 22,
         window_end: point_max,
     }));
     let line = call(
@@ -30193,10 +30173,7 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
         .expect("insert");
     }
     call(&mut interp, "goto-char", &[Value::Integer(1)], &mut env).expect("goto-char");
-    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        text_height: 22,
-        window_end: 199,
-    }));
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics { window_end: 199 }));
     let glass = crate::lisp::primitives::render_mode_line_glass(&mut interp, &mut env)
         .expect("glass render");
     let string = call(
@@ -30243,10 +30220,7 @@ fn glass_mode_line_honors_font_lock_face_string_properties() {
         &mut env,
         window_id,
         1,
-        InteractiveWindowMetrics {
-            text_height: 22,
-            window_end: 1,
-        },
+        InteractiveWindowMetrics { window_end: 1 },
         80,
         &measure,
     )
@@ -30732,10 +30706,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let selected_before = interp.selected_window_id();
     let buffer_before = interp.current_buffer_id();
     let point_before = interp.buffer.borrow().point();
-    let metrics = crate::lisp::primitives::InteractiveWindowMetrics {
-        text_height: 10,
-        window_end: 14,
-    };
+    let metrics = crate::lisp::primitives::InteractiveWindowMetrics { window_end: 14 };
     let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id);
     let (mode_line, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
@@ -32930,10 +32901,7 @@ fn assert_purecopy_callback_contract(program: &str, expected: &str) {
         .expect("read purecopy callback fixture")
         .expect("purecopy callback fixture has a form");
     let previous_metrics = interactive_window_metrics();
-    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        text_height: 22,
-        window_end: 1,
-    }));
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics { window_end: 1 }));
     let result = interp.eval(&form, &mut env).map(|value| value.to_string());
     set_interactive_window_metrics(previous_metrics);
     assert_eq!(result.expect("purecopy callback fixture"), expected);

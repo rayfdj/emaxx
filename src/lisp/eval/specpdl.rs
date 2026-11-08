@@ -85,6 +85,12 @@ pub(crate) enum UnwindAction {
     KbdMacro(Value),
     /// redisplay_internal's record_unwind_protect_void (unwind_redisplay).
     Redisplay,
+    /// editfns.c's record_unwind_protect (restore_point_unwind, MARKER):
+    /// Fgoto_char (MARKER), then the marker unchained.
+    RestorePoint(Value),
+    /// editfns.c's record_unwind_protect (unwind_labeled_narrow_to_region,
+    /// LABEL): Finternal__labeled_widen (LABEL).
+    LabeledWiden(Value),
 }
 
 impl UnwindAction {
@@ -94,7 +100,10 @@ impl UnwindAction {
             Self::Excursion(saved) => mark(&Value::Marker(saved.marker_id)),
             Self::Restriction(saved) => saved.mark_values(mark),
             Self::CurrentBuffer(_) | Self::Redisplay => {}
-            Self::Cleanup { value, .. } | Self::KbdMacro(value) => mark(value),
+            Self::Cleanup { value, .. }
+            | Self::KbdMacro(value)
+            | Self::RestorePoint(value)
+            | Self::LabeledWiden(value) => mark(value),
         }
     }
 }
@@ -344,6 +353,15 @@ impl Interpreter {
             }
             UnwindAction::KbdMacro(info) => self.with_lisp_stack_roots(&info, |interp| {
                 crate::lisp::primitives::pop_kbd_macro(interp, info, env)
+            }),
+            UnwindAction::RestorePoint(marker) => self.with_lisp_stack_roots(&marker, |interp| {
+                crate::lisp::primitives::call(interp, "goto-char", &[marker], env)?;
+                crate::lisp::primitives::call(interp, "set-marker", &[marker, Value::Nil], env)
+                    .map(drop)
+            }),
+            UnwindAction::LabeledWiden(label) => self.with_lisp_stack_roots(&label, |interp| {
+                crate::lisp::primitives::call(interp, "internal--labeled-widen", &[label], env)
+                    .map(drop)
             }),
         }
     }

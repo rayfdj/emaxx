@@ -1296,9 +1296,11 @@ impl Interpreter {
             buffer.set_autosave_modiff(0);
             buffer.auto_save_failure_time = 0;
             buffer.set_mark_active_value(Value::Nil);
-            // `b->clip_changed = 0; b->prevent_redisplay_optimizations_p = 1'.
+            // `b->clip_changed = 0; b->prevent_redisplay_optimizations_p = 1;
+            // b->long_line_optimizations_p = 0'.
             buffer.set_clip_changed(false);
             buffer.set_prevent_redisplay_optimizations_p(true);
+            buffer.set_long_line_optimizations_p(false);
         }
         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
             buffer.set_last_window_start(1);

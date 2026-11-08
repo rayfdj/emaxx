@@ -394,7 +394,7 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         interp.set_variable_key(cached_symbol!("this-command"), cmd, env);
         interp.set_variable_key(cached_symbol!("real-this-command"), cmd, env);
         drop(roots);
-        crate::lisp::primitives::safe_run_hooks(
+        crate::lisp::primitives::safe_run_hooks_maybe_narrowed(
             interp,
             &cached_symbol!("pre-command-hook").symbol(),
             env,
@@ -421,7 +421,7 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
             .lookup_var_key(cached_symbol!("current-prefix-arg"), env)
             .unwrap_or(Value::Nil);
         interp.set_variable_key(cached_symbol!("last-prefix-arg"), current_prefix_arg, env);
-        crate::lisp::primitives::safe_run_hooks(
+        crate::lisp::primitives::safe_run_hooks_maybe_narrowed(
             interp,
             &cached_symbol!("post-command-hook").symbol(),
             env,

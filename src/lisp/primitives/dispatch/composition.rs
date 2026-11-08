@@ -1302,18 +1302,22 @@ fn find_automatic_composition(
 
     let (head, tail) = if string.is_nil() {
         // BACKLIM is -1 here, so the backward search stops at the first
-        // newline before POS: a newline can never be composed.  (GNU's
-        // long-line-optimizations narrowing is not modeled.)
-        let min = interp.buffer.borrow().point_min();
-        let before = interp
-            .buffer
-            .borrow()
-            .buffer_substring(min, pos)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        let head = before
-            .rfind('\n')
-            .map(|byte| min + before[..byte].chars().count() + 1)
-            .unwrap_or(min);
+        // newline before POS: a newline can never be composed.
+        let mut head = crate::lisp::primitives::buffers::line_beginning_at(interp, pos);
+        if interp.buffer.borrow().long_line_optimizations_p() {
+            // In buffers with very long lines this is slow: the buffer is
+            // taken as narrowed around the window's point.
+            let point = super::display::call(interp, "window-point", &[window], env)?
+                .integer_value()
+                .unwrap_or(pos as i64)
+                .max(1) as usize;
+            let begv = crate::lisp::primitives::long_lines::small_narrowing_begv(
+                interp, env, window, point,
+            );
+            if pos > begv {
+                head = begv;
+            }
+        }
         (head, interp.buffer.borrow().point_max())
     } else {
         (

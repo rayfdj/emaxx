@@ -6340,36 +6340,23 @@ fn vertical_motion_moves_by_lines_and_reports_actual_motion() {
 }
 
 #[test]
-fn pos_visible_in_window_p_checks_selected_window_range() {
+fn pos_visible_in_window_p_is_nil_on_the_initial_frame() {
+    // pos_visible_p sees nothing on the initial frame (FRAME_INITIAL_P),
+    // the only one a headless session has, `noninteractive' or not; the
+    // terminal display's answers are compared with GNU's in cli_parity.
     assert_eq!(
         eval_str(
             r#"
                 (progn
+                  (setq noninteractive nil)
                   (insert "a\nb\nc\n")
                   (set-window-start (selected-window) 3)
                   (list (pos-visible-in-window-p 1)
                         (pos-visible-in-window-p 3)
-                        (pos-visible-in-window-p (point-max) (selected-window))))
+                        (pos-visible-in-window-p (point-max) (selected-window) t)))
                 "#
         ),
-        Value::list([Value::Nil, Value::T, Value::T])
-    );
-}
-
-#[test]
-fn pos_visible_in_window_p_respects_window_height() {
-    assert_eq!(
-        eval_str(
-            r#"
-                (progn
-                  (dotimes (_ 30)
-                    (insert "line\n"))
-                  (set-window-start (selected-window) 1)
-                  (list (pos-visible-in-window-p 1)
-                        (pos-visible-in-window-p (point-max))))
-                "#
-        ),
-        Value::list([Value::T, Value::Nil])
+        Value::list([Value::Nil, Value::Nil, Value::Nil])
     );
 }
 
