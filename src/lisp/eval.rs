@@ -6981,6 +6981,18 @@ pub struct InterpreterState {
     /// accidentally turning the native noreturn primitive into a catchable
     /// Lisp condition.
     pending_termination: Option<EmacsTermination>,
+    /// Set while the exit after a C stack overflow (`c_stack_overflow')
+    /// travels to the command loop: the frames it leaves pop their specpdl
+    /// entries without undoing them, as the siglongjmp past them and
+    /// init_eval's `specpdl_ptr = specpdl' do in GNU.
+    pub(crate) c_stack_overflow_exit: bool,
+    /// The lowest Lisp depth at which a call entry tests the C stack
+    /// (continuations::c_stack_safe_depth of the smallest stack seen): the
+    /// call gate is no higher, so the fast entries never need the test.
+    c_stack_safe_depth: i64,
+    /// keyboard.c's return_to_command_loop, set: how many command loops
+    /// are running, so that a C stack overflow has one to return to.
+    pub(crate) command_loops_entered: usize,
     /// The latest regexp match data in buffer coordinates.
     pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
     /// search.c's last_thing_searched when it is a buffer: the buffer
@@ -7718,6 +7730,9 @@ impl Interpreter {
             #[cfg(test)]
             last_selected_tests: Vec::new(),
             pending_termination: None,
+            c_stack_overflow_exit: false,
+            c_stack_safe_depth: continuations::c_stack_safe_depth(),
+            command_loops_entered: 0,
             last_match_data: None,
             last_thing_searched: None,
             search_regs_num_regs: 0,

@@ -46,23 +46,58 @@ thread_local! {
     /// The lowest address of the owned stack running now, its guard page
     /// included; 0 on the OS thread's own stack.
     static CURRENT_STACK_LIMIT: Cell<usize> = const { Cell::new(0) };
+    /// The address below which the running stack counts as overflowed
+    /// (`c_stack_overflowed'): C_STACK_MARGIN above its lowest usable
+    /// address; 0 when that is not known.
+    static C_STACK_FLOOR: Cell<usize> = const { Cell::new(0) };
 }
 
+/// What a stack keeps below its floor: room for the Rust frames between two
+/// of the Lisp call entries that test the floor (a primitive's own frames,
+/// the printer's or `equal''s bounded recursion).  GNU's guard page is the
+/// stack's end; a Rust frame cannot be unwound from a fault, so Emaxx stops
+/// this far before it, or a quarter of a smaller stack's size before it.
+pub(crate) const C_STACK_MARGIN: usize = 1 << 20;
+
+/// The floor of a stack whose lowest usable address is LOWEST, below BASE:
+/// `C_STACK_MARGIN' above LOWEST, or a quarter of the stack above it when
+/// the stack is smaller than four margins.  0 (no floor) for no stack.
+fn stack_floor(lowest: usize, base: usize) -> usize {
+    if lowest == 0 || lowest >= base {
+        return 0;
+    }
+    lowest + C_STACK_MARGIN.min((base - lowest) / 4)
+}
+
+/// The most stack one level of Lisp evaluation (one `lisp_eval_depth')
+/// takes, Rust frames between the call entries included: measured at about
+/// 600 bytes interpreted and 1.8 KB byte-compiled, with room for the heavier
+/// primitives that call back into Lisp.  Below the depth this bound gives
+/// for a stack (`c_stack_safe_depth') no call can reach its floor.
+const C_STACK_BYTES_PER_LEVEL: usize = 8 * 1024;
+
 struct ResumeGuard(*const ResumeContext);
-pub(crate) struct StackBaseGuard(Option<*const usize>, usize);
+pub(crate) struct StackBaseGuard(Option<*const usize>, usize, usize);
 
 impl StackBaseGuard {
     /// A boundary on the OS thread's own stack, which the kernel maps only
     /// as deep as it has been used.
     pub(crate) fn enter(base: usize) -> Self {
-        Self::enter_owned(base, 0)
+        let floor = os_stack_floor(base);
+        Self(
+            CURRENT_STACK_BASE.replace(Some(base as *const usize)),
+            CURRENT_STACK_LIMIT.replace(0),
+            C_STACK_FLOOR.replace(floor),
+        )
     }
 
-    /// An owned stack reserved from LIMIT up to BASE.
+    /// An owned stack reserved from LIMIT (its guard page included) up to
+    /// BASE.
     fn enter_owned(base: usize, limit: usize) -> Self {
         Self(
             CURRENT_STACK_BASE.replace(Some(base as *const usize)),
             CURRENT_STACK_LIMIT.replace(limit),
+            C_STACK_FLOOR.replace(stack_floor(limit, base)),
         )
     }
 }
@@ -71,6 +106,91 @@ impl Drop for StackBaseGuard {
     fn drop(&mut self) {
         CURRENT_STACK_BASE.set(self.0);
         CURRENT_STACK_LIMIT.set(self.1);
+        C_STACK_FLOOR.set(self.2);
+    }
+}
+
+/// The floor of the OS thread's stack above BASE.  The process's main
+/// thread grows its stack down to RLIMIT_STACK's soft limit below the top
+/// of its stack mapping (emacs.c's main raised it), which lies above the
+/// arguments, the environment and the auxiliary vector the kernel put
+/// there; another thread's stack is the size pthread gave it.  0 (no
+/// floor) when the limit is unlimited or not known.  GNU's Linux seccomp
+/// policy permits getrlimit and gettid, not pthread_getattr_np's affinity
+/// query, so the main thread asks only those and reads the auxiliary
+/// vector.
+fn os_stack_floor(base: usize) -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: getpid and gettid have no preconditions.
+        let main_thread =
+            unsafe { libc::getpid() as libc::c_long == libc::syscall(libc::SYS_gettid) };
+        let lowest = if main_thread {
+            let mut rlim = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+            // SAFETY: getrlimit fills RLIM on success, the only case read.
+            if unsafe { libc::getrlimit(libc::RLIMIT_STACK, rlim.as_mut_ptr()) } != 0 {
+                return 0;
+            }
+            // SAFETY: initialized by the successful getrlimit above.
+            let rlim = unsafe { rlim.assume_init() };
+            if rlim.rlim_cur == libc::RLIM_INFINITY {
+                return 0;
+            }
+            main_stack_top()
+                .unwrap_or(base)
+                .saturating_sub(usize::try_from(rlim.rlim_cur).unwrap_or(usize::MAX))
+        } else {
+            match crate::lisp::alloc::os_stack_range() {
+                Some((start, _)) => start,
+                None => return 0,
+            }
+        };
+        stack_floor(lowest, base)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = base;
+        0
+    }
+}
+
+/// The end of the main thread's stack mapping: the page above the exec
+/// file name, which the kernel copied to the mapping's top before the
+/// environment and argument strings (`getauxval (AT_EXECFN)').
+#[cfg(target_os = "linux")]
+fn main_stack_top() -> Option<usize> {
+    // SAFETY: getauxval reads the auxiliary vector; AT_EXECFN, when
+    // present, is the address of a NUL-terminated string on the stack.
+    let execfn = unsafe { libc::getauxval(libc::AT_EXECFN) } as usize;
+    if execfn == 0 {
+        return None;
+    }
+    // SAFETY: as above, a NUL-terminated string; sysconf reads a value.
+    let end = execfn + unsafe { libc::strlen(execfn as *const libc::c_char) } + 1;
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    Some(end.div_ceil(page) * page)
+}
+
+/// Whether the running stack has reached its floor: sysdep.c's
+/// stack_overflow, tested before the stack is exhausted rather than in the
+/// SIGSEGV handler of the fault past it.
+#[inline]
+pub(crate) fn c_stack_overflowed() -> bool {
+    let floor = C_STACK_FLOOR.get();
+    floor != 0 && crate::lisp::alloc::approximate_stack_pointer() < floor
+}
+
+/// The Lisp depth below which no call can reach the running stack's floor
+/// (`C_STACK_BYTES_PER_LEVEL' a level from its base), so the call entries'
+/// fast paths need not test it; i64::MAX when the stack has no floor.
+pub(crate) fn c_stack_safe_depth() -> i64 {
+    let floor = C_STACK_FLOOR.get();
+    match CURRENT_STACK_BASE.get() {
+        Some(base) if floor != 0 => {
+            i64::try_from((base as usize).saturating_sub(floor) / C_STACK_BYTES_PER_LEVEL)
+                .unwrap_or(i64::MAX)
+        }
+        _ => i64::MAX,
     }
 }
 

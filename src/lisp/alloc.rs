@@ -1279,6 +1279,12 @@ pub(crate) fn os_stack_base() -> Option<usize> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn os_stack_base() -> Option<usize> {
+    os_stack_range().map(|(_, end)| end)
+}
+
+/// This OS thread's own stack, its lowest address and its base.
+#[cfg(target_os = "linux")]
+pub(crate) fn os_stack_range() -> Option<(usize, usize)> {
     // SAFETY: the pthread attribute calls on the calling thread, the
     // attribute object destroyed after the read.
     unsafe {
@@ -1291,7 +1297,7 @@ pub(crate) fn os_stack_base() -> Option<usize> {
         let mut size = 0;
         let status = libc::pthread_attr_getstack(&attributes, &mut start, &mut size);
         libc::pthread_attr_destroy(&mut attributes);
-        (status == 0).then(|| start as usize + size)
+        (status == 0).then(|| (start as usize, start as usize + size))
     }
 }
 

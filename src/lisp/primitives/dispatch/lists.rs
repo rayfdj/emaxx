@@ -68,17 +68,15 @@ fn execute_kbd_macro(
         .lookup_var_key(cached_symbol!("real-this-command"), env)
         .unwrap_or(Value::Nil);
     // macros.c:Fexecute_kbd_macro saves the public state in two ordinary
-    // conses. Use the same allocations, including their normal GC charge,
+    // conses, the argument of its record_unwind_protect (pop_kbd_macro),
     // while a borrowed stack root keeps the final array and loop function
     // alive across replacement, nested commands and collecting callbacks.
-    let roots = [
-        final_macro,
-        loop_function,
-        Value::cons(
-            previous_macro,
-            Value::cons(previous_index, previous_real_this_command),
-        ),
-    ];
+    let pdlcount = interp.specpdl_index();
+    interp.record_unwind(crate::lisp::eval::UnwindAction::KbdMacro(Value::cons(
+        previous_macro,
+        Value::cons(previous_index, previous_real_this_command),
+    )));
+    let roots = [final_macro, loop_function];
     interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
         let mut result = Ok(());
         let mut success_count = 0;
@@ -138,34 +136,41 @@ fn execute_kbd_macro(
         if result.is_ok() {
             interp.executing_kbd_macro = false;
         }
-        let (previous_macro, tail) = roots[2].cons_values().expect("saved macro pair");
-        let (previous_index, previous_real_this_command) =
-            tail.cons_values().expect("saved macro index and command");
-        interp.set_variable_key(cached_symbol!("executing-kbd-macro"), previous_macro, env);
-        interp.set_variable_key(
-            cached_symbol!("executing-kbd-macro-index"),
-            previous_index,
-            env,
-        );
-        interp.set_variable_key(
-            cached_symbol!("real-this-command"),
-            previous_real_this_command,
-            env,
-        );
-        // This is an unwind cleanup in GNU: it runs once for normal completion,
-        // loop-function termination, and command errors.
-        let mut result = result.map(|()| Value::Nil);
-        if let Err(hook_error) = interp.with_lisp_stack_roots(&result, |interp| {
-            run_hook(
-                interp,
-                &cached_symbol!("kbd-macro-termination-hook").symbol(),
-                env,
-            )
-        }) {
-            result = Err(hook_error);
-        }
-        result
+        // unbind_to (pdlcount, Qnil): pop_kbd_macro, once for normal
+        // completion, loop-function termination and command errors.
+        let result = result.map(|()| Value::Nil);
+        let unbind =
+            interp.with_lisp_stack_roots(&result, |interp| interp.unbind_to(pdlcount, env));
+        result.and_then(|value| unbind.map(|()| value))
     })
+}
+
+/// macros.c:pop_kbd_macro of INFO, (MACRO INDEX . REAL-THIS-COMMAND):
+/// the outer macro's state back, then `kbd-macro-termination-hook'.
+pub(crate) fn pop_kbd_macro(
+    interp: &mut Interpreter,
+    info: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let (previous_macro, tail) = info.cons_values().expect("saved macro pair");
+    let (previous_index, previous_real_this_command) =
+        tail.cons_values().expect("saved macro index and command");
+    interp.set_variable_key(cached_symbol!("executing-kbd-macro"), previous_macro, env);
+    interp.set_variable_key(
+        cached_symbol!("executing-kbd-macro-index"),
+        previous_index,
+        env,
+    );
+    interp.set_variable_key(
+        cached_symbol!("real-this-command"),
+        previous_real_this_command,
+        env,
+    );
+    run_hook(
+        interp,
+        &cached_symbol!("kbd-macro-termination-hook").symbol(),
+        env,
+    )
 }
 
 pub(crate) fn next_kbd_macro_event(

@@ -87,14 +87,64 @@ pub(crate) fn recursive_edit_1(interp: &mut Interpreter, env: &mut Env) -> Resul
 /// is command_loop_2 under a catch for `exit', whose thrown value it
 /// returns; at the top level it runs the startup (top_level_1) and then
 /// command_loop_2, each under a catch for `top-level', for ever.
+///
+/// HAVE_STACK_OVERFLOW_HANDLING's entry is where a C stack overflow
+/// returns to (sysdep.c:handle_sigsegv's siglongjmp to
+/// return_to_command_loop, here the exit `Interpreter::c_stack_overflow'
+/// starts, which the innermost running command loop takes): init_eval's
+/// resets, and the loop entered again with `internal--top-level-message'
+/// saying so, which `normal-top-level' shows at the top level.
 pub(crate) fn command_loop(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
-    // HAVE_STACK_OVERFLOW_HANDLING's entry, its stack overflow recovery
-    // aside: `normal-top-level''s message is the regular one again.
+    interp.command_loops_entered += 1;
+    let mut message = "Back to top level";
+    let result = loop {
+        interp.set_variable_key(
+            cached_symbol!("internal--top-level-message"),
+            Value::string(message),
+            env,
+        );
+        match command_loop_body(interp, env) {
+            Err(error) if is_c_stack_overflow_exit(&error) => {
+                init_eval_after_overflow(interp, env);
+                message = "Re-entering top level after C stack overflow";
+            }
+            result => break result,
+        }
+    };
+    interp.command_loops_entered -= 1;
+    result
+}
+
+/// Whether ERROR is the exit after a C stack overflow.
+fn is_c_stack_overflow_exit(error: &LispError) -> bool {
+    matches!(error.kind(), LispErrorKind::Terminate(termination) if termination.c_stack_overflow)
+}
+
+/// eval.c:init_eval as command_loop runs it after a C stack overflow:
+/// `quit-flag' nil, debug_on_next_call cleared and when_entered_debugger
+/// -1 (less than any `num-nonmacro-input-events', so the next error may
+/// enter the debugger), here with the exit's pending termination taken
+/// back.  Its `specpdl_ptr = specpdl' and
+/// `lisp_eval_depth = 0' were done by the frames the exit left, which
+/// popped their specpdl entries undone and gave their depth back; the
+/// entries and depth of the frames outside this command loop stay.  (GNU's
+/// drop the outer recursive edits' entries too, so that their unbind_to
+/// later walks below the specpdl's start; there are none at the top
+/// level.)
+fn init_eval_after_overflow(interp: &mut Interpreter, env: &mut Env) {
+    interp.c_stack_overflow_exit = false;
+    interp.take_pending_termination();
+    interp.clear_quit_flag_in_place();
+    interp.clear_debug_on_next_call();
     interp.set_variable_key(
-        cached_symbol!("internal--top-level-message"),
-        Value::string("Back to top level"),
+        cached_symbol!("internal-when-entered-debugger"),
+        Value::Integer(-1),
         env,
     );
+}
+
+/// command_loop past its HAVE_STACK_OVERFLOW_HANDLING entry.
+fn command_loop_body(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
     if interp.command_loop_recursion_depth > 0 || interp.minibuffer_depth() > 0 {
         let result = internal_catch(interp, env, "exit", |interp, env| {
             command_loop_2(interp, env, CommandLoopHandlers::Error).map(|()| Value::Nil)

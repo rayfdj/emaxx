@@ -314,39 +314,46 @@ impl Interpreter {
         }
     }
 
+    /// editfns.c:Fsave_excursion: record_unwind_protect_excursion, the
+    /// body, unbind_to.
     pub(super) fn sf_save_excursion(
         &mut self,
         args: &Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let saved = self.save_excursion_state();
+        let count = self.specpdl_index();
+        self.record_unwind_protect_excursion();
         let result = self.progn_list(args, env);
-        self.restore_excursion_state(saved);
-        result
+        let unbind = self.unbind_to(count, env);
+        result.and_then(|value| unbind.map(|()| value))
     }
 
+    /// editfns.c:Fsave_current_buffer: record_unwind_current_buffer, the
+    /// body, unbind_to.
     pub(super) fn sf_save_current_buffer(
         &mut self,
         args: &Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let saved_buffer_id = self.current_buffer_id();
+        let count = self.specpdl_index();
+        self.record_unwind_current_buffer();
         let result = self.progn_list(args, env);
-        if self.has_buffer_id(saved_buffer_id) {
-            let _ = self.set_current_buffer_id(saved_buffer_id);
-        }
-        result
+        let unbind = self.unbind_to(count, env);
+        result.and_then(|value| unbind.map(|()| value))
     }
 
+    /// editfns.c:Fsave_restriction: record_unwind_protect of
+    /// save_restriction_save, the body, unbind_to.
     pub(super) fn sf_save_restriction(
         &mut self,
         args: &Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let saved = self.save_restriction_state();
+        let count = self.specpdl_index();
+        self.record_unwind_save_restriction();
         let result = self.progn_list(args, env);
-        self.restore_restriction_state(saved);
-        result
+        let unbind = self.unbind_to(count, env);
+        result.and_then(|value| unbind.map(|()| value))
     }
 
     // ── cl-destructuring-bind ──

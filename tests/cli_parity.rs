@@ -5883,7 +5883,9 @@ fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
     // read of WAIT_PROC sets wait to MINIMUM, the next select finds a child
     // that has just written and is exiting either still running (the wait
     // returns) or reaped (status_notify runs its sentinel first), a race in
-    // GNU's loop as in Emaxx's.
+    // GNU's loop as in Emaxx's; and the main thread sleeps until the other
+    // thread's child has exited, whose sentinel its sleep runs, as a child
+    // slower than one 50 ms sleep left both Emacsen running it later.
     let corpus = Corpus::new();
     for program in [
         r##";;; -*- lexical-binding: t -*-
@@ -5959,7 +5961,10 @@ fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
               (with-mutex m (while (not go) (condition-wait cv)))
               (push (list 'thread-wait (accept-process-output nil 0.3)) log))
             "T")))
-  (while (not p) (sleep-for 0.05) (push 'slept log))
+  (while (not p) (sleep-for 0.05))
+  (let ((t0 (float-time)))
+    (while (and (not (assq 'tp log)) (< (- (float-time) t0) 5)) (sleep-for 0.05)))
+  (push 'slept log)
   (busy 0.4)
   (make-process :name "mp" :command '("true") :noquery t :connection-type 'pipe
                 :sentinel (lambda (_ e) (push (list 'mp (string-trim e)) log)))
@@ -7119,6 +7124,201 @@ fn read_buffer_and_read_command_read_as_minibuf_c_does() {
   (ert-simulate-keys (kbd "RET") (read-command "C: " 'forward-char))
   (ert-simulate-keys (kbd "RET") (read-variable "V: " 'fill-column))
   (ert-simulate-keys (kbd "RET") (read-command "C: " "x")))))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn c_stack_overflow_returns_to_the_top_level_without_unwinding() {
+    // sysdep.c:handle_sigsegv's siglongjmp to keyboard.c's command_loop:
+    // `condition-case' does not catch the overflow, no unwind form runs and
+    // no binding is undone; command_loop's init_eval and top_level_1 again,
+    // `normal-top-level' showing internal--top-level-message, and then the
+    // batch session's command_loop_2, which waits (a timer ends it).  The
+    // depth reached differs (Rust frames are not C's), so only its size is
+    // compared.  The children inherit the stack limit emacs.c raised.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "so.el",
+        r#"(setq max-lisp-eval-depth 10000000)
+(defvar so-v 'outer)
+(defvar so-log nil)
+(add-hook 'kill-emacs-hook
+          (lambda ()
+            (princ (format "hook %S %S %S %S\n" (integerp so-v) (and (integerp so-v) (> so-v 1000))
+                           (recursion-depth) so-log)
+                   #'external-debugging-output)))
+(defun so-f (n) (let ((so-v n)) (unwind-protect (1+ (so-f (1+ n))) (setq so-log 'ran))))
+(run-at-time 2 nil (lambda () (kill-emacs 7)))
+(message "before")
+(condition-case e (so-f 0) (error (message "caught %S" e)))
+(message "after %S" so-v)"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = corpus.write(
+        "ulimit.el",
+        r#"(princ (shell-command-to-string "ulimit -s"))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[cfg(unix)]
+#[test]
+fn c_stack_overflow_in_a_terminal_command_returns_to_its_command_loop() {
+    // A command that recurses past the C stack: handle_sigsegv's
+    // siglongjmp to command_loop, which shows "Re-entering top level after
+    // C stack overflow" at the top level and reads the next command, the
+    // command's binding of so-v not undone.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "so.el",
+        r#"(setq max-lisp-eval-depth 10000000)
+(defvar so-v 'outer)
+(defvar so-log nil)
+(defun so-f (n) (let ((so-v n)) (1+ (so-f (1+ n)))))
+(add-hook 'echo-area-clear-hook (lambda () (push (list 'clear (current-message)) so-log)))
+(global-set-key [f5] (lambda () (interactive) (so-f 0)))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (push (list (current-message) (integerp so-v) (recursion-depth)) so-log)
+    (with-temp-file (expand-file-name "so.out" command-line-default-directory)
+      (insert (format "%S\n" so-log)))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![(6.5, b"\x1b[15~"), (4.0, b"\x1b[17~")];
+    let expected = corpus.run_tty(&oracle(), &probe, "so.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "so.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn c_stack_overflow_leaves_the_frames_unwind_records_undone() {
+    // init_eval empties the specpdl without unbinding: `save-excursion',
+    // `save-restriction' and `save-current-buffer' (interpreted or
+    // compiled), `eval-buffer''s excursion, `execute-kbd-macro''s
+    // pop_kbd_macro (so the recovered command loop goes on reading the
+    // macro) are not undone, and when_entered_debugger is -1 again.
+    let corpus = Corpus::new();
+    let common = r#"(setq max-lisp-eval-depth 10000000)
+(defvar so-log nil)
+(defun so-f (n) (1+ (so-f (1+ n))))
+(run-at-time 2 nil (lambda () (kill-emacs 7)))
+"#;
+    let excursion = |name: &str, compile: &str| {
+        corpus.write(
+            name,
+            &format!(
+                r#"{common}(defvar so-b (get-buffer-create "so"))
+(with-current-buffer so-b (insert "hello world, hello"))
+(defun so-x ()
+  (with-current-buffer so-b
+    (save-excursion
+      (save-restriction
+        (narrow-to-region 2 8)
+        (goto-char 5)
+        (save-current-buffer (set-buffer (get-buffer-create "other")) (so-f 0))))))
+{compile}
+(add-hook 'kill-emacs-hook
+          (lambda ()
+            (princ (format "hook %S\n" (with-current-buffer so-b (list (point) (buffer-narrowed-p))))
+                   #'external-debugging-output)))
+(so-x)"#
+            ),
+        )
+    };
+    let program = excursion("sx.el", "");
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = excursion("sxb.el", "(byte-compile 'so-x)");
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = corpus.write(
+        "evb.el",
+        &format!(
+            r#"{common}(defvar so-b (get-buffer-create "evb"))
+(with-current-buffer so-b (insert "(push 'one so-log)\n(so-f 0)\n(push 'three so-log)\n"))
+(add-hook 'kill-emacs-hook
+          (lambda ()
+            (princ (format "hook %S\n" (list so-log (mapcar #'buffer-name eval-buffer-list)
+                                             (with-current-buffer so-b (point))))
+                   #'external-debugging-output)))
+(with-current-buffer so-b (goto-char 3) (eval-buffer so-b nil nil nil t))"#
+        ),
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = corpus.write(
+        "kmac.el",
+        &format!(
+            r#"{common}(add-hook 'kill-emacs-hook
+          (lambda ()
+            (princ (format "hook %S\n" (list (reverse so-log) executing-kbd-macro
+                                             executing-kbd-macro-index))
+                   #'external-debugging-output)))
+(global-set-key [f5] (lambda () (interactive) (push 'f5 so-log) (so-f 0)))
+(global-set-key [f6] (lambda () (interactive) (push 'f6 so-log)))
+(execute-kbd-macro [f5 f6])"#
+        ),
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = corpus.write(
+        "wed.el",
+        r#"(setq max-lisp-eval-depth 10000000)
+(defvar so-log nil)
+(defun so-f (n) (1+ (so-f (1+ n))))
+(setq debug-on-error t debugger (lambda (&rest a) (push (list 'dbg (cadr a)) so-log) nil))
+(condition-case nil (error "first") ((debug error) nil))
+(push (list 'entered internal-when-entered-debugger) so-log)
+(run-at-time 2 nil (lambda ()
+  (push (list 'entered internal-when-entered-debugger) so-log)
+  (condition-case nil (error "second") ((debug error) nil))
+  (princ (format "%S\n" (reverse so-log)) #'external-debugging-output)
+  (kill-emacs 7)))
+(so-f 0)"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[cfg(unix)]
+#[test]
+fn c_stack_overflow_in_minibuffer_setup_leaves_the_minibuffer_active() {
+    // read_minibuf's unwind records are dropped with the rest: the
+    // recovered command loop runs with the minibuffer at its depth.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "so.el",
+        r#"(setq max-lisp-eval-depth 10000000)
+(defvar so-go nil)
+(defun so-f (n) (1+ (so-f (1+ n))))
+(add-hook 'minibuffer-setup-hook (lambda () (when so-go (setq so-go nil) (so-f 0))))
+(global-set-key [f5] (lambda () (interactive) (setq so-go t) (read-from-minibuffer "Q: ")))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "so.out" command-line-default-directory)
+      (insert (format "%S\n" (list (recursion-depth) (minibuffer-depth) (minibufferp)
+                                   (minibuffer-window-active-p (minibuffer-window))))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![(6.5, b"\x1b[15~"), (6.0, b"\x1b[17~")];
+    let expected = corpus.run_tty(&oracle(), &probe, "so.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "so.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn handler_bind_handlers_get_room_as_signal_or_quit_gives_them() {
+    // eval.c:signal_or_quit's HANDLER_BIND case runs the handler after
+    // max_ensure_room (20), so a handler for `excessive-lisp-nesting' runs
+    // at the depth that signaled it.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "hb.el",
+        r#"(defun f (n) (f (1+ n)))
+(defvar hb-log nil)
+(condition-case nil
+    (handler-bind ((excessive-lisp-nesting (lambda (e) (push (list 'hb (car e)) hb-log))))
+      (f 0))
+  (error (push 'caught hb-log)))
+(princ (format "%S %S\n" (reverse hb-log) max-lisp-eval-depth))"#,
     );
     assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
 }

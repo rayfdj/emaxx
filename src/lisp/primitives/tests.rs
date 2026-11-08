@@ -3492,7 +3492,8 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         error.kind(),
         LispErrorKind::Terminate(EmacsTermination {
             exit_code: 7,
-            restart: false
+            restart: false,
+            c_stack_overflow: false,
         })
     ));
     assert_eq!(
@@ -3508,6 +3509,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         Some(EmacsTermination {
             exit_code: 7,
             restart: false,
+            c_stack_overflow: false,
         })
     );
 
@@ -3531,6 +3533,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: 0,
             restart: false,
+            c_stack_overflow: false,
         }
     );
     assert_eq!(
@@ -3538,6 +3541,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: -1,
             restart: false,
+            c_stack_overflow: false,
         }
     );
     assert_eq!(
@@ -3545,6 +3549,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: i32::MAX,
             restart: false,
+            c_stack_overflow: false,
         },
         "most-positive-fixnum masked to INT_MAX"
     );
@@ -3553,6 +3558,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: 0,
             restart: false,
+            c_stack_overflow: false,
         },
         "past most-positive-fixnum make_int gives a bignum, which FIXNUMP rejects"
     );
@@ -3561,6 +3567,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: 0,
             restart: false,
+            c_stack_overflow: false,
         },
         "emacs.c uses FIXNUMP, so a bignum is not an exit status"
     );
@@ -3569,6 +3576,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: 0,
             restart: true,
+            c_stack_overflow: false,
         }
     );
 }

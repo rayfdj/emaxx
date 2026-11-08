@@ -57,7 +57,9 @@ pub(crate) use display::{
     clear_message, echo_area_message, echo_area_message_tick, echo_area_print_logged,
     echo_display_message,
 };
-pub(crate) use lists::{event_array, next_kbd_macro_event, recursive_edit_exit_value};
+pub(crate) use lists::{
+    event_array, next_kbd_macro_event, pop_kbd_macro, recursive_edit_exit_value,
+};
 pub(crate) use misc_keymaps::restore_unicode_menu_case_table;
 mod overlays;
 mod predicates;

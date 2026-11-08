@@ -29,11 +29,12 @@ pub(crate) use kbd_input::{
     ResetState, arm_emergency_reset, disarm_emergency_reset, emergency_reset,
 };
 pub(crate) use kbd_input::{
-    SysModes, TtyInputModes, change_tty_input_modes, dev_tty_terminal, frame_garbaged,
-    init_all_sys_modes, interrupt_signal_pending, note_tty_erase_char, process_interrupt_signal,
-    quit_char, refresh_emergency_reset, reset_all_sys_modes, set_frame_garbaged, set_quit_char,
-    set_tty_input_modes, stuff_buffered_input, sys_suspend, take_frame_garbaged,
-    take_window_change_signal, tty_input_modes, unread_command_events_pending,
+    SysModes, TtyInputModes, begin_redisplay, change_tty_input_modes, dev_tty_terminal,
+    frame_garbaged, init_all_sys_modes, interrupt_signal_pending, note_tty_erase_char,
+    process_interrupt_signal, quit_char, redisplaying_p, refresh_emergency_reset,
+    reset_all_sys_modes, set_frame_garbaged, set_quit_char, set_tty_input_modes,
+    stuff_buffered_input, sys_suspend, take_frame_garbaged, take_window_change_signal,
+    tty_input_modes, unread_command_events_pending, unwind_redisplay,
 };
 use kbd_input::{quit_throw_to_read_char_outside_signal, waiting_for_input};
 pub(crate) use key_sequence::{KeySequenceReader, read_key_sequence_vs};
@@ -511,7 +512,7 @@ pub(crate) fn emacs_backtrace(limit: i32) {
 /// emacs.c:terminate_due_to_signal's end: SIGNAL unblocked and raised at
 /// its default action, which ends the process.
 #[cfg(unix)]
-fn raise_unblocked(signal: libc::c_int) -> ! {
+pub(crate) fn raise_unblocked(signal: libc::c_int) -> ! {
     // SAFETY: async-signal-safe calls on owned storage.
     unsafe {
         let mut unblocked: libc::sigset_t = std::mem::zeroed();
@@ -582,6 +583,22 @@ pub(crate) fn run_pending_fatal_signal(
     }
     let _ = (interp, env);
     Ok(())
+}
+
+/// sysdep.c:deliver_fatal_thread_signal for a fault Emaxx finds itself
+/// rather than takes in a handler (a C stack overflow it cannot return
+/// from): terminate_due_to_signal (SIGNAL, 40), its orderly shutdown and
+/// backtrace run here, where the interpreter is at hand, and then the
+/// signal at its default action ends the process.
+#[cfg(unix)]
+#[cold]
+pub(crate) fn deliver_fatal_signal(
+    interp: &mut Interpreter,
+    signal: libc::c_int,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    PENDING_FATAL_SIGNAL.store(signal, UserSignalOrdering::Relaxed);
+    run_pending_fatal_signal(interp, env)
 }
 
 /// emacs.c:shut_down_emacs (0, ...), as Fkill_emacs runs it: Vrun_hooks
@@ -1584,6 +1601,7 @@ fn terminal_gone(interp: &mut Interpreter, env: &mut Env) -> LispError {
         Ok(_) => LispError::Terminate(crate::lisp::types::EmacsTermination {
             exit_code: SIGHUP as i32,
             restart: false,
+            c_stack_overflow: false,
         }),
     }
 }

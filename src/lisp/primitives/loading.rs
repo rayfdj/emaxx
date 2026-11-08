@@ -443,7 +443,9 @@ pub(crate) fn eval_buffer_impl(
     )?;
     let previous_output =
         interp.bind_special_key(cached_symbol!("standard-output"), output, env)?;
-    let excursion = interp.save_excursion_state();
+    // Feval_buffer's record_unwind_protect_excursion.
+    let excursion = interp.specpdl_index();
+    interp.record_unwind_protect_excursion();
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
         let begv = buffer.point_min();
         buffer.goto_char(begv);
@@ -507,7 +509,11 @@ pub(crate) fn eval_buffer_impl(
             result = Err(error);
         }
     }
-    interp.restore_excursion_state(excursion);
+    if let Err(error) = interp.unbind_to(excursion, env)
+        && result.is_ok()
+    {
+        result = Err(error);
+    }
     for restore in [previous_output, previous_eval_buffer_list] {
         if let Err(error) = interp.restore_special_binding(restore, env)
             && result.is_ok()
@@ -767,13 +773,17 @@ fn read_region_form(
     if !interp.has_buffer_id(buffer_id) {
         return Err(LispError::Signal("Reading from killed buffer".into()));
     }
-    let outer = interp.save_excursion_state();
+    // readevalloop: record_unwind_protect_excursion, set_buffer_internal,
+    // record_unwind_protect_excursion again for point in it, and
+    // save_restriction_save for its ZV, unbound after one form is read.
+    let count = interp.specpdl_index();
+    interp.record_unwind_protect_excursion();
     if let Err(error) = interp.set_current_buffer_id(buffer_id) {
-        interp.restore_excursion_state(outer);
+        let _ = interp.unbind_to(count, env);
         return Err(error);
     }
-    let inner = interp.save_excursion_state();
-    let restriction = interp.save_restriction_state();
+    interp.record_unwind_protect_excursion();
+    interp.record_unwind_save_restriction();
     interp.restore_labeled_restrictions(buffer_id, Vec::new());
     let read = (|| {
         let stream = interp.buffer_value(buffer_id).expect("live buffer object");
@@ -813,10 +823,8 @@ fn read_region_form(
         }
         Ok(Some((form, stop)))
     })();
-    interp.restore_restriction_state(restriction);
-    interp.restore_excursion_state(inner);
-    interp.restore_excursion_state(outer);
-    read
+    let unbind = interp.unbind_to(count, env);
+    read.and_then(|read| unbind.map(|()| read))
 }
 
 /// lread.c lisp_file_lexical_cookie: the `lexical-binding' file variable

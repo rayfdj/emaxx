@@ -17137,6 +17137,109 @@ setup_process_coding_systems's check now refuses). A 13-form
   echo probes whose 0.2-second samples straddle the echo's appearance.
   A terminal probe of `help-form' in `read-event' (C-h, then x) gives
   GNU's screen and events, round 342's binary not.
+- **Round 344: a C stack overflow returns to the command loop, as
+  sysdep.c's handle_sigsegv and keyboard.c's command_loop have it, and
+  the startup raises the stack limit as emacs.c's main does.** GNU finds
+  an overflow in the SIGSEGV handler (the fault in the guard region past
+  the known stack, stack_overflow) and siglongjmps to the command loop
+  entered last, whose init_eval empties the specpdl without unbinding
+  and which runs again with `internal--top-level-message' "Re-entering
+  top level after C stack overflow"; a Rust frame cannot be unwound from
+  a fault, so Emaxx tests the stack before it is exhausted.  Each stack
+  keeps a floor 1 MB above its lowest usable address, or a quarter of a
+  stack smaller than 4 MB (continuations.rs: an owned stack's limit, the
+  top of the main thread's stack mapping less RLIMIT_STACK, another OS
+  thread's pthread stack), and the call entries that test
+  max-lisp-eval-depth (eval_sub's general entry, Ffuncall's and Bcall's)
+  test the floor too, past the depth below which no call can reach it (8
+  KB a level from the stack's base, against the 0.4 to 2.4 KB a level
+  interpreted, byte-compiled and native code take), the call gate
+  keeping the fast entries under that depth.  At the floor the overflow
+  is an exit nothing catches, `kill-emacs''s kind of termination marked
+  as a stack overflow: no `condition-case', `catch', `handler-bind' or
+  debugger takes it, no unwind form runs, and the frames it leaves pop
+  their specpdl entries without undoing them; the innermost running
+  command loop takes it, clears `quit-flag' and debug_on_next_call
+  (init_eval) and enters its loop again with the recovery message, which
+  `normal-top-level' shows at the top level.  With
+  `attempt-stack-overflow-recovery' nil or with no command loop running
+  it is fatal (terminate_due_to_signal (SIGSEGV), its shutdown and
+  backtrace, run on a fresh stack as GNU's handler runs on its
+  sigaltstack), and on a thread other than the main one it is SIGSEGV at
+  its default action, as deliver_thread_signal makes it.  emacs.c's main
+  raises RLIMIT_STACK's soft limit to emacs_re_max_failures' need plus
+  room for a GC's frames, within the hard limit, so a child process sees
+  the grown limit (9,788 KB under 8 MB) as GNU's children do; its
+  emacs_re_safe_alloca has no counterpart (Emaxx's failure stack is
+  always on the heap).  An adversarial review of the round, probing GNU
+  and Emaxx in batch and in a pseudo-terminal, found three P1s, eight
+  P2s and two P3s.  P1: interpreted `save-excursion', `save-restriction'
+  and `save-current-buffer' restored in Rust after their bodies, outside
+  the specpdl the exit leaves undone, as did `eval-buffer''s and
+  `eval-region''s readevalloop (GNU's point 5 in a narrowed buffer came
+  back as 19, widened); they are record_unwind_protect_excursion,
+  save_restriction_save's record and record_unwind_current_buffer now,
+  with the other Rust excursions and restrictions GNU records (the
+  scroll commands', `kill-buffer''s, write_region's and
+  call-process-region's); `execute-kbd-macro' restored the outer macro
+  and ran `kbd-macro-termination-hook' on any exit, where pop_kbd_macro
+  is a specpdl unwind, so GNU's recovered command loop goes on reading
+  the macro (F5 then F6 of [f5 f6]) and Emaxx's abandoned it; and the
+  reader's recursion on deeply nested data, which crashed before the
+  round too, is recorded below.  P2: init_eval's when_entered_debugger =
+  -1 was missing, so a debugger entered before the overflow kept the
+  next error out of it; an overflow in `minibuffer-setup-hook' tore the
+  minibuffer down, where GNU's read_minibuf unwinds are dropped and the
+  minibuffer stays active at its depth; an overflow inside redisplay
+  left Emaxx drawing, where GNU's redisplaying_p stays set without its
+  unwind_redisplay and the display freezes: redisplay_internal's
+  redisplaying_p, its unwind record and its `redisplay_internal (C
+  function)' backtrace frame are Emaxx's, the terminal's redisplay does
+  nothing while it is set or `inhibit-redisplay' is non-nil (which it
+  never tested), and the echo area's immediate display updates the frame
+  only when no redisplay runs; the main thread's floor was measured from
+  a local below the arguments and environment, so 1.4 MB of environment
+  put it past the kernel's limit (the floor now counts from the stack
+  mapping's top, the page above AT_EXECFN); a hard limit near 1 MB left
+  no floor at all (a stack smaller than four margins keeps a quarter of
+  itself); and the fatal path ran its shutdown on the exhausted stack,
+  where its first Lisp call met the floor again, so no backtrace was
+  printed and the lock files stayed (it runs on a fresh 16 MB stack, as
+  GNU's handler on its sigaltstack).  P3: an overflow on another Lisp
+  thread ran the fatal shutdown, where GNU's deliver_thread_signal
+  raises SIGSEGV at its default action for the main thread, silently.
+  Recorded with the terminal's differences: which limit a deep recursion
+  meets first (the 128 MB batch stack against the byte-code stack, where
+  GNU's 9.8 MB C stack overflows first), GNU's stack_overflow answering
+  false for a fault far past the last backtrace record (a byte-code
+  caller's, or inside redisplay), the overflow inside a recursive edit
+  (GNU's init_eval drops the outer levels' specpdl entries and handlers
+  too, their unbind_to then walking below the specpdl's start), an
+  unlimited RLIMIT_STACK (no floor), the reader's recursion, to be made
+  as read0's explicit stack, and the read_char wipe reaching the
+  terminal before the next redisplay.  Local validation: the grouped
+  gate's 3,506 library tests pass on the round's source as built before
+  clippy's three rewrites of a lazily evaluated value as an eager one
+  (`.and()', the same values), and the integration targets on the final
+  source: cli's 30, cli_parity's 112 (its five new comparisons of the
+  return to the top level without unwinding, in batch and from a
+  terminal command, of the frames' unwind records the exit leaves
+  undone, of the minibuffer an overflow in its setup leaves active, and
+  of the room `handler-bind''s handlers get among them), ert_runner's 3,
+  native_comp_identity's, native_thread_continuations',
+  package_lifecycle's 5 and runtime_ownership's 3.  cli_parity's
+  comparison of the wait failed once among the parallel targets, in its
+  threads probe: the main thread's one 50 ms `sleep-for' ended before
+  the other thread's child had exited, so its sentinel ran at the later
+  `accept-process-output', after the main thread's mark and the second
+  child's, which GNU gives too for a child that takes 0.1 seconds to
+  exit; the probe now sleeps until that child's sentinel has run (at
+  most 5 seconds), and both Emacsen give the same log for a child
+  exiting at once, after 0.1 seconds and after 0.7 seconds, the
+  comparison passing alone.  clippy with `--all-targets --all-features
+  -D warnings' passes on the final source, and the review's batch, fatal
+  and terminal probes give GNU's results on the rebuilt binary but for
+  the read_char wipe recorded above.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -20026,9 +20129,19 @@ ert-tests as a whole 26,307 ms against 27,211.
   20 times in Emaxx and 19 in GNU. Round 343 has p2 sleep after its
   output, which both take the same way every time.
 
+**On `4940498`** (round 343): the frozen run (run 42433135825) matched
+  all 7,928 outcomes at its first attempt. Setup 70.1 s against 59.2 s
+  (1.183), test bodies 278.7 s against 253.3 s (1.100), in all 1.118,
+  with a per-file setup median of 106 ms against 91. The widest body
+  gaps are ert-tests (38.3 s against 35.7), comp-tests (16.2 against
+  13.7), tramp-tests (19.0 against 16.6), eglot-tests (33.4 against
+  32.0), process-tests (2.86 against 1.53), semantic-utest-ia (3.52
+  against 2.45), mule-tests (2.78 against 1.77) and icalendar-tests
+  (1.37 against 0.38). The Rust gate (run 42433133267) passed.
+
 **Findings recorded, not fixed:**
 - **The terminal session's remaining keyboard and display differences
-  (rounds 340-343).** The secondary terminals `make-terminal-frame'
+  (rounds 340-344).** The secondary terminals `make-terminal-frame'
   opens read their bytes through Emaxx's own decoder into
   `unread-command-events', with no quit character and no
   `throw-on-input', where GNU's tty_read_avail_input stores them in the
@@ -20044,35 +20157,47 @@ ert-tests as a whole 26,307 ms against 27,211.
   order. `suspend-tty' and `resume-tty' signal that every terminal is a
   non-text one ("Attempt to suspend a non-text terminal device"), and
   `tty--output-buffer-size' that it is not a tty, as on the batch frame.
-  A C stack overflow (unbounded recursion with `max-lisp-eval-depth'
-  raised) kills Emaxx with signal 11 after resetting the terminal, where
-  GNU's handle_sigsegv sees the fault in the stack's guard region and
-  stack_overflow's siglongjmp returns to the top level ("Re-entering top
-  level after C stack overflow"), Emacs still running; unwinding Rust
-  frames from a signal handler is not sound, so Emaxx needs its own
-  check of the native stack before it is exhausted, ending in the same
-  top-level re-entry. emacs.c's main also grows RLIMIT_STACK at startup
-  (to emacs_re_max_failures' need plus room for a GC's frames, within
-  the hard limit), which Emaxx does not, so a child process sees the
-  soft limit Emaxx was started with (8,192 KB under the usual 8 MB)
-  where GNU's children see the grown one (9,788 KB). With interrupt
-  input off nothing polls the keyboard during a busy command, where a
-  GNU build with POLL_FOR_INPUT reads it every `polling-period'
-  (start_polling's atimer, poll_for_input), so a `discard-input' after a
-  long command keeps typeahead GNU has read and discards. Two C-g's
-  typed before the main thread's next quit check count as one, where
-  GNU's SIGINT handler runs handle_interrupt in the signal itself (the
-  second, with `quit-flag' still set, the emergency escape); and a
-  background thread runs process_pending_signals at each of its quit
-  checks while an interrupt waits for the main thread. A face's tty
-  attributes come from faces.el's `face-attribute' and the frontend's
-  merge of realized attributes, where GNU merges the face's Lisp
-  attributes over the default face's (merge_face_ref) and realizes the
-  result once in the face cache, and
-  `display-supports-face-attributes-p' reads the frame's `default'
-  definition where GNU reads its realized default face, which differs
-  between a change to the default face and the next redisplay. The
-  frontend moves the cursor, clears and scrolls with fixed ANSI
+  A C stack overflow inside a recursive edit returns to that edit's
+  command loop with the outer levels' specpdl entries, handlers and
+  depth kept, where GNU's init_eval drops them all (their unbind_to
+  later walks below the specpdl's start, and GNU dies when the edit
+  exits; at the top level there are none); with RLIMIT_STACK unlimited
+  the main thread's stack has no floor, so an overflow on it still
+  faults, as it did before round 344 (GNU's guard-region test still
+  catches it).  Which limit a deep recursion meets first can differ,
+  Rust frames not being C's: the batch session's 128 MB stack (sized for
+  GNU's depths, not its bytes, and not RLIMIT_STACK) outlasts the
+  byte-code stack in a recursion through byte-compiled callers such as
+  `seq-reduce', which signals "Bytecode stack overflow" where GNU's 9.8
+  MB C stack overflows first.  GNU's stack_overflow also answers false,
+  and the overflow is fatal, when the fault lies further past the stack
+  top the last record_in_backtrace left than the known stack's 256th
+  part, as when that record was a byte-code call's (its arguments on the
+  heap byte-code stack) or redisplay's C frames took the stack's last
+  bytes; Emaxx tests the floor at its call entries and recovers there.
+  The reader recurses for nested lists and vectors where lread.c's read0
+  keeps an explicit read_stack, so a datum nested a million deep crashes
+  Emaxx (SIGSEGV) where GNU reads it.  And the read_char wipe of a
+  message reaches the terminal when the keyboard is polled, where GNU's
+  waits for the next redisplay, which shows only when that redisplay
+  never comes (a C stack overflow in one leaves GNU's display frozen
+  with the old message, Emaxx's with none). With interrupt input off
+  nothing polls the keyboard during a busy command, where a GNU build
+  with POLL_FOR_INPUT reads it every `polling-period' (start_polling's
+  atimer, poll_for_input), so a `discard-input' after a long command
+  keeps typeahead GNU has read and discards. Two C-g's typed before the
+  main thread's next quit check count as one, where GNU's SIGINT handler
+  runs handle_interrupt in the signal itself (the second, with
+  `quit-flag' still set, the emergency escape); and a background thread
+  runs process_pending_signals at each of its quit checks while an
+  interrupt waits for the main thread. A face's tty attributes come from
+  faces.el's `face-attribute' and the frontend's merge of realized
+  attributes, where GNU merges the face's Lisp attributes over the
+  default face's (merge_face_ref) and realizes the result once in the
+  face cache, and `display-supports-face-attributes-p' reads the frame's
+  `default' definition where GNU reads its realized default face, which
+  differs between a change to the default face and the next redisplay.
+  The frontend moves the cursor, clears and scrolls with fixed ANSI
   sequences where term.c sends the entry's cm, ce, cd and cl (with their
   padding), which matters on a terminal that is not ANSI. A message
   taller than `max-mini-window-height' shows its first lines, where
@@ -20098,16 +20223,16 @@ ert-tests as a whole 26,307 ms against 27,211.
   long-line narrowing of safe_run_hooks_maybe_narrowed; and a quit
   check's quit is never continuable, where eval.c's quit () is
   signal_or_quit with CONTINUABLE, a debugger `debug-on-quit' entered
-  returning to the check. To be made: read_char's menu prompting, the C
-  stack overflow's return to the top level and the startup's stack
-  limit, input polling, the secondary terminals' input, modes and sizes
-  as the controlling terminal's, sys_subshell, the special events in the
-  keyboard buffer's order, handle_interrupt in the signal handler,
-  suspend-tty and resume-tty with the output buffer size as term.c's,
-  faces realized from their merged Lisp attributes in a face cache as
-  xfaces.c's, the entry's cursor motion and clear strings, the command
-  hooks' long-line narrowing, resize_mini_window's window start for a
-  tall message, and the remaining keyboard and display details above.
+  returning to the check. To be made: the reader's nested data on an
+  explicit stack as read0's, read_char's menu prompting, input polling,
+  the secondary terminals' input, modes and sizes as the controlling
+  terminal's, sys_subshell, the special events in the keyboard buffer's
+  order, handle_interrupt in the signal handler, suspend-tty and
+  resume-tty with the output buffer size as term.c's, faces realized
+  from their merged Lisp attributes in a face cache as xfaces.c's, the
+  entry's cursor motion and clear strings, the command hooks' long-line
+  narrowing, resize_mini_window's window start for a tall message, and
+  the remaining keyboard and display details above.
 - **TLS over a process that is no network connection (round 337).**
   gnutls-boot on a pipe process or a subprocess gives GnuTLS the
   process's p->infd and p->outfd as its transport

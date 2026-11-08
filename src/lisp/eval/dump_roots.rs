@@ -236,6 +236,18 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "a word derived from the quit flag, the pending termination and max-lisp-eval-depth, refreshed as each is installed",
     ),
     (
+        "c_stack_safe_depth",
+        "the Lisp depth below which no call reaches the C stack's floor, derived from the running stack's size, which the new process measures for itself",
+    ),
+    (
+        "c_stack_overflow_exit",
+        "set only while a C stack overflow's exit travels to the command loop, as sysdep.c's siglongjmp does, which no dump outlives",
+    ),
+    (
+        "command_loops_entered",
+        "keyboard.c's return_to_command_loop, set by the running command loops; the new process has none until it enters its own",
+    ),
+    (
         "debug_on_next_call",
         "the forwarded C slot of debug-on-next-call, refilled likewise",
     ),

@@ -9107,3 +9107,46 @@ fn string_match_keeps_search_c_match_data() {
         Value::string("((7 12 7 10) nil (7 12 7 10) 0 (0 1) nil 0 2 (2 2) 0 0 (0 0) 0 \"-a-b-c\")")
     );
 }
+
+#[test]
+fn c_stack_overflow_leaves_for_the_command_loop_without_unwinding() {
+    // sysdep.c:handle_sigsegv's siglongjmp to keyboard.c's command_loop, as
+    // GNU 30.2 shows it in batch: `condition-case' does not catch it, the
+    // unwind-protect cleanup does not run, and the innermost `let' binding
+    // of so-v stays made.  On a 16 MB stack the call entries find the floor
+    // long before max-lisp-eval-depth.
+    let stack = corosensei::stack::DefaultStack::new(16 * 1024 * 1024).expect("a 16 MB stack");
+    super::continuations::on_stack(stack, || {
+        let mut interp = gnu_early_lisp_interpreter();
+        // The command loop the exit returns to.
+        interp.command_loops_entered = 1;
+        eval_str_with(
+            &mut interp,
+            "(progn (setq max-lisp-eval-depth 10000000)
+                    (defvar so-v 'outer)
+                    (defvar so-log nil)
+                    (defun so-f (n)
+                      (let ((so-v n))
+                        (unwind-protect (1+ (so-f (1+ n))) (setq so-log 'ran)))))",
+        );
+        let form = Reader::new("(condition-case nil (so-f 0) (error 'caught))")
+            .read()
+            .expect("parse")
+            .expect("a form");
+        interp.intern_symbols_in_value(&form);
+        let mut env = Env::new();
+        let error = interp
+            .eval(&form, &mut env)
+            .expect_err("the overflow exits");
+        assert!(
+            matches!(error.kind(), crate::lisp::types::LispErrorKind::Terminate(t) if t.c_stack_overflow),
+            "{error:?}"
+        );
+        // keyboard.c's command_loop takes the exit back (init_eval).
+        assert!(interp.c_stack_overflow_exit);
+        interp.c_stack_overflow_exit = false;
+        interp.take_pending_termination();
+        let state = eval_str_with(&mut interp, "(list (integerp so-v) (> so-v 1000) so-log)");
+        assert_eq!(state, Value::list([Value::T, Value::T, Value::Nil]));
+    });
+}

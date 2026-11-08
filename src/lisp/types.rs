@@ -3453,15 +3453,21 @@ fn format_value(
     }
 }
 
-/// An orderly process termination requested by `kill-emacs`.
+/// An orderly process termination requested by `kill-emacs`, or the
+/// return to the command loop after a C stack overflow.
 ///
 /// This is evaluator control flow, not a Lisp condition: GNU's native
 /// `kill-emacs` is `noreturn`, so `condition-case`, `handler-bind`, and
-/// `unwind-protect` cannot intercept it.
+/// `unwind-protect` cannot intercept it.  Neither can they intercept
+/// sysdep.c:handle_sigsegv's siglongjmp to keyboard.c's command_loop,
+/// which leaves every frame between without running its unwind forms or
+/// restoring its bindings; `c_stack_overflow' marks that exit, which the
+/// innermost command loop takes (`command_loop').
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmacsTermination {
     pub exit_code: i32,
     pub restart: bool,
+    pub c_stack_overflow: bool,
 }
 
 /// Lisp errors and non-local evaluator control flow: the kind, boxed in

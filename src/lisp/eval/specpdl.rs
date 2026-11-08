@@ -80,6 +80,11 @@ pub(crate) enum UnwindAction {
     /// record_unwind_protect of an unwind-protect's handler: a function
     /// called with no arguments, or a list of forms evaluated.
     Cleanup { function: bool, value: Value },
+    /// macros.c:Fexecute_kbd_macro's record_unwind_protect (pop_kbd_macro,
+    /// (MACRO INDEX . REAL-THIS-COMMAND)).
+    KbdMacro(Value),
+    /// redisplay_internal's record_unwind_protect_void (unwind_redisplay).
+    Redisplay,
 }
 
 impl UnwindAction {
@@ -88,8 +93,8 @@ impl UnwindAction {
         match self {
             Self::Excursion(saved) => mark(&Value::Marker(saved.marker_id)),
             Self::Restriction(saved) => saved.mark_values(mark),
-            Self::CurrentBuffer(_) => {}
-            Self::Cleanup { value, .. } => mark(value),
+            Self::CurrentBuffer(_) | Self::Redisplay => {}
+            Self::Cleanup { value, .. } | Self::KbdMacro(value) => mark(value),
         }
     }
 }
@@ -168,6 +173,26 @@ impl Interpreter {
             lisp_eval_depth: depth_word(self.lisp_eval_depth),
         };
         self.specpdl.push(SpecpdlEntry::Unwind(record));
+    }
+
+    /// record_unwind_protect_excursion: the current buffer and its point,
+    /// put back by the unbind_to that pops the entry.
+    pub(crate) fn record_unwind_protect_excursion(&mut self) {
+        let saved = self.save_excursion_state();
+        self.record_unwind(UnwindAction::Excursion(saved));
+    }
+
+    /// record_unwind_protect (save_restriction_restore,
+    /// save_restriction_save ()).
+    pub(crate) fn record_unwind_save_restriction(&mut self) {
+        let saved = self.save_restriction_state();
+        self.record_unwind(UnwindAction::Restriction(Box::new(saved)));
+    }
+
+    /// record_unwind_current_buffer.
+    pub(crate) fn record_unwind_current_buffer(&mut self) {
+        let buffer_id = self.current_buffer_id();
+        self.record_unwind(UnwindAction::CurrentBuffer(buffer_id));
     }
 
     /// unbind_to's do_one_unbind of the innermost entry when it is a
@@ -255,12 +280,21 @@ impl Interpreter {
 
     /// do_one_unbind of ENTRY, taken off the stack.  An unwind record's
     /// action runs with the backtrace frames recorded since retired and
-    /// at the evaluation depth it was made at.
+    /// at the evaluation depth it was made at.  While the exit after a C
+    /// stack overflow travels to the command loop the entry is dropped
+    /// undone: GNU's siglongjmp leaves it on the specpdl, which init_eval
+    /// then empties without unbinding (`c_stack_overflow_exit').
     pub(crate) fn undo_specpdl_entry(
         &mut self,
         entry: SpecpdlEntry,
         env: &mut Env,
     ) -> Result<(), LispError> {
+        if self.c_stack_overflow_exit {
+            if let SpecpdlEntry::Unwind(record) = entry {
+                self.truncate_backtrace_frames(record.backtrace_depth as usize);
+            }
+            return Ok(());
+        }
         match entry {
             SpecpdlEntry::Let(restore) => self.apply_special_restore(restore, env),
             SpecpdlEntry::Unwind(record) => {
@@ -304,6 +338,13 @@ impl Interpreter {
                     Ok(())
                 })
             }
+            UnwindAction::Redisplay => {
+                crate::lisp::primitives::unwind_redisplay();
+                Ok(())
+            }
+            UnwindAction::KbdMacro(info) => self.with_lisp_stack_roots(&info, |interp| {
+                crate::lisp::primitives::pop_kbd_macro(interp, info, env)
+            }),
         }
     }
 }

@@ -568,7 +568,8 @@ pub(crate) fn make_temp_file_internal(
                 Value::Nil,
                 Value::Nil,
             ];
-            let saved = interp.save_restriction_state();
+            let count = interp.specpdl_index();
+            interp.record_unwind_save_restriction();
             interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
             let written = write_region_with_coding(
                 interp,
@@ -580,8 +581,9 @@ pub(crate) fn make_temp_file_internal(
                 Some(&mut file),
                 env,
             );
-            interp.restore_restriction_state(saved);
+            let unbind = interp.unbind_to(count, env);
             written?;
+            unbind?;
         }
     }
     // failed = NILP (dir_flag) && emacs_close (fd) != 0.
@@ -1195,7 +1197,8 @@ pub(crate) fn write_region_value_with_logical_path(
     }
     // write_region saves restriction state even for explicit/string input;
     // nil START temporarily exposes the entire buffer to coding callbacks.
-    let saved = interp.save_restriction_state();
+    let count = interp.specpdl_index();
+    interp.record_unwind_save_restriction();
     interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
     if args[0].is_nil() {
         interp.buffer.borrow_mut().widen();
@@ -1210,8 +1213,8 @@ pub(crate) fn write_region_value_with_logical_path(
         None,
         env,
     );
-    interp.restore_restriction_state(saved);
-    result
+    let unbind = interp.unbind_to(count, env);
+    result.and_then(|value| unbind.map(|()| value))
 }
 
 /// callproc.c create_temp_file: the input `call-process-region' gives
@@ -1229,13 +1232,14 @@ pub(crate) fn encode_process_input(
     let restore_coding = interp.bind_special_dynamic("coding-system-for-write", coding, env)?;
     let result = match interp.bind_special_dynamic("file-name-handler-alist", Value::Nil, env) {
         Ok(restore_handlers) => {
-            let saved = interp.save_restriction_state();
+            let count = interp.specpdl_index();
+            interp.record_unwind_save_restriction();
             interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
             if start.is_nil() {
                 interp.buffer.borrow_mut().widen();
             }
             let result = encode_region_for_write(interp, start, end, env);
-            interp.restore_restriction_state(saved);
+            let result = interp.unbind_to(count, env).and(result);
             let restored = interp.restore_special_dynamic(restore_handlers, env);
             result.and_then(|bytes| restored.map(|()| bytes))
         }

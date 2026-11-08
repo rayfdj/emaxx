@@ -627,6 +627,7 @@ define_dispatch!(
                 let termination = EmacsTermination {
                     exit_code,
                     restart: args.get(1).is_some_and(Value::is_truthy),
+                    c_stack_overflow: false,
                 };
                 interp.request_termination(termination.clone());
                 Err(LispError::Terminate(termination))

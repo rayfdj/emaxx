@@ -618,18 +618,36 @@ fn run_owned(
         let queue = queue.clone();
         let state = std::rc::Rc::clone(&state);
         move |interpreter, env| {
+            // redisplay_internal: nothing while a redisplay runs (or after
+            // a C stack overflow left one without its unwind_redisplay),
+            // nor while `inhibit-redisplay' is non-nil.
+            if crate::lisp::primitives::redisplaying_p()
+                || interpreter
+                    .forwarded_c_value("inhibit-redisplay", env)
+                    .is_some_and(|value| value.is_truthy())
+            {
+                return;
+            }
+            let count = interpreter.specpdl_index();
+            crate::lisp::primitives::begin_redisplay(interpreter);
+            // "Record this function, so it appears on the profiler's
+            // backtraces": record_in_backtrace with no arguments, popped by
+            // the unbind_to.
+            interpreter.push_backtrace_frame(Value::symbol("redisplay_internal (C function)"), &[]);
             if queue.input_pending() {
                 // Painting yields to the input, but redisplay_internal
                 // runs the window change functions before any update.
                 let _ = crate::lisp::primitives::run_window_change_functions(interpreter, env);
-                return;
+            } else {
+                // command_loop_1's resize_echo_area_exactly after a command:
+                // a displayed message's mini window takes its own height
+                // again.
+                let exact = crate::lisp::primitives::take_resize_echo_area_exactly();
+                if let Ok(mut state) = state.try_borrow_mut() {
+                    let _ = redraw_with_echo_policy(interpreter, env, &mut state, exact);
+                }
             }
-            // command_loop_1's resize_echo_area_exactly after a command:
-            // a displayed message's mini window takes its own height again.
-            let exact = crate::lisp::primitives::take_resize_echo_area_exactly();
-            if let Ok(mut state) = state.try_borrow_mut() {
-                let _ = redraw_with_echo_policy(interpreter, env, &mut state, exact);
-            }
+            let _ = interpreter.unbind_to(count, env);
         }
     })));
     // term.c's menu_show_hook: the dropdown executor F10's popup path
@@ -1265,6 +1283,11 @@ fn draw_echo_row_composed(
     env: &mut Env,
     state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) {
+    // echo_area_display updates the frame only `if (update_frame_p &&
+    // !redisplaying_p)'.
+    if crate::lisp::primitives::redisplaying_p() {
+        return;
+    }
     let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
         return;
     };

@@ -206,6 +206,7 @@ impl Interpreter {
             self.request_termination(EmacsTermination {
                 exit_code: 0,
                 restart: false,
+                c_stack_overflow: false,
             });
         }
         while let Some(thread_id) = self.continuations.threads.keys().next().copied() {

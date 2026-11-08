@@ -61,6 +61,9 @@ thread_local! {
     /// dispnew.c's frame_garbaged: a size change (SIGWINCH's) the frame
     /// has not been redisplayed for yet.
     static FRAME_GARBAGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// xdisp.c's redisplaying_p: a redisplay is running, cleared by its
+    /// unwind_redisplay record.
+    static REDISPLAYING_P: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// get_named_terminal (DEV_TTY): the session's terminal is the
     /// controlling one.
     static DEV_TTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -386,6 +389,23 @@ pub(crate) fn take_frame_garbaged() -> bool {
 /// frame_garbaged = true: the next redisplay paints the whole frame.
 pub(crate) fn set_frame_garbaged() {
     FRAME_GARBAGED.set(true);
+}
+
+/// xdisp.c's redisplaying_p.
+pub(crate) fn redisplaying_p() -> bool {
+    REDISPLAYING_P.get()
+}
+
+/// redisplay_internal's `record_unwind_protect_void (unwind_redisplay);
+/// redisplaying_p = true;', as the redisplay starts.
+pub(crate) fn begin_redisplay(interp: &mut Interpreter) {
+    interp.record_unwind(crate::lisp::eval::UnwindAction::Redisplay);
+    REDISPLAYING_P.set(true);
+}
+
+/// xdisp.c:unwind_redisplay.
+pub(crate) fn unwind_redisplay() {
+    REDISPLAYING_P.set(false);
 }
 
 /// Whether the frame awaits a whole redisplay.

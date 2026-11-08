@@ -6525,18 +6525,16 @@ define_dispatch!(
                 // window's nil is CHECK_STRING's error.
                 let direction: i64 = if name == "scroll-up" { 1 } else { -1 };
                 let selected = interp.selected_window_contents_buffer_id();
-                let excursion = if selected == Some(interp.current_buffer_id()) {
-                    None
-                } else {
+                let count = interp.specpdl_index();
+                if selected != Some(interp.current_buffer_id()) {
                     let buffer =
                         selected.ok_or_else(|| wrong_type_argument("stringp", Value::Nil))?;
-                    let saved = interp.save_excursion_state();
+                    interp.record_unwind_protect_excursion();
                     if let Err(error) = interp.set_current_buffer_id(buffer) {
-                        interp.restore_excursion_state(saved);
+                        let _ = interp.unbind_to(count, env);
                         return Err(error);
                     }
-                    Some(saved)
-                };
+                }
                 let result = (|| -> Result<(), LispError> {
                     let (n, whole) = match args.first().map(|v| v.kind()) {
                         None | Some(Kind::Nil) => (direction, true),
@@ -6563,10 +6561,8 @@ define_dispatch!(
                         hscroll,
                     )
                 })();
-                if let Some(saved) = excursion {
-                    interp.restore_excursion_state(saved);
-                }
-                result.map(|()| Value::Nil)
+                let unbind = interp.unbind_to(count, env);
+                result.and(unbind).map(|()| Value::Nil)
             }
             "window-text-pixel-size" => {
                 // xdisp.c:Fwindow_text_pixel_size: measured in WINDOW's

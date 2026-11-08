@@ -4087,12 +4087,18 @@ impl Interpreter {
                     {
                         continue;
                     }
-                    let result = self.call_function_value(
-                        *handler,
-                        None,
-                        std::slice::from_ref(&error_value),
-                        env,
-                    );
+                    // signal_or_quit's HANDLER_BIND case: max_ensure_room
+                    // (20) for the handler, given back by its unbind_to (so
+                    // that a handler for `excessive-lisp-nesting' runs).
+                    let handler = *handler;
+                    let result = self.with_ensured_room(20, |interp| {
+                        interp.call_function_value(
+                            handler,
+                            None,
+                            std::slice::from_ref(&error_value),
+                            env,
+                        )
+                    });
                     match result {
                         Ok(_) => handled = true,
                         Err(next) => {
