@@ -8,13 +8,14 @@
 //! is row arithmetic here.
 
 use super::{
-    CharacterDisplayContext, glyphless_visual_line_at, layout, position_of_visual_row,
+    CharacterDisplayContext, VisualLine, glyphless_visual_line_at, layout,
     wrap_glyphless_visual_line, wrapped_position_of_column,
 };
 use crate::buffer::Buffer;
 use crate::lisp::primitives::{InvisibilitySpec, invisible_class_at, visual_line_first_line};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// One glyph row: segment SEG of the display line that begins at raw
 /// line LINE.
@@ -37,6 +38,14 @@ pub(super) struct Rows<'a, 'c> {
     /// Per display line: its rows, the raw lines it spans, and whether it
     /// is a wholly invisible tail that produces no row.
     lines: RefCell<HashMap<usize, (usize, usize, bool)>>,
+    /// Per display line: the line as the window shows it, laid out once
+    /// for every question the plan asks of it (the buffer cannot change
+    /// while the plan borrows it).
+    visuals: RefCell<HashMap<usize, Rc<VisualLine>>>,
+    /// Per display line: where each of its rows starts.
+    row_starts: RefCell<HashMap<usize, Rc<Vec<usize>>>>,
+    /// Per display line: its layout continued at the window's width.
+    layouts: RefCell<HashMap<usize, Rc<layout::LineLayout>>>,
 }
 
 impl<'a, 'c> Rows<'a, 'c> {
@@ -56,14 +65,92 @@ impl<'a, 'c> Rows<'a, 'c> {
             first_line: buffer.line_number_at_pos(buffer.point_min()),
             last_line: buffer.line_number_at_pos(buffer.point_max()),
             lines: RefCell::new(HashMap::new()),
+            visuals: RefCell::new(HashMap::new()),
+            row_starts: RefCell::new(HashMap::new()),
+            layouts: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// The display line beginning at raw line LINE laid out continued at
+    /// the window's width, made once for the plan.
+    pub(super) fn laid(&self, line: usize) -> Rc<layout::LineLayout> {
+        if let Some(laid) = self.layouts.borrow().get(&line) {
+            return Rc::clone(laid);
+        }
+        let laid = Rc::new(layout::lay_out_visual_line(
+            &self.visual(line),
+            self.body_width,
+            false,
+        ));
+        self.layouts.borrow_mut().insert(line, Rc::clone(&laid));
+        laid
+    }
+
+    /// The display line beginning at raw line LINE as the window shows it.
+    pub(super) fn visual(&self, line: usize) -> Rc<VisualLine> {
+        if let Some(visual) = self.visuals.borrow().get(&line) {
+            return Rc::clone(visual);
+        }
+        let visual = Rc::new(glyphless_visual_line_at(
+            self.buffer,
+            self.spec,
+            line,
+            self.glyphless,
+        ));
+        self.visuals.borrow_mut().insert(line, Rc::clone(&visual));
+        visual
+    }
+
+    /// Where each row of the display line beginning at raw line LINE
+    /// starts: the line's start, then the position each continuation
+    /// row's first glyph comes from, the line wrapped USABLE + 1 wide.
+    fn row_starts(&self, line: usize) -> Rc<Vec<usize>> {
+        if let Some(starts) = self.row_starts.borrow().get(&line) {
+            return Rc::clone(starts);
+        }
+        let start = self.buffer.display_line_start_of(line);
+        let visual = self.visual(line);
+        let raw_at = |index: usize| {
+            visual
+                .raw_of_display
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| visual.raw_of_display.last().copied().unwrap_or(0))
+        };
+        let usable = self.body_width.saturating_sub(1).max(1);
+        // At any width but one column that is the plan's own layout.
+        let laid = (usable + 1 == self.body_width).then(|| self.laid(line));
+        let other;
+        let segments = match &laid {
+            Some(laid) => &laid.rows,
+            None => {
+                other = wrap_glyphless_visual_line(&visual, usable + 1);
+                &other
+            }
+        };
+        let starts: Vec<usize> = segments
+            .iter()
+            .enumerate()
+            .map(|(seg, segment)| {
+                if seg == 0 {
+                    start
+                } else {
+                    start + raw_at(segment.start_index)
+                }
+            })
+            .collect();
+        let starts = Rc::new(starts);
+        self.row_starts
+            .borrow_mut()
+            .insert(line, Rc::clone(&starts));
+        starts
     }
 
     fn line_info(&self, line: usize) -> (usize, usize, bool) {
         if let Some(info) = self.lines.borrow().get(&line) {
             return *info;
         }
-        let visual = glyphless_visual_line_at(self.buffer, self.spec, line, self.glyphless);
+        let visual = self.visual(line);
         let line_start = self.buffer.display_line_start_of(line);
         let point_max = self.buffer.point_max();
         let invisible_tail = visual.text.is_empty()
@@ -73,9 +160,7 @@ impl<'a, 'c> Rows<'a, 'c> {
         let segs = if self.truncate {
             1
         } else {
-            wrap_glyphless_visual_line(&visual, self.body_width)
-                .len()
-                .max(1)
+            self.laid(line).rows.len().max(1)
         };
         let info = (segs, visual.lines_spanned.max(1), invisible_tail);
         self.lines.borrow_mut().insert(line, info);
@@ -117,17 +202,30 @@ impl<'a, 'c> Rows<'a, 'c> {
         })
     }
 
+    /// Buffer position where ROW begins under the window's wrap geometry:
+    /// where its first glyph comes from.
+    pub(super) fn row_start(&self, row: Row) -> usize {
+        let start = self.buffer.display_line_start_of(row.line);
+        if row.seg == 0 {
+            return start;
+        }
+        self.row_starts(row.line)
+            .get(row.seg)
+            .copied()
+            .unwrap_or_else(|| {
+                start
+                    + self
+                        .visual(row.line)
+                        .raw_of_display
+                        .last()
+                        .copied()
+                        .unwrap_or(0)
+            })
+    }
+
     /// MATRIX_ROW_START_CHARPOS of ROW.
     pub(super) fn start_pos(&self, row: Row) -> usize {
-        position_of_visual_row(
-            self.buffer,
-            self.spec,
-            self.glyphless,
-            row.line,
-            row.seg,
-            self.body_width.saturating_sub(1).max(1),
-        )
-        .max(self.buffer.point_min())
+        self.row_start(row).max(self.buffer.point_min())
     }
 
     /// The row showing POS.
@@ -139,14 +237,14 @@ impl<'a, 'c> Rows<'a, 'c> {
         if self.truncate {
             return Row { line, seg: 0 };
         }
-        let visual = glyphless_visual_line_at(buffer, self.spec, line, self.glyphless);
+        let visual = self.visual(line);
         let offset = pos.saturating_sub(buffer.display_line_start_of(line));
         let index = visual
             .map
             .get(offset)
             .copied()
             .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
-        let laid = layout::lay_out_visual_line(&visual, self.body_width, false);
+        let laid = self.laid(line);
         let column = laid.columns[index.min(laid.columns.len() - 1)];
         let (seg, _) = wrapped_position_of_column(
             &laid.rows,

@@ -8513,3 +8513,91 @@ fn face_changes_free_realized_faces_as_xfaces_c_does() {
     assert!(expected.is_some(), "GNU's session wrote nothing");
     assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }
+
+#[cfg(unix)]
+#[test]
+fn long_lines_turn_on_the_long_line_optimizations_as_xdisp_c_does() {
+    // redisplay_window finds a line longer than `long-line-threshold' in
+    // the buffer it displays and sets its long_line_optimizations_p for
+    // good; then current_column approximates a column past the threshold
+    // by the distance from the line's start, scan_for_column takes one
+    // column a character for truncated lines past `large-hscroll-threshold'
+    // (here characters two columns wide tell the approximation from the
+    // count), and the command hooks run under the labeled large narrowing
+    // around point.  A whole-window scroll of the truncated long lines is
+    // window_scroll_for_long_lines' (point taken half a window down),
+    // recenter moves by vmotion, and hscroll_window_tree finds point past
+    // `large-hscroll-threshold' by fast_move_it_horizontally, with no
+    // line-number columns and never at the end of a line.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "longlines.el",
+        r#"(defvar ll-log nil)
+(switch-to-buffer (get-buffer-create "long"))
+(insert (make-string 100000 ?あ) "\nshort line\n")
+(dotimes (i 60) (insert (format "line %d\n" i)))
+(goto-char (point-min))
+(setq long-line-optimizations-region-size 20000)
+(push (list 'before (long-line-optimizations-p)) ll-log)
+(add-hook 'post-command-hook
+          (lambda ()
+            (when (memq this-command '(ll-f6 ll-f7))
+              (push (list 'post this-command (point-min) (point-max)
+                          (condition-case err (progn (widen) (list (point-min) (point-max)))
+                            (error err)))
+                    ll-log))))
+(defun ll-f5 () (interactive)
+  (redisplay t)
+  (push (list 'f5 (long-line-optimizations-p) (current-column)) ll-log))
+(defun ll-f6 () (interactive)
+  (goto-char 60001)
+  (push (list 'f6 (current-column)) ll-log))
+(defun ll-f7 () (interactive)
+  (setq truncate-lines t)
+  (goto-char 20001)
+  (push (list 'f7 (current-column) (progn (move-to-column 30000) (point))
+              (progn (goto-char 5001) (current-column)))
+        ll-log))
+(defun ll-f9 () (interactive)
+  (goto-char (point-min))
+  (scroll-up)
+  (push (list 'f9 (window-start) (point)) ll-log)
+  (recenter 3)
+  (push (list 'f9-recenter (window-start) (point)) ll-log))
+(global-set-key [f5] #'ll-f5)
+(global-set-key [f6] #'ll-f6)
+(global-set-key [f7] #'ll-f7)
+(global-set-key [f9] #'ll-f9)
+(defun ll-f10 () (interactive)
+  (set-window-start nil 1)
+  (goto-char 100001))
+(defun ll-f11 () (interactive)
+  (push (list 'f11 (window-hscroll) (point)) ll-log)
+  (display-line-numbers-mode 1)
+  (goto-char 50001))
+(defun ll-f12 () (interactive)
+  (push (list 'f12 (window-hscroll) (point)) ll-log))
+(global-set-key [f10] #'ll-f10)
+(global-set-key [f11] #'ll-f11)
+(global-set-key [f12] #'ll-f12)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "longlines.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse ll-log))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (15.0, b"\x1b[15~"),
+        (3.0, b"\x1b[17~"),
+        (3.0, b"\x1b[18~"),
+        (3.0, b"\x1b[20~"),
+        (3.0, b"\x1b[21~"),
+        (3.0, b"\x1b[23~"),
+        (3.0, b"\x1b[24~"),
+        (3.0, b"\x1b[19~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "longlines.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "longlines.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}

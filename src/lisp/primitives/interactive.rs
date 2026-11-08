@@ -3243,7 +3243,7 @@ pub(crate) fn run_post_command_hooks(
         return Ok(());
     }
     if !interp.hooks_cleared {
-        crate::lisp::primitives::safe_run_hooks(
+        crate::lisp::primitives::safe_run_hooks_maybe_narrowed(
             interp,
             &cached_symbol!("post-command-hook").symbol(),
             env,

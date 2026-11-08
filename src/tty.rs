@@ -26,6 +26,7 @@ use crate::lisp::primitives::{
 use crate::lisp::types::{Env, Kind, LispError, LispErrorKind, Value};
 
 mod layout;
+mod long_lines;
 mod redisplay_flags;
 mod redisplay_window;
 mod sysdep;
@@ -1682,22 +1683,42 @@ fn window_render_geometry(
             };
         };
         let point_pos = info.point.clamp(buffer.point_min(), buffer.point_max());
-        // hscroll_window_tree measures the cursor's row with the display
-        // iterator: the visual line's laid-out columns, prefix included.
-        let spec = resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
-        let context = CharacterDisplayContext::new(interpreter, info.buffer_id, info.window_id)
-            .with_line_numbers(lnum_cols);
-        let point_line =
-            visual_line_first_line(&buffer, &spec, buffer.line_number_at_pos(point_pos));
-        let visual = glyphless_visual_line_at(&buffer, &spec, point_line, Some(&context));
-        let laid = layout::lay_out_visual_line(&visual, body_width, true);
-        let point_index = visual
-            .map
-            .get(point_pos - buffer.display_line_start_of(point_line))
-            .copied()
-            .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
-        let point_dcol = laid.columns[point_index.min(laid.columns.len() - 1)] as i64;
-        let line_w = laid.columns.last().copied().unwrap_or(0);
+        // In a buffer with very long lines, point more than
+        // `large-hscroll-threshold' characters into its row is found by
+        // fast_move_it_horizontally, each character taken as one column;
+        // the row's end is as far as its newline.
+        let row_start = buffer.line_start_at(point_pos);
+        let nchars = point_pos.saturating_sub(row_start);
+        let threshold = interpreter
+            .lookup_var_key(cached_symbol!("large-hscroll-threshold"), env)
+            .and_then(|value| value.integer_value())
+            .unwrap_or(0);
+        let fast_move = buffer.long_line_optimizations_p() && nchars as i64 > threshold;
+        let (point_dcol, line_w) = if fast_move {
+            let zv = buffer.point_max();
+            let row_end = buffer.find_before_next_newline(point_pos, zv);
+            (nchars as i64, row_end.saturating_sub(row_start))
+        } else {
+            // hscroll_window_tree measures the cursor's row with the
+            // display iterator: the visual line's laid-out columns,
+            // prefix included.
+            let spec = resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
+            let context = CharacterDisplayContext::new(interpreter, info.buffer_id, info.window_id)
+                .with_line_numbers(lnum_cols);
+            let point_line =
+                visual_line_first_line(&buffer, &spec, buffer.line_number_at_pos(point_pos));
+            let visual = glyphless_visual_line_at(&buffer, &spec, point_line, Some(&context));
+            let laid = layout::lay_out_visual_line(&visual, body_width, true);
+            let point_index = visual
+                .map
+                .get(point_pos - buffer.display_line_start_of(point_line))
+                .copied()
+                .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
+            (
+                laid.columns[point_index.min(laid.columns.len() - 1)] as i64,
+                laid.columns.last().copied().unwrap_or(0),
+            )
+        };
         let w = body_width as i64;
         let margin = interpreter
             .lookup_var_key(cached_symbol!("hscroll-margin"), env)
@@ -1728,10 +1749,13 @@ fn window_render_geometry(
         if trigger {
             // ITERATOR_AT_END_OF_LINE_P: the iterator sits on a newline
             // (at ZV it does not, so the cursor centers).
-            let at_eol = buffer.char_at(point_pos) == Some('\n');
+            // fast_move_it_horizontally loads no display element, so the
+            // iterator is never at the end of a line.
+            let at_eol = !fast_move && buffer.char_at(point_pos) == Some('\n');
             // hscroll_window_tree's iterator runs with the line-number
-            // glyphs produced, so its current_x carries their columns.
-            let current_x = point_dcol + lnum_cols as i64;
+            // glyphs produced, so its current_x carries their columns;
+            // fast_move_it_horizontally produces none.
+            let current_x = point_dcol + if fast_move { 0 } else { lnum_cols as i64 };
             let step = interpreter.lookup_var_key(cached_symbol!("hscroll-step"), env);
             let new_hscroll = match step.map(|v| v.kind()) {
                 Some(Kind::Float(relative)) if relative.get() >= 0.0 => {
@@ -3744,7 +3768,6 @@ fn plan_window_text(
     // the text lays out in the remaining columns.
     let lnum_cols = geometry.lnum.map_or(0, |layout| layout.cols);
     let body_width = body_width.saturating_sub(lnum_cols).max(1);
-    let usable = body_width.saturating_sub(1).max(1);
     let rows = redisplay_window::Rows::new(buffer, spec, glyphless, body_width, truncate);
     let (decision, consumed) = redisplay_window::decide(&rows, state, text_rows);
     let chosen = match decision {
@@ -3768,14 +3791,18 @@ fn plan_window_text(
         .clamp(buffer.point_min(), buffer.point_max());
 
     let point_line = visual_line_first_line(buffer, spec, buffer.line_number_at_pos(point));
-    let point_visual = glyphless_visual_line_at(buffer, spec, point_line, glyphless);
+    let point_visual = rows.visual(point_line);
     let point_offset = point.saturating_sub(buffer.display_line_start_of(point_line));
     let point_index = point_visual
         .map
         .get(point_offset)
         .copied()
         .unwrap_or_else(|| point_visual.map.last().copied().unwrap_or(0));
-    let point_layout = layout::lay_out_visual_line(&point_visual, body_width, truncate);
+    let point_layout = if truncate {
+        std::rc::Rc::new(layout::lay_out_visual_line(&point_visual, body_width, true))
+    } else {
+        rows.laid(point_line)
+    };
     let point_dcol = point_layout.columns[point_index.min(point_layout.columns.len() - 1)];
     let cursor_col = if truncate {
         // Without a line-number gutter, the left `$' occupies one screen
@@ -3831,7 +3858,7 @@ fn plan_window_text(
     let mut fill_line = view.top_line;
     let mut first_fill = true;
     'fill: while rendered.len() < text_rows && fill_line <= last_line {
-        let visual = glyphless_visual_line_at(buffer, spec, fill_line, glyphless);
+        let visual = rows.visual(fill_line);
         let line_start = buffer.display_line_start_of(fill_line);
         if visual.text.is_empty()
             && line_start < buffer.point_max()
@@ -3854,16 +3881,17 @@ fn plan_window_text(
         } else {
             geometry.min_hscroll
         };
-        let segments = if truncate {
+        let segments: Vec<String> = if truncate {
             vec![if lnum_cols > 0 {
                 truncate_row_from(&visual, body_width, row_hscroll)
             } else {
                 truncate_row_hscrolled(&visual, body_width, row_hscroll)
             }]
         } else {
-            wrap_glyphless_visual_line(&visual, body_width)
-                .into_iter()
-                .map(|segment| segment.text)
+            rows.laid(fill_line)
+                .rows
+                .iter()
+                .map(|segment| segment.text.clone())
                 .collect()
         };
         let from = if first_fill {
@@ -3874,8 +3902,10 @@ fn plan_window_text(
         first_fill = false;
         let next_line = fill_line + visual.lines_spanned;
         for (seg_index, segment) in segments.iter().enumerate().skip(from) {
-            let row_start =
-                position_of_visual_row(buffer, spec, glyphless, fill_line, seg_index, usable);
+            let row_start = rows.row_start(redisplay_window::Row {
+                line: fill_line,
+                seg: seg_index,
+            });
             rendered.push((
                 segment.clone(),
                 fill_line,
@@ -3902,7 +3932,7 @@ fn plan_window_text(
         // everything: window-end is ZV (a buffer without a trailing
         // newline has no line beyond its last).
         Some((line, _)) if line > last_line => buffer.point_max(),
-        Some((line, seg)) => position_of_visual_row(buffer, spec, glyphless, line, seg, usable),
+        Some((line, seg)) => rows.row_start(redisplay_window::Row { line, seg }),
         None => invisible_tail_start.unwrap_or_else(|| buffer.point_max()),
     };
     PlanOutcome::Planned {
@@ -4143,7 +4173,7 @@ fn fontify_window_ranges(
         // included); past that the window cannot reach this frame.
         let start = info.start.min(z);
         let end = info.start.saturating_add(info.width * info.height).min(z);
-        fontify_buffer_range(interpreter, env, start, end);
+        fontify_buffer_range(interpreter, env, start, end, info.point);
     }
     if interpreter.current_buffer_id() != saved_buffer {
         let _ = interpreter.set_current_buffer_id(saved_buffer);
@@ -4155,8 +4185,16 @@ fn fontify_window_ranges(
 /// `fontification-functions' runs for it.  The estimate pass above uses
 /// the window's cell count; the per-window pass after planning uses the
 /// planned window end, which invisible text (org's folds) can push far
-/// beyond the cell-count estimate.
-fn fontify_buffer_range(interpreter: &mut Interpreter, env: &mut Env, start: usize, end: usize) {
+/// beyond the cell-count estimate.  WINDOW_POINT is the point of the
+/// window being displayed, around which a buffer with long lines is
+/// narrowed for the functions (the iterator's large narrowing).
+fn fontify_buffer_range(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    start: usize,
+    end: usize,
+    window_point: usize,
+) {
     {
         let mut pos = start;
         let mut rounds = 0usize;
@@ -4182,13 +4220,38 @@ fn fontify_buffer_range(interpreter: &mut Interpreter, env: &mut Env, start: usi
             let functions = interpreter
                 .lookup_var_key(cached_symbol!("fontification-functions"), env)
                 .unwrap_or(Value::Nil);
+            let buffer_id = interpreter.current_buffer_id();
+            let (begv, zv, old_clip_changed) = {
+                let buffer = interpreter.buffer.borrow();
+                (
+                    buffer.point_min(),
+                    buffer.point_max(),
+                    buffer.clip_changed(),
+                )
+            };
             let Ok(restore) =
                 interpreter.bind_special_dynamic("fontification-functions", Value::Nil, env)
             else {
                 break;
             };
+            let count = interpreter.specpdl_index();
+            narrow_for_fontification(interpreter, env, pos, window_point);
             run_fontification_functions(interpreter, env, &functions, pos);
+            let _ = interpreter.unbind_to(count, env);
             let _ = interpreter.restore_special_dynamic(restore, env);
+            // Fontification functions routinely call `save-restriction',
+            // which tags clip_changed: when the buffer's restriction is
+            // left as it was, the flag is put back.  Misbehaving
+            // fontification that left another buffer current has the
+            // original made current again.
+            if interpreter.current_buffer_id() == buffer_id {
+                let mut buffer = interpreter.buffer.borrow_mut();
+                if buffer.point_min() == begv && buffer.point_max() == zv {
+                    buffer.set_clip_changed(old_clip_changed);
+                }
+            } else if interpreter.has_buffer_id(buffer_id) {
+                let _ = interpreter.set_current_buffer_id(buffer_id);
+            }
             let fontified = crate::lisp::primitives::buffer_char_property_at(
                 interpreter,
                 &interpreter.buffer.borrow(),
@@ -4203,6 +4266,37 @@ fn fontify_buffer_range(interpreter: &mut Interpreter, env: &mut Env, start: usi
                 break;
             }
         }
+    }
+}
+
+/// handle_fontified_prop in a buffer with long lines (and a positive
+/// `long-line-optimizations-region-size'): the functions run under the
+/// large narrowing around the window's point, or around POS when POS is
+/// outside it, labeled `long-line-optimizations-in-fontification-functions',
+/// when that narrowing restricts the buffer.
+fn narrow_for_fontification(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    pos: usize,
+    window_point: usize,
+) {
+    use crate::lisp::primitives::long_lines;
+    if !interpreter.buffer.borrow().long_line_optimizations_p()
+        || long_lines::region_size(interpreter) <= 0
+    {
+        return;
+    }
+    let mut begv = long_lines::large_narrowing_begv(interpreter, window_point);
+    let mut zv = long_lines::large_narrowing_zv(interpreter, window_point);
+    if pos < begv || pos > zv {
+        begv = long_lines::large_narrowing_begv(interpreter, pos);
+        zv = long_lines::large_narrowing_zv(interpreter, pos);
+    }
+    let z = interpreter.buffer.borrow().size_total() + 1;
+    if begv != 1 || zv != z {
+        let label = cached_symbol!("long-line-optimizations-in-fontification-functions")
+            .with(|symbol| Value::Symbol(*symbol));
+        let _ = long_lines::labeled_narrow_to_region(interpreter, begv, zv, label, env);
     }
 }
 
@@ -4676,6 +4770,13 @@ fn redraw_with_echo_policy(
         })
         .map(|info| info.window_id)
         .collect();
+    // redisplay_window finds whether a window's buffer holds long lines
+    // before its iterator does anything: before fontification runs.
+    for info in layout.iter() {
+        if redisplayed.contains(&info.window_id) {
+            long_lines::note_long_lines(interpreter, info.buffer_id);
+        }
+    }
     // Fontify what the windows redisplayed will show before any text is
     // snapshotted: GNU's iterator handles the `fontified' property before
     // producing glyphs (xdisp.c handle_fontified_prop).
@@ -5035,7 +5136,7 @@ fn redraw_with_echo_policy(
                     .is_some_and(|value| !value.is_nil())
                 {
                     for (start, end) in visible_ranges {
-                        fontify_buffer_range(interpreter, env, start, end);
+                        fontify_buffer_range(interpreter, env, start, end, info.point);
                     }
                 }
                 if interpreter.current_buffer_id() != saved {
@@ -5403,6 +5504,9 @@ fn redraw_with_echo_policy(
         let job_invisibility = resolve_buffer_invisibility(interpreter, &buffer, job.buffer_id);
         let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window_id)
             .with_line_numbers(job.lnum_cols);
+        // The rows of one continued line share its layout: it is made once
+        // for them, not once a row.
+        let mut line_layout: Option<(usize, VisualLine, layout::LineLayout)> = None;
         for (index, (line, seg, row_start, row_hscroll)) in job.rows.iter().enumerate() {
             if *row_start == usize::MAX {
                 continue;
@@ -5413,9 +5517,18 @@ fn redraw_with_echo_policy(
                 .map(|(_, _, next, _)| *next)
                 .filter(|next| *next != usize::MAX)
                 .unwrap_or(job.window_end);
-            let visual =
-                glyphless_visual_line_at(&buffer, &job_invisibility, *line, Some(&glyphless));
-            let laid = layout::lay_out_visual_line(&visual, job.body_width, job.truncate);
+            if line_layout
+                .as_ref()
+                .is_none_or(|(cached, _, _)| cached != line)
+            {
+                let visual =
+                    glyphless_visual_line_at(&buffer, &job_invisibility, *line, Some(&glyphless));
+                let laid = layout::lay_out_visual_line(&visual, job.body_width, job.truncate);
+                line_layout = Some((*line, visual, laid));
+            }
+            let Some((_, visual, laid)) = line_layout.as_ref() else {
+                continue;
+            };
             let column_of = |index: usize| laid.columns[index.min(laid.columns.len() - 1)];
             let line_width = laid.columns.last().copied().unwrap_or(0);
             let wrapped = (!job.truncate).then_some(&laid.rows);
@@ -5427,7 +5540,7 @@ fn redraw_with_echo_policy(
                     .min(segment.start_column + cell_count(&segment.text))
             });
             let hscroll_layout =
-                HscrollLayout::new(&visual, &laid.columns, *row_hscroll, job.lnum_cols == 0);
+                HscrollLayout::new(visual, &laid.columns, *row_hscroll, job.lnum_cols == 0);
             let line_begin = buffer.display_line_start_of(*line);
             // The right-truncation `$' glyph keeps the default face
             // (produce_special_glyphs); spans stop one cell short of it.
@@ -6480,6 +6593,9 @@ fn compose_echo_row(
             })
     };
     if let Some(buffer_id) = minibuffer_id {
+        // redisplay_window of the mini window showing the minibuffer:
+        // whether the minibuffer holds long lines.
+        long_lines::note_long_lines(interpreter, buffer_id);
         // The minibuffer's row renders like any window line in GNU:
         // buffer text under its face spans (text properties, overlays —
         // rfn-eshadow's shadow), with overlay before/after-strings
@@ -7279,34 +7395,6 @@ fn truncate_row_hscrolled(visual: &VisualLine, width: usize, hscroll: usize) -> 
     let mut row = String::from("$");
     row.push_str(&clip_truncated(&remaining, available));
     row
-}
-
-/// Buffer position (1-based) where the visual row (LINE, SEG) begins
-/// under the current wrap geometry.
-fn position_of_visual_row(
-    buffer: &crate::buffer::Buffer,
-    spec: &InvisibilitySpec,
-    glyphless: Option<&CharacterDisplayContext<'_>>,
-    line: usize,
-    seg: usize,
-    usable: usize,
-) -> usize {
-    let start = buffer.display_line_start_of(line);
-    if seg == 0 {
-        return start;
-    }
-    let visual = glyphless_visual_line_at(buffer, spec, line, glyphless);
-    let index = wrap_glyphless_visual_line(&visual, usable + 1)
-        .get(seg)
-        .map_or(visual.raw_of_display.len().saturating_sub(1), |segment| {
-            segment.start_index
-        });
-    start
-        + visual
-            .raw_of_display
-            .get(index)
-            .copied()
-            .unwrap_or_else(|| visual.raw_of_display.last().copied().unwrap_or(0))
 }
 
 /// One glyph row of a display line (layout.rs): its cells as drawn --
@@ -9035,26 +9123,15 @@ mod tests {
             .borrow_mut()
             .insert(&format!("top\n{}\nbottom\n", "wide".repeat(50)));
         let buffer = interpreter.buffer.borrow();
-        assert_eq!(
-            position_of_visual_row(&buffer, &InvisibilitySpec::default(), None, 1, 0, 79),
-            1
-        );
-        assert_eq!(
-            position_of_visual_row(&buffer, &InvisibilitySpec::default(), None, 2, 0, 79),
-            5
-        );
-        assert_eq!(
-            position_of_visual_row(&buffer, &InvisibilitySpec::default(), None, 2, 1, 79),
-            84
-        );
-        assert_eq!(
-            position_of_visual_row(&buffer, &InvisibilitySpec::default(), None, 2, 2, 79),
-            163
-        );
-        assert_eq!(
-            position_of_visual_row(&buffer, &InvisibilitySpec::default(), None, 3, 0, 79),
-            206
-        );
+        let spec = InvisibilitySpec::default();
+        // A window 80 columns wide: 79 characters and the `\' per row.
+        let rows = redisplay_window::Rows::new(&buffer, &spec, None, 80, false);
+        let row_start = |line, seg| rows.row_start(redisplay_window::Row { line, seg });
+        assert_eq!(row_start(1, 0), 1);
+        assert_eq!(row_start(2, 0), 5);
+        assert_eq!(row_start(2, 1), 84);
+        assert_eq!(row_start(2, 2), 163);
+        assert_eq!(row_start(3, 0), 206);
     }
 
     #[test]

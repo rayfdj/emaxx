@@ -7052,9 +7052,11 @@ define_dispatch!(
             }
             "long-line-optimizations-p" => {
                 need_args(name, args, 0)?;
-                // GNU only raises this redisplay-owned flag while maintaining a
-                // glyph matrix.  The cache-free headless renderer never does.
-                Ok(Value::Nil)
+                // xdisp.c: current_buffer->long_line_optimizations_p, which
+                // redisplay_window sets.
+                Ok(Value::from_bool(
+                    interp.buffer.borrow().long_line_optimizations_p(),
+                ))
             }
             // xsettings.c:Ftool_bar_get_system_style: a known `tool-bar-style',
             // else the system's (none without a display), else `image'.

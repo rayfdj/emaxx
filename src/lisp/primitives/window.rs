@@ -769,7 +769,11 @@ pub(crate) fn recenter_selected_window(
     let ht = text_height.max(1) as i64;
     let margin = selected_scroll_margin(interp, env, text_height) as i64;
     let point = interp.buffer.borrow().point();
-    let start = if interactive && !center && iarg >= 0 {
+    // The display code is not used for initial frames, whose data
+    // structures may not be set up yet, nor for a buffer with very long
+    // lines, which it slows down tremendously.
+    let display_code = interactive && !interp.buffer.borrow().long_line_optimizations_p();
+    let start = if display_code && !center && iarg >= 0 {
         // The display code: the start of point's screen line, then
         // move_it_by_lines ARG lines back, which reseats at a line start.
         let nlines = clip_to_bounds(margin, iarg, ht - margin - 1).max(0);
@@ -779,7 +783,7 @@ pub(crate) fn recenter_selected_window(
         } else {
             row
         }
-    } else if interactive {
+    } else if display_code {
         // move_it_vertically_backward: whole screen lines above point's
         // row, no reseat.
         let lines_back = if center {
@@ -796,7 +800,7 @@ pub(crate) fn recenter_selected_window(
         };
         move_screen_lines(interp, env, point, -(lines_back as isize)).0
     } else {
-        // An initial frame: vmotion with the margins applied to every arg.
+        // vmotion, the margins applied to every arg.
         let mut line = if center {
             ht / 2
         } else if iarg < 0 {
@@ -805,7 +809,11 @@ pub(crate) fn recenter_selected_window(
             iarg
         };
         line = clip_to_bounds(margin, line, ht - margin - 1);
-        move_screen_lines(interp, env, point, -(line as isize)).0
+        let win = super::indent_motion::MotionWindow {
+            id: window_id,
+            contents: interp.current_buffer_id(),
+        };
+        super::indent_motion::vmotion(interp, env, point, -line, win).bufpos
     };
     interp.set_selected_window_start(start);
     set_window_flag(interp, window_id, WINDOW_OPTIONAL_NEW_START_SLOT, true);
@@ -921,12 +929,13 @@ fn motion_from_start(
     Ok((rows, hpos.max(0)))
 }
 
-/// window.c window_scroll_line_based on the selected window, whose
-/// buffer is current: scroll N lines (N screenfuls less
-/// `next-screen-context-lines' when WHOLE), then keep point out of the
-/// scroll margins or, under `scroll-preserve-screen-position', on the
-/// screen line it occupied.  TEXT_HEIGHT is window_internal_height and
-/// TOTAL_LINES the window's total height.
+/// window.c window_scroll on the selected window, whose buffer is
+/// current: a whole-window scroll of a buffer with very long lines that
+/// this window truncates is window_scroll_for_long_lines', any other
+/// window_scroll_line_based's, `fontification-functions' bound to nil
+/// for a whole-window scroll that `fast-but-imprecise-scrolling' or
+/// those truncated lines ask to be fast.  TEXT_HEIGHT is
+/// window_internal_height and TOTAL_LINES the window's total height.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn window_scroll(
     interp: &mut Interpreter,
@@ -938,9 +947,170 @@ pub(crate) fn window_scroll(
     total_lines: i64,
     hscroll: i64,
 ) -> Result<(), LispError> {
-    use super::dispatch::visual_vertical_motion;
     let window_id = interp.selected_window_id();
+    let long_lines = interp.buffer.borrow().long_line_optimizations_p();
+    let mut long_lines_truncated = long_lines
+        && interp
+            .lookup_var_key(cached_symbol!("truncate-lines"), env)
+            .is_some_and(|value| !value.is_nil());
+    let count = interp.specpdl_index();
+    let n = n.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
     interp.wset_redisplay(window_id);
+    // Does this window's buffer have very long and truncated lines?
+    let total_cols = window_char_geometry(interp, window_id).0;
+    if long_lines && !long_lines_truncated && total_cols < interp.frame_width() {
+        let partial = interp
+            .lookup_var_key(cached_symbol!("truncate-partial-width-windows"), env)
+            .unwrap_or(Value::Nil);
+        if !partial.is_nil() {
+            // XFIXNAT of a fixnum, a negative one included.
+            long_lines_truncated = match partial.kind() {
+                Kind::Integer(columns) => total_cols < columns,
+                _ => true,
+            };
+        }
+    }
+    let fast = interp
+        .lookup_var_key(cached_symbol!("fast-but-imprecise-scrolling"), env)
+        .is_some_and(|value| !value.is_nil());
+    if whole && (fast || long_lines_truncated) {
+        interp.specbind_symbol(
+            &cached_symbol!("fontification-functions").with(|symbol| *symbol),
+            Value::Nil,
+            env,
+        )?;
+    }
+    let result = if whole && long_lines_truncated {
+        window_scroll_for_long_lines(interp, env, window_id, n, noerror, text_height)
+    } else {
+        window_scroll_line_based(
+            interp,
+            env,
+            window_id,
+            n,
+            whole,
+            noerror,
+            ScrollGeometry {
+                text_height,
+                total_lines,
+                hscroll,
+            },
+        )
+    };
+    let unbind = interp.unbind_to(count, env);
+    result.and(unbind)
+}
+
+/// window.c window_scroll_for_long_lines: a whole-window scroll of
+/// truncated very long lines, by vmotion alone, which honors neither
+/// `scroll-preserve-screen-position' nor `scroll-margin'.
+fn window_scroll_for_long_lines(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    n: i64,
+    noerror: bool,
+    text_height: usize,
+) -> Result<(), LispError> {
+    use super::indent_motion::{MotionWindow, vmotion};
+    let win = MotionWindow {
+        id: window_id,
+        contents: interp.current_buffer_id(),
+    };
+    let mut startpos = interp.selected_window_start();
+    let nscls = interp
+        .lookup_var_key(cached_symbol!("next-screen-context-lines"), env)
+        .and_then(|value| value.integer_value())
+        .unwrap_or(2)
+        .clamp(0, 1_000_000);
+    let ht = text_height as i64;
+    let n = n.saturating_mul((ht - nscls).max(1));
+    // If point is not visible in the window, bring it inside the window.
+    let (point, zv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point(), buffer.point_max())
+    };
+    let visible = point >= startpos
+        && point <= zv
+        && startpos <= zv
+        && super::dispatch::call(
+            interp,
+            "pos-visible-in-window-p",
+            &[Value::Integer(point as i64), interp.record_value(window_id)],
+            env,
+        )?
+        .is_truthy();
+    if !visible {
+        startpos = vmotion(interp, env, point, -(ht / 2), win).bufpos;
+    }
+    interp.buffer.borrow_mut().goto_char(startpos);
+    let lose = n < 0 && interp.buffer.borrow().point() == interp.buffer.borrow().point_min();
+    let pos = vmotion(interp, env, startpos, n, win).bufpos;
+    if lose {
+        return if noerror {
+            Ok(())
+        } else {
+            Err(signal_condition("beginning-of-buffer"))
+        };
+    }
+    let (bolp, zv) = {
+        let buffer = interp.buffer.borrow();
+        (
+            pos == buffer.point_min() || buffer.char_at(pos - 1) == Some('\n'),
+            buffer.point_max(),
+        )
+    };
+    if pos < zv {
+        set_window_start_marker(interp, window_id, pos);
+        set_window_flag(interp, window_id, WINDOW_START_AT_LINE_BEG_SLOT, bolp);
+        interp.wset_update_mode_line(window_id);
+        // force_start so that redisplay_window runs the
+        // window-scroll-functions.
+        set_window_flag(interp, window_id, WINDOW_FORCE_START_SLOT, true);
+        interp.buffer.borrow_mut().goto_char(pos);
+        let pos = if n > 0 {
+            vmotion(interp, env, pos, ht / 2, win).bufpos
+        } else if n < 0 {
+            vmotion(interp, env, pos, -(ht / 2), win).bufpos
+        } else {
+            pos
+        };
+        interp.buffer.borrow_mut().goto_char(pos);
+        Ok(())
+    } else if noerror {
+        Ok(())
+    } else {
+        Err(signal_condition("end-of-buffer"))
+    }
+}
+
+/// What window_scroll_line_based reads of the window's geometry: its
+/// window_internal_height, its total height and its hscroll.
+struct ScrollGeometry {
+    text_height: usize,
+    total_lines: i64,
+    hscroll: i64,
+}
+
+/// window.c window_scroll_line_based on the selected window: scroll N
+/// lines (N screenfuls less `next-screen-context-lines' when WHOLE),
+/// then keep point out of the scroll margins or, under
+/// `scroll-preserve-screen-position', on the screen line it occupied.
+fn window_scroll_line_based(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    n: i64,
+    whole: bool,
+    noerror: bool,
+    geometry: ScrollGeometry,
+) -> Result<(), LispError> {
+    use super::dispatch::visual_vertical_motion;
+    let ScrollGeometry {
+        text_height,
+        total_lines,
+        hscroll,
+    } = geometry;
     let window = interp.record_value(window_id);
     let opoint = interp.buffer.borrow().point();
     let ht = text_height.max(1) as i64;

@@ -17767,6 +17767,78 @@ setup_process_coding_systems's check now refuses). A 13-form
   optimization and fontification past a window's end) and the count of
   redisplays that find nothing to do, which differs between GNU's own
   runs as much.
+- **Round 350: long lines, as xdisp.c's "How Emacs deals with long
+  lines" has them.** redisplay_window finds a line longer than
+  `long-line-threshold' (its value in the buffer) in the buffer a window
+  shows, when the buffer's text changed enough since its counts were
+  taken or its restriction changed, and sets the buffer's
+  long_line_optimizations_p for good, before the window's fontification
+  runs; reset_buffer clears it and `long-line-optimizations-p' answers
+  it.  With it on: the command hooks run under
+  safe_run_hooks_maybe_narrowed's labeled narrowing around point
+  (`long-line-optimizations-region-size',
+  `long-line-optimizations-bol-search-limit'), the restriction and point
+  put back when they return; `fontification-functions' run under
+  handle_fontified_prop's labeled large narrowing around the window's
+  point, or around the position fontified when that lies outside it,
+  clip_changed kept as it was; current_column approximates a column past
+  `long-line-threshold' by the distance from the line's start, and
+  scan_for_column takes one column a character in truncated lines
+  (`truncate-lines', or a window narrower than its frame under
+  `truncate-partial-width-windows', a negative fixnum among them as
+  XFIXNAT reads it) for a column past `large-hscroll-threshold';
+  hscroll_window_tree finds point more than `large-hscroll-threshold'
+  characters into its row by fast_move_it_horizontally, one column a
+  character, with no line-number columns and never at a line's end;
+  window_scroll binds `fontification-functions' to nil for a
+  whole-window scroll under `fast-but-imprecise-scrolling' or of
+  truncated long lines, which window_scroll_for_long_lines scrolls by
+  vmotion with point half a window from the new start; recenter moves by
+  vmotion, which ignores `display' properties; and
+  find_automatic_composition starts its backward search no earlier than
+  get_small_narrowing_begv around the window's point
+  (get_nearby_bol_pos, get_narrowed_width), where it copied the whole
+  buffer before the position.  The frontend lays a line out once a
+  redisplay: a window's plan keeps each display line's text, layout and
+  row starts for every question it asks, and the face pass lays a
+  continued line out once for its rows, where both made the line's
+  layout again for each row (about fifty times a redisplay on a line of
+  100,000 characters): redisplay of such a line takes 12.8 ms where
+  round 349's took 276 ms (GNU's 1.2 ms), and moving point on it 11.1 ms
+  where round 349's took 297 ms.  A probe found scan_for_column's test
+  of a partial-width window calling `frame-width' through the primitive
+  dispatcher, which knows only primitives; it reads w->total_cols and
+  FRAME_COLS as the C does.  A review (one, adversarial, 30 probes on
+  GNU 30.2 and Emaxx in a pseudo-terminal) found 3 P2 and 3 P3
+  differences, all fixed: hscroll_window_tree's fast path took the
+  end-of-line margin at a long line's end, where
+  fast_move_it_horizontally loads no display element so GNU centers, and
+  counted the line-number columns, which that path produces none of; the
+  fontification before a window's display ran before the long-line
+  detection, so the first redisplay after a long line appeared fontified
+  it unnarrowed; window_scroll_for_long_lines and recenter's long-line
+  path walked the display's rows, where vmotion (compute_motion) ignores
+  `display' properties; a negative `truncate-partial-width-windows'
+  counted as truncating; and scan_for_column's fast path computed
+  prev_col as an unsigned col - 1, which a negative
+  `large-hscroll-threshold' makes overflow in a build that checks it.
+  Its other suspicions (the command hooks' narrowing with user
+  restrictions, errors and quits, the columns, scrolling with margins
+  and context lines, detection with let-bound and buffer-local
+  thresholds, indirect and swapped buffers, the composition search's
+  head, the frontend's caches over three windows on one buffer at
+  different widths with line numbers, invisible text, display strings,
+  overlays and word-wrap) match GNU or round 349's display byte for
+  byte.  The grouped gate passed its 3,508 library tests; the
+  integration suites passed (prefix help's tty comparison, whose GNU run
+  fell behind its input while the suite ran in parallel, passed alone
+  three times); cli_parity's long-line comparison gained a whole-window
+  scroll and a recenter of truncated long lines and hscrolls past
+  `large-hscroll-threshold' at a line's end and with line numbers;
+  clippy is clean; and the review's probes, run again on the release
+  build, match GNU's but for where the first redisplay after a long line
+  appears fontifies after its first calls, which the iterator's pseudo
+  line starts decide.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -20746,7 +20818,62 @@ ert-tests as a whole 26,307 ms against 27,211.
   26.0), process-tests (2.34 against 1.80) and package-tests (6.00
   against 5.46). The Rust gate (run 42472600654) passed.
 
+**On `51598c2`** (round 349): the frozen run (run 42486528989) matched
+  all 7,928 outcomes, esh-proc-test/kill-pipeline among them, which
+  round 348's had failed. Setup 63.6 s against 55.5 s (1.146), test
+  bodies 245.1 s against 229.9 s (1.066), in all 1.082, on a runner
+  slower than round 348's for both (setup median 97 ms against 87; at
+  round 348 87 against 77). The widest body gaps are tramp-tests (17.2 s
+  against 15.5), comp-tests (12.5 against 11.4), semantic-utest-ia (2.87
+  against 2.03), eglot-tests (29.5 against 28.7), mule-tests (1.98
+  against 1.26), process-tests (2.38 against 1.76), ert-tests (27.7
+  against 27.1) and package-tests (6.18 against 5.72). The Rust gate
+  (run 42486526425) passed.
+
 **Findings recorded, not fixed:**
+- **Long lines' display shortcuts (round 350).**  In a buffer with
+  long_line_optimizations_p GNU's display iterator skips straight to the
+  first visible character of a row hscrolled past
+  `large-hscroll-threshold' (display_line's chars_to_skip, one column a
+  character); back_to_previous_line_start, reseat and
+  get_visually_first_element look for a line start no further back than
+  the small and medium narrowings, so rows begin at those pseudo line
+  starts (where every character is one column wide they are row starts
+  anyway); and redisplay_window recenters truncated long lines by
+  stepping back over line starts, which puts point's line one row
+  higher than move_it_vertically_backward and can start the window at
+  the small narrowing's start.  Emaxx lays each line out from its real
+  start, and redisplays a line of 100,000 characters in about 13 ms
+  against GNU's 1.2 ms (moving point on it 11 ms, where GNU's
+  try_cursor_movement does almost nothing), for it lays the whole line
+  out once a redisplay.
+- **A window displayed from a start inside a line (round 350).**  GNU's
+  start_display shows a window from its start wherever that falls: a
+  continued line's first row begins at the start with x 0, its next rows
+  wrapping from there, and a truncated line's row begins at the start,
+  hscrolled from there.  Emaxx's rows begin at the row boundaries of the
+  line's own layout: after set-window-start inside a continued line,
+  posn-at-point of a position on the first row gives x 70 where GNU's
+  gives 49, and in a truncated line the hscroll that shows point is 109
+  where GNU's is 9.
+- **Point while another window is displayed (round 350).**
+  redisplay_window displays a window other than the selected one with
+  its buffer's point set to the window's point (SET_PT from w->pointm,
+  put back after), so `fontification-functions' and the other Lisp
+  redisplay runs for that window see the window's point; Emaxx's
+  frontend leaves the buffer's point.
+- **Fontification for pos_visible_p (round 350).**  pos_visible_p lays
+  text out with the display iterator, whose handle_fontified_prop runs
+  `fontification-functions' for what it passes (from
+  `pos-visible-in-window-p' and the scroll commands that call it);
+  Emaxx's answer runs none.
+- **Point inside an automatic composition after a command (round
+  350).**  adjust_point_for_property's composition_adjust_point moves
+  point out of an automatic composition by the glyphs of its glyph
+  string; for a Devanagari cluster on a terminal (क्षि), GNU moves
+  point left inside it to the cluster's start, where Emaxx's glyph
+  string, whose glyphs cover the cluster's characters differently,
+  leaves it.
 - **The glyph matrices' state redisplay decides from (round 349).**
   GNU's redisplay_internal and redisplay_window decide much from the
   windows' glyph matrices: w->window_end_valid (a complete display of
@@ -20801,11 +20928,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   session GNU spawns eight compilations at startup (cl-lib, time-date,
   rx, ring, ansi-color, ansi-osc, subr-x, comint) and redisplays 21
   times in its first ten seconds where Emaxx redisplays three.
-- **Redisplay of a long line (round 348).** A buffer whose one line
-  holds 100,000 multibyte characters takes Emaxx's tty redisplay about
-  1.3 s, where GNU's takes a few milliseconds, which delays what waits
-  on it (an idle auto-save came 8.2 s after the last key against GNU's
-  3.0 s).
 - **callint's `e' code after a key read in the middle of a command
   (round 347).** GNU's this_command_keys is one vector that a key
   sequence read while a command reads its arguments (a `k' argument, the
@@ -20908,8 +21030,7 @@ ert-tests as a whole 26,307 ms against 27,211.
   `tab-bar-mode' draws nothing on a tty. An unbound down-mouse event
   after an echoed prefix is not echoed before it is dropped, and the
   cursor after a minibuffer's read-only error is one column right of
-  GNU's. command_loop_1 runs the command hooks without the
-  long-line narrowing of safe_run_hooks_maybe_narrowed; and a quit
+  GNU's. A quit
   check's quit is never continuable, where eval.c's quit () is
   signal_or_quit with CONTINUABLE, a debugger `debug-on-quit' entered
   returning to the check. To be made: input polling,
@@ -20918,8 +21039,7 @@ ert-tests as a whole 26,307 ms against 27,211.
   order, handle_interrupt in the signal handler, suspend-tty and
   resume-tty with the output buffer size as term.c's, faces realized
   from their merged Lisp attributes in a face cache as xfaces.c's, the
-  entry's cursor motion and clear strings, the command hooks' long-line
-  narrowing, resize_mini_window's window start for a tall message, and
+  entry's cursor motion and clear strings, resize_mini_window's window start for a tall message, and
   the remaining keyboard and display details above.
 - **TLS over a process that is no network connection (round 337).**
   gnutls-boot on a pipe process or a subprocess gives GnuTLS the

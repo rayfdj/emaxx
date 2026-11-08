@@ -173,6 +173,7 @@ mod invisibility;
 mod keymap;
 mod keys;
 mod loading;
+pub(crate) mod long_lines;
 pub(crate) mod menu;
 pub(crate) mod move_it;
 mod numeric_time;

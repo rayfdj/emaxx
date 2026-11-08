@@ -3098,6 +3098,16 @@ pub(crate) fn current_column(
         return Ok(column);
     }
     let bol = line_beginning_at(interp, point);
+    // Avoid becoming abysmally slow for very long lines: the distance
+    // from the line's start, an approximation, which is not recorded.
+    if interp.buffer.borrow().long_line_optimizations_p()
+        && let Some(Kind::Integer(threshold)) = interp
+            .lookup_var_key(cached_symbol!("long-line-threshold"), env)
+            .map(|value| value.kind())
+        && (point - bol) as i64 > threshold
+    {
+        return Ok(point - bol);
+    }
     let column = match plain_current_column(interp, env, bol, point) {
         Some(column) => column,
         None => column_at(interp, env, bol, point)?,

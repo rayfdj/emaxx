@@ -241,6 +241,12 @@ pub struct Buffer {
     /// of the buffer's windows must not take a shortcut (a fresh or reset
     /// buffer, a forced mode-line update, an hscroll).
     prevent_redisplay_optimizations_p: bool,
+
+    /// buffer.h's long_line_optimizations_p: redisplay_window found a
+    /// line longer than `long-line-threshold' in the buffer, and the
+    /// display and the command loop limit what they consider in it.
+    /// Only reset_buffer clears it.
+    long_line_optimizations_p: bool,
 }
 
 // A Buffer clone is a text snapshot, without linked Lisp overlay objects.
@@ -282,6 +288,7 @@ impl Clone for Buffer {
             multibyte: self.multibyte,
             clip_changed: self.clip_changed,
             prevent_redisplay_optimizations_p: self.prevent_redisplay_optimizations_p,
+            long_line_optimizations_p: self.long_line_optimizations_p,
         }
     }
 }
@@ -1275,6 +1282,7 @@ impl Buffer {
             // Fget_buffer_create and reset_buffer: a new buffer's first
             // redisplay takes no shortcut.
             prevent_redisplay_optimizations_p: true,
+            long_line_optimizations_p: false,
         }
     }
 
@@ -1361,6 +1369,7 @@ impl Buffer {
             // Fget_buffer_create and reset_buffer: a new buffer's first
             // redisplay takes no shortcut.
             prevent_redisplay_optimizations_p: true,
+            long_line_optimizations_p: false,
         }
     }
 
@@ -1719,6 +1728,29 @@ impl Buffer {
         None
     }
 
+    /// redisplay_window's test for long lines: whether a line of the
+    /// accessible text, its newline counted, is longer than THRESHOLD
+    /// characters, each line found with find_newline1 (CUR, ..., 0, -1, 1)
+    /// from BEGV on, the scan stopping at the first line past THRESHOLD
+    /// or the last one.
+    pub(crate) fn has_line_longer_than(&self, threshold: i64) -> bool {
+        let (begv, zv) = (self.begv, self.zv);
+        let mut longest = 0i64;
+        let mut cur = begv;
+        while cur < zv {
+            let (next, found) = match self.newline_at_or_after(cur - 1) {
+                Some(index) if index + 1 < zv => (index + 2, true),
+                _ => (zv, false),
+            };
+            longest = longest.max((next - cur) as i64);
+            if !found || longest > threshold {
+                break;
+            }
+            cur = next;
+        }
+        longest > threshold
+    }
+
     /// search.c find_before_next_newline (FROM, TO, 1): the position of
     /// the first newline from FROM on before TO, else TO.
     pub(crate) fn find_before_next_newline(&self, from: usize, to: usize) -> usize {
@@ -1754,6 +1786,31 @@ impl Buffer {
                 return Some(index);
             }
             byte = start;
+        }
+        None
+    }
+
+    /// search.c's find_newline backward from POS to no further than
+    /// LIMIT (positions, LIMIT <= POS): the position after the last
+    /// newline in [LIMIT, POS), if there is one.
+    pub(crate) fn line_start_within(&self, pos: usize, limit: usize) -> Option<usize> {
+        let stored = self.text.borrow();
+        let end_index = pos.saturating_sub(1).min(stored.len_chars());
+        let start_index = limit.saturating_sub(1).min(end_index);
+        let end = stored.char_to_byte(end_index);
+        let floor = stored.char_to_byte(start_index);
+        let mut byte = end;
+        while byte > floor {
+            let text = stored.before_byte(byte);
+            let chunk_start = byte - text.len();
+            let from = floor.max(chunk_start);
+            if let Some(offset) = memchr::memrchr(b'\n', &text.as_bytes()[from - chunk_start..]) {
+                let found = from + offset;
+                let index = end_index - stored.text.chars_in(found..end);
+                stored.note_position(index, found);
+                return Some(index + 2);
+            }
+            byte = chunk_start;
         }
         None
     }
@@ -4338,6 +4395,7 @@ impl Buffer {
             // Fget_buffer_create and reset_buffer: a new buffer's first
             // redisplay takes no shortcut.
             prevent_redisplay_optimizations_p: true,
+            long_line_optimizations_p: false,
         }
     }
 
@@ -4413,6 +4471,15 @@ impl Buffer {
         self.prevent_redisplay_optimizations_p = on;
     }
 
+    /// b->long_line_optimizations_p.
+    pub(crate) fn long_line_optimizations_p(&self) -> bool {
+        self.long_line_optimizations_p
+    }
+
+    pub(crate) fn set_long_line_optimizations_p(&mut self, on: bool) {
+        self.long_line_optimizations_p = on;
+    }
+
     /// BUF_COMPACT.
     pub(crate) fn compact_tick(&self) -> ModCount {
         self.text.borrow().compact
@@ -4424,6 +4491,12 @@ impl Buffer {
 
     pub fn chars_modified_tick(&self) -> ModCount {
         self.text.borrow().chars_modiff
+    }
+
+    /// BUF_UNCHANGED_MODIFIED: BUF_MODIFF when redisplay last took the
+    /// counts (mark_window_display_accurate_1).
+    pub(crate) fn unchanged_modified(&self) -> ModCount {
+        self.text.borrow().unchanged_modified
     }
 
     pub fn set_modified_tick(&mut self, tick: ModCount) {
@@ -4443,6 +4516,10 @@ impl Buffer {
         std::mem::swap(&mut self.undo_list, &mut other.undo_list);
         std::mem::swap(&mut self.overlays, &mut other.overlays);
         std::mem::swap(&mut self.multibyte, &mut other.multibyte);
+        std::mem::swap(
+            &mut self.long_line_optimizations_p,
+            &mut other.long_line_optimizations_p,
+        );
         match (&mut self.mark, &mut other.mark) {
             (
                 BufferMark::Object { marker, owner },
