@@ -1410,6 +1410,71 @@ fn terminal_font(interp: &Interpreter, value: &Value) -> Result<Value, LispError
     }
 }
 
+/// composite.c:composition_adjust_point: where point at NEW_PT, moved
+/// from LAST_PT, goes so that it is not inside a composition: the far or
+/// near end of a valid static composition it moved into, else of the
+/// glyph of an automatic composition that holds it.
+pub(crate) fn composition_adjust_point(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    last_pt: usize,
+    new_pt: usize,
+) -> Result<usize, LispError> {
+    let (begv, zv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point_min(), buffer.point_max())
+    };
+    if new_pt == begv || new_pt == zv {
+        return Ok(new_pt);
+    }
+    // At first check the static composition.
+    if let Some((beg, end, val)) = property_and_range(interp, new_pt, &Value::Nil)?
+        && composition_valid_p(interp, beg, end, val)
+    {
+        if beg < new_pt && (last_pt <= beg || last_pt >= end) {
+            return Ok(if new_pt < last_pt { beg } else { end });
+        }
+        return Ok(new_pt);
+    }
+    if !interp.buffer.borrow().is_multibyte() || inhibit_auto_composition(interp, env) {
+        return Ok(new_pt);
+    }
+    // Next check the automatic composition.
+    let Some(found) = find_automatic_composition(interp, env, new_pt, None, &Value::Nil)? else {
+        return Ok(new_pt);
+    };
+    if found.start == new_pt {
+        return Ok(new_pt);
+    }
+    let beg = found.start;
+    let glyphs = found.gstring.to_vec().unwrap_or_default();
+    // LGSTRING_GLYPH (val, i), the glyphs after the header and the id.
+    for glyph in glyphs.iter().skip(2) {
+        if glyph.is_nil() {
+            break;
+        }
+        let glyph = glyph.to_vec().unwrap_or_default();
+        let field = |index: usize| {
+            glyph
+                .get(index)
+                .and_then(|value| value.integer_value())
+                .unwrap_or(0) as usize
+        };
+        let (from, to) = (field(0), field(1));
+        if beg + from == new_pt {
+            return Ok(new_pt);
+        }
+        if beg + to >= new_pt {
+            return Ok(if new_pt < last_pt {
+                beg + from
+            } else {
+                beg + to + 1
+            });
+        }
+    }
+    Ok(new_pt)
+}
+
 fn find_composition_internal(
     interp: &mut Interpreter,
     env: &mut Env,

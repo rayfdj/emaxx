@@ -96,6 +96,20 @@ fn update_status(process: &mut ProcessState) {
 /// p->infd >= 0: the process's input channel is open, which only
 /// deactivate_process closes (a child's end takes it out of the select
 /// mask alone, delete_read_fd).
+/// Whether a select on FD alone, with no wait, would find it ready to
+/// read (or at its end, or failed, which a read reports).
+#[cfg(unix)]
+fn descriptor_ready(fd: std::os::fd::RawFd) -> bool {
+    let mut entry = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: ENTRY is one valid pollfd and the timeout is zero.
+    let ready = unsafe { libc::poll(&mut entry, 1, 0) };
+    ready > 0 && entry.revents != 0
+}
+
 fn infd_open(process: &ProcessState) -> bool {
     process
         .runtime
@@ -129,9 +143,6 @@ pub(crate) enum SignalTarget {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WaitEvents {
     None,
-    /// A wait_reading_process_output iteration whose select did not end:
-    /// its events, but not timer_check.
-    ExceptTimers,
     All,
 }
 
@@ -321,15 +332,30 @@ fn fd_write_sig(fd: std::os::fd::RawFd, input: &[u8]) -> std::io::Result<usize> 
 
 /// gnutls.c:emacs_gnutls_deinit of a process's TLS state: false (nil)
 /// while p->gnutls_p is false, which leaves the session as it is; else
-/// the session freed, the stage put below GNUTLS_STAGE_INIT, gnutls_p
-/// cleared, and true.
+/// the credentials ("Deallocating x509 credentials" or "Deallocating
+/// anon credentials" logged at 2 against p->gnutls_log_level) and the
+/// session freed, the stage put below GNUTLS_STAGE_INIT, the
+/// certificates freed, gnutls_p cleared, and true.
 fn gnutls_deinit(tls: &mut ProcessGnuTlsState) -> bool {
     if !tls.gnutls_p {
         return false;
     }
-    if tls.session.take().is_some() && tls.initstage >= GNUTLS_STAGE_INIT {
-        tls.initstage = GNUTLS_STAGE_INIT - 1;
+    if let Some(session) = tls.session.take() {
+        crate::lisp::eval::gnutls_log(
+            2,
+            tls.log_level,
+            if session.credential_is_x509() {
+                "Deallocating x509 credentials"
+            } else {
+                "Deallocating anon credentials"
+            },
+        );
+        drop(session);
+        if tls.initstage >= GNUTLS_STAGE_INIT {
+            tls.initstage = GNUTLS_STAGE_INIT - 1;
+        }
     }
+    tls.certificates = None;
     tls.gnutls_p = false;
     true
 }
@@ -432,6 +458,14 @@ impl Interpreter {
         process.in_alist
     }
 
+    /// Fdelq of the process's cell from Vprocess_alist.
+    fn leave_process_alist(process: &mut ProcessState) {
+        if process.in_alist {
+            process.in_alist = false;
+            process.alist_removal = crate::lisp::eval::next_process_alist_removal();
+        }
+    }
+
     /// process.c:remove_process: the process leaves Vprocess_alist and its
     /// channels close (deactivate_process), its status and sentinel left
     /// as they are.  The unwind of a make-process or make-pipe-process
@@ -440,7 +474,7 @@ impl Interpreter {
     /// none.
     pub(crate) fn remove_process(&mut self, record_id: u64) {
         if let Some(process) = self.find_process_state_mut(record_id) {
-            process.in_alist = false;
+            Self::leave_process_alist(process);
             Self::deactivate_process_channels(process);
         }
     }
@@ -448,6 +482,12 @@ impl Interpreter {
     /// deactivate_process's closing of every channel the process holds (a
     /// child that has ended goes with them).
     fn deactivate_process_channels(process: &mut ProcessState) {
+        gnutls_deinit(&mut process.gnutls);
+        if process.read_output_delay > 0 {
+            crate::lisp::primitives::process_output_delay_given_up();
+            process.read_output_delay = 0;
+            process.read_output_skip = false;
+        }
         process.serial = None;
         process.module_pipe = None;
         process.pipe_input = None;
@@ -537,36 +577,59 @@ impl Interpreter {
         )
     }
 
-    /// The processes process.c:kill_buffer_processes acts on for a buffer
-    /// being killed: those on the process alist whose buffer it is, in the
-    /// alist's order, each with whether it is a connection (a network,
-    /// serial or pipe process), which Fdelete_process deletes, rather than
-    /// a subprocess, which is sent SIGHUP while its input is open.
-    pub(crate) fn buffer_processes(&self, buffer_id: u64) -> Vec<(u64, bool)> {
-        self.process_states
-            .iter()
+    /// Vprocess_alist's cells, in its order, as a FOR_EACH_PROCESS walk
+    /// starts: each a process's place in `process_states', which only
+    /// grows, so the place stays its own while the walk runs Lisp.
+    pub(crate) fn process_alist_cells(&self) -> Vec<usize> {
+        (0..self.process_states.len())
             .rev()
-            .filter(|process| {
-                Self::in_process_alist(process) && process.buffer_id == Some(buffer_id)
-            })
-            .map(|process| {
-                (
-                    process.record_id,
-                    !matches!(process.kind, ProcessKind::Real),
-                )
-            })
+            .filter(|&cell| Self::in_process_alist(&self.process_states[cell]))
             .collect()
     }
 
-    /// kill_buffer_processes's test as the walk reaches RECORD_ID: still on
-    /// Vprocess_alist, its buffer BUFFER_ID, and for a subprocess, its
-    /// input channel open (p->infd >= 0).
-    pub(crate) fn buffer_process_still_killable(&self, record_id: u64, buffer_id: u64) -> bool {
-        self.find_process_state(record_id).is_some_and(|process| {
-            Self::in_process_alist(process)
-                && process.buffer_id == Some(buffer_id)
-                && (process.kind != ProcessKind::Real || infd_open(process))
+    /// The index in CELLS of the cell FOR_EACH_PROCESS reaches after
+    /// CELLS[INDEX]: XCDR of a cell on Vprocess_alist is the next cell on
+    /// it, and of a cell Fdelq has taken off, the cell that followed it
+    /// then.  A process joins at the alist's head, so each cell after the
+    /// walk's first is in CELLS.
+    pub(crate) fn next_process_alist_cell(&self, cells: &[usize], index: usize) -> Option<usize> {
+        let removal = |cell: usize| self.process_states[cell].alist_removal;
+        let left = match removal(cells[index]) {
+            0 => u64::MAX,
+            left => left,
+        };
+        (index + 1..cells.len()).find(|&next| {
+            let removed = removal(cells[next]);
+            removed == 0 || removed > left
         })
+    }
+
+    /// The record id of the process at CELL.
+    pub(crate) fn process_alist_cell_id(&self, cell: usize) -> u64 {
+        self.process_states[cell].record_id
+    }
+
+    /// kill_buffer_processes's test as its walk reaches CELL, whose buffer
+    /// is to be BUFFER_ID (any, for None): Some(true) for a network,
+    /// serial or pipe connection, which Fdelete_process deletes,
+    /// Some(false) for a subprocess whose input channel is open (p->infd >=
+    /// 0), which is sent SIGHUP, and None for any other.
+    pub(crate) fn kill_buffer_process_action(
+        &self,
+        cell: usize,
+        buffer_id: Option<u64>,
+    ) -> Option<bool> {
+        let process = &self.process_states[cell];
+        if buffer_id.is_some_and(|buffer_id| process.buffer_id != Some(buffer_id)) {
+            return None;
+        }
+        if process.kind != ProcessKind::Real {
+            Some(true)
+        } else if infd_open(process) {
+            Some(false)
+        } else {
+            None
+        }
     }
 
     pub fn set_process_plist_value(&mut self, record_id: u64, plist: Value) -> bool {
@@ -618,7 +681,6 @@ impl Interpreter {
         &mut self,
         record_id: u64,
         session: ProcessGnuTlsSession,
-        peer_is_x509: bool,
         complete_negotiation: bool,
     ) -> Result<(), LispError> {
         let record_id_value = self.record_value(record_id);
@@ -627,10 +689,52 @@ impl Interpreter {
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.gnutls.session = Some(session);
         process.gnutls.initstage = GNUTLS_STAGE_CRED_SET;
-        process.gnutls.peer_verification = 0;
-        process.gnutls.peer_is_x509 = peer_is_x509;
         process.gnutls.complete_negotiation_p = complete_negotiation;
         Ok(())
+    }
+
+    /// Fgnutls_boot's "Mark PROC as a GnuTLS process": its session
+    /// forgotten (a session whose gnutls_p emacs_gnutls_deinit left set
+    /// aside), the stage GNUTLS_STAGE_EMPTY.
+    pub(crate) fn reset_process_gnutls(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.session = None;
+            process.gnutls.initstage = GNUTLS_STAGE_EMPTY;
+        }
+    }
+
+    /// p->gnutls_log_level of RECORD_ID.
+    pub(crate) fn process_gnutls_log_level(&self, record_id: u64) -> i32 {
+        self.find_process_state(record_id)
+            .map_or(0, |process| process.gnutls.log_level)
+    }
+
+    pub(crate) fn set_process_gnutls_log_level(&mut self, record_id: u64, level: i32) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.log_level = level;
+        }
+    }
+
+    /// p->gnutls_certificates of RECORD_ID: CERTIFICATES, or none.
+    pub(crate) fn set_process_gnutls_certificates(
+        &mut self,
+        record_id: u64,
+        certificates: Option<GnuTlsCertificates>,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.certificates = certificates;
+        }
+    }
+
+    /// p->gnutls_extra_peer_verification |= FLAGS.
+    pub(crate) fn add_process_gnutls_extra_peer_verification(
+        &mut self,
+        record_id: u64,
+        flags: u32,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.gnutls.extra_peer_verification |= flags;
+        }
     }
 
     pub(crate) fn set_process_gnutls_initstage(&mut self, record_id: u64, stage: i64) {
@@ -665,8 +769,9 @@ impl Interpreter {
         })
     }
 
-    /// One gnutls_handshake of RECORD_ID's session, and
-    /// gnutls_error_is_fatal of its result; None with no session.
+    /// One gnutls_handshake of RECORD_ID's session, and whether
+    /// emacs_gnutls_handle_error found its error fatal; None with no
+    /// session.
     pub(crate) fn process_gnutls_handshake_step(
         &mut self,
         record_id: u64,
@@ -676,8 +781,7 @@ impl Interpreter {
             .gnutls
             .session
             .as_mut()?;
-        let result = session.handshake_step();
-        Some((result, result < 0 && session.error_is_fatal(result)))
+        Some(session.handshake_step())
     }
 
     /// The raw state of RECORD_ID's session, which gnutls_verify_boot
@@ -692,12 +796,6 @@ impl Interpreter {
         )
     }
 
-    /// Whether RECORD_ID's session takes X.509 certificates.
-    pub(crate) fn process_gnutls_peer_is_x509(&self, record_id: u64) -> bool {
-        self.find_process_state(record_id)
-            .is_some_and(|process| process.gnutls.peer_is_x509)
-    }
-
     /// p->gnutls_peer_verification, which gnutls_verify_boot sets.
     pub(crate) fn set_process_gnutls_peer_verification(
         &mut self,
@@ -709,20 +807,27 @@ impl Interpreter {
         }
     }
 
-    /// The caller may query the session without invoking Lisp or yielding.
-    /// It remains owned by this process throughout that synchronous query.
+    /// What Fgnutls_peer_status reads of RECORD_ID at GNUTLS_STAGE_READY:
+    /// its session, p->gnutls_peer_verification,
+    /// p->gnutls_extra_peer_verification and p->gnutls_certificates.  The
+    /// caller queries them without invoking Lisp or yielding; they remain
+    /// owned by this process throughout that synchronous query.
     pub(crate) fn process_gnutls_peer_state(
         &self,
         record_id: u64,
-    ) -> Option<(*mut std::ffi::c_void, u32, bool)> {
+    ) -> Option<(*mut std::ffi::c_void, u32, u32, Vec<*mut std::ffi::c_void>)> {
         let tls = &self.find_process_state(record_id)?.gnutls;
-        if tls.initstage != 9 {
+        if tls.initstage != GNUTLS_STAGE_READY {
             return None;
         }
         Some((
             tls.session.as_ref()?.raw_state(),
             tls.peer_verification,
-            tls.peer_is_x509,
+            tls.extra_peer_verification,
+            tls.certificates
+                .as_ref()
+                .map(|certificates| certificates.handles().to_vec())
+                .unwrap_or_default(),
         ))
     }
 
@@ -735,6 +840,8 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
+        // Fgnutls_bye: gnutls_deinit_certificates, then gnutls_bye.
+        process.gnutls.certificates = None;
         let session = process
             .gnutls
             .session
@@ -1041,8 +1148,15 @@ impl Interpreter {
             output_to_null: false,
             null_output: None,
             in_alist: true,
+            alist_removal: 0,
             childless_pid: None,
             outfd_stale: false,
+            waiting_thread: None,
+            nbytes_read: 0,
+            adaptive_read_buffering: 0,
+            read_output_delay: 0,
+            read_output_skip: false,
+            read_fd_deleted: false,
         });
         Ok(process)
     }
@@ -1156,8 +1270,15 @@ impl Interpreter {
             output_to_null: false,
             null_output: None,
             in_alist: true,
+            alist_removal: 0,
             childless_pid: None,
             outfd_stale: false,
+            waiting_thread: None,
+            nbytes_read: 0,
+            adaptive_read_buffering: 0,
+            read_output_delay: 0,
+            read_output_skip: false,
+            read_fd_deleted: false,
         });
         self.setup_process_coding_systems(decoding, encoding)?;
         Ok(process)
@@ -1249,8 +1370,15 @@ impl Interpreter {
             output_to_null: false,
             null_output: None,
             in_alist: true,
+            alist_removal: 0,
             childless_pid: None,
             outfd_stale: false,
+            waiting_thread: None,
+            nbytes_read: 0,
+            adaptive_read_buffering: 0,
+            read_output_delay: 0,
+            read_output_skip: false,
+            read_fd_deleted: false,
         });
         self.setup_process_coding_systems(decoding, encoding)?;
         Ok(process)
@@ -1295,6 +1423,7 @@ impl Interpreter {
             .and_then(|process| process.os_pid)
     }
 
+    #[cfg(test)]
     pub(crate) fn process_output_delivery_count(&self, record_id: u64) -> Option<u64> {
         self.find_process_state(record_id)
             .map(|process| process.output_delivery_count)
@@ -1304,19 +1433,6 @@ impl Interpreter {
         if let Some(process) = self.find_process_state_mut(record_id) {
             process.output_delivery_count = process.output_delivery_count.saturating_add(1);
         }
-    }
-
-    pub(crate) fn current_thread_process_output_delivery_count(&self) -> u64 {
-        self.process_states
-            .iter()
-            .filter(|process| {
-                process
-                    .thread_id
-                    .is_none_or(|thread_id| thread_id == self.active_thread_id)
-            })
-            .fold(0_u64, |total, process| {
-                total.saturating_add(process.output_delivery_count)
-            })
     }
 
     /// GNU `process-command': child processes expose the program followed by
@@ -1398,15 +1514,6 @@ impl Interpreter {
             .and_then(|process| process.stderr_process_id)
     }
 
-    /// update_tick != process_tick: a change of any process since
-    /// status_notify last began (a process a sentinel's throw left
-    /// unvisited waits for the next change).
-    pub(crate) fn any_process_exit_awaits_notification(&self) -> bool {
-        self.process_states
-            .iter()
-            .any(|process| process.tick > self.process_update_tick)
-    }
-
     /// status_notify's `update_tick = process_tick', set before its walk
     /// so that processes its sentinels change are walked again.
     pub(crate) fn begin_status_notify(&mut self) {
@@ -1427,6 +1534,15 @@ impl Interpreter {
             .rev()
             .map(|process| process.record_id)
             .collect()
+    }
+
+    /// handle_child_signal's records of the children that ended, as its
+    /// handler makes them whenever SIGCHLD comes.
+    #[cfg(test)]
+    pub(crate) fn record_child_signals(&mut self) {
+        for process_id in self.child_process_ids() {
+            let _ = self.refresh_process_id(process_id);
+        }
     }
 
     /// Every process with a child, whatever thread it is locked to:
@@ -1496,7 +1612,7 @@ impl Interpreter {
             gnutls_deinit(&mut process.gnutls);
             Self::deactivate_process_channels(process);
             if remove {
-                process.in_alist = false;
+                Self::leave_process_alist(process);
             }
         }
         process.update_tick = process.tick;
@@ -1710,45 +1826,6 @@ impl Interpreter {
         }
     }
 
-    pub fn network_listener_ids(&self) -> Vec<u64> {
-        self.process_states
-            .iter()
-            .filter(|process| {
-                matches!(
-                    process.network,
-                    Some(NetworkRuntime::Listener(_)) | Some(NetworkRuntime::UnixListener(_))
-                ) && process.status.is_live()
-                    && !process.traffic_stopped
-                    && process
-                        .thread_id
-                        .is_none_or(|thread_id| thread_id == self.active_thread_id)
-            })
-            .map(|process| process.record_id)
-            .collect()
-    }
-
-    pub fn connection_stream_ids(&self) -> Vec<u64> {
-        self.process_states
-            .iter()
-            .filter(|process| {
-                (matches!(
-                    process.network,
-                    Some(NetworkRuntime::Stream(_))
-                        | Some(NetworkRuntime::Datagram { .. })
-                        | Some(NetworkRuntime::UnixStream(_))
-                ) || process.serial.is_some())
-                    && process.status.is_live()
-                    // A connecting socket is read once it connects
-                    // (add_process_read_fd after delete_write_fd).
-                    && !process.non_blocking_connect_fd
-                    && process
-                        .thread_id
-                        .is_none_or(|thread_id| thread_id == self.active_thread_id)
-            })
-            .map(|process| process.record_id)
-            .collect()
-    }
-
     /// Accept one pending connection on a server listener, if any: the
     /// accepted stream's runtime and, for inet listeners, the peer's
     /// socket address (unix peers are unnamed), or the errno of an accept
@@ -1818,6 +1895,24 @@ impl Interpreter {
         if process.gnutls.gnutls_p
             && let Some(session) = process.gnutls.session.as_mut()
         {
+            // wait_reading_process_output reads a channel its select found
+            // ready, or one whose session holds records already decrypted
+            // (emacs_gnutls_record_check_pending); emacs_gnutls_read on an
+            // idle socket would report a GNUTLS_E_AGAIN that GNU never
+            // asks for.
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                let socket = match process.network.as_ref() {
+                    Some(NetworkRuntime::Stream(stream)) => Some(stream.as_raw_fd()),
+                    Some(NetworkRuntime::UnixStream(stream)) => Some(stream.as_raw_fd()),
+                    _ => None,
+                };
+                if !session.has_pending_records() && socket.is_some_and(|fd| !descriptor_ready(fd))
+                {
+                    return Ok((Vec::new(), false));
+                }
+            }
             return session.receive(readmax);
         }
         Ok(match process.network.as_mut() {
@@ -1891,33 +1986,6 @@ impl Interpreter {
                 }
             }
         })
-    }
-
-    /// wait_reading_process_output on a connection's end: deactivate_process
-    /// and, for a running connection, status (exit 256), which
-    /// status_notify, with `delete-exited-processes', takes off the
-    /// process alist before the sentinel hears of it; a connection whose
-    /// TLS negotiation keeps it connecting keeps that status.  The
-    /// sentinel's message for the status it is left with.
-    pub fn close_connection_stream(&mut self, record_id: u64) -> String {
-        let remove = self
-            .lookup_var_key(cached_symbol!("delete-exited-processes"), &Env::new())
-            .is_none_or(|value| value.is_truthy());
-        let Some(process) = self.find_process_state_mut(record_id) else {
-            return String::new();
-        };
-        gnutls_deinit(&mut process.gnutls);
-        if matches!(process.status, ProcessStatus::Run | ProcessStatus::Open) {
-            process.status = ProcessStatus::Closed;
-            process.exit_code = Some(256);
-        }
-        process.network = None;
-        process.serial = None;
-        process.null_output = None;
-        if remove {
-            process.in_alist = false;
-        }
-        Self::process_status_message(process)
     }
 
     /// Whether a read of the process's output pipe (or its stderr pipe)
@@ -2130,52 +2198,6 @@ impl Interpreter {
                 .then_some(process.record_id)
         })?;
         Some(self.record_value(record_id))
-    }
-
-    /// wait_reading_process_output's `! EQ (wait_proc->status, Qrun)' for a
-    /// process with a child (or a childless pty): its status as the SIGCHLD
-    /// handler leaves it, ended, stopped or failed.
-    pub(crate) fn process_child_ended(&mut self, record_id: u64) -> Result<bool, LispError> {
-        self.refresh_process_id(record_id)?;
-        // `if (wait_proc->raw_status_new) update_status (wait_proc)'.
-        if let Some(process) = self.find_process_state_mut(record_id) {
-            update_status(process);
-        }
-        Ok(self.find_process_state(record_id).is_some_and(|process| {
-            process.kind == ProcessKind::Real
-                && matches!(
-                    process.status,
-                    ProcessStatus::Exit
-                        | ProcessStatus::Signal
-                        | ProcessStatus::Stop
-                        | ProcessStatus::Failed
-                )
-        }))
-    }
-
-    /// Whether RECORD_ID's child has ended (its output out of the select
-    /// mask, read by status_notify alone).
-    pub(crate) fn process_read_fd_deleted(&self, record_id: u64) -> bool {
-        self.find_process_state(record_id).is_some_and(child_ended)
-    }
-
-    /// One read of RECORD_ID's `:stderr' pipe alone, for a process whose
-    /// own output channel is out of the select mask.
-    pub(crate) fn poll_process_stderr(&mut self, record_id: u64) -> Result<Vec<u8>, LispError> {
-        let Some(process) = self.find_process_state_mut(record_id) else {
-            return Ok(Vec::new());
-        };
-        let readmax = Some(process.readmax);
-        let mut stderr = std::mem::take(&mut process.pending_stderr);
-        if let Some(runtime) = process.runtime.as_mut()
-            && let Some(pipe) = runtime.child.stderr.as_mut()
-            && !runtime.stderr_at_end
-            && read_nonblocking_pipe(pipe, &mut stderr, readmax)?
-        {
-            process.stderr_eof = true;
-            runtime.stderr_at_end = true;
-        }
-        Ok(stderr)
     }
 
     /// update_status of RECORD_ID: its pending change made its status.
@@ -2459,26 +2481,19 @@ impl Interpreter {
 
     /// A non-blocking connect that failed with ERRNO: deactivate_process
     /// closes its socket, and the status is (failed ERRNO).
+    /// wait_reading_process_output's failed connect with no address left:
+    /// a new tick, (failed ERRNO), and deactivate_process; status_notify
+    /// runs the sentinel.
     pub(crate) fn fail_network_connect(&mut self, record_id: u64, errno: i32) {
         self.set_network_process_failed(record_id, Value::Integer(i64::from(errno)), true, None);
-    }
-
-    pub(crate) fn connecting_network_processes(&self) -> Vec<u64> {
-        let active_thread_id = self.active_thread_id;
-        self.process_states
-            .iter()
-            .filter(|process| {
-                // NON_BLOCKING_CONNECT_FD: a non-blocking client's socket,
-                // whose connect wait_reading_process_output's write mask
-                // checks.
-                process.non_blocking_connect_fd
-                    && process.network.is_some()
-                    && process
-                        .thread_id
-                        .is_none_or(|thread_id| thread_id == active_thread_id)
-            })
-            .map(|process| process.record_id)
-            .collect()
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.tick = crate::lisp::eval::next_process_tick();
+            if process.read_output_delay > 0 {
+                crate::lisp::primitives::process_output_delay_given_up();
+                process.read_output_delay = 0;
+                process.read_output_skip = false;
+            }
+        }
     }
 
     pub(crate) fn mark_network_process_open(&mut self, record_id: u64) -> bool {
@@ -2976,7 +2991,6 @@ impl Interpreter {
         // GNU clears the connection flow-control marker while closing the
         // descriptor, so a stopped connection reports `closed' afterwards.
         process.traffic_stopped = false;
-        gnutls_deinit(&mut process.gnutls);
         // p->raw_status_new = 0: a change handle_child_signal recorded and
         // update_status has not made the status is dropped.
         process.pending_status = None;
@@ -2985,24 +2999,11 @@ impl Interpreter {
         if let Some(runtime) = process.runtime.take() {
             terminate_child_without_blocking(runtime);
         }
-        if let Some(network) = process.network.take() {
-            match &network {
-                NetworkRuntime::Stream(stream) => {
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                }
-                NetworkRuntime::UnixStream(stream) => {
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                }
-                NetworkRuntime::Datagram { .. } => {}
-                // GNU leaves a unix listener's socket file behind; the
-                // tests delete it themselves.
-                NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_) => {}
-            }
-        }
-        process.serial = None;
-        process.module_pipe = None;
-        process.pipe_input = None;
-        process.null_output = None;
+        // A connection's channels stay open until deactivate_process closes
+        // them, when status_notify's walk reaches the process or
+        // remove_process follows: close(2) alone, so a peer whose data
+        // was not read sees a reset, as GNU's does; a unix listener's
+        // socket file stays behind.
         if matches!(
             kind,
             ProcessKind::Network | ProcessKind::Serial | ProcessKind::Pipe
@@ -3337,291 +3338,411 @@ impl Interpreter {
         Ok((Vec::new(), Vec::new()))
     }
 
-    pub fn live_external_process_ids(&self) -> Vec<u64> {
+    /// The descriptors of fd_callback_info that belong to processes, each
+    /// a process's p->infd (chan_process[fd]), in descriptor order: with
+    /// `read', FOR_READ and PROCESS_FD (add_process_read_fd, not since
+    /// taken out by delete_read_fd: a filter or a stopped connection's
+    /// command of t, an ended child, a pty's EIO), with `connect',
+    /// FOR_WRITE and NON_BLOCKING_CONNECT_FD; `thread' is
+    /// fd_callback_info[fd].thread, the process's, and `waiting' its
+    /// waiting_thread.
+    #[cfg(unix)]
+    pub(crate) fn process_channels(&self) -> Vec<WaitChannel> {
+        let mut channels: Vec<WaitChannel> = self
+            .process_states
+            .iter()
+            .enumerate()
+            .filter_map(|(index, process)| self.channel_of(index, process))
+            .collect();
+        channels.sort_by_key(|channel| channel.fd);
+        channels
+    }
+
+    /// PROCESS's p->infd as a WaitChannel, INDEX its place in
+    /// process_states.
+    #[cfg(unix)]
+    fn channel_of(&self, index: usize, process: &ProcessState) -> Option<WaitChannel> {
+        let fd = process_infd_of(process)?;
+        let read_fd_deleted = child_ended(process)
+            || process.read_fd_deleted
+            || process
+                .runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.pty_output.is_some() && runtime.stdout_at_end);
+        let read = !process.non_blocking_connect_fd
+            && !process.traffic_stopped
+            && process
+                .filter
+                .as_ref()
+                .is_none_or(|filter| *filter != Value::T)
+            && !read_fd_deleted;
+        Some(WaitChannel {
+            fd,
+            process_id: process.record_id,
+            index,
+            read,
+            connect: process.non_blocking_connect_fd,
+            thread: self.fd_thread_locks.get(&fd).copied(),
+            waiting: process.waiting_thread,
+            read_output_delay: process.read_output_delay,
+            read_output_skip: process.read_output_skip,
+            tls_pending: process.gnutls.gnutls_p
+                && process
+                    .gnutls
+                    .session
+                    .as_ref()
+                    .is_some_and(ProcessGnuTlsSession::has_pending_records),
+        })
+    }
+
+    /// The process channel at FD as wait_reading_process_output finds it
+    /// now (chan_process[fd] and its flags), if a process still has it.
+    #[cfg(unix)]
+    pub(crate) fn channel_at(&self, fd: std::os::fd::RawFd) -> Option<WaitChannel> {
         self.process_states
             .iter()
-            .filter(|process| {
-                process.runtime.is_some()
-                    || process.module_pipe.is_some()
-                    || !process.pending_stdout.is_empty()
-                    || !process.pending_stderr.is_empty()
-            })
-            .filter(|process| {
-                process
-                    .thread_id
-                    .is_none_or(|thread_id| thread_id == self.active_thread_id)
-            })
-            .map(|process| process.record_id)
-            .collect()
+            .enumerate()
+            .find(|(_, process)| process_infd_of(process) == Some(fd))
+            .and_then(|(index, process)| self.channel_of(index, process))
     }
 
-    /// process.c:wait_reading_process_output's wait set for this thread's
-    /// processes, as compute_non_keyboard_wait_mask builds it (only
-    /// WAIT_PROC's channels for JUST-THIS-ONE, none of a process whose
-    /// output is stopped): the output pipes and pty, a pipe process's
-    /// reader, a socket, a listener, a serial port, and the socket of a
-    /// connection still connecting (compute_write_mask).  True when a pass
-    /// finds input without waiting: output kept from an earlier read, or a
-    /// TLS session's buffered records (emacs_gnutls_record_check_pending),
-    /// for which GNU skips the select.
+    /// RECORD_ID's p->infd, whatever its flags.
     #[cfg(unix)]
-    pub(crate) fn process_wait_set(
-        &self,
-        only_process_id: Option<u64>,
-        fds: &mut Vec<libc::pollfd>,
-    ) -> bool {
-        self.process_wait_set_for(only_process_id, fds)
+    pub(crate) fn process_infd(&self, record_id: u64) -> Option<std::os::fd::RawFd> {
+        self.find_process_state(record_id).and_then(process_infd_of)
     }
 
-    /// process_wait_set, leaving out with SKIP_ENDED what a terminated
-    /// child's process still holds: handle_child_signal's delete_read_fd
-    /// takes its channel out of the input mask, so the output it left is
-    /// no input that holds status_notify back.
-    #[cfg(unix)]
-    fn process_wait_set_for(
-        &self,
-        only_process_id: Option<u64>,
-        fds: &mut Vec<libc::pollfd>,
-    ) -> bool {
-        use std::os::fd::AsRawFd;
-        let mut watch = |fd: std::os::fd::RawFd, events: libc::c_short| {
-            fds.push(libc::pollfd {
-                fd,
-                events,
-                revents: 0,
-            });
+    /// update_tick != process_tick: some status change status_notify has
+    /// not walked over yet.
+    pub(crate) fn status_changes_pending(&self) -> bool {
+        self.process_update_tick != crate::lisp::eval::current_process_tick()
+    }
+
+    /// Whether any channel has NON_BLOCKING_CONNECT_FD (num_pending_connects
+    /// > 0).
+    pub(crate) fn connects_pending(&self) -> bool {
+        self.process_states
+            .iter()
+            .any(|process| process.non_blocking_connect_fd)
+    }
+
+    /// wait_reading_process_output's test of WAIT_PROC once
+    /// `if (wait_proc->raw_status_new) update_status (wait_proc)': its
+    /// status `run' (a connection's open one) or connecting_status.
+    pub(crate) fn wait_proc_running(&mut self, record_id: u64) -> bool {
+        // Only what handle_child_signal has recorded (raw_status_new): a
+        // child found ended here, after the loop's look at the status
+        // changes, would end the wait before status_notify ran its
+        // sentinel.
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return false;
         };
-        for process in &self.process_states {
-            if process
-                .thread_id
-                .is_some_and(|thread_id| thread_id != self.active_thread_id)
-                || only_process_id.is_some_and(|id| id != process.record_id)
-                || process.traffic_stopped
-                || process
-                    .filter
-                    .as_ref()
-                    .is_some_and(|filter| *filter == Value::T)
-            {
-                continue;
-            }
-            // A child's end takes its output out of the mask
-            // (handle_child_signal's delete_read_fd); its `:stderr' pipe,
-            // another process's channel, stays.
-            let ended = child_ended(process);
-            if (!ended && !process.pending_stdout.is_empty()) || !process.pending_stderr.is_empty()
-            {
-                return true;
-            }
-            if let Some(runtime) = process.runtime.as_ref() {
-                if let Some(pipe) = runtime.child.stdout.as_ref()
-                    && !runtime.stdout_at_end
-                    && !ended
-                {
-                    watch(pipe.as_raw_fd(), libc::POLLIN);
-                }
-                if let Some(pipe) = runtime.child.stderr.as_ref()
-                    && !runtime.stderr_at_end
-                {
-                    watch(pipe.as_raw_fd(), libc::POLLIN);
-                }
-                // A master that read EIO is out of the read mask
-                // (delete_read_fd).
-                if let Some(pty) = runtime.pty_output.as_ref()
-                    && !runtime.stdout_at_end
-                    && !ended
-                {
-                    watch(pty.as_raw_fd(), libc::POLLIN);
-                }
-            }
-            if let Some((reader, _)) = process.module_pipe.as_ref() {
-                watch(reader.as_raw_fd(), libc::POLLIN);
-            }
-            if process
-                .gnutls
-                .session
-                .as_ref()
-                .is_some_and(ProcessGnuTlsSession::has_pending_records)
-            {
-                return true;
-            }
-            let events = if process.non_blocking_connect_fd {
-                libc::POLLOUT
+        update_status(process);
+        matches!(
+            process.status,
+            ProcessStatus::Run | ProcessStatus::Open | ProcessStatus::Connect(_)
+        )
+    }
+
+    /// The status `listen' of a server.
+    pub(crate) fn process_listening(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| matches!(process.status, ProcessStatus::Listen))
+    }
+
+    /// Whether RECORD_ID is a network, serial or pipe connection
+    /// (NETCONN_P, SERIALCONN_P, PIPECONN_P), and a pipe one.
+    pub(crate) fn process_connection_kind(&self, record_id: u64) -> (bool, bool) {
+        self.find_process_state(record_id)
+            .map_or((false, false), |process| {
+                (
+                    process.kind != ProcessKind::Real,
+                    process.kind == ProcessKind::Pipe,
+                )
+            })
+    }
+
+    /// wait_reading_process_output after a read of zero from a connection
+    /// (or an error): `p->tick = ++process_tick', deactivate_process, then
+    /// for a pipe connection a `run' status made (exit 0), for any other
+    /// the raw status decoded and a `run' made (exit 256).
+    pub(crate) fn end_process_channel(&mut self, record_id: u64) {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return;
+        };
+        process.tick = crate::lisp::eval::next_process_tick();
+        Self::deactivate_process_channels(process);
+        let pipe = process.kind == ProcessKind::Pipe;
+        if !pipe {
+            update_status(process);
+        }
+        if matches!(process.status, ProcessStatus::Run | ProcessStatus::Open) {
+            process.status = if process.kind == ProcessKind::Real {
+                ProcessStatus::Exit
             } else {
-                libc::POLLIN
+                ProcessStatus::Closed
             };
-            match process.network.as_ref() {
-                Some(NetworkRuntime::Listener(listener)) => watch(listener.as_raw_fd(), events),
-                Some(NetworkRuntime::Stream(stream)) => watch(stream.as_raw_fd(), events),
-                Some(NetworkRuntime::Datagram { socket, .. }) => watch(socket.as_raw_fd(), events),
-                Some(NetworkRuntime::UnixListener(listener)) => watch(listener.as_raw_fd(), events),
-                Some(NetworkRuntime::UnixStream(stream)) => watch(stream.as_raw_fd(), events),
-                None => {}
-            }
-            if let Some(serial) = process.serial.as_ref() {
-                watch(serial.port.as_raw_fd(), libc::POLLIN);
-            }
+            process.exit_code = Some(if pipe { 0 } else { 256 });
+            process.exit_signal = None;
         }
-        false
     }
 
-    /// wait_reading_process_output runs status_notify only once a select
-    /// that does not wait finds no input on the channels it watches.  A
-    /// live child's output pipe at its end is still among them, readable,
-    /// until handle_child_signal takes it out at the child's death, so a
-    /// child that closed its output holds back every notification until it
-    /// is reaped (GNU reads its end again and again meanwhile).
-    #[cfg(unix)]
-    pub(crate) fn process_input_available(&self) -> bool {
-        let watched = |process: &&ProcessState| {
-            process
-                .thread_id
-                .is_none_or(|thread_id| thread_id == self.active_thread_id)
-                && !process.traffic_stopped
-                && process
-                    .filter
-                    .as_ref()
-                    .is_none_or(|filter| *filter != Value::T)
+    /// wait_reading_process_output's EIO on a pty: delete_read_fd, and for
+    /// a process with pid -2, which no SIGCHLD reports, `p->tick =
+    /// ++process_tick' and the status `failed'.
+    pub(crate) fn delete_read_fd_after_eio(&mut self, record_id: u64) {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return;
         };
-        if self.process_states.iter().filter(watched).any(|process| {
-            process.status.is_live()
-                && process.runtime.as_ref().is_some_and(|runtime| {
-                    runtime.stdout_at_end && runtime.child.stdout.is_some() && !runtime.child_ended
-                })
-        }) {
-            return true;
-        }
-        let mut fds = Vec::new();
-        if self.process_wait_set_for(None, &mut fds) {
-            return true;
-        }
-        // SAFETY: FDS holds live descriptors this interpreter owns.
-        !fds.is_empty() && unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 0) } > 0
-    }
-
-    #[cfg(not(unix))]
-    pub(crate) fn process_input_available(&self) -> bool {
-        false
-    }
-
-    /// The wait between two passes of wait_reading_process_output: its
-    /// pselect on the wait set and the child signal pipe for at most
-    /// DURATION, so output, a connection, or a child's change of status
-    /// ends it.  True when it ended before DURATION.  With other threads
-    /// to run, the scheduler's sleep stands in for it.
-    pub(crate) fn wait_current_thread_for_process_input(
-        &mut self,
-        env: &mut Env,
-        only_process_id: Option<u64>,
-        duration: std::time::Duration,
-    ) -> Result<bool, LispError> {
-        #[cfg(unix)]
-        if !continuations::can_suspend(self) {
-            let mut fds = Vec::new();
-            let mut woke = self.process_wait_set(only_process_id, &mut fds);
-            let child_signal_fd = crate::lisp::primitives::child_signal_read_fd();
-            if let Some(fd) = child_signal_fd {
-                fds.push(libc::pollfd {
-                    fd,
-                    events: libc::POLLIN,
-                    revents: 0,
-                });
-            }
-            if !woke {
-                let timeout = duration.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
-                // SAFETY: FDS holds live descriptors this interpreter owns
-                // and the child signal pipe, which is never closed.
-                woke = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) }
-                    != 0;
-            }
-            if let Some(fd) = child_signal_fd {
-                crate::lisp::primitives::drain_child_signal_pipe(fd);
-            }
-            self.check_thread_signal()?;
-            return Ok(woke);
-        }
-        self.sleep_current_thread(env, duration)?;
-        Ok(false)
-    }
-
-    /// Non-blocking read of a live process's pipes; marks the process
-    /// exited once the pipes are drained and the child has finished.
-    pub fn poll_process_output(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
-        let record_id_value = self.record_value(record_id);
-        let process = self
-            .find_process_state_mut(record_id)
-            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-        let readmax = Some(process.readmax);
-        if let Some((reader, _)) = process.module_pipe.as_ref() {
-            let mut output = std::mem::take(&mut process.pending_stdout);
-            let mut reader: &fs::File = reader;
-            match read_nonblocking_channel(&mut reader, &mut output, readmax)? {
-                ChannelRead::End => process.stdout_eof = true,
-                ChannelRead::Eio if process.childless_pid.is_some() => {
-                    // wait_reading_process_output's EIO on a pty:
-                    // delete_read_fd, and for a process with pid -2, which
-                    // no SIGCHLD reports, pset_status (p, Qfailed).  The
-                    // last other opener of the pty's tty closed it.
-                    process.module_pipe = None;
-                    process.tick = crate::lisp::eval::next_process_tick();
-                    process.status = ProcessStatus::Failed;
-                    process.exit_code = None;
-                    process.exit_signal = None;
-                }
-                ChannelRead::Eio | ChannelRead::More => {}
-            }
-            return Ok((output, std::mem::take(&mut process.pending_stderr)));
-        }
-        let Some(runtime) = process.runtime.as_mut() else {
-            // Output drained at exit-detection time still needs delivering.
-            return Ok((
-                std::mem::take(&mut process.pending_stdout),
-                std::mem::take(&mut process.pending_stderr),
-            ));
-        };
-        let mut stdout = std::mem::take(&mut process.pending_stdout);
-        let mut stderr = std::mem::take(&mut process.pending_stderr);
-        let before = (stdout.len(), stderr.len());
-        // read_process_output: one read of at most p->readmax bytes from
-        // each channel.
-        if let Some(pipe) = runtime.child.stdout.as_mut()
-            && read_nonblocking_pipe(pipe, &mut stdout, readmax)?
-        {
-            process.stdout_eof = true;
+        if let Some(runtime) = process.runtime.as_mut() {
             runtime.stdout_at_end = true;
         }
-        if let Some(pipe) = runtime.child.stderr.as_mut()
-            && read_nonblocking_pipe(pipe, &mut stderr, readmax)?
-        {
-            process.stderr_eof = true;
-            runtime.stderr_at_end = true;
+        process.read_fd_deleted = true;
+        if process.childless_pid == Some(-2) {
+            process.tick = crate::lisp::eval::next_process_tick();
+            process.status = ProcessStatus::Failed;
+            process.exit_code = None;
+            process.exit_signal = None;
         }
-        // The pty's master: EIO once no one has its tty open (the child
-        // and what it left there gone) is wait_reading_process_output's
-        // delete_read_fd, the exit itself coming with SIGCHLD.
-        if let Some(mut pty) = runtime.pty_output.as_deref()
-            && !runtime.stdout_at_end
+    }
+
+    /// The carryover p->decoding_buf holds for the next read.
+    pub(crate) fn process_decoding_carryover(&self, record_id: u64) -> usize {
+        self.find_process_state(record_id)
+            .map_or(0, |process| process.decoder.carryover.len())
+    }
+
+    /// Another Lisp thread lives, which thread_select lets run while this
+    /// one waits.
+    pub(crate) fn other_threads_live(&self) -> bool {
+        self.thread_states.iter().any(|thread| {
+            thread.record_id != self.active_thread_id
+                && !matches!(thread.status, ThreadStatus::Finished)
+        })
+    }
+
+    /// Another Lisp thread could run now: thread_select's release of the
+    /// lock lets it, where with none ready the select itself blocks.
+    pub(crate) fn other_threads_ready(&self) -> bool {
+        self.thread_states.iter().any(|thread| {
+            thread.record_id != self.active_thread_id && self.thread_ready(thread, true)
+        })
+    }
+
+    /// thread_select's release of the global lock for a wait of at most
+    /// SLICE: the other threads run (this one blocked if it can be
+    /// suspended, else each ready one stepped).
+    pub(crate) fn let_other_threads_run(
+        &mut self,
+        env: &mut Env,
+        slice: std::time::Duration,
+    ) -> Result<(), LispError> {
+        if continuations::can_suspend(self) {
+            self.sleep_current_thread(env, slice)
+        } else {
+            self.drive_threads_inner(env, true, WaitEvents::None, true)
+        }
+    }
+
+    /// current_thread.
+    pub(crate) fn current_thread_id(&self) -> u64 {
+        self.active_thread_id
+    }
+
+    /// CONSP (p->status) && EQ (XCAR (p->status), Qexit), the raw status
+    /// not decoded.
+    pub(crate) fn process_status_exit(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id).is_some_and(|process| {
+            matches!(process.status, ProcessStatus::Exit | ProcessStatus::Closed)
+        })
+    }
+
+    /// compute_input_wait_mask's (and compute_write_mask's) mark of a
+    /// channel: fd_callback_info[fd].waiting_thread = current_thread.
+    pub(crate) fn set_process_waiting_thread(&mut self, channel: &WaitChannel) {
+        let thread = self.active_thread_id;
+        if let Some(process) = self.process_states.get_mut(channel.index)
+            && process.record_id == channel.process_id
         {
-            match read_nonblocking_channel(&mut pty, &mut stdout, readmax)? {
-                ChannelRead::End => {
-                    process.stdout_eof = true;
-                    runtime.stdout_at_end = true;
-                }
-                ChannelRead::Eio => runtime.stdout_at_end = true,
-                ChannelRead::More => {}
+            process.waiting_thread = Some(thread);
+        }
+    }
+
+    /// clear_waiting_thread_state: the channels this thread's wait marked
+    /// are free for another thread's.
+    pub(crate) fn clear_waiting_thread_state(&mut self) {
+        let thread = self.active_thread_id;
+        for process in &mut self.process_states {
+            if process.waiting_thread == Some(thread) {
+                process.waiting_thread = None;
             }
         }
-        if std::env::var_os("EMAXX_DEBUG_PROCESS_IO").is_some()
-            && (stdout.len() > before.0 || stderr.len() > before.1)
-        {
-            eprintln!(
-                "PROC-IO poll#{record_id} +out {} +err {}: {:?}",
-                stdout.len() - before.0,
-                stderr.len() - before.1,
-                String::from_utf8_lossy(&stdout[before.0..stdout.len().min(before.0 + 120)])
+        crate::lisp::primitives::clear_keyboard_waiting_thread(thread);
+    }
+
+    /// The emacs_read (emacs_gnutls_read, recvfrom) of read_process_output
+    /// on RECORD_ID's p->infd: at most p->readmax bytes, with what an
+    /// earlier read handed back unread first.
+    #[cfg(unix)]
+    pub(crate) fn read_process_channel(
+        &mut self,
+        record_id: u64,
+    ) -> Result<ChannelOutcome, LispError> {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return Ok(ChannelOutcome::Error);
+        };
+        if !process.pending_stdout.is_empty() {
+            return Ok(ChannelOutcome::Data(std::mem::take(
+                &mut process.pending_stdout,
+            )));
+        }
+        let readmax = process.readmax;
+        let mut bytes = Vec::new();
+        if let Some((reader, _)) = process.module_pipe.as_ref() {
+            let mut reader: &fs::File = reader;
+            return Ok(
+                match read_nonblocking_channel(&mut reader, &mut bytes, Some(readmax))? {
+                    ChannelRead::End => ChannelOutcome::End,
+                    ChannelRead::Eio => ChannelOutcome::Eio,
+                    ChannelRead::More if bytes.is_empty() => ChannelOutcome::WouldBlock,
+                    ChannelRead::More => ChannelOutcome::Data(bytes),
+                },
             );
         }
-        Self::refresh_process_state(process)?;
-        Ok((stdout, stderr))
+        if let Some(runtime) = process.runtime.as_mut() {
+            if let Some(mut pty) = runtime.pty_output.as_deref() {
+                return Ok(
+                    match read_nonblocking_channel(&mut pty, &mut bytes, Some(readmax))? {
+                        ChannelRead::End => ChannelOutcome::End,
+                        ChannelRead::Eio => ChannelOutcome::Eio,
+                        ChannelRead::More if bytes.is_empty() => ChannelOutcome::WouldBlock,
+                        ChannelRead::More => ChannelOutcome::Data(bytes),
+                    },
+                );
+            }
+            if let Some(pipe) = runtime.child.stdout.as_mut() {
+                return Ok(
+                    match read_nonblocking_channel(pipe, &mut bytes, Some(readmax))? {
+                        ChannelRead::End => {
+                            runtime.stdout_at_end = true;
+                            ChannelOutcome::End
+                        }
+                        ChannelRead::Eio => ChannelOutcome::Eio,
+                        ChannelRead::More if bytes.is_empty() => ChannelOutcome::WouldBlock,
+                        ChannelRead::More => ChannelOutcome::Data(bytes),
+                    },
+                );
+            }
+            return Ok(ChannelOutcome::Error);
+        }
+        if process.network.is_none() && process.serial.is_none() {
+            return Ok(ChannelOutcome::Error);
+        }
+        let (bytes, eof) = self.poll_connection_stream(record_id)?;
+        Ok(if !bytes.is_empty() {
+            ChannelOutcome::Data(bytes)
+        } else if eof {
+            ChannelOutcome::End
+        } else {
+            ChannelOutcome::WouldBlock
+        })
+    }
+
+    /// read_process_output's adaptive read buffering after a read of
+    /// NBYTES of at most READMAX: a short read (under 256 bytes) lengthens
+    /// p->read_output_delay by two READ_OUTPUT_DELAY_INCREMENTs up to
+    /// READ_OUTPUT_DELAY_MAX_MAX, a full one shortens it by one; a delay
+    /// left sets p->read_output_skip.  The change of process_output_delay_count,
+    /// and whether process_output_skip is to be set.
+    pub(crate) fn adapt_read_output_delay(
+        &mut self,
+        record_id: u64,
+        nbytes: usize,
+        readmax: usize,
+    ) -> (i32, bool) {
+        const INCREMENT: i64 = 10_000_000;
+        const MAX_MAX: i64 = INCREMENT * 7;
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return (0, false);
+        };
+        if process.adaptive_read_buffering == 0 {
+            return (0, false);
+        }
+        let mut count = 0;
+        let mut delay = process.read_output_delay;
+        if nbytes < 256 {
+            if delay < MAX_MAX {
+                if delay == 0 {
+                    count += 1;
+                }
+                delay += INCREMENT * 2;
+            }
+        } else if delay > 0 && nbytes == readmax {
+            delay -= INCREMENT;
+            if delay == 0 {
+                count -= 1;
+            }
+        }
+        process.read_output_delay = delay;
+        if delay != 0 {
+            process.read_output_skip = true;
+        }
+        (count, delay != 0)
+    }
+
+    /// p->nbytes_read += NBYTES.
+    pub(crate) fn add_process_nbytes_read(&mut self, record_id: u64, nbytes: usize) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.nbytes_read += nbytes as u64;
+        }
+    }
+
+    /// p->nbytes_read.
+    pub(crate) fn process_nbytes_read(&self, record_id: u64) -> u64 {
+        self.find_process_state(record_id)
+            .map_or(0, |process| process.nbytes_read)
+    }
+
+    /// p->read_output_skip = 0.
+    pub(crate) fn clear_process_read_output_skip(&mut self, channel: &WaitChannel) {
+        if let Some(process) = self.process_states.get_mut(channel.index)
+            && process.record_id == channel.process_id
+        {
+            process.read_output_skip = false;
+        }
+    }
+
+    /// send_process after each write to a stream (not a datagram): with
+    /// adaptive_read_buffering 1, a delay is given up
+    /// (p->read_output_delay and p->read_output_skip 0).  Whether it had
+    /// one, for process_output_delay_count.
+    pub(crate) fn reset_read_output_delay_after_write(&mut self, record_id: u64) -> bool {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return false;
+        };
+        if matches!(process.network, Some(NetworkRuntime::Datagram { .. })) {
+            return false;
+        }
+        if process.read_output_delay > 0 && process.adaptive_read_buffering == 1 {
+            process.read_output_delay = 0;
+            process.read_output_skip = false;
+            return true;
+        }
+        false
+    }
+
+    /// Fmake_process's and Fmake_pipe_process's p->adaptive_read_buffering
+    /// from `process-adaptive-read-buffering'.
+    pub(crate) fn set_process_adaptive_read_buffering(&mut self, record_id: u64, value: Value) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.adaptive_read_buffering = if value.is_nil() {
+                0
+            } else if value == Value::T {
+                1
+            } else {
+                2
+            };
+        }
     }
 
     /// Put the still-unfired tail of a due-timer batch back before timers
@@ -4794,40 +4915,6 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Service the non-process half of wait_reading_process_output.  This is
-    /// shared by the top-level key wait and Lisp commands that perform their
-    /// own terminal read, so neither path can starve watches, timers, or
-    /// cooperative threads while waiting for keyboard input.
-    pub(crate) fn service_async_runtime_events(
-        &mut self,
-        env: &mut Env,
-        wake_sleepers: bool,
-        idle_seconds: Option<f64>,
-    ) -> Result<bool, LispError> {
-        let user_signal_events = if self.waiting_for_user_input()
-            && primitives::unread_command_events(self, env)?.is_empty()
-        {
-            primitives::run_pending_user_signal_events(self, env)?
-        } else {
-            false
-        };
-        let terminal_input = self.service_terminal_input(env)?;
-        let file_events = self.service_file_notifications(env)?;
-        let timer_events = if let Some(idle) = idle_seconds {
-            self.run_pending_timer_events_with_idle(env, idle)?
-        } else {
-            self.run_pending_timer_events(env)?
-        };
-        let thread_events = self.thread_states.iter().any(|thread| {
-            thread.record_id != self.main_thread_id
-                && (matches!(thread.status, ThreadStatus::Runnable)
-                    || wake_sleepers
-                        && matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::Sleep)))
-        });
-        self.drive_threads_inner(env, wake_sleepers, WaitEvents::None, true)?;
-        Ok(terminal_input || user_signal_events || file_events || timer_events || thread_events)
-    }
-
     pub(crate) fn current_thread_is_main(&self) -> bool {
         self.active_thread_id == self.main_thread_id
     }
@@ -4897,6 +4984,21 @@ impl Interpreter {
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         process.thread_id = thread_id;
+        // set_proc_thread: fd_callback_info[p->infd] and [p->outfd].
+        #[cfg(unix)]
+        {
+            let fds = [process_infd_of(process), process_outfd_of(process)];
+            for fd in fds.into_iter().flatten() {
+                match thread_id {
+                    Some(thread) => {
+                        self.fd_thread_locks.insert(fd, thread);
+                    }
+                    None => {
+                        self.fd_thread_locks.remove(&fd);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -4925,10 +5027,17 @@ impl Interpreter {
     fn unlock_processes_for_thread(&mut self, thread_id: u64) {
         // update_processes_for_thread_death walks Vprocess_alist: a process
         // already removed from it keeps the thread that locked it.
+        let mut unlocked = Vec::new();
         for process in &mut self.process_states {
             if Self::in_process_alist(process) && process.thread_id == Some(thread_id) {
                 process.thread_id = None;
+                // fd_callback_info[p->infd] and [p->outfd] unlocked.
+                #[cfg(unix)]
+                unlocked.extend([process_infd_of(process), process_outfd_of(process)]);
             }
+        }
+        for fd in unlocked.into_iter().flatten() {
+            self.fd_thread_locks.remove(&fd);
         }
     }
 
@@ -5173,17 +5282,6 @@ impl Interpreter {
         })
     }
 
-    /// One pass of a wait_reading_process_output iteration: the threads
-    /// stepped, the events serviced, and timer_check run when CHECK_TIMERS.
-    pub fn drive_threads(&mut self, env: &mut Env, check_timers: bool) -> Result<(), LispError> {
-        let events = if check_timers {
-            WaitEvents::All
-        } else {
-            WaitEvents::ExceptTimers
-        };
-        self.drive_threads_inner(env, true, events, true)
-    }
-
     pub(crate) fn yield_current_thread(&mut self, env: &mut Env) -> Result<Value, LispError> {
         // Fthread_yield does not itself read keyboard events or run timers.
         // Woken child event loops resume and service their own due timers.
@@ -5193,8 +5291,10 @@ impl Interpreter {
 
     /// The events wait_reading_process_output looks at at the top of an
     /// iteration of its loop, before any select: timer_check among them.
-    pub(crate) fn run_wait_loop_top_events(&mut self, env: &mut Env) -> Result<(), LispError> {
-        self.run_thread_wait_events(env, true)
+    /// The user signal events and file notifications a wait's pass
+    /// services before its timer_check.
+    pub(crate) fn run_wait_loop_input_events(&mut self, env: &mut Env) -> Result<(), LispError> {
+        self.run_thread_wait_events(env, false)
     }
 
     fn run_thread_wait_events(
@@ -5203,7 +5303,8 @@ impl Interpreter {
         check_timers: bool,
     ) -> Result<(), LispError> {
         if self.waiting_for_user_input() {
-            if primitives::unread_command_events(self, env)?.is_empty() {
+            // read_char's CONSP (Vunread_command_events).
+            if !primitives::unread_command_events_pending(self, env) {
                 let _ = primitives::run_pending_user_signal_events(self, env)?;
             }
             let _ = self.service_file_notifications(env)?;
@@ -5867,19 +5968,80 @@ fn file_notify_fingerprint(path: &str) -> FileNotifyFingerprint {
     }
 }
 
-/// Read a nonblocking child pipe into OUTPUT: one emacs_read of at most
-/// LIMIT bytes, or with no limit everything until it would block.  Whether
-/// the pipe reached its end (a read of zero bytes; a pty's EIO is not one,
-/// as process.c reads it).
-fn read_nonblocking_pipe<T: Read>(
-    pipe: &mut T,
-    output: &mut Vec<u8>,
-    limit: Option<usize>,
-) -> Result<bool, LispError> {
-    Ok(matches!(
-        read_nonblocking_channel(pipe, output, limit)?,
-        ChannelRead::End
-    ))
+/// A process's p->infd: the descriptor its output is read from.
+#[cfg(unix)]
+fn process_infd_of(process: &ProcessState) -> Option<std::os::fd::RawFd> {
+    use std::os::fd::AsRawFd;
+    if let Some((reader, _)) = process.module_pipe.as_ref() {
+        Some(reader.as_raw_fd())
+    } else if let Some(runtime) = process.runtime.as_ref() {
+        runtime
+            .pty_output
+            .as_ref()
+            .map(|pty| pty.as_raw_fd())
+            .or_else(|| runtime.child.stdout.as_ref().map(|pipe| pipe.as_raw_fd()))
+    } else if let Some(network) = process.network.as_ref() {
+        Some(match network {
+            NetworkRuntime::Listener(listener) => listener.as_raw_fd(),
+            NetworkRuntime::Stream(stream) => stream.as_raw_fd(),
+            NetworkRuntime::Datagram { socket, .. } => socket.as_raw_fd(),
+            NetworkRuntime::UnixListener(listener) => listener.as_raw_fd(),
+            NetworkRuntime::UnixStream(stream) => stream.as_raw_fd(),
+        })
+    } else {
+        process
+            .serial
+            .as_ref()
+            .map(|serial| serial.port.as_raw_fd())
+    }
+}
+
+/// A process's p->outfd: the descriptor its input is written to.
+#[cfg(unix)]
+fn process_outfd_of(process: &ProcessState) -> Option<std::os::fd::RawFd> {
+    use std::os::fd::AsRawFd;
+    if let Some((_, writer)) = process.module_pipe.as_ref() {
+        return writer.as_ref().map(|writer| writer.as_raw_fd());
+    }
+    if let Some(runtime) = process.runtime.as_ref() {
+        return runtime
+            .pty_input
+            .as_ref()
+            .map(|pty| pty.as_raw_fd())
+            .or_else(|| runtime.child.stdin.as_ref().map(|pipe| pipe.as_raw_fd()));
+    }
+    if let Some((_, write_to_subprocess)) = process.pipe_input.as_ref() {
+        return Some(write_to_subprocess.as_raw_fd());
+    }
+    process_infd_of(process)
+}
+
+/// A process channel wait_reading_process_output may select on.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WaitChannel {
+    pub(crate) fd: std::os::fd::RawFd,
+    pub(crate) process_id: u64,
+    /// The process's place in process_states.
+    pub(crate) index: usize,
+    pub(crate) read: bool,
+    pub(crate) connect: bool,
+    pub(crate) thread: Option<u64>,
+    pub(crate) waiting: Option<u64>,
+    /// p->read_output_delay and p->read_output_skip.
+    pub(crate) read_output_delay: i64,
+    pub(crate) read_output_skip: bool,
+    /// p->gnutls_p && emacs_gnutls_record_check_pending > 0.
+    pub(crate) tls_pending: bool,
+}
+
+/// What one read of a process's channel returned: bytes, the end (a
+/// read of zero), EAGAIN, a pty's EIO, or another error.
+pub(crate) enum ChannelOutcome {
+    Data(Vec<u8>),
+    End,
+    WouldBlock,
+    Eio,
+    Error,
 }
 
 /// What a non-blocking read of a process channel ended on.

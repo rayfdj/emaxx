@@ -58,6 +58,13 @@ impl Corpus {
         self.directory.join("script.el").display().to_string()
     }
 
+    /// A file NAME in the corpus directory holding CONTENTS, by its path.
+    fn write(&self, name: &str, contents: &str) -> String {
+        let path = self.directory.join(name);
+        std::fs::write(&path, contents).unwrap();
+        path.display().to_string()
+    }
+
     /// Run BINARY with ARGS from the corpus directory; the binary's own
     /// path (argv[0], echoed by messages and `command-line-args') and
     /// the corpus directory are replaced by placeholders, and bytecode
@@ -85,6 +92,212 @@ impl Corpus {
     }
 }
 
+impl Corpus {
+    /// Run BINARY with `-nw -Q -l PROBE' on the slave of a fresh 80x24
+    /// pseudo-terminal (its controlling terminal, TERM=xterm), feeding the
+    /// master the INPUT steps (a pause, then bytes) once the session has
+    /// had a second and a half to start, then waiting up to ten seconds for
+    /// it to exit; the contents of OUT, which the probe writes, or None.
+    #[cfg(unix)]
+    fn run_tty(
+        &self,
+        binary: &Path,
+        probe: &str,
+        out: &str,
+        locale: &str,
+        input: &[(f64, &[u8])],
+    ) -> Option<String> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let out = self.directory.join(out);
+        let _ = std::fs::remove_file(&out);
+        let (master, slave) = open_pty(24, 80);
+        let slave_fd = slave.as_raw_fd();
+        let mut command = Command::new(binary);
+        command
+            .args(["-nw", "-Q", "-l", probe])
+            .current_dir(&self.directory)
+            .env("HOME", &self.directory)
+            .env("LC_ALL", locale)
+            .env("TERM", "xterm")
+            .stdin(std::process::Stdio::from(slave.try_clone().unwrap()))
+            .stdout(std::process::Stdio::from(slave.try_clone().unwrap()))
+            .stderr(std::process::Stdio::from(slave));
+        // SAFETY: setsid and the TIOCSCTTY ioctl are async-signal-safe.
+        unsafe {
+            command.pre_exec(move || {
+                libc::setsid();
+                libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0);
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        let master_fd = master.as_raw_fd();
+        // The master's output is read and dropped so the session never
+        // blocks on a full terminal.
+        let drain = |seconds: f64| {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
+            let mut buffer = [0u8; 65536];
+            loop {
+                let left = end.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return;
+                }
+                let mut fds = libc::pollfd {
+                    fd: master_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: FDS is one valid pollfd.
+                let ready = unsafe { libc::poll(&mut fds, 1, left.as_millis() as i32) };
+                if ready > 0 {
+                    // SAFETY: BUFFER is writable for its length.
+                    let n =
+                        unsafe { libc::read(master_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+                    if n <= 0 {
+                        std::thread::sleep(left.min(std::time::Duration::from_millis(20)));
+                    }
+                }
+            }
+        };
+        drain(1.5);
+        for (pause, bytes) in input {
+            drain(*pause);
+            // SAFETY: BYTES is readable for its length.
+            unsafe { libc::write(master_fd, bytes.as_ptr().cast(), bytes.len()) };
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+            drain(0.2);
+        }
+        std::fs::read_to_string(&out).ok()
+    }
+}
+
+impl Corpus {
+    /// Run BINARY with ARGS on the slave of a fresh ROWS x COLS
+    /// pseudo-terminal (its controlling terminal) with TERM set to TERM
+    /// or unset, typing nothing; what the session wrote to the terminal
+    /// (CR LF read as LF) and its exit status, waiting up to ten seconds.
+    #[cfg(unix)]
+    fn run_pty(
+        &self,
+        binary: &Path,
+        args: &[&str],
+        term: Option<&str>,
+        rows: u16,
+        cols: u16,
+    ) -> (String, Option<i32>) {
+        self.run_pty_typing(binary, args, term, rows, cols, &[])
+    }
+
+    /// run_pty, typing INPUT's steps (a pause, then bytes) once the
+    /// session has had a second and a half to start.
+    #[cfg(unix)]
+    fn run_pty_typing(
+        &self,
+        binary: &Path,
+        args: &[&str],
+        term: Option<&str>,
+        rows: u16,
+        cols: u16,
+        input: &[(f64, &[u8])],
+    ) -> (String, Option<i32>) {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let (master, slave) = open_pty(rows, cols);
+        let slave_fd = slave.as_raw_fd();
+        let mut command = Command::new(binary);
+        command
+            .args(args)
+            .current_dir(&self.directory)
+            .env("HOME", &self.directory)
+            .env("LC_ALL", "C");
+        match term {
+            Some(term) => command.env("TERM", term),
+            None => command.env_remove("TERM"),
+        };
+        command
+            .stdin(std::process::Stdio::from(slave.try_clone().unwrap()))
+            .stdout(std::process::Stdio::from(slave.try_clone().unwrap()))
+            .stderr(std::process::Stdio::from(slave));
+        // SAFETY: setsid and the TIOCSCTTY ioctl are async-signal-safe.
+        unsafe {
+            command.pre_exec(move || {
+                libc::setsid();
+                libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0);
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        let master_fd = master.as_raw_fd();
+        let mut output = Vec::new();
+        let read_for = |seconds: f64, output: &mut Vec<u8>| {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
+            while std::time::Instant::now() < end {
+                let mut fds = libc::pollfd {
+                    fd: master_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: FDS is one valid pollfd.
+                if unsafe { libc::poll(&mut fds, 1, 20) } > 0 {
+                    let mut buffer = [0u8; 65536];
+                    // SAFETY: BUFFER is writable for its length.
+                    let n =
+                        unsafe { libc::read(master_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+                    if n > 0 {
+                        output.extend_from_slice(&buffer[..n as usize]);
+                    }
+                }
+            }
+        };
+        if !input.is_empty() {
+            read_for(1.5, &mut output);
+        }
+        for (pause, bytes) in input {
+            read_for(*pause, &mut output);
+            // SAFETY: BYTES is readable for its length.
+            unsafe { libc::write(master_fd, bytes.as_ptr().cast(), bytes.len()) };
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let status = loop {
+            let mut fds = libc::pollfd {
+                fd: master_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: FDS is one valid pollfd.
+            if unsafe { libc::poll(&mut fds, 1, 50) } > 0 {
+                let mut buffer = [0u8; 65536];
+                // SAFETY: BUFFER is writable for its length.
+                let n = unsafe { libc::read(master_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+                if n > 0 {
+                    output.extend_from_slice(&buffer[..n as usize]);
+                    continue;
+                }
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                break status.code();
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        };
+        (
+            String::from_utf8_lossy(&output).replace("\r\n", "\n"),
+            status,
+        )
+    }
+}
+
 impl Drop for Corpus {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.directory);
@@ -99,6 +312,52 @@ impl Drop for Corpus {
 /// from both outputs before they are compared: that difference is the
 /// evaluator's, not the command line's.  Which frame names are
 /// primitives, the oracle itself says.
+/// A pseudo-terminal of ROWS by COLS whose descriptors are close-on-exec
+/// from the moment they open (openpty's are not), so a child another test
+/// spawns meanwhile inherits neither: the atimer test reads which file a
+/// fresh editor's descriptor 3 names.
+fn open_pty(rows: u16, cols: u16) -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
+    use std::os::fd::FromRawFd;
+    // SAFETY: posix_openpt, grantpt, unlockpt and ptsname take the
+    // descriptor it returns; ptsname's static buffer is copied at once.
+    let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+    assert!(master >= 0, "posix_openpt");
+    // SAFETY: MASTER is open and ours.
+    let master = unsafe { std::os::fd::OwnedFd::from_raw_fd(master) };
+    use std::os::fd::AsRawFd;
+    // SAFETY: MASTER is a pty master.
+    assert_eq!(unsafe { libc::grantpt(master.as_raw_fd()) }, 0, "grantpt");
+    // SAFETY: as above.
+    assert_eq!(unsafe { libc::unlockpt(master.as_raw_fd()) }, 0, "unlockpt");
+    let mut name = [0 as libc::c_char; 128];
+    // SAFETY: NAME is writable for its length.
+    let named = unsafe { libc::ptsname_r(master.as_raw_fd(), name.as_mut_ptr(), name.len()) };
+    assert_eq!(named, 0, "ptsname_r");
+    // SAFETY: ptsname_r left NAME a terminated string.
+    let slave = unsafe {
+        libc::open(
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    assert!(slave >= 0, "open the pty slave");
+    // SAFETY: SLAVE is open and ours.
+    let slave = unsafe { std::os::fd::OwnedFd::from_raw_fd(slave) };
+    let size = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: SIZE is a valid winsize.
+    assert_eq!(
+        unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCSWINSZ, &size) },
+        0,
+        "TIOCSWINSZ"
+    );
+    (master, slave)
+}
+
 fn without_primitive_frames(texts: &mut [String]) {
     let names = texts
         .iter()
@@ -4710,11 +4969,11 @@ fn the_review_of_round_333_is_answered_as_gnu_answers() {
 (show "a2" (lambda () (make-process :name "a2" :command nil :coding 'no-such-cs :noquery t)))
 ;; :stderr given as a string naming an existing process
 (show "a3" (lambda () (let ((q (make-process :name "a3q" :command '("sleep" "3") :noquery t)))
-   (let ((p (make-process :name "a3" :command '("true") :stderr "a3q" :noquery t)))
+   (let ((p (make-process :name "a3" :command '("sleep" "3") :stderr "a3q" :noquery t)))
      (list (process-name p) (mapcar #'process-name (process-list)))))))
 ;; :stderr given as a buffer that has a process
 (show "a4" (lambda () (let ((q (make-process :name "a4q" :command '("sleep" "3") :buffer "a4b" :noquery t)))
-   (let ((p (make-process :name "a4" :command '("true") :stderr (get-buffer "a4b") :noquery t)))
+   (let ((p (make-process :name "a4" :command '("sleep" "3") :stderr (get-buffer "a4b") :noquery t)))
      (list (process-name p) (mapcar #'process-name (process-list)))))))
 ;; :stderr pipe left behind when make-process fails later
 (show "a5" (lambda () (list (condition-case e (make-process :name "a5" :command '("true") :stderr "a5err" :stop t) (error e))
@@ -4767,7 +5026,11 @@ fn the_review_of_round_333_is_answered_as_gnu_answers() {
 (show "d5" (lambda () (let ((p (fresh "d5"))) (list (kill-process p) (outs p) (process-status p)))))
 (show "d6" (lambda () (let ((p (fresh "d6" :connection-type 'pipe))) (list (condition-case e (interrupt-process p) (error e)) (condition-case e (stop-process p) (error e)) (condition-case e (process-running-child-p p) (error e)) (process-status p)))))
 (show "d7" (lambda () (let ((p (fresh "d7"))) (list (interrupt-process p 'lambda) (outs p)))))
-(show "d8" (lambda () (let ((p (fresh "d8"))) (process-send-string p "abc") (list (interrupt-process p t) (outs p)))))
+(show "d8" (lambda () (let ((p (fresh "d8")) (n 0)) (process-send-string p "abc")
+   ;; wait for the echo first: a VINTR's ISIG flush drops echo the master has not read yet,
+   ;; which depends on the kernel's workqueue timing
+   (while (and (< n 50) (not (car (process-get p 'outbox)))) (accept-process-output p 0.1) (setq n (1+ n)))
+   (list (interrupt-process p t) (outs p)))))
 (show "d9" (lambda () (let ((p (fresh "d9"))) (list (process-send-eof p) (outs p) (process-send-string p "q\n") (outs p))))))"##,
         r##"(progn
 ;; Sending more than a pipe's capacity to a pipe process nobody reads:
@@ -5564,6 +5827,360 @@ fn a_childs_end_waits_for_status_notify_as_gnu_s() {
 }
 
 #[test]
+fn a_sentinels_or_a_filters_error_is_caught_as_exec_sentinel_does() {
+    // exec_sentinel's and read_process_output's internal_condition_case_1
+    // with handlers `error' (none when `debug-on-error' is set, the error
+    // then reaching the caller's condition-case): every signal caught, a
+    // quit with them, given to cmd_error_internal with "error in process
+    // sentinel: " or "error in process filter: ", which in batch prints it
+    // and kills Emacs with status 255; delete-process's own status_notify
+    // as well.
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((debug-on-error t)
+       (p (make-process :name "a" :command '("true") :noquery t :connection-type 'pipe :sentinel (lambda (_ e) (error "boom %s" e)))))
+  (busy 0.3)
+  (princ (format "debug %S\n" (condition-case err (accept-process-output nil 0.2) (error (list 'caught err))))))
+(let* ((p (make-process :name "q" :command '("sh" "-c" "echo x; sleep 1") :noquery t :connection-type 'pipe
+                        :filter (lambda (_ s) (signal 'quit nil)))))
+  (busy 0.3)
+  (princ (format "quit %S\n" (condition-case err (accept-process-output nil 0.2) (quit (list 'quit err)))))
+  (delete-process p))
+(let* ((p (make-process :name "b" :command '("true") :noquery t :connection-type 'pipe :sentinel (lambda (_ e) (princ (format "b %S\n" e)))))
+       (q (make-process :name "c" :command '("sh" "-c" "echo y") :noquery t :connection-type 'pipe
+                        :filter (lambda (_ s) (error "fboom %s" s)))))
+  (busy 0.3)
+  (accept-process-output nil 0.2)
+  (princ "after\n")))"##,
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((p (make-process :name "a" :command '("sleep" "5") :noquery t :connection-type 'pipe :sentinel (lambda (_ e) (error "boom2 %s" e)))))
+  (princ (format "del %S\n" (condition-case err (delete-process p) (error (list 'caught err)))))
+  (princ "after\n")))"##,
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
+    }
+}
+
+#[test]
+fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
+    // process.c:wait_reading_process_output: one select over every channel
+    // this thread may watch, the ready ones handled in descriptor order
+    // from last_read_channel + 1, a channel's read before its connect, and
+    // no other channel read after one that read something until the next
+    // select; a server's readiness accepts one connection; a connection's
+    // end is reported by status_notify; WAIT_PROC's own reads, and what a
+    // nested wait read of its output (p->nbytes_read), make the value of
+    // `accept-process-output'; a server is no running process to wait for.
+    // A thread's wait selects on a process another thread made (only
+    // `set-process-thread' locks a descriptor); JUST-THIS-ONE reads no
+    // channel delete_read_fd took out (a stopped connection's, a filter of
+    // t's); a positive timeout however small runs one pass; Fsleep_for
+    // decodes its arguments as GNU's does; and a timed `read-event' ends
+    // when a filter sets `quit-flag'.  p2 sleeps after its output: once a
+    // read of WAIT_PROC sets wait to MINIMUM, the next select finds a child
+    // that has just written and is exiting either still running (the wait
+    // returns) or reaped (status_notify runs its sentinel first), a race in
+    // GNU's loop as in Emaxx's.
+    let corpus = Corpus::new();
+    for program in [
+        r##";;; -*- lexical-binding: t -*-
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((log nil)
+       (mk (lambda (n) (make-process :name n :command (list "sh" "-c" (format "printf '%s1 '; sleep 0.2; printf '%s2 '; sleep 3" n n))
+                                     :connection-type 'pipe :noquery t
+                                     :filter (lambda (_ s) (push (list n s) log)))))
+       (a (funcall mk "a")) (b (funcall mk "b")) (c (funcall mk "c")))
+  (busy 0.1)
+  (princ (format "apo1 %S %S\n" (accept-process-output nil 0.05) (reverse log)))
+  (busy 0.3)
+  (princ (format "apo2 %S %S\n" (accept-process-output nil 0.05) (reverse log)))
+  (mapc #'delete-process (list a b c)))
+(let* ((log nil)
+       (mk (lambda (n) (make-process :name n :command (list "sh" "-c" (format "printf '%s1 '; sleep 0.2; printf '%s2 '; sleep 3" n n))
+                                     :connection-type 'pipe :noquery t
+                                     :filter (lambda (_ s) (push (list n s) log)))))
+       (a (funcall mk "a")) (b (funcall mk "b")))
+  (busy 0.1)
+  (princ (format "jto %S %S\n" (accept-process-output b 0.05 nil t) (reverse log)))
+  (princ (format "jto2 %S %S\n" (accept-process-output b 0.05) (reverse log)))
+  (mapc #'delete-process (list a b)))
+(let* ((log nil)
+       (pp (make-pipe-process :name "pp" :noquery t
+                              :filter (lambda (_ s) (push (list 'err (string-trim s)) log))
+                              :sentinel (lambda (_ e) (push (list 'pp (string-trim e)) log))))
+       (p (make-process :name "p" :command '("sh" "-c" "echo e1 >&2; echo o1; echo e2 >&2; echo o2") :stderr pp :noquery t :connection-type 'pipe
+                        :filter (lambda (_ s) (push (list 'out (string-trim s)) log))
+                        :sentinel (lambda (_ e) (push (list 'p (string-trim e)) log)))))
+  (busy 0.4)
+  (princ (format "status %S %S\n" (process-status p) (process-status pp)))
+  (princ (format "stderr-wait %S %S\n" (accept-process-output pp 0.1) (reverse log))))
+(let* ((log nil)
+       (q (make-process :name "q2" :command '("true") :noquery t :sentinel (lambda (_p e) (push (list 'q e) log))))
+       (p (make-process :name "p2" :command '("sh" "-c" "sleep 0.3; echo hi; sleep 1") :noquery t :filter (lambda (_p s) (push (list 'pout s) log)) :sentinel (lambda (_p e) (push (list 'p e) log)))))
+  (busy 0.2)
+  (princ (format "%S\n" (list (accept-process-output p 2 nil t) (reverse log) (accept-process-output p 2 nil t) (reverse log)))))
+(princ "end\n")"##,
+        r##";;; -*- lexical-binding: t -*-
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((log nil)
+       (srv (make-network-process :name "srv" :server t :host "127.0.0.1" :service t :noquery t
+                                  :sentinel (lambda (_ e) (push (list 'srv (car (split-string e " from"))) log))))
+       (ok (make-network-process :name "ok" :host "127.0.0.1" :service (process-contact srv :service) :nowait t :noquery t
+                                 :sentinel (lambda (_ e) (push (list 'ok (string-trim e)) log)))))
+  (busy 0.3)
+  (accept-process-output nil 0.2)
+  (princ (format "connect-and-accept %S\n" (reverse log)))
+  (mapc #'delete-process (process-list)))
+(let ((srv (make-network-process :name "srv" :server t :service t :host 'local :noquery t)))
+  (let ((t0 (float-time)))
+    (princ (format "server-wait %S %s\n" (accept-process-output srv 0.3) (if (< (- (float-time) t0) 0.2) "fast" "slow"))))
+  (delete-process srv))
+(let* ((log nil)
+       (srv (make-network-process :name "s2" :server t :service t :host 'local :noquery t
+              :filter (lambda (p s) (push (list 'srv-in s) log) (process-send-string p "bye") (delete-process p))
+              :sentinel (lambda (_p e) (push (list 'srv-sen (car (split-string e " from"))) log))))
+       (cl (make-network-process :name "c2" :host 'local :service (process-contact srv :service) :noquery t
+              :filter (lambda (_p s) (push (list 'cl-in s) log))
+              :sentinel (lambda (_p e) (push (list 'cl-sen e) log)))))
+  (process-send-string cl "hi")
+  (accept-process-output nil 0.3)
+  (accept-process-output nil 0.3)
+  (princ (format "net %S\n" (reverse log)))
+  (delete-process srv))
+(let* ((log nil) p
+       (m (make-mutex)) (cv (make-condition-variable m)) (go nil)
+       (th (make-thread
+            (lambda ()
+              (setq p (make-process :name "tp" :command '("true") :noquery t :connection-type 'pipe
+                                    :sentinel (lambda (_ e) (push (list 'tp (string-trim e)) log))))
+              (with-mutex m (while (not go) (condition-wait cv)))
+              (push (list 'thread-wait (accept-process-output nil 0.3)) log))
+            "T")))
+  (while (not p) (sleep-for 0.05) (push 'slept log))
+  (busy 0.4)
+  (make-process :name "mp" :command '("true") :noquery t :connection-type 'pipe
+                :sentinel (lambda (_ e) (push (list 'mp (string-trim e)) log)))
+  (busy 0.3)
+  (accept-process-output nil 0.2)
+  (with-mutex m (setq go t) (condition-notify cv t))
+  (thread-join th)
+  (princ (format "threads %S\n" (reverse log))))
+(princ "end\n")"##,
+        r##";;; -*- lexical-binding: t -*-
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(let* ((done nil)
+       (p (make-process :name "srv" :command '("sh" "-c" "sleep 0.1; echo ready; sleep 30") :connection-type 'pipe :noquery t
+                        :filter (lambda (_ s) (setq done (string-trim s)))))
+       (t0 (float-time))
+       (th (make-thread (lambda () (while (and (not done) (< (- (float-time) t0) 3)) (accept-process-output nil 0.1))) "worker")))
+  (thread-join th)
+  (princ (format "worker done=%S %s\n" done (if (< (- (float-time) t0) 1) "soon" "late")))
+  (delete-process p))
+(let* ((log nil) (srvconn nil)
+       (srv (make-network-process :name "srv" :server t :service t :host 'local :noquery t
+              :sentinel (lambda (p _e) (setq srvconn p))))
+       (cl (make-network-process :name "cl" :host 'local :service (process-contact srv :service) :noquery t
+              :filter (lambda (_p s) (push (list 'cl-in s) log)))))
+  (while (not srvconn) (accept-process-output nil 0.05))
+  (stop-process cl)
+  (process-send-string srvconn "hello")
+  (busy 0.1)
+  (princ (format "stopped jto %S %S\n" (accept-process-output cl 0.2 nil t) log))
+  (continue-process cl)
+  (princ (format "continued %S %S\n" (accept-process-output cl 0.2) log))
+  (setq log nil)
+  (set-process-filter cl t)
+  (process-send-string srvconn "again")
+  (busy 0.1)
+  (princ (format "filter-t jto %S %S\n" (accept-process-output cl 0.2 nil t) log))
+  (set-process-filter cl (lambda (_p s) (push (list 'cl-in2 s) log)))
+  (princ (format "filter back %S %S\n" (accept-process-output cl 0.2) log))
+  (delete-process cl) (delete-process srv))
+(dolist (form '((sleep-for 1e-6) (sleep-for 1e-10) (accept-process-output nil 1e-9) (sit-for 1e-6)))
+  (let ((ran nil))
+    (run-at-time 0 nil (lambda () (setq ran t)))
+    (eval form t)
+    (princ (format "%S timer-ran=%S\n" form ran))))
+(dolist (args '(("x") (0.1 1.5) (0 -100) (nil)))
+  (princ (format "sleep-for %S %S\n" args (condition-case e (apply #'sleep-for args) (error e)))))
+(let* ((t0 (float-time))
+       (p (make-process :name "q" :command '("sh" "-c" "sleep 0.1; echo a; sleep 2") :connection-type 'pipe :noquery t
+                        :filter (lambda (_ _s) (setq quit-flag t)))))
+  (princ (format "read-event %S %s\n" (condition-case nil (progn (read-event nil nil 1) 'after) (quit 'quit))
+                 (if (< (- (float-time) t0) 0.5) "soon" "late")))
+  (setq quit-flag nil)
+  (delete-process p))
+(princ (format "read-event x %S\n" (read-event nil nil -1)))
+(princ "end\n")"##,
+    ] {
+        let file = corpus.write("wait.el", program);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &file]);
+    }
+}
+
+#[test]
+fn the_processes_at_exit_are_shut_down_as_shut_down_emacs_does() {
+    // emacs.c:shut_down_emacs after `kill-emacs-hook': inhibit_sentinels
+    // set, then kill_buffer_processes (Qnil) walking Vprocess_alist, each
+    // network, serial or pipe connection given to Fdelete_process, whose
+    // status_notify reads the output of the other processes that changed
+    // (their filters run, their sentinels do not), and each subprocess
+    // whose channel is open sent SIGHUP; emacs_gnutls_deinit's message for
+    // a TLS connection.  Then kill-buffer's kill_buffer_processes, whose
+    // FOR_EACH_PROCESS follows the cdr of a cell its deletion took off the
+    // alist to a connection a sentinel deleted, deleting it again.  A
+    // filter that runs during the shutdown sees `inhibit-redisplay' t, and
+    // one whose error, in batch, kills Emacs during a fatal signal's
+    // shutdown ends it with that `kill-emacs''s status.
+    let resources = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../emacs/test/lisp/net/network-stream-resources");
+    let corpus = Corpus::new();
+    for program in [
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(defvar srv (make-network-process :name "srv" :server t :service t :host 'local :noquery t
+  :sentinel (lambda (_p e) (princ (format "srv-sentinel %S\n" e)))))
+(defvar cl (make-network-process :name "cl" :host 'local :service (process-contact srv :service) :noquery t
+  :sentinel (lambda (_p e) (princ (format "cl-sentinel %S\n" e)))))
+(accept-process-output nil 0.3)
+(defvar pp (make-pipe-process :name "pp" :noquery t :sentinel (lambda (_p e) (princ (format "pp-sentinel %S\n" e)))))
+(defvar ch (make-process :name "ch" :command '("sh" "-c" "echo out1; exit 4") :noquery t :connection-type 'pipe
+  :sentinel (lambda (_p e) (princ (format "ch-sentinel %S\n" e)))
+  :filter (lambda (_p s) (princ (format "ch-filter %S %S\n" s (length (process-list)))))))
+(defvar sl (make-process :name "sl" :command '("sh" "-c" "trap '' HUP; sleep 5") :noquery t :connection-type 'pipe
+  :sentinel (lambda (_p e) (princ (format "sl-sentinel %S\n" e)))))
+(busy 0.5)
+(add-hook 'kill-emacs-hook (lambda () (princ (format "hook %S\n" (mapcar #'process-status (list srv cl pp ch sl))))))
+(kill-emacs 0))"##
+            .to_string(),
+        r##"(progn
+(defvar pp (make-pipe-process :name "pp" :noquery t :filter (lambda (_p s) (princ (format "pp-filter %S\n" s)))
+  :sentinel (lambda (_p e) (princ (format "pp-sentinel %S\n" e)))))
+(defvar ch (make-process :name "ch" :command '("sh" "-c" "echo out1; exit 4") :noquery t :connection-type 'pipe
+  :sentinel (lambda (_p e) (princ (format "ch-sentinel %S\n" e)))
+  :filter (lambda (_p s) (princ (format "ch-filter %S %S\n" s (mapcar #'process-name (process-list)))))))
+(defvar ch2 (make-process :name "ch2" :command '("sh" "-c" "echo out2; exit 5") :noquery t :connection-type 'pipe
+  :sentinel (lambda (_p e) (princ (format "ch2-sentinel %S\n" e)))
+  :filter (lambda (_p s) (princ (format "ch2-filter %S %S\n" s (mapcar #'process-name (process-list)))))))
+(defvar pp2 (make-pipe-process :name "pp2" :noquery t :sentinel (lambda (_p e) (princ (format "pp2-sentinel %S\n" e)))))
+(let ((end (+ (float-time) 0.7))) (while (< (float-time) end)))
+(princ (format "before %S\n" (mapcar #'process-status (list ch ch2))))
+(princ "end\n"))"##
+            .to_string(),
+        r##"(progn
+(defvar b (get-buffer-create "B"))
+(defvar ch2 (make-process :name "ch2" :command '("sh" "-c" "sleep 0.3; echo out2; exit 5") :noquery t :connection-type 'pipe
+  :sentinel (lambda (_p e) (princ (format "ch2-sentinel %S\n" e)))
+  :filter (lambda (_p s) (princ (format "ch2-filter %S\n" s)))))
+(defvar pb (make-pipe-process :name "pb" :buffer b :noquery t :sentinel (lambda (_p e) (princ (format "pb-sentinel %S\n" e)))))
+(defvar pa (make-pipe-process :name "pa" :buffer b :noquery t
+  :sentinel (lambda (_p e) (princ (format "pa-sentinel %S\n" e)) (delete-process pb)
+              (let ((end (+ (float-time) 0.8))) (while (< (float-time) end)))
+              (princ "pa-sentinel-end\n"))))
+(kill-buffer b)
+(princ (format "after %S\n" (mapcar #'process-name (process-list))))
+(accept-process-output nil 0.1)
+(princ "end\n"))"##
+            .to_string(),
+        r##"(progn
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(defvar pp (make-pipe-process :name "pp" :noquery t))
+(defvar ch (make-process :name "ch" :command '("sh" "-c" "sleep 0.2; echo out1; exit 4") :noquery t :connection-type 'pipe
+  :filter (lambda (_p s) (princ (format "filter %S inhibit-redisplay=%S\n" s inhibit-redisplay)))))
+(add-hook 'kill-emacs-hook (lambda () (princ (format "hook inhibit-redisplay=%S\n" inhibit-redisplay))))
+(busy 0.5)
+(kill-emacs 0))"##
+            .to_string(),
+        r##"(progn
+(defvar shutting nil)
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(defvar pp (make-pipe-process :name "pp" :noquery t))
+(defvar ch (make-process :name "ch" :command '("sh" "-c" "sleep 0.3; echo out1; exit 4") :noquery t :connection-type 'pipe
+  :filter (lambda (_p s) (message "filter %S" s) (when shutting (error "boom in filter")))))
+(defvar pp2 (make-pipe-process :name "pp2" :noquery t))
+(add-hook 'kill-emacs-hook (lambda () (message "hook")))
+(setq shutting t)
+(busy 0.6)
+(message "signal")
+(signal-process (emacs-pid) 'SIGVTALRM)
+(busy 0.5)
+(message "end"))"##
+            .to_string(),
+        r##"(progn
+(require 'gnutls)
+(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "44392"))
+(set-process-query-on-exit-flag srv nil)
+(sleep-for 1)
+(let ((c (open-network-stream "t" nil "127.0.0.1" 44392 :type 'plain)))
+  (set-process-query-on-exit-flag c nil)
+  (set-process-sentinel c (lambda (_p e) (princ (format "sentinel %S\n" e))))
+  (princ (format "boot %S\n" (gnutls-boot c 'gnutls-x509pki '(:hostname "localhost" :priority "NORMAL:%NO_SHUFFLE_EXTENSIONS" :loglevel 2)))))
+(add-hook 'kill-emacs-hook (lambda () (princ "hook\n")))
+(princ "end\n"))"##
+            .replace("KEYFILE", &resources.join("key.pem").display().to_string())
+            .replace("CERTFILE", &resources.join("cert.pem").display().to_string()),
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
+    }
+}
+
+#[test]
+fn gnutls_boot_verifies_and_logs_as_gnutls_c_does() {
+    // gnutls.c:gnutls_verify_boot against a gnutls-serv holding GNU's own
+    // test certificate: gnutls_certificate_verify_peers2's status and
+    // gnutls_x509_crt_check_hostname's mismatch kept apart
+    // (p->gnutls_extra_peer_verification), each `:verify-error' choice,
+    // the boot's error codes and init stages, `gnutls-peer-status''s
+    // warnings and certificate, and the "gnutls.c: [LEVEL] (Emacs) ..."
+    // messages GNUTLS_LOG makes at `:loglevel' 1, emacs_gnutls_deinit's
+    // among them.
+    let resources = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../emacs/test/lisp/net/network-stream-resources");
+    let program = r##"(progn
+(require 'gnutls)
+(defun show (tag form) (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "44391"))
+(sleep-for 1)
+(dolist (host '("localhost" "example.org"))
+  (dolist (ve '(nil t (:hostname) (:trustfiles)))
+    (show (format "%s %S" host ve)
+          (lambda ()
+            (let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+              (prog1 (condition-case e
+                         (progn (gnutls-negotiate :process c :hostname host :verify-error ve :trustfiles '("CERTFILE"))
+                                (let ((st (gnutls-peer-status c)))
+                                  (list (plist-get st :warnings) (gnutls-peer-status-warning-describe :no-host-match)
+                                        (plist-get (plist-get st :certificate) :subject))))
+                       (error (list 'ERR e)))
+                (delete-process c)))))))
+(dolist (params (list '(:hostname "localhost" :trustfiles ("/nonexistent/ca.pem"))
+                      '(:hostname "localhost" :trustfiles (5))
+                      '(:hostname "localhost" :crlfiles ("/nonexistent/crl.pem"))
+                      '(:hostname "localhost" :priority "BOGUS")
+                      '(:hostname "localhost" :keylist (("/nonexistent/k" "/nonexistent/c")))
+                      '(:hostname "localhost" :verify-error t)
+                      '(:hostname "example.org" :verify-error (:hostname) :trustfiles ("CERTFILE"))))
+  (let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+    (princ (format "%S -> %S stage %S\n" params
+                   (condition-case e (gnutls-boot c 'gnutls-x509pki params) (error (list 'ERR e)))
+                   (gnutls-get-initstage c)))
+    (princ (format "   status %S\n" (plist-get (gnutls-peer-status c) :warnings)))
+    (delete-process c)))
+(let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+  (princ (format "boot1 %S\n" (condition-case e (gnutls-boot c 'gnutls-x509pki (list :hostname "example.org" :trustfiles '("CERTFILE") :loglevel 1 :verify-flags 'bogus)) (error (list 'ERR e)))))
+  (princ (format "deinit %S\n" (gnutls-deinit c)))
+  (delete-process c))
+(delete-process srv))"##
+        .replace("KEYFILE", &resources.join("key.pem").display().to_string())
+        .replace("CERTFILE", &resources.join("cert.pem").display().to_string());
+    let corpus = Corpus::new();
+    assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
+}
+
+#[test]
 fn every_change_of_a_childs_status_is_notified() {
     // handle_child_signal's stop (WUNTRACED) and continue (WCONTINUED) as
     // new ticks for status_notify: "stopped (signal)\n" with the stop
@@ -5640,4 +6257,1129 @@ fn every_change_of_a_childs_status_is_notified() {
     ] {
         assert_same(&corpus, &["--batch", "-Q", "--eval", program]);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_terminal_session_starts_only_where_init_display_does() {
+    // dispnew.c:init_display and term.c:init_tty(DEV_TTY, TERM, 1): no
+    // TERM, a type terminfo does not know, one that cannot position the
+    // cursor and a screen under 3x3 each end the session at once with
+    // GNU's text and exit status 1, before anything reaches the screen;
+    // standard input that is not a terminal likewise.
+    let corpus = Corpus::new();
+    let args = ["-nw", "-Q", "--eval", "(kill-emacs 0)"];
+    for (term, rows, cols) in [
+        (None, 24, 80),
+        (Some("emaxx-no-such-terminal"), 24, 80),
+        (Some("dumb"), 24, 80),
+        (Some("xterm"), 2, 2),
+        (Some("xterm"), 2, 80),
+    ] {
+        let expected = corpus.run_pty(&oracle(), &args, term, rows, cols);
+        let actual = corpus.run_pty(emaxx(), &args, term, rows, cols);
+        assert_eq!(
+            expected.1,
+            Some(1),
+            "GNU starts with TERM={term:?} at {rows}x{cols}"
+        );
+        assert_eq!(
+            actual, expected,
+            "Emaxx (left) and GNU (right) differ for TERM={term:?} at {rows}x{cols}"
+        );
+    }
+    assert_same(&corpus, &args);
+}
+
+#[test]
+fn read_char_gives_the_input_method_what_keyboard_c_gives_it() {
+    // keyboard.c:read_char: `unread-post-input-method-events' first, not
+    // given to the input method again; `unread-command-events' and
+    // `unread-input-method-events' through `input-method-function' when
+    // PREV_EVENT is nil (a key sequence's first event, a `read-event'
+    // that inherits it), a character from SPC to 255 but DEL; no event
+    // back reads again.  Each list keeps events to spare: a read past
+    // them would wait on standard input in GNU too.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn
+ (setq input-method-function (lambda (c) (if (eq c ?a) (list ?X c) (if (eq c ?n) nil (list c)))))
+ (setq unread-command-events (list ?a ?b ?q ?q ?q))
+ (prin1 (list (read-key-sequence nil) unread-post-input-method-events (read-key-sequence nil) (read-key-sequence nil)))
+ (terpri)
+ (setq unread-command-events (list ?n ?c ?q))
+ (prin1 (read-key-sequence nil)) (terpri)
+ (setq unread-command-events nil unread-input-method-events (list ?a ?q ?q ?q) unread-post-input-method-events (list ?z))
+ (prin1 (list (read-key-sequence nil) (read-key-sequence nil) (read-key-sequence nil))) (terpri)
+ (setq unread-input-method-events nil unread-post-input-method-events nil unread-command-events (list ?a ?q))
+ (prin1 (list (read-event) unread-command-events unread-post-input-method-events)) (terpri)
+ (setq unread-post-input-method-events nil unread-command-events (list ?a ?q))
+ (prin1 (list (read-event nil t) (read-event))) (terpri)
+ (setq unread-post-input-method-events nil unread-command-events (list ?\s ?\C-a ?\x7f 200 ?q))
+ (prin1 (list (read-key-sequence nil) (read-key-sequence nil) (read-key-sequence nil) (read-key-sequence nil))) (terpri))"#,
+        ],
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_input_method_translates_what_read_char_reads() {
+    // keyboard.c:read_char gives a key sequence's first event (and a
+    // `read-event' that inherits the input method) to
+    // `input-method-function': quail's latin-1-prefix makes ' e an e with
+    // acute; the rest of what it returns comes back through
+    // `unread-post-input-method-events', not translated again.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "im.el",
+        r#"(defvar im-log nil)
+(defun im-read () (interactive)
+  (push (list 'inherit (read-event nil t)) im-log)
+  (push (list 'plain (read-event)) im-log))
+(defun im-done () (interactive)
+  (push (list 'buffer (buffer-substring-no-properties (point-min) (point-max))
+              current-input-method unread-post-input-method-events)
+        im-log)
+  (with-temp-file (expand-file-name "im.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse im-log))))
+  (kill-emacs 0))
+(global-set-key [f5] #'im-read)
+(global-set-key [f6] #'im-done)
+(switch-to-buffer "im")
+(set-input-method "latin-1-prefix")"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"'"),
+        (0.3, b"e"),
+        (0.3, b"a"),
+        (0.3, b"'"),
+        (0.3, b" "),
+        (0.3, b"\"o"),
+        (0.5, b"\x1b[15~"),
+        (0.5, b"'"),
+        (0.3, b"a"),
+        (0.3, b"'"),
+        (0.3, b"a"),
+        (0.5, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "im.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "im.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn keystrokes_echo_as_keyboard_c_echoes_them() {
+    // keyboard.c's echoing: read_char's echo timer shows a key sequence
+    // in progress (help.el's hint appended) once `echo-keystrokes'
+    // seconds pass with no input, a prefix command's echo comes from
+    // `internal-echo-keystrokes-prefix', a `read-event' inside a command
+    // (quoted-insert's) echoes the command's keys and then the key it
+    // read, and an error message wiped at the next key lets echoing start
+    // again.  An idle timer notes the echo area each time the session goes
+    // idle; the session waits out GNU's terminal query first.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "echo.el",
+        r#"(defvar echo-log nil)
+(run-with-idle-timer 1.6 t
+  (lambda ()
+    (when (> num-nonmacro-input-events 0)
+      (push (current-message) echo-log))
+    (when (= (length echo-log) 7)
+      (with-temp-file (expand-file-name "echo.out" command-line-default-directory)
+        (insert (format "%S\n" (reverse echo-log))))
+      (kill-emacs 0))))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x18"),
+        (2.4, b"\x07"),
+        (2.4, b"\x15"),
+        (2.4, b"8"),
+        (2.4, b"\x11"),
+        (2.4, b"a"),
+        (2.4, b"\x18"),
+        (0.3, b"4"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "echo.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "echo.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_echo_area_is_wiped_as_read_char_wipes_it() {
+    // read_char wipes the echo area for an event from the keyboard
+    // buffer, running `echo-area-clear-hook' first, and leaves it alone
+    // for a keyboard macro's events: a prefix argument's echo stays shown
+    // through the command it reads, and a message stays through the
+    // commands a macro runs.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "wipe.el",
+        r#"(defvar wipe-log nil)
+(add-hook 'pre-command-hook
+  (lambda () (push (list 'pre this-command (current-message)) wipe-log)))
+(add-hook 'post-command-hook
+  (lambda () (push (list 'post this-command (current-message)) wipe-log)))
+(add-hook 'echo-area-clear-hook
+  (lambda () (push (list 'clear (current-message)) wipe-log)))
+(defun wipe-macro () (interactive)
+  (message "kept")
+  (execute-kbd-macro "\C-f\C-f"))
+(defun wipe-done () (interactive)
+  (with-temp-file (expand-file-name "wipe.out" command-line-default-directory)
+    (insert (format "%S\n" (cdr (reverse wipe-log)))))
+  (kill-emacs 0))
+(global-set-key [f5] #'wipe-macro)
+(global-set-key [f6] #'wipe-done)"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x15"),
+        (2.4, b"8"),
+        (0.3, b"x"),
+        (0.5, b"\x1b[15~"),
+        (0.8, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "wipe.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "wipe.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_message_ends_echoing_and_times_out_over_the_minibuffer() {
+    // xdisp.c's message3 cancels echoing, so a command's message stays
+    // shown while the command waits after a key sequence that was being
+    // echoed; and command_loop_1 in a minibuffer shows a message over it
+    // for `minibuffer-message-timeout' seconds, then clears it and runs
+    // `echo-area-clear-hook'.  Timers note the echo area during the waits.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "msg.el",
+        r#"(defvar msg-log nil)
+(defun msg-note (tag) (push (list tag (current-message)) msg-log))
+(add-hook 'echo-area-clear-hook (lambda () (msg-note 'clear)))
+(global-set-key "\C-cM" (lambda () (interactive)
+  (message "hello")
+  (run-at-time 1.5 nil #'msg-note 'waiting)
+  (read-event)))
+(global-set-key "\C-cN" (lambda () (interactive)
+  (let ((set-message-function nil)) (message "hello there"))
+  (run-at-time 1.0 nil #'msg-note 'shown)
+  (run-at-time 2.8 nil #'msg-note 'timed-out)))
+(global-set-key [f6] (lambda () (interactive)
+  (with-temp-file (expand-file-name "msg.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse msg-log))))
+  (kill-emacs 0)))"#,
+    );
+    // GNU echoes nothing typed in its first seconds.
+    let input: Vec<(f64, &[u8])> = vec![
+        (9.0, b"\x03"),
+        (1.5, b"M"),
+        (2.2, b"a"),
+        (0.5, b"\x1bx"),
+        (0.4, b"abc"),
+        (0.4, b"\x03N"),
+        (3.5, b"\x07"),
+        (0.6, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "msg.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "msg.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_help_character_after_a_prefix_runs_prefix_help_command() {
+    // read_key_sequence's not_upcase step: an unbound key sequence of two
+    // or more keys whose last is the help character (or one of
+    // `help-event-list', F1) runs `prefix-help-command', its keys
+    // this-command-keys and its echo the sequence's.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "ph.el",
+        r#"(defvar ph-log nil)
+(defun ph-help () (interactive)
+  (push (list 'help (this-command-keys-vector) this-command (current-message)) ph-log))
+(setq prefix-help-command #'ph-help)
+(add-hook 'pre-command-hook (lambda () (push (list 'pre this-command) ph-log)))
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "ph.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse ph-log))))
+  (kill-emacs 0)))"#,
+    );
+    // The pause after C-x 4 is well past `echo-keystrokes' (1 s), so the
+    // prefix echoes before F1 arrives even under load.
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x18\x08"),
+        (0.5, b"\x184"),
+        (3.0, b"\x1bOP"),
+        (0.5, b"\x03\x08"),
+        (0.5, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "ph.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "ph.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_minibuffer_read_and_a_macro_keep_what_the_command_loop_keeps() {
+    // minibuf.c's minibuf_save_list gives the reading command back its
+    // `current-prefix-arg' and this-command-keys when the read ends, and
+    // command_loop_1 and read_key_sequence_vs start each sequence's raw
+    // keys empty, so a keyboard macro whose last key begins a Quail
+    // translation ends instead of reading its previous keys again.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "mb.el",
+        r#"(defvar mb-log nil)
+(defun mb-read (s) (interactive (list (read-string "s: ")))
+  (push (list 'read s current-prefix-arg (this-command-keys-vector)) mb-log))
+(defun mb-macro () (interactive)
+  (execute-kbd-macro "ae")
+  (push (list 'macro (buffer-string) (this-single-command-raw-keys)) mb-log))
+(defun mb-done () (interactive)
+  (with-temp-file (expand-file-name "mb.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse mb-log))))
+  (kill-emacs 0))
+(global-set-key [f5] #'mb-read)
+(global-set-key [f6] #'mb-macro)
+(global-set-key [f7] #'mb-done)
+(switch-to-buffer "mb")
+(set-input-method "german-postfix")"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"\x15"),
+        (0.3, b"\x1b[15~"),
+        (0.3, b"ab"),
+        (0.3, b"\r"),
+        (0.5, b"\x1b[17~"),
+        (0.8, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "mb.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "mb.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_quit_reaches_emacs_alone_not_the_shell_it_runs_under() {
+    // sysdep.c:init_sys_modes's narrow_foreground_group: an Emacs started
+    // in its shell's process group moves to its own and makes it the
+    // terminal's foreground, so the C-g the tty driver turns into SIGINT
+    // reaches Emacs alone; reset_sys_modes's widen_foreground_group gives
+    // the terminal back to the shell, which goes on.
+    let corpus = Corpus::new();
+    for binary in [oracle(), emaxx().to_path_buf()] {
+        let script = format!(
+            "{} -nw -Q --eval '(global-set-key \"Q\" (lambda () (interactive) (kill-emacs 0)))'; echo AFTER rc=$?",
+            binary.display()
+        );
+        let (screen, status) = corpus.run_pty_typing(
+            Path::new("/bin/sh"),
+            &["-c", &script],
+            Some("xterm"),
+            24,
+            80,
+            &[(1.5, b"\x07"), (0.5, b"Q")],
+        );
+        assert!(
+            screen.contains("AFTER rc=0"),
+            "{}: the shell did not go on after a C-g: {screen:?}",
+            binary.display()
+        );
+        assert_eq!(status, Some(0), "{}", binary.display());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn while_no_input_takes_the_key_that_ends_it() {
+    // keyboard.c: a key stored inside `while-no-input' sets `quit-flag' to
+    // `throw-on-input'; read_char, thrown to with that flag, reads again
+    // and returns the key, and the throw comes at the next quit check: the
+    // body's read is ended and the key is not run as a command after it.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "wni.el",
+        r#"(defvar w-log nil)
+(defun w-1 () (interactive) (push (list 'timed (while-no-input (read-event nil nil 3) 'finished)) w-log))
+(defun w-2 () (interactive) (push (list 'read (while-no-input (list (read-event) 'after))) w-log))
+(defun w-3 () (interactive) (push (list 'key (while-no-input (read-key))) w-log))
+(defun w-done () (interactive)
+  (push (list 'buffer (buffer-string)) w-log)
+  (with-temp-file (expand-file-name "wni.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse w-log))))
+  (kill-emacs 0))
+(global-set-key [f5] #'w-1)
+(global-set-key [f6] #'w-2)
+(global-set-key [f7] #'w-3)
+(global-set-key "Q" #'w-done)
+(switch-to-buffer "w")"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"\x1b[15~"),
+        (0.5, b"d"),
+        (1.0, b"\x1b[17~"),
+        (0.5, b"e"),
+        (1.0, b"\x1b[18~"),
+        (0.5, b"f"),
+        (1.0, b"Q"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "wni.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "wni.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_lisp_sees_the_terminal_s_frame_and_writes_to_it() {
+    // init_display_interactive gives the initial frame the terminal's size
+    // (get_tty_size, else the entry's co and li) before any Lisp runs;
+    // `send-string-to-terminal' writes to the terminal, so term/xterm.el's
+    // terminal-init-xterm sends its queries and bracketed-paste and focus
+    // modes, and `tty-mode-set-strings' and `tty-mode-reset-strings' are
+    // sent with the terminal's own modes.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "size.el",
+        r#"(with-temp-file (expand-file-name "size.out" command-line-default-directory)
+  (insert (format "%S\n" (list (frame-width) (frame-height) (window-height)
+                               (terminal-parameter nil 'tty-mode-set-strings)
+                               (terminal-parameter nil 'tty-mode-reset-strings)))))
+(send-string-to-terminal "<probe>")
+(kill-emacs 0)
+"#,
+    );
+    let args = ["-nw", "-Q", "-l", &probe];
+    let out = corpus.directory.join("size.out");
+    for (rows, cols) in [(30, 100), (0, 0)] {
+        let _ = std::fs::remove_file(&out);
+        let (expected_screen, expected_status) =
+            corpus.run_pty(&oracle(), &args, Some("xterm"), rows, cols);
+        let expected = std::fs::read_to_string(&out).ok();
+        let _ = std::fs::remove_file(&out);
+        let (actual_screen, actual_status) =
+            corpus.run_pty(emaxx(), &args, Some("xterm"), rows, cols);
+        let actual = std::fs::read_to_string(&out).ok();
+        assert!(
+            expected.is_some(),
+            "GNU's session wrote nothing at {rows}x{cols}"
+        );
+        assert_eq!(
+            actual, expected,
+            "Emaxx (left) and GNU (right) differ at {rows}x{cols}"
+        );
+        assert_eq!(actual_status, expected_status);
+        // What Lisp sent, in order, around the terminal's own mode strings.
+        let sent = |screen: &str| {
+            [
+                "\x1b[?1049h",
+                "\x1b[>0c",
+                "\x1b[?2004h",
+                "\x1b[?1004h",
+                "<probe>",
+                "\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b>",
+                "\x1b[?1049l",
+            ]
+            .iter()
+            .map(|piece| screen.find(piece))
+            .collect::<Vec<_>>()
+        };
+        let expected_order = sent(&expected_screen);
+        assert!(
+            expected_order.iter().all(Option::is_some)
+                && expected_order.windows(2).all(|pair| pair[0] < pair[1]),
+            "GNU's terminal output: {expected_screen:?}"
+        );
+        let actual_order = sent(&actual_screen);
+        assert!(
+            actual_order.iter().all(Option::is_some)
+                && actual_order.windows(2).all(|pair| pair[0] < pair[1]),
+            "Emaxx's terminal output: {actual_screen:?}"
+        );
+    }
+    // In batch the initial terminal's output is stdout, in order with
+    // `princ''s buffered text; TERMINAL is decoded before STRING is
+    // checked.
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r#"(progn (princ "a") (send-string-to-terminal "b\n") (princ "c")
+  (send-string-to-terminal (string 233 10))
+  (send-string-to-terminal "\351\n" (frame-terminal))
+  (princ (format "%S %S %S\n"
+    (condition-case e (send-string-to-terminal 1) (error e))
+    (condition-case e (send-string-to-terminal 1 'foo) (error e))
+    (send-string-to-terminal ""))))"#,
+        ],
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_small_terminal_s_frame_keeps_the_terminal_s_size() {
+    // A frame on a terminal narrower or shorter than its windows need has
+    // the size adjust_frame_size gives the terminal's (init_display takes
+    // anything from 3x3), after the first redisplay as before it; a
+    // window too small to show is still displayed without error.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "small.el",
+        r#"(run-with-timer 1 nil
+  (lambda ()
+    (with-temp-file (expand-file-name "small.out" command-line-default-directory)
+      (insert (format "%S\n" (list (frame-width) (frame-height) (window-width)
+                                   (window-height) (window-body-height)))))
+    (kill-emacs 0)))
+"#,
+    );
+    let args = ["-nw", "-Q", "-l", &probe];
+    let out = corpus.directory.join("small.out");
+    for (rows, cols) in [(3, 3), (24, 5), (5, 24), (3, 80), (24, 9)] {
+        let _ = std::fs::remove_file(&out);
+        let (_, expected_status) = corpus.run_pty(&oracle(), &args, Some("xterm"), rows, cols);
+        let expected = std::fs::read_to_string(&out).ok();
+        let _ = std::fs::remove_file(&out);
+        let (_, actual_status) = corpus.run_pty(emaxx(), &args, Some("xterm"), rows, cols);
+        let actual = std::fs::read_to_string(&out).ok();
+        assert!(
+            expected.is_some(),
+            "GNU's session wrote nothing at {rows}x{cols}"
+        );
+        assert_eq!(
+            actual, expected,
+            "Emaxx (left) and GNU (right) differ at {rows}x{cols}"
+        );
+        assert_eq!(actual_status, expected_status, "at {rows}x{cols}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_terminal_supports_the_face_attributes_its_entry_and_nc_allow() {
+    // xfaces.c:tty_supports_face_attributes_p on a tty frame, whatever its
+    // colors: the attributes a tty never shows, a weight, slant,
+    // underline, inverse video or strike-through the default face lacks
+    // (term.c:tty_capable_p of the entry's strings and NC, a plain
+    // underline needing the styled one too), and colors near what they
+    // name, apart from the default's and from each other as their standard
+    // values are; under each `tty-color-mode'.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "supports.el",
+        r##"(defvar sup-attrs
+  '((:underline t) (:weight bold) (:inverse-video t) (:slant italic) (:foreground "red") (:weight light)
+    (:strike-through t) (:underline (:style wave)) (:underline (:style foo)) (:underline "red")
+    (:background "blue") (:foreground "red" :background "blue") (:weight bold :inverse-video t)
+    (:slant oblique) (:slant normal) (:weight normal) (:family "x") (:box t) (:overline t) (:height 2.0)
+    (:foreground "#ff0001") (:foreground "#123456") (:foreground "white") (:background "black")
+    (:foreground "nosuchcolor") (:weight semi-bold) (:weight ultra-light) (:inverse-video nil)
+    (:underline nil) (:foreground "red" :background "red") (:foreground "yellow" :background "white")
+    bold italic underline (:inherit bold) (:weight bold :underline t) (:foreground "unspecified-fg")))
+(defun sup-note (tag)
+  (list tag (tty-display-color-cells)
+        (mapcar (lambda (a) (if (display-supports-face-attributes-p a) 1 0)) sup-attrs)))
+(run-with-timer 1 nil
+  (lambda ()
+    (let ((r (list (sup-note 'start))))
+      (dolist (mode '(never 8 nil))
+        (set-frame-parameter nil 'tty-color-mode mode)
+        (redisplay t)
+        (push (sup-note mode) r))
+      (tty-no-underline)
+      (push (sup-note 'no-underline) r)
+      (with-temp-file (expand-file-name "supports.out" command-line-default-directory)
+        (insert (format "%S\n" (nreverse r)))))
+    (kill-emacs 0)))
+"##,
+    );
+    let args = ["-nw", "-Q", "-l", &probe];
+    let out = corpus.directory.join("supports.out");
+    for term in [
+        "vt100",
+        "xterm-256color",
+        "linux",
+        "cons25",
+        "screen",
+        "xterm",
+    ] {
+        let _ = std::fs::remove_file(&out);
+        let (_, expected_status) = corpus.run_pty(&oracle(), &args, Some(term), 24, 80);
+        let expected = std::fs::read_to_string(&out).ok();
+        let _ = std::fs::remove_file(&out);
+        let (_, actual_status) = corpus.run_pty(emaxx(), &args, Some(term), 24, 80);
+        let actual = std::fs::read_to_string(&out).ok();
+        assert!(
+            expected.is_some(),
+            "GNU's session wrote nothing under TERM={term}"
+        );
+        assert_eq!(
+            actual, expected,
+            "Emaxx (left) and GNU (right) differ under TERM={term}"
+        );
+        assert_eq!(actual_status, expected_status, "TERM={term}");
+    }
+}
+
+#[test]
+fn a_terminal_s_colors_are_its_terminfo_entry_s_and_its_color_mode_s() {
+    // init_tty takes the colors from the entry: none without op, else Co
+    // (or the 24-bit forms); `tty-color-mode' is set up by the redisplay
+    // that next shows the frame (set_tty_color_mode), `never' turning
+    // colors off, 8 the ANSI eight, nil the entry's again, each change
+    // recomputing the faces.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "colors.el",
+        r#"(run-with-timer 1 nil
+  (lambda ()
+    (let ((r (list (display-color-cells) (tty-display-color-p)
+                   (face-attribute 'font-lock-comment-face :foreground nil t))))
+      (dolist (mode '(never 8 ansi8 nil 256 always no))
+        (set-frame-parameter nil 'tty-color-mode mode)
+        (push (list mode (display-color-cells)) r)
+        (redisplay t)
+        (push (list mode (display-color-cells) (tty-display-color-p)
+                    (face-attribute 'font-lock-comment-face :foreground nil t))
+              r))
+      (with-temp-file (expand-file-name "colors.out" command-line-default-directory)
+        (insert (format "%S\n" (nreverse r)))))
+    (kill-emacs 0)))
+"#,
+    );
+    let args = ["-nw", "-Q", "-l", &probe];
+    let out = corpus.directory.join("colors.out");
+    for term in [
+        "xterm",
+        "xterm-256color",
+        "vt100",
+        "linux",
+        "screen",
+        "ansi",
+        "tmux-256color",
+    ] {
+        let _ = std::fs::remove_file(&out);
+        let (_, expected_status) = corpus.run_pty(&oracle(), &args, Some(term), 24, 80);
+        let expected = std::fs::read_to_string(&out).ok();
+        let _ = std::fs::remove_file(&out);
+        let (_, actual_status) = corpus.run_pty(emaxx(), &args, Some(term), 24, 80);
+        let actual = std::fs::read_to_string(&out).ok();
+        assert!(
+            expected.is_some(),
+            "GNU's session wrote nothing under TERM={term}"
+        );
+        assert_eq!(
+            actual, expected,
+            "Emaxx (left) and GNU (right) differ under TERM={term}"
+        );
+        assert_eq!(actual_status, expected_status, "TERM={term}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_terminal_is_read_as_keyboard_c_reads_it() {
+    // keyboard.c with interrupt_input: the terminal's SIGIO leaves
+    // process_pending_signals to read what it has (handle_async_input's
+    // gobble_input) at the next quit check, so a C-g typed while a
+    // command runs is handle_interrupt's quit, and any other key inside
+    // `while-no-input' its throw; a key typed while a command computes is
+    // pending when it asks.  The command loop's and the readers' waits
+    // are kbd_buffer_get_event's wait_reading_process_output with READ_KBD
+    // -1: a key ends `sit-for' and a timed `read-event', a C-g ends a
+    // `read-event' as the quit character (the quit coming at the next
+    // check), and timers and process output run while the loop waits.
+    // The keys typed around a C-g that quits a busy command are read after
+    // it: GNU's controlling tty gives the C-g as SIGINT, the keys before it
+    // already read, those after it read later.  A function key's bytes are
+    // `read-event''s as the terminal sends them; read_key_sequence's
+    // `input-decode-map' makes them the key.
+    let corpus = Corpus::new();
+    let probe = corpus.write("tty.el", PROBE);
+    let f = |n: u8| -> Vec<u8> { format!("\x1b[{n}~").into_bytes() };
+    let input: Vec<(f64, Vec<u8>)> = vec![
+        (0.0, f(15)),
+        (0.5, b"\x07".to_vec()),
+        (0.5, f(17)),
+        (0.5, b"x".to_vec()),
+        (3.0, f(18)),
+        (0.3, b"a".to_vec()),
+        (0.5, f(19)),
+        (0.5, b"b".to_vec()),
+        (0.6, b"\x07".to_vec()),
+        (0.5, f(20)),
+        (0.2, b"c".to_vec()),
+        (1.0, f(21)),
+        (1.0, f(23)),
+        (0.5, b"xy".to_vec()),
+        (0.5, b"\x07ab".to_vec()),
+        (4.0, f(24)),
+        (0.5, f(15)),
+        (1.0, b"Q".to_vec()),
+    ];
+    let input: Vec<(f64, &[u8])> = input.iter().map(|(p, b)| (*p, b.as_slice())).collect();
+    let expected = corpus.run_tty(&oracle(), &probe, "tty.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "tty.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_terminal_bytes_are_decoded_as_keyboard_c_decodes_them() {
+    // In a UTF-8 locale `set-keyboard-coding-system' makes the terminal's
+    // meta mode pass the 8th bit and its keyboard coding UTF-8:
+    // read_decoded_event_from_main_queue decodes a character's bytes for
+    // read_key_sequence (self-insert, `read-key') and a `read-event' that
+    // inherits the input method, while a plain `read-event' takes the
+    // bytes as they come.
+    let corpus = Corpus::new();
+    let probe = corpus.write("utf8.el", UTF8_PROBE);
+    let e_acute: &[u8] = b"\xc3\xa9";
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, e_acute),
+        (0.3, b"a"),
+        (0.3, b"\x1b[15~"),
+        (0.5, e_acute),
+        (0.5, e_acute),
+        (0.3, e_acute),
+        (0.3, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "utf8.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "utf8.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+const UTF8_PROBE: &str = r##"(defvar u8-log nil)
+(defun u8-read () (interactive)
+  (push (list 'raw (read-event)) u8-log)
+  (while (let ((e (read-event nil nil 0.3))) (when e (push (list 'raw-more e) u8-log))))
+  (push (list 'inherit (read-event nil t)) u8-log)
+  (push (list 'key (read-key)) u8-log)
+  (push (list 'mode (current-input-mode) (keyboard-coding-system)) u8-log))
+(defun u8-done () (interactive)
+  (push (list 'buffer (buffer-substring-no-properties (point-min) (point-max))) u8-log)
+  (with-temp-file (expand-file-name "utf8.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse u8-log))))
+  (kill-emacs 0))
+(global-set-key [f5] #'u8-read)
+(global-set-key [f6] #'u8-done)
+(switch-to-buffer "u8")"##;
+
+const PROBE: &str = r##"(defvar k-log nil)
+(defun k-busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(defun k-loop () (interactive)
+  (push (list 'loop (condition-case nil (let ((n 0)) (while t (setq n (1+ n)))) (quit 'quit-caught))) k-log))
+(defun k-wni () (interactive)
+  (push (list 'wni (while-no-input (k-busy 3) 'finished)) k-log)
+  (push (list 'pending (input-pending-p)) k-log))
+(defun k-sit () (interactive)
+  (let ((t0 (float-time)))
+    (push (list 'sit (sit-for 3) (if (< (- (float-time) t0) 1) 'soon 'late)) k-log)))
+(defun k-read () (interactive)
+  (push (list 'read-timed (read-event nil nil 2)) k-log)
+  (push (list 'read-quit (condition-case nil (progn (read-event) 'after) (quit 'quit))) k-log))
+(defun k-pending () (interactive)
+  (k-busy 0.6)
+  (push (list 'pending-after-busy (input-pending-p)) k-log))
+(defun k-proc () (interactive)
+  (make-process :name "kp" :command '("sh" "-c" "sleep 0.3; echo out") :noquery t :connection-type 'pipe
+                :filter (lambda (_ s) (push (list 'filter (string-trim s)) k-log))
+                :sentinel (lambda (_ e) (push (list 'sentinel (string-trim e)) k-log)))
+  (run-at-time 0.2 nil (lambda () (push 'timer k-log))))
+(defun k-typeahead () (interactive)
+  (push (list 'typeahead (condition-case nil (k-busy 3) (quit 'quit))) k-log)
+  (let (events)
+    (while (let ((event (read-event nil nil 0.3))) (when event (push event events))))
+    (push (list 'after (nreverse events)) k-log)))
+(defun k-raw () (interactive)
+  (let (events)
+    (push (read-event) events)
+    (while (let ((event (read-event nil nil 0.3))) (when event (push event events))))
+    (push (list 'raw (nreverse events)) k-log)))
+(defun k-done () (interactive)
+  (push (list 'buffer (buffer-substring-no-properties (point-min) (point-max))) k-log)
+  (with-temp-file (expand-file-name "tty.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse k-log))))
+  (kill-emacs 0))
+(global-set-key [f5] #'k-loop)
+(global-set-key [f6] #'k-wni)
+(global-set-key [f7] #'k-sit)
+(global-set-key [f8] #'k-read)
+(global-set-key [f9] #'k-pending)
+(global-set-key [f10] #'k-proc)
+(global-set-key [f11] #'k-typeahead)
+(global-set-key [f12] #'k-raw)
+(global-set-key "Q" #'k-done)
+(switch-to-buffer "k")"##;
+
+#[test]
+fn read_minibuf_binds_its_entry_variables_as_minibuf_c_does() {
+    // Fread_from_minibuffer's KEYMAP is get_keymap's (a non-keymap
+    // signals), and minibuf.c:read_minibuf's entry: `minibuffer-default'
+    // is DEFAULT for the read (M-n's future history inserts it),
+    // `inhibit-read-only' nil, and `minibuffer-completing-file-name'
+    // bound, a `lambda' left by an outer read nil in this one and t made
+    // `lambda'; the contents keep their properties when
+    // `minibuffer-allow-text-properties' is non-nil in the minibuffer at
+    // the end; Fread_string binds `minibuffer-completion-table' to nil.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "rm.el",
+        r#"(require 'ert-x)
+(defvar rm-iro) (defvar rm-cfn)
+(princ (format "%S\n" (list
+  (condition-case e (read-from-minibuffer "p" nil 'foo) (error e))
+  (ert-simulate-keys (kbd "M-n RET") (read-string "p: " nil nil "dflt"))
+  (ert-simulate-keys (kbd "M-n M-n RET") (read-string "p: " nil nil '("d1" "d2")))
+  (let ((inhibit-read-only t))
+    (ert-simulate-keys (kbd "RET")
+      (minibuffer-with-setup-hook (lambda () (setq rm-iro inhibit-read-only)) (read-string "q: ")))
+    rm-iro)
+  (let ((minibuffer-completing-file-name t))
+    (ert-simulate-keys (kbd "RET")
+      (minibuffer-with-setup-hook (lambda () (setq rm-cfn minibuffer-completing-file-name)) (read-string "q: ")))
+    (list rm-cfn minibuffer-completing-file-name))
+  (let ((minibuffer-completing-file-name 'lambda))
+    (ert-simulate-keys (kbd "RET")
+      (minibuffer-with-setup-hook (lambda () (setq rm-cfn minibuffer-completing-file-name)) (read-string "q: ")))
+    (list rm-cfn minibuffer-completing-file-name))
+  (ert-simulate-keys (kbd "RET")
+    (minibuffer-with-setup-hook (lambda () (insert (propertize "ab" 'face 'bold)) (setq-local minibuffer-allow-text-properties t))
+      (read-string "p: ")))
+  (ert-simulate-keys (kbd "RET")
+    (minibuffer-with-setup-hook (lambda () (insert (propertize "ab" 'face 'bold))) (read-string "p: ")))
+  (let ((minibuffer-completion-table '("a" "b")))
+    (list (ert-simulate-keys (kbd "RET")
+            (minibuffer-with-setup-hook (lambda () (setq rm-cfn minibuffer-completion-table)) (read-string "p: ")))
+          rm-cfn
+          (ert-simulate-keys (kbd "RET")
+            (minibuffer-with-setup-hook (lambda () (setq rm-cfn minibuffer-completion-table)) (read-from-minibuffer "p: ")))
+          rm-cfn)))))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn read_buffer_and_read_command_read_as_minibuf_c_does() {
+    // minibuf.c:Fread_buffer: `completion-ignore-case' bound from
+    // `read-buffer-completion-ignore-case', the default edited into the
+    // prompt by `format-prompt' before its colon, `completing-read' over
+    // `internal-complete-buffer' (its `buffer' category), and a
+    // `read-buffer-function' given no PREDICATE argument when PREDICATE is
+    // nil.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "rb.el",
+        r#"(require 'ert-x)
+(defvar rb-log nil)
+(let ((read-buffer-completion-ignore-case t))
+  (push (ert-simulate-keys (kbd "RET")
+          (minibuffer-with-setup-hook
+              (lambda () (push (list (minibuffer-prompt) minibuffer-completion-table completion-ignore-case
+                                     (completion-metadata-get (completion-metadata "" minibuffer-completion-table nil) 'category))
+                               rb-log))
+            (read-buffer "Buf: " (get-buffer "*scratch*"))))
+        rb-log))
+(push (ert-simulate-keys (kbd "RET") (minibuffer-with-setup-hook (lambda () (push (minibuffer-prompt) rb-log)) (read-buffer "Buf:" "x"))) rb-log)
+(push (ert-simulate-keys (kbd "RET") (minibuffer-with-setup-hook (lambda () (push (minibuffer-prompt) rb-log)) (read-buffer "Buf" '("y" "z")))) rb-log)
+(let ((read-buffer-function (lambda (&rest args) (push (cons 'rbf args) rb-log) "r")))
+  (push (read-buffer "P: " nil t) rb-log)
+  (push (read-buffer "P: " nil t nil) rb-log)
+  (push (read-buffer "P: " "d" nil #'ignore) rb-log))
+(princ (format "%S\n" (reverse rb-log)))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    // Fread_command and Fread_variable: a symbol DEFAULT-VALUE's name (t's
+    // too), the name read interned.
+    let program = corpus.write(
+        "rc.el",
+        r#"(require 'ert-x)
+(princ (format "%S\n" (list
+  (ert-simulate-keys (kbd "RET") (read-command "C: " t))
+  (ert-simulate-keys (kbd "RET") (read-command "C: " 'forward-char))
+  (ert-simulate-keys (kbd "RET") (read-variable "V: " 'fill-column))
+  (ert-simulate-keys (kbd "RET") (read-command "C: " "x")))))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn read_event_runs_help_form_as_read_char_does() {
+    // keyboard.c:read_char: a help character read while `help-form' is
+    // non-nil is made part of this-command-keys and `last-input-event',
+    // `help-form-show' shows the form's help, and the next event is read
+    // and returned (the window configuration put back).
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "hf.el",
+        r#"(require 'ert-x)
+(defvar hf-log nil)
+(let ((help-form '(progn (push (list 'shown (this-command-keys-vector) last-input-event) hf-log) nil)))
+  (push (ert-simulate-keys (vector ?\C-h ?x)
+          (list (read-event) (this-command-keys-vector) last-input-event))
+        hf-log)
+  (push (ert-simulate-keys (vector ?\C-h ?\s ?y)
+          (list (read-char) last-input-event))
+        hf-log))
+(push (let ((help-form nil)) (ert-simulate-keys (vector ?\C-h) (read-event))) hf-log)
+(princ (format "%S\n" (reverse hf-log)))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn recursive_edit_unwinds_as_recursive_edit_unwind_does() {
+    // keyboard.c:recursive_edit_unwind: Fset_buffer of the buffer current
+    // at entry (when it was not the selected window's) signals if that
+    // buffer was killed during the recursive edit, before the level is
+    // given back.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "reu.el",
+        r#"(defvar reu-b (generate-new-buffer "reu"))
+(global-set-key [f5] (lambda () (interactive) (kill-buffer reu-b)))
+(princ (format "%S\n" (list
+  (condition-case e
+      (with-current-buffer reu-b
+        (let ((unread-command-events (list 'f5 ?\C-\M-c)) (executing-kbd-macro t))
+          (recursive-edit)))
+    (error e))
+  (recursion-depth))))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn the_mark_after_a_command_is_command_loop_1_s() {
+    // keyboard.c:command_loop_1 after each command with the mark active
+    // (Vrun_hooks being set): the one-command `transient-mark-mode' steps
+    // from `only' to `identity' to nil, a set `deactivate-mark'
+    // deactivates the mark, and `activate-mark-hook' runs after a change
+    // or with another buffer current.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "mk.el",
+        r#";;; -*- lexical-binding: t -*-
+(defvar log nil)
+(switch-to-buffer (get-buffer-create "m"))
+(insert "hello world") (goto-char 1)
+(transient-mark-mode 1)
+(add-hook 'activate-mark-hook (lambda () (push (list 'act this-command) log)))
+(add-hook 'deactivate-mark-hook (lambda () (push (list 'deact this-command) log)))
+(add-hook 'post-command-hook (lambda () (push (list 'post this-command mark-active deactivate-mark transient-mark-mode) log)))
+(global-set-key [f5] (lambda () (interactive) (setq transient-mark-mode 'only) (push-mark nil t t)))
+(global-set-key [f6] (lambda () (interactive) (let ((deactivate-mark nil)) (insert "Z"))))
+(global-set-key [f8] (lambda () (interactive) (with-current-buffer (get-buffer-create "other") (insert "x"))))
+(execute-kbd-macro [?\C-@ ?\C-f ?\C-f f6 ?\C-f ?X ?\C-f f5 ?\C-f ?\C-f f8 ?\C-f])
+(prin1 (list (buffer-string) (point) (mark t) mark-active transient-mark-mode (reverse log)))
+(terpri)"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn a_batch_error_reaches_cmd_error_through_the_top_level_command_loop() {
+    // emacs.c:main's Frecursive_edit runs top_level_1 under cmd_error in
+    // batch too: an error leaving `execute-kbd-macro' is reported with
+    // cmd_error's "After N kbd macro iterations: " (pop_kbd_macro gives
+    // back `executing-kbd-macro' but not executing_kbd_macro, which only
+    // a macro's normal end clears), and command-error-default-function
+    // prints it to stderr and exits -1.  The macro's commands run in the
+    // selected window's buffer, not `with-temp-buffer''s; the backtrace's
+    // funcall-interactively frame has the command as its first argument.
+    let corpus = Corpus::new();
+    for form in [
+        "(with-temp-buffer (execute-kbd-macro [?\\C-f] 3))",
+        "(progn (insert \"ab\") (goto-char 1) (execute-kbd-macro [?\\C-f] 5))",
+        "(progn (insert \"ab\") (goto-char 1) (execute-kbd-macro [?\\C-f] 1) (forward-char 5))",
+        "(progn (execute-kbd-macro [?a ?b] 2) (princ (buffer-string)) (car 1))",
+        // command_loop's entry gives `normal-top-level''s message back.
+        "(progn (setq internal--top-level-message \"X\") (let ((unread-command-events (list ?a ?\\r)) (executing-kbd-macro t)) (read-string \"p: \")) (princ internal--top-level-message))",
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", form]);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_throw_to_top_level_runs_the_startup_form_again() {
+    // keyboard.c's command_loop at the top level: a throw to `top-level'
+    // ends command_loop_2, and top_level_1 evaluates `top-level' again
+    // (normal-top-level, which says it is back there) before the next
+    // command loop, whose entry runs the post-command hooks.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "tl.el",
+        r#"(defvar tl-log nil)
+(defun tl-top () (interactive) (top-level))
+(add-hook 'post-command-hook (lambda () (push (list this-command (current-message)) tl-log)))
+(global-set-key [f6] #'tl-top)
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "tl.out" command-line-default-directory)
+    (insert (format "%S\n" (cdr (reverse tl-log)))))
+  (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![(6.5, b"\x1b[17~"), (1.0, b"\x1b[18~")];
+    let expected = corpus.run_tty(&oracle(), &probe, "tl.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "tl.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_edit_runs_a_command_loop_on_the_terminal() {
+    // keyboard.c's Frecursive_edit inside a command: recursive_edit_1's
+    // command loop reads the terminal's keys at depth 1, its `exit' catch
+    // returning nil for exit-recursive-edit and abort-recursive-edit
+    // throwing to `top-level'; the debugger's *Backtrace* commands run in
+    // it, and `q' and `c' leave it.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "re.el",
+        r#"(defvar re-log nil)
+(global-set-key [f5] (lambda () (interactive)
+  (push (list 'depth (recursion-depth)) re-log)
+  (push (list 'v (catch 'x (recursive-edit) 'normal)) re-log)
+  (push (list 'after (recursion-depth) (buffer-name)) re-log)))
+(global-set-key [f6] (lambda () (interactive) (push (list 'in (recursion-depth) (minibuffer-depth)) re-log)))
+(global-set-key [f8] (lambda () (interactive) (let ((debug-on-error t)) (car 1))))
+(add-hook 'post-command-hook (lambda () (push (list 'pch (and (symbolp this-command) this-command) (recursion-depth) (buffer-name)) re-log)))
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "re.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse re-log))))
+  (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x1b[15~"),
+        (0.5, b"\x1b[17~"),
+        (0.5, b"\x1b\x03\x03"),
+        (0.5, b"\x1b[15~"),
+        (0.5, b"\x1d"),
+        (0.5, b"\x1b[19~"),
+        (1.0, b"n"),
+        (0.5, b"q"),
+        (0.8, b"\x1b[19~"),
+        (1.0, b"c"),
+        (0.8, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "re.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "re.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_error_escaping_cmd_error_throws_to_top_level() {
+    // eval.c:signal_or_quit: an error no handler takes (here one signaled
+    // by `command-error-function' while cmd_error reports another) is
+    // Fthrow (Qtop_level, Qt); command_loop's catch takes it and the
+    // session goes on at the top level.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "ce.el",
+        r#"(defvar ce-log nil)
+(switch-to-buffer "ce")
+(add-hook 'post-command-hook (lambda () (push (list (and (symbolp this-command) this-command) (current-message)) ce-log)))
+(global-set-key [f6] (lambda () (interactive) (setq command-error-function (lambda (&rest _) (error "boom")))))
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "ce.out" command-line-default-directory)
+    (insert (format "%S\n" (cdr (reverse ce-log)))))
+  (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x1b[17~"),
+        (0.5, b"\x02"),
+        (1.0, b"a"),
+        (0.5, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "ce.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "ce.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn point_leaves_invisible_text_after_a_command() {
+    // command_loop_1's adjust_point_for_property: a command that leaves
+    // point inside invisible text has it moved to the run's end it went
+    // toward, or past the run when the buffer is unchanged.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "pa.el",
+        r#"(defvar pa-log nil)
+(switch-to-buffer "pa")
+(insert "abcdefghij")
+(put-text-property 3 6 'invisible t)
+(goto-char 2)
+(add-hook 'post-command-hook (lambda () (push (point) pa-log)))
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "pa.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse pa-log))))
+  (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x06"),
+        (0.3, b"\x06"),
+        (0.3, b"\x02"),
+        (0.3, b"\x02"),
+        (0.3, b"\x05"),
+        (0.3, b"\x01"),
+        (0.3, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "pa.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "pa.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_macro_takes_a_command_s_keys_once_no_prefix_argument_is_pending() {
+    // finalize_kbd_macro_chars runs after a command only with no prefix
+    // argument pending, so a prefix argument typed just before the macro
+    // ends is not part of it.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "km.el",
+        r#"(switch-to-buffer "km")
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "km.out" command-line-default-directory)
+    (insert (format "%S %S\n" last-kbd-macro
+                    (with-current-buffer "km" (buffer-string)))))
+  (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x18("),
+        (0.3, b"a"),
+        (0.3, b"\x15"),
+        (0.3, b"\x18)"),
+        (1.0, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "km.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "km.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }

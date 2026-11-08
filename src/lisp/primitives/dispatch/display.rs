@@ -1,6 +1,5 @@
 use super::*;
 use crate::lisp::primitives::image::valid_image_p;
-use crate::lisp::primitives::processes::wait_pumping_processes;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
@@ -10,7 +9,7 @@ pub(crate) use frame_size::{
     adjust_frame_size, change_frame_size, do_pending_window_change, frame_top_margin,
     set_menu_bar_lines, set_tab_bar_lines,
 };
-pub(crate) use mode_line::ModeLineCells;
+pub(crate) use mode_line::{ModeLineCells, display_prop_intangible_p};
 
 // The live echo-area line of an interactive session.  GNU keeps this in
 // the echo buffer that redisplay paints; the terminal frontend reads it
@@ -63,6 +62,7 @@ pub(crate) fn echo_area_message_tick() -> u64 {
     ECHO_MESSAGE_TICK.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
 pub(crate) fn set_echo_area_message(text: Option<String>) {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
     bump_echo_message_tick();
@@ -73,31 +73,6 @@ pub(crate) fn set_echo_area_message(text: Option<String>) {
     let message = text.map(|text| (text, Vec::new()));
     // message3 displays right away: the new message (or, for a clear,
     // nothing) becomes the last-displayed one too.
-    ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
-    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
-}
-
-/// A message carrying face spans (a propertized `message' — isearch's
-/// prompt); the frontend paints the spans on the echo row.
-pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
-    ECHO_FROM_PRINT.with(|flag| flag.set(false));
-    bump_echo_message_tick();
-    let len = text.chars().count();
-    let mut props = crate::lisp::types::string_data::StringProperties::default();
-    for (start, end, face) in &spans {
-        let _ = crate::intervals::add_string_text_properties(
-            &mut props,
-            len,
-            *start,
-            (*end).min(len),
-            Value::list([Value::symbol("face"), *face]),
-            crate::intervals::PropertySetType::Replace,
-            true,
-        );
-    }
-    let value = crate::lisp::primitives::strings::string_like_value(text.clone(), props.take());
-    ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = Some(value));
-    let message = Some((text, spans));
     ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
     ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
 }
@@ -122,6 +97,47 @@ pub(crate) fn expire_echo_area_message() {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
     ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = None);
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = None);
+}
+
+/// xdisp.c:truncate_echo_area: no message for NCHARS 0 (echo_area_buffer
+/// nil, shown at the next redisplay); else, interactively and while there
+/// is a message, the message cut to its first NCHARS characters in place
+/// (truncate_message_1), none when that leaves it empty.
+pub(crate) fn truncate_echo_area(
+    interp: &mut Interpreter,
+    nchars: usize,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if nchars == 0 {
+        expire_echo_area_message();
+        return Ok(());
+    }
+    let noninteractive = interp
+        .forwarded_c_value("noninteractive", &Env::new())
+        .is_some_and(|value| value.is_truthy());
+    let executing_macro = interp
+        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .is_some_and(|value| value.is_truthy());
+    let Some(message) = echo_area_message_value() else {
+        return Ok(());
+    };
+    if noninteractive || executing_macro {
+        return Ok(());
+    }
+    if string_text(&message).map_or(0, |text| text.chars().count()) <= nchars {
+        return Ok(());
+    }
+    let cut = crate::lisp::primitives::call(
+        interp,
+        "substring",
+        &[message, Value::Integer(0), Value::Integer(nchars as i64)],
+        env,
+    )?;
+    let text = string_text(&cut)?;
+    let spans = string_face_spans(&cut);
+    ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = Some(cut));
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = Some((text, spans)));
+    Ok(())
 }
 
 /// GNU xdisp.c:clear_message. Clearing is not a new message emission and
@@ -354,25 +370,29 @@ fn message_with_string_1(
         return message3_nolog(interp, message, env);
     }
     let log = string_text(&message)?;
-    message3(interp, message, &log, env)
+    message3(interp, message, Some(&log), env)
 }
 
-/// xdisp.c:message3 of MESSAGE in the echo area, logged in *Messages* as
-/// LOG (print_error_message logs the signalling function before the text
-/// it shows).
+/// xdisp.c:message3 of MESSAGE in the echo area (none for nil), logged in
+/// *Messages* as LOG (print_error_message logs the signalling function
+/// before the text it shows): the echo area cleared and echoing cancelled
+/// first, and nothing shown under `inhibit-message'.
 pub(crate) fn message3(
     interp: &mut Interpreter,
     message: Value,
-    log: &str,
+    log: Option<&str>,
     env: &mut Env,
 ) -> Result<(), LispError> {
     // The interactive message3 path can run redisplay callbacks. Keep the
     // formatted object rooted across those calls using the existing stack roots.
     interp.with_lisp_stack_roots(&message, |interp| {
         clear_message(interp, env, true, true)?;
+        crate::lisp::primitives::cancel_echoing(interp);
         // First flush out any partial line written with print.
         message_log_maybe_newline(interp, env);
-        log_message_text(interp, log, env);
+        if let Some(log) = log {
+            log_message_text(interp, log, env);
+        }
         if interp
             .forwarded_c_value("inhibit-message", &Env::new())
             .is_some_and(|value| value.is_truthy())
@@ -415,7 +435,7 @@ pub(crate) fn vmessage(
     let message = crate::lisp::primitives::strings::make_string(bytes)
         .map_err(|error| crate::lisp::primitives::string_storage_error(interp, env, error))?;
     let log = crate::lisp::primitives::string_text(&message)?;
-    message3(interp, message, &log, env)
+    message3(interp, message, Some(&log), env)
 }
 
 /// xdisp.c:message3_nolog: MESSAGE in the echo area, neither logged nor
@@ -430,9 +450,21 @@ pub(crate) fn message3_nolog(
         .forwarded_c_value("noninteractive", &Env::new())
         .is_some_and(|value| value.is_truthy())
     {
-        return message_to_stderr(interp, Some(&message), env);
+        return message_to_stderr(interp, message.is_string().then_some(&message), env);
     }
-    interp.with_lisp_stack_roots(&message, |interp| set_message(interp, message, env))
+    // INTERACTIVE: nothing is shown while a keyboard macro executes.
+    if interp
+        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(());
+    }
+    // A string with characters is set; anything else clears the echo area.
+    if message.is_string() && string_text(&message).is_ok_and(|text| !text.is_empty()) {
+        interp.with_lisp_stack_roots(&message, |interp| set_message(interp, message, env))
+    } else {
+        clear_message(interp, env, true, true)
+    }
 }
 
 /// xdisp.c:set_message: `set-message-function' may replace MESSAGE or
@@ -799,7 +831,7 @@ pub(crate) fn echo_area_message() -> Option<String> {
     ECHO_AREA_MESSAGE.with_borrow(|slot| slot.as_ref().map(|(text, _)| text.clone()))
 }
 
-fn echo_area_message_value() -> Option<Value> {
+pub(crate) fn echo_area_message_value() -> Option<Value> {
     ECHO_AREA_MESSAGE_VALUE.with_borrow(|slot| *slot)
 }
 
@@ -1691,158 +1723,164 @@ pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo
         .collect()
 }
 
-/// A face's realized tty attributes, the frontend's paint unit: ANSI
-/// color indexes plus the boolean attributes a terminal can show.
+/// dispextern.h's FACE_TTY_DEFAULT_COLOR, FACE_TTY_DEFAULT_FG_COLOR and
+/// FACE_TTY_DEFAULT_BG_COLOR: the pixels of no color, the terminal's own
+/// foreground and its own background (face_tty_specified_color is a
+/// pixel of none of them).
+pub(crate) const FACE_TTY_DEFAULT_COLOR: i64 = -1;
+pub(crate) const FACE_TTY_DEFAULT_FG_COLOR: i64 = -2;
+pub(crate) const FACE_TTY_DEFAULT_BG_COLOR: i64 = -3;
+
+/// dispextern.h's enum face_underline_type.
+pub(crate) const FACE_NO_UNDERLINE: u8 = 0;
+pub(crate) const FACE_UNDERLINE_SINGLE: u8 = 1;
+const FACE_UNDERLINE_DOUBLE_LINE: u8 = 2;
+const FACE_UNDERLINE_WAVE: u8 = 3;
+const FACE_UNDERLINE_DOTS: u8 = 4;
+const FACE_UNDERLINE_DASHES: u8 = 5;
+
+/// A face's tty attributes, the frontend's paint unit, as
+/// xfaces.c:realize_tty_face maps them: the colors' pixels (map_tty_color:
+/// the terminal's color index, or one of the FACE_TTY_DEFAULT_ pixels;
+/// None where the face leaves the color to the default face),
+/// tty_bold_p (a weight above medium), tty_italic_p (a slant other than
+/// normal), the underline's type and color pixel (0: none),
+/// tty_reverse_p and tty_strike_through_p.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(crate) struct TtyFaceAttrs {
-    pub(crate) foreground: Option<u8>,
-    pub(crate) background: Option<u8>,
+    pub(crate) foreground: Option<i64>,
+    pub(crate) background: Option<i64>,
     pub(crate) bold: bool,
-    pub(crate) underline: bool,
+    pub(crate) italic: bool,
+    pub(crate) underline: u8,
+    pub(crate) underline_color: i64,
     pub(crate) reverse: bool,
+    pub(crate) strike_through: bool,
     /// GNU's `:extend': the face keeps painting past the end of line to
     /// the window edge (the region's whole-row highlight).
     pub(crate) extend: bool,
+    /// The FACE_OFF_* attributes the face specifies as off (`:weight
+    /// normal', `:underline nil'...), which merging over a face that has
+    /// them on turns off; the ones neither on nor off are unspecified,
+    /// the underlying face's.
+    pub(crate) off: u8,
 }
 
-/// xfaces.c tty_supports_face_attributes_p: whether the requested
-/// attributes both render differently from the default face and lie
-/// within the terminal's capabilities.  The capability set mirrors GNU
-/// on the frontend's terminal class (TERM=xterm family): bold, italic,
-/// inverse video, and strike-through pass; dim and underline fail the
-/// capability test there; family, foundry, stipple, height, width,
-/// overline, and box never exist on a tty.  Color names must resolve
-/// on the terminal's palette and differ from the default face's.
-fn tty_supports_face_attributes(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    attributes: &Value,
-) -> Result<Value, LispError> {
-    let mut pairs: Vec<(String, Value)> = Vec::new();
-    // merge_face_ref accepts both a bare plist and a precedence-ordered
-    // list of face references.  `supports' display conditions pass their
-    // cdr verbatim, so the widespread `(supports (:box t))' spelling
-    // arrives here as the one-element face-reference list `((:box t))'.
-    // Walk those lists just as merge_face_ref does instead of mistaking an
-    // empty top-level plist for "every requested attribute is supported".
-    let mut pending = vec![*attributes];
-    while let Some(reference) = pending.pop() {
-        let Ok(items) = reference.to_vec() else {
-            continue;
-        };
-        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.as_str().starts_with(':'))
-        {
-            pending.extend(items.into_iter().rev());
-            continue;
-        }
-        for pair in items.as_chunks::<2>().0 {
-            if let Kind::Symbol(key) = pair[0].kind() {
-                pairs.push((key.to_string(), pair[1]));
-            }
-        }
-    }
-    let lookup = |wanted: &str| {
-        pairs
-            .iter()
-            .find(|(key, _)| key == wanted)
-            .map(|(_, value)| *value)
-    };
-    for (key, _) in &pairs {
-        if matches!(
-            key.as_str(),
-            ":family" | ":foundry" | ":stipple" | ":height" | ":width" | ":overline" | ":box"
-        ) {
-            return Ok(Value::Nil);
-        }
-    }
-    if let Some(weight) = lookup(":weight") {
-        // FONT_WEIGHT_NAME_NUMERIC: heavier than normal needs bold
-        // (supported), lighter needs dim (not on this terminal), and
-        // normal weights are the default's own.
-        match weight.as_symbol().unwrap_or("") {
-            "semi-bold" | "bold" | "extra-bold" | "ultra-bold" | "heavy" | "ultra-heavy"
-            | "black" => {}
-            "thin" | "ultra-light" | "extra-light" | "light" | "semi-light" => {
-                return Ok(Value::Nil);
-            }
-            "normal" | "medium" | "regular" | "book" => return Ok(Value::Nil),
-            _ => {}
-        }
-    }
-    if let Some(slant) = lookup(":slant") {
-        // Italic and oblique differ from the default's normal slant and
-        // the terminal renders italics.
-        if matches!(slant.as_symbol().unwrap_or(""), "normal") {
-            return Ok(Value::Nil);
-        }
-    }
-    if lookup(":underline").is_some() {
-        // The capability test fails for underline on this terminal
-        // class, styled variants included.
-        return Ok(Value::Nil);
-    }
-    for color_key in [":foreground", ":background"] {
-        if let Some(color) = lookup(color_key) {
-            if !color.is_string() {
-                return Ok(Value::Nil);
-            }
-            let default_color = interp
-                .call_function_value(
-                    Value::Symbol("face-attribute".into()),
-                    Some("face-attribute"),
-                    &[
-                        Value::Symbol("default".into()),
-                        Value::Symbol(color_key.into()),
-                    ],
-                    env,
+pub(crate) const FACE_OFF_BOLD: u8 = 1;
+pub(crate) const FACE_OFF_ITALIC: u8 = 2;
+pub(crate) const FACE_OFF_UNDERLINE: u8 = 4;
+pub(crate) const FACE_OFF_REVERSE: u8 = 8;
+pub(crate) const FACE_OFF_STRIKE_THROUGH: u8 = 16;
+pub(crate) const FACE_OFF_EXTEND: u8 = 32;
+
+impl TtyFaceAttrs {
+    fn from_options(options: TtyFaceAttrOptions) -> Self {
+        let (underline, underline_color) = options.underline.unwrap_or((FACE_NO_UNDERLINE, 0));
+        let off = |value: Option<bool>, bit: u8| if value == Some(false) { bit } else { 0 };
+        Self {
+            foreground: options.foreground,
+            background: options.background,
+            bold: options.bold.unwrap_or(false),
+            italic: options.italic.unwrap_or(false),
+            underline,
+            underline_color,
+            reverse: options.reverse.unwrap_or(false),
+            strike_through: options.strike_through.unwrap_or(false),
+            extend: options.extend.unwrap_or(false),
+            off: off(options.bold, FACE_OFF_BOLD)
+                | off(options.italic, FACE_OFF_ITALIC)
+                | off(
+                    options
+                        .underline
+                        .map(|(style, _)| style != FACE_NO_UNDERLINE),
+                    FACE_OFF_UNDERLINE,
                 )
-                .ok();
-            // face_attr_equal_p compares color strings case-insensitively.
-            let text_of = |value: &Value| -> Option<String> {
-                match value.kind() {
-                    Kind::StringObject(state) => Some(state.borrow().text()),
-                    _ => None,
-                }
-            };
-            if let (Some(default_text), Some(color_text)) =
-                (default_color.as_ref().and_then(text_of), text_of(&color))
-                && default_text.eq_ignore_ascii_case(&color_text)
-            {
-                return Ok(Value::Nil);
-            }
-            let index = interp
-                .call_function_value(
-                    Value::Symbol("tty-color-translate".into()),
-                    None,
-                    std::slice::from_ref(&color),
-                    env,
-                )?
-                .as_integer()
-                .unwrap_or(-1);
-            if index < 0 {
-                return Ok(Value::Nil);
-            }
+                | off(options.reverse, FACE_OFF_REVERSE)
+                | off(options.strike_through, FACE_OFF_STRIKE_THROUGH)
+                | off(options.extend, FACE_OFF_EXTEND),
         }
     }
-    Ok(Value::T)
+
+    /// merge_face_vectors for tty attributes: OVER's specified ones (on
+    /// or off) over BASE's, BASE's where OVER leaves them unspecified.
+    pub(crate) fn merged_over(base: &Self, over: &Self) -> Self {
+        let flag = |base_on: bool, over_on: bool, bit: u8| -> (bool, u8) {
+            if over_on {
+                (true, 0)
+            } else if over.off & bit != 0 {
+                (false, bit)
+            } else {
+                (base_on, base.off & bit)
+            }
+        };
+        let (bold, bold_off) = flag(base.bold, over.bold, FACE_OFF_BOLD);
+        let (italic, italic_off) = flag(base.italic, over.italic, FACE_OFF_ITALIC);
+        let (reverse, reverse_off) = flag(base.reverse, over.reverse, FACE_OFF_REVERSE);
+        let (strike_through, strike_off) = flag(
+            base.strike_through,
+            over.strike_through,
+            FACE_OFF_STRIKE_THROUGH,
+        );
+        let (extend, extend_off) = flag(base.extend, over.extend, FACE_OFF_EXTEND);
+        let (underline, underline_color, underline_off) = if over.underline != FACE_NO_UNDERLINE {
+            (over.underline, over.underline_color, 0)
+        } else if over.off & FACE_OFF_UNDERLINE != 0 {
+            (FACE_NO_UNDERLINE, 0, FACE_OFF_UNDERLINE)
+        } else {
+            (
+                base.underline,
+                base.underline_color,
+                base.off & FACE_OFF_UNDERLINE,
+            )
+        };
+        Self {
+            foreground: over.foreground.or(base.foreground),
+            background: over.background.or(base.background),
+            bold,
+            italic,
+            underline,
+            underline_color,
+            reverse,
+            strike_through,
+            extend,
+            off: bold_off | italic_off | underline_off | reverse_off | strike_off | extend_off,
+        }
+    }
 }
 
 /// Resolve FACE to its tty attributes through the runtime's own face
-/// machinery: `face-attribute' answers the realized (inherit-merged)
-/// attributes, and `tty-color-translate' maps color names onto the
-/// terminal's ANSI palette exactly as GNU's tty color support does.
+/// machinery: `face-attribute' answers the inherit-merged attributes,
+/// which realize_tty_face maps to the terminal's (map_tty_color for the
+/// colors), in the current buffer's `face-remapping-alist'.
+#[cfg(test)]
 pub(crate) fn resolve_tty_face_attrs(
     interp: &mut Interpreter,
     env: &mut Env,
     face: &Value,
+) -> TtyFaceAttrs {
+    let remapping = interp
+        .lookup_var_key(cached_symbol!("face-remapping-alist"), env)
+        .unwrap_or(Value::Nil);
+    resolve_tty_face_attrs_remapped(interp, env, face, remapping)
+}
+
+/// `resolve_tty_face_attrs' with REMAPPING the `face-remapping-alist' in
+/// effect: the displayed buffer's (redisplay_window makes a window's
+/// buffer current while it realizes the window's faces), nil for the
+/// frame's own faces.
+pub(crate) fn resolve_tty_face_attrs_remapped(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    face: &Value,
+    remapping: Value,
 ) -> TtyFaceAttrs {
     // face-remap.el installs buffer-local substitutions such as Magit's
     // `(header-line magit-header-line header-line)'.  Redisplay realizes
     // the cdr as the effective precedence-ordered face list; the trailing
     // base face is deliberately resolved without recursively remapping it.
     if let Kind::Symbol(requested) = face.kind()
-        && let Some(remapped) = interp
-            .lookup_var_key(cached_symbol!("face-remapping-alist"), env)
+        && let Some(remapped) = Some(remapping)
+            .filter(|alist| !alist.is_nil())
             .and_then(|alist| alist.to_vec().ok())
             .and_then(|entries| {
                 entries.into_iter().find_map(|entry| {
@@ -1852,15 +1890,9 @@ pub(crate) fn resolve_tty_face_attrs(
                 })
             })
     {
-        let options = resolve_tty_face_reference_options(interp, env, &remapped, 0);
-        return TtyFaceAttrs {
-            foreground: options.foreground,
-            background: options.background,
-            bold: options.bold.unwrap_or(false),
-            underline: options.underline.unwrap_or(false),
-            reverse: options.reverse.unwrap_or(false),
-            extend: options.extend.unwrap_or(false),
-        };
+        return TtyFaceAttrs::from_options(resolve_tty_face_reference_options(
+            interp, env, &remapped, 0,
+        ));
     }
     // xfaces.c merge_face_ref: a face reference may be a LIST of face
     // references, merged left to right with the entries nearer the
@@ -1869,44 +1901,11 @@ pub(crate) fn resolve_tty_face_attrs(
     // each member and fold, letting an earlier member's set attributes
     // override a later one's.
     if matches!(face.kind(), Kind::Cons(_)) {
-        let options = resolve_tty_face_reference_options(interp, env, face, 0);
-        return TtyFaceAttrs {
-            foreground: options.foreground,
-            background: options.background,
-            bold: options.bold.unwrap_or(false),
-            underline: options.underline.unwrap_or(false),
-            reverse: options.reverse.unwrap_or(false),
-            extend: options.extend.unwrap_or(false),
-        };
+        return TtyFaceAttrs::from_options(resolve_tty_face_reference_options(
+            interp, env, face, 0,
+        ));
     }
-    // `face-attribute' is GNU faces.el's; reach it through the ordinary
-    // function cell, never the native dispatcher.
-    let attribute = |interp: &mut Interpreter, env: &mut Env, name: &str| {
-        interp
-            .call_function_value(
-                Value::Symbol("face-attribute".into()),
-                Some("face-attribute"),
-                &[*face, Value::Symbol(name.into()), Value::Nil, Value::T],
-                env,
-            )
-            .ok()
-            .filter(|value| !crate::lisp::types::eq_symbol_named(value, "unspecified"))
-            .filter(|value| !value.is_nil())
-    };
-    let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
-        tty_face_color_index(interp, env, value.as_ref()?)
-    };
-    let foreground = attribute(interp, env, ":foreground");
-    let background = attribute(interp, env, ":background");
-    TtyFaceAttrs {
-        foreground: color_index(interp, env, foreground),
-        background: color_index(interp, env, background),
-        bold: attribute(interp, env, ":weight")
-            .is_some_and(|weight| matches!(weight.kind(), Kind::Symbol(s) if s.is_named("bold") || s.is_named("semi-bold") || s.is_named("extra-bold") || s.is_named("ultra-bold"))),
-        underline: attribute(interp, env, ":underline").is_some_and(|value| value.is_truthy()),
-        reverse: attribute(interp, env, ":inverse-video").is_some_and(|value| value.is_truthy()),
-        extend: attribute(interp, env, ":extend").is_some_and(|value| value.is_truthy()),
-    }
+    TtyFaceAttrs::from_options(resolve_tty_face_attr_options(interp, env, face))
 }
 
 /// One face member's tty attributes with per-attribute specificity: a
@@ -1915,11 +1914,13 @@ pub(crate) fn resolve_tty_face_attrs(
 /// a list merge can turn attributes off.
 #[derive(Default)]
 pub(crate) struct TtyFaceAttrOptions {
-    pub(crate) foreground: Option<u8>,
-    pub(crate) background: Option<u8>,
+    pub(crate) foreground: Option<i64>,
+    pub(crate) background: Option<i64>,
     pub(crate) bold: Option<bool>,
-    pub(crate) underline: Option<bool>,
+    pub(crate) italic: Option<bool>,
+    pub(crate) underline: Option<(u8, i64)>,
     pub(crate) reverse: Option<bool>,
+    pub(crate) strike_through: Option<bool>,
     pub(crate) extend: Option<bool>,
 }
 
@@ -1933,31 +1934,142 @@ fn merge_tty_face_options(base: &mut TtyFaceAttrOptions, overlay: TtyFaceAttrOpt
     if overlay.bold.is_some() {
         base.bold = overlay.bold;
     }
+    if overlay.italic.is_some() {
+        base.italic = overlay.italic;
+    }
     if overlay.underline.is_some() {
         base.underline = overlay.underline;
     }
     if overlay.reverse.is_some() {
         base.reverse = overlay.reverse;
     }
+    if overlay.strike_through.is_some() {
+        base.strike_through = overlay.strike_through;
+    }
     if overlay.extend.is_some() {
         base.extend = overlay.extend;
     }
 }
 
-/// Translate one realized tty face color through tty-colors.el's registered
-/// palette and approximation machinery.
-fn tty_face_color_index(interp: &mut Interpreter, env: &mut Env, value: &Value) -> Option<u8> {
-    string_text(value).ok()?;
-    interp
-        .call_function_value(
-            Value::Symbol("tty-color-translate".into()),
-            None,
-            std::slice::from_ref(value),
+/// xfaces.c:map_tty_color of a face's color VALUE (a foreground's or an
+/// underline's when FOREGROUND_P, else a background's): a string's index
+/// in `tty-color-alist' when `tty-defined-color-alist' is a list, else
+/// load_color's pixel (tty_defined_color's, the FACE_TTY_DEFAULT_ pixels
+/// for "unspecified-fg" and "unspecified-bg"), a color it cannot load
+/// logged ("Unable to load color") and given the frame's default pixel.
+/// None for a VALUE that is no string.
+fn map_tty_color(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    value: &Value,
+    foreground_p: bool,
+) -> Option<i64> {
+    if !value.is_string() {
+        return None;
+    }
+    let default_pixel = if foreground_p {
+        FACE_TTY_DEFAULT_FG_COLOR
+    } else {
+        FACE_TTY_DEFAULT_BG_COLOR
+    };
+    let mut pixel = default_pixel;
+    let frame = interp.selected_frame_value();
+    let defined = interp
+        .lookup_var_key(cached_symbol!("tty-defined-color-alist"), env)
+        .unwrap_or(Value::Nil);
+    if string_text(value).is_ok_and(|text| !text.is_empty())
+        && matches!(defined.kind(), Kind::Cons(_))
+        && let Ok(alist) = interp.call_function_value(
+            Value::Symbol("tty-color-alist".into()),
+            Some("tty-color-alist"),
+            &[frame],
             env,
         )
-        .ok()
-        .and_then(|index| index.integer_value())
-        .and_then(|index| u8::try_from(index).ok())
+        && let Ok(def) = crate::lisp::primitives::call(interp, "assoc", &[*value, alist], env)
+        && let Some((_, rest)) = def.cons_values()
+        && let Some((index, _)) = rest.cons_values()
+        && let Kind::Integer(index) = index.kind()
+    {
+        pixel = index;
+    }
+    if pixel == default_pixel {
+        let Kind::Frame(frame) = frame.kind() else {
+            return Some(pixel);
+        };
+        match super::faces::tty_defined_color_pixel(interp, env, frame, value) {
+            Ok(Some(loaded)) => pixel = loaded,
+            Ok(None) => {
+                let _ = add_to_log(interp, "Unable to load color \"%s\"", &[*value], env);
+            }
+            Err(_) => {}
+        }
+    }
+    Some(pixel)
+}
+
+/// realize_tty_face's underline of VALUE: (type, color pixel), nil none,
+/// t or a string (its color) a single line, and a (:color COLOR :style
+/// STYLE) list its style's line (a single one for an unknown style) and
+/// COLOR's pixel (none for `foreground-color').
+fn tty_underline(interp: &mut Interpreter, env: &mut Env, value: &Value) -> (u8, i64) {
+    match value.kind() {
+        Kind::Nil => (FACE_NO_UNDERLINE, 0),
+        Kind::T => (FACE_UNDERLINE_SINGLE, 0),
+        Kind::StringObject(_) => (
+            FACE_UNDERLINE_SINGLE,
+            map_tty_color(interp, env, value, true).unwrap_or(0),
+        ),
+        Kind::Cons(_) => {
+            let (mut kind, mut color) = (FACE_UNDERLINE_SINGLE, 0);
+            let mut tail = *value;
+            while let Some((keyword, rest)) = tail.cons_values() {
+                let Some((value, rest)) = rest.cons_values() else {
+                    break;
+                };
+                tail = rest;
+                if crate::lisp::types::eq_symbol_named(keyword, ":color") {
+                    if crate::lisp::types::eq_symbol_named(value, "foreground-color") {
+                        color = 0;
+                    } else if value.is_string() {
+                        color = map_tty_color(interp, env, &value, true).unwrap_or(0);
+                    }
+                } else if crate::lisp::types::eq_symbol_named(keyword, ":style") {
+                    kind = [
+                        ("line", FACE_UNDERLINE_SINGLE),
+                        ("double-line", FACE_UNDERLINE_DOUBLE_LINE),
+                        ("wave", FACE_UNDERLINE_WAVE),
+                        ("dots", FACE_UNDERLINE_DOTS),
+                        ("dashes", FACE_UNDERLINE_DASHES),
+                    ]
+                    .into_iter()
+                    .find(|(name, _)| crate::lisp::types::eq_symbol_named(value, name))
+                    .map_or(FACE_UNDERLINE_SINGLE, |(_, kind)| kind);
+                }
+            }
+            (kind, color)
+        }
+        _ => (FACE_NO_UNDERLINE, 0),
+    }
+}
+
+/// realize_tty_face's tty_bold_p and tty_italic_p: FONT_WEIGHT_NAME_NUMERIC
+/// above medium's 100, FONT_SLANT_NAME_NUMERIC other than normal's 100.
+fn tty_weight_bold(interp: &mut Interpreter, value: &Value) -> bool {
+    crate::lisp::primitives::font::style_name_numeric(
+        interp,
+        crate::lisp::primitives::font::FONT_WEIGHT_INDEX,
+        value,
+    )
+    .is_ok_and(|weight| weight > 100)
+}
+
+fn tty_slant_italic(interp: &mut Interpreter, value: &Value) -> bool {
+    crate::lisp::primitives::font::style_name_numeric(
+        interp,
+        crate::lisp::primitives::font::FONT_SLANT_INDEX,
+        value,
+    )
+    .is_ok_and(|slant| slant != 100)
 }
 
 /// Resolve the named, precedence-ordered list, and anonymous attribute
@@ -1998,7 +2110,6 @@ fn resolve_tty_face_reference_options(
     let mut merged = inherited
         .map(|value| resolve_tty_face_reference_options(interp, env, value, depth + 1))
         .unwrap_or_default();
-    let color_index = tty_face_color_index;
     for pair in pairs {
         let Kind::Symbol(name) = pair[0].kind() else {
             continue;
@@ -2008,17 +2119,13 @@ fn resolve_tty_face_reference_options(
             continue;
         }
         match name.as_ref() {
-            ":foreground" => merged.foreground = color_index(interp, env, value),
-            ":background" => merged.background = color_index(interp, env, value),
-            ":weight" => {
-                merged.bold = Some(matches!(value.kind(), Kind::Symbol(weight)
-                    if weight.is_named("bold")
-                        || weight.is_named("semi-bold")
-                        || weight.is_named("extra-bold")
-                        || weight.is_named("ultra-bold")));
-            }
-            ":underline" => merged.underline = Some(value.is_truthy()),
+            ":foreground" => merged.foreground = map_tty_color(interp, env, value, true),
+            ":background" => merged.background = map_tty_color(interp, env, value, false),
+            ":weight" => merged.bold = Some(tty_weight_bold(interp, value)),
+            ":slant" => merged.italic = Some(tty_slant_italic(interp, value)),
+            ":underline" => merged.underline = Some(tty_underline(interp, env, value)),
             ":inverse-video" => merged.reverse = Some(value.is_truthy()),
+            ":strike-through" => merged.strike_through = Some(value.is_truthy()),
             ":extend" => merged.extend = Some(value.is_truthy()),
             _ => {}
         }
@@ -2042,20 +2149,19 @@ fn resolve_tty_face_attr_options(
             .ok()
             .filter(|value| !crate::lisp::types::eq_symbol_named(value, "unspecified"))
     };
-    let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
-        tty_face_color_index(interp, env, value.as_ref()?)
-    };
-    let foreground = attribute(interp, env, ":foreground").filter(|value| !value.is_nil());
-    let background = attribute(interp, env, ":background").filter(|value| !value.is_nil());
+    let foreground = attribute(interp, env, ":foreground");
+    let background = attribute(interp, env, ":background");
+    let weight = attribute(interp, env, ":weight");
+    let slant = attribute(interp, env, ":slant");
+    let underline = attribute(interp, env, ":underline");
     TtyFaceAttrOptions {
-        foreground: color_index(interp, env, foreground),
-        background: color_index(interp, env, background),
-        bold: attribute(interp, env, ":weight").map(|weight| {
-            matches!(weight.kind(), Kind::Symbol(ref s)
-                if s.is_named("bold") || s.is_named("semi-bold") || s.is_named("extra-bold") || s.is_named("ultra-bold"))
-        }),
-        underline: attribute(interp, env, ":underline").map(|value| value.is_truthy()),
+        foreground: foreground.and_then(|value| map_tty_color(interp, env, &value, true)),
+        background: background.and_then(|value| map_tty_color(interp, env, &value, false)),
+        bold: weight.map(|weight| tty_weight_bold(interp, &weight)),
+        italic: slant.map(|slant| tty_slant_italic(interp, &slant)),
+        underline: underline.map(|value| tty_underline(interp, env, &value)),
         reverse: attribute(interp, env, ":inverse-video").map(|value| value.is_truthy()),
+        strike_through: attribute(interp, env, ":strike-through").map(|value| value.is_truthy()),
         extend: attribute(interp, env, ":extend").map(|value| value.is_truthy()),
     }
 }
@@ -4687,104 +4793,18 @@ define_dispatch!(
             "format-mode-line" => mode_line::format_mode_line(interp, args, env),
             // ── Output ──
             "message" => {
-                let (text, formatted) =
-                    if args.is_empty() || args.first().is_some_and(Value::is_nil) {
-                        (String::new(), None)
-                    } else {
-                        // editfns.c Fmessage formats through Fformat_message,
-                        // so grave quotes follow `text-quoting-style'.
-                        let formatted = super::call(interp, "format-message", args, env)?;
-                        (string_text(&formatted)?, Some(formatted))
-                    };
-                // Fmessage: `(message nil)' and `(message "")' clear the
-                // echo area (message1 (0)) without logging, which edebug
-                // relies on and the upstream capture advice ignores. Any
-                // other format logs, even when it formats to "".
-                let capturable = !args.is_empty()
-                    && !args.first().is_some_and(Value::is_nil)
-                    && args
-                        .first()
-                        .and_then(|format| with_string_text(format, |text| !text.is_empty()))
-                        .unwrap_or(true);
-                // message3: first flush out any partial line written with
-                // print, whatever the message.
-                message_log_maybe_newline(interp, env);
-                if capturable {
-                    log_message_text(interp, &text, env);
-                    interp.append_message_capture(&text, true, env);
+                // editfns.c:Fmessage: nil or an empty format string is
+                // message1 (0), clearing the echo area unlogged; anything
+                // else is message3 of `format-message''s string.
+                let first = args.first().copied().unwrap_or(Value::Nil);
+                if first.is_nil() || with_string_text(&first, str::is_empty).unwrap_or(false) {
+                    message3(interp, Value::Nil, None, env)?;
+                    return Ok(first);
                 }
-                // An interactive session shows the message in the echo area
-                // (an empty or nil MESSAGE clears it, GNU's documented way
-                // to wipe the echo line).
-                if interp
-                    .lookup_var_key(cached_symbol!("noninteractive"), env)
-                    .is_none_or(|value| value.is_nil())
-                {
-                    if text.is_empty() {
-                        // xdisp.c clear_message: `clear-message-function'
-                        // clears its own display first (the minibuffer's
-                        // transient overlay); `dont-clear-message' keeps
-                        // the echo area untouched.
-                        let kept = interp
-                            .lookup_var_key(cached_symbol!("clear-message-function"), env)
-                            .filter(|function| !function.is_nil())
-                            .and_then(|function| {
-                                interp.call_function_value(function, None, &[], env).ok()
-                            })
-                            .is_some_and(|result| {
-                                crate::lisp::types::eq_symbol_named(result, "dont-clear-message")
-                            });
-                        if !kept {
-                            set_echo_area_message(None);
-                        }
-                    } else {
-                        // xdisp.c set_message: `set-message-function' may
-                        // replace the string or consume it entirely
-                        // (set-minibuffer-message displays it inside the
-                        // active minibuffer instead of the echo area).
-                        let mut display = formatted;
-                        if let Some(function) = interp
-                            .lookup_var_key(cached_symbol!("set-message-function"), env)
-                            .filter(|function| !function.is_nil())
-                        {
-                            let string =
-                                formatted.unwrap_or_else(|| Value::String(text.clone().into()));
-                            if let Ok(result) =
-                                interp.call_function_value(function, None, &[string], env)
-                            {
-                                if result.is_string() {
-                                    display = Some(result);
-                                } else if result.is_truthy() {
-                                    display = None;
-                                }
-                            }
-                        }
-                        if let Some(value) = display {
-                            set_echo_area_message_value(value)?;
-                        }
-                    }
-                }
-                // There is no echo area in batch mode.  GNU writes messages to
-                // the process stderr instead (xdisp.c message_to_stderr),
-                // including the newline used to clear an empty message, and
-                // first a newline of its own when stdout was written since
-                // the previous message (`noninteractive_need_newline').
-                // Message capture remains independent of `inhibit-message',
-                // matching the advice used by ERT.
-                if interp
-                    .lookup_var_key(cached_symbol!("noninteractive"), env)
-                    .is_some_and(|value| value.is_truthy())
-                    && interp
-                        .lookup_var_key(cached_symbol!("inhibit-message"), env)
-                        .is_none_or(|value| value.is_nil())
-                {
-                    message_to_stderr(interp, formatted.as_ref(), env)?;
-                }
-                if args.first().is_some_and(Value::is_nil) {
-                    Ok(Value::Nil)
-                } else {
-                    Ok(formatted.unwrap_or_else(|| Value::String(text.into())))
-                }
+                let formatted = super::call(interp, "format-message", args, env)?;
+                let log = string_text(&formatted)?;
+                message3(interp, formatted, Some(&log), env)?;
+                Ok(formatted)
             }
             "message-box" => {
                 if args.is_empty() {
@@ -5011,6 +5031,8 @@ define_dispatch!(
                 if minibuffer_quit {
                     super::call(interp, "ding", &[Value::T], env)?;
                 } else {
+                    // Fdiscard_input: the typeahead goes with the error.
+                    super::call(interp, "discard-input", &[], env)?;
                     super::call(interp, "ding", &[], env)?;
                 }
                 // print_error_message (data, Qt, context, signal): printed
@@ -5045,102 +5067,169 @@ define_dispatch!(
             }
             "sleep-for" => {
                 need_arg_range(name, args, 1, 2)?;
-                let duration = wait_duration(args)?;
-                if duration.is_zero() {
-                    // Fsleep_for enters wait_reading_process_output only for
-                    // a positive duration and otherwise returns nil at once:
-                    // no subprocess output, no timers (in batch `sit-for'
-                    // is this call, and the oracle leaves a due
-                    // `run-at-time' timer unrun across it).
-                    return Ok(Value::Nil);
+                // dispnew.c:Fsleep_for: SECONDS by extract_float, the
+                // deprecated MILLISECONDS a fixnum added in thousandths.
+                let mut duration = crate::lisp::primitives::extract_float(interp, &args[0])?;
+                if let Some(milliseconds) = args.get(1).filter(|value| !value.is_nil()) {
+                    let Kind::Integer(milliseconds) = milliseconds.kind() else {
+                        return Err(LispError::WrongTypeArgument(
+                            "fixnump".into(),
+                            *milliseconds,
+                        ));
+                    };
+                    duration += milliseconds as f64 / 1000.0;
                 }
-                // GNU processes subprocess output whenever it waits; epg relies
-                // on the trailing (sleep-for 0.1) in epg-wait-for-completion to
-                // flush gpg's final status lines through the process filter.
-                // wait_reading_process_output records READ_KBD 0 for the
-                // whole call, even when it nests inside a keyboard read.
-                let previous_wait = interp.set_waiting_for_user_input(false);
-                let wait_result =
-                    wait_pumping_processes(interp, env, Some(duration), false, None, None, true);
-                interp.set_waiting_for_user_input(previous_wait);
-                wait_result?;
+                if duration > 0.0 {
+                    // tend = now + dtotimespec (duration), None when past
+                    // what the clock can hold.  wait_reading_process_output
+                    // returns as soon as it detects output from any
+                    // subprocess, so wait in a loop until the time expires.
+                    let (mut secs, mut nsecs) =
+                        crate::lisp::primitives::processes::dtotimespec(duration);
+                    let tend = std::time::Instant::now()
+                        .checked_add(std::time::Duration::new(secs as u64, nsecs as u32));
+                    loop {
+                        crate::lisp::primitives::processes::wait_reading_process_output(
+                            interp,
+                            env,
+                            crate::lisp::primitives::processes::WaitRequest {
+                                // min (t.tv_sec, WAIT_READING_MAX): time_t's
+                                // maximum, which no tv_sec exceeds.
+                                time_limit: secs,
+                                nsecs,
+                                read_kbd: 0,
+                                do_display: false,
+                                wait_proc: None,
+                                just_wait_proc: 0,
+                            },
+                        )?;
+                        if let Some(tend) = tend {
+                            let left = tend.saturating_duration_since(std::time::Instant::now());
+                            if left.is_zero() {
+                                break;
+                            }
+                            secs = i64::try_from(left.as_secs())
+                                .unwrap_or(crate::lisp::primitives::processes::WAIT_READING_MAX);
+                            nsecs = i64::from(left.subsec_nanos());
+                        }
+                    }
+                }
                 Ok(Value::Nil)
             }
             "accept-process-output" => {
                 need_arg_range(name, args, 0, 4)?;
-                // GNU: (accept-process-output &optional PROCESS SECONDS MILLISEC
-                // JUST-THIS-ONE) - the wait always comes from args 2 and 3.
-                let duration_args = if args.len() > 1 {
-                    &args[1..args.len().min(3)]
+                // process.c:Faccept_process_output.
+                let process = args.first().copied().unwrap_or(Value::Nil);
+                let mut seconds = args.get(1).copied().unwrap_or(Value::Nil);
+                let millisec = args.get(2).copied().unwrap_or(Value::Nil);
+                let mut just_this_one = args.get(3).copied().unwrap_or(Value::Nil);
+                let wait_proc = if process.is_nil() {
+                    just_this_one = Value::Nil;
+                    None
                 } else {
-                    &[]
-                };
-                let target_process_id = args
-                    .first()
-                    .filter(|process| !process.is_nil())
-                    .map(|process| interp.resolve_process_id(process))
-                    .transpose()?;
-                if let Some(process_id) = target_process_id {
+                    // CHECK_PROCESS, and a process dedicated to another
+                    // thread cannot be waited for.
+                    let process_id = interp.resolve_process_id(&process)?;
                     interp.ensure_process_owned_by_current_thread(process_id)?;
+                    Some(process_id)
+                };
+                if !millisec.is_nil() {
+                    // Obsolete calling convention using integers rather
+                    // than floats.
+                    let Kind::Integer(millis) = millisec.kind() else {
+                        return Err(LispError::WrongTypeArgument("fixnump".into(), millisec));
+                    };
+                    seconds = if seconds.is_nil() {
+                        Value::float(millis as f64 / 1000.0)
+                    } else {
+                        let Kind::Integer(whole) = seconds.kind() else {
+                            return Err(LispError::WrongTypeArgument("fixnump".into(), seconds));
+                        };
+                        Value::float(millis as f64 / 1000.0 + whole as f64)
+                    };
                 }
-                let timeout = if args.get(1).is_some_and(|seconds| !seconds.is_nil()) {
-                    Some(wait_duration(duration_args)?)
-                } else if target_process_id.is_none() {
-                    // With neither PROCESS nor a timeout GNU performs one event
-                    // pump (including due timers) and returns.  Only a specified
-                    // process makes the timeout-less form wait indefinitely.
-                    Some(std::time::Duration::ZERO)
+                let mut secs: i64 = 0;
+                let mut nsecs: i64 = -1;
+                if !seconds.is_nil() {
+                    match seconds.kind() {
+                        Kind::Integer(whole) => {
+                            if whole > 0 {
+                                secs = whole;
+                                nsecs = 0;
+                            }
+                        }
+                        Kind::Float(float) => {
+                            let float = float.get();
+                            if float > 0.0 {
+                                let (whole, fraction) =
+                                    crate::lisp::primitives::processes::dtotimespec(float);
+                                // min (t.tv_sec, WAIT_READING_MAX): time_t's
+                                // maximum, which no tv_sec exceeds.
+                                secs = whole;
+                                nsecs = fraction;
+                            }
+                        }
+                        _ => {
+                            return Err(LispError::WrongTypeArgument("numberp".into(), seconds));
+                        }
+                    }
+                } else if wait_proc.is_some() {
+                    nsecs = 0;
+                }
+                let just_wait_proc = if just_this_one.is_nil() {
+                    0
+                } else if !matches!(just_this_one.kind(), Kind::Integer(_)) {
+                    1
                 } else {
-                    None
+                    -1
                 };
-                // A non-nil JUST-THIS-ONE suspends output from every other
-                // process.  Its integer spelling also suppresses timers.
-                // GNU ignores the flag when PROCESS itself is nil.
-                let just_this_one = if target_process_id.is_some() {
-                    args.get(3).filter(|value| value.is_truthy())
-                } else {
-                    None
-                };
-                let only_process_id = just_this_one.and(target_process_id);
-                let run_timers =
-                    just_this_one.is_none_or(|value| !matches!(value.kind(), Kind::Integer(_)));
-                // A READ_KBD 0 wait: it never selects the keyboard-class
-                // notification descriptor, even when a callback nests it
-                // inside a keyboard read.
-                let previous_wait = interp.set_waiting_for_user_input(false);
-                let wait_result = wait_pumping_processes(
+                let got = crate::lisp::primitives::processes::wait_reading_process_output(
                     interp,
                     env,
-                    timeout,
-                    true,
-                    target_process_id,
-                    only_process_id,
-                    run_timers,
-                );
-                interp.set_waiting_for_user_input(previous_wait);
-                let delivered = wait_result?;
-                Ok(if delivered { Value::T } else { Value::Nil })
+                    crate::lisp::primitives::processes::WaitRequest {
+                        time_limit: secs,
+                        nsecs,
+                        read_kbd: 0,
+                        do_display: false,
+                        wait_proc,
+                        just_wait_proc,
+                    },
+                )?;
+                Ok(if got <= 0 { Value::Nil } else { Value::T })
             }
             "input-pending-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                // keyboard.c's process_special_events handles selection
-                // events only: buffered file notifications wait for read_char
-                // and the kernel notification queue is not read here at all
-                // (the oracle answers nil and runs no callback for a watched
-                // file written moments earlier).  A non-nil CHECK-TIMERS is
-                // READABLE_EVENTS_DO_TIMERS_NOW; `sit-for' deliberately calls
-                // `(input-pending-p t)', even for a zero-length no-redisplay
-                // wait.
-                if args.first().is_some_and(Value::is_truthy) {
-                    interp.run_pending_timer_events(env)?;
+                // keyboard.c:Finput_pending_p: requeued_events_pending_p,
+                // CONSP (Vunread_command_events) or either input-method
+                // queue non-nil, answers t.
+                if interp
+                    .lookup_var_key(cached_symbol!("unread-command-events"), env)
+                    .is_some_and(|events| events.is_cons())
+                    || [
+                        cached_symbol!("unread-post-input-method-events"),
+                        cached_symbol!("unread-input-method-events"),
+                    ]
+                    .into_iter()
+                    .any(|key| interp.lookup_var_key(key, env).is_some_and(|v| !v.is_nil()))
+                {
+                    return Ok(Value::T);
                 }
+                // process_special_events handles selection events only:
+                // buffered file notifications wait for read_char and the
+                // kernel notification queue is not read here at all (the
+                // oracle answers nil and runs no callback for a watched
+                // file written moments earlier).  A non-nil CHECK-TIMERS is
+                // READABLE_EVENTS_DO_TIMERS_NOW; `sit-for' deliberately
+                // calls `(input-pending-p t)', even for a zero-length
+                // no-redisplay wait.
+                // get_input_pending: `quit-flag' set, or an event in the
+                // keyboard buffer.
+                let check_timers = args.first().is_some_and(Value::is_truthy);
                 Ok(
-                    if unread_command_events(interp, env)?.is_empty()
-                        && !crate::lisp::primitives::tty_input_pending()
-                    {
-                        Value::Nil
-                    } else {
+                    if crate::lisp::primitives::get_input_pending(interp, env, check_timers)?.0 {
                         Value::T
+                    } else {
+                        Value::Nil
                     },
                 )
             }
@@ -5443,12 +5532,22 @@ define_dispatch!(
             "controlling-tty-p" => {
                 need_arg_range(name, args, 0, 1)?;
                 require_live_terminal(interp, args.first())?;
-                Ok(Value::Nil)
+                // term.c: a tty terminal whose name is dev_tty.
+                let target = args.first().copied().unwrap_or(Value::Nil);
+                let dev_tty = crate::lisp::eval::terminal::dev_tty();
+                let controlling = interp.decode_terminal(&target).is_some_and(|terminal| {
+                    let terminal = terminal.borrow();
+                    terminal.kind.is_some() && terminal.name == dev_tty
+                });
+                Ok(if controlling { Value::T } else { Value::Nil })
             }
+            // decode_tty_terminal: TERMINAL's TN_max_colors where it is a
+            // tty, else none.
             "tty-display-color-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                require_live_terminal(interp, args.first())?;
-                Ok(if interp.tty_display_color_cells() > 0 {
+                let terminal = require_live_terminal(interp, args.first())?;
+                let state = terminal.borrow();
+                Ok(if state.kind.is_some() && state.colors.max_colors > 0 {
                     Value::T
                 } else {
                     Value::Nil
@@ -5456,12 +5555,23 @@ define_dispatch!(
             }
             "tty-display-color-cells" => {
                 need_arg_range(name, args, 0, 1)?;
-                require_live_terminal(interp, args.first())?;
-                Ok(Value::Integer(interp.tty_display_color_cells()))
+                let terminal = require_live_terminal(interp, args.first())?;
+                let state = terminal.borrow();
+                Ok(Value::Integer(if state.kind.is_some() {
+                    state.colors.max_colors
+                } else {
+                    0
+                }))
             }
+            // term.c Ftty_no_underline: a tty terminal's
+            // TS_enter_underline_mode is no more.
             "tty-no-underline" => {
                 need_arg_range(name, args, 0, 1)?;
-                require_live_terminal(interp, args.first())?;
+                let terminal = require_live_terminal(interp, args.first())?;
+                let mut state = terminal.borrow_mut();
+                if state.kind.is_some() {
+                    state.appearance.enter_underline_mode = None;
+                }
                 Ok(Value::Nil)
             }
             "suspend-tty" | "resume-tty" => {
@@ -5491,17 +5601,14 @@ define_dispatch!(
                     "Attempt to suspend a non-text terminal device".into(),
                 ))
             }
-            // Batch sessions have no color support (GNU: nil / 0).
-
-            // xfaces.c Fdisplay_supports_face_attributes_p: batch gives
-            // up before frames exist (noninteractive -> nil); a live tty
-            // frame dispatches to tty_supports_face_attributes_p.
             "display-supports-face-attributes-p" => {
                 need_arg_range(name, args, 1, 2)?;
-                if interp.tty_display_color_cells() <= 0 {
-                    return Ok(Value::Nil);
-                }
-                tty_supports_face_attributes(interp, env, &args[0])
+                super::faces::display_supports_face_attributes_p(
+                    interp,
+                    env,
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                )
             }
             "internal-char-font" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -5553,43 +5660,62 @@ define_dispatch!(
             }
             "current-input-mode" => {
                 need_args(name, args, 0)?;
+                // keyboard.c: (INTERRUPT FLOW META QUIT); a frame not on a
+                // terminal has no flow control and takes 8-bit input as Meta.
+                let interrupt = if interp.input_interrupt_mode() {
+                    Value::T
+                } else {
+                    Value::Nil
+                };
+                let (flow, meta) = match crate::lisp::primitives::tty_input_modes() {
+                    Some(modes) => (
+                        if modes.flow_control {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        },
+                        match modes.meta_key {
+                            2 => Value::Integer(0),
+                            1 => Value::T,
+                            3 => Value::symbol("encoded"),
+                            _ => Value::Nil,
+                        },
+                    ),
+                    None => (Value::Nil, Value::T),
+                };
                 Ok(Value::list([
-                    if interp.input_interrupt_mode() {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                    Value::Nil,
-                    Value::T,
-                    Value::Integer(7),
+                    interrupt,
+                    flow,
+                    meta,
+                    Value::Integer(crate::lisp::primitives::quit_char()),
                 ]))
             }
             "set-input-interrupt-mode" => {
                 need_args(name, args, 1)?;
-                interp.set_input_interrupt_mode(args[0].is_truthy());
+                set_input_interrupt_mode(interp, args[0]);
                 Ok(Value::Nil)
             }
             "set-output-flow-control" | "set-input-meta-mode" => {
                 need_arg_range(name, args, 1, 2)?;
-                // keyboard.c: decode_tty_terminal's decode_live_terminal,
-                // then nothing for a terminal that is no tty: GNU's batch
-                // frame has none, so these terminal-local setters are
-                // successful no-ops.
                 let terminal = args.get(1).copied().unwrap_or(Value::Nil);
-                if interp.decode_terminal(&terminal).is_none() {
-                    return Err(wrong_type_argument("terminal-live-p", terminal));
-                }
+                set_tty_input_mode(interp, name, args[0], terminal)?;
                 Ok(Value::Nil)
             }
             "set-input-mode" => {
                 need_arg_range(name, args, 3, 4)?;
-                interp.set_input_interrupt_mode(args[0].is_truthy());
+                // Fset_input_mode: each mode's own setter, QUIT only when
+                // given.
+                set_input_interrupt_mode(interp, args[0]);
+                set_tty_input_mode(interp, "set-output-flow-control", args[1], Value::Nil)?;
+                set_tty_input_mode(interp, "set-input-meta-mode", args[2], Value::Nil)?;
+                if let Some(quit) = args.get(3).filter(|quit| !quit.is_nil()) {
+                    set_quit_char(interp, *quit)?;
+                }
                 Ok(Value::Nil)
             }
             "set-quit-char" => {
                 need_args(name, args, 1)?;
-                // No controlling tty in batch mode; GNU returns before
-                // validating or changing its tty-local quit character.
+                set_quit_char(interp, args[0])?;
                 Ok(Value::Nil)
             }
 
@@ -6826,15 +6952,18 @@ define_dispatch!(
             "redraw-frame" => {
                 need_arg_range(name, args, 0, 1)?;
                 decode_live_frame(interp, args.first(), true)?;
-                // dispnew.c:redraw_frame clears the glyph matrices, which
-                // Emaxx does not keep between batch evaluations, and marks
-                // every window's display inaccurate.
+                // dispnew.c:redraw_frame: the terminal cleared and the
+                // current matrices with it (the frame garbaged, which the
+                // next redisplay draws from a cleared screen), every
+                // window's display inaccurate.
+                crate::lisp::primitives::set_frame_garbaged();
                 mark_overlay_arrows_inaccurate(interp, env);
                 Ok(Value::Nil)
             }
             "redraw-display" => {
                 need_args(name, args, 0)?;
                 // redraw_frame on each visible frame; every live frame is.
+                crate::lisp::primitives::set_frame_garbaged();
                 mark_overlay_arrows_inaccurate(interp, env);
                 Ok(Value::Nil)
             }
@@ -6944,17 +7073,7 @@ define_dispatch!(
                         env,
                     );
                 }
-                let (r, g, b) = (
-                    i64::from(left[0]) - i64::from(right[0]),
-                    i64::from(left[1]) - i64::from(right[1]),
-                    i64::from(left[2]) - i64::from(right[2]),
-                );
-                let r_mean = (i64::from(left[0]) + i64::from(right[0])) >> 1;
-                let distance = ((((2 * 65536 + r_mean) * r * r) >> 16)
-                    + 4 * g * g
-                    + (((2 * 65536 + 65535 - r_mean) * b * b) >> 16))
-                    >> 16;
-                Ok(Value::Integer(distance))
+                Ok(Value::Integer(super::faces::color_distance(left, right)))
             }
             "color-values-from-color-spec" => {
                 need_args(name, args, 1)?;
@@ -7696,8 +7815,15 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "send-string-to-terminal" => {
+                // dispnew.c: decode_live_terminal, CHECK_STRING, and the
+                // string's bytes written unaltered to the terminal.
                 need_arg_range(name, args, 1, 2)?;
-                let _ = string_text(&args[0])?;
+                let terminal = require_live_terminal(interp, args.get(1))?;
+                let Kind::StringObject(string) = args[0].kind() else {
+                    return Err(wrong_type_argument("stringp", args[0]));
+                };
+                let bytes = string.borrow().bytes().to_vec();
+                crate::lisp::eval::terminal::send_string_to_terminal(terminal, &bytes);
                 Ok(Value::Nil)
             }
             "get-buffer-window" => {
@@ -8080,6 +8206,71 @@ fn text_char_description(
 /// Fbuffer_text_pixel_size's measurement of the current buffer's
 /// accessible text on a terminal: the widest line's columns by the line
 /// count.
+/// keyboard.c:Fset_input_interrupt_mode: a change of `interrupt_input'
+/// between reset_all_sys_modes and init_all_sys_modes.
+fn set_input_interrupt_mode(interp: &mut Interpreter, interrupt: Value) {
+    let new = !interrupt.is_nil();
+    if new != interp.input_interrupt_mode() {
+        crate::lisp::primitives::reset_all_sys_modes();
+        interp.set_input_interrupt_mode(new);
+        crate::lisp::primitives::init_all_sys_modes(interp, new);
+    }
+}
+
+/// keyboard.c:Fset_output_flow_control and Fset_input_meta_mode:
+/// decode_tty_terminal's terminal, nothing for one that is no tty, and
+/// the tty's mode changed between reset_sys_modes and init_sys_modes.
+fn set_tty_input_mode(
+    interp: &mut Interpreter,
+    name: &str,
+    value: Value,
+    terminal: Value,
+) -> Result<(), LispError> {
+    let Some(decoded) = interp.decode_terminal(&terminal) else {
+        return Err(wrong_type_argument("terminal-live-p", terminal));
+    };
+    let (is_tty, is_session) = {
+        let state = decoded.borrow();
+        (state.kind.is_some(), state.device.is_none())
+    };
+    if !is_tty || !is_session {
+        return Ok(());
+    }
+    let interrupt_input = interp.input_interrupt_mode();
+    crate::lisp::primitives::change_tty_input_modes(interp, interrupt_input, |modes| {
+        if name == "set-output-flow-control" {
+            modes.flow_control = !value.is_nil();
+        } else {
+            modes.meta_key = if value.is_nil() {
+                0
+            } else if matches!(value.kind(), Kind::T) {
+                1
+            } else if crate::lisp::types::eq_symbol_named(value, "encoded") {
+                3
+            } else {
+                2
+            };
+        }
+    });
+    Ok(())
+}
+
+/// keyboard.c:Fset_quit_char: nothing without the controlling terminal;
+/// QUIT an ASCII character, kept in the meta mode's range.
+fn set_quit_char(interp: &mut Interpreter, quit: Value) -> Result<(), LispError> {
+    if !crate::lisp::primitives::dev_tty_terminal() {
+        return Ok(());
+    }
+    match quit.kind() {
+        Kind::Integer(code) if (0..=0o400).contains(&code) => {
+            let interrupt_input = interp.input_interrupt_mode();
+            crate::lisp::primitives::set_quit_char(interp, code, interrupt_input);
+            Ok(())
+        }
+        _ => Err(LispError::Signal("QUIT must be an ASCII character".into())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

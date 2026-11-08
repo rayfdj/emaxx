@@ -33,12 +33,19 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     unsafe extern "C" fn check_pending(_: *mut c_void) -> usize {
         0
     }
+    unsafe extern "C" fn strerror(_: c_int) -> *const std::ffi::c_char {
+        c"Resource temporarily unavailable, try again.".as_ptr()
+    }
+    unsafe extern "C" fn alert_get(_: *mut c_void) -> c_int {
+        0
+    }
 
     let mut transport = Transport::default();
     let mut session = ProcessGnuTlsSession::new(
         std::sync::Arc::new(()),
         std::ptr::from_mut(&mut transport).cast(),
         std::ptr::null_mut(),
+        false,
         GnuTlsSessionApi {
             session_deinit: deinit,
             credential_deinit: deinit,
@@ -48,6 +55,9 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
             handshake,
             bye,
             error_is_fatal,
+            strerror,
+            alert_get,
+            alert_get_name: strerror,
         },
         false,
     );
@@ -56,7 +66,7 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     // behind process.c's back when ordinary output polling asks for bytes.
     assert_eq!(session.receive(65_536).unwrap(), (Vec::new(), false));
     assert_eq!((transport.handshakes, transport.reads), (0, 0));
-    assert_eq!(session.handshake_step(), 0);
+    assert_eq!(session.handshake_step(), (0, false));
     assert_eq!(session.receive(65_536).unwrap(), (Vec::new(), false));
     assert_eq!((transport.handshakes, transport.reads), (1, 1));
 }
@@ -558,30 +568,15 @@ fn subprocess_exit_is_event_driven_and_notifies_newest_process_first_once() {
 #[test]
 fn process_waits_end_on_output_and_on_a_child_signal_before_their_timeout() {
     // process.c:wait_reading_process_output selects on the processes'
-    // channels and the child signal pipe: output arriving ends the wait,
-    // and so does a child's exit on a pty, whose slave Emacs keeps open so
-    // that no hangup reaches the master.  Each wait below may last five
-    // seconds; the whole exchange must not.
+    // channels and the child signal pipe: a wait for a process's output
+    // ends when output comes, and when the process stops running, as a
+    // child on a pty does when it exits (Emacs keeps the slave open, so no
+    // hangup reaches the master; the child's SIGCHLD ends the select).
+    // Each wait below may last five seconds; the whole exchange must not.
     run_with_large_stack(|| {
         let _permit = crate::test_support::acquire_host_test_permit();
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-        let mut env = crate::lisp::types::Env::new();
-        let mut wait_until = |interp: &mut Interpreter, done: &str, what: &str| {
-            let start = std::time::Instant::now();
-            while !eval_str_with(interp, done).is_truthy() {
-                assert!(
-                    start.elapsed() < std::time::Duration::from_secs(4),
-                    "the wait for {what} lasted until its timeout"
-                );
-                interp
-                    .wait_current_thread_for_process_input(
-                        &mut env,
-                        None,
-                        std::time::Duration::from_secs(5),
-                    )
-                    .expect("wait for process input");
-            }
-        };
+        let start = std::time::Instant::now();
         eval_str_with(
             &mut interp,
             r#"(setq emaxx-wait-exit
@@ -589,11 +584,16 @@ fn process_waits_end_on_output_and_on_a_child_signal_before_their_timeout() {
                                    :command (list (executable-find "sh") "-c" "sleep 0.2")
                                    :connection-type 'pty :noquery t))"#,
         );
-        wait_until(
-            &mut interp,
-            "(progn (accept-process-output nil 0) (not (process-live-p emaxx-wait-exit)))",
-            "a pty child's exit",
+        eval_str_with(&mut interp, "(accept-process-output emaxx-wait-exit 5)");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(4),
+            "the wait for a pty child's exit lasted until its timeout"
         );
+        assert_eq!(
+            eval_str_with(&mut interp, "(process-live-p emaxx-wait-exit)"),
+            Value::Nil
+        );
+        let start = std::time::Instant::now();
         eval_str_with(
             &mut interp,
             r#"(setq emaxx-wait-output nil
@@ -605,10 +605,13 @@ fn process_waits_end_on_output_and_on_a_child_signal_before_their_timeout() {
                                    :filter (lambda (_process string)
                                              (setq emaxx-wait-output string))))"#,
         );
-        wait_until(
-            &mut interp,
-            "(progn (accept-process-output nil 0) emaxx-wait-output)",
-            "a child's output",
+        assert_eq!(
+            eval_str_with(&mut interp, "(accept-process-output emaxx-wait-talker 5)"),
+            Value::T
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(4),
+            "the wait for a child's output lasted until its timeout"
         );
         assert_eq!(
             eval_str_with(
@@ -3347,10 +3350,12 @@ fn completing_read_returns_default_when_typed_input_is_empty() {
     // minibuf.c read_minibuf: DEF applies when a real read submits empty
     // input.  The old test asserted the default with no input source at
     // all -- an answer GNU never invents (finding 12).
+    // `completing-read-function' and RET's `exit-minibuffer' are
+    // minibuffer.el's, read as ert-simulate-keys reads.
     assert_eq!(
-        eval_str(
-            r#"(let ((unread-command-events (listify-key-sequence "
-")))
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
+            r#"(ert-simulate-keys "\r"
                  (completing-read "File: " '("one" "two") nil nil nil nil "two"))"#
         ),
         Value::String("two".into())
@@ -3362,10 +3367,9 @@ fn completing_read_returns_typed_candidate() {
     // The replaced test pinned pure invention: the first candidate out of
     // thin air, which GNU never does (it reads or signals).
     assert_eq!(
-        eval_str(
-            r#"(let ((unread-command-events (listify-key-sequence "two
-")))
-                 (completing-read "File: " '("one" "two")))"#
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
+            r#"(ert-simulate-keys "two\r" (completing-read "File: " '("one" "two")))"#
         ),
         Value::String("two".into())
     );
@@ -8778,7 +8782,7 @@ fn tty_face_attrs_resolve_through_the_face_machinery() {
         "unspecified attributes merge from the :inherit parent"
     );
     assert!(attrs.bold && attrs.extend);
-    assert!(!attrs.reverse && !attrs.underline);
+    assert!(!attrs.reverse && attrs.underline == crate::lisp::primitives::FACE_NO_UNDERLINE);
 }
 
 #[test]
@@ -8803,7 +8807,7 @@ fn tty_face_attrs_apply_buffer_local_face_remapping() {
         &Value::Symbol("sample-base-face".into()),
     );
     assert_eq!(attrs.foreground, Some(6));
-    assert!(attrs.bold && attrs.underline);
+    assert!(attrs.bold && attrs.underline == crate::lisp::primitives::FACE_UNDERLINE_SINGLE);
 }
 
 #[test]
@@ -10509,9 +10513,16 @@ fn lookup_key_converts_lucid_event_lists_but_not_event_conses() {
 }
 
 #[test]
-fn pending_keystroke_echo_renders_event_heads_with_the_dash() {
+fn echo_renders_event_heads_with_the_dash() {
     let mut interp = Interpreter::new();
     let mut env: Env = crate::lisp::types::Env::new();
+    // simple.el's prefix echo, which echo_update consults, describes no
+    // prefix command here, and help.el's keystroke hint is off.
+    eval_str_with(
+        &mut interp,
+        "(progn (fset 'internal-echo-keystrokes-prefix '(lambda () nil)) \
+                (setq echo-keystrokes-help nil))",
+    );
     let click = Value::list([
         Value::Symbol("C-down-mouse-3".into()),
         Value::list([
@@ -10521,13 +10532,22 @@ fn pending_keystroke_echo_renders_event_heads_with_the_dash() {
             Value::Integer(0),
         ]),
     ]);
-    let (text, spans) =
-        crate::lisp::primitives::pending_keystroke_echo(&mut interp, &mut env, &[click]);
-    // echo_add_key renders a composite event's bare head symbol and
-    // echo_dash appends the dash; without help.el loaded the C-h hint
-    // machinery has no Lisp owner to consult, so no suffix appears.
-    assert_eq!(text, "C-down-mouse-3-");
-    assert!(spans.is_empty());
+    interp.keyboard_input.command_keys = vec![Value::Integer(24), click];
+    crate::lisp::primitives::echo_now(&mut interp, &mut env).expect("echo");
+    // echo_add_key renders a character by its key description and a
+    // composite event by its bare head symbol, space-separated, and
+    // echo_dash appends the dash; with `echo-keystrokes-help' nil no
+    // help suffix follows.
+    let echo = interp.keyboard_input.echo_string.expect("echo string");
+    assert_eq!(
+        crate::lisp::primitives::string_text(&echo).expect("text"),
+        "C-x C-down-mouse-3-"
+    );
+    assert!(interp.keyboard_input.immediate_echo);
+    assert!(interp.keyboard_input.echo_kboard);
+    crate::lisp::primitives::cancel_echoing(&mut interp);
+    assert!(interp.keyboard_input.echo_string.is_none());
+    assert!(!interp.keyboard_input.immediate_echo);
 }
 
 #[test]

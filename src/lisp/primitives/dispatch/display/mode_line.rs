@@ -182,6 +182,148 @@ fn plist_get(plist: Value, prop: Value) -> Value {
     Value::Nil
 }
 
+/// xdisp.c:display_prop_intangible_p: whether the `display' property
+/// PROP of the buffer text at CHARPOS replaces that text, as
+/// handle_display_spec answers with no iterator on a frame that is no
+/// window system's: a string, a `(space ...)', a margin's string or space
+/// and a fringe bitmap (`(when FORM . SPEC)' evaluating FORM, unless
+/// under `(disable-eval PROP)'), the first of a list or vector of them.
+pub(crate) fn display_prop_intangible_p(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    prop: Value,
+    charpos: usize,
+) -> Result<bool, LispError> {
+    let mut spec = prop;
+    let mut enable_eval = true;
+    if let Kind::Cons(cell) = spec.kind()
+        && crate::lisp::types::eq_symbol_named(cell.car.get(), "disable-eval")
+    {
+        enable_eval = false;
+        spec = cell
+            .cdr
+            .get()
+            .cons_values()
+            .map_or(Value::Nil, |(car, _)| car);
+    }
+    let simple = match spec.kind() {
+        Kind::Cons(cell) => {
+            let head = cell.car.get();
+            head.is_nil()
+                || [
+                    "image",
+                    "space",
+                    "when",
+                    "slice",
+                    "space-width",
+                    "height",
+                    "raise",
+                    "left-fringe",
+                    "right-fringe",
+                    "min-width",
+                ]
+                .iter()
+                .any(|name| crate::lisp::types::eq_symbol_named(head, name))
+                || head
+                    .cons_values()
+                    .is_some_and(|(car, _)| crate::lisp::types::eq_symbol_named(car, "margin"))
+        }
+        _ => true,
+    };
+    let specs: Vec<Value> = if !simple {
+        spec.to_vec().unwrap_or_default()
+    } else if let Kind::Vector(vector) = spec.kind() {
+        (0..vector.len())
+            .filter_map(|index| vector.get(index))
+            .collect()
+    } else {
+        vec![spec]
+    };
+    let mut roots = RootedVec::from_vec(specs);
+    for index in 0..roots.len() {
+        if single_display_spec_replaces(interp, env, roots[index], charpos, enable_eval)? {
+            return Ok(true);
+        }
+    }
+    roots.clear();
+    Ok(false)
+}
+
+/// handle_single_display_spec with no iterator, the frame no window
+/// system's: whether SPEC replaces the text it is on.
+fn single_display_spec_replaces(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    spec: Value,
+    charpos: usize,
+    enable_eval: bool,
+) -> Result<bool, LispError> {
+    let mut spec = spec;
+    let mut form = Value::T;
+    if let Kind::Cons(cell) = spec.kind()
+        && crate::lisp::types::eq_symbol_named(cell.car.get(), "when")
+    {
+        let Some((test, rest)) = cell.cdr.get().cons_values() else {
+            return Ok(false);
+        };
+        form = test;
+        spec = rest;
+    }
+    if !form.is_nil() && !matches!(form.kind(), Kind::T) && !enable_eval {
+        form = Value::Nil;
+    }
+    if !form.is_nil() && !matches!(form.kind(), Kind::T) {
+        let count = interp.specpdl_index();
+        let object = Value::Buffer(interp.buffer);
+        interp.specbind_symbol(&"object".into(), object, env)?;
+        interp.specbind_symbol(&"position".into(), Value::Integer(charpos as i64), env)?;
+        interp.specbind_symbol(
+            &"buffer-position".into(),
+            Value::Integer(charpos as i64),
+            env,
+        )?;
+        let value = interp.with_lisp_stack_roots(&spec, |interp| dsafe_eval(interp, env, form));
+        interp.unbind_to(count, env)?;
+        form = value?;
+    }
+    if form.is_nil() {
+        return Ok(false);
+    }
+    let head_is = |value: Value, name: &str| {
+        value
+            .cons_values()
+            .is_some_and(|(head, _)| crate::lisp::types::eq_symbol_named(head, name))
+    };
+    // height, space-width, min-width, slice and raise change how the text
+    // shows; they replace nothing.
+    for name in ["height", "space-width", "min-width", "slice", "raise"] {
+        if head_is(spec, name) && spec.cdr().is_ok_and(|tail| tail.is_cons()) {
+            return Ok(false);
+        }
+    }
+    // A fringe bitmap on a frame without fringes: the text is not shown.
+    if (head_is(spec, "left-fringe") || head_is(spec, "right-fringe"))
+        && spec.cdr().is_ok_and(|tail| tail.is_cons())
+    {
+        return Ok(true);
+    }
+    // ((margin LOCATION) VALUE), LOCATION nil, left-margin or right-margin.
+    let mut value = spec;
+    if let Some((first, rest)) = spec.cons_values()
+        && let Some((margin, location)) = first.cons_values()
+        && crate::lisp::types::eq_symbol_named(margin, "margin")
+    {
+        let location = location.cons_values().map_or(Value::Nil, |(car, _)| car);
+        if location.is_nil()
+            || crate::lisp::types::eq_symbol_named(location, "left-margin")
+            || crate::lisp::types::eq_symbol_named(location, "right-margin")
+        {
+            value = rest.cons_values().map_or(rest, |(car, _)| car);
+        }
+    }
+    Ok(value.is_string() || head_is(value, "space"))
+}
+
 /// xdisp.c:dsafe_eval: `(eval SEXPR t)' with quitting inhibited, an
 /// error logged ("Error during redisplay") and answered with nil.
 fn dsafe_eval(interp: &mut Interpreter, env: &mut Env, sexpr: Value) -> Result<Value, LispError> {

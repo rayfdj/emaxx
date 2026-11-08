@@ -149,12 +149,11 @@ impl Interpreter {
 
         for test in &tests {
             let mut env: Env = crate::lisp::types::Env::new();
-            // GNU can deliver SIGCHLD-driven process state changes between
-            // ERT tests.  Emaxx owns those transitions in its cooperative
-            // event pump, so run one nonblocking cycle at the same safe
-            // boundary.  Otherwise a completed child left by one test
-            // remains spuriously `run' throughout every later test.
-            let _ = primitives::pump_external_process_output(self, &mut env);
+            // SIGCHLD's handle_child_signal records a child's end whenever
+            // it comes, between ERT tests too: a completed child left by
+            // one test is not `run' throughout every later test.  No
+            // output is read and no filter runs outside a wait.
+            self.record_child_signals();
             if std::env::var("EMAXX_DEBUG_ERT").is_ok() {
                 eprintln!("ERT running: {}", test.name);
             }
@@ -328,10 +327,9 @@ impl Interpreter {
                     self.set_ert_test_most_recent_result(&test_struct, result);
                 }
             }
-            // Give children created by this test the same boundary delivery
-            // opportunity before the next test begins.  This is deliberately
-            // nonblocking: long-running subprocesses remain live.
-            let _ = primitives::pump_external_process_output(self, &mut env);
+            // The ends of the children this test made, as SIGCHLD's
+            // handler would have recorded them.
+            self.record_child_signals();
         }
         summary
     }

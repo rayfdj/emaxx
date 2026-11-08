@@ -268,10 +268,8 @@ fn run_initialized_batch(
     Ok(BatchRunOutcome::Exit(0))
 }
 
-pub(crate) fn run_startup_top_level(
-    interpreter: &mut Interpreter,
-    command_line_args: &[String],
-) -> Result<Value, LispError> {
+/// emacs.c's `command-line-args': the arguments as unibyte strings.
+pub(crate) fn set_command_line_args(interpreter: &mut Interpreter, command_line_args: &[String]) {
     interpreter.set_global_binding_key(
         cached_symbol!("command-line-args"),
         Value::list(
@@ -280,6 +278,16 @@ pub(crate) fn run_startup_top_level(
             }),
         ),
     );
+}
+
+/// top_level_1's evaluation of `top-level' once, for the interactive
+/// library fixture, which has no terminal to run a command loop on.
+#[cfg(test)]
+pub(crate) fn run_startup_top_level(
+    interpreter: &mut Interpreter,
+    command_line_args: &[String],
+) -> Result<Value, LispError> {
+    set_command_line_args(interpreter, command_line_args);
     // keyboard.c:top_level_2 evaluates the stored form, not a host-authored
     // call to a particular Lisp function. startup.el owns all startup policy.
     let form = interpreter
@@ -300,6 +308,16 @@ pub(crate) fn run_startup_top_level(
             &mut crate::lisp::types::Env::new(),
         );
     }
+    top_level_2(interpreter, form, &mut crate::lisp::types::Env::new())
+}
+
+/// keyboard.c:top_level_2: FORM, `top-level''s value, evaluated; in batch
+/// mode an error's backtrace is printed by `debug-early--handler'.
+pub(crate) fn top_level_2(
+    interpreter: &mut Interpreter,
+    form: Value,
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
     let handler = interpreter
         .symbol_value_cell("noninteractive")
         .is_ok_and(|value| value.is_truthy())
@@ -309,12 +327,7 @@ pub(crate) fn run_startup_top_level(
                 Value::symbol("debug-early--handler"),
             )])
         });
-    let result = lisp::primitives::call(
-        interpreter,
-        "eval",
-        &[form, Value::T],
-        &mut crate::lisp::types::Env::new(),
-    );
+    let result = lisp::primitives::call(interpreter, "eval", &[form, Value::T], env);
     if let Some(handler) = handler {
         interpreter.pop_handler_bindings(handler);
     }
@@ -325,31 +338,39 @@ fn run_batch_through_normal_top_level(
     interpreter: &mut Interpreter,
     command_line_args: &[String],
 ) -> Result<BatchRunOutcome, String> {
-    match run_startup_top_level(interpreter, command_line_args).map_err(LispError::into_kind) {
-        Ok(_) => {}
+    set_command_line_args(interpreter, command_line_args);
+    // emacs.c:main's Frecursive_edit: the top level's command loop, whose
+    // top_level_1 evaluates `top-level' (startup.el's normal-top-level)
+    // with cmd_error as its handler.  A batch session ends in kill-emacs:
+    // command-line's after its actions, command-error-default-function's
+    // (-1, the error and cmd_error's "After N kbd macro iterations: "
+    // context printed to stderr) after an error, or command_loop's at the
+    // end of input.
+    let mut env = crate::lisp::types::Env::new();
+    match lisp::primitives::recursive_edit_1(interpreter, &mut env).map_err(LispError::into_kind) {
+        Ok(()) => {}
         Err(LispErrorKind::Terminate(termination)) => return Ok(termination.into()),
-        Err(error) => {
-            // keyboard.c top_level_1 -> cmd_error -> cmd_error_internal: in
-            // batch, print_error_message to stderr and kill-emacs -1.  The
-            // backtrace was already printed, to `standard-output', by the
-            // `debug-early--handler' that top_level_2 bound around the
-            // form (run_batch_toplevel_form), when
-            // `backtrace-on-error-noninteractive' asked for it.
-            emit_batch_error_message(interpreter, &LispError::from(error.clone()));
-            // Fkill_emacs (make_fixnum (-1), Qnil): `kill-emacs-hook' and
-            // shut_down_emacs run as for any other exit.
-            match lisp::primitives::call(
-                interpreter,
-                "kill-emacs",
-                &[Value::Integer(-1)],
-                &mut crate::lisp::types::Env::new(),
-            )
-            .map_err(LispError::into_kind)
-            {
-                Err(LispErrorKind::Terminate(termination)) => return Ok(termination.into()),
-                _ => return Ok(BatchRunOutcome::Exit(255)),
-            }
-        }
+        Err(error) => return Err(LispError::from(error).to_string()),
+    }
+    Ok(interpreter
+        .take_pending_termination()
+        .map_or(BatchRunOutcome::Exit(0), Into::into))
+}
+
+/// An embedder's initialized session: keyboard.c's top_level_1 alone, the
+/// `top-level' form (normal-top-level) under cmd_error, without the
+/// command loop GNU's main enters next, the embedder's own actions taking
+/// its place.
+fn run_embedder_top_level(
+    interpreter: &mut Interpreter,
+    command_line_args: &[String],
+) -> Result<BatchRunOutcome, String> {
+    set_command_line_args(interpreter, command_line_args);
+    let mut env = crate::lisp::types::Env::new();
+    match lisp::primitives::top_level_1(interpreter, &mut env).map_err(LispError::into_kind) {
+        Ok(()) => {}
+        Err(LispErrorKind::Terminate(termination)) => return Ok(termination.into()),
+        Err(error) => return Err(LispError::from(error).to_string()),
     }
     Ok(interpreter
         .take_pending_termination()
@@ -970,13 +991,18 @@ fn initialize_interpreter_attempt(
         for path in &options.load_path {
             args.extend(["-L".into(), path.display().to_string()]);
         }
-        match run_batch_through_normal_top_level(&mut interpreter, &args)? {
+        match run_embedder_top_level(&mut interpreter, &args)? {
             BatchRunOutcome::Exit(0) => {
                 // The embedder's session goes on past the batch run's
                 // `kill-emacs', which no process outlives: Vrun_hooks is
-                // set again, as a process starting afresh has it.
+                // set again, sentinels run and redisplay is not inhibited,
+                // as in a process starting afresh.
                 interpreter.take_pending_termination();
                 interpreter.hooks_cleared = false;
+                // init_process_emacs: inhibit_sentinels = 0; and
+                // `inhibit-redisplay' nil, as syms_of_xdisp makes it.
+                interpreter.inhibit_sentinels = false;
+                interpreter.set_c_variable("inhibit-redisplay", Value::Nil);
             }
             other => return Err(format!("GNU batch startup did not complete: {other:?}")),
         }
@@ -1687,11 +1713,14 @@ mod tests {
     #[test]
     fn batch_top_level_uses_the_form_installed_by_gnu_startup() {
         let mut interpreter = Interpreter::new();
-        interpreter.set_global_binding_key(cached_symbol!("top-level"), Value::Integer(42));
+        interpreter.set_global_binding_key(
+            cached_symbol!("top-level"),
+            Value::list([Value::symbol("kill-emacs"), Value::Integer(42)]),
+        );
         assert_eq!(
             run_batch_through_normal_top_level(&mut interpreter, &["emaxx".into()])
-                .expect("evaluate the stored self-evaluating top-level form"),
-            BatchRunOutcome::Exit(0),
+                .expect("evaluate the stored top-level form"),
+            BatchRunOutcome::Exit(42),
             "keyboard.c evaluates Vtop_level, not a hardcoded normal-top-level call"
         );
     }

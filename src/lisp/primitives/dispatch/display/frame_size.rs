@@ -118,6 +118,17 @@ pub(crate) fn do_pending_window_change(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    // dispnew.c:handle_window_change_signal's work for a SIGWINCH: the
+    // terminal's frames take its new size (delayed, as from the handler)
+    // and are garbaged.
+    if crate::lisp::primitives::take_window_change_signal()
+        && let Ok((width, height)) = crate::lisp::eval::terminal::output_size()
+        && width > 5
+        && height > 2
+    {
+        interp.tty_window_change(i64::from(width), i64::from(height));
+        crate::lisp::primitives::set_frame_garbaged();
+    }
     loop {
         let pending = interp.frame_states.iter().copied().find(|frame| {
             frame.is_live() && {

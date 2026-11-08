@@ -1,7 +1,5 @@
 use super::*;
-use crate::lisp::primitives::processes::wait_pumping_processes;
 use crate::lisp::types::Kind;
-use crate::lisp::types::LispErrorKind;
 
 fn event_vector(events: impl IntoIterator<Item = Value>) -> Value {
     Value::vector(events)
@@ -35,6 +33,15 @@ fn execute_kbd_macro(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     need_arg_range("execute-kbd-macro", args, 1, 3)?;
+    // macros.c:Fexecute_kbd_macro: the iteration count reset, COUNT
+    // decoded, then MACRO's function indirection checked.
+    interp.kbd_macro_iterations = 0;
+    let mut repeat = args
+        .get(1)
+        .map(prefix_numeric_value)
+        .transpose()?
+        .unwrap_or(Value::Integer(1))
+        .as_integer()?;
     let final_macro = if matches!(args[0].kind(), Kind::Symbol(_)) {
         super::call(
             interp,
@@ -50,12 +57,6 @@ fn execute_kbd_macro(
             "Keyboard macros must be strings or vectors".into(),
         ));
     }
-    let mut repeat = args
-        .get(1)
-        .map(prefix_numeric_value)
-        .transpose()?
-        .unwrap_or(Value::Integer(1))
-        .as_integer()?;
     let loop_function = args.get(2).cloned().unwrap_or(Value::Nil);
     let previous_macro = interp
         .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
@@ -79,19 +80,8 @@ fn execute_kbd_macro(
         ),
     ];
     interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
-        // Fexecute_kbd_macro starts each iteration in the selected window's
-        // buffer (command_loop_1's set_buffer_internal (XBUFFER (XWINDOW
-        // (selected_window)->contents))).  This is observable when Lisp
-        // deliberately makes another buffer current without changing the
-        // selected window.  A deleted selected window's nil contents have
-        // no XBUFFER; the current buffer stays.
-        if let Some(selected_buffer) = interp.selected_window_contents_buffer_id() {
-            interp.set_current_buffer_id(selected_buffer)?;
-        }
-
         let mut result = Ok(());
         let mut success_count = 0;
-        interp.kbd_macro_iterations = 0;
         loop {
             interp.set_variable_key(cached_symbol!("executing-kbd-macro"), roots[0], env);
             interp.executing_kbd_macro = true;
@@ -101,7 +91,6 @@ fn execute_kbd_macro(
                 env,
             );
             interp.set_variable_key(cached_symbol!("prefix-arg"), Value::Nil, env);
-            interp.set_variable_key(cached_symbol!("last-prefix-arg"), Value::Nil, env);
 
             if !roots[1].is_nil() {
                 match call_function_value(interp, &roots[1], &[], env) {
@@ -114,34 +103,23 @@ fn execute_kbd_macro(
                 }
             }
 
-            // Fexecute_kbd_macro's command loop handles only `minibuffer-quit'
-            // (see execute_kbd_macro_resolved_command); register that frame so outer
-            // handler-binds see the same handler landscape GNU's
-            // signal_or_quit does.
-            let handler_start =
-                interp.push_condition_case_handler(vec![Value::Symbol("minibuffer-quit".into())]);
-            // command_loop_2 enters command_loop_1 afresh for each
-            // iteration.
-            let iteration = match crate::lisp::primitives::command_loop_entry(interp, env)
-                .and_then(|()| run_kbd_macro_events(interp, env))
-                .map_err(LispError::into_kind)
-            {
-                // GNU's outermost command loop catches `top-level`, terminating
-                // the keyboard macro without propagating an error.
-                Err(LispErrorKind::Throw(tag, _))
-                    if crate::lisp::types::eq_symbol_named(tag, "top-level") =>
-                {
-                    Ok(())
-                }
-                other => other,
-            };
-            interp.pop_handler_bindings(handler_start);
-            if let Err(error) = iteration {
-                result = Err(LispError::from(error));
+            // command_loop_2 (list1 (Qminibuffer_quit)): the iteration's
+            // command loop, which returns at the macro's end; its other
+            // errors leave the macro.
+            if let Err(error) = crate::lisp::primitives::command_loop_2(
+                interp,
+                env,
+                crate::lisp::primitives::CommandLoopHandlers::MinibufferQuit,
+            ) {
+                result = Err(error);
                 break;
             }
             success_count += 1;
             interp.kbd_macro_iterations = success_count;
+            if let Err(error) = interp.maybe_quit(env) {
+                result = Err(error);
+                break;
+            }
 
             if repeat != 0 {
                 repeat = repeat.saturating_sub(1);
@@ -174,7 +152,6 @@ fn execute_kbd_macro(
             previous_real_this_command,
             env,
         );
-        interp.set_variable_key(cached_symbol!("this-command"), Value::Nil, env);
         // This is an unwind cleanup in GNU: it runs once for normal completion,
         // loop-function termination, and command errors.
         let mut result = result.map(|()| Value::Nil);
@@ -189,18 +166,6 @@ fn execute_kbd_macro(
         }
         result
     })
-}
-
-fn increment_num_input_keys(interp: &mut Interpreter, env: &mut Env) {
-    let count = interp
-        .lookup_var_key(cached_symbol!("num-input-keys"), env)
-        .and_then(|value| value.integer_value())
-        .unwrap_or(0);
-    interp.set_variable_key(
-        cached_symbol!("num-input-keys"),
-        Value::Integer(count.saturating_add(1)),
-        env,
-    );
 }
 
 pub(crate) fn next_kbd_macro_event(
@@ -240,184 +205,107 @@ pub(crate) fn next_kbd_macro_event(
     );
     interp.keyboard_input.num_input_events += 1;
     interp.keyboard_input.last_event_reread = false;
+    crate::lisp::primitives::note_event_source(crate::lisp::primitives::EventSource::Macro);
+    crate::lisp::primitives::note_macro_event_read();
     Ok(Some(event))
 }
 
-// GNU's C command loop runs `pre-command-hook', delegates the command body
-// (including prefix transfer) to simple.el's `command-execute', records the
-// consumed prefix, and only then runs `post-command-hook'.  Batch startup
-// loads that Elisp owner.  The small native transfer below exists solely for
-// file-less Interpreter users and native command bodies that cannot delegate
-// to `command-execute'.
-fn prepare_native_kbd_command_body(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    let pending_prefix = interp
-        .lookup_var_key(cached_symbol!("prefix-arg"), env)
-        .unwrap_or(Value::Nil);
-    interp.set_variable_key(cached_symbol!("current-prefix-arg"), pending_prefix, env);
-    interp.set_variable_key(cached_symbol!("prefix-arg"), Value::Nil, env);
-    if pending_prefix.is_truthy()
-        && let Ok(update) = interp.lookup_function_key(cached_symbol!("prefix-command-update"), env)
-    {
-        call_function_value(interp, &update, &[], env)?;
-    }
-    Ok(())
+/// read_minibuf's arguments as its callers give them: PROMPT, the initial
+/// contents, the keymap, HISTVAR (with its position), DEFALT and
+/// ALLOW_PROPS.
+struct ReadMinibufArgs<'a> {
+    prompt: &'a Value,
+    initial_value: &'a Value,
+    local_map: &'a Value,
+    history: Value,
+    defalt: Value,
+    allow_props: bool,
 }
 
-fn execute_kbd_command_body(
+/// minibuf.c:read_minibuf past its noninteractive reader: the minibuffer
+/// made ready (minibuf_save_list, the history variable and position,
+/// `minibuffer-setup-hook'), its recursive edit, and its contents as a
+/// string, with their text properties under ALLOW_PROPS; once the read is
+/// unwound the string, or DEFALT for an empty one, goes to the history
+/// through `add-to-history' unless `history-add-new-input' is nil.
+fn read_minibuf(
     interp: &mut Interpreter,
-    command: &Value,
     env: &mut Env,
-) -> Result<(), LispError> {
-    if let Ok(command_execute) = interp.lookup_function_key(cached_symbol!("command-execute"), env)
-    {
-        call_function_value(interp, &command_execute, std::slice::from_ref(command), env)?;
+    args: ReadMinibufArgs<'_>,
+) -> Result<Value, LispError> {
+    let ReadMinibufArgs {
+        prompt,
+        initial_value,
+        local_map,
+        history,
+        defalt,
+        allow_props,
+    } = args;
+    let histvar = match history.cons_values() {
+        Some((variable, _)) => variable,
+        None if history.is_symbol() => history,
+        None => Value::Nil,
+    };
+    let histvar = if histvar.is_nil() {
+        Value::symbol("minibuffer-history")
     } else {
-        prepare_native_kbd_command_body(interp, env)?;
-        call_interactively_impl(interp, std::slice::from_ref(command), env)?;
-    }
-    Ok(())
-}
-
-fn finish_kbd_macro_command_cycle(
-    interp: &mut Interpreter,
-    real_command: Value,
-    dispatched_command: Value,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    let current_prefix = interp
-        .lookup_var_key(cached_symbol!("current-prefix-arg"), env)
-        .unwrap_or(Value::Nil);
-    interp.set_variable_key(cached_symbol!("last-prefix-arg"), current_prefix, env);
-    crate::lisp::primitives::run_post_command_hooks(interp, env)?;
-    let final_this_command = interp
-        .lookup_var_key(cached_symbol!("this-command"), env)
-        .filter(|value| !value.is_nil())
-        .unwrap_or(dispatched_command);
-    finish_kbd_macro_command(interp, real_command, final_this_command, env);
-    crate::lisp::primitives::clear_command_keys(interp);
-    Ok(())
-}
-
-fn active_minibuffer_text(interp: &mut Interpreter, env: &mut Env) -> Result<String, LispError> {
-    // read_minibuf: "Make minibuffer contents into a string", with the
-    // minibuffer set current first (the exiting command may have run in
-    // another buffer, *Completions* for one).
-    if let Some(minibuffer) = interp.active_minibuffer_buffer_id()
-        && interp.has_buffer_id(minibuffer)
-    {
-        interp.set_current_buffer_id(minibuffer)?;
-    }
-    let contents = super::call(interp, "minibuffer-contents-no-properties", &[], env)?;
-    string_text(&contents)
-}
-
-// Minibuffer reads issued while a keyboard macro executes consume the
-// macro's remaining events as minibuffer input, up to the RET (or C-j) that
-// runs `exit-minibuffer' in the real command loop.  INITIAL seeds the
-// contents with point at the end, and the basic editing keys the Edebug
-// tests use to replace a suggested default are honored.
-fn read_minibuffer_text_from_kbd_macro(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    prompt: &Value,
-    initial: &str,
-    initial_value: &Value,
-    local_map: &Value,
-) -> Result<Option<String>, LispError> {
-    // keyboard.c read_char reads from `executing-kbd-macro' whenever it is
-    // non-nil, however it came to be bound: a Lisp `let' of the variable
-    // (ert-simulate-keys binds it to t) drives the recursive minibuffer
-    // loop just like `execute-kbd-macro'. The public array and index are
-    // the same authority in both cases; t carries no macro events.
-    if !executing_kbd_macro_p(interp, env) {
-        return Ok(None);
-    }
-    let saved_buffer_id = prepare_kbd_macro_minibuffer_entry(interp, env)?;
-    let result = (|| {
-        let minibuffer = activate_minibuffer(interp, prompt, initial_value, *local_map, env)?;
-        run_active_minibuffer(interp, env, minibuffer, |interp, env| {
-            read_minibuffer_text_from_kbd_macro_inner(interp, env, initial)
-        })
-    })();
-    if interp.has_buffer_id(saved_buffer_id) {
-        let _ = interp.set_current_buffer_id(saved_buffer_id);
-    }
-    result
-}
-
-pub(crate) fn prepare_kbd_macro_minibuffer_entry(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<u64, LispError> {
-    let prompting_buffer_id = interp.current_buffer_id();
-    // Entering the recursive minibuffer command loop completes the outer
-    // command's pending cycle before the first minibuffer key is read.
-    // Kmacro's step editor uses this boundary to carry the outer macro index
-    // into the minibuffer.
-    let result = safe_run_hooks(interp, &cached_symbol!("post-command-hook").symbol(), env);
-    if interp.has_buffer_id(prompting_buffer_id) {
-        interp.set_current_buffer_id(prompting_buffer_id)?;
-    }
-    result.map(|()| prompting_buffer_id)
-}
-
-pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    _initial: &str,
-) -> Result<Option<String>, LispError> {
-    read_minibuffer_queued_commands(interp, env)
-}
-
-// minibuf.c:read_minibuf runs the ordinary recursive command loop. Both
-// unread input and macro input enter the same incremental key reader;
-// callbacks observe the actual queue spine and the already-advanced index.
-// RET and completion are commands in the active map, never special event
-// codes intercepted by this loop.
-fn read_minibuffer_queued_commands(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<Option<String>, LispError> {
-    // recursive_edit_1 enters command_loop_1.
-    crate::lisp::primitives::command_loop_entry(interp, env)?;
-    let mut reader: Option<KeySequenceReader> = None;
-    while let Some(event) = next_kbd_command_event(interp, env)? {
-        if reader.is_none() {
-            reader = Some(KeySequenceReader::new(interp, Value::Nil, env)?);
+        histvar
+    };
+    let minibuffer = crate::lisp::primitives::activate_minibuffer_with_history(
+        interp,
+        prompt,
+        initial_value,
+        *local_map,
+        history,
+        env,
+    )?;
+    let buffer_id = minibuffer.buffer_id;
+    let val = run_active_minibuffer(interp, env, minibuffer, |interp, env| {
+        crate::lisp::primitives::recursive_edit_1(interp, env)?;
+        // Make minibuffer contents into a string: with properties when
+        // the caller allowed them or `minibuffer-allow-text-properties' is
+        // non-nil in the minibuffer (a setup hook's local value counts).
+        if interp.has_buffer_id(buffer_id) {
+            interp.set_current_buffer_id(buffer_id)?;
         }
-        let active = reader.as_mut().expect("minibuffer key reader");
-        let command = match active.read_event(interp, event, env)? {
-            KeyResolution::Prefix => continue,
-            KeyResolution::Command(command) => command,
-            KeyResolution::Undefined => Value::Nil,
+        let allow_props = allow_props
+            || interp
+                .lookup_var_key(cached_symbol!("minibuffer-allow-text-properties"), env)
+                .is_some_and(|value| value.is_truthy());
+        let contents = if allow_props {
+            "minibuffer-contents"
+        } else {
+            "minibuffer-contents-no-properties"
         };
-        let original = active.command_binding();
-        let events = reader
-            .take()
-            .expect("completed minibuffer key reader")
-            .finish(interp, false, env);
-        // Register read_minibuf's catch before dispatch so a real
-        // exit-minibuffer (including one invoked by completion) can throw.
-        interp.push_catch_tag(Value::symbol("exit"));
-        let dispatch = execute_kbd_macro_resolved_command(interp, original, command, &events, env);
-        interp.pop_catch_tag();
-        match dispatch.map_err(LispError::into_kind) {
-            Ok(()) => {}
-            Err(LispErrorKind::Throw(tag, value))
-                if crate::lisp::types::eq(tag, Value::symbol("exit")) =>
-            {
-                // The submitting command leaves before its post-command
-                // phase; the prompting command resumes that outer cycle.
-                recursive_edit_exit_value(interp, env, value)?;
-                return active_minibuffer_text(interp, env).map(Some);
-            }
-            Err(error) => return Err(LispError::from(error)),
-        }
+        super::call(interp, contents, &[], env)
+    })?;
+    // Choose the string to add to the history.
+    let histstring = if string_like(&val).is_some_and(|text| !text.text.is_empty()) {
+        val
+    } else if defalt.is_string() {
+        defalt
+    } else if let Some((head, _)) = defalt.cons_values()
+        && head.is_string()
+    {
+        head
+    } else {
+        Value::Nil
+    };
+    let add = interp
+        .lookup_var_key(cached_symbol!("history-add-new-input"), env)
+        .is_some_and(|value| value.is_truthy());
+    if add && !histstring.is_nil() {
+        let roots = [val, histvar, histstring];
+        interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
+            interp.call_function_value(
+                Value::symbol("add-to-history"),
+                Some("add-to-history"),
+                &[histvar, histstring],
+                env,
+            )
+        })?;
     }
-    active_minibuffer_text(interp, env).map(Some)
+    Ok(val)
 }
 
 /// The bytes read from standard input and not yet consumed, as stdio's
@@ -605,85 +493,33 @@ fn string_to_object(
     Ok(expr)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn read_minibuffer_text_without_queued_events(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    prompt: &Value,
-    initial: &str,
-    initial_value: &Value,
-    local_map: &Value,
-    history: Value,
-    batch_stdin: bool,
-) -> Result<String, LispError> {
-    debug_assert!(!batch_stdin, "the batch reader returns a string of its own");
-    let minibuffer = activate_minibuffer(interp, prompt, initial_value, *local_map, env)?;
-    run_active_minibuffer(interp, env, minibuffer, |interp, env| {
-        if crate::lisp::primitives::has_tty_event_reader() {
-            // A live terminal reads through the recursive minibuffer
-            // command loop over the real Lisp keymaps; a session without
-            // that machinery keeps the native editing subset.  C-g inside
-            // either signals GNU's `quit'.
-            crate::lisp::primitives::interactive_minibuffer_read(interp, env, initial, &history)
-        } else {
-            active_minibuffer_text(interp, env)
+/// read_char (0, Qnil, Qnil, 0, NULL), as read_char's help-form step
+/// reads the event after the help: no end time and no input method; the
+/// event recorded, made part of the current key unless reread after it,
+/// `last-input-event', and a help character processed again.
+fn read_char_after_help(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
+    let event = match pop_pending_input_event_value(interp, env)? {
+        Some(event) => event,
+        None => {
+            crate::lisp::primitives::run_tty_frame_redraw(interp, env);
+            pop_unread_command_event_value(interp, env)?
         }
-    })
+    };
+    crate::lisp::primitives::record_unrecorded_event(interp, &event, env);
+    crate::lisp::primitives::add_read_event_to_command_keys(interp, event, env)?;
+    interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
+    if crate::lisp::primitives::help_form_applies(interp, event, env) {
+        return crate::lisp::primitives::run_help_form(interp, env, &mut read_char_after_help);
+    }
+    Ok(event)
 }
 
-// `ert-simulate-keys' drives a real GNU minibuffer through
-// `unread-command-events', not through `execute-kbd-macro'.  Resolve command
-// prefixes before treating events as text so global commands such as
-// C-x RET c can open a nested prompt and then return to the outer minibuffer.
-fn read_minibuffer_text_from_unread_events(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    prompt: &Value,
-    initial: &str,
-    initial_value: &Value,
-    local_map: &Value,
-) -> Result<Option<String>, LispError> {
-    if !interp
-        .lookup_var_key(cached_symbol!("unread-command-events"), env)
-        .is_some_and(|events| events.is_cons())
-    {
-        return Ok(None);
-    }
-    // A recursive minibuffer command loop has its own prefix state.  Preserve
-    // the caller's prefix (which may control what the prompting command asks)
-    // while simulated keys start unprefixed and may build a fresh C-u prefix.
-    let saved_buffer_id = interp.current_buffer_id();
-    let restore = interp.bind_special_dynamic("current-prefix-arg", Value::Nil, env)?;
-    let result = (|| {
-        let minibuffer = activate_minibuffer(interp, prompt, initial_value, *local_map, env)?;
-        run_active_minibuffer(interp, env, minibuffer, |interp, env| {
-            read_minibuffer_text_from_unread_events_inner(interp, env, initial)
-        })
-    })();
-    if interp.has_buffer_id(saved_buffer_id) {
-        let _ = interp.set_current_buffer_id(saved_buffer_id);
-    }
-    let restore_result = interp.restore_special_dynamic(restore, env);
-    match (result, restore_result) {
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Ok(value), Ok(())) => Ok(value),
-    }
-}
-
-fn read_minibuffer_text_from_unread_events_inner(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    _initial: &str,
-) -> Result<Option<String>, LispError> {
-    read_minibuffer_queued_commands(interp, env)
-}
-
-// keyboard.c:read_char with an end time: the first event consumed
-// (unread, macro or terminal) before TIMEOUT passes, or None.
+// keyboard.c:read_char with END_TIME (None when it is past what the clock
+// can hold): the first event consumed (unread, macro or terminal) before
+// it, or None.
 fn read_event_within(
     interp: &mut Interpreter,
-    timeout: std::time::Duration,
+    end_time: Option<std::time::Instant>,
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
     // read_char consumes unread and live macro events before entering
@@ -691,17 +527,13 @@ fn read_event_within(
     if let Some(event) = pop_pending_input_event_value(interp, env)? {
         return Ok(Some(event));
     }
-    // A live terminal answers the first event inside the window, or nil
-    // when it elapses (keyboard.c's timed read); the process pump below is
-    // the batch stand-in.
-    if crate::lisp::primitives::has_tty_event_poller() {
-        return crate::lisp::primitives::read_tty_event_with_timeout(interp, env, timeout);
-    }
-    let previous_wait = interp.set_waiting_for_user_input(true);
-    let wait_result = wait_pumping_processes(interp, env, Some(timeout), false, None, None, true);
-    interp.set_waiting_for_user_input(previous_wait);
-    wait_result?;
-    pop_pending_input_event_value(interp, env)
+    // read_char's redisplay when no input is pending (COMMANDFLAG 0),
+    // END_TIME or not.
+    crate::lisp::primitives::run_tty_frame_redraw(interp, env);
+    // kbd_buffer_get_event with END_TIME: until an event comes or the
+    // time is up, wait_reading_process_output (the time left, -1, 1, Qnil,
+    // NULL, 0) with the keyboard in its select.
+    crate::lisp::primitives::read_tty_event_with_timeout(interp, env, end_time)
 }
 
 // lread.c:read_filtered_event's conversion of an event to a character
@@ -721,16 +553,6 @@ fn ascii_event_code(interp: &Interpreter, event: Value) -> Option<i64> {
     Some(ascii.as_integer().ok()? | modifiers.as_integer().ok()?)
 }
 
-fn next_kbd_command_event(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<Option<Value>, LispError> {
-    if let Some(event) = take_unread_command_event(interp, env) {
-        return Ok(Some(event));
-    }
-    next_kbd_macro_event(interp, env)
-}
-
 // Dispatch commands from the innermost keyboard macro until its events run
 // out.  `recursive-edit` re-enters this loop on the same shared cursor, so a
 // command that stops in a recursive edit (like Edebug) keeps consuming the
@@ -747,95 +569,6 @@ fn bare_symbol_type_error(value: &Value) -> LispError {
         ]),
         *value,
     ]))
-}
-
-fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
-    let mut reader: Option<KeySequenceReader> = None;
-    loop {
-        if !interp
-            .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
-            .is_some_and(|value| value.is_truthy())
-        {
-            return Ok(());
-        }
-        if reader.is_none() {
-            crate::lisp::primitives::clear_this_command(interp, env);
-        }
-        let event = next_kbd_command_event(interp, env)?;
-        let Some(event) = event else {
-            increment_num_input_keys(interp, env);
-            set_command_key_state(interp, Vec::new(), Vec::new(), env);
-            return Ok(());
-        };
-        if reader.is_none() {
-            reader = Some(KeySequenceReader::new(interp, Value::Nil, env)?);
-        }
-        let active = reader.as_mut().expect("macro key reader");
-        let resolution = active.read_event(interp, event, env)?;
-        let command = match resolution {
-            KeyResolution::Prefix => continue,
-            KeyResolution::Command(command) => command,
-            KeyResolution::Undefined => Value::Nil,
-        };
-        let original = active.command_binding();
-        let events = reader
-            .take()
-            .expect("completed macro key reader")
-            .finish(interp, false, env);
-        execute_kbd_macro_resolved_command(interp, original, command, &events, env)?;
-    }
-}
-
-// Batch recursive-edit: consume the remaining events of the innermost
-// executing keyboard macro until `exit-recursive-edit` throws `exit` or the
-// macro runs dry.
-fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
-    interp.command_loop_recursion_depth += 1;
-    // GNU's command loop runs post-command-hook at the top of each cycle,
-    // including right after entering a recursive edit mid-command; the
-    // Edebug tests observe their stop points from that hook run.
-    let entry_hooks = if !executing_kbd_macro_p(interp, env) {
-        Ok(())
-    } else {
-        safe_run_hooks(interp, &cached_symbol!("post-command-hook").symbol(), env)
-    };
-    // GNU's recursive edit runs command_loop_2 under
-    // internal_condition_case with `error': signal_or_quit stops its
-    // handler-bind scan at that frame, so a handler-bind OUTSIDE the
-    // recursive edit (ert's test wrapper) must not fire for a command
-    // error this loop is about to report itself.
-    let handler_start =
-        interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::Error);
-    let result = entry_hooks.and_then(|()| {
-        crate::lisp::primitives::with_recursive_edit_bindings(interp, env, |interp, env| {
-            run_recursive_kbd_command_loop(interp, env)
-                // With no more events to dispatch the command loop goes
-                // idle, which processes queued file notifications and fires
-                // due timers.  Loaded timer.el owns GNU timer objects in
-                // `timer-list'; the native queue remains the bootstrap path,
-                // so a real command-loop pump must drain both
-                // representations just like the other event-waiting paths.
-                .and_then(|()| interp.service_file_notifications(env).map(|_| ()))
-                // Going idle starts the idle clock (timer_start_idle).
-                .and_then(|()| {
-                    interp
-                        .run_pending_timer_events_with_idle(env, 0.0)
-                        .map(|_| ())
-                })
-        })
-    });
-    interp.pop_handler_bindings(handler_start);
-    let outcome = match result.map_err(LispError::into_kind) {
-        Err(LispErrorKind::Throw(tag, value))
-            if crate::lisp::types::eq_symbol_named(tag, "exit") =>
-        {
-            recursive_edit_exit_value(interp, env, value)
-        }
-        Err(error) => Err(LispError::from(error)),
-        Ok(()) => Ok(()),
-    };
-    interp.command_loop_recursion_depth -= 1;
-    outcome.map(|()| Value::Nil)
 }
 
 /// keyboard.c:recursive_edit_1 on the value thrown to `exit' (by
@@ -860,175 +593,6 @@ pub(crate) fn recursive_edit_exit_value(
         interp.call_function_value(value, None, &[], env)?;
     }
     Ok(())
-}
-
-/// Run the command loop used by a recursive edit.
-///
-/// GNU's top-level `execute-kbd-macro' invokes `command_loop_2' with only
-/// `minibuffer-quit' handled, while `recursive-edit' invokes the same loop
-/// with the complete `error' condition.  Edebug depends on that distinction:
-/// a command error inside its recursive edit is reported, the active macro is
-/// stopped, and the next command-loop cycle runs `post-command-hook', where
-/// its test driver may deliberately resume the macro.
-fn run_recursive_kbd_command_loop(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    loop {
-        match run_kbd_macro_events(interp, env).map_err(LispError::into_kind) {
-            Ok(()) => return Ok(()),
-            Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
-                return Err(LispError::from(error));
-            }
-            Err(error)
-                if error_matches_condition(interp, &LispError::from(error.clone()), "error") =>
-            {
-                crate::lisp::primitives::cmd_error(interp, env, &LispError::from(error.clone()))?;
-                crate::lisp::primitives::command_loop_entry(interp, env)?;
-                let resumed = interp
-                    .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
-                    .is_some_and(|value| value.is_truthy());
-                if !resumed {
-                    return Ok(());
-                }
-            }
-            Err(error) => return Err(LispError::from(error)),
-        }
-    }
-}
-
-// Both command loops supply the binding already found and remapped,
-// preserving filter effects and translated/raw command-key state.
-fn execute_kbd_macro_resolved_command(
-    interp: &mut Interpreter,
-    original_command: Value,
-    command: Value,
-    events: &[Value],
-    env: &mut Env,
-) -> Result<(), LispError> {
-    let event = events.last().copied().unwrap_or(Value::Nil);
-    // command_loop_1's C assignment, as in the interactive loop.
-    interp.set_c_variable("deactivate-mark", Value::Nil);
-    interp.set_variable_key(cached_symbol!("last-command-event"), event, env);
-    interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
-    interp.set_variable_key(
-        cached_symbol!("this-original-command"),
-        original_command,
-        env,
-    );
-    interp.set_variable_key(cached_symbol!("this-command"), command, env);
-    interp.set_variable_key(cached_symbol!("real-this-command"), command, env);
-    crate::lisp::primitives::record_command_lossage(interp, command);
-    increment_num_input_keys(interp, env);
-    safe_run_hooks(interp, &cached_symbol!("pre-command-hook").symbol(), env)?;
-    let dispatched_command = interp
-        .lookup_var_key(cached_symbol!("this-command"), env)
-        .unwrap_or(Value::Nil);
-    // keyboard.c:command_loop_1 calls the unchanged Lisp `undefined' when
-    // the map (or pre-command-hook) leaves this-command nil. In particular,
-    // an unbound printable event is not an implicit self-insert command.
-    // A defined command first separates the previous command's changes
-    // into their own undo group (viper's undo tests observe the grouping)
-    // and lets a run of self-inserts amalgamate.
-    if !dispatched_command.is_nil() {
-        crate::lisp::primitives::add_command_undo_boundary(interp, env)?;
-    }
-    let command_result = if dispatched_command.is_nil() {
-        call_function_value(interp, &Value::symbol("undefined"), &[], env)
-    } else if crate::lisp::types::eq_symbol_named(dispatched_command, "narrow-to-region") {
-        prepare_native_kbd_command_body(interp, env)?;
-        let mark = interp
-            .buffer
-            .borrow()
-            .mark()
-            .unwrap_or(interp.buffer.borrow().point());
-        let point = interp.buffer.borrow().point();
-        super::call(
-            interp,
-            "narrow-to-region",
-            &[Value::Integer(mark as i64), Value::Integer(point as i64)],
-            env,
-        )
-        .map(|_| Value::Nil)
-    } else {
-        execute_kbd_command_body(interp, &dispatched_command, env).map(|()| Value::Nil)
-    };
-    if let Err(error) = command_result {
-        // `Fexecute_kbd_macro' enters GNU's `command_loop_2' with
-        // `minibuffer-quit' as its sole condition handler.  A customized
-        // reporter changes how that one condition is displayed; it does not
-        // turn the command loop into a catch-all for ordinary command errors.
-        if matches!(
-            error.kind(),
-            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
-        ) || !error_matches_condition(interp, &error, "minibuffer-quit")
-        {
-            return Err(error);
-        }
-        crate::lisp::primitives::cmd_error(interp, env, &error)?;
-    }
-    // GNU copies `this-command' into `last-command' at the end of the
-    // cycle, so a command that rewrites this-command (viper-undo-more sets
-    // it to viper-undo) steers the next dispatch.
-    finish_kbd_macro_command_cycle(interp, command, dispatched_command, env)?;
-    Ok(())
-}
-
-/// Whether ERROR's condition is the interned symbol EXPECTED or lists it
-/// among its `error-conditions' (read from the condition symbol itself).
-fn error_matches_condition(interp: &Interpreter, error: &LispError, expected: &str) -> bool {
-    let condition = error.condition_symbol();
-    condition.is_named(expected)
-        || interp
-            .get_property_of_symbol_value(Value::Symbol(condition), "error-conditions")
-            .and_then(|conditions| conditions.to_vec().ok())
-            .is_some_and(|conditions| {
-                conditions.iter().any(|condition| {
-                    condition
-                        .symbol_cell()
-                        .is_some_and(|condition| condition.is_named(expected))
-                })
-            })
-}
-
-fn finish_kbd_macro_command(
-    interp: &mut Interpreter,
-    original_command: Value,
-    this_command: Value,
-    env: &mut Env,
-) {
-    if interp
-        .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
-        .is_some_and(|value| value.is_truthy())
-    {
-        interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
-    }
-    interp.set_variable_key(cached_symbol!("real-last-command"), original_command, env);
-    interp.set_variable_key(cached_symbol!("last-command"), this_command, env);
-    if interp
-        .lookup_var_key(cached_symbol!("last-repeatable-command"), env)
-        .is_some()
-    {
-        let real_last_command = interp
-            .lookup_var_key(cached_symbol!("real-last-command"), env)
-            .unwrap_or(Value::Nil);
-        interp.set_variable_key(
-            cached_symbol!("last-repeatable-command"),
-            real_last_command,
-            env,
-        );
-    }
-    // The command loop re-establishes the selected window's buffer after
-    // every command (command_loop_1's set_buffer_internal).  Lisp commands
-    // commonly use `save-current-buffer', so selecting another window
-    // inside them can otherwise leave the command loop's current buffer
-    // pointing at the window that was just quit.  A deleted selected
-    // window's nil contents have no XBUFFER; the current buffer stays.
-    if let Some(selected_buffer) = interp.selected_window_contents_buffer_id()
-        && interp.has_buffer_id(selected_buffer)
-    {
-        let _ = interp.set_current_buffer_id(selected_buffer);
-    }
 }
 
 fn nth_list_element(
@@ -1711,6 +1275,14 @@ define_dispatch!(
             }
             "suspend-emacs" => {
                 need_arg_range(name, args, 0, 1)?;
+                // Fsuspend_emacs: not with other tty frames open, then
+                // CHECK_STRING of STUFFSTRING.
+                if interp.secondary_tty_terminals_live() {
+                    return Err(LispError::Signal(
+                        "There are other tty frames open; close them before suspending Emacs"
+                            .into(),
+                    ));
+                }
                 if let Some(stuff_string) = args.first()
                     && !stuff_string.is_nil()
                     && string_like(stuff_string).is_none()
@@ -1721,16 +1293,48 @@ define_dispatch!(
                     ));
                 }
                 run_hook(interp, &cached_symbol!("suspend-hook").symbol(), env)?;
-                // Emaxx currently exposes a headless batch terminal.  There is no
-                // foreground terminal process group to stop and later resume;
-                // the observable native contract in that environment is the
-                // paired hook transition.
+                // A terminal session's modes are reset and the job stopped
+                // (sys_suspend), STUFFSTRING and the input read ahead stuffed
+                // for the shell; the modes come back, also after an error.
+                // GNU's batch session has no terminal to do this on (its
+                // CURTTY is null); there only the hooks run.
+                if crate::lisp::primitives::tty_input_modes().is_some() {
+                    let stuff = args.first().and_then(string_like).map(|string| {
+                        if string.multibyte {
+                            string.text.into_bytes()
+                        } else {
+                            string
+                                .character_codes()
+                                .into_iter()
+                                .map(|code| code as u8)
+                                .collect::<Vec<u8>>()
+                        }
+                    });
+                    let old_size = crate::lisp::eval::terminal::controlling_tty_size();
+                    crate::lisp::primitives::reset_all_sys_modes();
+                    crate::lisp::primitives::stuff_buffered_input(stuff.as_deref());
+                    crate::lisp::primitives::sys_suspend();
+                    let interrupt_input = interp.input_interrupt_mode();
+                    crate::lisp::primitives::init_all_sys_modes(interp, interrupt_input);
+                    // A size the terminal took while Emacs was stopped is
+                    // the selected frame's before suspend-resume-hook runs
+                    // (change_frame_size, not delayed).
+                    let size = crate::lisp::eval::terminal::controlling_tty_size();
+                    if let Some((width, height)) = size
+                        && size != old_size
+                    {
+                        let frame = interp.selected_frame_id;
+                        crate::lisp::primitives::change_frame_size(
+                            interp, frame, width, height, false, false, env,
+                        )?;
+                    }
+                }
                 run_hook(interp, &cached_symbol!("suspend-resume-hook").symbol(), env)?;
                 Ok(Value::Nil)
             }
             "recursive-edit" => {
                 need_args(name, args, 0)?;
-                recursive_edit(interp, env)
+                crate::lisp::primitives::recursive_edit(interp, env)
             }
             "exit-recursive-edit" | "abort-recursive-edit" => {
                 need_args(name, args, 0)?;
@@ -1821,20 +1425,33 @@ define_dispatch!(
             }
             "set--this-command-keys" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
-                let keys = string
-                    .text
-                    .chars()
-                    .map(|character| {
-                        if character as u32 == 248 {
+                // keyboard.c:Fset__this_command_keys: KEYS's characters as
+                // fetch_string_char_advance reads them (a unibyte string's
+                // bytes), an eight-bit one as its byte, the first 248
+                // ("\M-x") as M-x for novice.el.
+                let Kind::StringObject(string) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let codes = string.borrow().codes();
+                let keys = codes
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, code)| {
+                        let code = if (0x3fff80..=0x3fffff).contains(&code) {
+                            code - 0x3fff00
+                        } else {
+                            code
+                        };
+                        if index == 0 && code == 248 {
                             Value::Integer(i64::from(b'x') | KEY_DESCRIPTION_META_BIT)
                         } else {
-                            Value::Integer(character as i64)
+                            Value::Integer(i64::from(code))
                         }
                     })
                     .collect::<Vec<_>>();
-                set_command_key_state(interp, keys, Vec::new(), env);
+                // The raw keys stay what read_key_sequence read.
+                let raw = interp.keyboard_input.raw_keys.clone();
+                set_command_key_state(interp, keys, raw, env);
                 Ok(Value::Nil)
             }
             "clear-this-command-keys" => {
@@ -1868,10 +1485,13 @@ define_dispatch!(
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
                 }
                 ensure_interaction_allowed(interp, env)?;
-                let events = read_key_sequence_events(
+                let events = crate::lisp::primitives::read_key_sequence_vs(
                     interp,
                     args[0],
+                    args.get(1).is_some_and(Value::is_truthy),
                     args.get(2).is_some_and(Value::is_truthy),
+                    args.get(3).is_some_and(Value::is_truthy),
+                    args.get(4).is_some_and(Value::is_truthy),
                     env,
                 )?;
                 Ok(event_array(&events, name == "read-key-sequence-vector"))
@@ -1881,23 +1501,37 @@ define_dispatch!(
                 // lread.c: a non-nil PROMPT is shown, unlogged, as the
                 // read begins.
                 if let Some(prompt) = args.first().filter(|prompt| !prompt.is_nil()) {
-                    crate::lisp::primitives::set_pending_keystroke_echo(None);
+                    crate::lisp::primitives::cancel_echoing(interp);
                     super::display::message_with_string_nolog(interp, "%s", *prompt, env)?;
                 }
                 let read_event = name == "read-event";
-                // SECONDS bounds the whole read, retries included.
-                let deadline = if args.len() >= 3 && args[2].is_truthy() {
-                    let timeout = wait_duration(std::slice::from_ref(&args[2]))?;
-                    Some(std::time::Instant::now() + timeout)
-                } else {
-                    None
+                // read_filtered_event's read_char with PREV_EVENT t unless
+                // INHERIT-INPUT-METHOD: the terminal's bytes undecoded.
+                let _raw = crate::lisp::primitives::RawEventRead::enter(
+                    args.get(1).is_none_or(Value::is_nil),
+                );
+                // read_filtered_event: a number SECONDS is an end time
+                // (dtotimespec added to now, None past what the clock can
+                // hold) bounding the whole read, retries included; any
+                // other SECONDS is none.
+                let deadline = match args.get(2).map(|seconds| seconds.kind()) {
+                    Some(Kind::Integer(_) | Kind::Float(_) | Kind::BigInteger(_)) => {
+                        let duration = crate::lisp::primitives::numeric_to_f64(interp, &args[2])?;
+                        let now = std::time::Instant::now();
+                        Some(if duration > 0.0 {
+                            let (secs, nsecs) =
+                                crate::lisp::primitives::processes::dtotimespec(duration);
+                            now.checked_add(std::time::Duration::new(secs as u64, nsecs as u32))
+                        } else {
+                            Some(now)
+                        })
+                    }
+                    _ => None,
                 };
                 loop {
                     let event = match deadline {
                         Some(deadline) => {
-                            let timeout =
-                                deadline.saturating_duration_since(std::time::Instant::now());
-                            let event = read_event_within(interp, timeout, env)?;
+                            let event = read_event_within(interp, deadline, env)?;
                             // A read with an end time adds nothing to
                             // this-command-keys.
                             interp.keyboard_input.last_event_reread = false;
@@ -1907,16 +1541,59 @@ define_dispatch!(
                             }
                         }
                         None => {
-                            // GNU's read_char enters redisplay before
+                            // read_char takes an unread or keyboard-macro
+                            // event at once; else it redisplays before
                             // blocking for input: window-configuration
                             // changes a command made before reading (rmc's
                             // help pop-up, y-or-n-p's prompt context) reach
                             // the glass while the read waits.
-                            crate::lisp::primitives::run_tty_frame_redraw(interp, env);
-                            let event = pop_unread_command_event_value(interp, env)?;
-                            crate::lisp::primitives::add_read_event_to_command_keys(interp, event);
-                            event
+                            match pop_pending_input_event_value(interp, env)? {
+                                Some(event) => event,
+                                None => {
+                                    crate::lisp::primitives::run_tty_frame_redraw(interp, env);
+                                    pop_unread_command_event_value(interp, env)?
+                                }
+                            }
                         }
+                    };
+                    // read_filtered_event's read_char with PREV_EVENT nil
+                    // and no keymap when it inherits the input method,
+                    // which may give no event: read again (nothing added
+                    // to this-command-keys).
+                    let event = if args.get(1).is_some_and(Value::is_truthy) {
+                        match crate::lisp::primitives::input_method_for_last_event(
+                            interp,
+                            env,
+                            event,
+                            crate::lisp::primitives::InputMethodRead::NoKeymap,
+                        )? {
+                            Some(event) => event,
+                            None => continue,
+                        }
+                    } else {
+                        event
+                    };
+                    // Past the input method: an unread or macro event is
+                    // recorded now, the event (as the input method left
+                    // it) joins this-command-keys unless the read had an
+                    // end time, and it is `last-input-event'.
+                    crate::lisp::primitives::record_unrecorded_event(interp, &event, env);
+                    if deadline.is_none() {
+                        crate::lisp::primitives::add_read_event_to_command_keys(
+                            interp, event, env,
+                        )?;
+                    }
+                    interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
+                    // read_char's help character: `help-form' shown, the
+                    // event read after it the read's.
+                    let event = if crate::lisp::primitives::help_form_applies(interp, event, env) {
+                        crate::lisp::primitives::run_help_form(
+                            interp,
+                            env,
+                            &mut read_char_after_help,
+                        )?
+                    } else {
+                        event
                     };
                     if read_event {
                         return normalize_input_event_value(event);
@@ -1955,6 +1632,16 @@ define_dispatch!(
                 if string_like(&prompt).is_none() {
                     return Err(wrong_type_argument("stringp", prompt));
                 }
+                // Fread_from_minibuffer's KEYMAP: `minibuffer-local-map'
+                // when nil, else get_keymap (KEYMAP, 1, 0).
+                let local_map = match args.get(2).filter(|_| name == "read-from-minibuffer") {
+                    Some(map) if !map.is_nil() => {
+                        crate::lisp::primitives::keymap::get_keymap(interp, *map, true, false, env)?
+                    }
+                    _ => interp
+                        .lookup_var_key(cached_symbol!("minibuffer-local-map"), env)
+                        .unwrap_or(Value::Nil),
+                };
                 // read_minibuf checks INITIAL, a string or (STRING .
                 // POSITION), before the recursive-read guard.
                 let (initial_string, _) =
@@ -1963,11 +1650,6 @@ define_dispatch!(
                     .map(|string| string.text)
                     .unwrap_or_default();
                 crate::lisp::primitives::check_recursive_minibuffer(interp, env)?;
-                let local_map = (name == "read-from-minibuffer")
-                    .then(|| args.get(2).filter(|map| !map.is_nil()).cloned())
-                    .flatten()
-                    .or_else(|| interp.lookup_var_key(cached_symbol!("minibuffer-local-map"), env))
-                    .unwrap_or(Value::Nil);
                 // HIST and DEFAULT sit at different positions per reader:
                 // read-from-minibuffer's KEYMAP and READ shift them to
                 // args 4 and 5, read-string keeps GNU's 2 and 3.
@@ -1981,207 +1663,205 @@ define_dispatch!(
                         args.get(3).cloned().unwrap_or(Value::Nil),
                     ),
                 };
-                // minibuf.c read_minibuf takes read_minibuf_noninteractive
-                // (stdin, no history) only while `noninteractive' and no
-                // keyboard macro executes; it does not look at
-                // `unread-command-events'.  Every other read goes through
-                // the recursive command loop, whose read_char consumes
-                // unread events first and then the macro.
-                let batch_stdin = interp
-                    .lookup_var_key(cached_symbol!("noninteractive"), env)
-                    .is_some_and(|value| value.is_truthy())
-                    && interp
-                        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
-                        .is_none_or(|value| value.is_nil());
-                if batch_stdin {
-                    // read_minibuf_noninteractive returns before any
-                    // minibuffer is chosen: no buffer, no setup or exit hook,
-                    // no history.
-                    let value = read_minibuffer_value_from_batch_stdin(interp, env, &prompt)?;
-                    if name == "read-from-minibuffer" && args.get(3).is_some_and(Value::is_truthy) {
-                        return string_to_object(interp, env, value, default);
+                // read_minibuf's entry: `minibuffer-default' is DEFAULT and
+                // `inhibit-read-only' nil for the read, and
+                // `minibuffer-completing-file-name' is bound, a `lambda' a
+                // previous recursive minibuffer left (t there, not set
+                // again for this read) nil in this one.
+                let count = interp.specpdl_index();
+                // Fread_string: the previous minibuffer's completion table
+                // does not apply to the new one.
+                if name == "read-string" {
+                    interp.specbind_symbol(
+                        &"minibuffer-completion-table".into(),
+                        Value::Nil,
+                        env,
+                    )?;
+                }
+                interp.specbind_symbol(&"minibuffer-default".into(), default, env)?;
+                interp.specbind_symbol(&"inhibit-read-only".into(), Value::Nil, env)?;
+                let completing_file_name = interp
+                    .lookup_var_key(cached_symbol!("minibuffer-completing-file-name"), env)
+                    .unwrap_or(Value::Nil);
+                interp.specbind_symbol(
+                    &"minibuffer-completing-file-name".into(),
+                    completing_file_name,
+                    env,
+                )?;
+                if crate::lisp::types::eq(completing_file_name, Value::symbol("lambda")) {
+                    interp.set_variable_key(
+                        cached_symbol!("minibuffer-completing-file-name"),
+                        Value::Nil,
+                        env,
+                    );
+                }
+                let read = (|| {
+                    // minibuf.c read_minibuf takes read_minibuf_noninteractive
+                    // (stdin, no history) only while `noninteractive' and no
+                    // keyboard macro executes; it does not look at
+                    // `unread-command-events'.  Every other read goes through
+                    // the recursive command loop, whose read_char consumes
+                    // unread events first and then the macro.
+                    let batch_stdin = interp
+                        .lookup_var_key(cached_symbol!("noninteractive"), env)
+                        .is_some_and(|value| value.is_truthy())
+                        && interp
+                            .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+                            .is_none_or(|value| value.is_nil());
+                    if batch_stdin {
+                        // read_minibuf_noninteractive returns before any
+                        // minibuffer is chosen: no buffer, no setup or exit hook,
+                        // no history.
+                        let value = read_minibuffer_value_from_batch_stdin(interp, env, &prompt)?;
+                        if name == "read-from-minibuffer"
+                            && args.get(3).is_some_and(Value::is_truthy)
+                        {
+                            return string_to_object(interp, env, value, default);
+                        }
+                        if name == "read-string"
+                            && string_like(&value).is_some_and(|string| string.text.is_empty())
+                            && !default.is_nil()
+                        {
+                            return Ok(default.cons_values().map_or(default, |(head, _)| head));
+                        }
+                        return Ok(value);
                     }
+                    // INHERIT-INPUT-METHOD: read-from-minibuffer's seventh
+                    // argument, read-string's fifth.
+                    let inherit = args
+                        .get(if name == "read-from-minibuffer" { 6 } else { 4 })
+                        .is_some_and(Value::is_truthy);
+                    crate::lisp::primitives::inherit_minibuffer_input_method(interp, env, inherit);
+                    let allow_props = interp
+                        .forwarded_c_value("minibuffer-allow-text-properties", &Env::new())
+                        .is_some_and(|value| value.is_truthy());
+                    let val = read_minibuf(
+                        interp,
+                        env,
+                        ReadMinibufArgs {
+                            prompt: &prompt,
+                            initial_value: &initial_value,
+                            local_map: &local_map,
+                            history,
+                            defalt: default,
+                            allow_props,
+                        },
+                    )?;
+                    // If Lisp form desired instead of string, parse it.
+                    if name == "read-from-minibuffer" && args.get(3).is_some_and(Value::is_truthy) {
+                        return string_to_object(interp, env, val, default);
+                    }
+                    // Fread_string: an empty answer is DEFAULT-VALUE, the first
+                    // of a list.
                     if name == "read-string"
-                        && string_like(&value).is_some_and(|string| string.text.is_empty())
+                        && string_like(&val).is_some_and(|string| string.text.is_empty())
                         && !default.is_nil()
                     {
                         return Ok(default.cons_values().map_or(default, |(head, _)| head));
                     }
-                    return Ok(value);
-                }
-                let mut contents = None;
-                if !batch_stdin {
-                    contents = read_minibuffer_text_from_unread_events(
-                        interp,
-                        env,
-                        &prompt,
-                        &initial,
-                        &initial_value,
-                        &local_map,
-                    )?;
-                    if contents.is_none() {
-                        contents = read_minibuffer_text_from_kbd_macro(
-                            interp,
-                            env,
-                            &prompt,
-                            &initial,
-                            &initial_value,
-                            &local_map,
-                        )?;
-                    }
-                }
-                if contents.is_none() {
-                    contents = Some(read_minibuffer_text_without_queued_events(
-                        interp,
-                        env,
-                        &prompt,
-                        &initial,
-                        &initial_value,
-                        &local_map,
-                        history,
-                        batch_stdin,
-                    )?);
-                }
-                if let Some(contents) = contents {
-                    if !batch_stdin {
-                        // read_minibuf adds the value to HIST after the
-                        // recursive edit, or DEFAULT (its first element
-                        // when a list) for an empty value; the noninteractive
-                        // reader returns before that point.
-                        let histstring = if contents.is_empty() {
-                            match default.cons_values() {
-                                Some((head, _)) => head,
-                                None => default,
-                            }
-                        } else {
-                            Value::String(contents.clone().into())
-                        };
-                        if let Some(text) = string_like(&histstring).map(|text| text.text)
-                            && let Some(variable) =
-                                crate::lisp::primitives::completion::history_variable_name(&history)
-                        {
-                            crate::lisp::primitives::completion::push_minibuffer_history(
-                                interp, env, &variable, &text,
-                            );
-                        }
-                    }
-                    if name == "read-from-minibuffer" && args.get(3).is_some_and(Value::is_truthy) {
-                        return string_to_object(
-                            interp,
-                            env,
-                            Value::String(contents.into()),
-                            default,
-                        );
-                    }
-                    if contents.is_empty() {
-                        // GNU read-string returns DEFAULT-VALUE unchanged on
-                        // empty input, even when it is not a string.  A list
-                        // default contributes its first element.  In contrast,
-                        // read-from-minibuffer's DEFAULT is only history input
-                        // and does not replace an empty return value.
-                        if name == "read-string"
-                            && let Some(default) = args.get(3).filter(|value| !value.is_nil())
-                        {
-                            let default = match default.cons_values() {
-                                Some((head, _)) => head,
-                                None => *default,
-                            };
-                            return Ok(default);
-                        }
-                    }
-                    return Ok(Value::String(contents.into()));
-                }
-                Ok(Value::String(String::new().into()))
+                    Ok(val)
+                })();
+                let unbound = interp.unbind_to(count, env);
+                let value = read?;
+                unbound.map(|()| value)
             }
             "completing-read" => completing_read(interp, args, env),
             "read-buffer" => {
                 need_arg_range(name, args, 1, 4)?;
-                let default = match args.get(1).cloned().unwrap_or(Value::Nil).kind() {
-                    // BVAR (XBUFFER (def), name).
-                    Kind::Buffer(buffer) => buffer.borrow().name(),
-                    other => other.value(),
-                };
-                if let Some(function) = interp
-                    .lookup_var_key(cached_symbol!("read-buffer-function"), env)
-                    .filter(|function| !function.is_nil())
-                {
-                    let mut call_args =
-                        vec![args[0], default, args.get(2).cloned().unwrap_or(Value::Nil)];
-                    if let Some(predicate) = args.get(3) {
-                        call_args.push(*predicate);
-                    }
-                    return call_function_value(interp, &function, &call_args, env);
+                // minibuf.c:Fread_buffer.  A buffer DEF is its name.
+                let mut def = args.get(1).copied().unwrap_or(Value::Nil);
+                if let Kind::Buffer(buffer) = def.kind() {
+                    def = buffer.borrow().name();
                 }
-                let prompt = if default.is_nil() {
-                    args[0]
-                } else {
-                    let raw = string_text(&args[0])?;
-                    let stem = raw
-                        .strip_suffix(": ")
-                        .or_else(|| raw.strip_suffix(':'))
-                        .or_else(|| raw.strip_suffix(' '))
-                        .unwrap_or(&raw);
-                    let shown_default = default.car().unwrap_or(default);
-                    call_function_value(
+                let require_match = args.get(2).copied().unwrap_or(Value::Nil);
+                let predicate = args.get(3).copied().unwrap_or(Value::Nil);
+                let count = interp.specpdl_index();
+                let ignore_case = interp
+                    .lookup_var_key(cached_symbol!("read-buffer-completion-ignore-case"), env)
+                    .is_some_and(|value| value.is_truthy());
+                interp.specbind_symbol(
+                    &"completion-ignore-case".into(),
+                    if ignore_case { Value::T } else { Value::Nil },
+                    env,
+                )?;
+                let roots = [args[0], def, require_match, predicate];
+                let result = interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
+                    let function = interp
+                        .lookup_var_key(cached_symbol!("read-buffer-function"), env)
+                        .unwrap_or(Value::Nil);
+                    if !function.is_nil() {
+                        // Partial backward compatibility for older
+                        // read_buffer_functions which don't expect a
+                        // `predicate' argument.
+                        let call_args: &[Value] = if predicate.is_nil() {
+                            &[args[0], def, require_match]
+                        } else {
+                            &[args[0], def, require_match, predicate]
+                        };
+                        return call_function_value(interp, &function, call_args, env);
+                    }
+                    let mut prompt = args[0];
+                    if !def.is_nil() {
+                        // The default edited in before the colon: PROMPT
+                        // without its terminal ": ", ":" or " ", then
+                        // `format-prompt'.
+                        // make_specified_string of the bytes kept: the
+                        // prompt's multibyteness, none of its properties.
+                        if let Some(text) = string_like(&prompt) {
+                            let chars = text.text.chars().count() as i64;
+                            let cut = if text.text.ends_with(": ") {
+                                2
+                            } else if text.text.ends_with(':') || text.text.ends_with(' ') {
+                                1
+                            } else {
+                                0
+                            };
+                            prompt = super::call(
+                                interp,
+                                "substring-no-properties",
+                                &[prompt, Value::Integer(0), Value::Integer(chars - cut)],
+                                env,
+                            )?;
+                        }
+                        let shown = def.cons_values().map_or(def, |(head, _)| head);
+                        prompt = interp.with_lisp_stack_roots(&prompt, |interp| {
+                            call_function_value(
+                                interp,
+                                &Value::symbol("format-prompt"),
+                                &[prompt, shown],
+                                env,
+                            )
+                        })?;
+                    }
+                    completing_read(
                         interp,
-                        &Value::Symbol("format-prompt".into()),
-                        &[Value::String(stem.into()), shown_default],
+                        &[
+                            prompt,
+                            Value::symbol("internal-complete-buffer"),
+                            predicate,
+                            require_match,
+                            Value::Nil,
+                            Value::symbol("buffer-name-history"),
+                            def,
+                            Value::Nil,
+                        ],
                         env,
                     )
-                    .or_else(|error| {
-                        if matches!(error.kind(), LispErrorKind::VoidFunction(_)) {
-                            Ok(Value::String(
-                                format!(
-                                    "{stem} (default {}): ",
-                                    string_text(&shown_default)
-                                        .unwrap_or_else(|_| format!("{shown_default}"))
-                                )
-                                .into(),
-                            ))
-                        } else {
-                            Err(error)
-                        }
-                    })?
-                };
-                // minibuf.c's read_buffer completes over Vbuffer_alist:
-                // (NAME . BUFFER) conses, so a PREDICATE receives the pair
-                // and can inspect the buffer object (ERC's foreign-buffer
-                // filter reads buffer-local variables through the cdr).
-                let buffers = super::call(interp, "buffer-list", &[], env)?
-                    .to_vec()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|buffer| match buffer.kind() {
-                        Kind::Buffer(handle) => {
-                            Some(Value::cons(handle.borrow().name(), Value::Buffer(handle)))
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                completing_read(
-                    interp,
-                    &[
-                        prompt,
-                        Value::list(buffers),
-                        args.get(3).cloned().unwrap_or(Value::Nil),
-                        args.get(2).cloned().unwrap_or(Value::Nil),
-                        Value::Nil,
-                        Value::Symbol("buffer-name-history".into()),
-                        default,
-                    ],
-                    env,
-                )
+                });
+                let unbound = interp.unbind_to(count, env);
+                let value = result?;
+                unbound.map(|()| value)
             }
             "read-command" | "read-variable" => {
                 need_arg_range(name, args, 1, 2)?;
+                // minibuf.c:Fread_command, Fread_variable: a symbol
+                // DEFAULT-VALUE's SYMBOL_NAME, then Fintern of the name
+                // read in `obarray'.
                 let default = args.get(1).cloned().unwrap_or(Value::Nil);
-                let default = match default.kind() {
-                    Kind::Symbol(symbol) => Value::String(
-                        crate::lisp::types::visible_symbol_name(symbol.as_str())
-                            .to_string()
-                            .into(),
-                    ),
-                    other => other.value(),
+                let default = if !default.is_nil() && default.is_symbol() {
+                    super::call(interp, "symbol-name", &[default], env)?
+                } else {
+                    default
                 };
                 let obarray = interp
                     .lookup_var_key(cached_symbol!("obarray"), env)
@@ -2213,8 +1893,7 @@ define_dispatch!(
                 if value.is_nil() {
                     Ok(Value::Nil)
                 } else {
-                    let symbol = string_text(&value)?;
-                    intern_in_obarray(interp, &obarray, &symbol)
+                    super::call(interp, "intern", &[value], env)
                 }
             } // GNU byte-run.el defines this as an ordinary &rest function.
               // Keeping it on the callable dispatch route makes interpreted

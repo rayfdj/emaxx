@@ -163,33 +163,37 @@ impl Interpreter {
 }
 
 impl Interpreter {
-    /// emacs.c:shut_down_emacs's kill_buffer_processes (Qnil), each
-    /// subprocess sent SIGHUP with no sentinel run, and reset_all_sys_modes,
-    /// each terminal's modes restored.
-    pub(crate) fn hang_up_processes_and_reset_terminals(&mut self) {
+    /// emacs.c:shut_down_emacs's reset_all_sys_modes: each terminal's
+    /// modes restored.
+    pub(crate) fn reset_terminals_for_shutdown(&mut self) {
         if self.state.is_some() {
-            #[cfg(unix)]
-            for process in &mut self.process_states {
-                if let Some(runtime) = &mut process.runtime {
-                    runtime.hang_up_for_process_exit();
-                }
-            }
             self.terminals.clear();
         }
     }
 
     /// Release resources with external effects before the batch CLI exits.
     /// The OS reclaims Lisp storage; embedded callers still drop it normally.
+    /// Once shut_down_emacs has run (inhibit_sentinels set), its
+    /// kill_buffer_processes has hung up each subprocess whose channel was
+    /// open, and Fkill_emacs's exit leaves every child as it is, the
+    /// descriptors Emacs holds to it closed by the kernel as the process
+    /// ends, not before: a child that writes as its SIGHUP comes still
+    /// has a reader until then.  A run that ended without `kill-emacs'
+    /// hangs its live children up here.
     pub(crate) fn release_external_resources_for_exit(&mut self) {
         self.unwind_suspended_threads_for_shutdown();
         if self.state.is_some() {
-            #[cfg(unix)]
-            for process in &mut self.process_states {
-                if let Some(runtime) = &mut process.runtime {
-                    runtime.hang_up_for_process_exit();
+            if self.inhibit_sentinels {
+                std::mem::forget(std::mem::take(&mut self.process_states));
+            } else {
+                #[cfg(unix)]
+                for process in &mut self.process_states {
+                    if let Some(runtime) = &mut process.runtime {
+                        runtime.hang_up_for_process_exit();
+                    }
                 }
+                self.process_states.clear();
             }
-            self.process_states.clear();
             self.terminals.clear();
         }
     }

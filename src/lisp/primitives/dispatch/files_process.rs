@@ -3470,20 +3470,7 @@ define_dispatch!(
                 unlock_buffer(interp, env, id)?;
                 // kill_buffer_processes: the buffer's connections are
                 // deleted and its subprocesses hung up.
-                for (process_id, connection) in interp.buffer_processes(id) {
-                    // FOR_EACH_PROCESS's test as it reaches the process: a
-                    // sentinel run by an earlier deletion may have deleted
-                    // or deactivated it.
-                    if !interp.buffer_process_still_killable(process_id, id) {
-                        continue;
-                    }
-                    if connection {
-                        delete_process_notifying(interp, process_id, env)?;
-                    } else {
-                        #[cfg(unix)]
-                        interp.signal_process_group(process_id, libc::SIGHUP, &Value::Nil)?;
-                    }
-                }
+                crate::lisp::primitives::processes::kill_buffer_processes(interp, env, Some(id))?;
                 // Their sentinels may have killed it.
                 if !interp.has_buffer_id(id) {
                     return Ok(Value::T);
@@ -3720,16 +3707,21 @@ pub(crate) fn send_process(
             .unwrap_or_default();
         let mut offset = 0;
         while offset < batch.len() {
-            match interp.process_write_some(process_id, &batch[offset..])? {
+            let written = interp.process_write_some(process_id, &batch[offset..])?;
+            // A write to a stream gives up the adaptive read delay
+            // (adaptive_read_buffering 1).
+            if interp.reset_read_output_delay_after_write(process_id) {
+                crate::lisp::primitives::processes::process_output_delay_written();
+            }
+            // emacs_gnutls_write's messages, shown as it makes them.
+            super::gnutls::flush_gnutls_log(interp, env)?;
+            match written {
                 Some(written) => offset += written,
                 None => {
                     interp.write_queue_push(process_id, batch[offset..].to_vec(), true);
-                    super::call(
-                        interp,
-                        "accept-process-output",
-                        &[Value::Nil, Value::Integer(0), Value::Integer(20)],
-                        env,
-                    )?;
+                    // send_process: wait_reading_process_output (0, 20 *
+                    // 1000 * 1000, 0, 0, Qnil, NULL, 0).
+                    crate::lisp::primitives::processes::wait_twenty_milliseconds(interp, env)?;
                     break;
                 }
             }
@@ -3819,6 +3811,11 @@ pub(crate) fn make_pipe_process_value(
     let made = (|| -> Result<(), LispError> {
         let channels = open_pipe_process_channels(interp)?;
         interp.install_pipe_process_channels(process_id, channels);
+        // add_process_read_fd, then p->adaptive_read_buffering.
+        let adaptive = interp
+            .lookup_var_key(cached_symbol!("process-adaptive-read-buffering"), env)
+            .unwrap_or(Value::Nil);
+        interp.set_process_adaptive_read_buffering(process_id, adaptive);
         let buffer = match plist_argument(args, ":buffer") {
             buffer if buffer.is_nil() => name,
             buffer => buffer,
@@ -3981,6 +3978,11 @@ fn make_process_value(
                 .lookup_var_key(cached_symbol!("inherit-process-coding-system"), env)
                 .is_some_and(|value| value.is_truthy());
         interp.set_process_inherit_coding_system_flag(process_id, inherit_coding_system)?;
+        // p->adaptive_read_buffering from `process-adaptive-read-buffering'.
+        let adaptive = interp
+            .lookup_var_key(cached_symbol!("process-adaptive-read-buffering"), env)
+            .unwrap_or(Value::Nil);
+        interp.set_process_adaptive_read_buffering(process_id, adaptive);
         if program.is_nil() {
             // create_pty: allocate_pty when the connection type asks for a
             // pty, which FD_SETSIZE refuses ("Opening pty"), then, where

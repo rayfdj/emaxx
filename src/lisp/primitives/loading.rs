@@ -306,14 +306,6 @@ fn call_interactively_bound(
         None
     };
     interp.push_interactive_call();
-    // The interactive dispatch frame is what `called-interactively-p's
-    // backtrace walk stops at (GNU stops at funcall-interactively); the
-    // native dispatch paths (special form, command loop) don't otherwise
-    // leave one.
-    interp.push_backtrace_frame(
-        Value::Symbol("funcall-interactively".into()),
-        &interactive_args,
-    );
     // Call through the SYMBOL when one was given, as GNU's
     // Ffuncall_interactively does: the advised command's own frame is
     // then recorded between funcall-interactively and the advice
@@ -324,6 +316,13 @@ fn call_interactively_bound(
     } else {
         func
     };
+    // callint.c's Ffuncall (funcall-interactively, FUNCTION, ARGS...): the
+    // frame `called-interactively-p''s backtrace walk stops at, FUNCTION
+    // its first argument.
+    let frame_args: Vec<Value> = std::iter::once(call_target)
+        .chain(interactive_args.iter().copied())
+        .collect();
+    interp.push_backtrace_frame(Value::Symbol("funcall-interactively".into()), &frame_args);
     let result = interp.call_function_value(call_target, None, &interactive_args, env);
     interp.pop_backtrace_frame();
     interp.pop_interactive_call();

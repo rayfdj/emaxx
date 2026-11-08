@@ -3,23 +3,6 @@ use super::*;
 use crate::lisp::types::Kind;
 use std::rc::Rc;
 
-pub(crate) fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
-    let seconds = args
-        .first()
-        .map(Value::as_float)
-        .transpose()?
-        .unwrap_or(0.0);
-    let millis = match args.get(1).map(|v| v.kind()) {
-        None | Some(Kind::Nil) => 0.0,
-        Some(value) => value.value().as_float()?,
-    };
-    let total = seconds + millis / 1000.0;
-    if !total.is_finite() || total <= 0.0 {
-        return Ok(Duration::ZERO);
-    }
-    Ok(Duration::from_secs_f64(total))
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum RoundingKind {
     Ceiling,

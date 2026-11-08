@@ -439,22 +439,18 @@ fn store_frame_parameter(
         && !matches!(val.kind(), Kind::Integer(width) if (1..=i64::from(i32::MAX)).contains(&width))
     {
         val = get_frame_param(id, prop);
-    } else if cached_symbol!("tty-color-mode").is(prop) {
-        // GNU's channel for changing a tty frame's color support
-        // (term.c's set_tty_color_mode): tty_setup_colors publishes
-        // the count, then safe_calln (Qtty_set_up_initial_frame_faces)
-        // has faces.el recompute every face against the new display.
-        let cells = match val.kind() {
-            Kind::Integer(mode) if mode > 1 => mode,
-            Kind::Integer(_) | Kind::Nil => 0,
-            _ => 8,
-        };
-        interp.set_tty_display_colors(cells);
-        if let Ok(forms) =
-            crate::lisp::reader::Reader::new("(tty-set-up-initial-frame-faces)").read_all()
-            && let Some(form) = forms.first()
-        {
-            let _ = interp.eval(form, &mut crate::lisp::types::Env::new());
+    }
+    // A tty frame's `tty-color-mode' takes effect when redisplay next
+    // shows the frame (set_tty_color_mode, from redisplay_internal's
+    // check of the terminal's previous_frame), forced here for the frame
+    // the terminal shows now.
+    if cached_symbol!("tty-color-mode").is(prop) {
+        let terminal = id.borrow().terminal;
+        if let Some(terminal) = terminal {
+            let mut state = terminal.borrow_mut();
+            if state.kind.is_some() && state.previous_frame == Some(id.identity()) {
+                state.previous_frame = None;
+            }
         }
     }
     let mut alist = id.borrow().param_alist;
@@ -1331,7 +1327,8 @@ fn make_terminal_frame(
                     }
                 })
         };
-        let tty = future(cached_symbol!("tty")).unwrap_or_else(|| "/dev/tty".into());
+        let tty =
+            future(cached_symbol!("tty")).unwrap_or_else(crate::lisp::eval::terminal::dev_tty);
         let kind = future(cached_symbol!("tty-type"))
             .ok_or_else(|| LispError::Signal("Unknown terminal type".into()))?;
         interp.open_tty_terminal(&tty, &kind)?

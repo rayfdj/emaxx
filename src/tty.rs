@@ -15,8 +15,7 @@
 use crate::lisp::cached_symbol;
 use std::io::{self, Write};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::{cursor, event, execute, queue, style, terminal};
+use crossterm::{cursor, queue, style, terminal};
 
 use crate::batch;
 use crate::lisp::eval::Interpreter;
@@ -28,6 +27,7 @@ use crate::lisp::types::{Env, Kind, LispError, LispErrorKind, Value};
 
 mod layout;
 mod redisplay_window;
+mod sysdep;
 
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
@@ -42,23 +42,20 @@ fn debug_log(message: &str) {
     }
 }
 
-/// Restore the terminal even when the session ends by panic or error.
+/// The frame route of the session's terminal, given up even when the
+/// session ends by panic or error (the terminal's modes are TtyModes').
 struct TerminalGuard;
 
 impl TerminalGuard {
-    fn enter() -> io::Result<Self> {
-        terminal::enable_raw_mode()?;
-        execute!(io::stdout(), terminal::EnterAlternateScreen, cursor::Show)?;
+    fn enter() -> Self {
         crate::lisp::eval::terminal::activate_frame_route();
-        Ok(Self)
+        Self
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         crate::lisp::eval::terminal::clear_frame_route();
-        let _ = execute!(io::stdout(), terminal::LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
     }
 }
 
@@ -92,20 +89,6 @@ struct WindowView {
     deferred_mode_line_point: Option<usize>,
 }
 
-/// The terminal's color capability, GNU's terminfo Co# in miniature:
-/// xterm-family terminals answer 8 colors, 256-color variants 256, and
-/// anything unrecognizably dumb stays colorless.
-fn terminal_color_cells() -> i64 {
-    let term = std::env::var("TERM").unwrap_or_default();
-    if term.is_empty() || term == "dumb" {
-        0
-    } else if term.contains("256color") {
-        256
-    } else {
-        8
-    }
-}
-
 fn terminal_output() -> Box<dyn Write> {
     struct FailedOutput(io::Error);
     impl Write for FailedOutput {
@@ -125,14 +108,53 @@ type CellAttrs = crate::lisp::primitives::TtyFaceAttrs;
 /// keep the base's — GNU's face merging for spans drawn inside an
 /// already-faced area (the mode line's buffer name over the mode line).
 fn merge_cell_attrs(base: CellAttrs, over: CellAttrs) -> CellAttrs {
-    CellAttrs {
-        foreground: over.foreground.or(base.foreground),
-        background: over.background.or(base.background),
-        bold: base.bold || over.bold,
-        underline: base.underline || over.underline,
-        reverse: base.reverse || over.reverse,
-        extend: base.extend || over.extend,
-    }
+    CellAttrs::merged_over(&base, &over)
+}
+
+/// The `face-remapping-alist' a buffer's display realizes faces with
+/// (redisplay_window makes the window's buffer current, and
+/// lookup_named_face and lookup_basic_face consult it), and the printed
+/// form those faces are cached under apart from the frame's own: none
+/// (nil) for the echo area, the menu bar and the other frame parts.
+struct FaceRemapping {
+    alist: Value,
+    key: String,
+}
+
+fn face_remapping(interpreter: &Interpreter, buffer_id: Option<u64>) -> FaceRemapping {
+    let alist = buffer_id
+        .and_then(|id| {
+            interpreter
+                .buffer_local_value_key(id, cached_symbol!("face-remapping-alist"))
+                .or_else(|| interpreter.global_binding_value("face-remapping-alist"))
+        })
+        .unwrap_or(Value::Nil);
+    let key = if alist.is_nil() {
+        String::new()
+    } else {
+        format!("{alist}\u{1}")
+    };
+    FaceRemapping { alist, key }
+}
+
+/// FACE realized as REMAPPING has it, cached by face and remapping.
+fn realized_face(
+    cache: &mut std::collections::HashMap<String, CellAttrs>,
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    remapping: &FaceRemapping,
+    face: &Value,
+) -> CellAttrs {
+    *cache
+        .entry(format!("{}{face}", remapping.key))
+        .or_insert_with(|| {
+            crate::lisp::primitives::resolve_tty_face_attrs_remapped(
+                interpreter,
+                env,
+                face,
+                remapping.alist,
+            )
+        })
 }
 
 /// A padding glyph: a cell after the first of a wide character (term.c
@@ -331,7 +353,7 @@ impl PaintRow {
     /// turn_on_face emits no SGR color at all when
     /// `face_tty_specified_color' (dispextern.h) rejects the default
     /// sentinel.
-    fn force_foreground(&mut self, from: usize, to: usize, foreground: Option<u8>) {
+    fn force_foreground(&mut self, from: usize, to: usize, foreground: Option<i64>) {
         for at in from..to.min(self.attrs.len()) {
             self.attrs[at].foreground = foreground;
         }
@@ -352,19 +374,16 @@ struct TtyState {
     other_terminals: std::collections::HashMap<u64, Box<TtyState>>,
     /// Per-window display anchors, keyed by window record id.
     views: std::collections::HashMap<u64, WindowView>,
-    /// A `C-u' sequence is accumulating: digits and `-' extend the prefix
-    /// argument instead of dispatching (GNU's universal-argument--mode).
-    prefix_active: bool,
-    /// Events of the in-progress (multi-key) sequence.
-    /// Frontend-owned echo text (key-sequence progress, command errors);
-    /// when empty, the session's `message' echo line shows instead.
-    echo: String,
     /// The frame as last painted: every row above the echo area, the echo
     /// row, and the terminal size they were painted for.  Redraw emits
     /// only rows that differ — GNU's dispnew current-matrix idea, one
     /// line deep.
     painted_rows: Vec<PaintRow>,
     painted_echo: Vec<PaintRow>,
+    /// The default face, `inverse-video' and
+    /// `tty-suppress-bold-inverse-default-colors' the rows were painted
+    /// with.
+    painted_faces: Option<(CellAttrs, bool, bool)>,
     /// `max-mini-window-height' as resolved at the last full redisplay,
     /// so the interpreter-less painter can grow the echo area too.
     echo_max_rows: usize,
@@ -431,10 +450,9 @@ impl TtyState {
             terminal_id: 0,
             other_terminals: Default::default(),
             views: std::collections::HashMap::new(),
-            prefix_active: false,
-            echo: String::new(),
             painted_rows: Vec::new(),
             painted_echo: Vec::new(),
+            painted_faces: None,
             echo_rows: 1,
             echo_max_rows: 6,
             painted_size: (0, 0),
@@ -457,6 +475,12 @@ impl TtyState {
     }
 }
 
+/// emacs.c's `-t DEVICE': the terminal the session opens is DEVICE
+/// (dev_tty), not DEV_TTY.
+pub fn set_dev_tty(name: &str) {
+    crate::lisp::eval::terminal::set_dev_tty(name);
+}
+
 pub fn run(command_line_args: &[String], options: &batch::BatchRunOptions) -> Result<i32, String> {
     crate::lisp::runtime::with_runtime(|| run_owned(command_line_args, options))
 }
@@ -471,18 +495,118 @@ fn run_owned(
     // emacs.c:init_display establishes the terminal before keyboard.c
     // evaluates top-level. startup.el then owns palette registration,
     // terminal Lisp initialization, buffers, file visitation, and messages.
-    interpreter.set_tty_display_colors(terminal_color_cells());
-    interpreter.set_tty_terminal_type(std::env::var("TERM").ok());
+    // dispnew.c:init_display: a terminal on standard input and TERM set,
+    // then term.c:init_tty(dev_tty, TERM, must_succeed): the device, its
+    // terminfo entry, its size and its cursor motion, each fatal (exit
+    // status 1) when missing.
+    // SAFETY: isatty has no preconditions.
+    if unsafe { libc::isatty(libc::STDIN_FILENO) } != 1 {
+        fatal("standard input is not a tty");
+    }
+    let Some(terminal_type) = std::env::var_os("TERM") else {
+        eprintln!("Please set the environment variable TERM; see 'tset'.");
+        std::process::exit(1);
+    };
+    let terminal_type = terminal_type.to_string_lossy().into_owned();
+    let tty_fd = sysdep::open_dev_tty(&crate::lisp::eval::terminal::dev_tty())
+        .unwrap_or_else(|text| fatal(&text));
+    let termcap = crate::lisp::eval::terminal::read_termcap(&terminal_type, tty_fd)
+        .unwrap_or_else(|error| fatal(&error.fatal_text()));
+    if termcap.height < 3 || termcap.width < 3 {
+        fatal(&format!(
+            "Screen size {}x{} is too small",
+            termcap.width, termcap.height
+        ));
+    }
+    if !termcap.cursor_motion {
+        fatal(&crate::lisp::eval::terminal::cursor_motion_fatal_text(
+            &terminal_type,
+        ));
+    }
+    // init_display_interactive: the initial frame on the terminal, given
+    // its size at once, then the frame's faces.
+    interpreter.set_tty_colors(termcap.colors.clone());
+    interpreter.set_tty_appearance(termcap.appearance.clone());
+    interpreter.set_tty_terminal_type(Some(terminal_type));
+    interpreter.set_tty_frame_size(termcap.width, termcap.height);
     batch::initialize_initial_frame_faces(&mut interpreter)?;
 
-    let guard = TerminalGuard::enter().map_err(|error| error.to_string())?;
-    interpreter.note_selected_frame(interpreter.selected_frame_id);
-    let queue = SharedEventQueue::default();
-    let state = std::rc::Rc::new(std::cell::RefCell::new(TtyState::new()));
-    crate::lisp::primitives::set_tty_event_reader(Some(make_event_reader(
-        queue.clone(),
-        std::rc::Rc::clone(&state),
+    let guard = TerminalGuard::enter();
+    let terminal = interpreter
+        .decode_terminal(&Value::Nil)
+        .expect("the initial frame's terminal is live");
+    crate::lisp::eval::terminal::set_controlling_output(Some((
+        tty_fd,
+        termcap.width,
+        termcap.height,
+        terminal,
     )));
+    // The rest of init_tty: the mode strings of the terminal's entry,
+    // whether it has a Meta key, term_get_fkeys's keys for
+    // `input-decode-map'; then sysdep.c:init_sys_modes.
+    let tty_modes = std::rc::Rc::new(std::cell::RefCell::new(sysdep::TtyModes::new(
+        tty_fd,
+        terminal_mode_strings(&termcap),
+    )));
+    term_get_fkeys(&mut interpreter, &mut env, &termcap.keys).map_err(|error| error.to_string())?;
+    let tty_fd = tty_modes.borrow().fd;
+    let queue = SharedEventQueue::default();
+    let input_modes = crate::lisp::primitives::TtyInputModes {
+        flow_control: false,
+        meta_key: i32::from(termcap.meta_key),
+    };
+    crate::lisp::primitives::set_tty_input_modes(
+        Some(input_modes),
+        tty_modes.borrow().controlling,
+        Some(Box::new({
+            let tty_modes = std::rc::Rc::clone(&tty_modes);
+            let queue = queue.clone();
+            move |op| {
+                let Ok(mut modes) = tty_modes.try_borrow_mut() else {
+                    return;
+                };
+                match op {
+                    crate::lisp::primitives::SysModes::Stuff(stuff) => {
+                        // stuff_buffered_input: STUFF, then what was read
+                        // ahead and not used, back for the shell to read.
+                        for byte in stuff {
+                            sysdep::stuff_char(modes.fd, byte);
+                        }
+                        while let Some(QueuedInput::Lisp(event)) = queue.pop() {
+                            if let Kind::Integer(code) = event.kind()
+                                && (0..0x100).contains(&(code & !CHAR_META))
+                            {
+                                sysdep::stuff_char(modes.fd, (code & 0xff) as u8);
+                            }
+                        }
+                    }
+                    crate::lisp::primitives::SysModes::Reset => {
+                        let rows = sysdep::get_tty_size(modes.fd).map_or(24, |(_, rows)| rows);
+                        modes.reset(rows);
+                    }
+                    crate::lisp::primitives::SysModes::Refresh => modes.arm(),
+                    crate::lisp::primitives::SysModes::Init { interrupt_input } => {
+                        let input =
+                            crate::lisp::primitives::tty_input_modes().unwrap_or(input_modes);
+                        let quit = crate::lisp::primitives::quit_char() as u8;
+                        // A terminal entered again shows what the shell
+                        // left: the frame is garbaged.
+                        if modes.initted() {
+                            crate::lisp::primitives::set_frame_garbaged();
+                        }
+                        let erase = modes.init(interrupt_input, input, quit);
+                        crate::lisp::primitives::note_tty_erase_char(erase);
+                    }
+                }
+            }
+        })),
+    );
+    let interrupt_input = interpreter.input_interrupt_mode();
+    crate::lisp::primitives::init_all_sys_modes(&mut interpreter, interrupt_input);
+    // dispnew.c:init_display's SIGWINCH handler.
+    crate::lisp::primitives::install_window_change_handler();
+    interpreter.note_selected_frame(interpreter.selected_frame_id);
+    let state = std::rc::Rc::new(std::cell::RefCell::new(TtyState::new()));
     crate::lisp::primitives::set_tty_event_poller(Some(make_event_poller(
         queue.clone(),
         std::rc::Rc::clone(&state),
@@ -500,8 +624,11 @@ fn run_owned(
                 let _ = crate::lisp::primitives::run_window_change_functions(interpreter, env);
                 return;
             }
+            // command_loop_1's resize_echo_area_exactly after a command:
+            // a displayed message's mini window takes its own height again.
+            let exact = crate::lisp::primitives::take_resize_echo_area_exactly();
             if let Ok(mut state) = state.try_borrow_mut() {
-                let _ = redraw(interpreter, env, &mut state);
+                let _ = redraw_with_echo_policy(interpreter, env, &mut state, exact);
             }
         }
     })));
@@ -511,49 +638,66 @@ fn run_owned(
         queue.clone(),
         std::rc::Rc::clone(&state),
     )));
-    // keyboard.c's input_pending probe: `input-pending-p' and sit-for's
-    // early exit see queued terminal input without consuming it.
-    crate::lisp::primitives::set_tty_input_pending_check(Some(Box::new({
-        let queue = queue.clone();
-        move || queue.input_pending()
-    })));
-    // keyboard.c's Fdiscard_input: the keyboard buffer empties.
+    // term.c:init_tty's terminal: its read_socket_hook
+    // (tty_read_avail_input) storing into the keyboard buffer, and its
+    // input descriptor given add_keyboard_wait_descriptor (init_sys_modes
+    // asked for SIGIO on it with interrupt_input).
+    crate::lisp::primitives::set_keyboard_terminal(Some(
+        crate::lisp::primitives::KeyboardTerminal {
+            read_socket_hook: Box::new({
+                let queue = queue.clone();
+                move |interpreter, env| queue.read_avail_input(interpreter, env, tty_fd)
+            }),
+            buffer_nonempty: Box::new({
+                let queue = queue.clone();
+                move || queue.input_pending()
+            }),
+            fd: Some(tty_fd),
+        },
+    ));
+    // keyboard.c's Fdiscard_input: the keyboard buffer empties, and
+    // discard_tty_input sets the terminal's modes again (TCSADRAIN, which
+    // leaves what the terminal holds unread in place).
     crate::lisp::primitives::set_tty_input_discard(Some(Box::new({
         let queue = queue.clone();
-        move || queue.discard()
+        let tty_modes = std::rc::Rc::clone(&tty_modes);
+        move || {
+            queue.discard();
+            if let Ok(modes) = tty_modes.try_borrow() {
+                modes.discard_input();
+            }
+        }
     })));
     // keyboard.c:command_loop enters top_level_1 after terminal input is
     // available, then the editing loop. Do not replay Lisp startup actions.
     // emacs.c runs after-pdump-load-hook after init_display. Hook code can
     // therefore inspect the real terminal or read events before top-level.
-    let startup = batch::safe_run_hooks(
+    // Then main's Frecursive_edit: the top level's command loop, whose
+    // top_level_1 evaluates `top-level' (startup.el's normal-top-level).
+    batch::set_command_line_args(&mut interpreter, command_line_args);
+    let session = batch::safe_run_hooks(
         &mut interpreter,
         &crate::lisp::types::symbols::SymbolKey::new("after-pdump-load-hook").symbol(),
     )
     .and_then(|()| crate::lisp::primitives::set_initial_minibuffer_mode(&mut interpreter))
-    .and_then(|()| batch::run_startup_top_level(&mut interpreter, command_line_args));
-    let termination = match startup.map_err(LispError::into_kind) {
-        Err(LispErrorKind::Terminate(termination)) => Some(termination),
-        Err(error) => {
-            let text =
-                command_error_text(&mut interpreter, &mut env, &LispError::from(error.clone()));
-            crate::lisp::primitives::set_echo_area_message(Some(text));
-            interpreter.take_pending_termination()
-        }
-        Ok(_) => interpreter.take_pending_termination(),
-    };
-    let code = if let Some(termination) = termination {
-        Ok(termination.exit_code)
-    } else {
-        command_loop(&mut interpreter, &mut env, &queue, &state)
+    .and_then(|()| crate::lisp::primitives::recursive_edit_1(&mut interpreter, &mut env));
+    let code = match session.map_err(LispError::into_kind) {
+        Err(LispErrorKind::Terminate(termination)) => Ok(termination.exit_code),
+        Err(error) => Err(LispError::from(error).to_string()),
+        Ok(()) => Ok(0),
     };
     crate::lisp::primitives::set_tty_frame_redraw(None);
     crate::lisp::primitives::set_tty_event_reader(None);
     crate::lisp::primitives::set_tty_event_poller(None);
-    crate::lisp::primitives::set_tty_input_pending_check(None);
+    crate::lisp::primitives::set_keyboard_terminal(None);
+    crate::lisp::primitives::set_tty_input_modes(None, false, None);
+    drop(tty_modes);
     crate::lisp::primitives::set_tty_input_discard(None);
     crate::lisp::primitives::set_tty_menu_executor(None);
     crate::lisp::primitives::set_interactive_window_metrics(None);
+    // Fkill_emacs's exit leaves each child as shut_down_emacs left it
+    // (hung up, not killed), as the batch exit does.
+    interpreter.release_external_resources_for_exit();
     drop(guard);
     code
 }
@@ -570,182 +714,383 @@ fn run_owned(
 #[derive(Clone)]
 enum QueuedInput {
     Lisp(Value),
-    Mouse(RawMouseInput),
 }
 
 impl QueuedInput {
-    /// keyboard.c:make_lispy_event is shared by command-loop reads and
-    /// Lisp read-event/read-char. A timer's timed read must receive the
-    /// same click so sit-for can put it back on unread-command-events.
-    fn into_lisp(self, interpreter: &mut Interpreter) -> Option<Value> {
-        match self {
-            Self::Lisp(event) => Some(event),
-            Self::Mouse(raw) => synthesize_mouse_event(interpreter, raw),
-        }
+    /// keyboard.c:make_lispy_event: the event as Lisp reads it.
+    fn into_lisp(self, _interpreter: &mut Interpreter) -> Option<Value> {
+        let Self::Lisp(event) = self;
+        Some(event)
     }
 }
 
-#[derive(Clone, Copy)]
-struct RawMouseInput {
-    button: i64,
-    modifiers: i64,
-    column: u16,
-    row: u16,
-    press: bool,
+thread_local! {
+    /// gobble_input's -2 for the controlling terminal: its device
+    /// terminated, and the command loop ends.
+    static TERMINAL_GONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(Clone, Default)]
 struct SharedEventQueue(std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<QueuedInput>>>);
 
 impl SharedEventQueue {
-    /// Whether an event can be delivered without blocking.  Redisplay is
-    /// skipped while input is pending, GNU's redisplay preemption: a burst
-    /// of keys paints once at the end, and scrolling recenters against the
-    /// final point, not each intermediate one.
+    /// keyboard.c's readable_events: the keyboard buffer holds an event.
+    /// Redisplay is skipped while input is pending, GNU's redisplay
+    /// preemption: a burst of keys paints once at the end, and scrolling
+    /// recenters against the final point, not each intermediate one.
     fn input_pending(&self) -> bool {
         !self.0.borrow().is_empty()
-            || event::poll(std::time::Duration::from_millis(0)).unwrap_or(false)
     }
 
-    /// Drop every event already read from the terminal: the queued ones
-    /// and those the terminal has ready, which read_avail_input would
-    /// already hold in GNU's keyboard buffer.
+    /// Fdiscard_input: the keyboard buffer emptied, and the input the
+    /// terminal still holds with it (discard_tty_input's TCIFLUSH).
     fn discard(&self) {
         self.0.borrow_mut().clear();
-        while event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
-            if event::read().is_err() {
+    }
+
+    /// The next event in the keyboard buffer (kbd_fetch_ptr).
+    fn pop(&self) -> Option<QueuedInput> {
+        self.0.borrow_mut().pop_front()
+    }
+
+    /// keyboard.c:tty_read_avail_input: the bytes the terminal holds
+    /// (FIONREAD's count, at most KBD_BUFFER_SIZE - 1), each an
+    /// ASCII_KEYSTROKE_EVENT whose 8th bit the terminal's meta mode makes
+    /// Meta or strips, stored with kbd_buffer_store_event; input that
+    /// follows a quit character too closely is not looked at.  How many
+    /// bytes it read, -2 when the terminal device is gone.
+    fn read_avail_input(
+        &self,
+        interpreter: &mut Interpreter,
+        env: &mut Env,
+        fd: std::os::fd::RawFd,
+    ) -> i32 {
+        let bytes = match sysdep::read_available(fd) {
+            sysdep::TtyRead::Gone => {
+                TERMINAL_GONE.set(true);
+                return -2;
+            }
+            sysdep::TtyRead::Bytes(bytes) => bytes,
+        };
+        if bytes.is_empty() {
+            return 0;
+        }
+        // The events' frame is the terminal's top frame: one that is not
+        // the frame of the last event is a switch-frame first.
+        if crate::lisp::eval::terminal::secondary_output_active()
+            && let Some(frame) = crate::lisp::eval::terminal::primary_top_frame()
+        {
+            self.0
+                .borrow_mut()
+                .push_back(QueuedInput::Lisp(Value::list([
+                    Value::symbol("switch-frame"),
+                    Value::Frame(frame),
+                ])));
+        }
+        let meta_key = crate::lisp::primitives::tty_input_modes().map_or(1, |modes| modes.meta_key);
+        for &byte in &bytes {
+            let mut code = i64::from(byte);
+            let mut modifiers = 0;
+            if meta_key == 1 && byte & 0x80 != 0 {
+                modifiers = CHAR_META;
+            }
+            if meta_key < 2 {
+                code &= !0x80;
+            }
+            // make_lispy_event: a capital letter in a chord with no shift
+            // came from caps lock, and is un-capitalized.
+            let mut char_code = code;
+            if modifiers != 0 && (i64::from(b'A')..=i64::from(b'Z')).contains(&char_code) {
+                char_code += 32;
+            }
+            let event = Value::Integer(char_code | modifiers);
+            if crate::lisp::primitives::kbd_buffer_store_event(interpreter, env, Some(&event)) {
+                self.0.borrow_mut().push_back(QueuedInput::Lisp(event));
+            }
+            // Don't look at input that follows a C-g too closely.
+            if code == crate::lisp::primitives::quit_char() {
                 break;
             }
         }
+        bytes.len() as i32
     }
 
-    /// Pop an event without blocking: a queued one, or whatever the
-    /// terminal has ready.  `Err' means the terminal is gone.
-    fn try_next_event(&self) -> Result<Option<QueuedInput>, ()> {
-        if let Some(event) = self.0.borrow_mut().pop_front() {
-            return Ok(Some(event));
+    /// keyboard.c:read_decoded_event_from_main_queue for FIRST, an event
+    /// just taken from the keyboard buffer: on the terminal, unless the
+    /// read takes events raw (PREV_EVENT t), the bytes of a sequence the
+    /// terminal's `keyboard-coding-system' encodes are gathered (the next
+    /// ones waited for) and decoded, the 8th bit made Meta after decoding
+    /// for the `encoded' meta mode; the first character is the event, the
+    /// rest `unread-command-events'.
+    fn decode_event(&self, interpreter: &mut Interpreter, env: &mut Env, first: Value) -> Value {
+        if crate::lisp::primitives::raw_event_read() {
+            return first;
         }
-        while event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
-            let Ok(event) = event::read() else {
-                return Err(());
-            };
-            match event {
-                Event::Key(key) => {
-                    let mut events = encode_key(key);
-                    if events.is_empty() {
-                        continue;
-                    }
-                    if crate::lisp::eval::terminal::secondary_output_active()
-                        && let Some(frame) = crate::lisp::eval::terminal::primary_top_frame()
-                    {
-                        events.insert(
-                            0,
-                            Value::list([Value::symbol("switch-frame"), Value::Frame(frame)]),
-                        );
-                    }
-                    let first = events.remove(0);
-                    self.0
-                        .borrow_mut()
-                        .extend(events.into_iter().map(QueuedInput::Lisp));
-                    return Ok(Some(QueuedInput::Lisp(first)));
-                }
-                Event::Mouse(mouse) => {
-                    if let Some(raw) = encode_mouse(mouse) {
-                        return Ok(Some(QueuedInput::Mouse(raw)));
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok(None)
-    }
-
-    /// Pop the next event, blocking on the terminal when empty.  Returns
-    /// `None' only on terminal loss.
-    fn next_event(&self) -> Option<QueuedInput> {
-        if let Some(event) = self.0.borrow_mut().pop_front() {
-            return Some(event);
-        }
+        let Some(modes) = crate::lisp::primitives::tty_input_modes() else {
+            return first;
+        };
+        let meta_key = modes.meta_key;
+        let Some(decoding) = keyboard_decoding(interpreter) else {
+            return first;
+        };
+        let byte_limit = if meta_key == 1 { 0x80 } else { 0x100 };
+        let fixnat_byte = |event: &Value| match event.kind() {
+            Kind::Integer(code) if (0..byte_limit).contains(&code) => Some(code),
+            _ => None,
+        };
+        const MAX_ENCODED_BYTES: usize = 16;
+        let mut events = vec![first];
         loop {
-            let Ok(event) = event::read() else {
-                return None;
-            };
-            match event {
-                Event::Key(key) => {
-                    let mut events = encode_key(key);
-                    if events.is_empty() {
-                        continue;
+            let last = *events.last().expect("an event at least");
+            if fixnat_byte(&last).is_none() {
+                break;
+            }
+            match &decoding {
+                KeyboardDecoding::RawText => {
+                    if meta_key != 2 {
+                        for event in &mut events {
+                            if let Kind::Integer(c) = event.kind() {
+                                let modifier = if meta_key == 3 && c < 0x100 && c & 0x80 != 0 {
+                                    CHAR_META
+                                } else {
+                                    0
+                                };
+                                *event = Value::Integer((c & !0x80) | modifier);
+                            }
+                        }
                     }
-                    if crate::lisp::eval::terminal::secondary_output_active()
-                        && let Some(frame) = crate::lisp::eval::terminal::primary_top_frame()
+                    break;
+                }
+                KeyboardDecoding::Coding { coding, utf8 } => {
+                    let mut src: Vec<u8> = events
+                        .iter()
+                        .filter_map(|event| fixnat_byte(event).map(|code| code as u8))
+                        .collect();
+                    if meta_key < 2 {
+                        for byte in &mut src {
+                            *byte &= !0x80;
+                        }
+                    }
+                    // The encoded sequence is incomplete: read on.
+                    if *utf8
+                        && events.len() < MAX_ENCODED_BYTES
+                        && std::str::from_utf8(&src)
+                            .err()
+                            .is_some_and(|error| error.error_len().is_none())
                     {
-                        events.insert(
-                            0,
-                            Value::list([Value::symbol("switch-frame"), Value::Frame(frame)]),
-                        );
+                        match self.next_raw_event(interpreter, env) {
+                            RawNext::Event(next) => {
+                                events.push(next);
+                                continue;
+                            }
+                            RawNext::Quit => {
+                                return self.quit_thrown_mid_sequence(interpreter, env, first);
+                            }
+                            RawNext::Ended => break,
+                        }
                     }
-                    let first = events.remove(0);
-                    self.0
-                        .borrow_mut()
-                        .extend(events.into_iter().map(QueuedInput::Lisp));
-                    return Some(QueuedInput::Lisp(first));
-                }
-                Event::Mouse(mouse) => {
-                    if let Some(raw) = encode_mouse(mouse) {
-                        return Some(QueuedInput::Mouse(raw));
+                    // decode_coding_c_string: the bytes as a unibyte
+                    // string decoded, a byte no character takes an
+                    // eight-bit one.
+                    let unibyte = crate::lisp::primitives::bytes_to_shared_unibyte_value(&src);
+                    let Ok(decoded) = crate::lisp::primitives::coding::decode_coding_text(
+                        interpreter,
+                        &unibyte,
+                        Some(coding),
+                        None,
+                        false,
+                        false,
+                        env,
+                    ) else {
+                        break;
+                    };
+                    let Some(decoded) = crate::lisp::primitives::string_like(&decoded) else {
+                        break;
+                    };
+                    events = decoded
+                        .character_codes()
+                        .into_iter()
+                        .map(|c| {
+                            if meta_key == 3 && c < 0x100 && c & 0x80 != 0 {
+                                Value::Integer((c & !0x80) | CHAR_META)
+                            } else {
+                                Value::Integer(c)
+                            }
+                        })
+                        .collect();
+                    if events.is_empty() {
+                        return first;
                     }
+                    break;
                 }
-                _ => {}
             }
         }
+        // Only one event can be returned: the others for later.
+        if events.len() > 1 {
+            // nconc2 (Flist (n - 1, events + 1), Vunread_command_events).
+            let rest: Vec<Value> = events.drain(1..).collect();
+            crate::lisp::primitives::prepend_unread_command_events(interpreter, env, &rest);
+        }
+        events[0]
+    }
+
+    /// The next event of a sequence being decoded: the keyboard buffer's,
+    /// waited for until the read's END_TIME (read_event_from_main_queue);
+    /// a quit thrown to read_char while it waits; or the wait's end.
+    fn next_raw_event(&self, interpreter: &mut Interpreter, env: &mut Env) -> RawNext {
+        loop {
+            if let Some(QueuedInput::Lisp(event)) = self.pop() {
+                return RawNext::Event(event);
+            }
+            if TERMINAL_GONE.get() {
+                return RawNext::Ended;
+            }
+            let end_time = crate::lisp::primitives::tty_read_end_time();
+            match crate::lisp::primitives::kbd_buffer_get_event_wait(
+                interpreter,
+                env,
+                end_time,
+                true,
+            ) {
+                Ok(crate::lisp::primitives::KbdWait::Ready) if self.input_pending() => {}
+                Ok(crate::lisp::primitives::KbdWait::Quit) => return RawNext::Quit,
+                _ => return RawNext::Ended,
+            }
+        }
+    }
+
+    /// read_char's setjmp when a quit is thrown to it in the middle of an
+    /// encoded sequence: the bytes read so far are gone; the quit
+    /// character is the event (under `inhibit-quit' its quit not reported
+    /// again), unless `quit-flag' holds `throw-on-input', when read_char
+    /// reads again.
+    fn quit_thrown_mid_sequence(
+        &self,
+        interpreter: &mut Interpreter,
+        env: &mut Env,
+        first: Value,
+    ) -> Value {
+        let throw_on_input = interpreter.throw_on_input_value();
+        if crate::lisp::types::eq(interpreter.quit_flag_value(), throw_on_input) {
+            return match self.next_raw_event(interpreter, env) {
+                RawNext::Event(event) => self.decode_event(interpreter, env, event),
+                RawNext::Quit | RawNext::Ended => first,
+            };
+        }
+        if interpreter.inhibit_quit_is_truthy() {
+            interpreter.set_c_variable("quit-flag", Value::Nil);
+        }
+        Value::Integer(crate::lisp::primitives::quit_char())
     }
 }
 
-/// Blocking single-event reader for command code that pulls events itself.
-/// The echo area is repainted before blocking so a prompt just issued with
-/// `message' (y-or-n-p's protocol) is visible while the terminal waits.
-/// C-g is answered as the event it is: read_char's caller decides whether
-/// it quits.
-fn make_event_reader(
-    queue: SharedEventQueue,
-    state: std::rc::Rc<std::cell::RefCell<TtyState>>,
-) -> crate::lisp::primitives::TtyEventReader {
-    Box::new(move |interpreter| {
-        draw_echo_row(interpreter, &state);
-        loop {
-            let input = queue.next_event()?;
-            if let Ok(mut state) = state.try_borrow_mut() {
-                state.note_input();
-            }
-            if let Some(event) = input.into_lisp(interpreter) {
-                return Some(event);
-            }
-        }
-    })
+/// What waiting for an encoded sequence's next byte came to.
+enum RawNext {
+    Event(Value),
+    /// quit_throw_to_read_char.
+    Quit,
+    /// The read's end time, or the terminal's loss.
+    Ended,
 }
 
-/// The polling companion waits briefly when the terminal is quiet so Lisp
-/// readers can service timers between polls.
+/// lisp.h's CHAR_META: the Meta modifier bit of a character event.
+const CHAR_META: i64 = 0x0800_0000;
+
+/// How read_decoded_event_from_main_queue decodes the terminal's input.
+enum KeyboardDecoding {
+    /// raw_text_coding_system_p: only the meta mode's 8th bit.
+    RawText,
+    /// decode_coding_c_string by CODING; UTF8 when an incomplete sequence
+    /// can be told (and read on).
+    Coding { coding: String, utf8: bool },
+}
+
+/// The selected frame's terminal keyboard coding, when it requires
+/// decoding (CODING_REQUIRE_DECODING_MASK): None for `no-conversion' and
+/// the raw-text of Unix line ends.
+fn keyboard_decoding(interpreter: &Interpreter) -> Option<KeyboardDecoding> {
+    let coding = interpreter
+        .terminal_state(interpreter.selected_terminal_id())
+        .and_then(|terminal| terminal.keyboard_coding.clone())?;
+    let kind = interpreter.coding_system_kind_name(&coding)?;
+    match kind.as_str() {
+        // setup_coding_system: raw-text (no-conversion among them) needs
+        // decoding only for an eol type other than unix.
+        "raw-text" => {
+            let unix = interpreter.coding_spec_index(&coding).is_some_and(|spec| {
+                interpreter.coding_specs[spec]
+                    .eol_type
+                    .is_key(cached_symbol!("unix"))
+            });
+            (!unix).then_some(KeyboardDecoding::RawText)
+        }
+        _ => Some(KeyboardDecoding::Coding {
+            utf8: kind == "utf-8",
+            coding,
+        }),
+    }
+}
+
+/// The keyboard buffer's next event for command code that pulls events
+/// itself (`y-or-n-p', `read-event'): kbd_buffer_get_event's fetch, which
+/// keyboard.c's wait (kbd_buffer_get_event_wait) fills.  The echo area is
+/// repainted first so a prompt just issued with `message' (y-or-n-p's
+/// protocol) is visible while the read waits.  `Some(None)' is an empty
+/// buffer; `None' never comes back, the terminal's loss being gobble_input's.
 fn make_event_poller(
     queue: SharedEventQueue,
     state: std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) -> crate::lisp::primitives::TtyEventPoller {
     Box::new(move |interpreter| {
         draw_echo_row(interpreter, &state);
-        match queue.try_next_event() {
-            Err(()) => None,
-            Ok(Some(input)) => {
-                if let Ok(mut state) = state.try_borrow_mut() {
-                    state.note_input();
-                }
-                Some(input.into_lisp(interpreter))
+        // gobble_input's -2: the terminal device terminated.
+        if TERMINAL_GONE.get() && !queue.input_pending() {
+            return None;
+        }
+        while let Some(input) = queue.pop() {
+            if let Ok(mut state) = state.try_borrow_mut() {
+                state.note_input();
             }
-            Ok(None) => {
-                let _ = event::poll(std::time::Duration::from_millis(50));
-                Some(None)
+            if let Some(event) = input.into_lisp(interpreter) {
+                return Some(Some(queue.decode_event(
+                    interpreter,
+                    &mut Env::new(),
+                    event,
+                )));
             }
         }
+        Some(None)
     })
+}
+
+/// A tty menu's read_menu_input: the keyboard buffer's next event, read
+/// as read_key_sequence's read_char waits for it, in kbd_buffer_get_event
+/// with DO_DISPLAY false (tty->showing_menu).  A quit is the quit
+/// character, `quit-flag' cleared as read_key_sequence clears it; None
+/// when the terminal is gone.
+fn menu_read_event(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    queue: &SharedEventQueue,
+) -> Result<Option<QueuedInput>, LispError> {
+    loop {
+        if let Some(QueuedInput::Lisp(event)) = queue.pop() {
+            return Ok(Some(QueuedInput::Lisp(queue.decode_event(
+                interpreter,
+                env,
+                event,
+            ))));
+        }
+        if TERMINAL_GONE.get() {
+            return Ok(None);
+        }
+        if crate::lisp::primitives::kbd_buffer_get_event_wait(interpreter, env, None, false)?
+            == crate::lisp::primitives::KbdWait::Quit
+        {
+            interpreter.set_c_variable("quit-flag", Value::Nil);
+            return Ok(Some(QueuedInput::Lisp(Value::Integer(7))));
+        }
+    }
 }
 
 /// Slice one unbounded echo paint into mini-window rows exactly as the
@@ -891,22 +1236,26 @@ fn wrapped_echo_cursor(
     )
 }
 
-/// The mini window's height ceiling, GNU's `max-mini-window-height'
-/// (default 0.25 of the frame).
-fn max_mini_window_rows(interpreter: &Interpreter, rows: usize) -> usize {
-    match interpreter
+/// The mini window's height ceiling, resize_mini_window's max_height:
+/// `max-mini-window-height' of a float times FRAME_INNER_HEIGHT (the rows
+/// below the menu and tab bars, INNER_ROWS), of an integer that many
+/// lines, else a quarter of the inner height, clipped to between one
+/// line and the inner height; the window tree above keeps two rows of
+/// the frame's ROWS.
+fn max_mini_window_rows(interpreter: &Interpreter, inner_rows: usize, rows: usize) -> usize {
+    let max_height = match interpreter
         .lookup_var_key(
             cached_symbol!("max-mini-window-height"),
             &crate::lisp::types::Env::new(),
         )
         .map(|v| v.kind())
     {
-        Some(Kind::Integer(lines)) if lines > 0 => (lines as usize).min(rows.saturating_sub(2)),
-        Some(Kind::Float(fraction)) if fraction.get() > 0.0 => {
-            (((rows as f64) * fraction.get()) as usize).clamp(1, rows.saturating_sub(2))
-        }
-        _ => ((rows as f64 * 0.25) as usize).clamp(1, rows.saturating_sub(2)),
-    }
+        Some(Kind::Float(fraction)) => (fraction.get() * inner_rows as f64) as i64,
+        Some(Kind::Integer(lines)) => lines,
+        _ => (inner_rows / 4) as i64,
+    };
+    let max_height = max_height.clamp(1, (inner_rows as i64).max(1)) as usize;
+    max_height.min(rows.saturating_sub(2)).max(1)
 }
 
 /// Paint the echo area through the same character and face translation as
@@ -925,20 +1274,15 @@ fn draw_echo_row_composed(
     if state.minibuffer_owns_echo {
         return;
     }
-    let frontend_echo = state.echo.clone();
-    let cols = cols.max(10) as usize;
+    let cols = usize::from(cols.max(1));
+    let rows = usize::from(rows.max(1));
     let max_rows = state.echo_max_rows.max(1);
-    let (long, _, echo_cursor) = compose_echo_row(
-        interpreter,
-        env,
-        &frontend_echo,
-        cols * max_rows,
-        &mut state.face_cache,
-    );
+    let (long, _, echo_cursor) =
+        compose_echo_row(interpreter, env, cols * max_rows, &mut state.face_cache);
     let mut echo_paint = wrap_echo_paint(&long, cols, max_rows);
     let mut mini_rows = state.echo_rows.max(1);
     if echo_paint.len() > mini_rows {
-        for row in (rows.max(4) as usize).saturating_sub(echo_paint.len())..(rows.max(4) as usize) {
+        for row in rows.saturating_sub(echo_paint.len())..rows {
             if row < state.painted_rows.len() {
                 state.painted_rows[row] = PaintRow::unpainted();
             }
@@ -948,7 +1292,7 @@ fn draw_echo_row_composed(
     }
     echo_paint.resize(mini_rows, PaintRow::blank(cols));
     encode_terminal_cells(interpreter, &mut echo_paint);
-    let base = (rows.max(4) as usize).saturating_sub(mini_rows);
+    let base = rows.saturating_sub(mini_rows);
     let mut out = terminal_output();
     for (index, echo_row) in echo_paint.iter().enumerate() {
         let _ = paint_row(&mut out, base + index, echo_row);
@@ -962,7 +1306,7 @@ fn draw_echo_row_composed(
             out,
             cursor::MoveTo(
                 col.min(cols.saturating_sub(1)) as u16,
-                (base + row).min(rows.saturating_sub(1) as usize) as u16,
+                (base + row).min(rows.saturating_sub(1)) as u16,
             ),
             cursor::Show,
         );
@@ -988,307 +1332,6 @@ fn draw_echo_row(interpreter: &mut Interpreter, state: &std::rc::Rc<std::cell::R
     draw_echo_row_composed(interpreter, &mut Env::new(), state);
 }
 
-fn command_loop(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    queue: &SharedEventQueue,
-    shared_state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
-) -> Result<i32, String> {
-    let mut reader: Option<crate::lisp::primitives::KeySequenceReader> = None;
-    crate::lisp::primitives::command_loop_entry(interpreter, env)
-        .map_err(|error| error.to_string())?;
-    loop {
-        // keyboard.c's command_loop_1 reselects the selected window's
-        // buffer at the top of every command cycle.  A display action can
-        // replace the selected window's buffer while `save-current-buffer'
-        // restores the command's former current buffer (Magit does exactly
-        // this when opening a log).  Key lookup and the next command must
-        // operate in what the selected window shows, not that stale buffer.
-        select_command_loop_buffer(interpreter).map_err(|error| error.to_string())?;
-        if reader.is_none() {
-            crate::lisp::primitives::clear_this_command(interpreter, env);
-        }
-        // GNU redisplays only when the input queue is quiet; a key burst
-        // paints once at the end.
-        if !queue.input_pending() {
-            let mut state = shared_state.borrow_mut();
-            redraw_at_command_boundary(interpreter, env, &mut state)
-                .map_err(|error| error.to_string())?;
-        }
-        // GNU fires ripe timers while the loop waits for input
-        // (keyboard.c's timer_check): isearch's lazy highlight and every
-        // other timer-driven update land between keystrokes.  A timer
-        // that ran gets its work repainted before the wait resumes.
-        let mut idle_since: Option<std::time::Instant> = None;
-        let event = loop {
-            // GNU's read_char consumes `unread-command-events' before the
-            // terminal: an event a command read and pushed back (subr.el's
-            // sit-for) re-enters the key stream here.
-            if let Some(event) =
-                crate::lisp::primitives::take_unread_command_event(interpreter, env)
-            {
-                break QueuedInput::Lisp(event);
-            }
-            match queue.try_next_event() {
-                Err(()) => return Ok(0),
-                Ok(Some(event)) => {
-                    interpreter.keyboard_input.last_event_reread = false;
-                    break event;
-                }
-                Ok(None) => {}
-            }
-            // Entering the wait means Emacs is idle: keyboard.c's
-            // timer_start_idle marks every idle timer runnable again
-            // (once per idle period) and starts the `current-idle-time'
-            // clock.
-            if idle_since.is_none() {
-                crate::lisp::primitives::tty_note_idle_start(interpreter, env);
-            }
-            idle_since.get_or_insert_with(std::time::Instant::now);
-            match interpreter
-                .service_async_runtime_events(env, true, None)
-                .map_err(LispError::into_kind)
-            {
-                Ok(true) => {
-                    let mut state = shared_state.borrow_mut();
-                    let _ = redraw(interpreter, env, &mut state);
-                }
-                Ok(false) => {}
-                Err(LispErrorKind::Terminate(termination)) => {
-                    return Ok(termination.exit_code);
-                }
-                Err(error) => {
-                    let text =
-                        command_error_text(interpreter, env, &LispError::from(error.clone()));
-                    crate::lisp::primitives::set_echo_area_message(Some(text));
-                    let mut state = shared_state.borrow_mut();
-                    let _ = redraw(interpreter, env, &mut state);
-                }
-            }
-            // keyboard.c's kbd_buffer_get_event blocks inside
-            // wait_reading_process_output (READ_KBD -1, do_display set):
-            // subprocess output reaches filters and sentinels while the
-            // loop waits for a key, and a delivery repaints the glass,
-            // process.c's redisplay_preserve_echo_area.  Process output
-            // does not end the idle period; only keyboard input does.
-            match pump_processes_during_wait(interpreter, env).map_err(LispError::into_kind) {
-                Ok(true) => {
-                    let mut state = shared_state.borrow_mut();
-                    let _ = redraw(interpreter, env, &mut state);
-                }
-                Ok(false) => {}
-                Err(LispErrorKind::Terminate(termination)) => {
-                    return Ok(termination.exit_code);
-                }
-                Err(_) => {}
-            }
-            let _ = event::poll(std::time::Duration::from_millis(50));
-        };
-        // Input arrived: the idle period is over (timer_stop_idle).
-        crate::lisp::primitives::tty_note_idle_end();
-        shared_state.borrow_mut().note_input();
-        // Typed mouse input becomes GNU's click event now that the frame
-        // state is in reach; motion and wheel produce nothing.
-        let Some(event) = event.into_lisp(interpreter) else {
-            continue;
-        };
-        // read_char wipes a lingering message the moment any input event
-        // arrives — sequences and silently-discarded button-downs
-        // included; the glass catches up at the next redisplay.
-        crate::lisp::primitives::expire_echo_area_message();
-        if event
-            .car()
-            .ok()
-            .and_then(|value| value.symbol_str().map(str::to_owned))
-            .as_deref()
-            == Some("switch-frame")
-        {
-            crate::lisp::primitives::call(interpreter, "handle-switch-frame", &[event], env)
-                .map_err(|error| error.to_string())?;
-            shared_state
-                .borrow_mut()
-                .activate_terminal(interpreter.selected_terminal_id());
-            continue;
-        }
-        // The state borrow is scoped: `execute_binding' below may re-enter
-        // redisplay through the minibuffer's frame-redraw hook, and
-        // resolution itself can run the whole dropdown executor (a
-        // keymap-bound mouse click pops it), both of which borrow the
-        // same cell.
-        if reader.is_none() {
-            let state = &mut *shared_state.borrow_mut();
-            if !state.prefix_active {
-                state.echo.clear();
-            }
-        }
-        let resolution = (|| {
-            if reader.is_none() {
-                reader = Some(crate::lisp::primitives::KeySequenceReader::new(
-                    interpreter,
-                    Value::Nil,
-                    env,
-                )?);
-            }
-            reader
-                .as_mut()
-                .expect("active key reader")
-                .read_event(interpreter, event, env)
-        })();
-        let resolution = match resolution.map_err(LispError::into_kind) {
-            Ok(resolution) => resolution,
-            Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
-            Err(error) => {
-                let text = command_error_text(interpreter, env, &LispError::from(error.clone()));
-                crate::lisp::primitives::set_echo_area_message(Some(text));
-                reader = None;
-                continue;
-            }
-        };
-        let active = reader.as_ref().expect("active key reader");
-        let original = active.command_binding();
-        debug_log(&format!(
-            "keys {:?} -> {}",
-            describe_keys(active.keys()),
-            match &resolution {
-                Resolution::Command(binding) => format!("command {binding}"),
-                Resolution::Prefix => "prefix".to_string(),
-                Resolution::Undefined => "undefined".to_string(),
-            }
-        ));
-        let binding = match resolution {
-            Resolution::Command(binding) => binding,
-            Resolution::Prefix => {
-                let mut state = shared_state.borrow_mut();
-                if active.keys().is_empty() {
-                    state.echo.clear();
-                } else {
-                    state.echo = format!("{}-", describe_keys(active.keys()));
-                }
-                continue;
-            }
-            // An undefined key sequence is a nil command, which
-            // command_loop_1 runs as `undefined' once `pre-command-hook'
-            // has run.
-            Resolution::Undefined => Value::Nil,
-        };
-        if !shared_state.borrow().prefix_active {
-            shared_state.borrow_mut().echo.clear();
-        }
-        let keys = reader
-            .take()
-            .expect("completed key reader")
-            .finish(interpreter, false, env);
-        let last_event = keys.last().cloned().unwrap_or(Value::Nil);
-        let command_error = match crate::lisp::primitives::execute_read_key_command_binding(
-            interpreter,
-            env,
-            original,
-            binding,
-            &keys,
-            last_event,
-        )
-        .map_err(LispError::into_kind)
-        {
-            Ok(()) => None,
-            Err(LispErrorKind::Terminate(termination)) => {
-                return Ok(termination.exit_code);
-            }
-            Err(error) => {
-                debug_log(&format!("command error: {error:?}"));
-                if std::env::var_os("EMAXX_TTY_LOG").is_some() {
-                    for (_, function, args, _) in
-                        interpreter.backtrace_frames_snapshot().iter().take(12)
-                    {
-                        debug_log(&format!("  frame: {function} nargs={}", args.len()));
-                    }
-                }
-                match settle_command_error(interpreter, env, error) {
-                    Ok(text) => text,
-                    Err(termination) => return Ok(termination.exit_code),
-                }
-            }
-        };
-        if let Some(termination) = interpreter.take_pending_termination() {
-            return Ok(termination.exit_code);
-        }
-        // A prefix command (simple.el's universal-argument family) left
-        // an accumulating prefix-arg behind: keep echoing the chain,
-        // GNU's echo_keystrokes display of the pending prefix keys.
-        // Any other command consumes the chain and its echo.
-        let prefix_pending = interpreter
-            .lookup_var_key(cached_symbol!("prefix-arg"), env)
-            .is_some_and(|prefix| prefix.is_truthy());
-        {
-            let state = &mut *shared_state.borrow_mut();
-            if prefix_pending {
-                state.echo = append_prefix_echo(&state.echo, &describe_keys(&keys));
-                state.prefix_active = true;
-            } else {
-                state.prefix_active = false;
-                state.echo.clear();
-            }
-            if let Some(text) = command_error {
-                state.echo = text;
-            }
-            // A blocking reader may have painted the echo row outside the
-            // matrix; repaint it against fresh state next frame.
-            state.painted_echo = Vec::new();
-        }
-    }
-}
-
-/// keyboard.c's command_loop around a command that left with ERROR: a
-/// `top-level' throw re-enters command_loop_1; anything else (an
-/// unmatched throw's no-catch among them) goes to command_loop_2's
-/// handler, cmd_error, which reports it through `command-error-function',
-/// and command_loop_1 is then entered again: the post-command hooks with
-/// `this-command' still the command's, then `last-command'.  The text to
-/// echo when reporting failed in turn; the termination that ends the
-/// session.
-fn settle_command_error(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    error: LispErrorKind,
-) -> Result<Option<String>, crate::lisp::types::EmacsTermination> {
-    let top_level = matches!(
-        &error,
-        LispErrorKind::Throw(tag, _)
-            if crate::lisp::types::eq_symbol_named(tag, "top-level")
-    );
-    let error = LispError::from(error);
-    let reported = if top_level {
-        Ok(())
-    } else {
-        crate::lisp::primitives::cmd_error(interpreter, env, &error)
-    };
-    match reported
-        .and_then(|()| crate::lisp::primitives::command_loop_entry(interpreter, env))
-        .map_err(LispError::into_kind)
-    {
-        Ok(()) => Ok(None),
-        Err(LispErrorKind::Terminate(termination)) => Err(termination),
-        Err(error) => Ok(Some(command_error_text(
-            interpreter,
-            env,
-            &LispError::from(error),
-        ))),
-    }
-}
-
-/// keyboard.c:command_loop_1's `set_buffer_internal (XBUFFER (XWINDOW
-/// (selected_window)->contents))'.  A deleted selected window's nil
-/// contents have no XBUFFER (GNU's checking build aborts there); the
-/// current buffer stays.
-fn select_command_loop_buffer(interpreter: &mut Interpreter) -> Result<(), LispError> {
-    if let Some(selected_buffer) = interpreter.selected_window_contents_buffer_id()
-        && selected_buffer != interpreter.current_buffer_id()
-        && interpreter.has_buffer_id(selected_buffer)
-    {
-        interpreter.set_current_buffer_id(selected_buffer)?;
-    }
-    Ok(())
-}
-
 use crate::lisp::primitives::KeyResolution as Resolution;
 
 #[cfg(test)]
@@ -1304,271 +1347,92 @@ fn resolve_pending(interpreter: &mut Interpreter, env: &mut Env, pending: &[Valu
     resolution
 }
 
+/// KEYS (a Lisp sequence of events) read by a recursive edit's command
+/// loop, which returns when they run out; FORM, evaluated in
+/// `post-command-hook' after each command and once at the loop's entry,
+/// gives the log, printed.
 #[cfg(test)]
-fn execute_binding(
+fn post_command_log(
     interpreter: &mut Interpreter,
     env: &mut Env,
-    binding: Value,
-    keys: &[Value],
-    last_event: Value,
+    keys: &str,
+    form: &str,
+) -> String {
+    let printed = crate::test_support::eval_lisp(
+        interpreter,
+        env,
+        // The recursive edit runs KEYS; without a keyboard read_char then
+        // waits, as GNU's does, so a timer ends it with a throw to `exit'
+        // once the keys are read and no command runs.
+        &format!(
+            "(let ((tty-test-log nil)
+                   (tty-test-exit
+                    (run-at-time 0 0.01
+                                 (lambda ()
+                                   (when (and (null unread-command-events) (null this-command))
+                                     (throw 'exit nil))))))
+               (unwind-protect
+                   (let ((post-command-hook (list (lambda () (push {form} tty-test-log))))
+                         (unread-command-events (append {keys} nil)))
+                     (recursive-edit))
+                 (cancel-timer tty-test-exit))
+               (prin1-to-string (reverse tty-test-log)))"
+        ),
+    )
+    .expect("the keys run");
+    crate::lisp::primitives::string_like(&printed)
+        .expect("a string")
+        .text
+}
+
+// ── The terminal's setup ───────────────────────────────────────────────
+
+/// term.c:fatal (vfatal): "emacs: " and MESSAGE on stderr, a newline
+/// unless it ends in one, and exit status 1, nothing else run.
+fn fatal(message: &str) -> ! {
+    eprint!("emacs: {message}");
+    if !message.ends_with('\n') {
+        eprintln!();
+    }
+    std::process::exit(1)
+}
+
+/// The strings tty_set_terminal_modes and tty_reset_terminal_modes write,
+/// from the terminal's termcap entry.
+fn terminal_mode_strings(
+    termcap: &crate::lisp::eval::terminal::Termcap,
+) -> sysdep::TerminalModeStrings {
+    sysdep::TerminalModeStrings {
+        termcap_modes: termcap.termcap_modes.clone(),
+        end_termcap_modes: termcap.end_termcap_modes.clone(),
+        keypad_mode: termcap.keypad_mode.clone(),
+        end_keypad_mode: termcap.end_keypad_mode.clone(),
+        cursor_visible: termcap.cursor_visible.clone(),
+        cursor_normal: termcap.cursor_normal.clone(),
+        orig_pair: termcap.orig_pair.clone(),
+    }
+}
+
+/// term.c:term_get_fkeys for the controlling terminal: each function key
+/// its termcap entry names, KEYS, defined in `input-decode-map', so
+/// read_key_sequence decodes the bytes the key sends.
+fn term_get_fkeys(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    keys: &[(Vec<u8>, String)],
 ) -> Result<(), LispError> {
-    crate::lisp::primitives::execute_command_binding(interpreter, env, binding, keys, last_event)
-}
-
-/// Extend the echoed `C-u' sequence: "C-u-" then "C-u 8-", GNU's prefix
-/// echo shape.
-fn append_prefix_echo(echo: &str, key: &str) -> String {
-    match echo.strip_suffix('-') {
-        Some(base) if !base.is_empty() => format!("{base} {key}-"),
-        _ => format!("{key}-"),
+    let map = interpreter
+        .lookup_var_key(cached_symbol!("input-decode-map"), env)
+        .unwrap_or(Value::Nil);
+    if map.is_nil() {
+        return Ok(());
     }
-}
-
-/// The echo-area text for a command's error, GNU's
-/// `error-message-string' rendering ("Quit", "Beginning of buffer", a
-/// user-error's own message).
-fn command_error_text(interpreter: &mut Interpreter, env: &mut Env, error: &LispError) -> String {
-    crate::lisp::primitives::command_error_echo_text(interpreter, env, error)
-}
-
-/// One pump of subprocess and network output for the key wait.
-/// process.c wraps every filter call (read_process_output_call under
-/// internal_condition_case_1) and sentinel call (exec_sentinel's
-/// handler) so an error reports to the echo area and the wait
-/// continues; only a termination unwinds the command loop.  Returns
-/// whether anything was delivered, which the caller repaints.
-fn pump_processes_during_wait(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    let mut progressed = false;
-    for outcome in [
-        crate::lisp::primitives::pump_external_process_output(interpreter, env),
-        crate::lisp::primitives::pump_connection_processes(interpreter, env),
-    ] {
-        match outcome.map_err(LispError::into_kind) {
-            Ok(pumped) => progressed |= pumped,
-            Err(error @ LispErrorKind::Terminate(_)) => return Err(LispError::from(error)),
-            Err(error) => {
-                let text = command_error_text(interpreter, env, &LispError::from(error.clone()));
-                crate::lisp::primitives::set_echo_area_message(Some(text));
-                progressed = true;
-            }
-        }
+    for (bytes, key) in keys {
+        let sequence = Value::string(&String::from_utf8_lossy(bytes));
+        let event = Value::vector([Value::symbol(key)]);
+        crate::lisp::primitives::call(interpreter, "define-key", &[map, sequence, event], env)?;
     }
-    Ok(progressed)
-}
-
-// ── Event encoding ──────────────────────────────────────────────────────
-
-/// A terminal mouse press or release as an internal raw token; the
-/// command loop turns it into GNU's click event shape once it can see
-/// the frame (term.c's GPM path builds tty mouse events at the same
-/// C layer).  The token never reaches Lisp.
-fn encode_mouse(mouse: event::MouseEvent) -> Option<RawMouseInput> {
-    use event::{MouseButton, MouseEventKind};
-    let (press, button) = match mouse.kind {
-        MouseEventKind::Down(button) => (true, button),
-        MouseEventKind::Up(button) => (false, button),
-        _ => return None,
-    };
-    let number = match button {
-        MouseButton::Left => 1,
-        MouseButton::Middle => 2,
-        MouseButton::Right => 3,
-    };
-    let mut modifier_bits = 0i64;
-    if mouse.modifiers.contains(KeyModifiers::CONTROL) {
-        modifier_bits |= 1;
-    }
-    if mouse.modifiers.contains(KeyModifiers::ALT) {
-        modifier_bits |= 2;
-    }
-    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
-        modifier_bits |= 4;
-    }
-    Some(RawMouseInput {
-        button: number,
-        modifiers: modifier_bits,
-        column: mouse.column,
-        row: mouse.row,
-        press,
-    })
-}
-
-/// Build GNU's click event from typed mouse input: (EVENT-SYMBOL POSN),
-/// posn being (FRAME menu-bar (X . Y) TIME) on the menu-bar row and
-/// (WINDOW POS (X . Y) TIME) with window-relative coordinates in a text
-/// area — the shapes xt-mouse.el and term.c's GPM support hand to the
-/// command loop.  POS stands in with the window's point: the tty layer
-/// has no per-cell buffer-position map yet, and the mouse consumers the
-/// frontend drives (menu-bar-open-mouse, keymap popups) read only the
-/// coordinates.
-fn synthesize_mouse_event(interpreter: &mut Interpreter, raw: RawMouseInput) -> Option<Value> {
-    let button = raw.button;
-    let modifier_bits = raw.modifiers;
-    let col = raw.column as i64;
-    let row = raw.row as i64;
-    let press = raw.press;
-    let mut name = String::new();
-    if modifier_bits & 2 != 0 {
-        name.push_str("M-");
-    }
-    if modifier_bits & 1 != 0 {
-        name.push_str("C-");
-    }
-    if modifier_bits & 4 != 0 {
-        name.push_str("S-");
-    }
-    if press {
-        name.push_str("down-");
-    }
-    name.push_str(&format!("mouse-{button}"));
-    // xt-mouse.el and keyboard.c:make_lispy_event publish this on the
-    // actual event symbol; readers consult it even after Lisp renaming.
-    interpreter.put_symbol_property(&name, "event-kind", Value::symbol("mouse-click"));
-
-    // Classify the click against the frame geometry used by its window
-    // tree, including while a Lisp reader owns the terminal input loop.
-    let menu_bar_rows = (interpreter.frame_height() - interpreter.frame_text_height()).clamp(0, 1);
-    let posn = if menu_bar_rows > 0 && row == 0 {
-        // xt-mouse builds the menu-bar posn with a nil window slot —
-        // menu-bar-open-mouse refuses events that sit inside a window.
-        Value::list([
-            Value::Nil,
-            Value::Symbol("menu-bar".into()),
-            Value::cons(Value::Integer(col), Value::Integer(0)),
-            Value::Integer(0),
-        ])
-    } else {
-        let layout = crate::lisp::primitives::window_render_layout(interpreter);
-        let window = layout.iter().find(|info| {
-            (info.left as i64) <= col
-                && col < (info.left + info.width) as i64
-                && (info.top as i64) <= row
-                && row < (info.top + info.height) as i64
-        })?;
-        let pos = if window.buffer_id == interpreter.current_buffer_id() {
-            interpreter.buffer.borrow().point()
-        } else {
-            interpreter
-                .get_buffer_by_id(window.buffer_id)
-                .map(|buffer| buffer.point())
-                .unwrap_or(1)
-        };
-        Value::list([
-            interpreter.record_value(window.window_id),
-            Value::Integer(pos as i64),
-            Value::cons(
-                Value::Integer(col - window.left as i64),
-                Value::Integer(row - window.top as i64),
-            ),
-            Value::Integer(0),
-        ])
-    };
-    Some(Value::list([Value::Symbol(name.into()), posn]))
-}
-
-/// Translate a terminal key event into GNU key events.  Meta becomes the
-/// ESC prefix so the runtime's standard `esc-map' resolves M- bindings, and
-/// control characters use their ASCII codes, exactly as a real tty delivers
-/// them to GNU.
-fn encode_key(key: KeyEvent) -> Vec<Value> {
-    let mut events = Vec::new();
-    if key.modifiers.contains(KeyModifiers::ALT) {
-        events.push(Value::Integer(27));
-    }
-    let control = key.modifiers.contains(KeyModifiers::CONTROL);
-    let base = match key.code {
-        KeyCode::Char(c) => {
-            if control {
-                match c {
-                    ' ' | '@' => Some(Value::Integer(0)),
-                    'a'..='z' => Some(Value::Integer((c as u8 - b'a' + 1) as i64)),
-                    'A'..='Z' => Some(Value::Integer((c as u8 - b'A' + 1) as i64)),
-                    '[' | '3' => Some(Value::Integer(27)),
-                    '\\' | '4' => Some(Value::Integer(28)),
-                    ']' | '5' => Some(Value::Integer(29)),
-                    '^' | '6' => Some(Value::Integer(30)),
-                    // Terminals send C-_ as 0x1f, which parsers report as
-                    // Ctrl plus any of these; C-2..C-8 follow xterm's
-                    // control-digit convention.
-                    '_' | '/' | '7' => Some(Value::Integer(31)),
-                    '?' | '8' => Some(Value::Integer(127)),
-                    '2' => Some(Value::Integer(0)),
-                    _ => Some(Value::Integer(c as i64)),
-                }
-            } else {
-                Some(Value::Integer(c as i64))
-            }
-        }
-        KeyCode::Enter => Some(Value::Integer(13)),
-        KeyCode::Tab => Some(Value::Integer(9)),
-        // term/xterm decodes `\e[Z' (kcbt) to the `backtab' function
-        // key; org's S-TAB global cycling lives on it.
-        KeyCode::BackTab => Some(Value::Symbol("backtab".into())),
-        KeyCode::Backspace => Some(Value::Integer(127)),
-        KeyCode::Esc => Some(Value::Integer(27)),
-        KeyCode::Up => Some(Value::Symbol("up".into())),
-        KeyCode::Down => Some(Value::Symbol("down".into())),
-        KeyCode::Left => Some(Value::Symbol("left".into())),
-        KeyCode::Right => Some(Value::Symbol("right".into())),
-        KeyCode::Home => Some(Value::Symbol("home".into())),
-        KeyCode::End => Some(Value::Symbol("end".into())),
-        KeyCode::PageUp => Some(Value::Symbol("prior".into())),
-        KeyCode::PageDown => Some(Value::Symbol("next".into())),
-        KeyCode::Delete => Some(Value::Symbol("deletechar".into())),
-        KeyCode::Insert => Some(Value::Symbol("insert".into())),
-        KeyCode::F(n) => Some(Value::Symbol(format!("f{n}").into())),
-        _ => None,
-    };
-    match base {
-        Some(event) => events.push(event),
-        None => events.clear(),
-    }
-    events
-}
-
-fn describe_keys(events: &[Value]) -> String {
-    let mut parts = Vec::new();
-    let mut meta = false;
-    for event in events {
-        match event.kind() {
-            Kind::Integer(27) => {
-                meta = true;
-                continue;
-            }
-            Kind::Integer(code) => parts.push(describe_char(code, meta)),
-            Kind::Symbol(name) => parts.push(if meta {
-                format!("M-<{name}>")
-            } else {
-                format!("<{name}>")
-            }),
-            other => parts.push(format!("{other}")),
-        }
-        meta = false;
-    }
-    if meta {
-        parts.push("ESC".to_string());
-    }
-    parts.join(" ")
-}
-
-fn describe_char(code: i64, meta: bool) -> String {
-    let prefix = if meta { "M-" } else { "" };
-    match code {
-        0 => format!("{prefix}C-SPC"),
-        9 => format!("{prefix}TAB"),
-        13 => format!("{prefix}RET"),
-        27 => format!("{prefix}ESC"),
-        32 => format!("{prefix}SPC"),
-        127 => format!("{prefix}DEL"),
-        1..=26 => format!("{prefix}C-{}", (b'a' + (code as u8 - 1)) as char),
-        28..=31 => format!("{prefix}C-{}", (b'\\' + (code as u8 - 28)) as char),
-        _ => char::from_u32(code as u32)
-            .map(|c| format!("{prefix}{c}"))
-            .unwrap_or_else(|| format!("{prefix}#{code}")),
-    }
+    Ok(())
 }
 
 // ── Redisplay ───────────────────────────────────────────────────────────
@@ -4311,21 +4175,6 @@ fn run_fontification_functions(
     }
 }
 
-fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) -> io::Result<()> {
-    redraw_with_echo_policy(interpreter, env, state, false)
-}
-
-/// The command loop's redraw: keyboard.c calls resize_echo_area_exactly
-/// between commands, so a displayed message shrinks the mini window
-/// back to the rows it needs (grow-only holds only within a command).
-fn redraw_at_command_boundary(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    state: &mut TtyState,
-) -> io::Result<()> {
-    redraw_with_echo_policy(interpreter, env, state, true)
-}
-
 fn redraw_with_echo_policy(
     interpreter: &mut Interpreter,
     env: &mut Env,
@@ -4333,17 +4182,29 @@ fn redraw_with_echo_policy(
     exact_echo: bool,
 ) -> io::Result<()> {
     state.activate_terminal(interpreter.selected_terminal_id());
+    // redisplay_internal: a frame the terminal did not show last is
+    // garbaged and its `tty-color-mode' set up; it paints with its
+    // terminal's colors.
+    interpreter.note_tty_frame_displayed(env);
+    set_paint_terminal(interpreter.selected_terminal_output());
+    // What a fatal signal resets the terminal with follows its size and
+    // `tty-mode-reset-strings' as of this update.
+    crate::lisp::primitives::refresh_emergency_reset();
     let (cols, rows) = crate::lisp::eval::terminal::output_size()?;
-    let cols = cols.max(10) as usize;
-    let rows = rows.max(4) as usize;
+    // The terminal's size as init_display accepted it (at least 3x3) or
+    // as a later SIGWINCH reported it: painted as it is, never widened.
+    let cols = usize::from(cols.max(1));
+    let rows = usize::from(rows.max(1));
     // The frame takes the terminal's size when the session starts on it
     // (init_display_interactive), and at the next redisplay after the
     // terminal changes size (handle_window_change_signal's delayed
     // change_frame_size); redisplay_internal first applies what is
     // pending, `menu-bar-lines' changes included.
+    // handle_window_change_signal takes a size only above 5x2; a
+    // smaller terminal leaves the frames their size.
     match state.terminal_size {
         None => interpreter.set_tty_frame_size(cols as i64, rows as i64),
-        Some(size) if size != (cols, rows) => {
+        Some(size) if size != (cols, rows) && cols > 5 && rows > 2 => {
             interpreter.tty_window_change(cols as i64, rows as i64)
         }
         Some(_) => {}
@@ -4353,21 +4214,19 @@ fn redraw_with_echo_policy(
     // The frame's size as it stands: set-frame-size can make it smaller
     // than the terminal, whose remaining rows and columns stay as they
     // were.
-    let cols = cols.min(interpreter.frame_width().max(10) as usize);
-    let rows = rows.min(interpreter.frame_height().max(4) as usize);
+    let cols = cols.min(interpreter.frame_width().max(1) as usize);
+    let rows = rows.min(interpreter.frame_height().max(1) as usize);
     run_pre_redisplay_function(interpreter, env);
     // Rows above the window tree belong to the frame's menu and tab bars.
     let menu_lines = crate::lisp::primitives::frame_top_margin(interpreter.selected_frame_id)
-        .clamp(0, rows as i64 - 2) as usize;
+        .clamp(0, (rows as i64 - 2).max(0)) as usize;
     // The mini window's height comes first: a tall message shrinks the
     // window tree above it (GNU's resize_mini_window, grow-only policy).
-    let max_mini = max_mini_window_rows(interpreter, rows);
+    let max_mini = max_mini_window_rows(interpreter, rows - menu_lines, rows);
     state.echo_max_rows = max_mini.max(1);
-    let frontend_echo_early = state.echo.clone();
     let (echo_long, echo_from_minibuffer, echo_cursor) = compose_echo_row(
         interpreter,
         env,
-        &frontend_echo_early,
         cols * max_mini.max(1),
         &mut state.face_cache,
     );
@@ -4409,37 +4268,47 @@ fn redraw_with_echo_policy(
     // Failures from the Lisp resizer are deliberately not propagated: the
     // render-level clamp below stays as the safety net when window.el's
     // resizer declines (grow_mini_window likewise gives up quietly when
-    // the root cannot shrink).
-    let _ = (|interpreter: &mut Interpreter, env: &mut Env| -> Result<(), LispError> {
-        let root = call(interpreter, env, "frame-root-window", &[])?;
-        let current = call(
-            interpreter,
-            env,
-            "window-total-height",
-            std::slice::from_ref(&root),
-        )?
-        .as_integer()?;
-        let delta = desired_root_height - current;
-        if delta == 0 {
-            return Ok(());
-        }
-        let recovered = call(
-            interpreter,
-            env,
-            "window--resize-root-window-vertically",
-            &[root, Value::Integer(delta), Value::T],
-        )?;
-        crate::lisp::primitives::apply_staged_root_window_height(
-            interpreter,
-            recovered.as_integer().unwrap_or(0),
-        )?;
-        Ok(())
-    })(interpreter, env);
+    // the root cannot shrink).  The window accessors are C calls in GNU,
+    // which take no quit: a pending C-g stays in `quit-flag' for the next
+    // quit check rather than being dropped with the error.
+    let _ = with_inhibit_quit(
+        interpreter,
+        env,
+        |interpreter, env| -> Result<(), LispError> {
+            let root = call(interpreter, env, "frame-root-window", &[])?;
+            let current = call(
+                interpreter,
+                env,
+                "window-total-height",
+                std::slice::from_ref(&root),
+            )?
+            .as_integer()?;
+            let delta = desired_root_height - current;
+            if delta == 0 {
+                return Ok(());
+            }
+            let recovered = call(
+                interpreter,
+                env,
+                "window--resize-root-window-vertically",
+                &[root, Value::Integer(delta), Value::T],
+            )?;
+            crate::lisp::primitives::apply_staged_root_window_height(
+                interpreter,
+                recovered.as_integer().unwrap_or(0),
+            )?;
+            Ok(())
+        },
+    );
     // xdisp.c:redisplay_internal runs the window change functions once
     // the mini window has its size; their errors are already muted.
     let _ = crate::lisp::primitives::run_window_change_functions(interpreter, env);
     let frame_rows = rows - state.echo_rows; // everything above the echo area
     let full_repaint = state.painted_size != (cols, rows);
+    // frame_garbaged: the terminal's screen is not what was painted (the
+    // modes reentered after a suspension, a SIGWINCH), so the whole frame
+    // is painted again (clear_garbaged_frames's redraw_frame).
+    let garbaged = crate::lisp::primitives::take_frame_garbaged();
     if full_repaint {
         // A resize changes the wrap geometry under every saved segment
         // index; re-anchor each window instead of trusting stale ones.
@@ -4452,6 +4321,41 @@ fn redraw_with_echo_policy(
     if full_repaint || face_changed {
         state.face_cache.clear();
         state.face_cache_generation = face_generation;
+    }
+    // The frame's default face (realize_basic_faces's DEFAULT_FACE_ID, no
+    // buffer's remapping), which every glyph's face is merged over, and
+    // the variables turn_on_face and realize_tty_face read.  A window
+    // whose buffer remaps `default' has its text merged over that.
+    let frame_faces = face_remapping(interpreter, None);
+    let default_face = realized_face(
+        &mut state.face_cache,
+        interpreter,
+        env,
+        &frame_faces,
+        &Value::symbol("default"),
+    );
+    let inverse_video = interpreter
+        .lookup_var_key(cached_symbol!("inverse-video"), env)
+        .is_some_and(|value| value.is_truthy());
+    set_paint_faces(
+        default_face,
+        inverse_video,
+        interpreter.tty_suppress_bold_inverse_default_colors,
+    );
+    // free_realized_faces's clear_current_matrices: a face definition,
+    // `inverse-video' or the bold suppression changing has every row
+    // written again, the unchanged text in its new appearance.
+    let paint_faces = (
+        default_face,
+        inverse_video,
+        interpreter.tty_suppress_bold_inverse_default_colors,
+    );
+    if face_changed || state.painted_faces != Some(paint_faces) {
+        state.painted_faces = Some(paint_faces);
+        for row in &mut state.painted_rows {
+            *row = PaintRow::unpainted();
+        }
+        state.painted_echo = Vec::new();
     }
 
     let mut layout = crate::lisp::primitives::window_render_layout(interpreter);
@@ -4500,16 +4404,13 @@ fn redraw_with_echo_policy(
     // GNU's tty vertical border draws in the vertical-border face (its
     // inherit chain reaches mode-line-inactive's reverse video).
     let divider_attrs = if layout.iter().any(|info| info.left + info.width < cols) {
-        *state
-            .face_cache
-            .entry("vertical-border".into())
-            .or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(
-                    interpreter,
-                    env,
-                    &Value::Symbol("vertical-border".into()),
-                )
-            })
+        realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &frame_faces,
+            &Value::symbol("vertical-border"),
+        )
     } else {
         CellAttrs::default()
     };
@@ -4599,6 +4500,9 @@ fn redraw_with_echo_policy(
         rows: Vec<(usize, usize, usize, usize)>,
     }
     let mut text_face_jobs: Vec<TextFaceJob> = Vec::new();
+    // Each window's text area (top, rows, left, width) and buffer, whose
+    // `default' remapping its glyphs' faces are merged over.
+    let mut window_default_jobs: Vec<(usize, usize, usize, usize, u64)> = Vec::new();
     // A window with `display-line-numbers' paints its number column
     // after the text lands, exactly like the face spans: resolving the
     // line-number faces evaluates Lisp.
@@ -4621,6 +4525,7 @@ fn redraw_with_echo_policy(
     // lives in an overlay before-string; the displayed payload and its
     // faces paint into the reserved margin rather than the text body.
     struct MarginStringJob {
+        buffer_id: u64,
         row: usize,
         left: usize,
         width: usize,
@@ -4656,6 +4561,7 @@ fn redraw_with_echo_policy(
         let header_rows = usize::from(has_header_line && info.height > 2 + tab_rows);
         let text_top = info.top + tab_rows + header_rows;
         let text_rows = info.height - 1 - tab_rows - header_rows;
+        window_default_jobs.push((text_top, text_rows, info.left, body_width, info.buffer_id));
         // `display-line-numbers': the column's width follows the
         // window's start line, which planning itself may move
         // (recentering); iterate until the width the plan was laid out
@@ -4977,6 +4883,7 @@ fn redraw_with_echo_policy(
                         continue;
                     };
                     margin_string_jobs.push(MarginStringJob {
+                        buffer_id: info.buffer_id,
                         row: text_top + row,
                         left: margin_left,
                         width: margin_width,
@@ -5037,6 +4944,7 @@ fn redraw_with_echo_policy(
                         continue;
                     }
                     margin_string_jobs.push(MarginStringJob {
+                        buffer_id: info.buffer_id,
                         row: text_top + row,
                         left: margin_left + offset,
                         width: margin_width - offset,
@@ -5196,6 +5104,7 @@ fn redraw_with_echo_policy(
         if job.start >= job.window_end {
             continue;
         }
+        let remapping = face_remapping(interpreter, Some(job.buffer_id));
         let spans = crate::lisp::primitives::window_face_spans(
             interpreter,
             env,
@@ -5207,30 +5116,18 @@ fn redraw_with_echo_policy(
         let resolved: Vec<(usize, usize, CellAttrs)> = spans
             .iter()
             .map(|(begin, end, face)| {
-                let key = format!("{face}");
-                let attrs = *state.face_cache.entry(key).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
-                });
+                let attrs =
+                    realized_face(&mut state.face_cache, interpreter, env, &remapping, face);
                 (*begin, *end, attrs)
             })
             .collect();
-        let glyphless_attrs = *state
-            .face_cache
-            .entry("glyphless-char".into())
-            .or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(
-                    interpreter,
-                    env,
-                    &Value::Symbol("glyphless-char".into()),
-                )
-            });
-        state.face_cache.entry("default".into()).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(
-                interpreter,
-                env,
-                &Value::Symbol("default".into()),
-            )
-        });
+        let glyphless_attrs = realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &remapping,
+            &Value::symbol("glyphless-char"),
+        );
         let mut display_face_jobs = Vec::new();
         let mut ellipsis_jobs = Vec::new();
         let buffer = if job.buffer_id == interpreter.current_buffer_id() {
@@ -5486,12 +5383,7 @@ fn redraw_with_echo_policy(
         }
         drop(buffer);
         for (row_index, from, to, face) in display_face_jobs {
-            let attrs = *state
-                .face_cache
-                .entry(format!("{face}"))
-                .or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-                });
+            let attrs = realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
             let row = &mut frame[row_index];
             if crate::lisp::types::eq_symbol_named(face, "default") {
                 row.replace_attrs(from, to, attrs);
@@ -5525,13 +5417,14 @@ fn redraw_with_echo_policy(
         // A margin string is a separate glyph object.  Its unpropertized
         // cells carry the default foreground, while an extending face from
         // the buffer row remains the background beneath it.
-        let default = *state.face_cache.entry("default".into()).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(
-                interpreter,
-                env,
-                &Value::Symbol("default".into()),
-            )
-        });
+        let remapping = face_remapping(interpreter, Some(job.buffer_id));
+        let default = realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &remapping,
+            &Value::symbol("default"),
+        );
         // The margin string is its own glyph object realized over the
         // default face: its cells take the default foreground (the
         // terminal's own default when the face leaves it unspecified —
@@ -5543,10 +5436,7 @@ fn redraw_with_echo_policy(
             default.foreground,
         );
         for (from, to, face) in crate::lisp::primitives::string_face_spans(&job.value) {
-            let key = format!("{face}");
-            let attrs = *state.face_cache.entry(key).or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-            });
+            let attrs = realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
             frame[job.row].overlay(
                 job.left + from.min(job.width),
                 job.left + to.min(job.width),
@@ -5563,14 +5453,15 @@ fn redraw_with_echo_policy(
     for job in &line_number_jobs {
         use crate::lisp::primitives::LineNumberMode as LnMode;
         let layout = job.layout;
+        let remapping = face_remapping(interpreter, Some(job.buffer_id));
         let mut resolve = |name: &str| -> CellAttrs {
-            *state.face_cache.entry(name.to_string()).or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(
-                    interpreter,
-                    env,
-                    &Value::Symbol(name.into()),
-                )
-            })
+            realized_face(
+                &mut state.face_cache,
+                interpreter,
+                env,
+                &remapping,
+                &Value::symbol(name),
+            )
         };
         let number_attrs = resolve("line-number");
         let current_attrs = resolve("line-number-current-line");
@@ -5746,33 +5637,58 @@ fn redraw_with_echo_policy(
         }
     }
 
+    // A window whose buffer remaps `default': every glyph of its text area
+    // (blank rows and margins included, extend_face_to_end_of_line's
+    // spaces) realized over that default instead of the frame's.
+    for (top, rows, left, width, buffer_id) in window_default_jobs {
+        let remapping = face_remapping(interpreter, Some(buffer_id));
+        if remapping.alist.is_nil() {
+            continue;
+        }
+        let window_default = realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &remapping,
+            &Value::symbol("default"),
+        );
+        if window_default == default_face {
+            continue;
+        }
+        for row in frame.iter_mut().skip(top).take(rows) {
+            let end = (left + width).min(row.attrs.len());
+            for attrs in &mut row.attrs[left.min(end)..end] {
+                *attrs = merge_cell_attrs(window_default, *attrs);
+            }
+        }
+    }
+
     // Mode lines: each window's real `mode-line-format', rendered by the
     // interpreter's engine in that window's context and painted in the
     // realized mode-line face.
     // CURRENT_MODE_LINE_ACTIVE_FACE_ID: `mode-line-active' for the
     // selected window (and the window a selected minibuffer was entered
     // from), `mode-line-inactive' for the others.
-    let mut mode_line_face = |name: &str| {
-        *state.face_cache.entry(name.into()).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &Value::symbol(name))
-        })
-    };
-    let mode_line_active_attrs = mode_line_face("mode-line-active");
-    let mode_line_inactive_attrs = mode_line_face("mode-line-inactive");
+    // Each face as the window's buffer remaps it (lookup_basic_face).
     for job in &mode_line_jobs {
+        let remapping = face_remapping(interpreter, Some(job.buffer_id));
         let measure = ModeLineMeasure {
             buffer_id: job.buffer_id,
             window_id: job.window_id,
         };
-        let (mut mode_line, mut spans) = match crate::lisp::primitives::render_window_mode_line(
-            interpreter,
-            env,
-            job.window_id,
-            job.point,
-            job.metrics,
-            job.body_width,
-            &measure,
-        ) {
+        // display_mode_lines runs with `inhibit-quit' bound to t.
+        let rendered = with_inhibit_quit(interpreter, env, |interpreter, env| {
+            crate::lisp::primitives::render_window_mode_line(
+                interpreter,
+                env,
+                job.window_id,
+                job.point,
+                job.metrics,
+                job.body_width,
+                &measure,
+            )
+        });
+        let (mut mode_line, mut spans) = match rendered {
             Ok((text, spans)) => (text, spans),
             // A GNU-shaped fabrication here would feed the very
             // differential tool that checks mode lines; render failures
@@ -5799,19 +5715,22 @@ fn redraw_with_echo_policy(
         if cells > job.body_width {
             (mode_line, shown) = take_cells_padded(&mode_line, job.body_width, '-');
         }
-        let mode_line_attrs = if job.active {
-            mode_line_active_attrs
-        } else {
-            mode_line_inactive_attrs
-        };
+        let mode_line_attrs = realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &remapping,
+            &Value::symbol(if job.active {
+                "mode-line-active"
+            } else {
+                "mode-line-inactive"
+            }),
+        );
         frame[job.row].blit(job.left, &mode_line, mode_line_attrs);
         // The renderer's face spans (the buffer name's mode-line-buffer-id)
         // layer over the base mode-line face, clipped to the body.
         for (from, to, face) in spans {
-            let key = format!("{face}");
-            let attrs = *state.face_cache.entry(key).or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-            });
+            let attrs = realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
             let from = job.left + from.min(shown);
             let to = job.left + to.min(shown);
             frame[job.row].overlay(from, to, attrs);
@@ -5822,17 +5741,15 @@ fn redraw_with_echo_policy(
     // package can install an evaluated per-buffer format here without
     // enabling the global tab-bar UI (Flycheck's grouping controls do so).
     if !tab_line_jobs.is_empty() {
-        let tab_attrs = *state
-            .face_cache
-            .entry("tab-line".into())
-            .or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(
-                    interpreter,
-                    env,
-                    &Value::Symbol("tab-line".into()),
-                )
-            });
         for job in &tab_line_jobs {
+            let remapping = face_remapping(interpreter, Some(job.buffer_id));
+            let tab_attrs = realized_face(
+                &mut state.face_cache,
+                interpreter,
+                env,
+                &remapping,
+                &Value::symbol("tab-line"),
+            );
             let measure = ModeLineMeasure {
                 buffer_id: job.buffer_id,
                 window_id: job.window_id,
@@ -5865,10 +5782,8 @@ fn redraw_with_echo_policy(
             ));
             frame[job.row].blit(job.left, &padded, tab_attrs);
             for (from, to, face) in spans {
-                let key = format!("{face}");
-                let attrs = *state.face_cache.entry(key).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-                });
+                let attrs =
+                    realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
                 let from = job.left + from.min(shown);
                 let to = job.left + to.min(shown);
                 frame[job.row].overlay(from, to, attrs);
@@ -5880,30 +5795,31 @@ fn redraw_with_echo_policy(
     // `header-line' face, padded with spaces to the body (GNU's
     // display_mode_line for the header row).
     if !header_line_jobs.is_empty() {
-        let header_attrs = *state
-            .face_cache
-            .entry("header-line".into())
-            .or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(
-                    interpreter,
-                    env,
-                    &Value::Symbol("header-line".into()),
-                )
-            });
         for job in &header_line_jobs {
+            let remapping = face_remapping(interpreter, Some(job.buffer_id));
+            let header_attrs = realized_face(
+                &mut state.face_cache,
+                interpreter,
+                env,
+                &remapping,
+                &Value::symbol("header-line"),
+            );
             let measure = ModeLineMeasure {
                 buffer_id: job.buffer_id,
                 window_id: job.window_id,
             };
-            let (mut header, mut spans) = match crate::lisp::primitives::render_window_header_line(
-                interpreter,
-                env,
-                job.window_id,
-                job.point,
-                job.metrics,
-                job.body_width,
-                &measure,
-            ) {
+            let rendered = with_inhibit_quit(interpreter, env, |interpreter, env| {
+                crate::lisp::primitives::render_window_header_line(
+                    interpreter,
+                    env,
+                    job.window_id,
+                    job.point,
+                    job.metrics,
+                    job.body_width,
+                    &measure,
+                )
+            });
+            let (mut header, mut spans) = match rendered {
                 Ok((text, spans)) => (text, spans),
                 Err(error) => {
                     debug_log(&format!("header-line render: {error:?}"));
@@ -5928,10 +5844,8 @@ fn redraw_with_echo_policy(
             ));
             frame[job.row].blit(job.left, &padded, header_attrs);
             for (from, to, face) in spans {
-                let key = format!("{face}");
-                let attrs = *state.face_cache.entry(key).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-                });
+                let attrs =
+                    realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
                 let from = job.left + from.min(shown);
                 let to = job.left + to.min(shown);
                 frame[job.row].overlay(from, to, attrs);
@@ -5959,15 +5873,13 @@ fn redraw_with_echo_policy(
             .as_ref()
             .is_none_or(|(key, _)| *key != cache_key)
         {
-            let _ = interpreter.call_function_value(
-                Value::Symbol("run-hooks".into()),
-                None,
-                &[
-                    Value::Symbol("activate-menubar-hook".into()),
-                    Value::Symbol("menu-bar-update-hook".into()),
-                ],
-                env,
-            );
+            // update_menu_bar: safe_run_hooks of each, quits inhibited.
+            for hook in ["activate-menubar-hook", "menu-bar-update-hook"] {
+                let _ = batch::safe_run_hooks(
+                    interpreter,
+                    &crate::lisp::types::symbols::SymbolKey::new(hook).symbol(),
+                );
+            }
             let captions = crate::lisp::primitives::menu_bar_row_captions(interpreter, env);
             let mut text = String::new();
             for caption in &captions {
@@ -5976,13 +5888,13 @@ fn redraw_with_echo_policy(
             }
             state.menu_bar_row = Some((cache_key, text));
         }
-        let menu_attrs = *state.face_cache.entry("menu".into()).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(
-                interpreter,
-                env,
-                &Value::Symbol("menu".into()),
-            )
-        });
+        let menu_attrs = realized_face(
+            &mut state.face_cache,
+            interpreter,
+            env,
+            &frame_faces,
+            &Value::symbol("menu"),
+        );
         let text = state
             .menu_bar_row
             .as_ref()
@@ -5997,7 +5909,7 @@ fn redraw_with_echo_policy(
     // Emit only rows that changed since the last paint (dispnew's
     // current-matrix idea, one line deep): a self-insert repaints one
     // text row, not the frame.
-    if full_repaint {
+    if full_repaint || garbaged {
         state.painted_echo = Vec::new();
         state.painted_size = (cols, rows);
         state.painted_rows.clear();
@@ -6007,7 +5919,7 @@ fn redraw_with_echo_policy(
     encode_terminal_cells(interpreter, &mut frame);
     let mut out = terminal_output();
     queue!(out, cursor::Hide)?;
-    if full_repaint {
+    if full_repaint || garbaged {
         // xdisp.c:clear_garbaged_frames: a resized frame is redrawn from a
         // cleared terminal (redraw_frame's clear_frame), so rows a smaller
         // frame no longer covers do not keep the old paint.
@@ -6038,10 +5950,13 @@ fn redraw_with_echo_policy(
         }
         state.painted_echo = echo_paint;
     }
+    // update_frame_1's cursor: in the echo area with `cursor-in-echo-area'
+    // or a message shown over the selected active minibuffer; otherwise
+    // the selected window's, echoing included.
     if (minibuffer_echo_owns_hardware_cursor(interpreter, echo_from_minibuffer)
         || (!echo_from_minibuffer
-            && frontend_echo_early.is_empty()
-            && interpreter.active_minibuffer_buffer_id().is_some()))
+            && interpreter.active_minibuffer_buffer_id().is_some()
+            && interpreter.selected_window_id() == interpreter.minibuffer_window_id()))
         && let Some(position) = echo_cursor
     {
         let (row, col) = wrapped_echo_cursor(&echo_long, position, cols, state.echo_rows);
@@ -6052,8 +5967,8 @@ fn redraw_with_echo_policy(
     } else if interpreter
         .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
         .is_some_and(|value| value.is_truthy())
-        && !frontend_echo_early.is_empty()
     {
+        // At the end of the echo row's text, its first column when empty.
         let (row, col) =
             wrapped_echo_cursor(&echo_long, echo_cursor.unwrap_or(0), cols, state.echo_rows);
         cursor_position = (
@@ -6082,8 +5997,46 @@ fn run_pre_redisplay_function(interpreter: &mut Interpreter, env: &mut Env) {
     else {
         return;
     };
-    let _ =
-        interpreter.call_function_value(function, Some("pre-redisplay-function"), &[Value::T], env);
+    // dsafe_calln (true, Vpre_redisplay_function, windows).
+    dsafe_call(interpreter, env, true, function, &[Value::T]);
+}
+
+/// xdisp.c:dsafe__call: FUNCTION called with ARGS, `inhibit-redisplay'
+/// (and with INHIBIT_QUIT `inhibit-quit') bound to t, any error or quit it
+/// signals caught (internal_condition_case_n with Qt); nil then.
+fn dsafe_call(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    inhibit_quit: bool,
+    function: Value,
+    args: &[Value],
+) -> Value {
+    let count = interpreter.specpdl_index();
+    let _ = interpreter.specbind_symbol(&"inhibit-redisplay".into(), Value::T, env);
+    if inhibit_quit {
+        let _ = interpreter.specbind_symbol(&"inhibit-quit".into(), Value::T, env);
+    }
+    let handlers =
+        interpreter.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
+    let value = interpreter
+        .call_function_value(function, None, args, env)
+        .unwrap_or(Value::Nil);
+    interpreter.pop_handler_bindings(handlers);
+    let _ = interpreter.unbind_to(count, env);
+    value
+}
+
+/// display_mode_lines's specbind (Qinhibit_quit, Qt) around BODY.
+fn with_inhibit_quit<T>(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> T,
+) -> T {
+    let count = interpreter.specpdl_index();
+    let _ = interpreter.specbind_symbol(&"inhibit-quit".into(), Value::T, env);
+    let value = body(interpreter, env);
+    let _ = interpreter.unbind_to(count, env);
+    value
 }
 
 fn minibuffer_echo_owns_hardware_cursor(
@@ -6100,13 +6053,12 @@ fn minibuffer_echo_owns_hardware_cursor(
 fn compose_echo_row(
     interpreter: &mut Interpreter,
     env: &mut Env,
-    frontend_echo: &str,
     cols: usize,
     face_cache: &mut std::collections::HashMap<String, CellAttrs>,
 ) -> (PaintRow, bool, Option<usize>) {
     let mut row;
     let mut message_cursor = None;
-    let minibuffer_id = if frontend_echo.is_empty() {
+    let minibuffer_id = {
         interpreter
             .active_minibuffer_buffer_id()
             .filter(|id| interpreter.has_buffer_id(*id))
@@ -6118,12 +6070,12 @@ fn compose_echo_row(
                         .get_buffer_by_id(id)
                         .unwrap_or(interpreter.buffer.borrow())
                 };
-                // The minibuffer command loop mirrors its prompt text into
-                // the echo channel before blocking.  A different live value
-                // is an intentional transient message (notably the value
-                // printed by eval-expression after a nested read) and owns
-                // the echo area until the next input event.  Printing to the
-                // echo stream leaves the hardware cursor after that value.
+                // A message in the echo area shows over the active
+                // minibuffer until read_char wipes it at the next input
+                // event (the bare-runtime minibuffer reader, which mirrors
+                // its prompt and contents into the echo area, shows them as
+                // the minibuffer).  Printing to the echo stream leaves the
+                // hardware cursor after the message.
                 match crate::lisp::primitives::echo_area_message() {
                     Some(message) if message != buffer.buffer_string() => {
                         message_cursor = Some(message.chars().count());
@@ -6132,8 +6084,6 @@ fn compose_echo_row(
                     _ => Some(id),
                 }
             })
-    } else {
-        None
     };
     if let Some(buffer_id) = minibuffer_id {
         // The minibuffer's row renders like any window line in GNU:
@@ -6228,6 +6178,8 @@ fn compose_echo_row(
         let mut chars = text.chars();
         let mut cursor = None;
         let mut overlay_cursor = None;
+        // The minibuffer's faces as its buffer remaps them.
+        let remapping = face_remapping(interpreter, Some(buffer_id));
         let splice = |row: &mut PaintRow,
                       col: &mut usize,
                       string: &OverlayString,
@@ -6238,17 +6190,11 @@ fn compose_echo_row(
             row.blit(start, &string.text, CellAttrs::default());
             *col += string.text.chars().count();
             for face in &string.base_faces {
-                let key = format!("{face}");
-                let attrs = *face_cache.entry(key).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
-                });
+                let attrs = realized_face(face_cache, interpreter, env, &remapping, face);
                 row.overlay(start.min(cols), (*col).min(cols), attrs);
             }
             for (from, to, face) in &string.spans {
-                let key = format!("{face}");
-                let attrs = *face_cache.entry(key).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
-                });
+                let attrs = realized_face(face_cache, interpreter, env, &remapping, face);
                 row.overlay((start + from).min(cols), (start + to).min(cols), attrs);
             }
             string.cursor.map(|offset| start + offset)
@@ -6301,10 +6247,7 @@ fn compose_echo_row(
             }
         }
         for (from, to, face) in &face_spans {
-            let key = format!("{face}");
-            let attrs = *face_cache.entry(key).or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, face)
-            });
+            let attrs = realized_face(face_cache, interpreter, env, &remapping, face);
             for position in *from..*to {
                 if let Some(&col) = column_of.get(&position) {
                     row.overlay(col.min(cols), (col + 1).min(cols), attrs);
@@ -6324,20 +6267,15 @@ fn compose_echo_row(
         );
         return (row, true, cursor);
     }
-    let (echo, spans) = if frontend_echo.is_empty() {
-        crate::lisp::primitives::echo_display_message().unwrap_or_default()
-    } else {
-        (frontend_echo.to_string(), Vec::new())
-    };
+    let (echo, spans) = crate::lisp::primitives::echo_display_message().unwrap_or_default();
     let output_cols = cols;
     let cols = echo.chars().count();
     row = PaintRow::blank(cols);
     row.blit(0, &echo, CellAttrs::default());
+    // An echo area message: the frame's faces.
+    let frame_faces = face_remapping(interpreter, None);
     for (from, to, face) in spans {
-        let key = format!("{face}");
-        let attrs = *face_cache.entry(key).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-        });
+        let attrs = realized_face(face_cache, interpreter, env, &frame_faces, &face);
         row.overlay(from.min(cols), to.min(cols), attrs);
     }
     let (row, cursor) = translate_echo_paint(
@@ -6362,6 +6300,9 @@ fn translate_echo_paint(
     face_cache: &mut std::collections::HashMap<String, CellAttrs>,
 ) -> (PaintRow, Option<usize>) {
     let text: String = source.text.iter().collect();
+    // The minibuffer's remapping; an echo area message's (BUFFER_ID 0)
+    // is the frame's.
+    let remapping = face_remapping(interpreter, (buffer_id != 0).then_some(buffer_id));
     let display =
         CharacterDisplayContext::new(interpreter, buffer_id, interpreter.minibuffer_window_id())
             .translate(&text);
@@ -6384,9 +6325,7 @@ fn translate_echo_paint(
             .into_iter()
             .map(|(from, to)| (from, to, Value::symbol("glyphless-char"))),
     ) {
-        let attrs = *face_cache.entry(format!("{face}")).or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-        });
+        let attrs = realized_face(face_cache, interpreter, env, &remapping, &face);
         row.overlay(cell_of(from).min(cols), cell_of(to).min(cols), attrs);
     }
     (row, cursor)
@@ -6406,45 +6345,269 @@ fn tty_string_cursor_position(value: &Value) -> Option<usize> {
     })
 }
 
-/// The SGR sequence selecting ATTRS from a reset state.
-fn sgr_sequence(attrs: &CellAttrs) -> String {
-    // term.c selects colors through the opposite foreground/background
-    // capability while standout is active.  Once both colors are concrete,
-    // that is the same terminal state as swapping them without retaining the
-    // reverse flag; GNU's Magit highlight is a visible example.  A face with
-    // either terminal-default color still needs actual reverse video.
-    let (foreground, background, reverse) =
-        match (attrs.foreground, attrs.background, attrs.reverse) {
-            (Some(foreground), Some(background), true) => {
-                (Some(background), Some(foreground), false)
+thread_local! {
+    /// The terminal being painted (its tty_display_info's output side),
+    /// set by each redisplay; none where no terminal is (a test's rows).
+    static PAINT_TERMINAL: std::cell::RefCell<Option<PaintTerminal>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A terminal's color support and appearance strings, the frame's
+/// default face (the realized face of the glyphs no face names),
+/// `inverse-video' and `tty-suppress-bold-inverse-default-colors', with
+/// tparam's output for each string and argument it has sent.
+struct PaintTerminal {
+    colors: crate::lisp::eval::terminal::TtyColors,
+    appearance: crate::lisp::eval::terminal::TtyAppearance,
+    default_face: CellAttrs,
+    inverse_video: bool,
+    suppress_bold_inverse_default_colors: bool,
+    sent: std::collections::HashMap<(Vec<u8>, i64), Vec<u8>>,
+}
+
+impl PaintTerminal {
+    fn new(
+        colors: crate::lisp::eval::terminal::TtyColors,
+        appearance: crate::lisp::eval::terminal::TtyAppearance,
+    ) -> Self {
+        Self {
+            colors,
+            appearance,
+            default_face: CellAttrs::default(),
+            inverse_video: false,
+            suppress_bold_inverse_default_colors: false,
+            sent: std::collections::HashMap::new(),
+        }
+    }
+
+    /// tparam (STRING, ARG) as emacs_tputs sends it.
+    fn tparam(&mut self, string: &[u8], arg: i64) -> Vec<u8> {
+        self.sent
+            .entry((string.to_vec(), arg))
+            .or_insert_with(|| {
+                crate::lisp::eval::terminal::tputs(&crate::lisp::eval::terminal::tparam(
+                    string, arg,
+                ))
+            })
+            .clone()
+    }
+}
+
+/// Paint with the selected terminal's COLORS and APPEARANCE (none: no
+/// terminal, a test's rows), keeping what was sent while they stay.
+fn set_paint_terminal(
+    terminal: Option<(
+        crate::lisp::eval::terminal::TtyColors,
+        crate::lisp::eval::terminal::TtyAppearance,
+    )>,
+) {
+    PAINT_TERMINAL.with_borrow_mut(|paint| match (paint.as_mut(), terminal) {
+        (Some(paint), Some((colors, appearance)))
+            if paint.colors == colors && paint.appearance == appearance => {}
+        (_, terminal) => {
+            *paint = terminal.map(|(colors, appearance)| PaintTerminal::new(colors, appearance));
+        }
+    });
+}
+
+/// The frame's realized default face, `inverse-video' and
+/// `tty-suppress-bold-inverse-default-colors' for this redisplay.
+fn set_paint_faces(default_face: CellAttrs, inverse_video: bool, suppress_bold: bool) {
+    PAINT_TERMINAL.with_borrow_mut(|paint| {
+        if let Some(paint) = paint.as_mut() {
+            paint.default_face = default_face;
+            paint.inverse_video = inverse_video;
+            paint.suppress_bold_inverse_default_colors = suppress_bold;
+        }
+    });
+}
+
+/// realize_tty_face's face for a glyph of ATTRS: its attributes over the
+/// default face's (the merge lookup_face starts from), the colors
+/// swapped for inverse video (realize_tty_face's swap; a tty's colors are
+/// never defaulted), and bold left off inverse default colors when
+/// `tty-suppress-bold-inverse-default-colors' says so.
+fn realize_cell_face(
+    attrs: &CellAttrs,
+    default: &CellAttrs,
+    suppress_bold_inverse_default_colors: bool,
+) -> CellAttrs {
+    use crate::lisp::primitives::{
+        FACE_TTY_DEFAULT_BG_COLOR as DEFAULT_BG, FACE_TTY_DEFAULT_FG_COLOR as DEFAULT_FG,
+    };
+    // The attributes merged over the default face's (an attribute the
+    // glyph's face turns off is off), the colors filled in with the
+    // terminal's defaults, `:extend' the glyph's own.
+    let merged = CellAttrs::merged_over(default, attrs);
+    let mut face = CellAttrs {
+        foreground: Some(merged.foreground.unwrap_or(DEFAULT_FG)),
+        background: Some(merged.background.unwrap_or(DEFAULT_BG)),
+        extend: attrs.extend,
+        off: 0,
+        ..merged
+    };
+    if face.reverse {
+        std::mem::swap(&mut face.foreground, &mut face.background);
+    }
+    if suppress_bold_inverse_default_colors
+        && face.bold
+        && face.background == Some(DEFAULT_FG)
+        && face.foreground == Some(DEFAULT_BG)
+    {
+        face.bold = false;
+    }
+    face
+}
+
+/// emacs_tputs of STRING where there is one (OUTPUT_IF).
+fn output_if(out: &mut Vec<u8>, string: Option<&Vec<u8>>) {
+    if let Some(string) = string {
+        out.extend(crate::lisp::eval::terminal::tputs(string));
+    }
+}
+
+/// term.c's tty_turn_on_highlight and tty_turn_off_highlight: standout
+/// entered or left, STANDOUT its tty->standout_mode.
+fn turn_on_highlight(out: &mut Vec<u8>, paint: &PaintTerminal, standout: &mut bool) {
+    if !*standout {
+        output_if(out, paint.appearance.standout_mode.as_ref());
+    }
+    *standout = true;
+}
+
+fn turn_off_highlight(out: &mut Vec<u8>, paint: &PaintTerminal, standout: &mut bool) {
+    if *standout {
+        output_if(out, paint.appearance.end_standout_mode.as_ref());
+    }
+    *standout = false;
+}
+
+/// term.c's output around a run of glyphs of realized FACE in
+/// tty_write_glyphs: tty_highlight_if_desired and turn_on_face before
+/// the text (standout toggled for the default colors the other way round
+/// from `inverse-video', then bold, italic or else dim, the underline or
+/// its style, strike-through, each where NC allows it with colors, and
+/// the colors through the terminal's strings, the two swapped while
+/// standout is on), turn_off_face and tty_turn_off_highlight after it
+/// (me for an appearance, else ue, and op for a color of the face's own).
+fn face_run_output(
+    face: &CellAttrs,
+    paint: &mut PaintTerminal,
+    standout: &mut bool,
+) -> (Vec<u8>, Vec<u8>) {
+    use crate::lisp::eval::terminal::{
+        NC_BOLD, NC_ITALIC, NC_REVERSE, NC_STRIKE_THROUGH, NC_UNDERLINE,
+    };
+    use crate::lisp::primitives::{
+        FACE_NO_UNDERLINE, FACE_TTY_DEFAULT_BG_COLOR as DEFAULT_BG,
+        FACE_TTY_DEFAULT_COLOR as DEFAULT, FACE_TTY_DEFAULT_FG_COLOR as DEFAULT_FG,
+        FACE_UNDERLINE_SINGLE,
+    };
+    let fg = face.foreground.unwrap_or(DEFAULT_FG);
+    let bg = face.background.unwrap_or(DEFAULT_BG);
+    let mut on = Vec::new();
+    // tty_highlight_if_desired.
+    if paint.inverse_video {
+        turn_on_highlight(&mut on, paint, standout);
+    } else {
+        turn_off_highlight(&mut on, paint, standout);
+    }
+    let may_use = |paint: &PaintTerminal, attr: i64| paint.colors.may_use_with_colors(attr);
+    if may_use(paint, NC_REVERSE)
+        && if paint.inverse_video {
+            fg == DEFAULT_FG || bg == DEFAULT_BG
+        } else {
+            fg == DEFAULT_BG || bg == DEFAULT_FG
+        }
+    {
+        if *standout {
+            turn_off_highlight(&mut on, paint, standout);
+        } else {
+            turn_on_highlight(&mut on, paint, standout);
+        }
+    }
+    if face.bold && may_use(paint, NC_BOLD) {
+        output_if(&mut on, paint.appearance.enter_bold_mode.as_ref());
+    }
+    if face.italic && may_use(paint, NC_ITALIC) {
+        // Italics unavailable: dimmed text instead.
+        output_if(
+            &mut on,
+            paint
+                .appearance
+                .enter_italic_mode
+                .as_ref()
+                .or(paint.appearance.enter_dim_mode.as_ref()),
+        );
+    }
+    if face.underline != FACE_NO_UNDERLINE && may_use(paint, NC_UNDERLINE) {
+        match paint.appearance.set_underline_style.clone() {
+            Some(style) if face.underline != FACE_UNDERLINE_SINGLE => {
+                let sequence = paint.tparam(&style, i64::from(face.underline));
+                on.extend(sequence);
             }
-            _ => (attrs.foreground, attrs.background, attrs.reverse),
+            _ => output_if(&mut on, paint.appearance.enter_underline_mode.as_ref()),
+        }
+    }
+    if face.strike_through && may_use(paint, NC_STRIKE_THROUGH) {
+        output_if(&mut on, paint.appearance.enter_strike_through_mode.as_ref());
+    }
+    if paint.colors.max_colors > 0 {
+        let (for_fg, for_bg) = if *standout {
+            (
+                paint.colors.set_background.clone(),
+                paint.colors.set_foreground.clone(),
+            )
+        } else {
+            (
+                paint.colors.set_foreground.clone(),
+                paint.colors.set_background.clone(),
+            )
         };
-    let mut codes: Vec<String> = vec!["0".into()];
-    if attrs.bold {
-        codes.push("1".into());
+        // face_tty_specified_color: a pixel none of the default ones.
+        if fg >= 0
+            && let Some(string) = for_fg
+        {
+            let sequence = paint.tparam(&string, fg);
+            on.extend(sequence);
+        }
+        if bg >= 0
+            && let Some(string) = for_bg
+        {
+            let sequence = paint.tparam(&string, bg);
+            on.extend(sequence);
+        }
+        if face.underline_color != 0
+            && let Some(string) = paint.appearance.set_underline_color.clone()
+        {
+            let sequence = paint.tparam(&string, face.underline_color);
+            on.extend(sequence);
+        }
     }
-    if attrs.underline {
-        codes.push("4".into());
+    // turn_off_face.
+    let mut off = Vec::new();
+    if let Some(exit) = paint.appearance.exit_attribute_mode.clone() {
+        if face.bold
+            || face.italic
+            || face.reverse
+            || face.underline != FACE_NO_UNDERLINE
+            || face.strike_through
+        {
+            output_if(&mut off, Some(&exit));
+            if paint.appearance.end_standout_mode.as_ref() == Some(&exit) {
+                *standout = false;
+            }
+        }
+    } else if face.underline != FACE_NO_UNDERLINE {
+        output_if(&mut off, paint.appearance.exit_underline_mode.as_ref());
     }
-    if reverse {
-        codes.push("7".into());
+    if paint.colors.max_colors > 0
+        && ((fg != DEFAULT && fg != DEFAULT_FG) || (bg != DEFAULT && bg != DEFAULT_BG))
+    {
+        output_if(&mut off, paint.colors.orig_pair.as_ref());
     }
-    if let Some(fg) = foreground {
-        codes.push(if fg < 8 {
-            format!("{}", 30 + fg)
-        } else {
-            format!("38;5;{fg}")
-        });
-    }
-    if let Some(bg) = background {
-        codes.push(if bg < 8 {
-            format!("{}", 40 + bg)
-        } else {
-            format!("48;5;{bg}")
-        });
-    }
-    format!("\x1b[{}m", codes.join(";"))
+    turn_off_highlight(&mut off, paint, standout);
+    (on, off)
 }
 
 /// term.c encode_terminal_code: a glyph the output coding (the
@@ -6489,15 +6652,29 @@ fn encode_terminal_cells(interpreter: &Interpreter, rows: &mut [PaintRow]) {
 /// cells print inside one SGR selection, and trailing blank
 /// default-attribute cells are cleared, not printed.
 fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Result<()> {
-    queue!(
-        out,
-        cursor::MoveTo(0, row as u16),
-        terminal::Clear(terminal::ClearType::CurrentLine),
-    )?;
+    queue!(out, cursor::MoveTo(0, row as u16))?;
     let cols = rendered.text.len();
     let default_attrs = CellAttrs::default();
+    // tty->standout_mode across the row's runs.
+    let mut standout = false;
+    // update_frame_line's write_spaces_p: a default face whose background
+    // is not the terminal's (colored_spaces_p) has the row's trailing
+    // default-face spaces written; otherwise they are left to
+    // clear_end_of_line.
+    let colored_spaces = PAINT_TERMINAL.with_borrow(|paint| {
+        paint.as_ref().is_some_and(|paint| {
+            realize_cell_face(
+                &default_attrs,
+                &paint.default_face,
+                paint.suppress_bold_inverse_default_colors,
+            )
+            .background
+                != Some(crate::lisp::primitives::FACE_TTY_DEFAULT_BG_COLOR)
+        })
+    });
     let mut end = cols;
-    while end > 0
+    while !colored_spaces
+        && end > 0
         && rendered.text[end - 1] == ' '
         && rendered.attrs[end - 1] == default_attrs
         && !rendered.marks.iter().any(|(cell, _)| *cell == end - 1)
@@ -6525,17 +6702,50 @@ fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Resul
                 text.push(*mark);
             }
         }
-        if attrs == default_attrs {
-            queue!(out, style::Print(&text))?;
-        } else {
-            queue!(
-                out,
-                style::Print(sgr_sequence(&attrs)),
-                style::Print(&text),
-                style::Print("\x1b[0m"),
-            )?;
+        // tty_write_glyphs's run: the face's appearances on, the text,
+        // the appearances off.
+        let around = PAINT_TERMINAL.with_borrow_mut(|paint| {
+            paint.as_mut().map(|paint| {
+                let face = realize_cell_face(
+                    &attrs,
+                    &paint.default_face,
+                    paint.suppress_bold_inverse_default_colors,
+                );
+                face_run_output(&face, paint, &mut standout)
+            })
+        });
+        match around {
+            Some((on, off)) => {
+                out.write_all(&on)?;
+                queue!(out, style::Print(&text))?;
+                out.write_all(&off)?;
+            }
+            None => queue!(out, style::Print(&text))?,
         }
         at = run_end;
+    }
+    if end < cols {
+        // tty_clear_end_of_line: tty_background_highlight (standout under
+        // `inverse-video', so the cleared cells are reversed too), the
+        // terminal's clear to end of line, and the highlight off again.
+        let (on, off) = PAINT_TERMINAL
+            .with_borrow_mut(|paint| {
+                paint.as_mut().map(|paint| {
+                    let mut on = Vec::new();
+                    if paint.inverse_video {
+                        turn_on_highlight(&mut on, paint, &mut standout);
+                    } else {
+                        turn_off_highlight(&mut on, paint, &mut standout);
+                    }
+                    let mut off = Vec::new();
+                    turn_off_highlight(&mut off, paint, &mut standout);
+                    (on, off)
+                })
+            })
+            .unwrap_or_default();
+        out.write_all(&on)?;
+        queue!(out, terminal::Clear(terminal::ClearType::UntilNewLine))?;
+        out.write_all(&off)?;
     }
     Ok(())
 }
@@ -6955,8 +7165,8 @@ mod tests {
           (aset standard-display-table ?y []))",
         );
         let mut cache = std::collections::HashMap::new();
-        let (row, mini, cursor) =
-            compose_echo_row(&mut interpreter, &mut env, "yyyxZ", 3, &mut cache);
+        crate::lisp::primitives::set_echo_area_message(Some("yyyxZ".into()));
+        let (row, mini, cursor) = compose_echo_row(&mut interpreter, &mut env, 3, &mut cache);
         assert!(!mini);
         assert_eq!(row.text.iter().collect::<String>(), "ABZ");
         assert_eq!(cursor, Some(3));
@@ -6969,7 +7179,7 @@ mod tests {
         )
         .expect("display test minibuffer activates");
         crate::lisp::primitives::set_echo_area_message(None);
-        let (row, mini, cursor) = compose_echo_row(&mut interpreter, &mut env, "", 8, &mut cache);
+        let (row, mini, cursor) = compose_echo_row(&mut interpreter, &mut env, 8, &mut cache);
         crate::lisp::primitives::unwind_active_minibuffer(&mut interpreter, active, &mut env)
             .expect("unwind the read");
         assert!(mini);
@@ -7006,82 +7216,6 @@ mod tests {
             assert_eq!(display_table_glyph(glyph), None);
         }
     }
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
-        KeyEvent::new(code, modifiers)
-    }
-
-    #[test]
-    fn tty_lisp_readers_preserve_mouse_events_and_keyboard_order() {
-        use crate::lisp::primitives::{set_tty_event_poller, set_tty_event_reader};
-        for mode in ["blocking", "polling", "timed"] {
-            // The terminal frame's size comes from adjust_frame_size, which
-            // calls window.el's owners.
-            let mut interpreter = crate::test_support::initialized_gnu_window_lisp_interpreter();
-            let mut env = Env::new();
-            interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
-            interpreter.set_tty_frame_size(80, 24);
-            let queue = SharedEventQueue::default();
-            queue.0.borrow_mut().extend([
-                QueuedInput::Mouse(RawMouseInput {
-                    button: 1,
-                    modifiers: 0,
-                    column: 5,
-                    row: 0,
-                    press: true,
-                }),
-                QueuedInput::Mouse(RawMouseInput {
-                    button: 1,
-                    modifiers: 0,
-                    column: 5,
-                    row: 0,
-                    press: false,
-                }),
-                QueuedInput::Lisp(Value::Integer(97)),
-                // Sentinels make the broken reader fail without blocking.
-                QueuedInput::Lisp(Value::Integer(98)),
-                QueuedInput::Lisp(Value::Integer(99)),
-            ]);
-            let state = std::rc::Rc::new(std::cell::RefCell::new(TtyState::new()));
-            set_tty_event_reader(Some(make_event_reader(
-                queue.clone(),
-                std::rc::Rc::clone(&state),
-            )));
-            if mode != "blocking" {
-                set_tty_event_poller(Some(make_event_poller(queue.clone(), state)));
-            }
-            let args = if mode == "timed" {
-                vec![Value::Nil, Value::Nil, Value::Integer(0)]
-            } else {
-                Vec::new()
-            };
-            let observed: Vec<_> = (0..3)
-                .map(|_| {
-                    crate::lisp::primitives::call(&mut interpreter, "read-event", &args, &mut env)
-                })
-                .collect();
-            set_tty_event_reader(None);
-            set_tty_event_poller(None);
-            let observed: Vec<_> = observed
-                .into_iter()
-                .map(|event| event.expect("read queued terminal event").to_string())
-                .collect();
-            // GNU lread.c:read_filtered_event returns parameterized mouse
-            // events unchanged when ASCII_REQUIRED is false (read-event).
-            assert_eq!(
-                observed,
-                [
-                    "(down-mouse-1 (nil menu-bar (5 . 0) 0))",
-                    "(mouse-1 (nil menu-bar (5 . 0) 0))",
-                    "97",
-                ],
-                "mode={mode}"
-            );
-            assert_eq!(queue.0.borrow().len(), 2);
-        }
-    }
-
     fn test_visual_line(line: &str) -> VisualLine {
         let chars = line.chars().count();
         VisualLine {
@@ -7884,7 +8018,8 @@ mod tests {
             original,
             "set-window-buffer itself does not change the current buffer"
         );
-        select_command_loop_buffer(&mut interp).expect("command-cycle buffer selection succeeds");
+        crate::lisp::primitives::select_window_buffer(&mut interp)
+            .expect("command-cycle buffer selection succeeds");
         assert_eq!(interp.current_buffer_id(), displayed);
         assert_eq!(interp.selected_window_contents_buffer_id(), Some(displayed));
     }
@@ -7936,116 +8071,290 @@ mod tests {
         );
     }
 
+    /// A pipe holding BYTES, read as the terminal's descriptor; the
+    /// controlling terminal's input modes META_KEY while the test runs.
+    struct TtyBytes {
+        fds: [i32; 2],
+    }
+
+    impl TtyBytes {
+        fn new(bytes: &[u8], meta_key: i32) -> Self {
+            let mut fds = [0; 2];
+            // SAFETY: FDS has room for the two descriptors pipe returns.
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            // SAFETY: BYTES is readable for its length.
+            let written = unsafe { libc::write(fds[1], bytes.as_ptr().cast(), bytes.len()) };
+            assert_eq!(written, bytes.len() as isize);
+            crate::lisp::primitives::set_tty_input_modes(
+                Some(crate::lisp::primitives::TtyInputModes {
+                    flow_control: false,
+                    meta_key,
+                }),
+                true,
+                None,
+            );
+            Self { fds }
+        }
+
+        fn read(&self, interp: &mut Interpreter, env: &mut Env, queue: &SharedEventQueue) -> i32 {
+            queue.read_avail_input(interp, env, self.fds[0])
+        }
+    }
+
+    impl Drop for TtyBytes {
+        fn drop(&mut self) {
+            crate::lisp::primitives::set_tty_input_modes(None, false, None);
+            // SAFETY: both ends are this pipe's, closed only here.
+            unsafe {
+                libc::close(self.fds[0]);
+                libc::close(self.fds[1]);
+            }
+        }
+    }
+
+    fn queued(queue: &SharedEventQueue) -> Vec<Value> {
+        let mut events = Vec::new();
+        while let Some(QueuedInput::Lisp(event)) = queue.pop() {
+            events.push(event);
+        }
+        events
+    }
+
     #[test]
-    fn plain_characters_encode_as_their_codes() {
+    fn terminal_bytes_are_keystrokes_by_the_meta_mode() {
+        // tty_read_avail_input: each byte an ASCII_KEYSTROKE_EVENT; with
+        // meta_key 1 the 8th bit is Meta (a capital un-capitalized, as
+        // make_lispy_event takes it for caps lock), with 0 it is stripped,
+        // with 2 it passes.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        let queue = SharedEventQueue::default();
+        let bytes = [b'a', 0xe1, 0xc1, 0x1b, b'[', b'A', 13, 127];
+        {
+            let tty = TtyBytes::new(&bytes, 1);
+            assert_eq!(tty.read(&mut interp, &mut env, &queue), bytes.len() as i32);
+        }
+        let meta = |c: u8| Value::Integer(i64::from(c) | CHAR_META);
         assert_eq!(
-            encode_key(key(KeyCode::Char('h'), KeyModifiers::NONE)),
-            vec![Value::Integer(104)]
+            queued(&queue),
+            [
+                Value::Integer(97),
+                meta(b'a'),
+                meta(b'a'),
+                Value::Integer(27),
+                Value::Integer(91),
+                Value::Integer(65),
+                Value::Integer(13),
+                Value::Integer(127),
+            ]
         );
+        {
+            let tty = TtyBytes::new(&[0xe1, 0xc1], 0);
+            tty.read(&mut interp, &mut env, &queue);
+        }
+        assert_eq!(queued(&queue), [Value::Integer(97), Value::Integer(65)]);
+        {
+            let tty = TtyBytes::new(&[0xe1, 0xc1], 2);
+            tty.read(&mut interp, &mut env, &queue);
+        }
+        assert_eq!(queued(&queue), [Value::Integer(0xe1), Value::Integer(0xc1)]);
+        assert!(!queue.input_pending());
+    }
+
+    #[test]
+    fn a_quit_character_read_as_a_byte_interrupts_and_ends_the_read() {
+        // kbd_buffer_store_event gives the quit character to
+        // handle_interrupt, unstored, and tty_read_avail_input looks no
+        // further into that read.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        interp.set_c_variable("quit-flag", Value::Nil);
+        let queue = SharedEventQueue::default();
+        let tty = TtyBytes::new(b"a\x07b", 1);
+        assert_eq!(tty.read(&mut interp, &mut env, &queue), 3);
+        drop(tty);
+        assert_eq!(queued(&queue), [Value::Integer(97)]);
+        assert!(
+            !interp.quit_flag_is_nil(),
+            "the quit character requests a quit"
+        );
+        interp.set_c_variable("quit-flag", Value::Nil);
+    }
+
+    #[test]
+    fn keyboard_bytes_decode_by_the_keyboard_coding_unless_read_raw() {
+        // read_decoded_event_from_main_queue: the bytes of a UTF-8 sequence
+        // gathered and decoded; a read with PREV_EVENT t takes them as
+        // they come.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        crate::lisp::primitives::call(
+            &mut interp,
+            "set-keyboard-coding-system-internal",
+            &[Value::symbol("utf-8-unix")],
+            &mut env,
+        )
+        .expect("a UTF-8 keyboard");
+        let queue = SharedEventQueue::default();
+        let tty = TtyBytes::new(b"\xc3\xa9\xc3\xa9", 2);
+        tty.read(&mut interp, &mut env, &queue);
+        let Some(QueuedInput::Lisp(first)) = queue.pop() else {
+            panic!("a byte was stored");
+        };
         assert_eq!(
-            encode_key(key(KeyCode::Char('É'), KeyModifiers::NONE)),
-            vec![Value::Integer(0xC9)]
+            queue.decode_event(&mut interp, &mut env, first),
+            Value::Integer(0xe9)
+        );
+        let Some(QueuedInput::Lisp(raw)) = queue.pop() else {
+            panic!("the second character's bytes remain");
+        };
+        {
+            let _raw = crate::lisp::primitives::RawEventRead::enter(true);
+            assert_eq!(
+                queue.decode_event(&mut interp, &mut env, raw),
+                Value::Integer(0xc3)
+            );
+        }
+        assert_eq!(queued(&queue), [Value::Integer(0xa9)]);
+        drop(tty);
+    }
+
+    #[test]
+    fn decoded_characters_after_the_first_wait_in_unread_command_events() {
+        // A byte that starts a sequence and one that cannot continue it
+        // decode to two characters: the first is the event, the other
+        // `unread-command-events''s first.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        crate::lisp::primitives::call(
+            &mut interp,
+            "set-keyboard-coding-system-internal",
+            &[Value::symbol("utf-8-unix")],
+            &mut env,
+        )
+        .expect("a UTF-8 keyboard");
+        interp.set_variable_key(
+            cached_symbol!("unread-command-events"),
+            Value::Nil,
+            &mut env,
+        );
+        let queue = SharedEventQueue::default();
+        let tty = TtyBytes::new(b"\xc3(", 2);
+        tty.read(&mut interp, &mut env, &queue);
+        let Some(QueuedInput::Lisp(first)) = queue.pop() else {
+            panic!("a byte was stored");
+        };
+        let event = queue.decode_event(&mut interp, &mut env, first);
+        drop(tty);
+        assert_ne!(event, Value::Integer(0xc3), "the byte was decoded");
+        assert!(!queue.input_pending(), "both bytes were gathered");
+        let unread = crate::lisp::primitives::unread_command_events(&interp, &env)
+            .expect("a list of events");
+        assert_eq!(unread, [Value::Integer(i64::from(b'('))]);
+        interp.set_variable_key(
+            cached_symbol!("unread-command-events"),
+            Value::Nil,
+            &mut env,
         );
     }
 
     #[test]
-    fn control_characters_use_ascii_codes() {
+    fn the_encoded_meta_mode_makes_the_eighth_bit_meta_after_decoding() {
+        // meta_key 3: the character a byte decodes to has its 8th bit made
+        // Meta.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        crate::lisp::primitives::call(
+            &mut interp,
+            "set-keyboard-coding-system-internal",
+            &[Value::symbol("iso-latin-1-unix")],
+            &mut env,
+        )
+        .expect("a Latin-1 keyboard");
+        let queue = SharedEventQueue::default();
+        let tty = TtyBytes::new(b"\xe1x", 3);
+        tty.read(&mut interp, &mut env, &queue);
+        let mut events = Vec::new();
+        while let Some(QueuedInput::Lisp(event)) = queue.pop() {
+            events.push(queue.decode_event(&mut interp, &mut env, event));
+        }
+        drop(tty);
         assert_eq!(
-            encode_key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
-            vec![Value::Integer(1)]
-        );
-        assert_eq!(
-            encode_key(key(KeyCode::Char('x'), KeyModifiers::CONTROL)),
-            vec![Value::Integer(24)]
-        );
-        assert_eq!(
-            encode_key(key(KeyCode::Char(' '), KeyModifiers::CONTROL)),
-            vec![Value::Integer(0)]
-        );
-        assert_eq!(
-            encode_key(key(KeyCode::Char('_'), KeyModifiers::CONTROL)),
-            vec![Value::Integer(31)]
-        );
-        assert_eq!(
-            encode_key(key(KeyCode::Char('?'), KeyModifiers::CONTROL)),
-            vec![Value::Integer(127)]
-        );
-    }
-
-    #[test]
-    fn meta_becomes_the_escape_prefix() {
-        assert_eq!(
-            encode_key(key(KeyCode::Char('x'), KeyModifiers::ALT)),
-            vec![Value::Integer(27), Value::Integer(120)]
-        );
-        assert_eq!(
-            encode_key(key(
-                KeyCode::Char('w'),
-                KeyModifiers::ALT | KeyModifiers::CONTROL
-            )),
-            vec![Value::Integer(27), Value::Integer(23)]
+            events,
+            [
+                Value::Integer(0x61 | CHAR_META),
+                Value::Integer(i64::from(b'x'))
+            ]
         );
     }
 
     #[test]
-    fn function_keys_encode_as_symbols() {
+    fn function_keys_reach_the_input_decode_map() {
+        // term_get_fkeys: each key's bytes bound to its symbol in
+        // `input-decode-map'.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        let map = crate::lisp::primitives::call(&mut interp, "make-sparse-keymap", &[], &mut env)
+            .expect("a keymap");
+        interp.set_variable_key(cached_symbol!("input-decode-map"), map, &mut env);
+        term_get_fkeys(
+            &mut interp,
+            &mut env,
+            &[
+                (b"\x1b[15~".to_vec(), "f5".into()),
+                (b"\x1bOA".to_vec(), "up".into()),
+            ],
+        )
+        .expect("define the keys");
+        let lookup = |interp: &mut Interpreter, env: &mut Env, keys: &str| {
+            crate::lisp::primitives::call(interp, "lookup-key", &[map, Value::string(keys)], env)
+                .expect("look the key up")
+        };
         assert_eq!(
-            encode_key(key(KeyCode::Up, KeyModifiers::NONE)),
-            vec![Value::Symbol("up".into())]
+            lookup(&mut interp, &mut env, "\x1b[15~"),
+            Value::vector([Value::symbol("f5")])
         );
         assert_eq!(
-            encode_key(key(KeyCode::Delete, KeyModifiers::NONE)),
-            vec![Value::Symbol("deletechar".into())]
-        );
-        assert_eq!(
-            encode_key(key(KeyCode::F(5), KeyModifiers::NONE)),
-            vec![Value::Symbol("f5".into())]
-        );
-        assert_eq!(
-            encode_key(key(KeyCode::Up, KeyModifiers::ALT)),
-            vec![Value::Integer(27), Value::Symbol("up".into())]
-        );
-    }
-
-    #[test]
-    fn terminal_editing_keys_use_gnu_codes() {
-        assert_eq!(
-            encode_key(key(KeyCode::Enter, KeyModifiers::NONE)),
-            vec![Value::Integer(13)]
-        );
-        assert_eq!(
-            encode_key(key(KeyCode::Tab, KeyModifiers::NONE)),
-            vec![Value::Integer(9)]
-        );
-        assert_eq!(
-            encode_key(key(KeyCode::Backspace, KeyModifiers::NONE)),
-            vec![Value::Integer(127)]
-        );
-        assert_eq!(
-            encode_key(key(KeyCode::Esc, KeyModifiers::NONE)),
-            vec![Value::Integer(27)]
+            lookup(&mut interp, &mut env, "\x1bOA"),
+            Value::vector([Value::symbol("up")])
         );
     }
 
     #[test]
-    fn key_descriptions_follow_gnu_spellings() {
-        assert_eq!(
-            describe_keys(&[Value::Integer(24), Value::Integer(3)]),
-            "C-x C-c"
+    fn tty_mode_strings_are_the_terminal_parameters_strings() {
+        // tty_send_additional_strings: the strings of the terminal's
+        // `tty-mode-set-strings' (or reset) parameter in list order, other
+        // elements skipped; none once the terminal is deleted.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (push "\e[?2004h" (terminal-parameter nil 'tty-mode-set-strings))
+                 (push 7 (terminal-parameter nil 'tty-mode-set-strings))
+                 (push "\e[?1004h" (terminal-parameter nil 'tty-mode-set-strings)))"#,
+        )
+        .expect("push the strings");
+        let terminal = interp
+            .decode_terminal(&Value::Nil)
+            .expect("the initial terminal");
+        let set = crate::lisp::eval::terminal::tty_additional_strings(
+            terminal,
+            Value::symbol("tty-mode-set-strings"),
         );
-        assert_eq!(
-            describe_keys(&[Value::Integer(27), Value::Integer(120)]),
-            "M-x"
+        assert_eq!(set, b"\x1b[?1004h\x1b[?2004h");
+        let reset = crate::lisp::eval::terminal::tty_additional_strings(
+            terminal,
+            Value::symbol("tty-mode-reset-strings"),
         );
-        assert_eq!(describe_keys(&[Value::Symbol("up".into())]), "<up>");
-        assert_eq!(
-            describe_keys(&[Value::Integer(27), Value::Symbol("up".into())]),
-            "M-<up>"
+        assert!(reset.is_empty());
+        interp.retire_terminal(terminal);
+        let gone = crate::lisp::eval::terminal::tty_additional_strings(
+            terminal,
+            Value::symbol("tty-mode-set-strings"),
         );
-        assert_eq!(describe_keys(&[Value::Integer(13)]), "RET");
-        assert_eq!(describe_keys(&[Value::Integer(127)]), "DEL");
-        assert_eq!(describe_keys(&[Value::Integer(0)]), "C-SPC");
-        assert_eq!(describe_keys(&[Value::Integer(27)]), "ESC");
+        assert!(gone.is_empty());
     }
 
     #[test]
@@ -8263,7 +8572,6 @@ mod tests {
         let (row, from_minibuffer, cursor) = compose_echo_row(
             &mut interpreter,
             &mut env,
-            "",
             80,
             &mut std::collections::HashMap::new(),
         );
@@ -8302,7 +8610,6 @@ mod tests {
         let (row, from_minibuffer, _) = compose_echo_row(
             &mut interpreter,
             &mut env,
-            "",
             80,
             &mut std::collections::HashMap::new(),
         );
@@ -8757,39 +9064,245 @@ mod tests {
         }
     }
 
+    /// xterm-256color's color and appearance strings, as terminfo has them.
+    fn xterm_256color() -> PaintTerminal {
+        use crate::lisp::eval::terminal::{TtyAppearance, TtyColors};
+        let some = |bytes: &[u8]| Some(bytes.to_vec());
+        PaintTerminal::new(
+            TtyColors {
+                max_colors: 256,
+                orig_pair: some(b"\x1b[39;49m"),
+                set_foreground: some(
+                    b"\x1b[%?%p1%{8}%<%t3%p1%d%e%p1%{16}%<%t9%p1%{8}%-%d%e38;5;%p1%d%;m",
+                ),
+                set_background: some(
+                    b"\x1b[%?%p1%{8}%<%t4%p1%d%e%p1%{16}%<%t10%p1%{8}%-%d%e48;5;%p1%d%;m",
+                ),
+                no_color_video: 0,
+            },
+            TtyAppearance {
+                standout_mode: some(b"\x1b[7m"),
+                end_standout_mode: some(b"\x1b[27m"),
+                enter_underline_mode: some(b"\x1b[4m"),
+                exit_underline_mode: some(b"\x1b[24m"),
+                enter_bold_mode: some(b"\x1b[1m"),
+                enter_dim_mode: some(b"\x1b[2m"),
+                enter_italic_mode: some(b"\x1b[3m"),
+                enter_strike_through_mode: some(b"\x1b[9m"),
+                exit_attribute_mode: some(b"\x1b(B\x1b[m"),
+                ..TtyAppearance::default()
+            },
+        )
+    }
+
+    /// The bytes around a run of ATTRS: realize_cell_face over PAINT's
+    /// default face, then face_run_output from standout off.
+    fn run_output(paint: &mut PaintTerminal, attrs: CellAttrs) -> (String, String) {
+        let face = realize_cell_face(&attrs, &paint.default_face, false);
+        let mut standout = false;
+        let (on, off) = face_run_output(&face, paint, &mut standout);
+        assert!(!standout, "each run ends with standout off");
+        (
+            String::from_utf8(on).expect("ASCII"),
+            String::from_utf8(off).expect("ASCII"),
+        )
+    }
+
     #[test]
-    fn sgr_sequences_reset_then_select_each_attribute() {
-        assert_eq!(sgr_sequence(&CellAttrs::default()), "\x1b[0m");
+    fn a_run_s_appearances_are_turn_on_face_s_and_turn_off_face_s() {
+        use crate::lisp::primitives::{
+            FACE_TTY_DEFAULT_BG_COLOR as DEFAULT_BG, FACE_TTY_DEFAULT_FG_COLOR as DEFAULT_FG,
+        };
+        let mut xterm = xterm_256color();
+        let mut run = |attrs: CellAttrs| run_output(&mut xterm, attrs);
         assert_eq!(
-            sgr_sequence(&CellAttrs {
-                foreground: Some(6),
-                background: Some(5),
-                ..CellAttrs::default()
-            }),
-            "\x1b[0;36;45m",
-            "the base ANSI palette uses the 30/40 ranges"
+            run(CellAttrs::default()),
+            (String::new(), String::new()),
+            "the default face's default colors send nothing"
         );
         assert_eq!(
-            sgr_sequence(&CellAttrs {
-                foreground: Some(250),
-                background: Some(238),
+            run(CellAttrs {
+                foreground: Some(1),
+                background: Some(9),
                 bold: true,
-                underline: true,
-                reverse: true,
-                extend: false,
+                ..CellAttrs::default()
             }),
-            "\x1b[0;1;4;38;5;238;48;5;250m",
-            "concrete inverse colors swap through the 38;5/48;5 channels"
+            (
+                "\x1b[1m\x1b[31m\x1b[101m".into(),
+                "\x1b(B\x1b[m\x1b[39;49m".into()
+            ),
+            "md, then setaf and setab by tparam; me and op after"
         );
         assert_eq!(
-            sgr_sequence(&CellAttrs {
-                foreground: Some(6),
+            run(CellAttrs {
                 reverse: true,
                 ..CellAttrs::default()
             }),
-            "\x1b[0;7;36m",
-            "inverse remains active while either color is terminal-default"
+            ("\x1b[7m".into(), "\x1b(B\x1b[m\x1b[39;49m\x1b[27m".into()),
+            "inverse default colors are standout, which se ends"
         );
+        assert_eq!(
+            run(CellAttrs {
+                foreground: Some(1),
+                reverse: true,
+                ..CellAttrs::default()
+            }),
+            (
+                "\x1b[7m\x1b[31m".into(),
+                "\x1b(B\x1b[m\x1b[39;49m\x1b[27m".into()
+            ),
+            "under standout the swapped background goes out as a foreground"
+        );
+        assert_eq!(
+            run(CellAttrs {
+                italic: true,
+                strike_through: true,
+                underline: crate::lisp::primitives::FACE_UNDERLINE_SINGLE,
+                ..CellAttrs::default()
+            }),
+            ("\x1b[3m\x1b[4m\x1b[9m".into(), "\x1b(B\x1b[m".into())
+        );
+        // -rv: the default face's colors are each other's sentinels, so
+        // every run of it, and of a face over it, is standout.
+        xterm.default_face = CellAttrs {
+            foreground: Some(DEFAULT_BG),
+            background: Some(DEFAULT_FG),
+            ..CellAttrs::default()
+        };
+        assert_eq!(
+            run_output(&mut xterm, CellAttrs::default()),
+            ("\x1b[7m".into(), "\x1b[39;49m\x1b[27m".into())
+        );
+        assert_eq!(
+            run_output(
+                &mut xterm,
+                CellAttrs {
+                    bold: true,
+                    ..CellAttrs::default()
+                }
+            ),
+            (
+                "\x1b[7m\x1b[1m".into(),
+                "\x1b(B\x1b[m\x1b[39;49m\x1b[27m".into()
+            )
+        );
+    }
+
+    #[test]
+    fn a_terminal_s_strings_and_nc_decide_what_goes_out() {
+        use crate::lisp::eval::terminal::{NC_BOLD, NC_REVERSE, NC_UNDERLINE};
+        // NC_REVERSE (cons25's): no standout with colors, so an inverse
+        // face's swapped color goes out as the background.
+        let mut cons25 = xterm_256color();
+        cons25.colors.no_color_video = NC_REVERSE;
+        assert_eq!(
+            run_output(
+                &mut cons25,
+                CellAttrs {
+                    foreground: Some(1),
+                    reverse: true,
+                    ..CellAttrs::default()
+                }
+            ),
+            ("\x1b[41m".into(), "\x1b(B\x1b[m\x1b[39;49m".into())
+        );
+        // No italic string: dim instead; NC underline left off.
+        let mut console = xterm_256color();
+        console.appearance.enter_italic_mode = None;
+        console.colors.no_color_video = NC_UNDERLINE;
+        assert_eq!(
+            run_output(
+                &mut console,
+                CellAttrs {
+                    italic: true,
+                    underline: crate::lisp::primitives::FACE_UNDERLINE_SINGLE,
+                    ..CellAttrs::default()
+                }
+            ),
+            ("\x1b[2m".into(), "\x1b(B\x1b[m".into())
+        );
+        // NC binds only where there are colors, and none are sent without
+        // them; tputs leaves a padding specification out.
+        let mut mono = xterm_256color();
+        mono.colors.max_colors = 0;
+        mono.colors.no_color_video = NC_BOLD;
+        mono.appearance.enter_bold_mode = Some(b"\x1b[1m$<2>".to_vec());
+        assert_eq!(
+            run_output(
+                &mut mono,
+                CellAttrs {
+                    foreground: Some(1),
+                    bold: true,
+                    ..CellAttrs::default()
+                }
+            ),
+            ("\x1b[1m".into(), "\x1b(B\x1b[m".into())
+        );
+        // Without me, only ue ends an appearance.
+        let mut no_me = xterm_256color();
+        no_me.appearance.exit_attribute_mode = None;
+        assert_eq!(
+            run_output(
+                &mut no_me,
+                CellAttrs {
+                    bold: true,
+                    underline: crate::lisp::primitives::FACE_UNDERLINE_SINGLE,
+                    ..CellAttrs::default()
+                }
+            ),
+            ("\x1b[1m\x1b[4m".into(), "\x1b[24m".into())
+        );
+        // A styled underline through Smulx; a 24-bit color through the
+        // xterm+direct strings.
+        let mut kitty = xterm_256color();
+        kitty.appearance.set_underline_style = Some(b"\x1b[4:%p1%dm".to_vec());
+        kitty.colors.max_colors = 16_777_216;
+        kitty.colors.set_foreground = Some(
+            b"\x1b[%?%p1%{8}%<%t3%p1%d%e38;2;%p1%{65536}%/%d;%p1%{256}%/%{255}%&%d;%p1%{255}%&%d%;m"
+                .to_vec(),
+        );
+        assert_eq!(
+            run_output(
+                &mut kitty,
+                CellAttrs {
+                    foreground: Some(0x12_34_56),
+                    underline: 3,
+                    ..CellAttrs::default()
+                }
+            ),
+            (
+                "\x1b[4:3m\x1b[38;2;18;52;86m".into(),
+                "\x1b(B\x1b[m\x1b[39;49m".into()
+            )
+        );
+    }
+
+    #[test]
+    fn color_modes_set_up_the_colors_as_tty_setup_colors() {
+        use crate::lisp::eval::terminal::TtyColors;
+        let entry = TtyColors {
+            max_colors: 256,
+            orig_pair: Some(b"\x1b[39;49m".to_vec()),
+            set_foreground: Some(b"F".to_vec()),
+            set_background: Some(b"B".to_vec()),
+            no_color_video: 3,
+        };
+        entry.save_default();
+        let mut colors = entry.clone();
+        colors.setup(-7);
+        assert_eq!(
+            colors,
+            TtyColors::default(),
+            "-1 and below: no colors at all"
+        );
+        colors.setup(8);
+        assert_eq!(colors.max_colors, 8);
+        assert_eq!(colors.set_foreground.as_deref(), Some(&b"\x1b[3%p1%dm"[..]));
+        assert_eq!(colors.orig_pair.as_deref(), Some(&b"\x1b[0m"[..]));
+        for mode in [0, 256, 16] {
+            colors.setup(mode);
+            assert_eq!(colors, entry, "mode {mode}: the capabilities init_tty saw");
+        }
     }
 
     #[test]
@@ -8808,15 +9321,7 @@ mod tests {
         let merged = merge_cell_attrs(base, over);
         assert_eq!(merged.foreground, Some(6), "the overlay's colors win");
         assert_eq!(merged.background, Some(4), "unspecified colors fall back");
-        assert!(merged.bold && merged.reverse && !merged.underline);
-    }
-
-    #[test]
-    fn prefix_echo_accumulates_like_gnu() {
-        assert_eq!(append_prefix_echo("", "C-u"), "C-u-");
-        assert_eq!(append_prefix_echo("C-u-", "8"), "C-u 8-");
-        assert_eq!(append_prefix_echo("C-u 8-", "2"), "C-u 8 2-");
-        assert_eq!(append_prefix_echo("C-u-", "C-u"), "C-u C-u-");
+        assert!(merged.bold && merged.reverse && merged.underline == 0);
     }
 
     fn prefixed_test_line(
@@ -9059,24 +9564,22 @@ mod tests {
                    (let ((inhibit-read-only t)) (erase-buffer))))"#,
         )
         .expect("setup");
-        for events in [
-            vec![Value::Integer(16)],
-            vec![Value::symbol("f6")],
-            vec![Value::symbol("f7")],
-        ] {
-            let binding = match resolve_pending(&mut interpreter, &mut env, &events) {
-                Resolution::Command(binding) => binding,
-                Resolution::Undefined => Value::Nil,
-                Resolution::Prefix => panic!("{events:?} is a whole key sequence"),
-            };
-            let last = *events.last().expect("an event");
-            if let Err(error) = execute_binding(&mut interpreter, &mut env, binding, &events, last)
-            {
-                let echoed = settle_command_error(&mut interpreter, &mut env, error.into_kind())
-                    .expect("no termination");
-                assert_eq!(echoed, None, "cmd_error reports the error itself");
-            }
-        }
+        // Each key read by a recursive edit's command loop, which a timer
+        // ends with a throw to `exit' once the loop waits for more input
+        // (without a keyboard read_char waits, as GNU's does);
+        // command_loop_1's entry runs the post-command hooks first.
+        // (command-error-default-function discards the input after an
+        // error, so the keys come one recursive edit each; each loop's top
+        // makes `this-command' nil before it reads.)
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            "(dolist (key (list ?\\C-p 'f6 'f7))
+               (let ((unread-command-events (list key)))
+                 (run-at-time 0 nil (lambda () (throw 'exit nil)))
+                 (recursive-edit)))",
+        )
+        .expect("each recursive edit returns when its timer throws to exit");
         let value = crate::test_support::eval_lisp(
             &mut interpreter,
             &mut env,
@@ -9097,8 +9600,9 @@ mod tests {
             crate::lisp::primitives::string_like(&printed)
                 .expect("a string")
                 .text,
-            "(((pre previous-line) (post previous-line \"Beginning of buffer\") (pre t147-boom) \
-             (post t147-boom \"Boom 1\") (pre nil) (post nil \"<f7> is undefined\")) nil \
+            "(((post nil nil) (pre previous-line) (post previous-line \"Beginning of buffer\") \
+             (post nil \"Beginning of buffer\") (pre t147-boom) (post t147-boom \"Boom 1\") \
+             (post nil \"Boom 1\") (pre nil) (post nil \"<f7> is undefined\")) nil \
              \"previous-line: Beginning of buffer\nt147-boom: Boom 1\n<f7> is undefined\n\")"
         );
     }
@@ -9129,60 +9633,60 @@ gamma word three
         );
         interpreter.buffer.borrow_mut().goto_char(1);
 
-        let send = |interpreter: &mut Interpreter, env: &mut Env, code: i64| {
-            let event = Value::Integer(code);
-            let resolution = resolve_pending(interpreter, env, std::slice::from_ref(&event));
-            let Resolution::Command(binding) = resolution else {
-                panic!("event {code} must resolve to a command, got a prefix/undefined");
-            };
-            let described = format!("{binding}");
-            execute_binding(
-                interpreter,
-                env,
-                binding,
-                std::slice::from_ref(&event),
-                event,
-            )
-            .expect("command executes");
-            described
-        };
-
         // C-s enters isearch; printing characters dispatch through the
-        // overriding isearch-mode-map.
-        assert_eq!(send(&mut interpreter, &mut env, 0x13), "isearch-forward");
+        // overriding isearch-mode-map, the first match ending after "wor"
+        // on the second line ("beta word": w=16, o=17, r=18, end=19).  C-a
+        // is not an isearch key: the pre-command-hook exits the search,
+        // removing the overriding map, and the key's own command runs.
         assert_eq!(
-            send(&mut interpreter, &mut env, i64::from(b'w')),
-            "isearch-printing-char"
+            post_command_log(
+                &mut interpreter,
+                &mut env,
+                "\"\\C-swor\\C-a\"",
+                "(list this-original-command (point) (null overriding-terminal-local-map))",
+            ),
+            "((nil 1 t) (isearch-forward 1 nil) (isearch-printing-char 17 nil) \
+             (isearch-printing-char 18 nil) (isearch-printing-char 19 nil) \
+             (move-beginning-of-line 11 t))"
         );
-        assert_eq!(
-            send(&mut interpreter, &mut env, i64::from(b'o')),
-            "isearch-printing-char"
-        );
-        assert_eq!(
-            send(&mut interpreter, &mut env, i64::from(b'r')),
-            "isearch-printing-char"
-        );
-        // The first match ends after "wor" on the second line
-        // ("beta word": w=16, o=17, r=18, end=19).
-        assert_eq!(interpreter.buffer.borrow().point(), 19);
+    }
 
-        // C-a is not an isearch key: the pre-command-hook exits the
-        // search and the key's own command runs.
+    #[test]
+    fn a_printing_key_inserts_through_command_loop_1_and_its_command() {
+        // The terminal's keys run in keyboard.c's command loop: a printing
+        // character's binding, `self-insert-command', inserts it through
+        // call-interactively, and command_loop_1 makes it `last-command'.
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(
+                &crate::compat::project_root().join("../emacs"),
+            )
+            .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interpreter =
+            crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
+        let mut env: Env = crate::lisp::types::Env::new();
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+        crate::lisp::primitives::call(&mut interpreter, "erase-buffer", &[], &mut env)
+            .expect("erase the scratch banner");
         assert_eq!(
-            send(&mut interpreter, &mut env, 0x01),
-            "move-beginning-of-line"
+            post_command_log(
+                &mut interpreter,
+                &mut env,
+                "\"h\"",
+                "(list this-command (buffer-string) (point))",
+            ),
+            // command_loop_1's entry runs the post-command hooks first.
+            "((nil \"\" 1) (self-insert-command \"h\" 2))"
         );
         assert_eq!(
-            interpreter.buffer.borrow().point(),
-            11,
-            "point at the match line's start"
+            interpreter.lookup_var_key(cached_symbol!("last-command-event"), &env),
+            Some(Value::Integer(104))
         );
-        let overriding = interpreter
-            .lookup_var_key(cached_symbol!("overriding-terminal-local-map"), &env)
-            .unwrap_or(Value::Nil);
-        assert!(
-            overriding.is_nil(),
-            "leaving isearch removes the overriding map"
+        assert_eq!(interpreter.buffer.borrow().buffer_string(), "h");
+        assert_eq!(
+            interpreter.lookup_var_key(cached_symbol!("last-command"), &env),
+            Some(Value::Symbol("self-insert-command".into()))
         );
     }
 
@@ -9202,53 +9706,18 @@ gamma word three
         interpreter.buffer.borrow_mut().insert("abcdefghijklmnop\n");
         interpreter.buffer.borrow_mut().goto_char(1);
 
-        let send = |interpreter: &mut Interpreter, env: &mut Env, code: i64| {
-            let event = Value::Integer(code);
-            let resolution = resolve_pending(interpreter, env, std::slice::from_ref(&event));
-            let Resolution::Command(binding) = resolution else {
-                panic!("event {code} must resolve to a command");
-            };
-            let described = format!("{binding}");
-            execute_binding(
-                interpreter,
-                env,
-                binding,
-                std::slice::from_ref(&event),
-                event,
-            )
-            .expect("command executes");
-            described
-        };
-
         // C-u is simple.el's universal-argument: it stores (4) in
         // prefix-arg and arms the transient map that makes a following
-        // digit dispatch digit-argument.
-        assert_eq!(send(&mut interpreter, &mut env, 21), "universal-argument");
+        // digit dispatch digit-argument; the next ordinary command consumes
+        // the accumulated prefix (C-u 8 C-f moves 8 chars).
         assert_eq!(
-            interpreter.lookup_var_key(cached_symbol!("prefix-arg"), &env),
-            Some(Value::list([Value::Integer(4)]))
-        );
-        assert_eq!(
-            send(&mut interpreter, &mut env, i64::from(b'8')),
-            "digit-argument"
-        );
-        assert_eq!(
-            interpreter.lookup_var_key(cached_symbol!("prefix-arg"), &env),
-            Some(Value::Integer(8))
-        );
-        // The next ordinary command consumes the accumulated prefix.
-        assert_eq!(send(&mut interpreter, &mut env, 6), "forward-char");
-        assert_eq!(
-            interpreter.buffer.borrow().point(),
-            9,
-            "C-u 8 C-f moves 8 chars"
-        );
-        assert_eq!(
-            interpreter
-                .lookup_var_key(cached_symbol!("prefix-arg"), &env)
-                .unwrap_or(Value::Nil),
-            Value::Nil,
-            "the chain is consumed"
+            post_command_log(
+                &mut interpreter,
+                &mut env,
+                "\"\\C-u8\\C-f\"",
+                "(list this-original-command prefix-arg (point))",
+            ),
+            "((nil nil 1) (universal-argument (4) 1) (digit-argument 8 1) (forward-char nil 9))"
         );
     }
 
@@ -9300,7 +9769,9 @@ gamma word three
         };
         assert_eq!(binding, Value::symbol("forward-char"));
         assert_eq!(
-            reader.finish(&mut interpreter, false, &mut env),
+            reader
+                .finish(&mut interpreter, false, &mut env)
+                .expect("finish"),
             vec![Value::symbol("a"), Value::symbol("b")]
         );
         assert_eq!(
@@ -9359,26 +9830,6 @@ gamma word three
 
         let undefined = resolve_pending(&mut interpreter, &mut env, &[Value::Symbol("f35".into())]);
         assert!(matches!(undefined, Resolution::Undefined));
-    }
-
-    #[test]
-    fn interactive_execution_inserts_through_lisp() {
-        let mut interpreter = Interpreter::new();
-        let mut env: Env = crate::lisp::types::Env::new();
-        let keys = [Value::Integer(104)];
-        execute_binding(
-            &mut interpreter,
-            &mut env,
-            Value::Symbol("self-insert-command".into()),
-            &keys,
-            Value::Integer(104),
-        )
-        .expect("self-insert through call-interactively");
-        assert_eq!(interpreter.buffer.borrow().buffer_string(), "h");
-        assert_eq!(
-            interpreter.lookup_var_key(cached_symbol!("last-command"), &env),
-            Some(Value::Symbol("self-insert-command".into()))
-        );
     }
 }
 
@@ -9439,44 +9890,21 @@ fn make_menu_executor(
             let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
                 return Ok(TtyMenuOutcome::Quit);
             };
-            let (cols, rows) = (cols.max(10) as usize, rows.max(4) as usize);
+            let (cols, rows) = (usize::from(cols.max(1)), usize::from(rows.max(1)));
             let mut resolve_face = |name: &str| {
                 let mut state = state.borrow_mut();
-                *state.face_cache.entry(name.into()).or_insert_with(|| {
-                    crate::lisp::primitives::resolve_tty_face_attrs(
-                        interpreter,
-                        env,
-                        &Value::Symbol(name.into()),
-                    )
-                })
+                // A tty menu's faces are the frame's.
+                realized_face(
+                    &mut state.face_cache,
+                    interpreter,
+                    env,
+                    &face_remapping(interpreter, None),
+                    &Value::symbol(name),
+                )
             };
             let disabled_attrs = resolve_face("tty-menu-disabled-face");
             let enabled_attrs = resolve_face("tty-menu-enabled-face");
             let selected_raw = resolve_face("tty-menu-selected-face");
-            // read_char's echo timer: a sequence still pending while
-            // this menu blocks (kboard->echo_string, computed by the
-            // resolver through the real echo machinery) is displayed
-            // after `echo-keystrokes' idle seconds; 0 or nil disables
-            // echoing entirely, as in GNU.
-            let mut pending_keystroke_echo = crate::lisp::primitives::take_pending_keystroke_echo();
-            let echo_keystrokes = interpreter
-                .lookup_var_key(cached_symbol!("echo-keystrokes"), env)
-                .map(|value| match value.kind() {
-                    Kind::Integer(seconds) => seconds as f64,
-                    Kind::Float(seconds) => seconds.get(),
-                    _ => 0.0,
-                })
-                .unwrap_or(1.0);
-            if echo_keystrokes <= 0.0 {
-                pending_keystroke_echo = None;
-            }
-            // The idle window opens when the read starts waiting with
-            // the sequence pending — one shared deadline, not one per
-            // inner read (consuming the click's release must not push
-            // the echo out).
-            let pending_echo_deadline = pending_keystroke_echo.as_ref().map(|_| {
-                std::time::Instant::now() + std::time::Duration::from_secs_f64(echo_keystrokes)
-            });
             // GNU derives the selected face over the enabled one
             // (lookup_derived_face with faces[1] as its base).
             let selected_attrs = merge_cell_attrs(enabled_attrs, selected_raw);
@@ -9593,6 +10021,7 @@ fn make_menu_executor(
                     }
                     // One key sequence under the navigation map; prefixes keep
                     // reading, everything else maps per read_menu_input.
+                    crate::lisp::primitives::init_raw_keybuf_count(interpreter);
                     let mut reader = crate::lisp::primitives::KeySequenceReader::new(
                         interpreter,
                         Value::Nil,
@@ -9613,49 +10042,13 @@ fn make_menu_executor(
                             draw_echo_row_composed(interpreter, env, &state);
                             place_cursor(selected_row);
                         }
-                        // A sequence still pending while this menu blocks
-                        // echoes after the shared idle window expires
-                        // (echo_now through the frozen redisplay); the read
-                        // then blocks normally.
-                        let event = match (&pending_keystroke_echo, pending_echo_deadline) {
-                            (Some(_), Some(deadline)) => {
-                                let timed = 'timed: loop {
-                                    match queue.try_next_event() {
-                                        Err(()) => break 'timed Err(()),
-                                        Ok(Some(event)) => break 'timed Ok(event),
-                                        Ok(None) => {}
-                                    }
-                                    let now = std::time::Instant::now();
-                                    if now >= deadline {
-                                        let (text, spans) = pending_keystroke_echo
-                                            .take()
-                                            .expect("pending echo present in this arm");
-                                        crate::lisp::primitives::set_echo_area_message_with_spans(
-                                            text, spans,
-                                        );
-                                        draw_echo_row_composed(interpreter, env, &state);
-                                        place_cursor(selected_row);
-                                        break 'timed Err(());
-                                    }
-                                    let _ = event::poll(
-                                        (deadline - now).min(std::time::Duration::from_millis(50)),
-                                    );
-                                };
-                                match timed {
-                                    Ok(event) => Some(event),
-                                    // Echo shown (or terminal gone): a plain
-                                    // blocking read takes over either way.
-                                    Err(()) => queue.next_event(),
-                                }
-                            }
-                            _ => queue.next_event(),
-                        };
+                        // read_menu_command binds `echo-keystrokes' to 0: no
+                        // echoing while navigating the menu.
+                        let event = menu_read_event(interpreter, env, &queue)?;
                         let Some(event) = event else {
                             break Value::T;
                         };
-                        let QueuedInput::Lisp(event) = event else {
-                            continue;
-                        };
+                        let QueuedInput::Lisp(event) = event;
                         if event == Value::Integer(7) {
                             break Value::T;
                         }

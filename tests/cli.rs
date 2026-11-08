@@ -76,10 +76,16 @@ fn batch_exit_and_restart_preserve_a_childs_ignored_hangup_like_gnu() {
 #[cfg(unix)]
 #[test]
 fn batch_exit_terminates_owned_children_like_gnu() {
+    use std::os::unix::process::CommandExt;
     let oracle = emaxx::compat::configured_gnu_source_root().join("src/emacs");
-    for binary in [oracle.as_path(), common::emaxx(false)] {
-        let output = Command::new(binary)
-            .args([
+    // shut_down_emacs's kill_buffer_processes sends each child's group
+    // SIGHUP.  A child keeps the SIGHUP disposition Emacs inherited, so
+    // one started under nohup (SIGHUP ignored) survives the exit in GNU;
+    // each disposition is set here, whatever the test runner was given.
+    for hangup_ignored in [false, true] {
+        for binary in [oracle.as_path(), common::emaxx(false)] {
+            let mut command = Command::new(binary);
+            command.args([
                 "-Q",
                 "--batch",
                 "--eval",
@@ -88,32 +94,65 @@ fn batch_exit_terminates_owned_children_like_gnu() {
                      (set-process-query-on-exit-flag child nil)
                      (princ (process-id child))
                      (kill-emacs 0)))",
-            ])
-            .output()
-            .expect("run editor with an owned child");
-        assert!(output.status.success(), "{}: {output:?}", binary.display());
-        let pid = std::str::from_utf8(&output.stdout)
-            .expect("printed process ID")
-            .parse::<u32>()
-            .expect("numeric process ID");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            let status = Command::new("/bin/ps")
-                .args(["-p", &pid.to_string(), "-o", "stat="])
-                .output()
-                .expect("inspect child process state");
-            let state = String::from_utf8_lossy(&status.stdout);
-            // A zombie has terminated and is awaiting the host's reaper.
-            if status.status.code() == Some(1) || state.trim_start().starts_with('Z') {
-                break;
+            ]);
+            // SAFETY: only the async-signal-safe signal call runs between
+            // fork and exec, establishing the editor's inherited disposition.
+            unsafe {
+                command.pre_exec(move || {
+                    let handler = if hangup_ignored {
+                        libc::SIG_IGN
+                    } else {
+                        libc::SIG_DFL
+                    };
+                    if libc::signal(libc::SIGHUP, handler) == libc::SIG_ERR {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
             }
-            assert!(status.status.success(), "ps failed: {status:?}");
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{} left child {pid} running after exit: {state}",
-                binary.display()
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            let output = command.output().expect("run editor with an owned child");
+            assert!(output.status.success(), "{}: {output:?}", binary.display());
+            let pid = std::str::from_utf8(&output.stdout)
+                .expect("printed process ID")
+                .parse::<u32>()
+                .expect("numeric process ID");
+            let state = || {
+                let status = Command::new("/bin/ps")
+                    .args(["-p", &pid.to_string(), "-o", "stat="])
+                    .output()
+                    .expect("inspect child process state");
+                // A zombie has terminated and is awaiting the host's reaper.
+                let gone = status.status.code() == Some(1)
+                    || String::from_utf8_lossy(&status.stdout)
+                        .trim_start()
+                        .starts_with('Z');
+                assert!(gone || status.status.success(), "ps failed: {status:?}");
+                (gone, String::from_utf8_lossy(&status.stdout).into_owned())
+            };
+            if hangup_ignored {
+                let _cleanup = ExitProbeChild(pid);
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let (gone, stat) = state();
+                assert!(
+                    !gone,
+                    "{} ended child {pid}, whose SIGHUP was ignored: {stat}",
+                    binary.display()
+                );
+                continue;
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let (gone, stat) = state();
+                if gone {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{} left child {pid} running after exit: {stat}",
+                    binary.display()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
         }
     }
 }

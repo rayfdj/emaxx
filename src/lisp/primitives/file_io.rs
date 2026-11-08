@@ -2910,9 +2910,9 @@ fn insert_file_bytes(
             {
                 super::call(interp, "unlock-file", &[truename], env)?;
             }
-            interp.set_variable_key(cached_symbol!("deactivate-mark"), old_deactivate_mark, env);
+            interp.set_c_variable("deactivate-mark", old_deactivate_mark);
         } else {
-            interp.set_variable_key(cached_symbol!("deactivate-mark"), Value::T, env);
+            interp.set_c_variable("deactivate-mark", Value::T);
         }
         if let Some(error) = read.error {
             return Err(report_file_errno(

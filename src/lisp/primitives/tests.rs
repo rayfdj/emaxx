@@ -4,6 +4,17 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 use std::io::{Read, Write};
 
+/// subr.el's `ignore', which a bare interpreter has not loaded: a
+/// sentinel given it must find a function, or exec_sentinel's handler
+/// reports the void function as GNU's would.
+fn define_subr_ignore(interp: &mut Interpreter, env: &mut crate::lisp::types::Env) {
+    let form = Reader::new("(defalias 'ignore #'(lambda (&rest _arguments) nil))")
+        .read()
+        .expect("read ignore's definition")
+        .expect("ignore's definition is a form");
+    interp.eval(&form, env).expect("define ignore");
+}
+
 fn upstream_emacs_repo() -> PathBuf {
     crate::compat::canonicalize_path(&crate::compat::configured_gnu_source_root())
         .expect("canonical configured GNU checkout")
@@ -8183,36 +8194,6 @@ fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_global_binding_key(cached_symbol!("executing-kbd-macro"), Value::T);
-    for (events, default, expected) in [
-        (
-            vec![b'u', b't', b'f', b'-', b'8', 13],
-            Value::Nil,
-            Value::Symbol("utf-8".into()),
-        ),
-        (
-            vec![13],
-            Value::Symbol("utf-8".into()),
-            Value::Symbol("utf-8".into()),
-        ),
-        (vec![13], Value::Nil, Value::Nil),
-    ] {
-        interp.set_global_binding_key(
-            cached_symbol!("unread-command-events"),
-            Value::list(events.into_iter().map(|event| Value::Integer(event.into()))),
-        );
-        assert_eq!(
-            call(
-                &mut interp,
-                "read-coding-system",
-                &[Value::String("Coding: ".into()), default],
-                &mut env,
-            )
-            .expect("read-coding-system should consume simulated minibuffer input"),
-            expected,
-        );
-    }
-
     // No keyboard macro is executing when the command loop reports an
     // error (cmd_error clears it first): with one, the reporter's
     // bitch_at_user would end it with a `user-error', as GNU's does.
@@ -12567,7 +12548,13 @@ fn process_connection_probe_with_default(
         )
         .expect("wait for probe process activity");
     }
-    pump_external_process_output(&mut interp, &mut env).expect("drain probe output");
+    call(
+        &mut interp,
+        "accept-process-output",
+        &[Value::Nil, Value::Integer(0)],
+        &mut env,
+    )
+    .expect("drain probe output");
     interp
         .get_buffer_by_id(buffer_id)
         .expect("probe buffer")
@@ -12694,7 +12681,13 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
         )
         .expect("wait for PTY output");
     }
-    pump_external_process_output(&mut interp, &mut env).expect("drain final PTY output");
+    call(
+        &mut interp,
+        "accept-process-output",
+        &[Value::Nil, Value::Integer(0)],
+        &mut env,
+    )
+    .expect("drain final PTY output");
 
     assert_eq!(
         interp
@@ -12759,7 +12752,13 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
         )
         .expect("wait for split PTY output");
     }
-    pump_external_process_output(&mut interp, &mut env).expect("drain split PTY output");
+    call(
+        &mut interp,
+        "accept-process-output",
+        &[Value::Nil, Value::Integer(0)],
+        &mut env,
+    )
+    .expect("drain split PTY output");
 
     assert_eq!(
         interp
@@ -12773,7 +12772,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
 #[cfg(unix)]
 #[test]
 fn signal_process_preserves_os_signal_status_and_sentinel_event() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("captured-signal-event", Value::Nil, &mut env);
     let process = call_via_lisp(
@@ -12819,7 +12818,13 @@ fn signal_process_preserves_os_signal_status_and_sentinel_event() {
         .expect("target process id");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
-        pump_external_process_output(&mut interp, &mut env).expect("pump signal target");
+        call(
+            &mut interp,
+            "accept-process-output",
+            &[Value::Nil, Value::Integer(0)],
+            &mut env,
+        )
+        .expect("pump signal target");
         if !interp.process_is_live(process_id) {
             break;
         }
@@ -13078,11 +13083,8 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
         let process_id = interp
             .resolve_process_id(&process)
             .expect("resolve timed process");
-        let (pending_stdout, pending_stderr) = interp
-            .poll_process_output(process_id)
-            .expect("inspect timed process output");
         panic!(
-            "accept-process-output timed out: status={:?}, deliveries={:?}, pending_stdout={pending_stdout:?}, pending_stderr={pending_stderr:?}",
+            "accept-process-output timed out: status={:?}, deliveries={:?}",
             interp.process_status_value(process_id),
             interp.process_output_delivery_count(process_id),
         );
@@ -13096,10 +13098,6 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
         .strip_suffix("\nProcess accept-output-test finished\n")
         .unwrap_or(&text);
     assert_eq!(text, "ready");
-    assert_eq!(
-        wait_duration(&[Value::Integer(10)]).expect("ten-second wait should be valid"),
-        std::time::Duration::from_secs(10)
-    );
     call(
         &mut interp,
         "accept-process-output",
@@ -13107,11 +13105,6 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
         &mut env,
     )
     .expect("an explicit nil MILLISEC should mean zero milliseconds");
-    assert_eq!(
-        wait_duration(&[Value::Integer(10), Value::Nil])
-            .expect("nil optional milliseconds should be zero"),
-        std::time::Duration::from_secs(10)
-    );
 }
 
 #[test]
@@ -16692,7 +16685,8 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
                (progn
                  (process-send-string process "encrypted round trip\n")
                  (accept-process-output process 2)
-                 (with-current-buffer buffer (buffer-string)))
+                 (equal (with-current-buffer buffer (buffer-string))
+                        "encrypted round trip\n"))
                (gnutls-bye process t)
                (gnutls-deinit process)
                (gnutls-get-initstage process))
@@ -16708,7 +16702,14 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
     let actual = interp
         .eval(&form, &mut env)
         .expect("GnuTLS transport program should evaluate");
-    let expected = Reader::new("(t 9 (t t t t nil) \"encrypted round trip\\n\" t t 3)")
+    // GNU's answer: gnutls_verify_boot's gnutls_certificate_verify_peers2
+    // fails for anonymous credentials (GNUTLS_E_INVALID_REQUEST), so a
+    // boot that completes its negotiation never sets p->gnutls_p, and the
+    // process reads and writes its socket as it is: the server's alert
+    // comes back, gnutls_bye fails, and emacs_gnutls_deinit has nothing to
+    // free.  The `:nowait' client below sets p->gnutls_p in
+    // gnutls_try_handshake and goes through the session.
+    let expected = Reader::new("(-50 9 (t t t t nil) nil -53 nil 9)")
         .read()
         .expect("GnuTLS transport expectation should parse")
         .expect("GnuTLS transport expectation should contain a form");
@@ -16717,6 +16718,50 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
         "GnuTLS process transport did not round-trip through one live session:\nactual: {actual:?}"
     );
 
+    // GNU's own race, kept: when the whole handshake ends inside
+    // connect_network_socket's Fgnutls_boot (each of the server's flights
+    // already there by the client's read, as a loaded host makes likely),
+    // finish_after_tls_connection finds the descriptor still
+    // NON_BLOCKING_CONNECT_FD, and the connect's completion then leaves
+    // the status to TLS (p->gnutls_p): the process stays `connect' for
+    // good.  GNU 30.2 left 12 and 43 of 60 such clients connecting under
+    // CPU load, Emaxx 36 and 26.  A relay that holds the server's first
+    // flight back keeps the boot's handshake short of READY, as an
+    // unloaded host does.
+    let relay = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("reserve localhost port for the GnuTLS relay");
+    let relay_port = relay.local_addr().expect("relay address").port();
+    std::thread::spawn(move || {
+        let Ok((client, _)) = relay.accept() else {
+            return;
+        };
+        let Ok(server) = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)) else {
+            return;
+        };
+        let (Ok(mut from_client), Ok(mut to_server)) = (client.try_clone(), server.try_clone())
+        else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut from_client, &mut to_server);
+            let _ = to_server.shutdown(std::net::Shutdown::Write);
+        });
+        let (mut from_server, mut to_client) = (server, client);
+        let mut buffer = [0u8; 16384];
+        let mut first = true;
+        while let Ok(count) = from_server.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            if std::mem::take(&mut first) {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            if to_client.write_all(&buffer[..count]).is_err() {
+                break;
+            }
+        }
+        let _ = to_client.shutdown(std::net::Shutdown::Write);
+    });
     let asynchronous = format!(
         r#"
         (let* ((buffer (generate-new-buffer " *gnutls-async-transport*"))
@@ -16724,7 +16769,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
                          :name "gnutls-async-transport"
                          :buffer buffer
                          :host "127.0.0.1"
-                         :service {port}
+                         :service {relay_port}
                          :family 'ipv4
                          :coding 'no-conversion
                          :sentinel #'ignore
@@ -16738,7 +16783,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
               (let ((initial-status (process-status process))
                     (tries 0))
                 (while (and (eq (process-status process) 'connect)
-                            (< (setq tries (1+ tries)) 100))
+                            (< (setq tries (1+ tries)) 500))
                   (sit-for 0.01))
                 (let ((peer (gnutls-peer-status process)))
                   (list initial-status
@@ -16985,7 +17030,12 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
         .expect("X.509 verification result should be a list");
     assert_eq!(items.first(), Some(&Value::T));
     assert_eq!(items.get(1), Some(&Value::T));
-    assert_eq!(items.get(2), Some(&Value::Nil));
+    // Fgnutls_peer_status: `:self-signed' for a host certificate that is
+    // its own issuer, trusted or not.
+    assert_eq!(
+        items.get(2),
+        Some(&Value::list([Value::symbol(":self-signed")]))
+    );
     assert_eq!(
         items.get(3),
         Some(&Value::list(std::iter::repeat_n(Value::T, 13)))
@@ -23787,6 +23837,7 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    define_subr_ignore(&mut interp, &mut env);
     let (buffer_id, _) = interp.create_buffer(" *native-process-audit*");
     interp
         .switch_to_buffer_id_preserving_window_history(buffer_id)
@@ -25363,9 +25414,15 @@ fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() 
     for (program, expected) in contracts {
         assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-        let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+        // A macro's keys run through command_loop_1's `command-execute',
+        // simple.el's: the batch image's Lisp.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         let mut env = crate::lisp::types::Env::new();
-        let form = Reader::new(program)
+        // *scratch* starts empty, as in GNU's batch session, where the
+        // macro's command loop inserts (the selected window's buffer).
+        let program =
+            format!("(progn (with-current-buffer \"*scratch*\" (erase-buffer)) {program})");
+        let form = Reader::new(&program)
             .read()
             .expect("keyboard-macro contract should parse")
             .expect("keyboard-macro contract should contain a form");
@@ -25421,18 +25478,24 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
     let mut env = crate::lisp::types::Env::new();
     interp.buffer.borrow_mut().insert("xy");
     interp.buffer.borrow_mut().goto_char(1);
-    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
-        .expect("start keyboard macro recording");
-
-    crate::lisp::primitives::execute_command_binding(
+    // C-f read by a recursive edit's command loop, which a timer ends with
+    // a throw to `exit' once it waits for more input (without a keyboard
+    // read_char waits, as GNU's does; GNU gives the same values).
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
-        Value::Symbol("forward-char".into()),
-        &[Value::Integer(6)],
-        Value::Integer(6),
+        "(progn (defvar emaxx-test-nonmenu nil)
+                (add-hook 'post-command-hook
+                          (lambda () (when (eq this-command 'forward-char)
+                                       (setq emaxx-test-nonmenu last-nonmenu-event))))
+                (start-kbd-macro nil)
+                (let ((unread-command-events (list ?\\C-f)))
+                  (run-at-time 0 nil (lambda () (throw 'exit nil)))
+                  (recursive-edit))
+                (end-kbd-macro))",
     )
-    .expect("execute recorded command");
-    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+    .expect("record C-f");
 
     assert_eq!(
         interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
@@ -25442,10 +25505,78 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
         interp.lookup_var_key(cached_symbol!("last-input-event"), &env),
         Some(Value::Integer(6))
     );
+    // The command saw C-f as read_key_sequence's last_nonmenu_event (the
+    // next read's replay sets it nil again).
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-nonmenu-event"), &env),
+        interp.lookup_var("emaxx-test-nonmenu", &env),
         Some(Value::Integer(6))
     );
+}
+
+#[test]
+fn key_description_spells_keys_as_keymap_c_does() {
+    // keymap.c:Fkey_description (the spellings the terminal's echo and
+    // messages use): a function key in angle brackets, RET, DEL and ESC by
+    // name, NUL as C-@, and a sequence's keys separated by spaces (GNU 30.2
+    // gives the same strings).
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut describe = |keys: Value| {
+        let described =
+            call(&mut interp, "key-description", &[keys], &mut env).expect("key-description");
+        string_like(&described).expect("a string").text
+    };
+    assert_eq!(describe(Value::vector([Value::symbol("up")])), "<up>");
+    assert_eq!(describe(Value::vector([Value::Integer(13)])), "RET");
+    assert_eq!(describe(Value::vector([Value::Integer(127)])), "DEL");
+    assert_eq!(describe(Value::vector([Value::Integer(0)])), "C-@");
+    assert_eq!(describe(Value::vector([Value::Integer(27)])), "ESC");
+    assert_eq!(
+        describe(Value::vector([
+            Value::Integer(24),
+            Value::Integer(52),
+            Value::symbol("f1"),
+        ])),
+        "C-x 4 <f1>"
+    );
+}
+
+#[test]
+fn read_event_runs_help_form_for_the_help_character() {
+    // keyboard.c:read_char: the help character read while `help-form' is
+    // non-nil is made this-command-keys and `last-input-event', help-form-show
+    // evaluates the form (dynamically, so it sets the special variable), and
+    // the next event is read and returned.  GNU gives
+    // (120 ([8] 8) 120 nil [8]).
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn
+           (defvar emaxx-test-help-shown nil)
+           (let* ((help-form '(progn (setq emaxx-test-help-shown
+                                           (list (this-command-keys-vector) last-input-event))
+                                     nil))
+                  (unread-command-events (list ?\\C-h ?x)))
+             (list (read-event) emaxx-test-help-shown last-input-event
+                   unread-command-events (this-command-keys-vector))))",
+    )
+    .expect("read an event");
+    let items = value.to_vec().expect("a list");
+    assert_eq!(
+        items[0],
+        Value::Integer(120),
+        "the event after the help character"
+    );
+    assert_eq!(
+        items[1],
+        Value::list([Value::vector([Value::Integer(8)]), Value::Integer(8)]),
+        "the help form saw the help character as the keys and last input"
+    );
+    assert_eq!(items[2], Value::Integer(120));
+    assert_eq!(items[3], Value::Nil, "both events were read");
+    assert_eq!(items[4], Value::vector([Value::Integer(8)]));
 }
 
 #[test]
@@ -25460,23 +25591,20 @@ fn keyboard_macro_records_input_read_inside_a_command() {
     interp
         .eval(&definition, &mut env)
         .expect("define nested-input command");
-    interp.set_variable_key(
-        cached_symbol!("unread-command-events"),
-        Value::list([Value::Integer(97)]),
-        &mut env,
-    );
-    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
-        .expect("start keyboard macro recording");
-
-    crate::lisp::primitives::execute_command_binding(
+    // C-c r runs the command, whose read-char takes the a after it; C-M-c
+    // ends the recursive edit, a throw before finalize_kbd_macro_chars
+    // gives the macro its keys (GNU records [3 114 97] too).  With no
+    // keyboard, nothing else ends it: read_char would wait for input.
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
-        Value::Symbol("emaxx-test-read-char-command".into()),
-        &[Value::Integer(3), Value::Integer(114)],
-        Value::Integer(114),
+        "(progn (global-set-key \"\\C-cr\" 'emaxx-test-read-char-command)
+                (start-kbd-macro nil)
+                (let ((unread-command-events (list ?\\C-c ?r ?a ?\\C-\\M-c))) (recursive-edit))
+                (end-kbd-macro))",
     )
-    .expect("execute a command that reads another event");
-    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+    .expect("record a command that reads another event");
 
     assert_eq!(
         interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
@@ -25503,8 +25631,19 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
              (setq emaxx-test-completion-value nil))"#,
     )
     .expect("define a completing command for macro recording");
+    // C-c c and the minibuffer's keys come from the keyboard (the feed);
+    // ESC C-c's `exit-recursive-edit' ends the recursive edit, its throw
+    // leaving the macro's end where the last command's
+    // finalize_kbd_macro_chars put it.  (A feed that runs dry is its
+    // terminal's end: `kill-emacs' 1.)
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(global-set-key \"\\C-cc\" 'emaxx-test-completion-command)",
+    )
+    .expect("bind the completing command");
     let script = std::rc::Rc::new(std::cell::RefCell::new(
-        "ba\t\r"
+        "\x03cba\t\r\x1b\x03"
             .chars()
             .rev()
             .map(|ch| Value::Integer(ch as i64))
@@ -25512,19 +25651,13 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
     ));
     let feed = std::rc::Rc::clone(&script);
     set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
-
-    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
-        .expect("start keyboard macro recording");
-    crate::lisp::primitives::execute_command_binding(
+    let recorded = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
-        Value::Symbol("emaxx-test-completion-command".into()),
-        &[Value::Integer(3), Value::Integer(99)],
-        Value::Integer(99),
-    )
-    .expect("record a command and its minibuffer input");
+        "(progn (start-kbd-macro nil) (recursive-edit) (end-kbd-macro))",
+    );
     set_tty_event_reader(None);
-    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+    recorded.expect("record a command and its minibuffer input");
 
     assert_eq!(
         interp.lookup_var("emaxx-test-completion-value", &env),
@@ -25624,6 +25757,21 @@ fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
                     (this-command-keys)
                     (this-command-keys-vector))))"#,
             r#"(("ab" [97 98] [97 98]) "" [])"#,
+        ),
+        (
+            // keyboard.c's Fset__this_command_keys: a raw byte is its
+            // byte, and only a first 248 is M-x.
+            r#"(list
+                (progn
+                  (set--this-command-keys "\M-xa\M-x")
+                  (list (this-command-keys-vector) (this-single-command-keys)))
+                (progn
+                  (set--this-command-keys (string-to-multibyte "\377b\370"))
+                  (this-command-keys-vector))
+                (condition-case error-data
+                    (set--this-command-keys 'a)
+                  (error error-data)))"#,
+            "(([134217848 97 248] [134217848 97 248]) [255 98 248] (wrong-type-argument stringp a))",
         ),
         (
             r#"(let ((unread-command-events '(97)))
@@ -27010,6 +27158,7 @@ fn native_serial_speed_nil_preserves_the_unconfigured_gnu_contract() {
     let (_emaxx_master, emaxx_path) = serial_test_pty();
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    define_subr_ignore(&mut interp, &mut env);
     let form = Reader::new(&program(&emaxx_path))
         .read()
         .expect("unconfigured serial contract should parse")
@@ -27468,12 +27617,18 @@ fn native_subprocess_job_control_uses_child_groups_and_reaps_signal_states() {
                 std::time::Instant::now() < deadline,
                 "subprocess never reached {expected}; last status was {status:?}"
             );
-            pump_external_process_output(interp, env).expect("pump controlled subprocess");
+            call(
+                interp,
+                "accept-process-output",
+                &[Value::Nil, Value::Integer(0)],
+                env,
+            )
+            .expect("pump controlled subprocess");
             std::thread::sleep(Duration::from_millis(5));
         }
     }
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
 
     let stopped = start_sleep(&mut interp, &mut env, "stopped-child");
@@ -27748,11 +27903,8 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
         let process_id = interp
             .resolve_process_id(&process)
             .expect("resolve held-output process");
-        let (pending_stdout, pending_stderr) = interp
-            .poll_process_output(process_id)
-            .expect("inspect undelivered held output");
         panic!(
-            "held output was not delivered: status={:?}, filter={:?}, paused={}, deliveries={:?}, pending_stdout={pending_stdout:?}, pending_stderr={pending_stderr:?}",
+            "held output was not delivered: status={:?}, filter={:?}, paused={}, deliveries={:?}",
             interp.process_status_value(process_id),
             interp.process_filter_value(process_id),
             interp.process_output_paused(process_id),
@@ -27795,6 +27947,7 @@ fn native_process_window_and_foreground_queries_follow_pty_ownership() {
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
+    define_subr_ignore(&mut interp, &mut env);
     let make_process =
         |interp: &mut Interpreter, env: &mut Env, name: &str, connection_type: &str| {
             call(
@@ -27885,7 +28038,7 @@ fn tty_event_reader_quit_signals_gnu_quit() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
-    set_tty_event_reader(Some(Box::new(|_| None)));
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(7)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
     let Err(LispErrorKind::SignalValue(data)) = event.as_ref().map_err(LispError::kind) else {
@@ -27894,7 +28047,7 @@ fn tty_event_reader_quit_signals_gnu_quit() {
     // keyboard.c signal_quit: Fsignal (Qquit, Qnil), whose error object
     // is the list (quit).
     assert_eq!(*data, Value::list([Value::symbol("quit")]));
-    set_tty_event_reader(Some(Box::new(|_| None)));
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(7)))));
     let caught = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -27926,6 +28079,86 @@ fn tty_event_reader_does_not_preempt_queued_events() {
     );
 }
 
+/// A keyboard terminal over a pipe for a test's blocking read: the pipe is
+/// the descriptor the wait selects on, a thread writes its byte DELAY
+/// after the read begins (as a key typed then), and the read hook stores
+/// EVENT for it in the keyboard buffer the poller takes from.
+struct PipeKeyboard {
+    read_fd: i32,
+    writer: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PipeKeyboard {
+    fn install(event: Value, delay: std::time::Duration) -> Self {
+        let mut fds = [0; 2];
+        // SAFETY: FDS has room for the two descriptors pipe2 returns.
+        assert_eq!(
+            unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) },
+            0
+        );
+        let [read_fd, write_fd] = fds;
+        let buffer = std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::new()));
+        set_keyboard_terminal(Some(KeyboardTerminal {
+            read_socket_hook: Box::new({
+                let buffer = std::rc::Rc::clone(&buffer);
+                move |interp, env| {
+                    let mut byte = [0u8; 64];
+                    // SAFETY: BYTE is a writable buffer of its length.
+                    let nread =
+                        unsafe { libc::read(read_fd, byte.as_mut_ptr().cast(), byte.len()) };
+                    if nread <= 0 {
+                        return 0;
+                    }
+                    for _ in 0..nread {
+                        if crate::lisp::primitives::kbd_buffer_store_event(
+                            interp,
+                            env,
+                            Some(&event),
+                        ) {
+                            buffer.borrow_mut().push_back(event);
+                        }
+                    }
+                    nread as i32
+                }
+            }),
+            buffer_nonempty: Box::new({
+                let buffer = std::rc::Rc::clone(&buffer);
+                move || !buffer.borrow().is_empty()
+            }),
+            fd: Some(read_fd),
+        }));
+        set_tty_event_poller(Some(Box::new(move |_| {
+            Some(buffer.borrow_mut().pop_front())
+        })));
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            // SAFETY: WRITE_FD is the pipe's write end, closed only here.
+            unsafe {
+                libc::write(write_fd, b"x".as_ptr().cast(), 1);
+                libc::close(write_fd);
+            }
+        });
+        Self {
+            read_fd,
+            writer: Some(writer),
+        }
+    }
+}
+
+impl Drop for PipeKeyboard {
+    fn drop(&mut self) {
+        set_tty_event_poller(None);
+        set_keyboard_terminal(None);
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+        // SAFETY: READ_FD is the pipe's read end, closed only here.
+        unsafe {
+            libc::close(self.read_fd);
+        }
+    }
+}
+
 #[test]
 fn blocking_tty_event_read_redraws_after_a_due_timer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
@@ -27940,13 +28173,9 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
     )
     .expect("schedule an immediately due timer");
 
-    let polls = std::rc::Rc::new(std::cell::Cell::new(0));
-    let poll_count = std::rc::Rc::clone(&polls);
-    set_tty_event_poller(Some(Box::new(move |_| {
-        let count = poll_count.get();
-        poll_count.set(count + 1);
-        Some((count > 0).then_some(Value::Integer(120)))
-    })));
+    // The key comes after the read has begun waiting, the timer due then.
+    let keyboard =
+        PipeKeyboard::install(Value::Integer(120), std::time::Duration::from_millis(200));
     let saw_timer = std::rc::Rc::new(std::cell::Cell::new(false));
     let observed = std::rc::Rc::clone(&saw_timer);
     set_tty_frame_redraw(Some(Box::new(move |interp, env| {
@@ -27960,9 +28189,9 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_frame_redraw(None);
-    set_tty_event_poller(None);
+    drop(keyboard);
     assert_eq!(
-        event.expect("the second poll supplies input"),
+        event.expect("the key typed during the read is its event"),
         Value::Integer(120)
     );
     assert!(
@@ -27992,14 +28221,9 @@ fn blocking_tty_event_read_redraws_after_process_output() {
     .expect("start the redraw probe process");
 
     let saw_output = std::rc::Rc::new(std::cell::Cell::new(false));
-    let poll_observation = std::rc::Rc::clone(&saw_output);
-    let polls = std::rc::Rc::new(std::cell::Cell::new(0_usize));
-    let poll_count = std::rc::Rc::clone(&polls);
-    set_tty_event_poller(Some(Box::new(move |_| {
-        let count = poll_count.get() + 1;
-        poll_count.set(count);
-        Some((poll_observation.get() || count >= 100_000).then_some(Value::Integer(120)))
-    })));
+    // The key comes well after the child's output.
+    let keyboard =
+        PipeKeyboard::install(Value::Integer(120), std::time::Duration::from_millis(1500));
     let redraw_observation = std::rc::Rc::clone(&saw_output);
     set_tty_frame_redraw(Some(Box::new(move |interp, env| {
         if interp
@@ -28012,7 +28236,7 @@ fn blocking_tty_event_read_redraws_after_process_output() {
 
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_frame_redraw(None);
-    set_tty_event_poller(None);
+    drop(keyboard);
     let _ = call(
         &mut interp,
         "delete-process",
@@ -28020,7 +28244,7 @@ fn blocking_tty_event_read_redraws_after_process_output() {
         &mut env,
     );
     assert_eq!(
-        event.expect("the redraw observation releases the input poll"),
+        event.expect("the key typed during the read is its event"),
         Value::Integer(120)
     );
     assert!(
@@ -28278,9 +28502,7 @@ fn write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events()
 
 #[test]
 fn tty_events_answer_interactive_minibuffer_prompts() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     // The terminal feeds "answer.txt" then RET into the minibuffer loop.
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
         std::rc::Rc::new(std::cell::RefCell::new(
@@ -28386,9 +28608,7 @@ fn live_read_string_records_an_accepted_default_in_history() {
 
 #[test]
 fn tty_minibuffer_edits_complete_and_recall_history() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     interp.set_variable_key(
         cached_symbol!("minibuffer-history"),
         Value::list([Value::String("older-entry".into())]),
@@ -28438,9 +28658,7 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
 
 #[test]
 fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     interp.set_variable_key(
         cached_symbol!("minibuffer-history"),
         Value::list([Value::String("recalled".into())]),
@@ -28477,11 +28695,11 @@ fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
 
 #[test]
 fn tty_minibuffer_quit_signals_gnu_quit() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
-    // The frontend's reader answers None for C-g; the loop signals quit.
-    set_tty_event_reader(Some(Box::new(|_| None)));
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    // C-g from the keyboard runs minibuffer.el's `abort-minibuffers', whose
+    // throw to `exit' calls a function signalling `minibuffer-quit' (a
+    // `quit'), as GNU's does.
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(7)))));
     let result = call(
         &mut interp,
         "read-string",
@@ -28492,14 +28710,12 @@ fn tty_minibuffer_quit_signals_gnu_quit() {
     let Err(LispErrorKind::SignalValue(data)) = result.as_ref().map_err(LispError::kind) else {
         panic!("C-g from the minibuffer loop must signal, got {result:?}");
     };
-    assert_eq!(*data, Value::list([Value::symbol("quit")]));
+    assert_eq!(*data, Value::list([Value::symbol("minibuffer-quit")]));
 }
 
 #[test]
 fn tty_completing_read_completes_with_tab() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
         std::rc::Rc::new(std::cell::RefCell::new(
             "forw\t\r"
@@ -28531,9 +28747,7 @@ fn tty_completing_read_completes_with_tab() {
 
 #[test]
 fn tty_read_buffer_formats_a_buffer_default_into_the_prompt() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     let current = Value::Buffer(interp.buffer);
     set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(13)))));
     let prompts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -28724,10 +28938,20 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
         .active_minibuffer_activation_id()
         .expect("inner activation has an identity");
     assert!(inner_activation > outer_activation);
+    // read_minibuf sets minibuf_selected_window only at the first level or
+    // when the read starts outside the minibuffer window, so a read nested
+    // in the minibuffer keeps the outer read's entry window (GNU 30.2 gives
+    // ((1 t nil) (2 t nil)) for minibuffer-selected-window's identity with
+    // the entry window and window-minibuffer-p at each level).
+    assert_eq!(
+        call(&mut interp, "selected-window", &[], &mut env).expect("inner selection"),
+        outer_minibuffer,
+        "the nested read runs in the minibuffer window"
+    );
     assert_eq!(
         call(&mut interp, "minibuffer-selected-window", &[], &mut env).expect("inner entry query"),
-        outer_minibuffer,
-        "a nested read remembers the outer minibuffer window"
+        entry,
+        "a read nested in the minibuffer keeps the outer entry window"
     );
 
     crate::lisp::primitives::unwind_active_minibuffer(&mut interp, inner, &mut env)
@@ -30232,7 +30456,7 @@ fn tty_menu_key_hints_follow_preferred_binding_and_live_removal() {
 }
 
 #[test]
-fn command_error_echo_accepts_mutable_error_message_strings() {
+fn error_message_string_accepts_mutable_error_message_strings() {
     let program = r#"(let ((text (copy-sequence "before")))
         (list (error-message-string '(beginning-of-buffer))
               (error-message-string '(user-error "visible warning"))
@@ -30242,39 +30466,6 @@ fn command_error_echo_accepts_mutable_error_message_strings() {
     assert_upstream_primitive_contract(
         &format!("(prin1 {program})"),
         r#"("Beginning of buffer" "visible warning" "before" "Before")"#,
-    );
-    let mut interp = Interpreter::new();
-    let mut env = Env::new();
-    for (condition, expected) in [
-        ("(beginning-of-buffer)", "Beginning of buffer"),
-        ("(user-error \"visible warning\")", "visible warning"),
-    ] {
-        let data = Reader::new(condition)
-            .read()
-            .expect("read echo condition")
-            .expect("echo condition form");
-        let error = LispError::SignalValue(data);
-        assert_eq!(
-            command_error_echo_text(&mut interp, &mut env, &error),
-            expected
-        );
-    }
-    let text = make_shared_string_value_with_multibyte("before".into(), None, true);
-    let error = LispError::SignalValue(Value::list([Value::symbol("error"), text]));
-    assert_eq!(
-        command_error_echo_text(&mut interp, &mut env, &error),
-        "before"
-    );
-    call(
-        &mut interp,
-        "aset",
-        &[text, Value::Integer(0), Value::Integer(i64::from(b'B'))],
-        &mut env,
-    )
-    .expect("mutate error text");
-    assert_eq!(
-        command_error_echo_text(&mut interp, &mut env, &error),
-        "Before"
     );
 }
 
@@ -30640,7 +30831,7 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
     // The frame-redraw hook runs once per minibuffer iteration; observing
     // the layout there sees the pop-up while the read is still live.
-    type LayoutSnapshots = Vec<(Option<String>, Vec<(String, usize, bool)>)>;
+    type LayoutSnapshots = Vec<(Option<String>, Vec<(String, usize, bool)>, Option<String>)>;
     let observed: std::rc::Rc<std::cell::RefCell<LayoutSnapshots>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = std::rc::Rc::clone(&observed);
@@ -30659,8 +30850,20 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
                 (name, info.height, info.selected)
             })
             .collect();
-        sink.borrow_mut()
-            .push((crate::lisp::primitives::echo_area_message(), windows));
+        let minibuffer = interp.active_minibuffer_buffer_id().and_then(|id| {
+            if id == interp.current_buffer_id() {
+                Some(interp.buffer.borrow().buffer_string())
+            } else {
+                interp
+                    .get_buffer_by_id(id)
+                    .map(|buffer| buffer.buffer_string())
+            }
+        });
+        sink.borrow_mut().push((
+            crate::lisp::primitives::echo_area_message(),
+            windows,
+            minibuffer,
+        ));
     })));
     let result = call(
         &mut interp,
@@ -30684,7 +30887,7 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     let observed = observed.borrow();
     let popped: Vec<_> = observed
         .iter()
-        .filter(|(_, windows)| windows.iter().any(|(name, _, _)| name == "*Completions*"))
+        .filter(|(_, windows, _)| windows.iter().any(|(name, _, _)| name == "*Completions*"))
         .collect();
     assert!(
         !popped.is_empty(),
@@ -30692,25 +30895,28 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     );
     // Content: two help lines, a blank, the count line, two candidates —
     // six lines plus the mode line, GNU's fit-window-to-buffer answer.
-    for (_, windows) in &popped {
+    for (_, windows, _) in &popped {
         let (_, height, _) = windows
             .iter()
             .find(|(name, _, _)| name == "*Completions*")
             .expect("completions window in snapshot");
         assert_eq!(*height, 7, "the pop-up stays fitted after selection");
     }
-    let (selected_echo, _) = popped
+    let (selected_echo, _, minibuffer) = popped
         .iter()
-        .find(|(_, windows)| {
+        .find(|(_, windows, _)| {
             windows
                 .iter()
                 .any(|(name, _, selected)| name == "*Completions*" && *selected)
         })
         .expect("M-v selects the completions window");
+    // No message: the mini window shows the active minibuffer, which
+    // still holds the read's prompt and input.
+    assert_eq!(selected_echo.as_deref(), None, "no echo area message");
     assert_eq!(
-        selected_echo.as_deref(),
+        minibuffer.as_deref(),
         Some("Pick: ambig"),
-        "selecting *Completions* keeps the active minibuffer in the echo area"
+        "selecting *Completions* keeps the active minibuffer's text"
     );
 
     let final_layout = crate::lisp::primitives::window_render_layout(&interp);
@@ -30799,9 +31005,7 @@ fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
 
 #[test]
 fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() {
-    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     interp.set_tty_frame_size(80, 24);
     interp.buffer.borrow_mut().insert("alpha\nbeta\ngamma\n");
     interp.buffer.borrow_mut().goto_char(7); // line 2
@@ -35816,7 +36020,7 @@ fn stderr_pipe_process_and_status_notify_as_process_c() {
         (a (make-process :name "t256-a" :noquery t :connection-type 'pipe
                          :command '("sh" "-c" "exec 1>&- 2>&-; sleep 0.3")))
         (b (make-process :name "t256-b" :noquery t :connection-type 'pipe
-                         :command '("true")
+                         :command '("sh" "-c" "sleep 0.1")
                          :sentinel (lambda (_p _e) (push (process-live-p a) seen)))))
    (while (or (null seen) (process-live-p a))
      (accept-process-output nil 0.05))

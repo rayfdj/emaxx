@@ -603,6 +603,7 @@ fn use_terminal_device(argv0: &str, term: &str) {
         std::process::exit(1);
     }
     eprintln!("Using {term}");
+    tty::set_dev_tty(term);
 }
 
 #[cfg(not(unix))]

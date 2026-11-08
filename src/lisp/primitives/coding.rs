@@ -590,7 +590,7 @@ pub(crate) fn pre_write_convert(
             .unwrap_or(Ok(())),
         _ => Ok(()),
     };
-    interp.set_variable_key(cached_symbol!("deactivate-mark"), old_deactivate_mark, env);
+    interp.set_c_variable("deactivate-mark", old_deactivate_mark);
     let restored = code_conversion_restore(interp, work, env);
     let (converted, _) = converted?;
     killed?;
@@ -682,7 +682,7 @@ pub(crate) fn decode_into_work_buffer(
             extended_chars: buffer.substring_extended_chars(begv, zv),
         })
     })();
-    interp.set_variable_key(cached_symbol!("deactivate-mark"), old_deactivate_mark, env);
+    interp.set_c_variable("deactivate-mark", old_deactivate_mark);
     let restored = code_conversion_restore(interp, work, env);
     let result = result?;
     restored?;
