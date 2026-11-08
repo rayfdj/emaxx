@@ -1734,6 +1734,17 @@ pub(crate) fn visual_char_widths(
 /// computes at the window's start — so wrapped lines break that many
 /// columns earlier.
 fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize {
+    let window_id = interp.selected_window_id();
+    window_line_number_columns(interp, env, window_id)
+}
+
+/// The `display-line-numbers' columns of WINDOW, which shows the current
+/// buffer: the width redisplay computes at its start.
+pub(crate) fn window_line_number_columns(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+) -> usize {
     let buffer_id = interp.current_buffer_id();
     let enabled = interp
         .buffer_local_value_key(buffer_id, cached_symbol!("display-line-numbers"))
@@ -1747,20 +1758,30 @@ fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize 
     if enabled.is_nil() {
         return 0;
     }
-    let text_rows = super::call(interp, "window-body-height", &[], env)
+    let window = interp.record_value(window_id);
+    let text_rows = super::call(interp, "window-body-height", &[window], env)
         .ok()
         .and_then(|value| value.integer_value())
         .unwrap_or(0)
         .max(1) as usize;
-    let start = interp.selected_window_start().clamp(
-        interp.buffer.borrow().point_min(),
-        interp.buffer.borrow().point_max(),
-    );
+    let (point_min, point_max) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point_min(), buffer.point_max())
+    };
+    let start = crate::lisp::primitives::window::window_start(interp, Some(&window))
+        .unwrap_or(point_min)
+        .clamp(point_min, point_max);
+    let point = if window_id == interp.selected_window_id() {
+        interp.buffer.borrow().point()
+    } else {
+        super::call(interp, "window-point", &[window], env)
+            .ok()
+            .and_then(|value| value.integer_value())
+            .map_or(point_min, |point| point.max(0) as usize)
+    }
+    .clamp(point_min, point_max);
     let top_line = interp.buffer.borrow().line_number_at_pos(start);
-    let point_line = interp
-        .buffer
-        .borrow()
-        .line_number_at_pos(interp.buffer.borrow().point());
+    let point_line = interp.buffer.borrow().line_number_at_pos(point);
     let begv_line = interp
         .buffer
         .borrow()
@@ -1769,6 +1790,42 @@ fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize 
         interp, buffer_id, top_line, point_line, begv_line, text_rows,
     )
     .map_or(0, |layout| layout.cols)
+}
+
+/// How WINDOW, which shows the current buffer, lays its text out on a
+/// terminal: its line-number columns, the text width right of them,
+/// truncation and hscroll.
+pub(crate) fn window_text_geometry(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+) -> crate::tty::WindowTextGeometry {
+    let lnum_cols = window_line_number_columns(interp, env, window_id);
+    let truncate = crate::tty::window_truncates(interp, window_id, interp.current_buffer_id());
+    let state = crate::lisp::primitives::window_hscroll_state(interp, window_id);
+    let hscroll = state.hscroll.max(0) as usize;
+    let min_hscroll = state.min_hscroll.max(0) as usize;
+    let current_line = interp
+        .buffer_local_value(interp.current_buffer_id(), "auto-hscroll-mode")
+        .or_else(|| interp.default_value("auto-hscroll-mode"))
+        .is_some_and(|mode| crate::lisp::types::eq_symbol_named(mode, "current-line"));
+    crate::tty::WindowTextGeometry {
+        lnum_cols,
+        text_width: crate::lisp::primitives::window_text_area_columns(interp, window_id)
+            .saturating_sub(lnum_cols)
+            .max(1),
+        truncate,
+        hscroll,
+        // init_iterator: hscrolling_current_line_p hscrolls only the row
+        // showing point, the others by the min_hscroll.
+        first_visible: if truncate && current_line && !state.suspended {
+            min_hscroll
+        } else {
+            hscroll
+        },
+        // buffer_posn_from_coords tests `auto-hscroll-mode' alone.
+        point_row_hscroll: (truncate && current_line).then(|| hscroll.saturating_sub(min_hscroll)),
+    }
 }
 
 /// Whether screen-line motion follows a live terminal display rather
@@ -1896,9 +1953,31 @@ pub(crate) fn window_text_pixel_size(
         Some(limit) => limit.saturating_add(1).saturating_sub(lnum).max(1),
         None => default_width,
     };
-    let default_last_visible_x = lnum + default_width.saturating_sub(1).max(1);
-    let last_visible_x = lnum + width.saturating_sub(1).max(1);
     let truncate = crate::tty::window_truncates(interp, window_id, interp.current_buffer_id());
+    // init_iterator's first_visible_x: the window's hscroll (its
+    // min_hscroll when only the current line hscrolls), which the
+    // iterator's x counts from and its last_visible_x lies past.
+    let hscroll = if truncate {
+        window_text_geometry(interp, env, window_id).first_visible
+    } else {
+        0
+    };
+    let default_last_visible_x = hscroll + lnum + default_width.saturating_sub(1).max(1);
+    // X-LIMIT is it.last_visible_x itself.
+    let last_visible_x = if max_x.is_some() {
+        lnum + width.saturating_sub(1).max(1)
+    } else {
+        default_last_visible_x
+    };
+    // The iterator's x of a glyph at COLUMN: the line-number glyphs come
+    // once a glyph reaches past first_visible_x.
+    let iterator_x = move |column: usize| {
+        if hscroll == 0 || column > hscroll {
+            lnum + column
+        } else {
+            column
+        }
+    };
     if vertical_offset != 0 {
         // move_it_by_lines (&it, 0), then up or down that many lines.
         let (landed, _) =
@@ -1914,11 +1993,11 @@ pub(crate) fn window_text_pixel_size(
     };
     let (mut layout, mut eol) = layout_with(start, width);
     let mut start_x = if vertical_offset != 0 {
-        lnum
+        iterator_x(0)
     } else if width == default_width {
-        lnum + layout.position_cell(start).1
+        iterator_x(layout.position_cell(start).1)
     } else {
-        lnum + layout_with(start, default_width).0.position_cell(start).1
+        iterator_x(layout_with(start, default_width).0.position_cell(start).1)
     };
     let mut row = layout.position_cell(start).0;
     let start_on_newline = char_at(interp, start) == Some('\n');
@@ -1939,8 +2018,12 @@ pub(crate) fn window_text_pixel_size(
     // The first line's glyphs follow FROM's x, or x 0 when FROM is a
     // newline (the newline takes no place on display).
     let mut adjust: isize = if iterator_at == start {
-        let base = if start_on_newline { lnum } else { start_x };
-        base as isize - (lnum + layout.position_cell(start).1) as isize
+        let base = if start_on_newline {
+            iterator_x(0)
+        } else {
+            start_x
+        };
+        base as isize - iterator_x(layout.position_cell(start).1) as isize
     } else {
         0
     };
@@ -1961,13 +2044,15 @@ pub(crate) fn window_text_pixel_size(
         };
         let end_on_row = next_row.map_or(end <= eol, |next| end < next);
         let x_of = |layout: &crate::tty::ScreenLineLayout, pos: usize, adjust: isize| {
-            ((lnum + layout.position_cell(pos).1) as isize + adjust).max(0) as usize
+            (iterator_x(layout.position_cell(pos).1) as isize + adjust).max(0) as usize
         };
         if carried && lines == 0 {
             // Every glyph is past the edge: the line is cut at once.
             x = x.max(last_visible_x);
             if end_on_row || end < iterator_at {
-                final_height = 1 + usize::from(end < iterator_at);
+                // The retry's it.current_x - it.first_visible_x >=
+                // it.last_visible_x holds at the cut only unhscrolled.
+                final_height = 1 + usize::from(end < iterator_at && hscroll == 0);
                 break;
             }
             lines += 1;
@@ -2007,7 +2092,9 @@ pub(crate) fn window_text_pixel_size(
             // it and the retry before TO counts the line once more, except
             // at a ZV that ends no newline.
             final_height = usize::from(row_start < end || (lines == 0 && landed_on_glyph))
-                + usize::from(hidden && end < zv);
+                // GNU's test, it.current_x - it.first_visible_x >=
+                // it.last_visible_x, holds at the cut only unhscrolled.
+                + usize::from(hidden && end < zv && hscroll == 0);
             break;
         }
         let row_x = if next_row.is_some() {

@@ -172,7 +172,99 @@ pub(super) fn lay_out_motion_line(visual: &VisualLine, cols: usize, truncate: bo
     lay_out(visual, cols, truncate, true)
 }
 
+/// VISUAL as a window whose display starts at display index FROM, inside
+/// the line, shows it (xdisp.c start_display): a truncated line's row
+/// begins there, x 0; a continued line is walked from its start to FROM
+/// (reseat_at_previous_visible_line_start, move_it_to), and its rows then
+/// begin at FROM with x 0, keeping the continuation_lines_width the walk
+/// reached -- so the first row takes `wrap-prefix' past the line's first
+/// row and its TABs stop where they would on the row FROM was on.
+/// Display indexes before FROM take the first row's start column.
+///
+/// WALK is false for a start right after a newline (start_at_line_beg_p,
+/// an invisible newline's line joined to the one before): no walk, so
+/// the rows begin there as a line's first row does.
+pub(super) fn lay_out_visual_line_from(
+    visual: &VisualLine,
+    cols: usize,
+    truncate: bool,
+    from: usize,
+    walk: bool,
+) -> LineLayout {
+    lay_out_from(visual, cols, truncate, false, from, walk)
+}
+
+/// lay_out_visual_line_from as move_it_in_display_line_to walks the rows.
+pub(super) fn lay_out_motion_line_from(
+    visual: &VisualLine,
+    cols: usize,
+    truncate: bool,
+    from: usize,
+    walk: bool,
+) -> LineLayout {
+    lay_out_from(visual, cols, truncate, true, from, walk)
+}
+
+fn lay_out_from(
+    visual: &VisualLine,
+    cols: usize,
+    truncate: bool,
+    motion: bool,
+    from: usize,
+    walk: bool,
+) -> LineLayout {
+    let chars: Vec<char> = visual.text.chars().collect();
+    let elements = elements_of(visual, &chars);
+    // The display element FROM is part of: the iterator stops before it.
+    let target = elements
+        .iter()
+        .position(|element| from < element.end)
+        .unwrap_or(elements.len());
+    let start = if truncate || !walk {
+        // init_iterator at the start; no move from the line's start.
+        RowState {
+            element: target,
+            ..RowState::default()
+        }
+    } else {
+        // The state at the start of the row the walk to FROM stops on.
+        let (_, states) = lay_out_rows(visual, cols, false, motion, RowState::default());
+        RowState {
+            element: target,
+            ..states
+                .iter()
+                .rev()
+                .find(|state| state.element <= target)
+                .copied()
+                .unwrap_or_default()
+        }
+    };
+    lay_out_rows(visual, cols, truncate, motion, start).0
+}
+
+/// Where a glyph row of a display line begins: its first element, the
+/// column the current hard line began at, and continuation_lines_width
+/// (the layout's own and GNU's, which counts the line-number gutter).
+#[derive(Clone, Copy, Debug, Default)]
+struct RowState {
+    element: usize,
+    line_base: usize,
+    continuation_width: usize,
+    gnu_continuation: usize,
+}
+
 fn lay_out(visual: &VisualLine, cols: usize, truncate: bool, motion: bool) -> LineLayout {
+    lay_out_rows(visual, cols, truncate, motion, RowState::default()).0
+}
+
+/// The rows from START on, and the state each began in.
+fn lay_out_rows(
+    visual: &VisualLine,
+    cols: usize,
+    truncate: bool,
+    motion: bool,
+    start: RowState,
+) -> (LineLayout, Vec<RowState>) {
     let chars: Vec<char> = visual.text.chars().collect();
     let count = chars.len();
     let elements = elements_of(visual, &chars);
@@ -205,17 +297,29 @@ fn lay_out(visual: &VisualLine, cols: usize, truncate: bool, motion: bool) -> Li
     let mut columns = vec![0usize; count + 1];
     let mut assigned = vec![false; count + 1];
     let mut rows = Vec::new();
-    let mut element = 0usize;
+    let mut states = Vec::new();
+    let mut element = start.element;
     // Column where the current hard line (a newline in an overlay or
     // display string starts another) began, and continuation_lines_width
     // relative to it.
-    let mut line_base = 0usize;
-    let mut continuation_width = 0usize;
+    let mut line_base = start.line_base;
+    let mut continuation_width = start.continuation_width;
     // GNU's own continuation_lines_width: each continued row adds its
     // full x, the line-number gutter included.
     let lnum = visual.lnum_cols;
-    let mut gnu_continuation = 0usize;
+    let mut gnu_continuation = start.gnu_continuation;
+    // A display starting inside the line shows nothing before its start.
+    if let Some(first) = elements.get(element) {
+        columns[..first.start].fill(line_base + continuation_width);
+        assigned[..first.start].fill(true);
+    }
     loop {
+        states.push(RowState {
+            element,
+            line_base,
+            continuation_width,
+            gnu_continuation,
+        });
         let row_start_column = line_base + continuation_width;
         let start_index = elements.get(element).map_or(count, |e| e.start);
         let prefix = prefix_at(visual, start_index, continuation_width > 0);
@@ -400,5 +504,5 @@ fn lay_out(visual: &VisualLine, cols: usize, truncate: bool, motion: bool) -> Li
             };
         }
     }
-    LineLayout { rows, columns }
+    (LineLayout { rows, columns }, states)
 }

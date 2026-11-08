@@ -1569,6 +1569,29 @@ fn position_at_coordinates(
     let local_x = x - left;
     let local_y = y - top;
     if area.is_symbol() {
+        // make_lispy_position's mode_line_string for the tab, header and
+        // mode lines: COL the glyph under X (a cell a glyph, the line
+        // filling the window's width), ROW the line's row counted from
+        // the first text row, DX and DY from the glyph, its pixel_width
+        // 1 and ascent plus descent 0 (term.c).
+        let tab_line = window_line_height(interp, buffer, "tab-line-format", env);
+        let header_line = window_line_height(interp, buffer, "header-line-format", env);
+        let row = if crate::lisp::types::eq_symbol_named(area, "tab-line") {
+            Some(-(tab_line + header_line))
+        } else if crate::lisp::types::eq_symbol_named(area, "header-line") {
+            Some(-header_line)
+        } else if crate::lisp::types::eq_symbol_named(area, "mode-line") {
+            Some(
+                window_geometry(interp, window_id).1
+                    - window_non_body_height(interp, window_id, Some(buffer), env),
+            )
+        } else {
+            None
+        };
+        let (col_row, dx_dy, size) = match row {
+            Some(row) => ((local_x, row), (0, 0), (1, 0)),
+            None => ((local_x, local_y), (-1, -1), (-1, -1)),
+        };
         return Ok(Value::list([
             window,
             area,
@@ -1576,10 +1599,10 @@ fn position_at_coordinates(
             Value::Integer(0),
             Value::Nil,
             Value::Nil,
-            Value::cons(Value::Integer(local_x), Value::Integer(local_y)),
+            Value::cons(Value::Integer(col_row.0), Value::Integer(col_row.1)),
             Value::Nil,
-            Value::cons(Value::Integer(-1), Value::Integer(-1)),
-            Value::cons(Value::Integer(-1), Value::Integer(-1)),
+            Value::cons(Value::Integer(dx_dy.0), Value::Integer(dx_dy.1)),
+            Value::cons(Value::Integer(size.0), Value::Integer(size.1)),
         ]));
     }
     let text_x = area.car()?.as_integer()?;
@@ -1601,9 +1624,6 @@ fn position_at_coordinates(
             Value::cons(Value::Integer(hscroll), Value::Integer(0)),
             window,
         ]);
-        let motion = super::buffer_edit::display_motion(interp, env, &motion_args, true)?;
-        let dx = text_x - motion.hpos;
-        let dy = text_y - motion.vpos;
         // dispnew.c obtains dimensions from a realized glyph matrix:
         // the glyph's pixel_width and its ascent plus descent, which a
         // terminal's glyphs leave at 0 (term.c's append_glyph sets neither),
@@ -1611,33 +1631,48 @@ fn position_at_coordinates(
         // being one column wide.  Batch has no such matrix, even though
         // position traversal works.
         let realized = interactive_window_metrics().is_some();
-        let width = if realized {
-            interp
-                .buffer
-                .borrow()
-                .char_at(motion.position)
-                .map_or(1, |character| {
-                    if character == '\t' || character == '\n' {
-                        1
-                    } else {
-                        unicode_width::UnicodeWidthChar::width(character).unwrap_or(0) as i64
-                    }
-                })
+        let mut object = Value::Nil;
+        let (position, hpos, col, vpos) = if realized {
+            // buffer_posn_from_coords: start_display at the window's
+            // start, move_it_to the row, then to the x, as the window
+            // lays its text out.
+            let geometry = super::buffer_edit::window_text_geometry(interp, env, window_id);
+            let at = crate::tty::window_position_at(
+                interp,
+                window_id,
+                start,
+                (text_x.max(0) as usize, text_y.max(0) as usize),
+                geometry,
+            );
+            if let Some((string, index)) = at.object {
+                object = Value::cons(string, Value::Integer(index as i64));
+            }
+            (at.position, at.x, at.col, at.row as i64)
         } else {
-            0
+            let motion = super::buffer_edit::display_motion(interp, env, &motion_args, true)?;
+            (
+                motion.position,
+                motion.hpos,
+                text_x.max(motion.hpos),
+                motion.vpos,
+            )
         };
-        let position = Value::Integer(motion.position as i64);
+        let dx = text_x - hpos;
+        let dy = text_y - vpos;
+        // The glyph's pixel_width, which term.c's append_glyph sets to 1
+        // for each cell glyph (a wide character's included).
+        let width = i64::from(realized);
+        let position = Value::Integer(position as i64);
         Ok(Value::list([
             window,
             position,
             Value::cons(Value::Integer(text_x), Value::Integer(text_y)),
             Value::Integer(0),
-            Value::Nil,
+            object,
             position,
-            Value::cons(
-                Value::Integer(text_x.max(motion.hpos)),
-                Value::Integer(motion.vpos),
-            ),
+            // make_lispy_position's COL is buffer_posn_from_coords's
+            // it.hpos (plus the cells past the element's end).
+            Value::cons(Value::Integer(col), Value::Integer(vpos)),
             Value::Nil,
             Value::cons(Value::Integer(dx), Value::Integer(dy)),
             Value::cons(Value::Integer(width), Value::Integer(0)),
@@ -6248,15 +6283,28 @@ define_dispatch!(
                 {
                     position_from_value(interp, pos)?;
                 }
-                if interp
-                    .lookup_var_key(cached_symbol!("noninteractive"), env)
-                    .is_some_and(|value| !value.is_nil())
-                {
+                // pos_visible_p: nothing shows on the initial frame, the
+                // batch session's (FRAME_INITIAL_P).
+                if interp.window_frame_id(window_id).is_none_or(|frame| {
+                    frame
+                        .borrow()
+                        .terminal
+                        .as_ref()
+                        .is_none_or(|terminal| terminal.borrow().kind.is_none())
+                }) {
                     return Ok(Value::Nil);
                 }
                 let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
                 let pos = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.buffer.borrow().point(),
+                    // PT for the selected window, else w->pointm.
+                    None | Some(Kind::Nil) if window_id == interp.selected_window_id() => {
+                        interp.buffer.borrow().point()
+                    }
+                    None | Some(Kind::Nil) => {
+                        window_marker_position(interp, window_id, WINDOW_POINT_SLOT).ok_or_else(
+                            || LispError::Signal("Marker does not point anywhere".into()),
+                        )?
+                    }
                     Some(Kind::T) => point_max,
                     Some(value) => position_from_value(interp, &value.value())?,
                 };
@@ -6288,47 +6336,45 @@ define_dispatch!(
                 let limit = (window_geometry(interp, window_id).1
                     - window_non_body_height(interp, window_id, Some(buffer_id), env))
                 .max(1) as usize;
-                let rows = {
+                // pos_visible_p: start_display at the window's start and
+                // move_it_to POS, in the window's buffer, as the window
+                // lays its text out.
+                let xy = if pos < first_visible || pos > point_max {
+                    None
+                } else {
                     let saved_buffer = interp.current_buffer_id();
                     let switched = saved_buffer != buffer_id
                         && interp.set_current_buffer_id(buffer_id).is_ok();
-                    let mut rows = 0usize;
-                    let mut cursor = first_visible;
-                    while rows < limit && pos >= first_visible {
-                        let (next, remaining) = crate::lisp::primitives::window::move_screen_lines(
-                            interp, env, cursor, 1,
-                        );
-                        if remaining != 0 || next <= cursor || pos < next {
-                            break;
-                        }
-                        cursor = next;
-                        rows += 1;
-                    }
+                    let geometry = super::buffer_edit::window_text_geometry(interp, env, window_id);
+                    let xy = crate::tty::window_position_xy(
+                        interp,
+                        window_id,
+                        first_visible,
+                        pos,
+                        geometry,
+                        limit,
+                    );
                     if switched {
                         let _ = interp.set_current_buffer_id(saved_buffer);
                     }
-                    rows
+                    xy
                 };
-                let visible = pos >= first_visible && pos <= point_max && rows < limit;
-                if !visible {
+                let Some((x, y)) = xy else {
                     return Ok(Value::Nil);
-                }
+                };
                 // With PARTIALLY non-nil GNU answers a list (X Y [RTOP RBOT
                 // ROWH VPOS]) — two elements for a fully visible position.
                 // Text-terminal frames measure pixels in character cells, so
-                // X is the display column and Y the window row; simple.el's
-                // line-move-partial consumes exactly this shape.
+                // X is the column in the text area (the line-number glyphs
+                // counted, the hscroll taken off) and Y the window row.
                 if args.get(2).is_some_and(Value::is_truthy) {
-                    let saved = interp.buffer.borrow().point();
-                    interp.buffer.borrow_mut().goto_char(pos);
-                    let x = super::call(interp, "current-column", &[], env)
-                        .ok()
-                        .and_then(|value| value.integer_value())
-                        .unwrap_or(0);
-                    interp.buffer.borrow_mut().goto_char(saved);
+                    // The iterator's y starts below the tab and header
+                    // lines (start_display's current_y).
+                    let top = window_line_height(interp, buffer_id, "tab-line-format", env)
+                        + window_line_height(interp, buffer_id, "header-line-format", env);
                     return Ok(Value::list([
                         Value::Integer(x),
-                        Value::Integer(rows as i64),
+                        Value::Integer(y as i64 + top),
                     ]));
                 }
                 Ok(Value::T)
@@ -7881,93 +7927,37 @@ define_dispatch!(
             }
             "posn-at-point" => {
                 need_arg_range(name, args, 0, 2)?;
-                // keyboard.c:Fposn_at_point: Fpos_visible_in_window_p's
-                // decode_live_window (window) first.
-                live_window_id_or_selected(interp, args.get(1))?;
-                // Then its fix_position of a POS that is neither nil nor t.
-                if let Some(pos) = args
-                    .first()
-                    .filter(|pos| !pos.is_nil() && **pos != Value::T)
-                {
-                    position_from_value(interp, pos)?;
-                }
-                // Like GNU --batch, Emaxx has no realized glyph matrix from
-                // which to derive a screen position.  An interactive
-                // session publishes live window geometry, from which the
-                // posn's screen coordinates follow (tty pixels are cells).
-                let Some(metrics) = interactive_window_metrics() else {
-                    return Ok(Value::Nil);
-                };
-                let pos = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.buffer.borrow().point(),
-                    Some(value) => position_from_value(interp, &value.value())?,
-                };
-                let point_min = interp.buffer.borrow().point_min();
-                let point_max = interp.buffer.borrow().point_max();
-                let start = crate::lisp::primitives::current_window_start(interp)
-                    .clamp(point_min, point_max);
-                let visible = pos >= start
-                    && (pos < metrics.window_end
-                        || (pos <= point_max && metrics.window_end >= point_max));
-                if !visible {
-                    // GNU answers nil for positions outside the window.
+                // keyboard.c:Fposn_at_point: where pos-visible-in-window-p
+                // puts POS in WINDOW (the selected one for nil), as
+                // posn-at-x-y describes that place.
+                let window = args
+                    .get(1)
+                    .copied()
+                    .filter(|window| !window.is_nil())
+                    .unwrap_or_else(|| interp.selected_window_value());
+                let pos = args.first().copied().unwrap_or(Value::Nil);
+                let visible = super::call(
+                    interp,
+                    "pos-visible-in-window-p",
+                    &[pos, window, Value::T],
+                    env,
+                )?;
+                if visible.is_nil() {
                     return Ok(Value::Nil);
                 }
-                let window_id = interp.selected_window_id();
-                let (bol, _) = super::buffer_edit::visual_line_bounds(interp, pos);
-                let line = super::buffer_edit::interactive_screen_line(interp, env, window_id, bol);
-                let (seg_index, x) = line.position_cell(pos);
-                // A position past a truncated row's edge reports the last
-                // visible column; X counts the line-number gutter's glyphs.
-                let x = if line.truncate {
-                    x.min(line.text_width.saturating_sub(1))
-                } else {
-                    x
-                } + line.lnum_cols;
-                // Row within the window: visual rows between window-start
-                // and POS's screen line, capped at the window height.
-                let mut y = 0usize;
-                let (mut walk_bol, mut walk_eol) =
-                    super::buffer_edit::visual_line_bounds(interp, start);
-                let walk_starts = super::buffer_edit::screen_row_starts(
-                    interp, env, window_id, walk_bol, walk_eol,
-                );
-                let mut walk_seg = super::buffer_edit::row_index_of(&walk_starts, start);
-                while y < metrics.text_height {
-                    if walk_bol == bol {
-                        y += seg_index.saturating_sub(walk_seg);
-                        break;
-                    }
-                    let segs = super::buffer_edit::screen_row_starts(
-                        interp, env, window_id, walk_bol, walk_eol,
-                    )
-                    .len();
-                    y += segs.saturating_sub(walk_seg);
-                    walk_seg = 0;
-                    if walk_eol >= point_max {
-                        break;
-                    }
-                    let bounds = super::buffer_edit::visual_line_bounds(interp, walk_eol + 1);
-                    walk_bol = bounds.0;
-                    walk_eol = bounds.1;
+                let x = visible.car()?;
+                let rest = visible.cdr()?;
+                let mut y = rest.car()?;
+                let aux = rest.cdr()?;
+                // Point invisible due to hscrolling?
+                if x.as_integer()? < -1 {
+                    return Ok(Value::Nil);
                 }
-                let y = y.min(metrics.text_height.saturating_sub(1));
-                // keyboard.c's make_lispy_position for a text-area point:
-                // (WINDOW POS (X . Y) TIME OBJECT POS (COL . ROW) IMAGE
-                //  (DX . DY) (WIDTH . HEIGHT)).
-                let xy = Value::cons(Value::Integer(x as i64), Value::Integer(y as i64));
-                Ok(Value::list([
-                    interp.selected_window_value(),
-                    Value::Integer(pos as i64),
-                    xy,
-                    Value::Integer(0),
-                    Value::Nil,
-                    Value::Integer(pos as i64),
-                    xy,
-                    Value::Nil,
-                    Value::cons(Value::Integer(0), Value::Integer(0)),
-                    Value::cons(Value::Integer(1), Value::Integer(1)),
-                ]))
+                let y_coord = y.as_integer()?;
+                if !aux.is_nil() && y_coord < 0 {
+                    y = Value::Integer(y_coord + aux.car()?.as_integer()?);
+                }
+                super::call(interp, "posn-at-x-y", &[x, y, window, Value::Nil], env)
             }
             "window-display-table" | "window-cursor-type" => {
                 need_arg_range(name, args, 0, 1)?;

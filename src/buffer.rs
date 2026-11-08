@@ -4426,6 +4426,14 @@ impl Buffer {
         (text.beg_unchanged, text.end_unchanged)
     }
 
+    /// BEG + BEG_UNCHANGED and Z - END_UNCHANGED: the text before the
+    /// first and after the last change since redisplay took the counts.
+    pub(crate) fn changed_region(&self) -> (i64, i64) {
+        let text = self.text.borrow();
+        let z = text.len_chars() as i64 + 1;
+        (1 + text.beg_unchanged, z - text.end_unchanged)
+    }
+
     /// mark_window_display_accurate_1's `BUF_UNCHANGED_MODIFIED (b) =
     /// BUF_MODIFF (b)' and the rest: the counts taken, the unchanged text
     /// what is before and after the gap.

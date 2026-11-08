@@ -8516,6 +8516,141 @@ fn face_changes_free_realized_faces_as_xfaces_c_does() {
 
 #[cfg(unix)]
 #[test]
+fn windows_display_from_a_start_inside_a_line_as_start_display_does() {
+    // start_display shows a window from its start wherever that falls in
+    // a line: a continued line is walked from its start, its first row
+    // then beginning at the start with x 0 and the continuation width the
+    // walk reached (the wrap-prefix past the line's first row, TABs
+    // stopping where they would on the row the start was on, no repeated
+    // line number); a truncated line's row begins at the start and
+    // hscroll_window_tree measures point from there, its line-number
+    // glyphs counted once point lies past the hscroll.  pos_visible_p,
+    // buffer_posn_from_coords and posn-at-point (keyboard.c's composition
+    // of the two) measure the same display.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "midstart.el",
+        r#"(defvar ms-log nil)
+(switch-to-buffer (get-buffer-create "mid"))
+(dotimes (i 3) (insert (mapconcat (lambda (n) (format "%03d" n)) (number-sequence (* i 100) (+ (* i 100) 99)) "") "\n"))
+(goto-char 110) (insert "\t\tT")
+(put-text-property 1 200 'wrap-prefix ">>")
+(goto-char 150)
+(defun ms-grid ()
+  (mapcar (lambda (xy) (let ((p (posn-at-x-y (car xy) (cdr xy))))
+                         (list (posn-point p) (posn-object-x-y p) (posn-col-row p))))
+          '((0 . 0) (2 . 0) (10 . 1) (79 . 0) (78 . 2) (20 . 3))))
+(defun ms-report (tag)
+  (push (list tag (window-start) (point) (window-hscroll) (window-end nil t)
+              (posn-x-y (posn-at-point)) (posn-x-y (posn-at-point (window-start)))
+              (pos-visible-in-window-p 200 nil t) (pos-visible-in-window-p 400 nil t)
+              (ms-grid))
+        ms-log))
+(defun ms-f5 () (interactive) (set-window-start nil 105))
+(defun ms-f6 () (interactive) (ms-report 'wrapped)
+  (setq-local display-line-numbers t) (set-window-start nil 51))
+(defun ms-f7 () (interactive) (ms-report 'numbered)
+  (setq truncate-lines t) (set-window-start nil 101))
+(defun ms-f9 () (interactive) (ms-report 'truncated)
+  (set-window-start nil 51))
+(defun ms-f10 () (interactive) (ms-report 'truncated-again))
+(global-set-key [f5] #'ms-f5)
+(global-set-key [f6] #'ms-f6)
+(global-set-key [f7] #'ms-f7)
+(global-set-key [f9] #'ms-f9)
+(global-set-key [f10] #'ms-f10)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "midstart.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse ms-log))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (15.0, b"\x1b[15~"),
+        (3.0, b"\x1b[17~"),
+        (3.0, b"\x1b[18~"),
+        (3.0, b"\x1b[20~"),
+        (3.0, b"\x1b[21~"),
+        (3.0, b"\x1b[19~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "midstart.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "midstart.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn positions_in_a_window_measure_its_display_as_the_iterator_does() {
+    // pos_visible_p's y counts the tab and header lines above the text
+    // (start_display's current_y), so posn-at-point, which describes that
+    // place with posn-at-x-y, lands on the text below a header line.
+    // buffer_posn_from_coords below the last row stops at ZV, and
+    // make_lispy_position's COL is it.hpos: the line-number glyphs
+    // counted, and past an element's end the cells beyond it.  A start
+    // inside text a display string replaces shows the string, and the
+    // overlay strings at a start show from their first, after-strings
+    // before before-strings, point after them all.  With only the current
+    // line hscrolled, rows other than point's are measured unscrolled.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "positions.el",
+        r#"(defvar rf-log nil)
+(switch-to-buffer (get-buffer-create "rf"))
+(dotimes (i 3) (insert (mapconcat (lambda (n) (format "%03d" n)) (number-sequence (* i 100) (+ (* i 100) 99)) "") "\n"))
+(insert "a last line without a newline")
+(put-text-property 98 104 'display "<DISP>")
+(overlay-put (make-overlay 401 401) 'before-string "BEFORE")
+(overlay-put (make-overlay 395 401) 'after-string "AFT")
+(goto-char 150)
+(defun rf-xy (x y)
+  (let ((p (posn-at-x-y x y)))
+    (list (posn-point p) (posn-object-x-y p) (posn-col-row p))))
+(defun rf-report (tag)
+  (push (list tag (window-start) (point) (window-hscroll)
+              (posn-x-y (posn-at-point)) (posn-col-row (posn-at-point))
+              (posn-point (posn-at-point (window-start)))
+              (pos-visible-in-window-p 104 nil t) (pos-visible-in-window-p 401 nil t)
+              (pos-visible-in-window-p 402 nil t)
+              (rf-xy 3 0) (rf-xy 1 1) (rf-xy 5 20) (rf-xy 50 20) (rf-xy 79 3))
+        rf-log))
+(defun rf-f5 () (interactive) (set-window-start nil 101))
+(defun rf-f6 () (interactive) (rf-report 'display-string)
+  (setq header-line-format "HDR") (set-window-start nil 400) (goto-char 401))
+(defun rf-f7 () (interactive) (rf-report 'overlay-strings)
+  (setq-local display-line-numbers t) (set-window-start nil 1) (goto-char 150))
+(defun rf-f9 () (interactive) (rf-report 'numbered)
+  (setq header-line-format nil) (setq-local display-line-numbers nil)
+  (setq truncate-lines t) (setq-local auto-hscroll-mode 'current-line)
+  (goto-char 250))
+(defun rf-f10 () (interactive) (rf-report 'current-line))
+(global-set-key [f5] #'rf-f5)
+(global-set-key [f6] #'rf-f6)
+(global-set-key [f7] #'rf-f7)
+(global-set-key [f9] #'rf-f9)
+(global-set-key [f10] #'rf-f10)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "positions.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse rf-log))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (15.0, b"\x1b[15~"),
+        (3.0, b"\x1b[17~"),
+        (3.0, b"\x1b[18~"),
+        (3.0, b"\x1b[20~"),
+        (3.0, b"\x1b[21~"),
+        (3.0, b"\x1b[19~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "positions.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "positions.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
 fn long_lines_turn_on_the_long_line_optimizations_as_xdisp_c_does() {
     // redisplay_window finds a line longer than `long-line-threshold' in
     // the buffer it displays and sets its long_line_optimizations_p for

@@ -7,9 +7,6 @@ use crate::lisp::types::{Env, Kind, LispError, Value};
 /// sessions have none and keep GNU's batch answers (window-end = ZV).
 #[derive(Clone, Copy)]
 pub(crate) struct InteractiveWindowMetrics {
-    /// Text rows of the selected window (frame minus mode line and echo
-    /// area).
-    pub text_height: usize,
     /// Position just past the last displayed character, GNU's window-end.
     pub window_end: usize,
 }
