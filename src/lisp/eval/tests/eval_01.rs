@@ -3350,10 +3350,12 @@ fn completing_read_returns_default_when_typed_input_is_empty() {
     // minibuf.c read_minibuf: DEF applies when a real read submits empty
     // input.  The old test asserted the default with no input source at
     // all -- an answer GNU never invents (finding 12).
+    // `completing-read-function' and RET's `exit-minibuffer' are
+    // minibuffer.el's, read as ert-simulate-keys reads.
     assert_eq!(
-        eval_str(
-            r#"(let ((unread-command-events (listify-key-sequence "
-")))
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
+            r#"(ert-simulate-keys "\r"
                  (completing-read "File: " '("one" "two") nil nil nil nil "two"))"#
         ),
         Value::String("two".into())
@@ -3365,10 +3367,9 @@ fn completing_read_returns_typed_candidate() {
     // The replaced test pinned pure invention: the first candidate out of
     // thin air, which GNU never does (it reads or signals).
     assert_eq!(
-        eval_str(
-            r#"(let ((unread-command-events (listify-key-sequence "two
-")))
-                 (completing-read "File: " '("one" "two")))"#
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
+            r#"(ert-simulate-keys "two\r" (completing-read "File: " '("one" "two")))"#
         ),
         Value::String("two".into())
     );

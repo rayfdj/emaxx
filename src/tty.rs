@@ -624,8 +624,11 @@ fn run_owned(
                 let _ = crate::lisp::primitives::run_window_change_functions(interpreter, env);
                 return;
             }
+            // command_loop_1's resize_echo_area_exactly after a command:
+            // a displayed message's mini window takes its own height again.
+            let exact = crate::lisp::primitives::take_resize_echo_area_exactly();
             if let Ok(mut state) = state.try_borrow_mut() {
-                let _ = redraw(interpreter, env, &mut state);
+                let _ = redraw_with_echo_policy(interpreter, env, &mut state, exact);
             }
         }
     })));
@@ -669,26 +672,19 @@ fn run_owned(
     // available, then the editing loop. Do not replay Lisp startup actions.
     // emacs.c runs after-pdump-load-hook after init_display. Hook code can
     // therefore inspect the real terminal or read events before top-level.
-    let startup = batch::safe_run_hooks(
+    // Then main's Frecursive_edit: the top level's command loop, whose
+    // top_level_1 evaluates `top-level' (startup.el's normal-top-level).
+    batch::set_command_line_args(&mut interpreter, command_line_args);
+    let session = batch::safe_run_hooks(
         &mut interpreter,
         &crate::lisp::types::symbols::SymbolKey::new("after-pdump-load-hook").symbol(),
     )
     .and_then(|()| crate::lisp::primitives::set_initial_minibuffer_mode(&mut interpreter))
-    .and_then(|()| batch::run_startup_top_level(&mut interpreter, command_line_args));
-    let termination = match startup.map_err(LispError::into_kind) {
-        Err(LispErrorKind::Terminate(termination)) => Some(termination),
-        Err(error) => {
-            let text =
-                command_error_text(&mut interpreter, &mut env, &LispError::from(error.clone()));
-            crate::lisp::primitives::set_echo_area_message(Some(text));
-            interpreter.take_pending_termination()
-        }
-        Ok(_) => interpreter.take_pending_termination(),
-    };
-    let code = if let Some(termination) = termination {
-        Ok(termination.exit_code)
-    } else {
-        command_loop(&mut interpreter, &mut env, &queue, &state)
+    .and_then(|()| crate::lisp::primitives::recursive_edit_1(&mut interpreter, &mut env));
+    let code = match session.map_err(LispError::into_kind) {
+        Err(LispErrorKind::Terminate(termination)) => Ok(termination.exit_code),
+        Err(error) => Err(LispError::from(error).to_string()),
+        Ok(()) => Ok(0),
     };
     crate::lisp::primitives::set_tty_frame_redraw(None);
     crate::lisp::primitives::set_tty_event_reader(None);
@@ -718,18 +714,13 @@ fn run_owned(
 #[derive(Clone)]
 enum QueuedInput {
     Lisp(Value),
-    /// An error read_char raised while it waited (its echo), which ends
-    /// the key sequence as read_key_sequence's error.
-    Error(LispError),
 }
 
 impl QueuedInput {
     /// keyboard.c:make_lispy_event: the event as Lisp reads it.
     fn into_lisp(self, _interpreter: &mut Interpreter) -> Option<Value> {
-        match self {
-            Self::Lisp(event) => Some(event),
-            Self::Error(_) => None,
-        }
+        let Self::Lisp(event) = self;
+        Some(event)
     }
 }
 
@@ -1052,6 +1043,10 @@ fn make_event_poller(
 ) -> crate::lisp::primitives::TtyEventPoller {
     Box::new(move |interpreter| {
         draw_echo_row(interpreter, &state);
+        // gobble_input's -2: the terminal device terminated.
+        if TERMINAL_GONE.get() && !queue.input_pending() {
+            return None;
+        }
         while let Some(input) = queue.pop() {
             if let Ok(mut state) = state.try_borrow_mut() {
                 state.note_input();
@@ -1337,410 +1332,6 @@ fn draw_echo_row(interpreter: &mut Interpreter, state: &std::rc::Rc<std::cell::R
     draw_echo_row_composed(interpreter, &mut Env::new(), state);
 }
 
-fn command_loop(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    queue: &SharedEventQueue,
-    shared_state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
-) -> Result<i32, String> {
-    let mut reader: Option<crate::lisp::primitives::KeySequenceReader> = None;
-    crate::lisp::primitives::command_loop_entry(interpreter, env)
-        .map_err(|error| error.to_string())?;
-    loop {
-        // keyboard.c's command_loop_1 reselects the selected window's
-        // buffer at the top of every command cycle.  A display action can
-        // replace the selected window's buffer while `save-current-buffer'
-        // restores the command's former current buffer (Magit does exactly
-        // this when opening a log).  Key lookup and the next command must
-        // operate in what the selected window shows, not that stale buffer.
-        select_command_loop_buffer(interpreter).map_err(|error| error.to_string())?;
-        if reader.is_none() {
-            crate::lisp::primitives::clear_this_command(interpreter, env);
-            crate::lisp::primitives::init_raw_keybuf_count(interpreter);
-        }
-        // GNU redisplays only when the input queue is quiet; a key burst
-        // paints once at the end.
-        if !queue.input_pending() {
-            let mut state = shared_state.borrow_mut();
-            redraw_at_command_boundary(interpreter, env, &mut state)
-                .map_err(|error| error.to_string())?;
-        }
-        // read_char, with no requeued event to give it one at once: a
-        // message in the echo area turns echoing off (or the dash goes
-        // after the echo), and in the middle of a key sequence echoing
-        // starts once `echo-keystrokes' seconds pass with no input
-        // (sit_for, then echo_now).  An error there is read_key_sequence's,
-        // reported by command_loop_2's handler.
-        let mut echo_deadline = None;
-        if !crate::lisp::primitives::requeued_events_pending_p(interpreter, env) {
-            let prev_event = reader.as_ref().map_or(
-                Value::Nil,
-                crate::lisp::primitives::KeySequenceReader::prev_event,
-            );
-            let prelude = crate::lisp::primitives::echo_before_wait(interpreter, env)
-                .and_then(|()| crate::lisp::primitives::echo_timer(interpreter, env, prev_event));
-            match prelude.map_err(LispError::into_kind) {
-                Ok(delay) => {
-                    echo_deadline =
-                        delay.and_then(|seconds| std::time::Instant::now().checked_add(seconds));
-                }
-                Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
-                Err(error) => {
-                    reader = None;
-                    match settle_command_error(interpreter, env, error) {
-                        Ok(text) => {
-                            if let Some(text) = text {
-                                crate::lisp::primitives::set_echo_area_message(Some(text));
-                            }
-                        }
-                        Err(termination) => return Ok(termination.exit_code),
-                    }
-                    continue;
-                }
-            }
-        }
-        // GNU fires ripe timers while the loop waits for input
-        // (keyboard.c's timer_check): isearch's lazy highlight and every
-        // other timer-driven update land between keystrokes.  A timer
-        // that ran gets its work repainted before the wait resumes.
-        let mut idle_since: Option<std::time::Instant> = None;
-        let event = loop {
-            // GNU's read_char consumes `unread-command-events' before the
-            // terminal: an event a command read and pushed back (subr.el's
-            // sit-for) re-enters the key stream here.
-            if let Some(event) =
-                crate::lisp::primitives::take_unread_command_event(interpreter, env)
-            {
-                break QueuedInput::Lisp(event);
-            }
-            if let Some(QueuedInput::Lisp(event)) = queue.pop() {
-                interpreter.keyboard_input.last_event_reread = false;
-                break QueuedInput::Lisp(queue.decode_event(interpreter, env, event));
-            }
-            // gobble_input's -2: the terminal device terminated.
-            if TERMINAL_GONE.get() {
-                return Ok(0);
-            }
-            // Entering the wait means Emacs is idle: keyboard.c's
-            // timer_start_idle marks every idle timer runnable again
-            // (once per idle period) and starts the `current-idle-time'
-            // clock.
-            if idle_since.is_none() {
-                crate::lisp::primitives::tty_note_idle_start(interpreter, env);
-            }
-            idle_since.get_or_insert_with(std::time::Instant::now);
-            // keyboard.c's kbd_buffer_get_event: wait_reading_process_output
-            // (0, 0, -1, do_display, ...) until the keyboard buffer has an
-            // event.  Timers, filters and sentinels run inside it, each
-            // delivery repainting the glass (redisplay_preserve_echo_area).
-            match crate::lisp::primitives::kbd_buffer_get_event_wait(
-                interpreter,
-                env,
-                echo_deadline,
-                true,
-            )
-            .map_err(LispError::into_kind)
-            {
-                Ok(crate::lisp::primitives::KbdWait::TimedOut) if echo_deadline.is_some() => {
-                    // sit_for's t: no input arrived in `echo-keystrokes'
-                    // seconds; message3_nolog shows the echo at once.
-                    echo_deadline = None;
-                    if !queue.input_pending() {
-                        if let Err(error) =
-                            crate::lisp::primitives::echo_timer_expired(interpreter, env)
-                        {
-                            match error.into_kind() {
-                                LispErrorKind::Terminate(termination) => {
-                                    return Ok(termination.exit_code);
-                                }
-                                error => break QueuedInput::Error(LispError::from(error)),
-                            }
-                        }
-                        let mut state = shared_state.borrow_mut();
-                        let _ = redraw(interpreter, env, &mut state);
-                    }
-                }
-                Ok(crate::lisp::primitives::KbdWait::Quit) => {
-                    // read_char's setjmp: the quit character, and under
-                    // `inhibit-quit' the quit not reported again.
-                    if interpreter.inhibit_quit_is_truthy() {
-                        interpreter.set_c_variable("quit-flag", Value::Nil);
-                    }
-                    interpreter.keyboard_input.last_event_reread = false;
-                    break QueuedInput::Lisp(Value::Integer(7));
-                }
-                Ok(_) => {}
-                Err(LispErrorKind::Terminate(termination)) => {
-                    return Ok(termination.exit_code);
-                }
-                Err(error) => {
-                    let text =
-                        command_error_text(interpreter, env, &LispError::from(error.clone()));
-                    crate::lisp::primitives::set_echo_area_message(Some(text));
-                    let mut state = shared_state.borrow_mut();
-                    let _ = redraw(interpreter, env, &mut state);
-                }
-            }
-        };
-        // Input arrived: the idle period is over (timer_stop_idle).
-        crate::lisp::primitives::tty_note_idle_end();
-        // The echo's error leaves read_key_sequence for command_loop_2's
-        // cmd_error, and command_loop_1 is entered again.
-        if let QueuedInput::Error(error) = event {
-            reader = None;
-            match settle_command_error(interpreter, env, error.into_kind()) {
-                Ok(text) => {
-                    if let Some(text) = text {
-                        crate::lisp::primitives::set_echo_area_message(Some(text));
-                    }
-                }
-                Err(termination) => return Ok(termination.exit_code),
-            }
-            continue;
-        }
-        shared_state.borrow_mut().note_input();
-        // Typed mouse input becomes GNU's click event now that the frame
-        // state is in reach; motion and wheel produce nothing.
-        let Some(event) = event.into_lisp(interpreter) else {
-            continue;
-        };
-        // read_key_sequence after each read_char: a quit the read
-        // reported as the quit character is reported no more.  An event
-        // read_char gives the input method first keeps `quit-flag' for
-        // that step's funcall (KeySequenceReader::read_event clears it).
-        if !(reader.is_none()
-            && crate::lisp::primitives::input_method_takes(interpreter, &event, env))
-        {
-            interpreter.set_c_variable("quit-flag", Value::Nil);
-        }
-        // read_char's record_char of a keyboard event as it is read; one
-        // from the unread lists is recorded past the input method
-        // (KeySequenceReader::read_event).
-        if crate::lisp::primitives::last_event_source()
-            == crate::lisp::primitives::EventSource::Keyboard
-        {
-            crate::lisp::primitives::record_external_input_event(interpreter, &event, env);
-            // read_char keeps the echo area's message for an input method
-            // before wiping it, for every character an input method could
-            // take, whether or not this read gives it one.
-            if crate::lisp::primitives::input_method_takes(interpreter, &event, env) {
-                crate::lisp::primitives::save_input_method_previous_message(interpreter, env);
-            }
-            // Then wipes the echo area, as it does for every event from
-            // the keyboard buffer but a help event (not a reread one); the
-            // glass catches up at the next redisplay.
-            if let Err(error) =
-                crate::lisp::primitives::read_char_wipe_echo_area(interpreter, &event, env)
-            {
-                match error.into_kind() {
-                    LispErrorKind::Terminate(termination) => return Ok(termination.exit_code),
-                    error => {
-                        reader = None;
-                        match settle_command_error(interpreter, env, error) {
-                            Ok(text) => {
-                                if let Some(text) = text {
-                                    crate::lisp::primitives::set_echo_area_message(Some(text));
-                                }
-                            }
-                            Err(termination) => return Ok(termination.exit_code),
-                        }
-                        continue;
-                    }
-                }
-            }
-        } else {
-            crate::lisp::primitives::count_read_event(interpreter);
-        }
-        if event
-            .car()
-            .ok()
-            .and_then(|value| value.symbol_str().map(str::to_owned))
-            .as_deref()
-            == Some("switch-frame")
-        {
-            crate::lisp::primitives::call(interpreter, "handle-switch-frame", &[event], env)
-                .map_err(|error| error.to_string())?;
-            shared_state
-                .borrow_mut()
-                .activate_terminal(interpreter.selected_terminal_id());
-            continue;
-        }
-        // `execute_binding' below may re-enter redisplay through the
-        // minibuffer's frame-redraw hook, and resolution itself can run
-        // the whole dropdown executor (a keymap-bound mouse click pops
-        // it), both of which borrow the state cell: no borrow is held.
-        let resolution = (|| {
-            if reader.is_none() {
-                crate::lisp::primitives::clear_command_keys(interpreter);
-                reader = Some(crate::lisp::primitives::KeySequenceReader::new(
-                    interpreter,
-                    Value::Nil,
-                    env,
-                )?);
-            }
-            reader
-                .as_mut()
-                .expect("active key reader")
-                .read_event(interpreter, event, env)
-        })();
-        let resolution = match resolution.map_err(LispError::into_kind) {
-            Ok(resolution) => resolution,
-            Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
-            Err(error) => {
-                let text = command_error_text(interpreter, env, &LispError::from(error.clone()));
-                crate::lisp::primitives::set_echo_area_message(Some(text));
-                reader = None;
-                continue;
-            }
-        };
-        let active = reader.as_ref().expect("active key reader");
-        let original = active.command_binding();
-        debug_log(&format!(
-            "keys {:?} -> {}",
-            describe_keys(active.keys()),
-            match &resolution {
-                Resolution::Command(binding) => format!("command {binding}"),
-                Resolution::Prefix => "prefix".to_string(),
-                Resolution::Undefined => "undefined".to_string(),
-            }
-        ));
-        let binding = match resolution {
-            Resolution::Command(binding) => binding,
-            Resolution::Prefix => continue,
-            // An undefined key sequence is a nil command, which
-            // command_loop_1 runs as `undefined' once `pre-command-hook'
-            // has run.
-            Resolution::Undefined => Value::Nil,
-        };
-        let keys = match reader
-            .take()
-            .expect("completed key reader")
-            .finish(interpreter, false, env)
-            .map_err(LispError::into_kind)
-        {
-            Ok(keys) => keys,
-            Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
-            Err(error) => {
-                match settle_command_error(interpreter, env, error) {
-                    Ok(text) => {
-                        if let Some(text) = text {
-                            crate::lisp::primitives::set_echo_area_message(Some(text));
-                        }
-                    }
-                    Err(termination) => return Ok(termination.exit_code),
-                }
-                continue;
-            }
-        };
-        let last_event = keys.last().cloned().unwrap_or(Value::Nil);
-        let command_error = match crate::lisp::primitives::execute_read_key_command_binding(
-            interpreter,
-            env,
-            original,
-            binding,
-            &keys,
-            last_event,
-        )
-        .map_err(LispError::into_kind)
-        {
-            Ok(()) => None,
-            Err(LispErrorKind::Terminate(termination)) => {
-                return Ok(termination.exit_code);
-            }
-            Err(error) => {
-                debug_log(&format!("command error: {error:?}"));
-                if std::env::var_os("EMAXX_TTY_LOG").is_some() {
-                    for (_, function, args, _) in
-                        interpreter.backtrace_frames_snapshot().iter().take(12)
-                    {
-                        debug_log(&format!("  frame: {function} nargs={}", args.len()));
-                    }
-                }
-                match settle_command_error(interpreter, env, error) {
-                    Ok(text) => text,
-                    Err(termination) => return Ok(termination.exit_code),
-                }
-            }
-        };
-        if let Some(termination) = interpreter.take_pending_termination() {
-            return Ok(termination.exit_code);
-        }
-        // command_loop_1 after the command: this-command-keys emptied, and
-        // with echoing on a prefix command's echo shown afresh (simple.el's
-        // universal-argument family describing its argument), else no
-        // echoing.
-        crate::lisp::primitives::clear_command_keys(interpreter);
-        let command_error = match crate::lisp::primitives::echo_after_command(interpreter, env)
-            .map_err(LispError::into_kind)
-        {
-            Ok(()) => command_error,
-            Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
-            Err(error) => match settle_command_error(interpreter, env, error) {
-                Ok(text) => text,
-                Err(termination) => return Ok(termination.exit_code),
-            },
-        };
-        if let Some(text) = command_error {
-            crate::lisp::primitives::set_echo_area_message(Some(text));
-        }
-        // A blocking reader may have painted the echo row outside the
-        // matrix; repaint it against fresh state next frame.
-        shared_state.borrow_mut().painted_echo = Vec::new();
-    }
-}
-
-/// keyboard.c's command_loop around a command that left with ERROR: a
-/// `top-level' throw re-enters command_loop_1; anything else (an
-/// unmatched throw's no-catch among them) goes to command_loop_2's
-/// handler, cmd_error, which reports it through `command-error-function',
-/// and command_loop_1 is then entered again: the post-command hooks with
-/// `this-command' still the command's, then `last-command'.  The text to
-/// echo when reporting failed in turn; the termination that ends the
-/// session.
-fn settle_command_error(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    error: LispErrorKind,
-) -> Result<Option<String>, crate::lisp::types::EmacsTermination> {
-    let top_level = matches!(
-        &error,
-        LispErrorKind::Throw(tag, _)
-            if crate::lisp::types::eq_symbol_named(tag, "top-level")
-    );
-    let error = LispError::from(error);
-    let reported = if top_level {
-        Ok(())
-    } else {
-        crate::lisp::primitives::cmd_error(interpreter, env, &error)
-    };
-    match reported
-        .and_then(|()| crate::lisp::primitives::command_loop_entry(interpreter, env))
-        .map_err(LispError::into_kind)
-    {
-        Ok(()) => Ok(None),
-        Err(LispErrorKind::Terminate(termination)) => Err(termination),
-        Err(error) => Ok(Some(command_error_text(
-            interpreter,
-            env,
-            &LispError::from(error),
-        ))),
-    }
-}
-
-/// keyboard.c:command_loop_1's `set_buffer_internal (XBUFFER (XWINDOW
-/// (selected_window)->contents))'.  A deleted selected window's nil
-/// contents have no XBUFFER (GNU's checking build aborts there); the
-/// current buffer stays.
-fn select_command_loop_buffer(interpreter: &mut Interpreter) -> Result<(), LispError> {
-    if let Some(selected_buffer) = interpreter.selected_window_contents_buffer_id()
-        && selected_buffer != interpreter.current_buffer_id()
-        && interpreter.has_buffer_id(selected_buffer)
-    {
-        interpreter.set_current_buffer_id(selected_buffer)?;
-    }
-    Ok(())
-}
-
 use crate::lisp::primitives::KeyResolution as Resolution;
 
 #[cfg(test)]
@@ -1756,22 +1347,42 @@ fn resolve_pending(interpreter: &mut Interpreter, env: &mut Env, pending: &[Valu
     resolution
 }
 
+/// KEYS (a Lisp sequence of events) read by a recursive edit's command
+/// loop, which returns when they run out; FORM, evaluated in
+/// `post-command-hook' after each command and once at the loop's entry,
+/// gives the log, printed.
 #[cfg(test)]
-fn execute_binding(
+fn post_command_log(
     interpreter: &mut Interpreter,
     env: &mut Env,
-    binding: Value,
-    keys: &[Value],
-    last_event: Value,
-) -> Result<(), LispError> {
-    crate::lisp::primitives::execute_command_binding(interpreter, env, binding, keys, last_event)
-}
-
-/// The echo-area text for a command's error, GNU's
-/// `error-message-string' rendering ("Quit", "Beginning of buffer", a
-/// user-error's own message).
-fn command_error_text(interpreter: &mut Interpreter, env: &mut Env, error: &LispError) -> String {
-    crate::lisp::primitives::command_error_echo_text(interpreter, env, error)
+    keys: &str,
+    form: &str,
+) -> String {
+    let printed = crate::test_support::eval_lisp(
+        interpreter,
+        env,
+        // The recursive edit runs KEYS; without a keyboard read_char then
+        // waits, as GNU's does, so a timer ends it with a throw to `exit'
+        // once the keys are read and no command runs.
+        &format!(
+            "(let ((tty-test-log nil)
+                   (tty-test-exit
+                    (run-at-time 0 0.01
+                                 (lambda ()
+                                   (when (and (null unread-command-events) (null this-command))
+                                     (throw 'exit nil))))))
+               (unwind-protect
+                   (let ((post-command-hook (list (lambda () (push {form} tty-test-log))))
+                         (unread-command-events (append {keys} nil)))
+                     (recursive-edit))
+                 (cancel-timer tty-test-exit))
+               (prin1-to-string (reverse tty-test-log)))"
+        ),
+    )
+    .expect("the keys run");
+    crate::lisp::primitives::string_like(&printed)
+        .expect("a string")
+        .text
 }
 
 // ── The terminal's setup ───────────────────────────────────────────────
@@ -1822,48 +1433,6 @@ fn term_get_fkeys(
         crate::lisp::primitives::call(interpreter, "define-key", &[map, sequence, event], env)?;
     }
     Ok(())
-}
-
-fn describe_keys(events: &[Value]) -> String {
-    let mut parts = Vec::new();
-    let mut meta = false;
-    for event in events {
-        match event.kind() {
-            Kind::Integer(27) => {
-                meta = true;
-                continue;
-            }
-            Kind::Integer(code) => parts.push(describe_char(code, meta)),
-            Kind::Symbol(name) => parts.push(if meta {
-                format!("M-<{name}>")
-            } else {
-                format!("<{name}>")
-            }),
-            other => parts.push(format!("{other}")),
-        }
-        meta = false;
-    }
-    if meta {
-        parts.push("ESC".to_string());
-    }
-    parts.join(" ")
-}
-
-fn describe_char(code: i64, meta: bool) -> String {
-    let prefix = if meta { "M-" } else { "" };
-    match code {
-        0 => format!("{prefix}C-SPC"),
-        9 => format!("{prefix}TAB"),
-        13 => format!("{prefix}RET"),
-        27 => format!("{prefix}ESC"),
-        32 => format!("{prefix}SPC"),
-        127 => format!("{prefix}DEL"),
-        1..=26 => format!("{prefix}C-{}", (b'a' + (code as u8 - 1)) as char),
-        28..=31 => format!("{prefix}C-{}", (b'\\' + (code as u8 - 28)) as char),
-        _ => char::from_u32(code as u32)
-            .map(|c| format!("{prefix}{c}"))
-            .unwrap_or_else(|| format!("{prefix}#{code}")),
-    }
 }
 
 // ── Redisplay ───────────────────────────────────────────────────────────
@@ -4604,21 +4173,6 @@ fn run_fontification_functions(
         };
         rest = next;
     }
-}
-
-fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) -> io::Result<()> {
-    redraw_with_echo_policy(interpreter, env, state, false)
-}
-
-/// The command loop's redraw: keyboard.c calls resize_echo_area_exactly
-/// between commands, so a displayed message shrinks the mini window
-/// back to the rows it needs (grow-only holds only within a command).
-fn redraw_at_command_boundary(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    state: &mut TtyState,
-) -> io::Result<()> {
-    redraw_with_echo_policy(interpreter, env, state, true)
 }
 
 fn redraw_with_echo_policy(
@@ -8464,7 +8018,8 @@ mod tests {
             original,
             "set-window-buffer itself does not change the current buffer"
         );
-        select_command_loop_buffer(&mut interp).expect("command-cycle buffer selection succeeds");
+        crate::lisp::primitives::select_window_buffer(&mut interp)
+            .expect("command-cycle buffer selection succeeds");
         assert_eq!(interp.current_buffer_id(), displayed);
         assert_eq!(interp.selected_window_contents_buffer_id(), Some(displayed));
     }
@@ -8800,27 +8355,6 @@ mod tests {
             Value::symbol("tty-mode-set-strings"),
         );
         assert!(gone.is_empty());
-    }
-
-    #[test]
-    fn key_descriptions_follow_gnu_spellings() {
-        assert_eq!(
-            describe_keys(&[Value::Integer(24), Value::Integer(3)]),
-            "C-x C-c"
-        );
-        assert_eq!(
-            describe_keys(&[Value::Integer(27), Value::Integer(120)]),
-            "M-x"
-        );
-        assert_eq!(describe_keys(&[Value::Symbol("up".into())]), "<up>");
-        assert_eq!(
-            describe_keys(&[Value::Integer(27), Value::Symbol("up".into())]),
-            "M-<up>"
-        );
-        assert_eq!(describe_keys(&[Value::Integer(13)]), "RET");
-        assert_eq!(describe_keys(&[Value::Integer(127)]), "DEL");
-        assert_eq!(describe_keys(&[Value::Integer(0)]), "C-SPC");
-        assert_eq!(describe_keys(&[Value::Integer(27)]), "ESC");
     }
 
     #[test]
@@ -10030,24 +9564,22 @@ mod tests {
                    (let ((inhibit-read-only t)) (erase-buffer))))"#,
         )
         .expect("setup");
-        for events in [
-            vec![Value::Integer(16)],
-            vec![Value::symbol("f6")],
-            vec![Value::symbol("f7")],
-        ] {
-            let binding = match resolve_pending(&mut interpreter, &mut env, &events) {
-                Resolution::Command(binding) => binding,
-                Resolution::Undefined => Value::Nil,
-                Resolution::Prefix => panic!("{events:?} is a whole key sequence"),
-            };
-            let last = *events.last().expect("an event");
-            if let Err(error) = execute_binding(&mut interpreter, &mut env, binding, &events, last)
-            {
-                let echoed = settle_command_error(&mut interpreter, &mut env, error.into_kind())
-                    .expect("no termination");
-                assert_eq!(echoed, None, "cmd_error reports the error itself");
-            }
-        }
+        // Each key read by a recursive edit's command loop, which a timer
+        // ends with a throw to `exit' once the loop waits for more input
+        // (without a keyboard read_char waits, as GNU's does);
+        // command_loop_1's entry runs the post-command hooks first.
+        // (command-error-default-function discards the input after an
+        // error, so the keys come one recursive edit each; each loop's top
+        // makes `this-command' nil before it reads.)
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            "(dolist (key (list ?\\C-p 'f6 'f7))
+               (let ((unread-command-events (list key)))
+                 (run-at-time 0 nil (lambda () (throw 'exit nil)))
+                 (recursive-edit)))",
+        )
+        .expect("each recursive edit returns when its timer throws to exit");
         let value = crate::test_support::eval_lisp(
             &mut interpreter,
             &mut env,
@@ -10068,8 +9600,9 @@ mod tests {
             crate::lisp::primitives::string_like(&printed)
                 .expect("a string")
                 .text,
-            "(((pre previous-line) (post previous-line \"Beginning of buffer\") (pre t147-boom) \
-             (post t147-boom \"Boom 1\") (pre nil) (post nil \"<f7> is undefined\")) nil \
+            "(((post nil nil) (pre previous-line) (post previous-line \"Beginning of buffer\") \
+             (post nil \"Beginning of buffer\") (pre t147-boom) (post t147-boom \"Boom 1\") \
+             (post nil \"Boom 1\") (pre nil) (post nil \"<f7> is undefined\")) nil \
              \"previous-line: Beginning of buffer\nt147-boom: Boom 1\n<f7> is undefined\n\")"
         );
     }
@@ -10100,60 +9633,60 @@ gamma word three
         );
         interpreter.buffer.borrow_mut().goto_char(1);
 
-        let send = |interpreter: &mut Interpreter, env: &mut Env, code: i64| {
-            let event = Value::Integer(code);
-            let resolution = resolve_pending(interpreter, env, std::slice::from_ref(&event));
-            let Resolution::Command(binding) = resolution else {
-                panic!("event {code} must resolve to a command, got a prefix/undefined");
-            };
-            let described = format!("{binding}");
-            execute_binding(
-                interpreter,
-                env,
-                binding,
-                std::slice::from_ref(&event),
-                event,
-            )
-            .expect("command executes");
-            described
-        };
-
         // C-s enters isearch; printing characters dispatch through the
-        // overriding isearch-mode-map.
-        assert_eq!(send(&mut interpreter, &mut env, 0x13), "isearch-forward");
+        // overriding isearch-mode-map, the first match ending after "wor"
+        // on the second line ("beta word": w=16, o=17, r=18, end=19).  C-a
+        // is not an isearch key: the pre-command-hook exits the search,
+        // removing the overriding map, and the key's own command runs.
         assert_eq!(
-            send(&mut interpreter, &mut env, i64::from(b'w')),
-            "isearch-printing-char"
+            post_command_log(
+                &mut interpreter,
+                &mut env,
+                "\"\\C-swor\\C-a\"",
+                "(list this-original-command (point) (null overriding-terminal-local-map))",
+            ),
+            "((nil 1 t) (isearch-forward 1 nil) (isearch-printing-char 17 nil) \
+             (isearch-printing-char 18 nil) (isearch-printing-char 19 nil) \
+             (move-beginning-of-line 11 t))"
         );
-        assert_eq!(
-            send(&mut interpreter, &mut env, i64::from(b'o')),
-            "isearch-printing-char"
-        );
-        assert_eq!(
-            send(&mut interpreter, &mut env, i64::from(b'r')),
-            "isearch-printing-char"
-        );
-        // The first match ends after "wor" on the second line
-        // ("beta word": w=16, o=17, r=18, end=19).
-        assert_eq!(interpreter.buffer.borrow().point(), 19);
+    }
 
-        // C-a is not an isearch key: the pre-command-hook exits the
-        // search and the key's own command runs.
+    #[test]
+    fn a_printing_key_inserts_through_command_loop_1_and_its_command() {
+        // The terminal's keys run in keyboard.c's command loop: a printing
+        // character's binding, `self-insert-command', inserts it through
+        // call-interactively, and command_loop_1 makes it `last-command'.
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(
+                &crate::compat::project_root().join("../emacs"),
+            )
+            .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interpreter =
+            crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
+        let mut env: Env = crate::lisp::types::Env::new();
+        interpreter.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+        crate::lisp::primitives::call(&mut interpreter, "erase-buffer", &[], &mut env)
+            .expect("erase the scratch banner");
         assert_eq!(
-            send(&mut interpreter, &mut env, 0x01),
-            "move-beginning-of-line"
+            post_command_log(
+                &mut interpreter,
+                &mut env,
+                "\"h\"",
+                "(list this-command (buffer-string) (point))",
+            ),
+            // command_loop_1's entry runs the post-command hooks first.
+            "((nil \"\" 1) (self-insert-command \"h\" 2))"
         );
         assert_eq!(
-            interpreter.buffer.borrow().point(),
-            11,
-            "point at the match line's start"
+            interpreter.lookup_var_key(cached_symbol!("last-command-event"), &env),
+            Some(Value::Integer(104))
         );
-        let overriding = interpreter
-            .lookup_var_key(cached_symbol!("overriding-terminal-local-map"), &env)
-            .unwrap_or(Value::Nil);
-        assert!(
-            overriding.is_nil(),
-            "leaving isearch removes the overriding map"
+        assert_eq!(interpreter.buffer.borrow().buffer_string(), "h");
+        assert_eq!(
+            interpreter.lookup_var_key(cached_symbol!("last-command"), &env),
+            Some(Value::Symbol("self-insert-command".into()))
         );
     }
 
@@ -10173,53 +9706,18 @@ gamma word three
         interpreter.buffer.borrow_mut().insert("abcdefghijklmnop\n");
         interpreter.buffer.borrow_mut().goto_char(1);
 
-        let send = |interpreter: &mut Interpreter, env: &mut Env, code: i64| {
-            let event = Value::Integer(code);
-            let resolution = resolve_pending(interpreter, env, std::slice::from_ref(&event));
-            let Resolution::Command(binding) = resolution else {
-                panic!("event {code} must resolve to a command");
-            };
-            let described = format!("{binding}");
-            execute_binding(
-                interpreter,
-                env,
-                binding,
-                std::slice::from_ref(&event),
-                event,
-            )
-            .expect("command executes");
-            described
-        };
-
         // C-u is simple.el's universal-argument: it stores (4) in
         // prefix-arg and arms the transient map that makes a following
-        // digit dispatch digit-argument.
-        assert_eq!(send(&mut interpreter, &mut env, 21), "universal-argument");
+        // digit dispatch digit-argument; the next ordinary command consumes
+        // the accumulated prefix (C-u 8 C-f moves 8 chars).
         assert_eq!(
-            interpreter.lookup_var_key(cached_symbol!("prefix-arg"), &env),
-            Some(Value::list([Value::Integer(4)]))
-        );
-        assert_eq!(
-            send(&mut interpreter, &mut env, i64::from(b'8')),
-            "digit-argument"
-        );
-        assert_eq!(
-            interpreter.lookup_var_key(cached_symbol!("prefix-arg"), &env),
-            Some(Value::Integer(8))
-        );
-        // The next ordinary command consumes the accumulated prefix.
-        assert_eq!(send(&mut interpreter, &mut env, 6), "forward-char");
-        assert_eq!(
-            interpreter.buffer.borrow().point(),
-            9,
-            "C-u 8 C-f moves 8 chars"
-        );
-        assert_eq!(
-            interpreter
-                .lookup_var_key(cached_symbol!("prefix-arg"), &env)
-                .unwrap_or(Value::Nil),
-            Value::Nil,
-            "the chain is consumed"
+            post_command_log(
+                &mut interpreter,
+                &mut env,
+                "\"\\C-u8\\C-f\"",
+                "(list this-original-command prefix-arg (point))",
+            ),
+            "((nil nil 1) (universal-argument (4) 1) (digit-argument 8 1) (forward-char nil 9))"
         );
     }
 
@@ -10332,26 +9830,6 @@ gamma word three
 
         let undefined = resolve_pending(&mut interpreter, &mut env, &[Value::Symbol("f35".into())]);
         assert!(matches!(undefined, Resolution::Undefined));
-    }
-
-    #[test]
-    fn interactive_execution_inserts_through_lisp() {
-        let mut interpreter = Interpreter::new();
-        let mut env: Env = crate::lisp::types::Env::new();
-        let keys = [Value::Integer(104)];
-        execute_binding(
-            &mut interpreter,
-            &mut env,
-            Value::Symbol("self-insert-command".into()),
-            &keys,
-            Value::Integer(104),
-        )
-        .expect("self-insert through call-interactively");
-        assert_eq!(interpreter.buffer.borrow().buffer_string(), "h");
-        assert_eq!(
-            interpreter.lookup_var_key(cached_symbol!("last-command"), &env),
-            Some(Value::Symbol("self-insert-command".into()))
-        );
     }
 }
 
@@ -10570,10 +10048,7 @@ fn make_menu_executor(
                         let Some(event) = event else {
                             break Value::T;
                         };
-                        let event = match event {
-                            QueuedInput::Lisp(event) => event,
-                            QueuedInput::Error(error) => return Err(error),
-                        };
+                        let QueuedInput::Lisp(event) = event;
                         if event == Value::Integer(7) {
                             break Value::T;
                         }

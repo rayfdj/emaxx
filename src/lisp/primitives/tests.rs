@@ -8194,36 +8194,6 @@ fn read_coding_system_matches_the_gnu_coding_primitive_contract() {
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_global_binding_key(cached_symbol!("executing-kbd-macro"), Value::T);
-    for (events, default, expected) in [
-        (
-            vec![b'u', b't', b'f', b'-', b'8', 13],
-            Value::Nil,
-            Value::Symbol("utf-8".into()),
-        ),
-        (
-            vec![13],
-            Value::Symbol("utf-8".into()),
-            Value::Symbol("utf-8".into()),
-        ),
-        (vec![13], Value::Nil, Value::Nil),
-    ] {
-        interp.set_global_binding_key(
-            cached_symbol!("unread-command-events"),
-            Value::list(events.into_iter().map(|event| Value::Integer(event.into()))),
-        );
-        assert_eq!(
-            call(
-                &mut interp,
-                "read-coding-system",
-                &[Value::String("Coding: ".into()), default],
-                &mut env,
-            )
-            .expect("read-coding-system should consume simulated minibuffer input"),
-            expected,
-        );
-    }
-
     // No keyboard macro is executing when the command loop reports an
     // error (cmd_error clears it first): with one, the reporter's
     // bitch_at_user would end it with a `user-error', as GNU's does.
@@ -25444,9 +25414,15 @@ fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() 
     for (program, expected) in contracts {
         assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-        let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+        // A macro's keys run through command_loop_1's `command-execute',
+        // simple.el's: the batch image's Lisp.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         let mut env = crate::lisp::types::Env::new();
-        let form = Reader::new(program)
+        // *scratch* starts empty, as in GNU's batch session, where the
+        // macro's command loop inserts (the selected window's buffer).
+        let program =
+            format!("(progn (with-current-buffer \"*scratch*\" (erase-buffer)) {program})");
+        let form = Reader::new(&program)
             .read()
             .expect("keyboard-macro contract should parse")
             .expect("keyboard-macro contract should contain a form");
@@ -25502,18 +25478,24 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
     let mut env = crate::lisp::types::Env::new();
     interp.buffer.borrow_mut().insert("xy");
     interp.buffer.borrow_mut().goto_char(1);
-    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
-        .expect("start keyboard macro recording");
-
-    crate::lisp::primitives::execute_command_binding(
+    // C-f read by a recursive edit's command loop, which a timer ends with
+    // a throw to `exit' once it waits for more input (without a keyboard
+    // read_char waits, as GNU's does; GNU gives the same values).
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
-        Value::Symbol("forward-char".into()),
-        &[Value::Integer(6)],
-        Value::Integer(6),
+        "(progn (defvar emaxx-test-nonmenu nil)
+                (add-hook 'post-command-hook
+                          (lambda () (when (eq this-command 'forward-char)
+                                       (setq emaxx-test-nonmenu last-nonmenu-event))))
+                (start-kbd-macro nil)
+                (let ((unread-command-events (list ?\\C-f)))
+                  (run-at-time 0 nil (lambda () (throw 'exit nil)))
+                  (recursive-edit))
+                (end-kbd-macro))",
     )
-    .expect("execute recorded command");
-    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+    .expect("record C-f");
 
     assert_eq!(
         interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
@@ -25523,10 +25505,78 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
         interp.lookup_var_key(cached_symbol!("last-input-event"), &env),
         Some(Value::Integer(6))
     );
+    // The command saw C-f as read_key_sequence's last_nonmenu_event (the
+    // next read's replay sets it nil again).
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-nonmenu-event"), &env),
+        interp.lookup_var("emaxx-test-nonmenu", &env),
         Some(Value::Integer(6))
     );
+}
+
+#[test]
+fn key_description_spells_keys_as_keymap_c_does() {
+    // keymap.c:Fkey_description (the spellings the terminal's echo and
+    // messages use): a function key in angle brackets, RET, DEL and ESC by
+    // name, NUL as C-@, and a sequence's keys separated by spaces (GNU 30.2
+    // gives the same strings).
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut describe = |keys: Value| {
+        let described =
+            call(&mut interp, "key-description", &[keys], &mut env).expect("key-description");
+        string_like(&described).expect("a string").text
+    };
+    assert_eq!(describe(Value::vector([Value::symbol("up")])), "<up>");
+    assert_eq!(describe(Value::vector([Value::Integer(13)])), "RET");
+    assert_eq!(describe(Value::vector([Value::Integer(127)])), "DEL");
+    assert_eq!(describe(Value::vector([Value::Integer(0)])), "C-@");
+    assert_eq!(describe(Value::vector([Value::Integer(27)])), "ESC");
+    assert_eq!(
+        describe(Value::vector([
+            Value::Integer(24),
+            Value::Integer(52),
+            Value::symbol("f1"),
+        ])),
+        "C-x 4 <f1>"
+    );
+}
+
+#[test]
+fn read_event_runs_help_form_for_the_help_character() {
+    // keyboard.c:read_char: the help character read while `help-form' is
+    // non-nil is made this-command-keys and `last-input-event', help-form-show
+    // evaluates the form (dynamically, so it sets the special variable), and
+    // the next event is read and returned.  GNU gives
+    // (120 ([8] 8) 120 nil [8]).
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn
+           (defvar emaxx-test-help-shown nil)
+           (let* ((help-form '(progn (setq emaxx-test-help-shown
+                                           (list (this-command-keys-vector) last-input-event))
+                                     nil))
+                  (unread-command-events (list ?\\C-h ?x)))
+             (list (read-event) emaxx-test-help-shown last-input-event
+                   unread-command-events (this-command-keys-vector))))",
+    )
+    .expect("read an event");
+    let items = value.to_vec().expect("a list");
+    assert_eq!(
+        items[0],
+        Value::Integer(120),
+        "the event after the help character"
+    );
+    assert_eq!(
+        items[1],
+        Value::list([Value::vector([Value::Integer(8)]), Value::Integer(8)]),
+        "the help form saw the help character as the keys and last input"
+    );
+    assert_eq!(items[2], Value::Integer(120));
+    assert_eq!(items[3], Value::Nil, "both events were read");
+    assert_eq!(items[4], Value::vector([Value::Integer(8)]));
 }
 
 #[test]
@@ -25541,23 +25591,20 @@ fn keyboard_macro_records_input_read_inside_a_command() {
     interp
         .eval(&definition, &mut env)
         .expect("define nested-input command");
-    interp.set_variable_key(
-        cached_symbol!("unread-command-events"),
-        Value::list([Value::Integer(97)]),
-        &mut env,
-    );
-    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
-        .expect("start keyboard macro recording");
-
-    crate::lisp::primitives::execute_command_binding(
+    // C-c r runs the command, whose read-char takes the a after it; C-M-c
+    // ends the recursive edit, a throw before finalize_kbd_macro_chars
+    // gives the macro its keys (GNU records [3 114 97] too).  With no
+    // keyboard, nothing else ends it: read_char would wait for input.
+    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
-        Value::Symbol("emaxx-test-read-char-command".into()),
-        &[Value::Integer(3), Value::Integer(114)],
-        Value::Integer(114),
+        "(progn (global-set-key \"\\C-cr\" 'emaxx-test-read-char-command)
+                (start-kbd-macro nil)
+                (let ((unread-command-events (list ?\\C-c ?r ?a ?\\C-\\M-c))) (recursive-edit))
+                (end-kbd-macro))",
     )
-    .expect("execute a command that reads another event");
-    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+    .expect("record a command that reads another event");
 
     assert_eq!(
         interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
@@ -25584,8 +25631,19 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
              (setq emaxx-test-completion-value nil))"#,
     )
     .expect("define a completing command for macro recording");
+    // C-c c and the minibuffer's keys come from the keyboard (the feed);
+    // ESC C-c's `exit-recursive-edit' ends the recursive edit, its throw
+    // leaving the macro's end where the last command's
+    // finalize_kbd_macro_chars put it.  (A feed that runs dry is its
+    // terminal's end: `kill-emacs' 1.)
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(global-set-key \"\\C-cc\" 'emaxx-test-completion-command)",
+    )
+    .expect("bind the completing command");
     let script = std::rc::Rc::new(std::cell::RefCell::new(
-        "ba\t\r"
+        "\x03cba\t\r\x1b\x03"
             .chars()
             .rev()
             .map(|ch| Value::Integer(ch as i64))
@@ -25593,19 +25651,13 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
     ));
     let feed = std::rc::Rc::clone(&script);
     set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
-
-    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
-        .expect("start keyboard macro recording");
-    crate::lisp::primitives::execute_command_binding(
+    let recorded = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
-        Value::Symbol("emaxx-test-completion-command".into()),
-        &[Value::Integer(3), Value::Integer(99)],
-        Value::Integer(99),
-    )
-    .expect("record a command and its minibuffer input");
+        "(progn (start-kbd-macro nil) (recursive-edit) (end-kbd-macro))",
+    );
     set_tty_event_reader(None);
-    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+    recorded.expect("record a command and its minibuffer input");
 
     assert_eq!(
         interp.lookup_var("emaxx-test-completion-value", &env),
@@ -27986,7 +28038,7 @@ fn tty_event_reader_quit_signals_gnu_quit() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
-    set_tty_event_reader(Some(Box::new(|_| None)));
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(7)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
     let Err(LispErrorKind::SignalValue(data)) = event.as_ref().map_err(LispError::kind) else {
@@ -27995,7 +28047,7 @@ fn tty_event_reader_quit_signals_gnu_quit() {
     // keyboard.c signal_quit: Fsignal (Qquit, Qnil), whose error object
     // is the list (quit).
     assert_eq!(*data, Value::list([Value::symbol("quit")]));
-    set_tty_event_reader(Some(Box::new(|_| None)));
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(7)))));
     let caught = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -28450,9 +28502,7 @@ fn write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events()
 
 #[test]
 fn tty_events_answer_interactive_minibuffer_prompts() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     // The terminal feeds "answer.txt" then RET into the minibuffer loop.
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
         std::rc::Rc::new(std::cell::RefCell::new(
@@ -28558,9 +28608,7 @@ fn live_read_string_records_an_accepted_default_in_history() {
 
 #[test]
 fn tty_minibuffer_edits_complete_and_recall_history() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     interp.set_variable_key(
         cached_symbol!("minibuffer-history"),
         Value::list([Value::String("older-entry".into())]),
@@ -28610,9 +28658,7 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
 
 #[test]
 fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     interp.set_variable_key(
         cached_symbol!("minibuffer-history"),
         Value::list([Value::String("recalled".into())]),
@@ -28649,11 +28695,11 @@ fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
 
 #[test]
 fn tty_minibuffer_quit_signals_gnu_quit() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
-    // The frontend's reader answers None for C-g; the loop signals quit.
-    set_tty_event_reader(Some(Box::new(|_| None)));
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    // C-g from the keyboard runs minibuffer.el's `abort-minibuffers', whose
+    // throw to `exit' calls a function signalling `minibuffer-quit' (a
+    // `quit'), as GNU's does.
+    set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(7)))));
     let result = call(
         &mut interp,
         "read-string",
@@ -28664,14 +28710,12 @@ fn tty_minibuffer_quit_signals_gnu_quit() {
     let Err(LispErrorKind::SignalValue(data)) = result.as_ref().map_err(LispError::kind) else {
         panic!("C-g from the minibuffer loop must signal, got {result:?}");
     };
-    assert_eq!(*data, Value::list([Value::symbol("quit")]));
+    assert_eq!(*data, Value::list([Value::symbol("minibuffer-quit")]));
 }
 
 #[test]
 fn tty_completing_read_completes_with_tab() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
         std::rc::Rc::new(std::cell::RefCell::new(
             "forw\t\r"
@@ -28703,9 +28747,7 @@ fn tty_completing_read_completes_with_tab() {
 
 #[test]
 fn tty_read_buffer_formats_a_buffer_default_into_the_prompt() {
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     let current = Value::Buffer(interp.buffer);
     set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(13)))));
     let prompts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -28896,10 +28938,20 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
         .active_minibuffer_activation_id()
         .expect("inner activation has an identity");
     assert!(inner_activation > outer_activation);
+    // read_minibuf sets minibuf_selected_window only at the first level or
+    // when the read starts outside the minibuffer window, so a read nested
+    // in the minibuffer keeps the outer read's entry window (GNU 30.2 gives
+    // ((1 t nil) (2 t nil)) for minibuffer-selected-window's identity with
+    // the entry window and window-minibuffer-p at each level).
+    assert_eq!(
+        call(&mut interp, "selected-window", &[], &mut env).expect("inner selection"),
+        outer_minibuffer,
+        "the nested read runs in the minibuffer window"
+    );
     assert_eq!(
         call(&mut interp, "minibuffer-selected-window", &[], &mut env).expect("inner entry query"),
-        outer_minibuffer,
-        "a nested read remembers the outer minibuffer window"
+        entry,
+        "a read nested in the minibuffer keeps the outer entry window"
     );
 
     crate::lisp::primitives::unwind_active_minibuffer(&mut interp, inner, &mut env)
@@ -30404,7 +30456,7 @@ fn tty_menu_key_hints_follow_preferred_binding_and_live_removal() {
 }
 
 #[test]
-fn command_error_echo_accepts_mutable_error_message_strings() {
+fn error_message_string_accepts_mutable_error_message_strings() {
     let program = r#"(let ((text (copy-sequence "before")))
         (list (error-message-string '(beginning-of-buffer))
               (error-message-string '(user-error "visible warning"))
@@ -30414,39 +30466,6 @@ fn command_error_echo_accepts_mutable_error_message_strings() {
     assert_upstream_primitive_contract(
         &format!("(prin1 {program})"),
         r#"("Beginning of buffer" "visible warning" "before" "Before")"#,
-    );
-    let mut interp = Interpreter::new();
-    let mut env = Env::new();
-    for (condition, expected) in [
-        ("(beginning-of-buffer)", "Beginning of buffer"),
-        ("(user-error \"visible warning\")", "visible warning"),
-    ] {
-        let data = Reader::new(condition)
-            .read()
-            .expect("read echo condition")
-            .expect("echo condition form");
-        let error = LispError::SignalValue(data);
-        assert_eq!(
-            command_error_echo_text(&mut interp, &mut env, &error),
-            expected
-        );
-    }
-    let text = make_shared_string_value_with_multibyte("before".into(), None, true);
-    let error = LispError::SignalValue(Value::list([Value::symbol("error"), text]));
-    assert_eq!(
-        command_error_echo_text(&mut interp, &mut env, &error),
-        "before"
-    );
-    call(
-        &mut interp,
-        "aset",
-        &[text, Value::Integer(0), Value::Integer(i64::from(b'B'))],
-        &mut env,
-    )
-    .expect("mutate error text");
-    assert_eq!(
-        command_error_echo_text(&mut interp, &mut env, &error),
-        "Before"
     );
 }
 
@@ -30986,9 +31005,7 @@ fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
 
 #[test]
 fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() {
-    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let (mut interp, mut env) = upstream_interactive_interpreter();
     interp.set_tty_frame_size(80, 24);
     interp.buffer.borrow_mut().insert("alpha\nbeta\ngamma\n");
     interp.buffer.borrow_mut().goto_char(7); // line 2

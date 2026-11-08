@@ -1148,6 +1148,27 @@ fn read_string_preserves_non_string_defaults_on_empty_input() {
 }
 
 #[test]
+fn read_coding_system_reads_through_completing_read() {
+    // coding.c:Fread_coding_system's completing-read over
+    // `coding-system-alist' with DEFAULT-CODING-SYSTEM, the name read
+    // interned and an empty answer nil; GNU gives (utf-8 utf-8 nil).
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "ert-x",
+            r#"(list
+                 (ert-simulate-keys "utf-8\r" (read-coding-system "Coding: "))
+                 (ert-simulate-keys "\r" (read-coding-system "Coding: " 'utf-8))
+                 (ert-simulate-keys "\r" (read-coding-system "Coding: ")))"#
+        ),
+        Value::list([
+            Value::Symbol("utf-8".into()),
+            Value::Symbol("utf-8".into()),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn no_event_minibuffer_runs_setup_hook_before_batch_input_and_restores_state() {
     assert_eq!(
         eval_str(

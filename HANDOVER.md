@@ -16915,6 +16915,228 @@ setup_process_coding_systems's check now refuses). A 13-form
   `recursive-edit''s terminal loop (two), the macro's extra
   `post-command-hook', and two echo probes whose 0.2-second samples
   straddle the echo's appearance, GNU's when sampled every 0.05 seconds.
+- **Round 343: one command loop as keyboard.c's, for the terminal, the
+  minibuffer, keyboard macros and `recursive-edit'.** Frecursive_edit,
+  recursive_edit_1, command_loop, command_loop_2, command_loop_1 and
+  top_level_1 are Emaxx's, and every command loop runs in them: the
+  terminal session is the startup's recursive_edit_1 at the top level
+  (after `after-pdump-load-hook' and the initial minibuffer mode), a
+  minibuffer read is read_minibuf's recursive_edit_1, `recursive-edit'
+  is Frecursive_edit, and each iteration of `execute-kbd-macro' is
+  command_loop_2 under a `minibuffer-quit' handler, so an error other
+  than `minibuffer-quit' leaves the macro through cmd_error. The loops
+  they replace are gone: the terminal's own (its wait, echo timer, wipe,
+  recording, switch-frame, error settling, binding execution and redraw
+  at each command), the minibuffer's three (the terminal's, a Rust
+  minibuffer editor and completer used when minibuffer.el was not
+  loaded, and one for queued and macro input that returned the
+  minibuffer's text when the queue ran out), the keyboard macro's, and
+  `recursive-edit''s, which read only queued and macro events.
+  recursive_edit_1 binds `standard-output' and `standard-input' to t and
+  `symbols-with-pos-enabled' and `print-symbols-bare' to nil inside a
+  recursive edit, `inhibit-redisplay' and
+  `undo-auto--undoably-changed-buffers' to nil, and acts on the value
+  thrown to `exit' (t quits, a string is an error, a function is
+  called); recursive_edit_unwind gives the current buffer back when it
+  was not the selected window's, with Fset_buffer, so a buffer killed
+  during the recursive edit signals there and the level stays counted,
+  as in GNU (Emaxx skipped a dead buffer). command_loop sets
+  `internal--top-level-message' to "Back to top level" at each entry
+  (the stack overflow recovery that gives it its other message is still
+  to be made), catches `exit' inside a recursive edit or a minibuffer
+  and otherwise runs top_level_1 (the `top-level' form under cmd_error,
+  or GNU's "Bare Emacs" message without one) and command_loop_2 under
+  `top-level' catches for ever, a batch session killing Emacs at the end
+  of input; command_loop_2 enters command_loop_1 again after each error
+  cmd_error reports, until the end of a macro or of input.
+  command_loop_1 is GNU's in GNU's order: its entry (the prefix argument
+  and command keys cleared; unless `memory-full', `post-command-hook'
+  once Vrun_hooks is set, resize_echo_area_exactly and
+  `delayed-warnings-hook', for a command that left by an error or a
+  throw; then `last-command'), the selected window's buffer made current
+  before and after each key sequence, `deactivate-mark' cleared, the
+  minibuffer message timeout, `this-command' nil while the keys are
+  read, read_key_sequence, num_input_keys, an empty sequence ending the
+  loop, `last-command-event', a quit pending in a macro,
+  `disable-point-adjustment', `this-original-command' and the remapped
+  command, the lossage, `pre-command-hook', `undefined' for a nil
+  command or `undo-auto--add-boundary' and `command-execute',
+  `last-prefix-arg', `post-command-hook', resize_echo_area_exactly,
+  `delayed-warnings-hook', `last-command', `real-last-command' and
+  `last-repeatable-command', the prefix command's echo, the mark after
+  the command (the one-command `transient-mark-mode' stepping from
+  `only' to `identity', `deactivate-mark', `activate-mark-hook' after a
+  change, and PRIMARY from the region under `select-active-regions'
+  where the frame or `xterm--set-selection' can set it, unless
+  `selection-inhibit-update-commands' names the command), and the
+  finalize: adjust_point_for_property moves point out of a composition
+  (composition_adjust_point), out of text a `display' property replaces
+  (display_prop_intangible_p) and out of invisible text, and
+  finalize_kbd_macro_chars gives a macro being defined the command's
+  keys only when no prefix argument is pending. cmd_error is GNU's:
+  `executing-kbd-macro' reset unless the error is a `minibuffer-quit'
+  (whose macro being defined then keeps the command's keys), the
+  standard streams bound to t, the prefix argument cleared, echoing
+  cancelled, and `command-error-function' called under print limits of
+  10 with the "After N kbd macro iterations: " context, its default
+  discarding pending input (Fdiscard_input) outside batch.
+  read_key_sequence returns its keys, its binding and the remapped
+  command, delays a switch-frame event read in the middle of a sequence
+  until after it (unread_switch_frame, marked by the collector), keeps
+  `last-nonmenu-event', and ends with no keys at the end of input or of
+  an executing macro, which ends command_loop_1 as read_key_sequence's 0
+  does. read_char runs `help-form': a help character read with it
+  non-nil shows `help-form-show''s help, reads the next event (one more
+  after a SPC) and puts the window configuration back unless a mouse
+  event came. `read-buffer' is Fread_buffer (`completion-ignore-case'
+  bound from `read-buffer-completion-ignore-case', `completing-read'
+  over `internal-complete-buffer' and so its `buffer' category, where
+  Emaxx completed over a list of the buffers, `format-prompt' called
+  without Emaxx's fallback, and a `read-buffer-function' given no
+  PREDICATE when it is nil), `read-command' and `read-variable' take a
+  symbol default's name (t's too, where Emaxx signaled) and intern the
+  name read, Fread_from_minibuffer checks KEYMAP with get_keymap (Emaxx
+  took any non-nil value) and Fread_string binds
+  `minibuffer-completion-table' to nil (Emaxx's setup hooks saw the
+  outer read's table), and read_minibuf is one function: its entry binds
+  `minibuffer-default' to DEFAULT (Emaxx never bound it, so M-n's future
+  history found nothing, an error whose `minibuffer-error-function'
+  discarded the rest of a macro's input), `inhibit-read-only' to nil and
+  `minibuffer-completing-file-name' (a `lambda' an outer read left made
+  nil, where Emaxx kept it and left `lambda' behind after the read),
+  then the history variable and position are set (an unbound history
+  variable set to nil), minibuffer-setup and the input method,
+  recursive_edit_1, the contents with properties when the caller allowed
+  them or `minibuffer-allow-text-properties' is non-nil in the
+  minibuffer at the end (Emaxx read only the caller's value, missing a
+  setup hook's local one), the default directory another live buffer's
+  when the current one's is not a string, and `add-to-history' after the
+  unwind; `completing-read' calls `completing-read-function',
+  minibuffer.el's `completing-read-default' doing what Emaxx's Rust
+  completion did (its candidates, prefix matching, partial-completion
+  expansion and common prefix, and its minibuffer editing keys, all
+  gone), and the terminal loop's own key descriptions and error text
+  went with it. A batch session's startup runs in the same command loop,
+  emacs.c's Frecursive_edit at the top level, where Emaxx evaluated
+  `top-level' and printed an error itself: an error in it reaches
+  top_level_1's cmd_error (an error leaving `execute-kbd-macro' now
+  prefixed "After N kbd macro iterations: " as GNU's,
+  executing_kbd_macro being cleared only at a macro's normal end and its
+  count taken before the iteration's quit check), and a throw to
+  `top-level' is caught there, the batch session going on to
+  command_loop_2's wait as GNU's does, where Emaxx reported no catch for
+  the tag. command_loop_1 calls `undo-auto--add-boundary'
+  unconditionally, as GNU's call0 does (Emaxx pushed its own boundary
+  when simple.el was not loaded), and call-interactively's
+  `funcall-interactively' frame has the command as its first argument,
+  as callint.c's Ffuncall gives it (a batch backtrace showed
+  `funcall-interactively(1)' for GNU's
+  `funcall-interactively(forward-char 1)').  An adversarial review of
+  the round, probing GNU and Emaxx in batch and in a pseudo-terminal,
+  found four P1s, three P2s and fourteen P3s, all fixed but four. P1:
+  command_loop_1's handling of the mark after a command never ran, its
+  test of Vrun_hooks reading a Lisp variable `run-hooks' that is void in
+  both Emacsen (Vrun_hooks is the C global holding the symbol, cleared
+  only by shut_down_emacs), so a set `deactivate-mark' left the region
+  active, `activate-mark-hook' never ran and `transient-mark-mode'
+  stayed `only'; read_minibuf lacked its entry bindings (above); an
+  error escaping cmd_error (a `command-error-function' that signals)
+  ended the terminal session, where GNU's signal_or_quit, finding no
+  handler, throws to `top-level' with t and command_loop goes on; and a
+  keyboard-less interpreter outside batch read end of input (-1) when
+  nothing was queued, a rule added only so the library tests' recursive
+  edits end, which GNU has no counterpart for (a batch `read-event' with
+  `noninteractive' bound to nil got -1, not the timer's value). The rule
+  is gone, and an embedder's or a test's event feed that runs dry is its
+  terminal's device terminating, as read_avail_input's -2 for the last
+  terminal is: terminate_due_to_signal (SIGHUP), whose orderly shutdown
+  is `kill-emacs' 1 with `kill-emacs-hook', which the real terminal's
+  end now runs too (Emaxx exited 0 without the hook). P2:
+  command_loop_1's entry set `deactivate-mark' as Fset does, making it
+  local in the current buffer, where GNU assigns Vdeactivate_mark (the
+  binding in place), as coding.c and fileio.c do, whose Emaxx stores had
+  the same fault; Emaxx's read_minibuf took
+  `minibuffer-allow-text-properties' from the caller only; and it set
+  the minibuffer's mode (its hooks running) before raising the depth and
+  setting the save list, `help-form' and the history variable and
+  position, which GNU does first, and replaced
+  `minibuffer-selected-window' even for a read started in the minibuffer
+  window, which GNU keeps. P3: `read-key-sequence' ignored
+  CAN-RETURN-SWITCH-FRAME; a `select-window' event was not delayed as a
+  switch-frame (read_key_sequence tests the head's event kind);
+  unread_switch_frame was set only when non-nil and on a nonlocal exit
+  too, where GNU assigns it at `done' alone; `execute-kbd-macro' reset
+  its iteration count after checking its arguments and counted an
+  iteration after the quit check; the help character was not made part
+  of this-command-keys and `last-input-event' before `help-form' ran;
+  resize_echo_area_exactly was missing from command_loop_1's entry;
+  `read-from-minibuffer' took any KEYMAP; the minibuffer run doubled
+  recursive_edit_1's bindings; and batch's own top level (above). The
+  `read-coding-system' cases a test lost are on the batch image now, GNU
+  giving the same (utf-8 utf-8 nil). Recorded with the terminal's
+  differences: a menu chosen on a terminal leaves
+  `this-original-command' the keymap where GNU's is the chosen command
+  (read_char's menu prompting, still to be made), the kill-emacs when
+  the selected frame is dead (no frame can die in Emaxx), the long-line
+  narrowing of the command hooks and the continuable quit of a quit
+  check. An audit of minibuf.c's DEFUNs against Emaxx's, made while the
+  review ran, found and fixed the rest of the minibuffer differences
+  above, and Fread_buffer, Fread_command and Fread_variable's. Local
+  validation: the grouped gate's 3,511 library tests pass on the round's
+  source, after six test changes the round's rules call for. Four tests
+  and tty.rs's post_command_log helper read past their queued input and
+  had relied on the keyboard-less end-of-input rule the review removed;
+  with no keyboard read_char waits, as GNU's does, so
+  `keyboard_macro_records_input_read_inside_a_command' now ends its
+  recursive edit with C-M-c,
+  `keyboard_macro_records_minibuffer_command_events_exactly_once' (whose
+  feed running dry is now its terminal's end, `kill-emacs' 1) with ESC
+  C-c, and
+  `terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event',
+  `command_errors_and_undefined_keys_reenter_command_loop_1' and
+  post_command_log with a timer's throw to `exit' (an error discards the
+  queued input, so a queued key would be lost); GNU records the same
+  macro and values for the C-M-c and timer shapes in batch.  And
+  `active_minibuffer_selected_window_tracks_entry_across_nested_reads'
+  expected round 342's `minibuffer-selected-window' in a read nested in
+  the minibuffer, the outer minibuffer window, where read_minibuf keeps
+  the outer read's entry window (GNU and the round give ((1 t nil) (2 t
+  nil)) for its identity with the entry window and `window-minibuffer-p'
+  at each level, round 342 ((1 t nil) (2 nil t))).  The eval, primitives
+  and compat groups ran on the binary with the four tests fixed, and the
+  changed test and the tty, batch and lightweight groups on the one with
+  all six, whose library code is the same.  The integration targets
+  pass: cli's 30, cli_parity's 107 (its new comparisons of a throw to
+  the top level, point leaving invisible text after a command, a macro's
+  keys around a prefix argument, recursive-edit and the debugger on the
+  terminal, an error escaping cmd_error, the mark after commands,
+  read_minibuf's bindings, `read-buffer' and `read-command',
+  recursive_edit_unwind, batch errors through cmd_error and
+  `read-event''s `help-form' among them), ert_runner's 3,
+  native_comp_identity's, native_thread_continuations',
+  package_lifecycle's 5 and runtime_ownership's 3; cli_parity's
+  prefix-help comparison failed once among the parallel targets, GNU's
+  session not having echoed C-x 4 when F1 came (its `current-message'
+  nil where Emaxx's held the echo), and passed on each of three runs
+  alone.  Three library tests were added for what the round made and no
+  test covered, each giving GNU 30.2's values in batch:
+  `key_description_spells_keys_as_keymap_c_does' (keymap.c's spellings,
+  which replaced the terminal loop's own),
+  `read_event_runs_help_form_for_the_help_character' (read_char's
+  `help-form', GNU's (120 ([8] 8) 120 nil [8])) and tty.rs's
+  `a_printing_key_inserts_through_command_loop_1_and_its_command' (((nil
+  "" 1) (self-insert-command "h" 2)), `last-command-event' 104); they
+  pass on the final binary.  read_minibuf's six arguments are one
+  ReadMinibufArgs, where they had needed a lint suppression, and clippy
+  with `--all-targets --all-features -D warnings' passes on the final
+  source.  The review's eight batch probes give GNU's results on the
+  rebuilt binary, and a pty comparison of the reviews' 96 probes gives
+  GNU's on 91 (round 342's 88 and the three it recorded for
+  `recursive-edit''s terminal loop and the macro's `post-command-hook');
+  the five others are recorded: Quail's raw keys (three probes) and two
+  echo probes whose 0.2-second samples straddle the echo's appearance.
+  A terminal probe of `help-form' in `read-event' (C-h, then x) gives
+  GNU's screen and events, round 342's binary not.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -19781,9 +20003,32 @@ ert-tests as a whole 26,307 ms against 27,211.
   (2,416 against 1,590), testcover-tests (1,028 against 287) and
   semantic-utest-ia (3,495 against 2,869).
 
+**On `ebc9ef1`** (round 342): the frozen run (run 42417533874) matched
+  all 7,928 outcomes at its second attempt, its first having failed at
+  GNU's eglot oracle. Setup 75.2 s against 60.4 s (1.245), test bodies
+  276.1 s against 251.7 s (1.097), in all 1.115, with a per-file setup
+  median of 118 ms against 91; here the round's binary sets up xml-tests
+  in 85 ms (median 94) against round 341's 83 (98) and GNU's 91 (104),
+  so the setup ratio is the runner's. The widest body gaps are
+  tramp-tests (19,366 ms against 16,829), comp-tests (16,845 against
+  13,763), ert-tests (35,636 against 33,896), process-tests (2,898
+  against 1,593), mule-tests (2,425 against 1,555), package-tests (6,988
+  against 6,133), semantic-utest-ia (3,274 against 2,502) and kmacro-tests
+  (1,870 against 1,274). The Rust gate (run 42417531633) passed every
+  stage but the integration targets, where cli_parity's
+  `the_wait_reads_its_channels_as_wait_reading_process_output_does' had
+  GNU's first JUST-THIS-ONE `accept-process-output' on p2 return before
+  p2's sentinel ran and Emaxx's after it. It is GNU's race, which Emaxx
+  reproduces: once a read of WAIT_PROC sets the wait to MINIMUM, the next
+  select finds the child that has just printed and is exiting either
+  still running (the wait returns) or reaped (status_notify runs its
+  sentinel first); the test's program run 20 times took the second path
+  20 times in Emaxx and 19 in GNU. Round 343 has p2 sleep after its
+  output, which both take the same way every time.
+
 **Findings recorded, not fixed:**
 - **The terminal session's remaining keyboard and display differences
-  (rounds 340-342).** The secondary terminals `make-terminal-frame'
+  (rounds 340-343).** The secondary terminals `make-terminal-frame'
   opens read their bytes through Emaxx's own decoder into
   `unread-command-events', with no quit character and no
   `throw-on-input', where GNU's tty_read_avail_input stores them in the
@@ -19806,66 +20051,63 @@ ert-tests as a whole 26,307 ms against 27,211.
   level after C stack overflow"), Emacs still running; unwinding Rust
   frames from a signal handler is not sound, so Emaxx needs its own
   check of the native stack before it is exhausted, ending in the same
-  top-level re-entry. With interrupt input off nothing polls the
-  keyboard during a busy command, where a GNU build with POLL_FOR_INPUT
-  reads it every `polling-period' (start_polling's atimer,
-  poll_for_input), so a `discard-input' after a long command keeps
-  typeahead GNU has read and discards. Two C-g's typed before the main
-  thread's next quit check count as one, where GNU's SIGINT handler runs
-  handle_interrupt in the signal itself (the second, with `quit-flag'
-  still set, the emergency escape); and a background thread runs
-  process_pending_signals at each of its quit checks while an interrupt
-  waits for the main thread. A face's tty attributes come from
-  faces.el's `face-attribute' and the frontend's merge of realized
-  attributes, where GNU merges the face's Lisp attributes over the
-  default face's (merge_face_ref) and realizes the result once in the
-  face cache, and `display-supports-face-attributes-p' reads the frame's
-  `default' definition where GNU reads its realized default face, which
-  differs between a change to the default face and the next redisplay.
-  The frontend moves the cursor, clears and scrolls with fixed ANSI
+  top-level re-entry. emacs.c's main also grows RLIMIT_STACK at startup
+  (to emacs_re_max_failures' need plus room for a GC's frames, within
+  the hard limit), which Emaxx does not, so a child process sees the
+  soft limit Emaxx was started with (8,192 KB under the usual 8 MB)
+  where GNU's children see the grown one (9,788 KB). With interrupt
+  input off nothing polls the keyboard during a busy command, where a
+  GNU build with POLL_FOR_INPUT reads it every `polling-period'
+  (start_polling's atimer, poll_for_input), so a `discard-input' after a
+  long command keeps typeahead GNU has read and discards. Two C-g's
+  typed before the main thread's next quit check count as one, where
+  GNU's SIGINT handler runs handle_interrupt in the signal itself (the
+  second, with `quit-flag' still set, the emergency escape); and a
+  background thread runs process_pending_signals at each of its quit
+  checks while an interrupt waits for the main thread. A face's tty
+  attributes come from faces.el's `face-attribute' and the frontend's
+  merge of realized attributes, where GNU merges the face's Lisp
+  attributes over the default face's (merge_face_ref) and realizes the
+  result once in the face cache, and
+  `display-supports-face-attributes-p' reads the frame's `default'
+  definition where GNU reads its realized default face, which differs
+  between a change to the default face and the next redisplay. The
+  frontend moves the cursor, clears and scrolls with fixed ANSI
   sequences where term.c sends the entry's cm, ce, cd and cl (with their
-  padding), which matters on a terminal that is not ANSI.
-  `recursive-edit' inside a command reads only queued and macro events,
-  where GNU's recursive_edit_1 runs a command loop on the terminal (the
-  debugger, edebug and query-replace's C-r wait in it), and a minibuffer
-  read from `unread-command-events' outside the terminal and with no
-  keyboard macro executing returns the minibuffer's text once the queued
-  events run out, where GNU's read_char goes on to wait for the
-  keyboard. A message taller than `max-mini-window-height' shows its
-  first lines, where resize_mini_window starts the mini window so that
-  its last lines show. An F-key's `last-input-event' is its symbol where
-  GNU's is the sequence's last byte, Quail's
-  `this-single-command-raw-keys' lacks the key it translated, and a
-  keyboard macro entering the minibuffer runs `post-command-hook' once
-  more than GNU. The region is highlighted in a non-selected window
-  showing the same buffer, frames on a second terminal are not redrawn
-  when the selected one changes their buffer, the second terminal echoes
-  escape sequences as keys, and `tab-bar-mode' draws nothing on a tty.
-  read_char's mouse-menu prompting is not GNU's: a menu cancelled with
-  C-g runs `ignore' with the command hooks and leaves the echo shown,
-  where read_key_sequence returns -1 and command_loop_1 runs no command,
-  and a chosen item is not recorded (record_menu_key's this-command-keys
-  and echo); an unbound down-mouse event after an echoed prefix is not
-  echoed before it is dropped; with `help-form' set, read_char does not
-  show the help and read the next key (`read-event' returns the help
-  character); a keyboard macro defined across a prefix argument records
-  the argument's keys, where finalize_kbd_macro_chars runs only with no
-  prefix argument; in batch, an error leaving `execute-kbd-macro' lacks
-  cmd_error's "After N kbd macro iterations: " prefix; and the cursor
-  after a minibuffer's read-only error is one column right of GNU's. To
-  be made: the one command loop of keyboard.c (command_loop,
-  command_loop_2 and command_loop_1 for the terminal, the minibuffer,
-  keyboard macros and `recursive-edit'), read_char's menu prompting and
-  `help-form', the C stack overflow's return to the top level, input
-  polling, the secondary terminals' input, modes and sizes as the
-  controlling terminal's, sys_subshell, the special events in the
+  padding), which matters on a terminal that is not ANSI. A message
+  taller than `max-mini-window-height' shows its first lines, where
+  resize_mini_window starts the mini window so that its last lines show.
+  An F-key's `last-input-event' is its symbol where GNU's is the
+  sequence's last byte, and Quail's `this-single-command-raw-keys' lacks
+  the key it translated (so `describe-key' after it does not say what
+  the key was translated from). The region is highlighted in a
+  non-selected window showing the same buffer, frames on a second
+  terminal are not redrawn when the selected one changes their buffer,
+  the second terminal echoes escape sequences as keys, and
+  `tab-bar-mode' draws nothing on a tty. read_char's mouse-menu
+  prompting is not GNU's: a menu cancelled with C-g runs `ignore' with
+  the command hooks and leaves the echo shown, where read_key_sequence
+  returns -1 and command_loop_1 runs no command, and a chosen item is
+  not recorded (record_menu_key's this-command-keys and echo); an
+  unbound down-mouse event after an echoed prefix is not echoed before
+  it is dropped; and the cursor after a minibuffer's read-only error is
+  one column right of GNU's. A menu chosen on a terminal leaves
+  `this-original-command' the menu's keymap, where GNU's read_char
+  returns the chosen event to read_key_sequence and the command is the
+  binding found; command_loop_1 runs the command hooks without the
+  long-line narrowing of safe_run_hooks_maybe_narrowed; and a quit
+  check's quit is never continuable, where eval.c's quit () is
+  signal_or_quit with CONTINUABLE, a debugger `debug-on-quit' entered
+  returning to the check. To be made: read_char's menu prompting, the C
+  stack overflow's return to the top level and the startup's stack
+  limit, input polling, the secondary terminals' input, modes and sizes
+  as the controlling terminal's, sys_subshell, the special events in the
   keyboard buffer's order, handle_interrupt in the signal handler,
   suspend-tty and resume-tty with the output buffer size as term.c's,
   faces realized from their merged Lisp attributes in a face cache as
-  xfaces.c's, the entry's cursor motion and clear strings,
-  recursive_edit_1's command loop on the terminal, resize_mini_window's
-  window start for a tall message, and the remaining keyboard and
-  display details above.
+  xfaces.c's, the entry's cursor motion and clear strings, the command
+  hooks' long-line narrowing, resize_mini_window's window start for a
+  tall message, and the remaining keyboard and display details above.
 - **TLS over a process that is no network connection (round 337).**
   gnutls-boot on a pipe process or a subprocess gives GnuTLS the
   process's p->infd and p->outfd as its transport

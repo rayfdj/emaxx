@@ -311,11 +311,13 @@ pub(crate) use dispatch::render_mode_line_glass;
 pub(crate) use dispatch::replace_buffer_in_windows_safely;
 #[cfg(test)]
 pub(crate) use dispatch::resolve_tty_face_attrs;
+#[cfg(test)]
+pub(crate) use dispatch::set_echo_area_message;
 pub(crate) use dispatch::set_window_buffer;
 pub(crate) use dispatch::unibyte_doc_string;
 pub(crate) use dispatch::{
     EchoSpans, echo_area_message_tick, echo_area_print_logged, echo_display_message,
-    set_echo_area_message, string_face_spans,
+    string_face_spans,
 };
 pub(crate) use dispatch::{
     FACE_NO_UNDERLINE, FACE_TTY_DEFAULT_BG_COLOR, FACE_TTY_DEFAULT_COLOR,

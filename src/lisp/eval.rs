@@ -1217,6 +1217,9 @@ pub(crate) struct KeyboardInputState {
     // read saved for read_minibuf_unwind to restore: MINIBUF_SAVE_SLOTS
     // per level, the outermost first.
     pub(crate) minibuf_save_list: Vec<Value>,
+    // keyboard.c's unread_switch_frame: the switch-frame event
+    // read_key_sequence delayed, which read_char returns next.
+    pub(crate) unread_switch_frame: Option<Value>,
 }
 
 // One active `ert-with-message-capture` scope.  When the capture variable is
@@ -5699,6 +5702,7 @@ impl Interpreter {
             .echo_string
             .iter()
             .chain(&self.keyboard_input.echo_prompt)
+            .chain(&self.keyboard_input.unread_switch_frame)
         {
             mark(value);
         }
@@ -6190,7 +6194,12 @@ impl Interpreter {
                 *event = c.copy(event);
             }
             let input = &mut clone.keyboard_input;
-            for value in input.echo_string.iter_mut().chain(&mut input.echo_prompt) {
+            for value in input
+                .echo_string
+                .iter_mut()
+                .chain(&mut input.echo_prompt)
+                .chain(&mut input.unread_switch_frame)
+            {
                 *value = c.copy(value);
             }
             for event in &mut clone.keyboard_input.raw_keys {

@@ -1418,21 +1418,6 @@ pub(crate) fn is_lambda_expression(interp: &Interpreter, value: &Value, env: &En
     })
 }
 
-pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -> bool {
-    matches!(
-        value.kind(),
-        Kind::BuiltinFunc(_) | Kind::NativeFunction(_) | Kind::Closure(_)
-    ) || is_lambda_expression(interp, value, env)
-        || matches!(
-            value.kind(),
-            Kind::Record(id)
-                if interp.find_record(id).is_some_and(|record| matches!(
-                    record.kind,
-                    crate::lisp::eval::RecordKind::ModuleFunction
-                ))
-        )
-}
-
 /// eval.c:FUNCTIONP.  Native callers use this helper directly so
 /// redefining the Lisp symbol `functionp' cannot change C-level argument
 /// validation.

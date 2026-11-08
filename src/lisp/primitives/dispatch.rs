@@ -11,7 +11,7 @@ pub(crate) use comp::{comp_el_to_eln_rel_filename, native_elisp_load};
 mod composition;
 pub(crate) use composition::{
     CHECK_ALL, CHECK_BORDER, CHECK_HEAD, CHECK_INSIDE, CHECK_TAIL, CompositionIterator,
-    StringCompositions, update_compositions,
+    StringCompositions, composition_adjust_point, update_compositions,
 };
 pub(crate) mod display;
 mod emacs_module;
@@ -40,6 +40,8 @@ pub(crate) use display::echo_area_message_with_spans;
 pub(crate) use display::render_mode_line_glass;
 #[cfg(test)]
 pub(crate) use display::resolve_tty_face_attrs;
+#[cfg(test)]
+pub(crate) use display::set_echo_area_message;
 pub(crate) use display::{
     EchoSpans, FACE_NO_UNDERLINE, FACE_TTY_DEFAULT_BG_COLOR, FACE_TTY_DEFAULT_COLOR,
     FACE_TTY_DEFAULT_FG_COLOR, FACE_UNDERLINE_SINGLE, LineNumberLayout, LineNumberMode,
@@ -53,12 +55,9 @@ pub(crate) use display::{
 };
 pub(crate) use display::{
     clear_message, echo_area_message, echo_area_message_tick, echo_area_print_logged,
-    echo_display_message, set_echo_area_message,
+    echo_display_message,
 };
-pub(crate) use lists::{
-    event_array, next_kbd_macro_event, prepare_kbd_macro_minibuffer_entry,
-    read_minibuffer_text_from_kbd_macro_inner, recursive_edit_exit_value,
-};
+pub(crate) use lists::{event_array, next_kbd_macro_event, recursive_edit_exit_value};
 pub(crate) use misc_keymaps::restore_unicode_menu_case_table;
 mod overlays;
 mod predicates;

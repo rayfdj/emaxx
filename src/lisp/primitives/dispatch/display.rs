@@ -9,7 +9,7 @@ pub(crate) use frame_size::{
     adjust_frame_size, change_frame_size, do_pending_window_change, frame_top_margin,
     set_menu_bar_lines, set_tab_bar_lines,
 };
-pub(crate) use mode_line::ModeLineCells;
+pub(crate) use mode_line::{ModeLineCells, display_prop_intangible_p};
 
 // The live echo-area line of an interactive session.  GNU keeps this in
 // the echo buffer that redisplay paints; the terminal frontend reads it
@@ -62,6 +62,7 @@ pub(crate) fn echo_area_message_tick() -> u64 {
     ECHO_MESSAGE_TICK.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
 pub(crate) fn set_echo_area_message(text: Option<String>) {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
     bump_echo_message_tick();

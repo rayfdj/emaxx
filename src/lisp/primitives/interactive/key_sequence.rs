@@ -14,8 +14,9 @@ struct KeyRemap {
 pub(crate) struct KeySequenceReader {
     keys: RootedVec<Value>,
     raw: RootedVec<Value>,
-    // Three (parent, current) pairs, binding, prompt, original case, and
-    // events for which a non-text mouse prefix has already been generated.
+    // Three (parent, current) pairs, binding, prompt, original case,
+    // events for which a non-text mouse prefix has already been generated,
+    // and read_key_sequence_cmd.
     roots: RootedVec<Value>,
     remaps: [KeyRemap; 3],
     read: usize,
@@ -41,7 +42,7 @@ impl KeySequenceReader {
         prompt: Value,
         env: &mut Env,
     ) -> Result<Self, LispError> {
-        let mut roots = RootedVec::with_capacity(10);
+        let mut roots = RootedVec::with_capacity(11);
         for name in [
             cached_symbol!("input-decode-map"),
             cached_symbol!("local-function-key-map"),
@@ -53,6 +54,7 @@ impl KeySequenceReader {
         }
         roots.push(Value::Nil);
         roots.push(prompt);
+        roots.push(Value::Nil);
         roots.push(Value::Nil);
         roots.push(Value::Nil);
         let mut reader = Self {
@@ -111,6 +113,8 @@ impl KeySequenceReader {
         env: &mut Env,
         mock_input: bool,
     ) -> Result<(), LispError> {
+        // replay_sequence: from the beginning of keybuf, no key read.
+        interp.set_variable_key(cached_symbol!("last-nonmenu-event"), Value::Nil, env);
         // keyboard.c:active_maps: the EVENT_START of a first event with
         // parameters, or of the second when the first is the fake prefix
         // (`mode-line' and the like) its POSN_POSN names.
@@ -417,12 +421,10 @@ impl KeySequenceReader {
         self.keys.last().copied().unwrap_or(Value::Nil)
     }
 
-    pub(crate) fn command_binding(&self) -> Value {
-        self.roots[6]
-    }
-
-    pub(crate) fn keys(&self) -> &[Value] {
-        &self.keys
+    /// read_key_sequence_cmd: the binding the sequence ended with, or
+    /// `prefix-help-command' for a help character after an unbound prefix.
+    pub(crate) fn read_key_sequence_cmd(&self) -> Value {
+        self.roots[10]
     }
 
     /// Advance the same reader used by read-key-sequence by one external
@@ -593,6 +595,12 @@ impl KeySequenceReader {
             }
             self.fresh_omitted = false;
             self.read += 1;
+            // keybuf[t++] = key, and last_nonmenu_event the key read.
+            interp.set_variable_key(
+                cached_symbol!("last-nonmenu-event"),
+                self.keys[self.read - 1],
+                env,
+            );
             let start = self
                 .keys_start
                 .min(interp.keyboard_input.command_keys.len());
@@ -633,6 +641,7 @@ impl KeySequenceReader {
                     let command = interp
                         .lookup_var_key(cached_symbol!("prefix-help-command"), env)
                         .unwrap_or(Value::Nil);
+                    self.roots[10] = command;
                     return if command.is_nil() || command.is_symbol() {
                         resolve_read_key_binding(interp, env, command, &self.keys)
                     } else {
@@ -648,6 +657,7 @@ impl KeySequenceReader {
                     && mouse_event_head(interp, &event).is_some()
                     && keymap_reference_map(interp, &self.roots[6], env).is_some())
             {
+                self.roots[10] = self.roots[6];
                 return resolve_read_key_binding(interp, env, self.roots[6], &self.keys);
             }
         }
@@ -703,6 +713,7 @@ pub(crate) fn read_key_sequence_vs(
     prompt: Value,
     continue_echo: bool,
     dont_downcase_last: bool,
+    can_return_switch_frame: bool,
     cmd_loop: bool,
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
@@ -714,34 +725,94 @@ pub(crate) fn read_key_sequence_vs(
         super::clear_command_keys(interp);
     }
     super::init_raw_keybuf_count(interp);
-    let events = read_key_sequence_events(interp, prompt, dont_downcase_last, env);
+    let events = read_key_sequence(
+        interp,
+        prompt,
+        dont_downcase_last,
+        can_return_switch_frame,
+        env,
+    )
+    .map(|read| read.keys);
     interp.unbind_to(count, env)?;
     events
 }
 
-pub(crate) fn read_key_sequence_events(
+/// keyboard.c:read_key_sequence's result: the keys (none at a keyboard
+/// macro's end or the keyboard's), read_key_sequence_cmd and
+/// read_key_sequence_remapped.
+pub(crate) struct ReadKeySequence {
+    pub(crate) keys: Vec<Value>,
+    pub(crate) cmd: Value,
+    pub(crate) remapped: Value,
+}
+
+/// keyboard.c:read_key_sequence: read_char's events looked up in the
+/// active maps until they make a complete sequence.  A switch-frame event
+/// after the first key, or as the first when CAN_RETURN_SWITCH_FRAME is
+/// false, is delayed until the sequence ends (unread_switch_frame); an
+/// end of input (read_char's -1) or of the executing macro ends the read
+/// with no keys.
+pub(crate) fn read_key_sequence(
     interp: &mut Interpreter,
     prompt: Value,
     dont_downcase_last: bool,
+    can_return_switch_frame: bool,
     env: &mut Env,
-) -> Result<Vec<Value>, LispError> {
+) -> Result<ReadKeySequence, LispError> {
     // read_key_sequence's read_char decodes the terminal's bytes.
     let _decoded = super::RawEventRead::enter(false);
     let mut reader = KeySequenceReader::new(interp, prompt, env)?;
-    loop {
+    let mut delayed_switch_frame = RootedVec::from_vec(vec![Value::Nil]);
+    let result: Result<Option<KeyResolution>, LispError> = (|| loop {
         // At the end of an executing macro, with no unread events, the
         // sequence ends empty (t = 0), whatever it has read.
         if at_end_of_macro_p(interp, env)?
             && !super::kbd_input::requeued_events_pending_p(interp, env)
         {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let event = wait_for_sequence_event(interp, env, reader.prev_event())?;
-        if !matches!(
-            reader.read_event(interp, event, env)?,
-            KeyResolution::Prefix
-        ) {
-            return reader.finish(interp, dont_downcase_last, env);
+        // read_char returns -1 at the end of input: t = 0.
+        if matches!(event.kind(), Kind::Integer(-1)) {
+            return Ok(None);
         }
-    }
+        // EVENT_HAS_PARAMETERS with EVENT_HEAD_KIND switch-frame: a
+        // `switch-frame' or a `select-window' event.
+        if event.cons_values().is_some_and(|(head, _)| {
+            interp
+                .get_property_of_symbol_value(head, "event-kind")
+                .is_some_and(|kind| crate::lisp::types::eq_symbol_named(kind, "switch-frame"))
+        }) && (!reader.keys.is_empty() || !can_return_switch_frame)
+        {
+            delayed_switch_frame[0] = event;
+            continue;
+        }
+        let resolution = reader.read_event(interp, event, env)?;
+        if !matches!(resolution, KeyResolution::Prefix) {
+            return Ok(Some(resolution));
+        }
+    })();
+    // done: unread_switch_frame = delayed_switch_frame, on a return (a
+    // nonlocal exit leaves it).
+    let result = result?;
+    interp.keyboard_input.unread_switch_frame =
+        (!delayed_switch_frame[0].is_nil()).then_some(delayed_switch_frame[0]);
+    let Some(resolution) = result else {
+        return Ok(ReadKeySequence {
+            keys: Vec::new(),
+            cmd: Value::Nil,
+            remapped: Value::Nil,
+        });
+    };
+    let cmd = reader.read_key_sequence_cmd();
+    let remapped = match resolution {
+        KeyResolution::Command(command) if !crate::lisp::types::eq(command, cmd) => command,
+        _ => Value::Nil,
+    };
+    let keys = reader.finish(interp, dont_downcase_last, env)?;
+    Ok(ReadKeySequence {
+        keys,
+        cmd,
+        remapped,
+    })
 }

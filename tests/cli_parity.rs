@@ -5879,7 +5879,11 @@ fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
     // channel delete_read_fd took out (a stopped connection's, a filter of
     // t's); a positive timeout however small runs one pass; Fsleep_for
     // decodes its arguments as GNU's does; and a timed `read-event' ends
-    // when a filter sets `quit-flag'.
+    // when a filter sets `quit-flag'.  p2 sleeps after its output: once a
+    // read of WAIT_PROC sets wait to MINIMUM, the next select finds a child
+    // that has just written and is exiting either still running (the wait
+    // returns) or reaped (status_notify runs its sentinel first), a race in
+    // GNU's loop as in Emaxx's.
     let corpus = Corpus::new();
     for program in [
         r##";;; -*- lexical-binding: t -*-
@@ -5915,7 +5919,7 @@ fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
   (princ (format "stderr-wait %S %S\n" (accept-process-output pp 0.1) (reverse log))))
 (let* ((log nil)
        (q (make-process :name "q2" :command '("true") :noquery t :sentinel (lambda (_p e) (push (list 'q e) log))))
-       (p (make-process :name "p2" :command '("sh" "-c" "sleep 0.3; echo hi") :noquery t :filter (lambda (_p s) (push (list 'pout s) log)) :sentinel (lambda (_p e) (push (list 'p e) log)))))
+       (p (make-process :name "p2" :command '("sh" "-c" "sleep 0.3; echo hi; sleep 1") :noquery t :filter (lambda (_p s) (push (list 'pout s) log)) :sentinel (lambda (_p e) (push (list 'p e) log)))))
   (busy 0.2)
   (princ (format "%S\n" (list (accept-process-output p 2 nil t) (reverse log) (accept-process-output p 2 nil t) (reverse log)))))
 (princ "end\n")"##,
@@ -7027,3 +7031,355 @@ const PROBE: &str = r##"(defvar k-log nil)
 (global-set-key [f12] #'k-raw)
 (global-set-key "Q" #'k-done)
 (switch-to-buffer "k")"##;
+
+#[test]
+fn read_minibuf_binds_its_entry_variables_as_minibuf_c_does() {
+    // Fread_from_minibuffer's KEYMAP is get_keymap's (a non-keymap
+    // signals), and minibuf.c:read_minibuf's entry: `minibuffer-default'
+    // is DEFAULT for the read (M-n's future history inserts it),
+    // `inhibit-read-only' nil, and `minibuffer-completing-file-name'
+    // bound, a `lambda' left by an outer read nil in this one and t made
+    // `lambda'; the contents keep their properties when
+    // `minibuffer-allow-text-properties' is non-nil in the minibuffer at
+    // the end; Fread_string binds `minibuffer-completion-table' to nil.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "rm.el",
+        r#"(require 'ert-x)
+(defvar rm-iro) (defvar rm-cfn)
+(princ (format "%S\n" (list
+  (condition-case e (read-from-minibuffer "p" nil 'foo) (error e))
+  (ert-simulate-keys (kbd "M-n RET") (read-string "p: " nil nil "dflt"))
+  (ert-simulate-keys (kbd "M-n M-n RET") (read-string "p: " nil nil '("d1" "d2")))
+  (let ((inhibit-read-only t))
+    (ert-simulate-keys (kbd "RET")
+      (minibuffer-with-setup-hook (lambda () (setq rm-iro inhibit-read-only)) (read-string "q: ")))
+    rm-iro)
+  (let ((minibuffer-completing-file-name t))
+    (ert-simulate-keys (kbd "RET")
+      (minibuffer-with-setup-hook (lambda () (setq rm-cfn minibuffer-completing-file-name)) (read-string "q: ")))
+    (list rm-cfn minibuffer-completing-file-name))
+  (let ((minibuffer-completing-file-name 'lambda))
+    (ert-simulate-keys (kbd "RET")
+      (minibuffer-with-setup-hook (lambda () (setq rm-cfn minibuffer-completing-file-name)) (read-string "q: ")))
+    (list rm-cfn minibuffer-completing-file-name))
+  (ert-simulate-keys (kbd "RET")
+    (minibuffer-with-setup-hook (lambda () (insert (propertize "ab" 'face 'bold)) (setq-local minibuffer-allow-text-properties t))
+      (read-string "p: ")))
+  (ert-simulate-keys (kbd "RET")
+    (minibuffer-with-setup-hook (lambda () (insert (propertize "ab" 'face 'bold))) (read-string "p: ")))
+  (let ((minibuffer-completion-table '("a" "b")))
+    (list (ert-simulate-keys (kbd "RET")
+            (minibuffer-with-setup-hook (lambda () (setq rm-cfn minibuffer-completion-table)) (read-string "p: ")))
+          rm-cfn
+          (ert-simulate-keys (kbd "RET")
+            (minibuffer-with-setup-hook (lambda () (setq rm-cfn minibuffer-completion-table)) (read-from-minibuffer "p: ")))
+          rm-cfn)))))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn read_buffer_and_read_command_read_as_minibuf_c_does() {
+    // minibuf.c:Fread_buffer: `completion-ignore-case' bound from
+    // `read-buffer-completion-ignore-case', the default edited into the
+    // prompt by `format-prompt' before its colon, `completing-read' over
+    // `internal-complete-buffer' (its `buffer' category), and a
+    // `read-buffer-function' given no PREDICATE argument when PREDICATE is
+    // nil.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "rb.el",
+        r#"(require 'ert-x)
+(defvar rb-log nil)
+(let ((read-buffer-completion-ignore-case t))
+  (push (ert-simulate-keys (kbd "RET")
+          (minibuffer-with-setup-hook
+              (lambda () (push (list (minibuffer-prompt) minibuffer-completion-table completion-ignore-case
+                                     (completion-metadata-get (completion-metadata "" minibuffer-completion-table nil) 'category))
+                               rb-log))
+            (read-buffer "Buf: " (get-buffer "*scratch*"))))
+        rb-log))
+(push (ert-simulate-keys (kbd "RET") (minibuffer-with-setup-hook (lambda () (push (minibuffer-prompt) rb-log)) (read-buffer "Buf:" "x"))) rb-log)
+(push (ert-simulate-keys (kbd "RET") (minibuffer-with-setup-hook (lambda () (push (minibuffer-prompt) rb-log)) (read-buffer "Buf" '("y" "z")))) rb-log)
+(let ((read-buffer-function (lambda (&rest args) (push (cons 'rbf args) rb-log) "r")))
+  (push (read-buffer "P: " nil t) rb-log)
+  (push (read-buffer "P: " nil t nil) rb-log)
+  (push (read-buffer "P: " "d" nil #'ignore) rb-log))
+(princ (format "%S\n" (reverse rb-log)))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    // Fread_command and Fread_variable: a symbol DEFAULT-VALUE's name (t's
+    // too), the name read interned.
+    let program = corpus.write(
+        "rc.el",
+        r#"(require 'ert-x)
+(princ (format "%S\n" (list
+  (ert-simulate-keys (kbd "RET") (read-command "C: " t))
+  (ert-simulate-keys (kbd "RET") (read-command "C: " 'forward-char))
+  (ert-simulate-keys (kbd "RET") (read-variable "V: " 'fill-column))
+  (ert-simulate-keys (kbd "RET") (read-command "C: " "x")))))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn read_event_runs_help_form_as_read_char_does() {
+    // keyboard.c:read_char: a help character read while `help-form' is
+    // non-nil is made part of this-command-keys and `last-input-event',
+    // `help-form-show' shows the form's help, and the next event is read
+    // and returned (the window configuration put back).
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "hf.el",
+        r#"(require 'ert-x)
+(defvar hf-log nil)
+(let ((help-form '(progn (push (list 'shown (this-command-keys-vector) last-input-event) hf-log) nil)))
+  (push (ert-simulate-keys (vector ?\C-h ?x)
+          (list (read-event) (this-command-keys-vector) last-input-event))
+        hf-log)
+  (push (ert-simulate-keys (vector ?\C-h ?\s ?y)
+          (list (read-char) last-input-event))
+        hf-log))
+(push (let ((help-form nil)) (ert-simulate-keys (vector ?\C-h) (read-event))) hf-log)
+(princ (format "%S\n" (reverse hf-log)))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn recursive_edit_unwinds_as_recursive_edit_unwind_does() {
+    // keyboard.c:recursive_edit_unwind: Fset_buffer of the buffer current
+    // at entry (when it was not the selected window's) signals if that
+    // buffer was killed during the recursive edit, before the level is
+    // given back.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "reu.el",
+        r#"(defvar reu-b (generate-new-buffer "reu"))
+(global-set-key [f5] (lambda () (interactive) (kill-buffer reu-b)))
+(princ (format "%S\n" (list
+  (condition-case e
+      (with-current-buffer reu-b
+        (let ((unread-command-events (list 'f5 ?\C-\M-c)) (executing-kbd-macro t))
+          (recursive-edit)))
+    (error e))
+  (recursion-depth))))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn the_mark_after_a_command_is_command_loop_1_s() {
+    // keyboard.c:command_loop_1 after each command with the mark active
+    // (Vrun_hooks being set): the one-command `transient-mark-mode' steps
+    // from `only' to `identity' to nil, a set `deactivate-mark'
+    // deactivates the mark, and `activate-mark-hook' runs after a change
+    // or with another buffer current.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "mk.el",
+        r#";;; -*- lexical-binding: t -*-
+(defvar log nil)
+(switch-to-buffer (get-buffer-create "m"))
+(insert "hello world") (goto-char 1)
+(transient-mark-mode 1)
+(add-hook 'activate-mark-hook (lambda () (push (list 'act this-command) log)))
+(add-hook 'deactivate-mark-hook (lambda () (push (list 'deact this-command) log)))
+(add-hook 'post-command-hook (lambda () (push (list 'post this-command mark-active deactivate-mark transient-mark-mode) log)))
+(global-set-key [f5] (lambda () (interactive) (setq transient-mark-mode 'only) (push-mark nil t t)))
+(global-set-key [f6] (lambda () (interactive) (let ((deactivate-mark nil)) (insert "Z"))))
+(global-set-key [f8] (lambda () (interactive) (with-current-buffer (get-buffer-create "other") (insert "x"))))
+(execute-kbd-macro [?\C-@ ?\C-f ?\C-f f6 ?\C-f ?X ?\C-f f5 ?\C-f ?\C-f f8 ?\C-f])
+(prin1 (list (buffer-string) (point) (mark t) mark-active transient-mark-mode (reverse log)))
+(terpri)"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn a_batch_error_reaches_cmd_error_through_the_top_level_command_loop() {
+    // emacs.c:main's Frecursive_edit runs top_level_1 under cmd_error in
+    // batch too: an error leaving `execute-kbd-macro' is reported with
+    // cmd_error's "After N kbd macro iterations: " (pop_kbd_macro gives
+    // back `executing-kbd-macro' but not executing_kbd_macro, which only
+    // a macro's normal end clears), and command-error-default-function
+    // prints it to stderr and exits -1.  The macro's commands run in the
+    // selected window's buffer, not `with-temp-buffer''s; the backtrace's
+    // funcall-interactively frame has the command as its first argument.
+    let corpus = Corpus::new();
+    for form in [
+        "(with-temp-buffer (execute-kbd-macro [?\\C-f] 3))",
+        "(progn (insert \"ab\") (goto-char 1) (execute-kbd-macro [?\\C-f] 5))",
+        "(progn (insert \"ab\") (goto-char 1) (execute-kbd-macro [?\\C-f] 1) (forward-char 5))",
+        "(progn (execute-kbd-macro [?a ?b] 2) (princ (buffer-string)) (car 1))",
+        // command_loop's entry gives `normal-top-level''s message back.
+        "(progn (setq internal--top-level-message \"X\") (let ((unread-command-events (list ?a ?\\r)) (executing-kbd-macro t)) (read-string \"p: \")) (princ internal--top-level-message))",
+    ] {
+        assert_same(&corpus, &["--batch", "-Q", "--eval", form]);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_throw_to_top_level_runs_the_startup_form_again() {
+    // keyboard.c's command_loop at the top level: a throw to `top-level'
+    // ends command_loop_2, and top_level_1 evaluates `top-level' again
+    // (normal-top-level, which says it is back there) before the next
+    // command loop, whose entry runs the post-command hooks.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "tl.el",
+        r#"(defvar tl-log nil)
+(defun tl-top () (interactive) (top-level))
+(add-hook 'post-command-hook (lambda () (push (list this-command (current-message)) tl-log)))
+(global-set-key [f6] #'tl-top)
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "tl.out" command-line-default-directory)
+    (insert (format "%S\n" (cdr (reverse tl-log)))))
+  (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![(6.5, b"\x1b[17~"), (1.0, b"\x1b[18~")];
+    let expected = corpus.run_tty(&oracle(), &probe, "tl.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "tl.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_edit_runs_a_command_loop_on_the_terminal() {
+    // keyboard.c's Frecursive_edit inside a command: recursive_edit_1's
+    // command loop reads the terminal's keys at depth 1, its `exit' catch
+    // returning nil for exit-recursive-edit and abort-recursive-edit
+    // throwing to `top-level'; the debugger's *Backtrace* commands run in
+    // it, and `q' and `c' leave it.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "re.el",
+        r#"(defvar re-log nil)
+(global-set-key [f5] (lambda () (interactive)
+  (push (list 'depth (recursion-depth)) re-log)
+  (push (list 'v (catch 'x (recursive-edit) 'normal)) re-log)
+  (push (list 'after (recursion-depth) (buffer-name)) re-log)))
+(global-set-key [f6] (lambda () (interactive) (push (list 'in (recursion-depth) (minibuffer-depth)) re-log)))
+(global-set-key [f8] (lambda () (interactive) (let ((debug-on-error t)) (car 1))))
+(add-hook 'post-command-hook (lambda () (push (list 'pch (and (symbolp this-command) this-command) (recursion-depth) (buffer-name)) re-log)))
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "re.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse re-log))))
+  (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x1b[15~"),
+        (0.5, b"\x1b[17~"),
+        (0.5, b"\x1b\x03\x03"),
+        (0.5, b"\x1b[15~"),
+        (0.5, b"\x1d"),
+        (0.5, b"\x1b[19~"),
+        (1.0, b"n"),
+        (0.5, b"q"),
+        (0.8, b"\x1b[19~"),
+        (1.0, b"c"),
+        (0.8, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "re.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "re.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_error_escaping_cmd_error_throws_to_top_level() {
+    // eval.c:signal_or_quit: an error no handler takes (here one signaled
+    // by `command-error-function' while cmd_error reports another) is
+    // Fthrow (Qtop_level, Qt); command_loop's catch takes it and the
+    // session goes on at the top level.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "ce.el",
+        r#"(defvar ce-log nil)
+(switch-to-buffer "ce")
+(add-hook 'post-command-hook (lambda () (push (list (and (symbolp this-command) this-command) (current-message)) ce-log)))
+(global-set-key [f6] (lambda () (interactive) (setq command-error-function (lambda (&rest _) (error "boom")))))
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "ce.out" command-line-default-directory)
+    (insert (format "%S\n" (cdr (reverse ce-log)))))
+  (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x1b[17~"),
+        (0.5, b"\x02"),
+        (1.0, b"a"),
+        (0.5, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "ce.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "ce.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn point_leaves_invisible_text_after_a_command() {
+    // command_loop_1's adjust_point_for_property: a command that leaves
+    // point inside invisible text has it moved to the run's end it went
+    // toward, or past the run when the buffer is unchanged.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "pa.el",
+        r#"(defvar pa-log nil)
+(switch-to-buffer "pa")
+(insert "abcdefghij")
+(put-text-property 3 6 'invisible t)
+(goto-char 2)
+(add-hook 'post-command-hook (lambda () (push (point) pa-log)))
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "pa.out" command-line-default-directory)
+    (insert (format "%S\n" (reverse pa-log))))
+  (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x06"),
+        (0.3, b"\x06"),
+        (0.3, b"\x02"),
+        (0.3, b"\x02"),
+        (0.3, b"\x05"),
+        (0.3, b"\x01"),
+        (0.3, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "pa.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "pa.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_macro_takes_a_command_s_keys_once_no_prefix_argument_is_pending() {
+    // finalize_kbd_macro_chars runs after a command only with no prefix
+    // argument pending, so a prefix argument typed just before the macro
+    // ends is not part of it.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "km.el",
+        r#"(switch-to-buffer "km")
+(global-set-key [f7] (lambda () (interactive)
+  (with-temp-file (expand-file-name "km.out" command-line-default-directory)
+    (insert (format "%S %S\n" last-kbd-macro
+                    (with-current-buffer "km" (buffer-string)))))
+  (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (6.5, b"\x18("),
+        (0.3, b"a"),
+        (0.3, b"\x15"),
+        (0.3, b"\x18)"),
+        (1.0, b"\x1b[18~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "km.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "km.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
