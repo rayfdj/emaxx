@@ -1071,10 +1071,6 @@ fn read_lisp_file_bytes(
             };
             if let Err(error) = result {
                 if stop_after_error(&error) {
-                    // The recognized C handoff is successful control flow
-                    // for image reconstruction, not a batch error retained
-                    // in the restored process.
-                    interp.clear_batch_error_backtrace();
                     stopped = true;
                     break;
                 }
@@ -1089,13 +1085,6 @@ fn read_lisp_file_bytes(
                         path.display(),
                         form_index + 1
                     );
-                    // Peek, never take: the toplevel batch reporter prints
-                    // the GNU-format backtrace from this same snapshot.
-                    if let Some(snapshot) = interp.peek_batch_error_backtrace() {
-                        for (_, function, _, _) in snapshot.frames.iter().take(20) {
-                            eprintln!("  load frame: {function}");
-                        }
-                    }
                 }
                 let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
                 interp.set_current_load_file(previous);

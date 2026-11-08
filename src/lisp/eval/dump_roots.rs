@@ -106,20 +106,12 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "the main thread's handlerlist is per-thread runtime state, not dumped",
     ),
     (
-        "active_catch_tags",
-        "catch tags live on the handlerlist, not dumped",
-    ),
-    (
         "backtrace_frames",
         "the specpdl's backtrace entries, not dumped",
     ),
     (
         "frame_environments",
         "the lexical environments interpreted code installed, recorded beside the specpdl's backtrace entries, not dumped",
-    ),
-    (
-        "batch_error_backtrace",
-        "a rendering of the specpdl kept for the batch error report, not dumped",
     ),
     (
         "doomed_finalizers",
@@ -479,12 +471,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "the main thread is the running process's (runtime magic)",
     ),
     ("active_thread_id", "as main_thread_id"),
-    ("handler_dispatch_depth", "the running signal dispatch"),
-    ("dispatched_signal", "the running signal dispatch"),
-    (
-        "suspend_condition_case_count",
-        "the running signal dispatch",
-    ),
     ("handler_generation", "the running signal dispatch"),
     ("handler_search_memo", "the running signal dispatch"),
     ("face_change_count", "carried in the remembered scalars"),

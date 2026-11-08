@@ -17240,6 +17240,128 @@ setup_process_coding_systems's check now refuses). A 13-form
   -D warnings' passes on the final source, and the review's batch, fatal
   and terminal probes give GNU's results on the rebuilt binary but for
   the read_char wipe recorded above.
+- **Round 345: a signal inside a `handler-bind' handler is a signal of
+  its own, as signal_or_quit's SKIP_CONDITIONS entry makes it, and a
+  batch error is reported only through top_level_2's
+  `debug-early--handler' and cmd_error.** GNU's signal_or_quit calls a
+  `handler-bind' handler under a SKIP_CONDITIONS entry on the handler
+  list, covering every entry from the signal's point down to the
+  handler's form and the form's other pairs (Fhandler_bind_1's
+  `bytecode_dest'), so a signal inside the handler is searched as any
+  other is: `signal-hook-function' sees it, Vsignaling_function is set
+  from it, the handler-binds inside the handler and outside the form run
+  for it, the debugger may be entered for it, and its catcher is found
+  past the skipped entries.  Emaxx did none of this while a handler ran
+  (signal_or_quit and the dispatch returned at once inside one): a
+  handler-bind established inside a handler never ran,
+  `signal-hook-function' never saw a signal inside one, an outer
+  handler-bind never saw an error leaving one (GNU: ((outermost
+  (hb-custom)) caught), Emaxx (caught)), and a byte-compiled or native
+  `condition-case' between the first signal and the form caught that
+  error (a count of interpreted ones to pass was all Emaxx had; GNU's
+  compiled probe gives (outer), Emaxx's gave (inner)).
+  `ActiveHandler::Skip' is the entry, pushed around each handler's call;
+  every search of the active handlers (signal_or_quit's dispatch, the
+  debugger's clause, the trace's) passes over what it covers; a Bind
+  entry carries its pair's count of the form's pairs below it; and an
+  error leaving a handler carries the index of the form's first pair,
+  its search having skipped everything from there up, which the
+  interpreted, byte-code and native `condition-case's test before
+  catching it.  The handler's own signal is settled with the entry in
+  place, so no later frame boundary searches without it.  Batch errors
+  had a Rust copy of the backtrace too: every frame an uncaught error
+  left made a snapshot of the frames (batch_error_backtrace, a GC root
+  carried across Lisp threads, cleared at each handled error and each
+  outermost evaluation), and the in-process action runner printed it
+  with startup frames it made up (command-line-1 with reconstructed
+  arguments, command-line, normal-top-level) after the message, where
+  the process's own startup runs GNU's normal-top-level under
+  top_level_2's `debug-early--handler'.  The snapshot, its printer and
+  the made-up frames are gone; the runner's actions run under
+  top_level_2's handler, `debug-early--handler' printing the real frames
+  where the error is signaled, and an error leaving them goes to
+  cmd_error, whose `command-error-default-function' prints it and kills
+  Emacs with -1 (GNU's order: the backtrace, then the message).
+  eval_sub's outermost evaluation no longer takes the general entry,
+  which only cleared the snapshot.  An adversarial review of the round,
+  probing GNU and Emaxx in batch and in a pseudo-terminal with the
+  signaling and the handling code each interpreted, byte-compiled and
+  native, found four P1s, four P2s and five P3s, all fixed but two P3s.
+  P1: an interpreted `catch' rebuilt each error that passed it, losing
+  its record of signal_or_quit's work and of the entries its search
+  skipped, so a `condition-case' between the catch and a `handler-bind'
+  form caught the handler's error (GNU (right (p-custom)), Emaxx
+  `wrong') and each catch an error crossed ran `signal-hook-function'
+  again; internal_catch's, `symbol-value''s, the module boundary's and
+  `load''s `substitute-in-file-name' paths rebuilt it too, and all pass
+  the error on as it came.  `kill-emacs' or a throw in a handler went on
+  to the debugger's clause test as a signal would, which panicked (a
+  handler's `kill-emacs' 7) or entered the debugger with a made-up
+  (no-catch TAG VALUE), so an ERT run under `debug-on-error' stopped at
+  its first erroring test: signal_or_quit leaves at once, as the
+  handler's longjmp does.  And the record of the object the handlers
+  last ran for, kept so that they did not run twice, was never cleared
+  and not marked, so after a collection a new error at a reused address
+  ran none of them (GNU 300 of 300, Emaxx 3), nor did a signal of an
+  object already handled: the record is gone, the error's own mark of
+  signal_or_quit's work being enough now that nothing rebuilds an error.
+  P2: signal_or_quit's SKIP_CONDITIONS extent is `skip +
+  h->bytecode_dest', SKIP counting the steps of its walk, a marker
+  passed on the way one step whatever it covered, so a handler reached
+  past an earlier marker covers fewer entries and the search sees its
+  own form's `condition-case's again (GNU (cc2-caught (p-other h2)),
+  Emaxx (outer ...)).  Emaxx's walk counts as GNU's on a handler list
+  with GNU's entries: a `catch' (Fcatch, internal_catch, Bpushcatch, the
+  native catch) is a CATCHER entry on it, where `throw' finds it, the
+  separate list of catch tags gone, and an interpreted `condition-case'
+  pushes an entry for each clause, a nil one too, the first innermost,
+  catching with the first clause the search did not skip; where GNU's
+  count makes a handler run again without end (a handler signaling
+  inside another's) Emaxx now meets its stack floor as GNU its segfault,
+  each nested dispatch walking the live list instead of copying it.
+  `unlock-file''s `file-error' and the macro loop's `minibuffer-quit'
+  catchers caught signals the search had skipped (an advice signaling in
+  `make-lock-file-name' under a handler gave a warning where GNU's outer
+  clause caught the handler's error), and test the skip as the Lisp
+  catchers do.  And lexbound_p read only the frames of the environment
+  in effect, so a lexical `let' around an `eval', a call or a file
+  loaded on demand defining the variable (`(let
+  ((byte-compile-dest-file-function ...)) (require \='bytecomp))')
+  passed where GNU signals "Defining as dynamic an already lexical var":
+  the environments installed before the one in effect, the specpdl's
+  saved values of `internal-interpreter-environment', count too.  P3:
+  `excessive-lisp-nesting' was signaled after the depth was given back,
+  so a handler's max_ensure_room counted from one level less (1621 and
+  221 against GNU's 1622 and 222), and is signaled at the depth reached;
+  `signal-hook-function' got an error object's car and cdr for `(signal
+  OBJECT nil)', where GNU passes OBJECT and nil, and ran (and the
+  signaling function was set) for a nil ERROR-SYMBOL, GNU's memory-full
+  form, which does neither; and `handler-bind-1' copied its conditions
+  as names, signaling for a non-symbol element or a dotted list
+  find_handler_clause passes over and missing a change made to the list
+  while the body runs, where it keeps the object and matches by EQ.
+  Recorded: a quit a handler leaves pending, which GNU processes during
+  the rest of the search (its Fmemq of each clause's conditions polls
+  for quit) and Emaxx after it, and how often redisplay logs a mode
+  line's error (redisplay's frequency, not the search).  Local
+  validation: the grouped gate's 3,507 library tests pass on the round's
+  source as built before clippy's rewrites of a collapsible `if', a
+  binding returned at once and a function placed after a test module
+  (the same code), and the integration targets on the final source:
+  cli's 30, cli_parity's 114 (its two new comparisons, of the
+  handler-bind cases and of the review's signals through catches and out
+  of handlers, in batch with the code interpreted, byte-compiled and
+  native), ert_runner's 3, native_comp_identity's,
+  native_thread_continuations', package_lifecycle's 5 and
+  runtime_ownership's 3.  cli_parity's comparison of a help character
+  after a prefix failed once among the parallel targets, Emaxx's echo of
+  `C-x 4' having appeared before the help character came where GNU's had
+  not (the one-second echo timer against the probe's pauses, which the
+  round does not touch), and it passes alone three times of three.
+  clippy with `--all-targets --all-features -D warnings' passes on the
+  final source, and the review's probes give GNU's results on the
+  rebuilt binary but where GNU itself crashes, there meeting Emaxx's
+  stack floor, and for the two timings recorded above.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -20139,7 +20261,28 @@ ert-tests as a whole 26,307 ms against 27,211.
   against 2.45), mule-tests (2.78 against 1.77) and icalendar-tests
   (1.37 against 0.38). The Rust gate (run 42433133267) passed.
 
+**On `e4a83ad`** (round 344): the frozen run (run 42440808780) matched
+  all 7,928 outcomes at its first attempt. Setup 79.5 s against 66.5 s
+  (1.195), test bodies 302.1 s against 266.2 s (1.135), in all 1.130,
+  with a per-file setup median of 122 ms against 104, on a runner slower
+  for both than round 343's (GNU's bodies 266.2 s against 253.3). The
+  widest body gaps are ert-tests (45.8 s against 37.9), tramp-tests
+  (22.6 against 19.4), comp-tests (16.8 against 14.2), eglot-tests
+  (34.0 against 32.3), semantic-utest-ia (4.09 against 2.74),
+  mule-tests (3.20 against 2.04), process-tests (2.73 against 1.77)
+  and electric-tests (1.14 against 0.60). The Rust gate (run
+  42440807126) passed.
+
 **Findings recorded, not fixed:**
+- **The handler search's remaining differences (round 345).** A quit a
+  `handler-bind' handler leaves pending (`quit-flag' set under
+  `inhibit-quit', and the handler returns) is processed after the
+  search, where GNU's find_handler_clause polls for it in the Fmemq of
+  each later clause's conditions, so that a `condition-case' for `quit'
+  inside the form catches it there and Emaxx's reaches the top level.
+  And redisplay logs a mode line's `:eval' error as often as it
+  redisplays, which is not GNU's count (GNU's *Messages* "[8 times]"
+  against Emaxx's "[3 times]" and "[2 times]").
 - **The terminal session's remaining keyboard and display differences
   (rounds 340-344).** The secondary terminals `make-terminal-frame'
   opens read their bytes through Emaxx's own decoder into

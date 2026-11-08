@@ -2919,54 +2919,6 @@ fn non_unicode_buffer_characters_are_typed_state_not_lisp_properties() {
     );
 }
 
-#[test]
-fn batch_error_snapshot_keeps_deep_frames_and_signal_site_policy() {
-    // `defun' is byte-run.el's macro, so the native snapshot policy is
-    // observed through the GNU early-Lisp runtime rather than a bare host.
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Env::new();
-    let form = Reader::new(
-        "(progn
-           (defun batch-error-snapshot-inner () (error \"Boo\"))
-           (let ((backtrace-on-error-noninteractive nil))
-             (batch-error-snapshot-inner)))",
-    )
-    .read_all()
-    .unwrap()
-    .pop()
-    .unwrap();
-    assert!(interp.eval(&form, &mut env).is_err());
-    let snapshot = interp
-        .take_batch_error_backtrace()
-        .expect("unhandled evaluation keeps its deepest frame snapshot");
-    assert!(!snapshot.enabled);
-    assert!(snapshot.frames.iter().any(|(_, function, _, _)| {
-        matches!(function.kind(), Kind::Symbol(name) if name.is_named("batch-error-snapshot-inner"))
-    }));
-
-    let form = Reader::new(
-        "(progn
-           (defun batch-error-snapshot-first () (error \"first\"))
-           (defun batch-error-snapshot-second () (error \"second\"))
-           (condition-case nil (batch-error-snapshot-first) (error nil))
-           (batch-error-snapshot-second))",
-    )
-    .read_all()
-    .unwrap()
-    .pop()
-    .unwrap();
-    assert!(interp.eval(&form, &mut env).is_err());
-    let snapshot = interp
-        .take_batch_error_backtrace()
-        .expect("a handled error cannot mask the later unhandled snapshot");
-    assert!(snapshot.frames.iter().any(|(_, function, _, _)| {
-        matches!(function.kind(), Kind::Symbol(name) if name.is_named("batch-error-snapshot-second"))
-    }));
-    assert!(!snapshot.frames.iter().any(|(_, function, _, _)| {
-        matches!(function.kind(), Kind::Symbol(name) if name.is_named("batch-error-snapshot-first"))
-    }));
-}
-
 #[cfg(unix)]
 #[test]
 fn local_symlink_targets_are_data_not_file_name_handler_candidates() {

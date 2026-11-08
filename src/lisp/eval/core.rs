@@ -318,12 +318,11 @@ impl Interpreter {
 
     #[inline(never)]
     fn eval_sub(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
-        // A form below the outermost evaluation and below the call gate (no
-        // termination or quit pending, the depth within its bound): the
-        // entry tests read the state through one borrow, and every other
-        // case takes the general entry.
+        // A form below the call gate (no termination or quit pending, the
+        // depth within its bound): the entry tests read the state through
+        // one borrow, and every other case takes the general entry.
         let state: &mut InterpreterState = self;
-        if state.lisp_eval_depth == 0 || state.lisp_eval_depth as i64 >= state.call_depth_gate {
+        if state.lisp_eval_depth as i64 >= state.call_depth_gate {
             return self.eval_sub_general(expr, env);
         }
         let Some(cell) = expr.cons_ref() else {
@@ -339,30 +338,17 @@ impl Interpreter {
         if state.lisp_eval_depth as i64 > state.max_lisp_eval_depth
             && self.lisp_eval_depth_exceeded()
         {
-            let reached = self.lisp_eval_depth;
-            self.lisp_eval_depth -= 1;
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("excessive-lisp-nesting"),
-                Value::Integer(reached as i64),
-            ])));
+            return Err(self.excessive_lisp_nesting(env));
         }
         let result = self.eval_cons(expr, cell, env);
         self.lisp_eval_depth -= 1;
         result
     }
 
-    /// eval_sub at the outermost evaluation, at the call gate, or with a
-    /// termination or a quit pending.
+    /// eval_sub at the call gate, or with a termination or a quit pending.
     #[inline(never)]
     fn eval_sub_general(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
-        // The entry tests read the state through one borrow.
-        let state: &InterpreterState = self;
-        let outermost = state.lisp_eval_depth == 0;
-        let terminating = state.pending_termination.is_some();
-        if outermost {
-            self.clear_batch_error_backtrace();
-        }
-        if terminating {
+        if self.pending_termination.is_some() {
             return Err(LispError::Terminate(
                 self.pending_termination()
                     .cloned()
@@ -373,11 +359,7 @@ impl Interpreter {
         // quit, collection and depth tests; the body below is inlined here,
         // one function as eval_sub is (its result crossed two frames before).
         if !expr.is_cons() {
-            let result = self.eval_inner(expr, env);
-            if outermost && result.is_ok() {
-                self.clear_batch_error_backtrace();
-            }
-            return result;
+            return self.eval_inner(expr, env);
         }
         // eval.c:eval_sub checks for a pending quit after the symbol/scalar
         // fast paths and before GC, depth accounting, or form dispatch.
@@ -409,12 +391,7 @@ impl Interpreter {
         // carrying the depth -- a condition this tree already defines
         // (eval.rs:732) and never signalled.
         if deeper && self.lisp_eval_depth_exceeded() {
-            let reached = self.lisp_eval_depth;
-            self.lisp_eval_depth -= 1;
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("excessive-lisp-nesting"),
-                Value::Integer(reached as i64),
-            ])));
+            return Err(self.excessive_lisp_nesting(env));
         }
         if self.c_stack_test_due() && continuations::c_stack_overflowed() {
             self.lisp_eval_depth -= 1;
@@ -422,9 +399,6 @@ impl Interpreter {
         }
         let result = self.eval_inner(expr, env);
         self.lisp_eval_depth -= 1;
-        if outermost && result.is_ok() {
-            self.clear_batch_error_backtrace();
-        }
         result
     }
 
@@ -1717,18 +1691,32 @@ impl Interpreter {
         self.maybe_quit(env)?;
         self.lisp_eval_depth += 1;
         if self.lisp_eval_depth_exceeded() {
-            let reached = self.lisp_eval_depth;
-            self.lisp_eval_depth -= 1;
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("excessive-lisp-nesting"),
-                Value::Integer(reached as i64),
-            ])));
+            return Err(self.excessive_lisp_nesting(env));
         }
         if self.c_stack_test_due() && continuations::c_stack_overflowed() {
             self.lisp_eval_depth -= 1;
             return Err(self.c_stack_overflow(env));
         }
         Ok(())
+    }
+
+    /// eval_sub's and Ffuncall's `xsignal1 (Qexcessive_lisp_nesting,
+    /// make_fixnum (lisp_eval_depth))': signal_or_quit runs at the depth
+    /// reached, so a `handler-bind' handler's max_ensure_room counts from
+    /// it, and the depth goes back as the signal leaves the call.
+    #[cold]
+    #[inline(never)]
+    fn excessive_lisp_nesting(&mut self, env: &mut Env) -> LispError {
+        let reached = self.lisp_eval_depth;
+        let error = self.signal_or_quit(
+            LispError::SignalValue(Value::list([
+                Value::symbol("excessive-lisp-nesting"),
+                Value::Integer(reached as i64),
+            ])),
+            env,
+        );
+        self.lisp_eval_depth -= 1;
+        error
     }
 
     /// bytecode.c's Bcall entry: maybe_quit, then the depth test, which
@@ -2135,9 +2123,7 @@ impl Interpreter {
         error: LispError,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let error = self.signal_or_quit(error, env);
-        self.capture_batch_error_backtrace(&error, env);
-        Err(error)
+        Err(self.signal_or_quit(error, env))
     }
 
     /// eval.c:funcall_lambda's direct `exec_byte_code' branch.  The caller

@@ -5883,9 +5883,11 @@ fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
     // read of WAIT_PROC sets wait to MINIMUM, the next select finds a child
     // that has just written and is exiting either still running (the wait
     // returns) or reaped (status_notify runs its sentinel first), a race in
-    // GNU's loop as in Emaxx's; and the main thread sleeps until the other
-    // thread's child has exited, whose sentinel its sleep runs, as a child
-    // slower than one 50 ms sleep left both Emacsen running it later.
+    // GNU's loop as in Emaxx's.  Which thread's wait runs the sentinel of
+    // the child the other thread made, and so where it falls in the log,
+    // is a race in GNU (under load its main thread's sleeps pass it by
+    // now and then), so the threads probe compares the log's entries, not
+    // their order.
     let corpus = Corpus::new();
     for program in [
         r##";;; -*- lexical-binding: t -*-
@@ -5962,9 +5964,6 @@ fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
               (push (list 'thread-wait (accept-process-output nil 0.3)) log))
             "T")))
   (while (not p) (sleep-for 0.05))
-  (let ((t0 (float-time)))
-    (while (and (not (assq 'tp log)) (< (- (float-time) t0) 5)) (sleep-for 0.05)))
-  (push 'slept log)
   (busy 0.4)
   (make-process :name "mp" :command '("true") :noquery t :connection-type 'pipe
                 :sentinel (lambda (_ e) (push (list 'mp (string-trim e)) log)))
@@ -5972,7 +5971,7 @@ fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
   (accept-process-output nil 0.2)
   (with-mutex m (setq go t) (condition-notify cv t))
   (thread-join th)
-  (princ (format "threads %S\n" (reverse log))))
+  (princ (format "threads %S\n" (sort log (lambda (a b) (string< (prin1-to-string a) (prin1-to-string b)))))))
 (princ "end\n")"##,
         r##";;; -*- lexical-binding: t -*-
 (defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
@@ -7305,6 +7304,49 @@ fn c_stack_overflow_in_minibuffer_setup_leaves_the_minibuffer_active() {
 }
 
 #[test]
+fn signals_in_handler_bind_handlers_are_signal_or_quit_s() {
+    // signal_or_quit's SKIP_CONDITIONS around a handler-bind handler: a
+    // signal inside it is searched as any other, so Vsignaling_function
+    // is set from the last one (here a void-variable that loading
+    // cl-print for debug-early's backtrace signals and catches in
+    // custom-initialize-reset), and handler-binds inside the handler and
+    // outside its form see the signals.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "sf.el",
+        r#"(setq command-error-function
+      (lambda (data context signal)
+        (princ (format "%S|%S|%S\n" data context signal) #'external-debugging-output)
+        (kill-emacs 3)))
+(car 1)"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = corpus.write(
+        "hb.el",
+        r#"(define-error 'hb-custom "Custom")
+(defvar hb-log nil)
+(condition-case nil
+    (handler-bind ((error (lambda (e) (push (list 'outermost e) hb-log))))
+      (handler-bind ((error (lambda (_e)
+                              (condition-case nil
+                                  (handler-bind ((error (lambda (e2) (push (list 'inner e2) hb-log))))
+                                    (car 1))
+                                (error (push 'inner-caught hb-log)))
+                              (signal 'hb-custom nil)))
+                     (hb-custom (lambda (e) (push (list 'sibling e) hb-log))))
+        (car 2)))
+  (error (push 'caught hb-log)))
+(let ((signal-hook-function (lambda (s d) (push (list 'hook s d) hb-log))))
+  (condition-case nil
+      (handler-bind ((error (lambda (_e) (condition-case nil (aref [] 3) (error nil)))))
+        (car 2))
+    (error nil)))
+(princ (format "%S\n" (reverse hb-log)))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
 fn handler_bind_handlers_get_room_as_signal_or_quit_gives_them() {
     // eval.c:signal_or_quit's HANDLER_BIND case runs the handler after
     // max_ensure_room (20), so a handler for `excessive-lisp-nesting' runs
@@ -7582,4 +7624,187 @@ fn a_macro_takes_a_command_s_keys_once_no_prefix_argument_is_pending() {
     let actual = corpus.run_tty(emaxx(), &probe, "km.out", "C", &input);
     assert!(expected.is_some(), "GNU's session wrote nothing");
     assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn signals_through_catches_and_out_of_handlers_follow_signal_or_quit() {
+    // An interpreted `catch' passes a signal on as it came, its search and
+    // what that skipped kept; a handler's `kill-emacs' or throw leaves
+    // signal_or_quit at once (no debugger, no panic); handlers run for
+    // each signal however the collector reused the objects of earlier
+    // ones, and for a signal of an object already handled; the C core's
+    // condition-case handlers (unlock-file's `file-error') respect the
+    // skipped entries; GNU's skip count, which a marker passed on the way
+    // advances by one step; the conditions of `handler-bind-1' as the
+    // objects themselves; `signal-hook-function' given `signal''s own
+    // arguments; and lexbound_p seeing the environments `eval' and a
+    // load replaced.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "c1.el",
+            r##";;; -*- lexical-binding: t -*-
+(define-error 'p-custom "Custom")
+(defvar log nil)
+(defun show (n r) (princ (format "%s: %S %S\n" n r (reverse log))) (setq log nil))
+;; 1: catch between first signal and form; cc between catch and form
+(show 1 (condition-case e
+    (handler-bind ((error (lambda (_e) (push 'h log) (signal 'p-custom nil))))
+      (condition-case nil
+          (catch 'tag (car 1))
+        (p-custom 'wrong)))
+  (p-custom (list 'right e))))
+;; 2: function frame between catch and cc
+(defun c1-f () (catch 'tag (car 1)))
+(show 2 (condition-case e
+    (handler-bind ((error (lambda (_e) (push 'h log) (signal 'p-custom nil))))
+      (condition-case nil
+          (list (c1-f))
+        (p-custom 'wrong)))
+  (p-custom (list 'right e))))
+;; 3: signal-hook-function count for an error passing through catch
+(show 3 (let ((signal-hook-function (lambda (s _d) (push s log))))
+  (condition-case nil (list (catch 'x (car 1))) (error 'caught))))
+;; 4: handler-bind run count through catch
+(show 4 (condition-case nil
+    (handler-bind ((error (lambda (e) (push (car e) log))))
+      (list (catch 'x (list (car 1)))))
+  (error 'caught)))
+;; 5: hook count, handler's error through a catch
+(show 5 (let ((signal-hook-function (lambda (s _d) (push s log))))
+  (condition-case nil
+      (handler-bind ((wrong-type-argument (lambda (_e) (signal 'p-custom nil))))
+        (list (catch 'x (list (car 1)))))
+    (error 'caught))))
+;; 6: debugger count via debug-on-error
+(show 6 (let ((debug-on-error t) (debugger (lambda (&rest a) (push (cadr a) log) (throw 'out 'dbg))))
+          (catch 'out (handler-bind ((error (lambda (_e) (signal 'p-custom nil))))
+                        (list (catch 'x (list (car 1))))))))
+;; 7: outer handler-bind sees handler's error once
+(show 7 (condition-case nil
+    (handler-bind ((p-custom (lambda (e) (push (list 'outer e) log))))
+      (handler-bind ((wrong-type-argument (lambda (_e) (signal 'p-custom nil))))
+        (list (catch 'x (list (car 1))))))
+  (error 'caught)))"##,
+        ),
+        (
+            "r1.el",
+            r##";;; -*- lexical-binding: t -*-
+(defvar log nil)
+(defun show (n r) (princ (format "%s: %S %S\n" n r (reverse log))) (setq log nil))
+(show 1 (condition-case e2
+  (handler-bind ((error (lambda (_e) (push 'outer log))))
+    (condition-case e
+        (handler-bind ((error (lambda (_e) (push 'inner log))))
+          (car 1))
+      (error (signal e nil))))
+  (error (list 'top e2))))
+(show 2 (condition-case e2
+  (handler-bind ((error (lambda (_e) (push 'outer log))))
+    (let ((saved nil))
+      (condition-case e
+          (handler-bind ((error (lambda (_e) (push 'inner log))))
+            (car 1))
+        (error (setq saved e)))
+      (push 'between log)
+      (signal saved nil)))
+  (error (list 'top e2))))
+(show 3 (let ((obj nil))
+  (condition-case nil (handler-bind ((error (lambda (e) (setq obj e) (push 'h1 log)))) (car 1)) (error nil))
+  (condition-case nil (handler-bind ((error (lambda (e) (push (list 'h2 (eq e obj)) log)))) (signal obj nil)) (error nil))
+  'done))
+(show 4 (let ((signal-hook-function (lambda (s d) (push (list 'hook s) log))))
+  (condition-case e (handler-bind ((error (lambda (e) (push 'h log)))) (condition-case e (car 1) (error (signal e nil)))) (error 'x))))"##,
+        ),
+        (
+            "hb1.el",
+            r##";;; -*- lexical-binding: t -*-
+(defvar log nil)
+(defun show (n r) (princ (format "%s: %S %S\n" n r (reverse log))) (setq log nil))
+(show 1 (condition-case e (handler-bind-1 (lambda () (car 1)) '("x" error) (lambda (e) (push 'ran log))) (error (car e))))
+(show 2 (condition-case e (handler-bind-1 (lambda () (car 1)) 42 (lambda (e) (push 'ran log))) (error (car e))))
+(show 3 (condition-case e (handler-bind-1 (lambda () (car 1)) (list (make-symbol "error")) (lambda (e) (push 'ran log))) (error (car e))))
+(show 4 (let ((conds (list 'arith-error)))
+  (condition-case e (handler-bind-1 (lambda () (setcar conds 'error) (car 1)) conds (lambda (e) (push 'ran log))) (error (car e)))))
+(show 5 (condition-case e (handler-bind-1 (lambda () (car 1)) '(error . arith-error) (lambda (e) (push 'ran log))) (error (car e))))
+(show 6 (condition-case e (handler-bind-1 (lambda () (car 1)) (list (make-symbol "t")) (lambda (e) (push 'ran log))) (error (car e))))
+(show 7 (condition-case e (handler-bind-1 (lambda () (signal 'quit nil)) 'error (lambda (e) (push 'ran log))) (t (car e))))"##,
+        ),
+        (
+            "g1.el",
+            r##";;; -*- lexical-binding: t -*-
+(let ((n 0) (iters 300))
+  (dotimes (i iters)
+    (condition-case nil
+        (handler-bind ((error (lambda (_e) (setq n (1+ n)))))
+          (car i))
+      (error nil))
+    (when (= 0 (% i 3)) (garbage-collect)))
+  (princ (format "ran %d of %d\n" n iters)))
+(let ((n 0) (iters 300))
+  (dotimes (i iters)
+    (condition-case nil
+        (handler-bind ((error (lambda (_e) (setq n (1+ n)))))
+          (signal 'error (list i)))
+      (error nil))
+    (garbage-collect))
+  (princ (format "ran2 %d of %d\n" n iters)))"##,
+        ),
+        (
+            "lexdef.el",
+            r##";;; -*- lexical-binding: t -*-
+(defvar lexdef-file (make-temp-file "lexdef" nil ".el"))
+(princ (format "r1 %S\n" (condition-case e (let ((byte-compile-dest-file-function 1)) (require 'bytecomp) 'no-error) (error e))))
+(princ (format "r2 %S\n" (condition-case e (let ((lexdef-zz 1)) (eval '(defvar lexdef-zz 2) t) 'no-error) (error e))))
+(princ (format "r3 %S\n" (condition-case e (let ((lexdef-yy 1)) (funcall (lambda () (eval '(defvar lexdef-yy 2) t))) 'no-error) (error e))))
+(princ (format "r4 %S\n" (condition-case e (let ((lexdef-xx 1)) (with-temp-buffer (insert "(defvar lexdef-xx 2)") (eval-buffer)) 'no-error) (error e))))
+(princ (format "r5 %S\n" (condition-case e (let ((lexdef-ww 1)) (with-temp-buffer (insert "(defvar lexdef-ww 2)") (write-region nil nil lexdef-file nil 'q)) (load lexdef-file nil t t) 'no-error) (error e))))"##,
+        ),
+        (
+            "ul.el",
+            r##";;; -*- lexical-binding: t -*-
+(put 'my-c 'error-conditions '(my-c))
+(put 'my-c 'error-message "My C")
+(defvar log nil)
+(advice-add 'make-lock-file-name :override (lambda (_fn) (push 'mlfn log) (signal 'my-c nil)))
+(princ (format "r %S %S\n"
+  (condition-case e
+      (handler-bind ((my-c (lambda (_) (push 'h log) (signal 'file-error '("from handler")))))
+        (unlock-file (expand-file-name "emaxx-ul-target" temporary-file-directory)))
+    (file-error (list 'outer e)))
+  (reverse log)))"##,
+        ),
+        (
+            "k1.el",
+            r##";;; -*- lexical-binding: t -*-
+(define-error 'p-custom "Custom")
+(define-error 'p-other "Other")
+(defvar log nil)
+;; Nested SKIP_CONDITIONS: GNU's `skip' counter advances by one per loop
+;; step, not by the entries a SKIP_CONDITIONS jump passed over.
+(princ (format "k1 %S\n"
+  (condition-case e
+      (handler-bind ((error (lambda (_e) (push 'h2 log) (signal 'p-other (list 'h2)))))
+        (condition-case e2
+            (handler-bind ((error (lambda (_e) (push 'h1 log) (signal 'p-custom '(h1)))))
+              (condition-case nil (car 1) (arith-error 'no)))
+          (p-other (list 'cc2-caught e2))))
+    (error (list 'outer e)))) #'external-debugging-output)
+(princ (format "k1log %S\n" (reverse log)) (function external-debugging-output))
+(setq log nil)"##,
+        ),
+        (
+            "t9.el",
+            r##"(handler-bind ((error (lambda (e) (kill-emacs 9))))
+  (car 1))"##,
+        ),
+        (
+            "t11.el",
+            r##"(setq debugger (lambda (&rest a) (princ (format "DEBUGGER %S\n" a) #'external-debugging-output) (throw 'dbg 'from-debugger)))
+(princ (format "r1 %S\n" (catch 'dbg (let ((debug-on-error t)) (catch 'x (handler-bind ((error (lambda (e) (throw 'x 'thrown)))) (car 1)))))))"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
 }

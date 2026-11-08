@@ -287,7 +287,7 @@ fn load_source_callback_nonlocal_exit_unwinds_even_with_noerror() {
         &mut env,
     );
     interp.set_variable_key(cached_symbol!("lexical-binding"), Value::T, &mut env);
-    interp.push_active_catch_tag(tag);
+    let catcher = interp.push_active_catch_tag(tag);
     let result = super::super::call(
         &mut interp,
         "load",
@@ -298,7 +298,7 @@ fn load_source_callback_nonlocal_exit_unwinds_even_with_noerror() {
         ],
         &mut env,
     );
-    interp.pop_active_catch_tag();
+    interp.pop_handler_bindings(catcher);
     assert!(
         matches!(result.as_ref().map_err(LispError::kind), Err(LispErrorKind::Throw(actual, value)) if values_eql(actual, &tag) && *value == Value::Integer(23))
     );

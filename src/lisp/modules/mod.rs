@@ -277,9 +277,12 @@ impl Context<'_> {
     }
 
     fn propagate_exit(&mut self) -> Result<(), LispError> {
-        let pending = self.pending.borrow_mut().take();
-        match pending.map(LispError::into_kind) {
-            Some(LispErrorKind::Throw(tag, value)) => {
+        let Some(error) = self.pending.borrow_mut().take() else {
+            return Ok(());
+        };
+        match error.kind() {
+            LispErrorKind::Throw(tag, value) => {
+                let (tag, value) = (*tag, *value);
                 // GNU rethrows through Fthrow after leaving the foreign
                 // callback's catch-all boundary, including no-catch checking.
                 unsafe {
@@ -287,8 +290,8 @@ impl Context<'_> {
                 }
                 Ok(())
             }
-            Some(error) => Err(LispError::from(error)),
-            None => Ok(()),
+            // A signal passes on as it came, its search done.
+            _ => Err(error),
         }
     }
 }

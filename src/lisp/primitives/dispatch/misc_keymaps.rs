@@ -981,19 +981,12 @@ define_dispatch!(
                         &[],
                     ));
                 }
+                // A nil CONDITIONS pushes nothing; any other is the
+                // handler's own object, walked at each signal.
                 let mut active = Vec::with_capacity(args.len() / 2);
                 for pair in args[1..].as_chunks::<2>().0 {
-                    let conditions = match pair[0].kind() {
-                        Kind::Nil => Vec::new(),
-                        Kind::Cons(_) => pair[0]
-                            .to_vec()?
-                            .iter()
-                            .map(|condition| condition.as_symbol().map(str::to_string))
-                            .collect::<Result<Vec<_>, _>>()?,
-                        condition => vec![condition.value().as_symbol()?.to_string()],
-                    };
-                    if !conditions.is_empty() {
-                        active.push((conditions, pair[1]));
+                    if !pair[0].is_nil() {
+                        active.push((pair[0], pair[1]));
                     }
                 }
                 active.reverse();

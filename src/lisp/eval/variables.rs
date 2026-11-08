@@ -3349,53 +3349,6 @@ impl Interpreter {
         ))
     }
 
-    pub(crate) fn capture_batch_error_backtrace(&mut self, error: &LispError, env: &Env) {
-        if matches!(
-            error.kind(),
-            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
-        ) {
-            return;
-        }
-        // Every frame the error unwinds through reports it here; only a
-        // deeper stack than the one already recorded replaces it, so decide
-        // before copying the frames.
-        if self
-            .batch_error_backtrace
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.frames.len() >= self.backtrace_frames.len())
-        {
-            return;
-        }
-        // keyboard.c's toplevel reports an uncaught error through an
-        // outermost `handler-bind' (debug-early--handler); signal_or_quit
-        // stops its search at a matching `condition-case', which then
-        // discards the report, so take no copy for it.
-        if self.condition_case_catches(error) {
-            return;
-        }
-        let frames = self.backtrace_frames_snapshot();
-        self.batch_error_backtrace = Some(BatchErrorBacktrace {
-            enabled: self
-                .lookup_var_key(cached_symbol!("backtrace-on-error-noninteractive"), env)
-                .is_some_and(|value| value.is_truthy()),
-            frames,
-        });
-    }
-
-    pub(crate) fn take_batch_error_backtrace(&mut self) -> Option<BatchErrorBacktrace> {
-        self.batch_error_backtrace.take()
-    }
-
-    /// Non-consuming view for diagnostics: the toplevel batch reporter
-    /// still needs the snapshot after a load-path trace peeked at it.
-    pub(crate) fn peek_batch_error_backtrace(&self) -> Option<&BatchErrorBacktrace> {
-        self.batch_error_backtrace.as_ref()
-    }
-
-    pub(crate) fn clear_batch_error_backtrace(&mut self) {
-        self.batch_error_backtrace = None;
-    }
-
     /// eval.c:Fbacktrace__locals of the frame at INDEX in `backtrace_frames'
     /// (found by `backtrace_frame_index'): the bindings on the specpdl
     /// between its record and the next frame's, oldest first, each paired
@@ -3562,13 +3515,26 @@ impl Interpreter {
         crate::lisp::primitives::window_margin_cols(self, window_id)
     }
 
-    pub fn push_handler_bindings(&mut self, bindings: &[(Vec<String>, Value)]) -> usize {
+    /// Fhandler_bind_1's push_handler_bind of each CONDITIONS/HANDLER
+    /// pair in BINDINGS, innermost last, each counting the pairs below it.
+    pub fn push_handler_bindings(&mut self, bindings: &[(Value, Value)]) -> usize {
         let start = self.active_handlers.len();
         self.handler_generation += 1;
-        self.active_handlers
-            .extend(bindings.iter().map(|(conditions, handler)| {
-                ActiveHandler::Bind(conditions.as_slice().into(), *handler)
-            }));
+        self.active_handlers.extend(bindings.iter().enumerate().map(
+            |(below, (conditions, handler))| {
+                ActiveHandler::Bind(*conditions, *handler, below as u32)
+            },
+        ));
+        start
+    }
+
+    /// signal_or_quit's `push_handler (make_fixnum (skip +
+    /// h->bytecode_dest), SKIP_CONDITIONS)' before a `handler-bind'
+    /// handler runs: the COUNT entries below it are skipped by a search.
+    fn push_skip_conditions(&mut self, count: usize) -> usize {
+        let start = self.active_handlers.len();
+        self.handler_generation += 1;
+        self.active_handlers.push(ActiveHandler::Skip(count));
         start
     }
 
@@ -3645,19 +3611,6 @@ impl Interpreter {
         names
     }
 
-    /// GNU handler matching (`eval.c:find_handler_clause' ->
-    /// `signal_or_quit''s conditions walk): `t' matches anything; otherwise the
-    /// handler symbol must be `memq' in the signaled symbol's
-    /// `error-conditions' property.  A symbol with NO `error-conditions' — one
-    /// that never went through `define-error' — is caught only by `t', even
-    /// by a handler naming that symbol.  GNU probes:
-    /// (condition-case nil (signal 'undefined-cond nil)
-    /// (error 'as-error) (t 'as-t)) => as-t, and (condition-case nil
-    /// (signal 'undefined-cond nil) (undefined-cond 'x) (t 'y)) => y.
-    pub(super) fn condition_symbol_matches(symbol: &str, condition_list: &[SymbolName]) -> bool {
-        symbol == "t" || condition_list.iter().any(|entry| entry.as_str() == symbol)
-    }
-
     /// find_handler_clause for one clause's condition HEAD: `t', or a
     /// symbol `memq' (EQ) in CONDITION_LIST, the signaled symbol's
     /// `error-conditions'; a list of them matches by any element, walked
@@ -3684,15 +3637,6 @@ impl Interpreter {
         false
     }
 
-    pub(super) fn take_condition_case_suspend(&mut self) -> bool {
-        if self.suspend_condition_case_count == 0 {
-            false
-        } else {
-            self.suspend_condition_case_count -= 1;
-            true
-        }
-    }
-
     /// Whether an active `condition-case'/`handler-bind' frame would catch
     /// an error of this condition type.  The EMAXX_TRACE_LOAD_ERRORS
     /// diagnostic consults this: an error a live handler is about to
@@ -3707,27 +3651,16 @@ impl Interpreter {
         }
         let error_type = error.condition_type();
         let condition_list = self.error_condition_names(&error_type);
-        self.active_handlers.iter().any(|handler| match handler {
+        handler_search_order(&self.active_handlers).any(|(_, handler)| match handler {
             ActiveHandler::Module | ActiveHandler::Internal(_) => true,
             ActiveHandler::Case(heads) => heads
                 .iter()
                 .any(|head| Self::clause_head_matches(head, &condition_list)),
-            ActiveHandler::Bind(conditions, _) => conditions
-                .iter()
-                .any(|symbol| Self::condition_symbol_matches(symbol, &condition_list)),
+            ActiveHandler::Bind(conditions, _, _) => {
+                Self::clause_head_matches(conditions, &condition_list)
+            }
+            ActiveHandler::Skip(_) | ActiveHandler::Catch(_) => false,
         })
-    }
-
-    /// Whether an active `condition-case' catches ERROR.
-    fn condition_case_catches(&mut self, error: &LispError) -> bool {
-        if !self
-            .active_handlers
-            .iter()
-            .any(|handler| matches!(handler, ActiveHandler::Case(_) | ActiveHandler::Internal(_)))
-        {
-            return false;
-        }
-        self.handler_search(error).catching_case.is_some()
     }
 
     /// ERROR's search of the active handlers (see `HandlerSearch'): the
@@ -3750,7 +3683,7 @@ impl Interpreter {
         let condition_list = self.error_condition_names_of(&error_symbol);
         let mut decisive = None;
         let mut catching_case = None;
-        for (index, entry) in self.active_handlers.iter().enumerate().rev() {
+        for (index, entry) in handler_search_order(&self.active_handlers) {
             let matches = match entry {
                 ActiveHandler::Module => true,
                 ActiveHandler::Internal(_) => {
@@ -3766,9 +3699,10 @@ impl Interpreter {
                     }
                     catches
                 }
-                ActiveHandler::Bind(conditions, _) => conditions
-                    .iter()
-                    .any(|symbol| Self::condition_symbol_matches(symbol, &condition_list)),
+                ActiveHandler::Bind(conditions, _, _) => {
+                    Self::clause_head_matches(conditions, &condition_list)
+                }
+                ActiveHandler::Skip(_) | ActiveHandler::Catch(_) => false,
             };
             if matches && decisive.is_none() {
                 decisive = Some(index);
@@ -3783,7 +3717,6 @@ impl Interpreter {
             generation: self.handler_generation,
             epoch,
             decisive,
-            catching_case,
         };
         self.handler_search_memo = Some(search);
         search
@@ -3807,10 +3740,10 @@ impl Interpreter {
         mut error: LispError,
         env: &mut Env,
     ) -> (LispError, bool) {
-        // A signal inside a handler-bind handler is settled at the
-        // boundaries outside the handler (`dispatch_handler_bindings').
+        // A signal inside a `handler-bind' handler is a signal of its
+        // own, its search skipping the handler's form and the entries
+        // between it and the first signal (`ActiveHandler::Skip').
         if error.signaled()
-            || self.handler_dispatch_depth > 0
             || matches!(
                 error.kind(),
                 LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
@@ -3824,11 +3757,18 @@ impl Interpreter {
         let hook = self
             .symbol_value_key(cached_symbol!("signal-hook-function"))
             .unwrap_or(Value::Nil);
-        if !hook.is_nil() {
+        // A nil ERROR-SYMBOL is the memory-full form (`oom'): no hook, and
+        // no signaling function.
+        let oom = error.signal_form() == crate::lisp::types::SignalForm::NilSymbol;
+        if !hook.is_nil() && !oom {
+            // call2 (Vsignal_hook_function, error_symbol, data): the
+            // arguments `signal' was given.
             let object = super::error_condition_value(&error);
-            let (symbol, data) = match object.cons_ref() {
-                Some(cell) => (cell.car.get(), cell.cdr.get()),
-                None => (object, Value::Nil),
+            let (symbol, data) = match (error.signal_form(), object.cons_ref()) {
+                (crate::lisp::types::SignalForm::Cons, Some(cell)) => {
+                    (cell.car.get(), cell.cdr.get())
+                }
+                _ => (object, Value::Nil),
             };
             let result = self.with_lisp_stack_roots(&object, |interp| {
                 interp.with_ensured_room(20, |interp| {
@@ -3842,7 +3782,9 @@ impl Interpreter {
         // Remember from where signal was called: the frame below the
         // innermost (`signal''s own), or below `error''s when that called
         // `signal'.
-        self.signaling_function = {
+        self.signaling_function = if oom {
+            Value::Nil
+        } else {
             let mut frames = self.backtrace_frames.iter().rev().skip(1);
             let mut frame = frames.next();
             if frame.is_some_and(|frame| {
@@ -3857,8 +3799,14 @@ impl Interpreter {
             Err(error) => error,
             Ok(_) => unreachable!("handler-bind handlers return to signal"),
         };
-        // A handler's own signal was settled as its own.
-        if error.identity() != identity && error.signaled() {
+        // A handler's throw or `kill-emacs' leaves signal_or_quit at once,
+        // as its longjmp does, and a handler's own signal was settled as
+        // its own.
+        if matches!(
+            error.kind(),
+            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+        ) || (error.identity() != identity && error.signaled())
+        {
             return (error, false);
         }
         error.mark_signaled();
@@ -3893,7 +3841,7 @@ impl Interpreter {
     fn catching_clause(&mut self, error: &LispError) -> CatchingClause {
         let error_symbol = error.condition_symbol();
         let condition_list = self.error_condition_names_of(&error_symbol);
-        for entry in self.active_handlers.iter().rev() {
+        for (_, entry) in handler_search_order(&self.active_handlers) {
             match entry {
                 ActiveHandler::Module => return CatchingClause::All,
                 ActiveHandler::Internal(InternalHandlers::All) => return CatchingClause::All,
@@ -3918,7 +3866,7 @@ impl Interpreter {
                         };
                     }
                 }
-                ActiveHandler::Bind(..) => {}
+                ActiveHandler::Bind(..) | ActiveHandler::Skip(_) | ActiveHandler::Catch(_) => {}
             }
         }
         CatchingClause::None
@@ -4026,22 +3974,6 @@ impl Interpreter {
         ) {
             return Err(error);
         }
-        if self.handler_dispatch_depth > 0 {
-            return Err(error);
-        }
-        // signal_or_quit searches the handlers once per signal.  Every frame
-        // boundary the error unwinds through dispatches here, so the object
-        // the handlers already ran for (the search rewrites the error to
-        // that object) passes outward untouched.  A fresh `signal' of the
-        // same symbol and data is a new object and runs them again, as in
-        // GNU.
-        if let LispErrorKind::SignalValue(value) = error.kind()
-            && self.dispatched_signal.as_ref().is_some_and(|seen| {
-                crate::lisp::primitives::values_eq_in_env(self, seen, value, env)
-            })
-        {
-            return Err(error);
-        }
         if !self
             .active_handlers
             .iter()
@@ -4064,11 +3996,26 @@ impl Interpreter {
         let condition_list = self.error_condition_names_of(&error_symbol);
         let error_value = error_condition_value(&error);
         let mut handled = false;
-        self.handler_dispatch_depth += 1;
-        let snapshot = self.active_handlers.clone();
-        for (index, entry) in snapshot[..=innermost].iter().enumerate().rev() {
-            match entry {
+        // signal_or_quit walks the live handler list: a handler pushes and
+        // pops only above the entry the walk is at, so the entries below
+        // stay as they were, and no copy is made (a handler signaling
+        // again in each nested call costs a stack, not a copy a level).
+        let mut next = self.active_handlers.len();
+        while next > 0 {
+            next -= 1;
+            if let ActiveHandler::Skip(count) = &self.active_handlers[next] {
+                next = next.saturating_sub(*count);
+                continue;
+            }
+            let index = next;
+            if index > innermost {
+                continue;
+            }
+            let entry = self.active_handlers[index].clone();
+            match &entry {
                 ActiveHandler::Module | ActiveHandler::Internal(_) => break,
+                ActiveHandler::Skip(_) => unreachable!("the search passes over its markers"),
+                ActiveHandler::Catch(_) => {}
                 // A matching `condition-case' between the signal point and
                 // any outer `handler-bind' handles the error itself; stop
                 // searching like GNU's signal_or_quit.
@@ -4080,42 +4027,51 @@ impl Interpreter {
                         break;
                     }
                 }
-                ActiveHandler::Bind(conditions, handler) => {
-                    if !conditions
-                        .iter()
-                        .any(|condition| Self::condition_symbol_matches(condition, &condition_list))
-                    {
+                ActiveHandler::Bind(conditions, handler, below) => {
+                    if !Self::clause_head_matches(conditions, &condition_list) {
                         continue;
                     }
-                    // signal_or_quit's HANDLER_BIND case: max_ensure_room
-                    // (20) for the handler, given back by its unbind_to (so
-                    // that a handler for `excessive-lisp-nesting' runs).
+                    // signal_or_quit's HANDLER_BIND case: a SKIP_CONDITIONS
+                    // entry for `skip + h->bytecode_dest', and
+                    // max_ensure_room (20) for the handler, both given back
+                    // by its unbind_to (so that a handler for
+                    // `excessive-lisp-nesting' runs).  SKIP counts the
+                    // loop's steps to the handler, a marker passed on the
+                    // way one step whatever it covered, so the entries the
+                    // new marker covers are the handler's form and those
+                    // between it and the signal only when the walk met no
+                    // marker; else fewer, and the search sees the rest
+                    // again, as GNU's does.
+                    let skip = handler_search_steps(&self.active_handlers, index);
+                    let covered = (skip + *below as usize + 1).min(self.active_handlers.len());
+                    let form_start = self.active_handlers.len() - covered;
                     let handler = *handler;
+                    let marker = self.push_skip_conditions(covered);
                     let result = self.with_ensured_room(20, |interp| {
-                        interp.call_function_value(
-                            handler,
-                            None,
-                            std::slice::from_ref(&error_value),
-                            env,
-                        )
+                        interp
+                            .call_function_value(
+                                handler,
+                                None,
+                                std::slice::from_ref(&error_value),
+                                env,
+                            )
+                            // The handler's own signal is searched with
+                            // the marker in place, wherever it settles.
+                            .map_err(|next| interp.signal_or_quit(next, env))
                     });
+                    self.pop_handler_bindings(marker);
                     match result {
                         Ok(_) => handled = true,
-                        Err(next) => {
-                            self.handler_dispatch_depth =
-                                self.handler_dispatch_depth.saturating_sub(1);
+                        Err(mut next) => {
+                            // A signal out of the handler was searched past
+                            // the skipped entries: the `condition-case's
+                            // between the first signal and the form, which
+                            // it now unwinds through, are not its catcher.
                             if !matches!(
                                 next.kind(),
                                 LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
                             ) {
-                                // An error signaled by the handler propagates
-                                // from the `handler-bind' frame outward, so
-                                // every `condition-case' inside it must let
-                                // the new error pass through untouched.
-                                self.suspend_condition_case_count = snapshot[index + 1..]
-                                    .iter()
-                                    .filter(|inner| matches!(inner, ActiveHandler::Case(_)))
-                                    .count();
+                                next.skip_entries_from(form_start);
                             }
                             return Err(next);
                         }
@@ -4123,9 +4079,7 @@ impl Interpreter {
                 }
             }
         }
-        self.handler_dispatch_depth = self.handler_dispatch_depth.saturating_sub(1);
         if handled {
-            self.dispatched_signal = Some(error_value);
             Err(LispError::SignalValue(error_value))
         } else {
             Err(error)
@@ -4505,6 +4459,41 @@ fn watcher_operation(action: &str) -> Value {
         other => return Value::symbol(other),
     };
     Value::Symbol(key.with(Clone::clone))
+}
+
+/// signal_or_quit's `skip' when its walk of ACTIVE reaches the entry at
+/// TARGET: the loop's steps before it, each entry it looks at one and each
+/// SKIP_CONDITIONS marker one, the entries the marker covers none.
+fn handler_search_steps(active: &[ActiveHandler], target: usize) -> usize {
+    let mut steps = 0;
+    let mut next = active.len();
+    while next > target + 1 {
+        next -= 1;
+        if let ActiveHandler::Skip(count) = &active[next] {
+            next = next.saturating_sub(*count);
+        }
+        steps += 1;
+    }
+    steps
+}
+
+/// signal_or_quit's walk of the handler list: ACTIVE from the innermost
+/// entry outward, the entries a SKIP_CONDITIONS marker
+/// (`ActiveHandler::Skip') covers passed over.
+pub(crate) fn handler_search_order(
+    active: &[ActiveHandler],
+) -> impl Iterator<Item = (usize, &ActiveHandler)> + '_ {
+    let mut next = active.len();
+    std::iter::from_fn(move || {
+        while next > 0 {
+            next -= 1;
+            match &active[next] {
+                ActiveHandler::Skip(count) => next = next.saturating_sub(*count),
+                entry => return Some((next, entry)),
+            }
+        }
+        None
+    })
 }
 
 #[cfg(test)]

@@ -91,33 +91,37 @@ impl Interpreter {
         };
         let tag = self.eval(&tag_form, env)?;
         let depth = env.len();
-        self.active_catch_tags.push(tag);
+        let catcher = self.push_active_catch_tag(tag);
         let result = self.progn_list(&body, env);
-        self.active_catch_tags.pop();
+        self.pop_handler_bindings(catcher);
         // A non-local exit unwinds any binding frames pushed between the
         // catch and the throw, like GNU's unbind_to at the catch point.
         if env.len() > depth {
             env.truncate(depth);
         }
-        match result.map_err(LispError::into_kind) {
-            Ok(value) => Ok(value),
-            Err(LispErrorKind::Throw(thrown_tag, value))
-                if crate::lisp::primitives::values_eq_in_env(self, &thrown_tag, &tag, env) =>
-            {
-                Ok(value)
+        // Any other exit passes on as it came: a signal keeps its search
+        // (signal_or_quit ran once for it) and what that search skipped.
+        let error = match result {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        if let LispErrorKind::Throw(thrown_tag, value) = error.kind() {
+            let (thrown_tag, value) = (*thrown_tag, *value);
+            if crate::lisp::primitives::values_eq_in_env(self, &thrown_tag, &tag, env) {
+                return Ok(value);
             }
-            Err(error) => Err(LispError::from(error)),
         }
+        Err(error)
     }
 
-    /// Register/unregister a VM `Bpushcatch' tag so `throw' sees it as an
-    /// active catch exactly like `sf_catch' frames.
-    pub(crate) fn push_active_catch_tag(&mut self, tag: Value) {
-        self.active_catch_tags.push(tag);
-    }
-
-    pub(crate) fn pop_active_catch_tag(&mut self) {
-        self.active_catch_tags.pop();
+    /// push_handler (TAG, CATCHER): a catch of TAG on the handler list,
+    /// where `throw' finds it and a signal's search counts it; its index,
+    /// for `pop_handler_bindings'.
+    pub(crate) fn push_active_catch_tag(&mut self, tag: Value) -> usize {
+        let start = self.active_handlers.len();
+        self.handler_generation += 1;
+        self.active_handlers.push(ActiveHandler::Catch(tag));
+        start
     }
 
     pub(crate) fn throw_value(
@@ -127,15 +131,18 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         // Fthrow looks for a catcher only when TAG is not nil: a nil tag
-        // reaches no catch and no catch-all, and signals `no-catch'.
+        // reaches no catch and no catch-all, and signals `no-catch'.  It
+        // walks the handler list for a CATCHER_ALL or a CATCHER of TAG.
         if !tag.is_nil()
-            && (self
+            && self
                 .active_handlers
                 .iter()
-                .any(|handler| matches!(handler, ActiveHandler::Module))
-                || self.active_catch_tags.iter().rev().any(|candidate| {
-                    crate::lisp::primitives::values_eq_in_env(self, candidate, &tag, env)
-                }))
+                .rev()
+                .any(|handler| match handler {
+                    ActiveHandler::Module => true,
+                    ActiveHandler::Catch(candidate) => crate::lisp::types::eq(*candidate, tag),
+                    _ => false,
+                })
         {
             Err(LispError::Throw(tag, value))
         } else {

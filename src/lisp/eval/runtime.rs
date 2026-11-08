@@ -3481,7 +3481,6 @@ impl Interpreter {
                         .iter()
                         .any(|name| name.as_str() == "error") =>
             {
-                self.clear_batch_error_backtrace();
                 Ok(Value::Nil)
             }
             result => result,
@@ -3512,7 +3511,6 @@ impl Interpreter {
                 Err(LispError::from(error))
             }
             Err(error) => {
-                self.clear_batch_error_backtrace();
                 let message = primitives::call(
                     self,
                     "format-message",

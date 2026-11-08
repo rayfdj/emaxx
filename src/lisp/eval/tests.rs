@@ -50,13 +50,6 @@ fn file_notification_roots_follow_queue_dispatch_and_error_requeue() {
         .expect_err("the collecting first callback must propagate its error");
     assert!(error.to_string().contains("notification control"));
     assert_eq!(interp.pending_file_notifications.len(), 2);
-    // This Rust caller caught the error outside Lisp's condition handlers.
-    // The batch reporter still owns its arguments until it consumes the
-    // captured backtrace; the queue must not invalidate that live report.
-    let mut reporting = LispReachability::default();
-    interp.mark_static_roots_into(&mut reporting);
-    assert!(reporting.contains(&events[0]));
-    assert!(interp.take_batch_error_backtrace().is_some());
     let mut requeued = LispReachability::default();
     interp.mark_static_roots_into(&mut requeued);
     assert!(
@@ -133,42 +126,7 @@ fn panic_eval_error(interp: &mut Interpreter, error: LispError) -> ! {
         .unwrap_or_else(|_| error.to_string()),
         _ => error.to_string(),
     };
-    let backtrace = interp
-        .take_batch_error_backtrace()
-        .map(|snapshot| {
-            snapshot
-                .frames
-                .into_iter()
-                .take(12)
-                .map(|(_, function, args, _)| {
-                    let mut frame = bounded_lisp_display(&function);
-                    for arg in args.into_iter().take(5) {
-                        frame.push(' ');
-                        frame.push_str(&bounded_lisp_display(&arg));
-                    }
-                    frame
-                })
-                .collect::<Vec<_>>()
-                .join(" <- ")
-        })
-        .unwrap_or_default();
-    panic!("evaluation failed: {rendered_error}; Lisp backtrace: {backtrace}")
-}
-
-fn bounded_lisp_display(value: &Value) -> String {
-    const LIMIT: usize = 120;
-    let rendered = value
-        .to_string()
-        .chars()
-        .flat_map(char::escape_debug)
-        .collect::<String>();
-    let mut chars = rendered.chars();
-    let prefix = chars.by_ref().take(LIMIT).collect::<String>();
-    if chars.next().is_some() {
-        format!("{prefix}…")
-    } else {
-        prefix
-    }
+    panic!("evaluation failed: {rendered_error}")
 }
 
 fn eval_str_bare(src: &str) -> Value {

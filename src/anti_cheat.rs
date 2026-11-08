@@ -1487,10 +1487,6 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
             "finalizers",
             "alloc.c marks a live finalizer's function only through the reached object; an unreached one is doomed and then rooted",
         ),
-        (
-            "dispatched_signal",
-            "identity memo of the last dispatched signal; thread.c marks handler->val only while its handler runs",
-        ),
     ];
     let mut undocumented = Vec::new();
     for capture in field_pattern.captures_iter(&source[struct_start..struct_end]) {
@@ -1534,7 +1530,6 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
             "Value",
             "SpecialBindingRestore",
             "BacktraceFrame",
-            "BatchErrorBacktrace",
             "ActiveHandler",
         ]
         .iter()
@@ -1542,10 +1537,7 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
         {
             continue;
         }
-        let marked = trace.contains(&format!("self.{name}"));
-        // Same identity-only memo as the active interpreter field above.
-        let listed = name == "dispatched_signal";
-        if marked == listed {
+        if !trace.contains(&format!("self.{name}")) {
             undocumented.push(format!("ThreadExecutionContext::{name}: {kind}"));
         }
     }

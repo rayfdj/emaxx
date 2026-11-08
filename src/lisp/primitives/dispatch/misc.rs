@@ -651,18 +651,21 @@ define_dispatch!(
                 // CHECK_SYMBOL refuses anything else.
                 let is_symbol =
                     |value: &Value| matches!(value.kind(), Kind::Symbol(_) | Kind::Nil | Kind::T);
-                let error = if condition.is_nil() {
-                    data
+                let (error, form) = if condition.is_nil() {
+                    (data, crate::lisp::types::SignalForm::NilSymbol)
                 } else if !is_symbol(&condition) && data.is_nil() {
-                    condition
+                    (condition, crate::lisp::types::SignalForm::Object)
                 } else {
-                    Value::cons(condition, data)
+                    (
+                        Value::cons(condition, data),
+                        crate::lisp::types::SignalForm::Cons,
+                    )
                 };
                 let real = error.cons_values().map_or(condition, |(car, _)| car);
                 if !is_symbol(&real) {
                     return Err(wrong_type_argument("symbolp", real));
                 }
-                Err(LispError::SignalValue(error))
+                Err(LispError::signal_of(error, form))
             }
             "throw" => {
                 if args.len() != 2 {
@@ -2526,18 +2529,16 @@ pub(super) fn direct_symbol_value(
     // GNU 30.2 data.c:Fsymbol_value reaches
     // find_symbol_value's CHECK_SYMBOL.
     let symbol = checked_symbol_identity(interp, &args[0], env)?;
-    match interp
-        .symbol_value_cell_symbol(&symbol)
-        .map_err(LispError::into_kind)
-    {
+    match interp.symbol_value_cell_symbol(&symbol) {
         // Fsymbol_value signals with its original argument,
         // even after find_symbol_value follows an alias or
         // XSYMBOL unwraps a symbol-with-position.
-        Err(LispErrorKind::Void(_)) => Err(LispError::SignalValue(Value::list([
-            Value::symbol("void-variable"),
-            args[0],
-        ]))),
-        Err(other) => Err(LispError::from(other)),
-        Ok(value) => Ok(value),
+        Err(error) if matches!(error.kind(), LispErrorKind::Void(_)) => {
+            Err(LispError::SignalValue(Value::list([
+                Value::symbol("void-variable"),
+                args[0],
+            ])))
+        }
+        other => other,
     }
 }

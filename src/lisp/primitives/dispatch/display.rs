@@ -201,8 +201,10 @@ fn redisplay_safe_call(
     let handler_start =
         interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
     if with_backtrace {
-        interp
-            .push_handler_bindings(&[(vec!["error".into()], Value::symbol("debug-early--muted"))]);
+        interp.push_handler_bindings(&[(
+            Value::symbol("error"),
+            Value::symbol("debug-early--muted"),
+        )]);
     }
     let depth = env.len();
     let result = interp.call_function_value(function, None, args, env);
@@ -216,7 +218,6 @@ fn redisplay_safe_call(
             // dsafe_eval_handler -> add_to_log -> Fformat_message and
             // message_dolog. Calling Fmessage here would run message hooks
             // and overwrite the echo area while handling its callback.
-            interp.clear_batch_error_backtrace();
             super::call(
                 interp,
                 "format-message",
@@ -3822,7 +3823,6 @@ fn window_change_safe_call(
             Err(LispError::from(error))
         }
         Err(error) => {
-            interp.clear_batch_error_backtrace();
             let message = super::call(
                 interp,
                 "format-message",
@@ -8457,9 +8457,9 @@ mod tests {
         interp.set_variable_key(cached_symbol!("inhibit-quit"), Value::Nil, &mut env);
         interp.set_variable_key(cached_symbol!("inhibit-redisplay"), Value::Nil, &mut env);
         set_echo_area_message(Some("not reached".into()));
-        interp.push_active_catch_tag(tag);
+        let catcher = interp.push_active_catch_tag(tag);
         let result = clear_message(&mut interp, &mut env, true, true);
-        interp.pop_active_catch_tag();
+        interp.pop_handler_bindings(catcher);
         assert!(matches!(
             result.as_ref().map_err(LispError::kind),
             Err(LispErrorKind::Throw(actual, value)) if values_eql(actual, &tag) && *value == Value::Integer(7)
@@ -8536,7 +8536,7 @@ mod tests {
             vec![Value::symbol("throw"), tag, Value::Integer(7)],
         );
         interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
-        interp.push_active_catch_tag(tag);
+        let catcher = interp.push_active_catch_tag(tag);
         let result = crate::lisp::primitives::activate_minibuffer(
             &mut interp,
             &Value::String("Prompt: ".into()),
@@ -8544,7 +8544,7 @@ mod tests {
             Value::Nil,
             &mut env,
         );
-        interp.pop_active_catch_tag();
+        interp.pop_handler_bindings(catcher);
         assert!(matches!(
             result.as_ref().map_err(LispError::kind),
             Err(LispErrorKind::Throw(actual, value)) if values_eql(actual, &tag) && *value == Value::Integer(7)

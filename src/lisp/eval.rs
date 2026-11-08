@@ -2020,12 +2020,6 @@ pub(crate) struct FrameEnvironment {
     environment: Value,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct BatchErrorBacktrace {
-    pub(crate) enabled: bool,
-    pub(crate) frames: Vec<(bool, Value, Vec<Value>, bool)>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ThreadBlocker {
     Mutex(u64),
@@ -5733,9 +5727,6 @@ impl Interpreter {
         if let Some(value) = &self.last_thread_error {
             mark(value);
         }
-        for value in &self.active_catch_tags {
-            mark(value);
-        }
         for timer in &self.pending_timers {
             mark(&timer.function);
             for argument in &timer.args {
@@ -5776,18 +5767,14 @@ impl Interpreter {
         for installed in &self.frame_environments {
             mark(&installed.environment);
         }
-        if let Some(backtrace) = &self.batch_error_backtrace {
-            for (_, function, arguments, _) in &backtrace.frames {
-                mark(function);
-                for argument in arguments {
-                    mark(argument);
-                }
-            }
-        }
         for handler in &self.active_handlers {
             match handler {
-                ActiveHandler::Module | ActiveHandler::Internal(_) => {}
-                ActiveHandler::Bind(_, function) => mark(function),
+                ActiveHandler::Module | ActiveHandler::Internal(_) | ActiveHandler::Skip(_) => {}
+                ActiveHandler::Bind(conditions, function, _) => {
+                    mark(conditions);
+                    mark(function);
+                }
+                ActiveHandler::Catch(function) => mark(function),
                 ActiveHandler::Case(heads) => {
                     for head in heads.iter() {
                         mark(head);
@@ -6250,9 +6237,6 @@ impl Interpreter {
             if let Some(error) = &clone.last_thread_error {
                 clone.last_thread_error = Some(c.copy(error));
             }
-            for tag in &mut clone.active_catch_tags {
-                *tag = c.copy(tag);
-            }
             for timer in &mut clone.pending_timers {
                 timer.function = c.copy(&timer.function.clone());
                 for arg in &mut timer.args {
@@ -6293,18 +6277,15 @@ impl Interpreter {
             for installed in &mut clone.frame_environments {
                 installed.environment = c.copy(&installed.environment);
             }
-            if let Some(backtrace) = &mut clone.batch_error_backtrace {
-                for (_, function, args, _) in &mut backtrace.frames {
-                    *function = c.copy(&function.clone());
-                    for arg in args {
-                        *arg = c.copy(arg);
-                    }
-                }
-            }
             for handler in &mut clone.active_handlers {
                 match handler {
-                    ActiveHandler::Module | ActiveHandler::Internal(_) => {}
-                    ActiveHandler::Bind(_, function) => *function = c.copy(&function.clone()),
+                    ActiveHandler::Module | ActiveHandler::Internal(_) | ActiveHandler::Skip(_) => {
+                    }
+                    ActiveHandler::Bind(conditions, function, _) => {
+                        *conditions = c.copy(&conditions.clone());
+                        *function = c.copy(&function.clone());
+                    }
+                    ActiveHandler::Catch(function) => *function = c.copy(&function.clone()),
                     ActiveHandler::Case(heads) => {
                         *heads = heads.iter().map(|head| c.copy(head)).collect();
                     }
@@ -7135,19 +7116,7 @@ pub struct InterpreterState {
     /// The lexical environments interpreted code installed, by frame (see
     /// `FrameEnvironment').
     frame_environments: Vec<FrameEnvironment>,
-    batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
-    /// Dynamically active `catch' tags.  GNU's `throw' signals `no-catch'
-    /// immediately when no `eq' tag is live, allowing condition handlers to
-    /// observe the error without intercepting throws bound for an outer catch.
-    active_catch_tags: Vec<Value>,
-    handler_dispatch_depth: usize,
-    /// The condition object the `handler-bind' handlers last ran for.  GNU
-    /// runs them once, from `signal' itself; Emaxx runs them at the
-    /// innermost frame boundary that sees the error and must not run them
-    /// again as the same error unwinds through the outer frames.
-    dispatched_signal: Option<Value>,
-    suspend_condition_case_count: usize,
     /// Counts the pushes onto `active_handlers' and the thread switches
     /// that exchange it: while it holds, the stack has only lost entries.
     handler_generation: u64,
@@ -7177,22 +7146,22 @@ pub(crate) struct HandlerSearch {
     condition: usize,
     generation: u64,
     epoch: u32,
-    /// The innermost module boundary or matching entry.
+    /// The innermost module boundary or matching entry; the search stops
+    /// at the innermost matching `condition-case'.
     pub(crate) decisive: Option<usize>,
-    /// The innermost matching `condition-case'.
-    pub(crate) catching_case: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum ActiveHandler {
     /// The GNU module API catches every signal and throw at its boundary.
     Module,
-    /// One CONDITIONS/HANDLER pair from `handler-bind'.  Keep the condition
-    /// list grouped so a handler whose list contains both a child condition
-    /// and one of its parents still runs exactly once for a signal.
-    /// The lists are shared: `signal' walks a copy of the stack, which
-    /// handlers may change, and a copy costs a count each.
-    Bind(std::rc::Rc<[String]>, Value),
+    /// One CONDITIONS/HANDLER pair from `handler-bind' (push_handler_bind):
+    /// CONDITIONS the object itself, a condition or a list of them that
+    /// find_handler_clause walks at each signal, so a handler whose list
+    /// holds a child condition and one of its parents runs once.  The
+    /// count is Fhandler_bind_1's `bytecode_dest': how many pairs of the
+    /// same form lie below this one.
+    Bind(Value, Value, u32),
     /// The clause heads of an active `condition-case' (minus :success).
     Case(CaseHeads),
     /// An internal_condition_case of the C core: HANDLERS that are no list
@@ -7200,6 +7169,14 @@ pub(crate) enum ActiveHandler {
     /// `error' lets the debugger in (signal_or_quit's `EQ (clause,
     /// Qerror)').
     Internal(InternalHandlers),
+    /// eval.c's SKIP_CONDITIONS, pushed while a `handler-bind' handler
+    /// runs: a handler search reaching it passes over this many entries
+    /// below it, the handler's own form and those between it and the
+    /// signal that called the handler.
+    Skip(usize),
+    /// A CATCHER of TAG (`catch', internal_catch, Bpushcatch): no signal
+    /// stops at it, but the search counts it, and `throw' looks for it.
+    Catch(Value),
 }
 
 /// The clause heads of an active `condition-case': the one of a
@@ -7811,12 +7788,7 @@ impl Interpreter {
             last_thread_error: None,
             backtrace_frames: Vec::new(),
             frame_environments: Vec::new(),
-            batch_error_backtrace: None,
             active_handlers: Vec::new(),
-            active_catch_tags: Vec::new(),
-            handler_dispatch_depth: 0,
-            dispatched_signal: None,
-            suspend_condition_case_count: 0,
             handler_generation: 0,
             handler_search_memo: None,
             face_change_count: 0,
@@ -9296,16 +9268,6 @@ impl Interpreter {
 
     pub(crate) fn lambda_capture_override(&self) -> Option<bool> {
         self.lambda_capture_overrides.last().copied()
-    }
-
-    /// Register TAG as an active `catch' target for the extent of a native
-    /// command-loop boundary (see GNU read_minibuf's `catch \='exit`).
-    pub(crate) fn push_catch_tag(&mut self, tag: Value) {
-        self.active_catch_tags.push(tag);
-    }
-
-    pub(crate) fn pop_catch_tag(&mut self) {
-        self.active_catch_tags.pop();
     }
 
     // Append echo-area output to the active `ert-with-message-capture'

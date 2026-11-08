@@ -2972,7 +2972,6 @@ fn call_catching_process_errors(
     ) {
         return Err(error);
     }
-    interp.clear_batch_error_backtrace();
     let mut data = crate::lisp::eval::error_condition_value(&error);
     if sentinel && data.cons_ref().is_none() {
         data = Value::cons(Value::symbol("error"), data);

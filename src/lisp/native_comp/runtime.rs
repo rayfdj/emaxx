@@ -1168,7 +1168,7 @@ impl NativeHandler {
 }
 
 enum HandlerRegistration {
-    Catch,
+    Catch(usize),
     ConditionCase(usize),
 }
 
@@ -2032,8 +2032,7 @@ impl NativeRuntime {
         {
             let entry = self.handlers.pop().expect("last checked above");
             match entry.registration {
-                HandlerRegistration::Catch => interpreter.pop_active_catch_tag(),
-                HandlerRegistration::ConditionCase(start) => {
+                HandlerRegistration::Catch(start) | HandlerRegistration::ConditionCase(start) => {
                     interpreter.pop_handler_bindings(start)
                 }
             }
@@ -2096,7 +2095,9 @@ impl NativeRuntime {
                     _ => false,
                 },
                 1 if !is_throw && !matches!(error.kind(), LispErrorKind::Terminate(_)) => {
-                    Interpreter::clause_head_matches(&handler.match_value, &conditions)
+                    !matches!(handler.registration, HandlerRegistration::ConditionCase(start)
+                        if error.skipped_by_search(start))
+                        && Interpreter::clause_head_matches(&handler.match_value, &conditions)
                 }
                 _ => false,
             })
@@ -2197,11 +2198,6 @@ impl NativeRuntime {
             let target = &mut self.handlers[target_index];
             interpreter.lisp_eval_depth = target.lisp_eval_depth;
             interpreter.truncate_backtrace_frames(target.backtrace_depth);
-            if target.kind == 1 {
-                // The signal is caught: its diagnostic snapshot must not
-                // keep the unwound arguments alive while the handler runs.
-                interpreter.clear_batch_error_backtrace();
-            }
             target.storage.set_value(encoded);
             return unsafe { target.address().cast::<u8>().add(HANDLER_JMP_OFFSET).cast() };
         }
@@ -3840,9 +3836,6 @@ fn invoke_plain_native_funcall(
     } else {
         Ok(word)
     };
-    if let Err(error) = &result {
-        interpreter.capture_batch_error_backtrace(error, environment);
-    }
     interpreter.leave_plain_funcall(depth);
     Some(result)
 }
@@ -3901,9 +3894,6 @@ fn invoke_plain_builtin_funcall(
     } else {
         Ok(word)
     };
-    if let Err(error) = &result {
-        interpreter.capture_batch_error_backtrace(error, environment);
-    }
     interpreter.leave_plain_funcall(depth);
     Some(result)
 }
@@ -4004,17 +3994,13 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
         };
         // The error keeps its box: signal_or_quit marks a signal it has
         // settled there.
-        let result = match result {
+        match result {
             Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
                 native_funcall_exit_debugger(interpreter, runtime, environment, word)
             }
             Ok(word) => Ok(word),
             Err(error) => Err(interpreter.signal_or_quit(error, environment)),
-        };
-        if let Err(error) = &result {
-            interpreter.capture_batch_error_backtrace(error, environment);
         }
-        result
     };
     interpreter.truncate_backtrace_frames(depth);
     interpreter.end_funcall();
@@ -4533,14 +4519,14 @@ fn invoke_native_symbol_value(active: &ActiveCall, word: NativeWord) -> Option<N
         return Some(value.word());
     }
     let value = unsafe { &*active.interpreter }.symbol_value_cell_symbol(&symbol);
-    let value = value.map_err(|error| match error.into_kind() {
+    let value = value.map_err(|error| match error.kind() {
         // data.c:Fsymbol_value uses the original SYMBOL in xsignal1,
         // not the name of the final cell reached through a variable alias.
         LispErrorKind::Void(_) => LispError::SignalValue(Value::list([
             Value::symbol("void-variable"),
             Value::Symbol(symbol),
         ])),
-        error => LispError::from(error),
+        _ => error,
     });
     Some(
         match value.and_then(|value| {
@@ -5067,7 +5053,6 @@ fn remember_helper_error(active: &ActiveCall, error: LispError) {
         Ok(()) => interpreter.signal_or_quit(error, environment),
         Err(error) => error,
     };
-    interpreter.capture_batch_error_backtrace(&error, environment);
     let jump_buffer = unsafe { &mut *active.runtime }.prepare_nonlocal_exit(
         unsafe { &mut *active.interpreter },
         unsafe { &mut *active.environment.get() },
@@ -5139,10 +5124,7 @@ extern "C" fn runtime_push_handler(match_value: NativeWord, kind: i32) -> *mut N
             let runtime = unsafe { &mut *active.runtime };
             runtime.sync_handlers(interpreter)?;
             let registration = match kind {
-                0 => {
-                    interpreter.push_active_catch_tag(match_value);
-                    HandlerRegistration::Catch
-                }
+                0 => HandlerRegistration::Catch(interpreter.push_active_catch_tag(match_value)),
                 1 => HandlerRegistration::ConditionCase(
                     interpreter.push_condition_case_handler(vec![match_value]),
                 ),
@@ -11695,7 +11677,6 @@ mod tests {
         assert!(!handler.is_null());
         signaling_frame(&mut interpreter, &table);
         let error = wrong_type_argument("stringp", Value::Nil);
-        interpreter.capture_batch_error_backtrace(&error, &environment);
         let collect = |interpreter: &mut Interpreter, environment: &Env| {
             crate::lisp::alloc::clobber_stack();
             let reachable = interpreter.weak_hash_reachability(environment, &[]);

@@ -263,9 +263,6 @@ fn safe_run_hook_funcall(
             Err(LispError::from(error))
         }
         Err(error) => {
-            // The handler ran: no backtrace of this error is left for
-            // batch mode's exit report.
-            interp.clear_batch_error_backtrace();
             let condition = crate::lisp::eval::error_condition_value(&LispError::from(error));
             safe_run_hooks_error(interp, hook, function, condition, env)
         }

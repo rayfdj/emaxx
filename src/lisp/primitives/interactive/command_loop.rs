@@ -201,17 +201,21 @@ fn internal_catch(
 ) -> Result<Value, LispError> {
     let tag = Value::symbol(tag);
     let count = interp.specpdl_index();
-    interp.push_catch_tag(tag);
+    let catcher = interp.push_active_catch_tag(tag);
     let result = body(interp, env);
-    interp.pop_catch_tag();
-    match result.map_err(LispError::into_kind) {
-        Ok(value) => Ok(value),
-        Err(LispErrorKind::Throw(thrown, value)) if crate::lisp::types::eq(thrown, tag) => {
-            interp.unbind_to(count, env)?;
-            Ok(value)
-        }
-        Err(error) => Err(LispError::from(error)),
+    interp.pop_handler_bindings(catcher);
+    let error = match result {
+        Ok(value) => return Ok(value),
+        Err(error) => error,
+    };
+    if let LispErrorKind::Throw(thrown, value) = error.kind()
+        && crate::lisp::types::eq(*thrown, tag)
+    {
+        let value = *value;
+        interp.unbind_to(count, env)?;
+        return Ok(value);
     }
+    Err(error)
 }
 
 /// keyboard.c:top_level_1: the startup, `top-level''s form (normal
@@ -282,6 +286,8 @@ pub(crate) fn command_loop_2(
             LispErrorKind::Throw(..) | LispErrorKind::Terminate(_) => false,
             _ => match handlers {
                 CommandLoopHandlers::Error => true,
+                // Not a signal the search passed this handler for.
+                CommandLoopHandlers::MinibufferQuit if error.skipped_by_search(start) => false,
                 CommandLoopHandlers::MinibufferQuit => error_data_has_condition(
                     interp,
                     &crate::lisp::eval::error_condition_value(&error),
