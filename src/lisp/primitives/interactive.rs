@@ -10,7 +10,7 @@ mod key_sequence;
 pub(crate) use command_loop::select_window_buffer;
 pub(crate) use command_loop::{
     CommandLoopHandlers, command_loop_2, recursive_edit, recursive_edit_1,
-    take_resize_echo_area_exactly, top_level_1,
+    set_resize_echo_area_exactly, top_level_1,
 };
 pub(crate) use echo::{
     cancel_echoing, echo_after_command, echo_after_event, echo_before_wait, echo_dash,
@@ -2687,33 +2687,6 @@ fn wrong_number_of_args(name: &str, count: usize) -> LispError {
     LispError::WrongNumberOfArgs(name.into(), count)
 }
 
-/// The menu bar's cheap per-redraw change signal: how many minor-mode
-/// maps are live plus whether an overriding map is installed.  Entering
-/// isearch (or any minor mode with a map) changes it, which triggers
-/// the recompute GNU gets from update_mode_lines — without walking the
-/// full active-keymap set on every keystroke.
-pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> usize {
-    let minors = interp
-        .lookup_var_key(cached_symbol!("minor-mode-map-alist"), env)
-        .and_then(|alist| alist.to_vec().ok())
-        .map(|entries| {
-            entries
-                .iter()
-                .filter(|entry| {
-                    entry.car().is_ok_and(|mode| {
-                        matches!(mode.kind(), Kind::Symbol(name)
-                            if interp.lookup_var_symbol(&name, env).is_some_and(|on| on.is_truthy()))
-                    })
-                })
-                .count()
-        })
-        .unwrap_or(0);
-    let overriding = interp
-        .lookup_var_key(cached_symbol!("overriding-terminal-local-map"), env)
-        .is_some_and(|map| map.is_truthy());
-    minors + usize::from(overriding)
-}
-
 /// read_char's events before the keyboard, in its order:
 /// `unread-post-input-method-events' (the rest of what an input method
 /// returned, not given to it again), `unread-command-events', then
@@ -3279,7 +3252,7 @@ pub(crate) fn run_post_command_hooks(
     // If displaying a message, resize the echo area window to fit that
     // message's size exactly.
     if crate::lisp::primitives::dispatch::display::echo_area_message_value().is_some() {
-        command_loop::resize_echo_area_exactly();
+        command_loop::resize_echo_area_exactly(interp, env);
     }
     if interp
         .lookup_var_key(cached_symbol!("delayed-warnings-list"), env)

@@ -111,18 +111,15 @@ fn composition_symbol() -> Value {
 }
 
 /// intervals.c:get_property_and_range of `composition' at POS of OBJECT
-/// (nil the current buffer): the range and the property.
+/// (a buffer, a string, or nil the current buffer): the range and the
+/// property.
 fn property_and_range(
     interp: &Interpreter,
     pos: usize,
     object: &Value,
 ) -> Result<Option<(usize, usize, Value)>, LispError> {
-    use crate::lisp::primitives::textprop::{SearchObject, get_property_and_range};
-    let target = if object.is_nil() {
-        SearchObject::Buffer(interp.current_buffer_id())
-    } else {
-        SearchObject::String(*object)
-    };
+    use crate::lisp::primitives::textprop::{get_property_and_range, search_object};
+    let target = search_object(interp, *object)?;
     Ok(
         get_property_and_range(interp, pos, PropertyName::new(composition_symbol()), target)?
             .map(|(prop, start, end)| (start, end, prop)),
@@ -170,6 +167,61 @@ fn find_composition(
         previous as usize - 1
     };
     property_and_range(interp, pos, object)
+}
+
+/// xdisp.c check_point_in_composition: whether point moved out of or
+/// into a composition.  PREV_BUF and PREV_PT are the last point's buffer
+/// and position, BUF and PT the current ones.  With point moved within
+/// one buffer from inside a valid composition, whether it left it;
+/// otherwise whether PT is strictly inside one, the positions in BUF's
+/// accessible part past BEGV and before ZV.
+pub(crate) fn check_point_in_composition(
+    interp: &mut Interpreter,
+    prev_buf: u64,
+    prev_pt: usize,
+    buf: u64,
+    pt: usize,
+) -> bool {
+    let Some((begv, zv)) = interp
+        .get_buffer_by_id(buf)
+        .map(|buffer| buffer.accessible_bounds())
+    else {
+        return false;
+    };
+    let Some(buffer) = interp.buffer_value(buf) else {
+        return false;
+    };
+    // The valid composition around POS of BUF, by find_composition (POS,
+    // -1, ..., BUFFER).
+    let composition_at = |interp: &Interpreter, pos: usize| {
+        find_composition(interp, pos, None, &buffer)
+            .ok()
+            .flatten()
+            .filter(|&(start, end, prop)| composition_valid_p(interp, start, end, prop))
+            .map(|(start, end, _)| (start, end))
+    };
+    // Check a composition at the last point if point moved within the
+    // same buffer.
+    if prev_buf == buf {
+        if prev_pt == pt {
+            // Point didn't move.
+            return false;
+        }
+        if prev_pt > begv
+            && prev_pt < zv
+            && let Some((start, end)) = composition_at(interp, prev_pt)
+            && start < prev_pt
+            && end > prev_pt
+        {
+            // The last point was within the composition: true iff point
+            // moved out of it.
+            return pt <= start || pt >= end;
+        }
+    }
+    // Check a composition at the current point.
+    pt > begv
+        && pt < zv
+        && composition_at(interp, pt).is_some_and(|(start, end)| start < pt && end > pt)
 }
 
 /// composite.h composition_valid_p: PROP is a `composition' property

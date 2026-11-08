@@ -162,18 +162,47 @@ define_dispatch!(
                     true,
                 )?;
                 let (beg, end) = overlay_range(interp, buffer, args[1], args[2])?;
+                let old = object.buffer().map(|old| (old, object.beg(), object.end()));
                 object.move_to(buffer, beg, end);
+                let buffer_id = interp.live_buffer_id(buffer);
+                match old {
+                    // The overlay was and is in the same buffer: the area
+                    // it has just left, or just enclosed, shown anew.
+                    Some((old, o_beg, o_end)) if old.ptr_eq(&buffer) => {
+                        if let Some(id) = buffer_id {
+                            if o_beg == beg {
+                                interp.modify_overlay(id, o_end, end);
+                            } else if o_end == end {
+                                interp.modify_overlay(id, o_beg, beg);
+                            } else {
+                                interp.modify_overlay(id, o_beg.min(beg), o_end.max(end));
+                            }
+                        }
+                    }
+                    // A change of buffers: where the overlay was, and
+                    // where it is going to be.
+                    old => {
+                        if let Some((old, o_beg, o_end)) = old
+                            && let Some(old_id) = interp.live_buffer_id(old)
+                        {
+                            interp.modify_overlay(old_id, o_beg, o_end);
+                        }
+                        if let Some(id) = buffer_id {
+                            interp.modify_overlay(id, beg, end);
+                        }
+                    }
+                }
                 if beg == end
                     && overlay_property_with_category(interp, &object, "evaporate")?
                         .is_some_and(|v| v.is_truthy())
                 {
-                    object.detach();
+                    interp.drop_overlay(object);
                 }
                 Ok(args[0])
             }
             "delete-overlay" => {
                 need_args(name, args, 1)?;
-                overlay(args[0])?.detach();
+                delete_overlay(interp, overlay(args[0])?)?;
                 Ok(Value::Nil)
             }
             "delete-all-overlays" => {
@@ -187,15 +216,20 @@ define_dispatch!(
             "overlay-put" => {
                 need_args(name, args, 3)?;
                 let object = overlay(args[0])?;
-                object.put_prop(args[1], args[2]);
-                // EQ (prop, Qevaporate).
-                if crate::lisp::types::eq(
-                    args[1],
-                    cached_symbol!("evaporate").with(|symbol| Value::Symbol(*symbol)),
-                ) && args[2].is_truthy()
-                    && object.beg() == object.end()
-                {
-                    object.detach();
+                let changed = object.put_prop(args[1], args[2]);
+                if let Some(buffer) = object.buffer() {
+                    if changed && let Some(buffer_id) = interp.live_buffer_id(buffer) {
+                        interp.modify_overlay(buffer_id, object.beg(), object.end());
+                    }
+                    // EQ (prop, Qevaporate).
+                    if crate::lisp::types::eq(
+                        args[1],
+                        cached_symbol!("evaporate").with(|symbol| Value::Symbol(*symbol)),
+                    ) && args[2].is_truthy()
+                        && object.beg() == object.end()
+                    {
+                        delete_overlay(interp, object)?;
+                    }
                 }
                 Ok(args[2])
             }
@@ -264,3 +298,23 @@ define_dispatch!(
         }
     }
 );
+
+/// buffer.c:Fdelete_overlay: OVERLAY dropped from its buffer, whose
+/// redisplay takes no shortcut when the overlay had a before- or
+/// after-string (they may hold newlines).
+fn delete_overlay(interp: &mut Interpreter, object: OverlayRef) -> Result<(), LispError> {
+    let Some(buffer) = object.buffer() else {
+        return Ok(());
+    };
+    interp.drop_overlay(object);
+    if interp.windows_or_buffers_changed == 0
+        && (overlay_property_with_category(interp, &object, "before-string")?
+            .is_some_and(|value| !value.is_nil())
+            || overlay_property_with_category(interp, &object, "after-string")?
+                .is_some_and(|value| !value.is_nil()))
+        && let Some(buffer_id) = interp.live_buffer_id(buffer)
+    {
+        interp.prevent_redisplay_optimizations(buffer_id);
+    }
+    Ok(())
+}

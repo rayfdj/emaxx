@@ -59,7 +59,7 @@ fn set_bar_lines(interp: &mut Interpreter, frame: FrameRef, value: Value, menu: 
     if minibuffer_only || nlines == olines {
         return;
     }
-    interp.redisplay_other_windows();
+    interp.windows_or_buffers_changed = 14;
     {
         let mut state = frame.borrow_mut();
         if menu {
@@ -297,7 +297,7 @@ pub(crate) fn adjust_frame_size(
         state.height = new_native_height;
     }
     // SET_FRAME_GARBAGED.
-    interp.redisplay_other_windows();
+    interp.fset_redisplay(frame);
     Ok(())
 }
 
@@ -420,7 +420,7 @@ fn resize_frame_windows(
         }
     }
     // fset_redisplay (f).
-    interp.redisplay_other_windows();
+    interp.fset_redisplay(frame);
     Ok(())
 }
 

@@ -326,6 +326,7 @@ fn set_term_frame_name(
         name
     };
     id.name.set(name);
+    interp.update_mode_lines = 16;
     Ok(())
 }
 
@@ -541,6 +542,7 @@ fn update_face_from_frame_parameter(
         Value::symbol("unspecified")
     };
     crate::lisp::primitives::aset_vector_value(&lface, index, color)?;
+    interp.note_face_definition_change(default, Some(id), 0);
     realize_basic_faces(interp, id)
 }
 
@@ -886,6 +888,8 @@ define_dispatch!(
                         "Attempt to make invisible the sole visible or iconified frame".into(),
                     ));
                 }
+                // Make menu bar update for the Buffers and Frames menus.
+                interp.windows_or_buffers_changed = 16;
                 Ok(Value::Nil)
             }
             "iconify-frame" => {
@@ -1486,6 +1490,8 @@ pub(super) fn delete_frame(
             env,
         )?;
     }
+    // Cause frame titles to update, necessary if just one frame is left.
+    interp.update_mode_lines = 15;
     if noelisp {
         interp.pending_funcalls.push(Value::list([
             Value::symbol("run-hook-with-args"),

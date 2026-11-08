@@ -1204,6 +1204,10 @@ impl Interpreter {
                 buffer_list: vec![buffer_id],
                 buried_buffer_list: Vec::new(),
                 menu_bar_items: Value::Nil,
+                // make_frame: `f->redisplay = true'.
+                redisplay: true,
+                face_change: false,
+                realized_faces_epoch: 0,
             },
         );
         self.frame_states.insert(0, frame);

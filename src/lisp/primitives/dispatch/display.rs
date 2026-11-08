@@ -9,7 +9,10 @@ pub(crate) use frame_size::{
     adjust_frame_size, change_frame_size, do_pending_window_change, frame_top_margin,
     set_menu_bar_lines, set_tab_bar_lines,
 };
-pub(crate) use mode_line::{ModeLineCells, display_prop_intangible_p};
+pub(crate) use mode_line::{
+    ModeLineCells, begin_display_mode_lines, display_prop_intangible_p, end_display_mode_lines,
+    window_base_line_pos,
+};
 
 // The live echo-area line of an interactive session.  GNU keeps this in
 // the echo buffer that redisplay paints; the terminal frontend reads it
@@ -619,6 +622,7 @@ fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &
     if log_max.is_nil() {
         return;
     }
+    let old_windows_or_buffers_changed = interp.windows_or_buffers_changed;
     // Fget_buffer_create (Vmessages_buffer_name, Qnil).
     let buffer_id = match buffer_name {
         Some(name) => interp
@@ -638,6 +642,11 @@ fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &
         let max_lines = log_max.fixnum().and_then(|max| usize::try_from(max).ok());
         message_dolog(&mut buffer, text, nlflag, max_lines);
     }
+    // The insertion prepared nothing, so nothing counted the change in a
+    // window showing the log: windows_or_buffers_changed as it was, and
+    // the log buffer marked for redisplay.
+    interp.windows_or_buffers_changed = old_windows_or_buffers_changed;
+    interp.bset_redisplay(buffer_id);
     MESSAGE_LOG_NEED_NEWLINE.with(|flag| flag.set(!nlflag));
 }
 
@@ -1117,6 +1126,38 @@ fn lookup_image_map(map: &Value, x: i64, y: i64) -> Value {
                 .is_ok_and(|area| image_hot_spot_contains(&area, x, y))
         })
         .unwrap_or(Value::Nil)
+}
+
+/// xdisp.c:mark_window_display_accurate (WINDOW, false): WINDOW and the
+/// windows after it among its siblings, with the leaves below them, made
+/// inaccurate (mark_window_display_accurate_1: no modification counts
+/// known, the star recorded as the buffer has it, the window to be
+/// redisplayed), and every overlay arrow drawn afresh.
+pub(crate) fn mark_window_display_inaccurate(
+    interp: &mut Interpreter,
+    env: &crate::lisp::types::Env,
+    window_id: u64,
+) {
+    fn walk(interp: &mut Interpreter, mut window: Option<u64>) {
+        while let Some(id) = window {
+            match window_link(interp, id, WINDOW_FIRST_CHILD_SLOT) {
+                Some(child) => walk(interp, Some(child)),
+                None => {
+                    let buffer = window_buffer_id(interp, &interp.record_value(id));
+                    let star = buffer
+                        .and_then(|buffer_id| interp.get_buffer_by_id(buffer_id))
+                        .is_some_and(|buffer| buffer.is_modified());
+                    set_window_count_slot(interp, id, WINDOW_LAST_MODIFIED_SLOT, Some(0));
+                    set_window_count_slot(interp, id, WINDOW_LAST_OVERLAY_MODIFIED_SLOT, Some(0));
+                    set_window_flag(interp, id, WINDOW_LAST_HAD_STAR_SLOT, star);
+                    set_window_flag(interp, id, WINDOW_REDISPLAY_SLOT, true);
+                }
+            }
+            window = window_link(interp, id, WINDOW_NEXT_SIBLING_SLOT);
+        }
+    }
+    walk(interp, Some(window_id));
+    mark_overlay_arrows_inaccurate(interp, env);
 }
 
 /// xdisp.c:update_overlay_arrows (-1), as mark_window_display_accurate
@@ -1680,6 +1721,32 @@ fn frame_window_tree_leaf_ids(
         }
     }
     leaves
+}
+
+/// window.c:window_list: the live windows of every live frame in
+/// canonical order, each frame's minibuffer window after its tree's.
+pub(crate) fn frames_window_list(interp: &Interpreter) -> Vec<u64> {
+    let mut windows = Vec::new();
+    for frame in interp
+        .frame_states
+        .iter()
+        .copied()
+        .filter(|frame| frame.is_live())
+    {
+        windows.extend(
+            frame_window_tree_leaf_ids(interp, frame)
+                .into_iter()
+                .filter(|id| is_live_ordinary_window(interp, *id)),
+        );
+        let (root, mini) = {
+            let state = frame.borrow();
+            (state.root_window_id(), state.minibuffer_window_id())
+        };
+        if mini != 0 && mini != root && interp.window_frame_id(mini) == Some(frame) {
+            windows.push(mini);
+        }
+    }
+    windows
 }
 
 pub(crate) fn live_ordinary_window_ids(interp: &Interpreter) -> WindowIds {
@@ -2571,6 +2638,18 @@ fn select_window_value(
     window: &Value,
     norecord: bool,
 ) -> Result<Value, LispError> {
+    select_window_marking(interp, window, norecord, !norecord)
+}
+
+/// window.c:select_window, NORECORD's nil or `mark-for-redisplay'
+/// (MARK) marking the old and new selected windows for redisplay, where
+/// another NORECORD only has redisplay consider the other windows.
+fn select_window_marking(
+    interp: &mut Interpreter,
+    window: &Value,
+    norecord: bool,
+    mark: bool,
+) -> Result<Value, LispError> {
     let window_id = live_window_id_or_selected(interp, Some(window))?;
     let previous_window_id = interp.selected_window_id();
     let target_buffer_id = window_buffer_id(interp, window);
@@ -2579,9 +2658,14 @@ fn select_window_value(
     // gives its buffer's point.  The selected window selected again keeps
     // its buffer's point (GNU's `save-selected-window' relies on this).
     let target_point = if window_id != previous_window_id {
-        // select_window marks both windows for redisplay, the newly
-        // selected one while it is still another window.
-        interp.redisplay_other_windows();
+        // Mark the windows for redisplay since the selected window has a
+        // different mode line.
+        if mark {
+            interp.wset_redisplay(previous_window_id);
+            interp.wset_redisplay(window_id);
+        } else {
+            interp.redisplay_other_windows();
+        }
         // `if (BUFFERP (ow->contents))': a deleted old selected window
         // keeps its unchained point marker.
         if let Some(previous_buffer_id) = interp.selected_window_contents_buffer_id() {
@@ -2895,7 +2979,7 @@ fn resize_mini_window_apply(
         root_top_line + root_lines,
     );
     // fset_redisplay (f).
-    interp.redisplay_other_windows();
+    interp.fset_redisplay(frame);
     Ok(())
 }
 
@@ -3405,7 +3489,8 @@ fn split_window_tree(
 /// window.c:set_window_margins: WINDOW's margins become LEFT_WIDTH and
 /// RIGHT_WIDTH columns (nil for none), unless that changes nothing or
 /// would leave the window under MIN_SAFE_WINDOW_WIDTH columns; true when
-/// the margins changed (apply_window_adjustment then redisplays it).
+/// the margins changed (the caller's apply_window_adjustment then
+/// redisplays it).
 fn set_window_margins(
     interp: &mut Interpreter,
     window_id: u64,
@@ -3431,8 +3516,24 @@ fn set_window_margins(
         return Ok(false);
     }
     interp.set_window_margins(window_id, Some(left), Some(right));
-    interp.wset_redisplay(window_id);
     Ok(true)
+}
+
+/// window.c:apply_window_adjustment: WINDOW is redisplayed and its
+/// frame's glyphs adjusted (adjust_frame_glyphs), which on a terminal
+/// garbages the frame whenever a window shows margins
+/// (adjust_frame_glyphs_for_frame_redisplay's showing_window_margins_p).
+fn apply_window_adjustment(interp: &mut Interpreter, window_id: u64) {
+    interp.wset_redisplay(window_id);
+    let showing_margins = crate::lisp::primitives::frames_window_list(interp)
+        .into_iter()
+        .any(|window| {
+            let (left, right) = interp.window_margins(window);
+            left.unwrap_or(0) > 0 || right.unwrap_or(0) > 0
+        });
+    if showing_margins {
+        crate::lisp::primitives::set_frame_garbaged();
+    }
 }
 
 /// window.c:set_window_buffer: WINDOW_ID shows BUFFER_ID.  Its start,
@@ -3470,6 +3571,7 @@ pub(crate) fn set_window_buffer(
             margin_width("right-margin-width"),
         );
         set_window_margins(interp, window_id, left, right)?;
+        apply_window_adjustment(interp, window_id);
     }
     if run_hooks_p {
         set_window_buffer_hooks(interp, window_id, buffer_id, env)?;
@@ -4521,7 +4623,11 @@ fn set_window_hscroll_value(
     // clip_to_bounds (0, hscroll, min (MOST_POSITIVE_FIXNUM, PTRDIFF_MAX)).
     let hscroll = requested.clamp(0, (1_i64 << 61) - 1);
     if window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT).integer_value() != Some(hscroll) {
-        // set_window_hscroll: a changed hscroll redisplays the window.
+        // set_window_hscroll: a changed hscroll redisplays the window,
+        // its buffer without the shortcuts.
+        if let Some(buffer_id) = window_buffer_id(interp, &interp.record_value(window_id)) {
+            interp.prevent_redisplay_optimizations(buffer_id);
+        }
         interp.wset_redisplay(window_id);
     }
     set_window_slot_value(
@@ -5278,6 +5384,8 @@ define_dispatch!(
                     .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
                     .is_some_and(|value| value.is_truthy())
                 {
+                    // end_kbd_macro.
+                    interp.update_mode_lines = 20;
                     {
                         let state = &mut **interp;
                         state
@@ -6051,6 +6159,9 @@ define_dispatch!(
                     args.get(1).copied().unwrap_or(Value::Nil),
                     args.get(2).copied().unwrap_or(Value::Nil),
                 )?;
+                if changed {
+                    apply_window_adjustment(interp, window_id);
+                }
                 Ok(if changed { Value::T } else { Value::Nil })
             }
             "window-margins" => {
@@ -6150,6 +6261,16 @@ define_dispatch!(
                     Some(value) => position_from_value(interp, &value.value())?,
                 };
                 let start = window_start(interp, window)?;
+                // pos_visible_p's start_display, for t or a POS from the
+                // window start to the end of the accessible text, the start
+                // itself within it: init_iterator frees the frame's realized
+                // faces after a face change.
+                let pos_is_t = matches!(args.first().map(|v| v.kind()), Some(Kind::T));
+                if (pos_is_t || (start..=point_max).contains(&pos))
+                    && (point_min..=point_max).contains(&start)
+                {
+                    interp.init_iterator_faces_window(window_id);
+                }
                 let first_visible = start.max(point_min);
                 // GNU walks DISPLAY lines from the window start (its
                 // start_display iterator): invisible text collapses, so
@@ -6415,8 +6536,6 @@ define_dispatch!(
                 )
             }
             "window-resize-apply" => {
-                // fset_redisplay: the frame's window tree changes.
-                interp.redisplay_other_windows();
                 need_arg_range(name, args, 0, 2)?;
                 // window.c:Fwindow_resize_apply: commit the sizes staged
                 // in FRAME's window tree when they add up to its root's.
@@ -6430,6 +6549,7 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 window_resize_apply(interp, root_id, horflag)?;
+                interp.fset_redisplay(frame);
                 Ok(Value::T)
             }
             "window-resize-apply-total" => {
@@ -6613,6 +6733,9 @@ define_dispatch!(
                     .unwrap_or(interp.current_buffer_id());
                 let saved_buffer = interp.current_buffer_id();
                 interp.set_current_buffer_id(buffer_id)?;
+                // window_text_pixel_size's start_display: init_iterator frees
+                // the frame's realized faces after a face change.
+                interp.init_iterator_faces_window(window_id);
                 let size = super::buffer_edit::window_text_pixel_size(
                     interp,
                     env,
@@ -6856,6 +6979,11 @@ define_dispatch!(
             }
             "line-pixel-height" => {
                 need_args(name, args, 0)?;
+                // Fline_pixel_height's start_display on the selected window:
+                // init_iterator frees its frame's realized faces after a
+                // face change.
+                let window_id = interp.selected_window_id();
+                interp.init_iterator_faces_window(window_id);
                 // The canonical terminal cell is one pixel high in the
                 // headless frame used by both compatibility runners.
                 Ok(Value::Integer(1))
@@ -7007,20 +7135,30 @@ define_dispatch!(
             }
             "redraw-frame" => {
                 need_arg_range(name, args, 0, 1)?;
-                decode_live_frame(interp, args.first(), true)?;
+                let frame = decode_live_frame(interp, args.first(), true)?;
                 // dispnew.c:redraw_frame: the terminal cleared and the
                 // current matrices with it (the frame garbaged, which the
                 // next redisplay draws from a cleared screen), every
                 // window's display inaccurate.
                 crate::lisp::primitives::set_frame_garbaged();
-                mark_overlay_arrows_inaccurate(interp, env);
+                if let Kind::Frame(frame) = frame.kind() {
+                    redraw_frame_flags(interp, env, frame);
+                }
                 Ok(Value::Nil)
             }
             "redraw-display" => {
                 need_args(name, args, 0)?;
                 // redraw_frame on each visible frame; every live frame is.
                 crate::lisp::primitives::set_frame_garbaged();
-                mark_overlay_arrows_inaccurate(interp, env);
+                let frames: Vec<_> = interp
+                    .frame_states
+                    .iter()
+                    .copied()
+                    .filter(|frame| frame.is_live())
+                    .collect();
+                for frame in frames {
+                    redraw_frame_flags(interp, env, frame);
+                }
                 Ok(Value::Nil)
             }
             "display--update-for-mouse-movement" => {
@@ -7074,9 +7212,11 @@ define_dispatch!(
             }
             "set-buffer-redisplay" => {
                 need_args(name, args, 4)?;
-                // GNU's xdisp.c primitive invalidates redisplay caches.  Emaxx's
-                // batch renderer has no retained glyph cache, so the observable
-                // watcher contract is the arity and nil return value.
+                // xdisp.c:Fset_buffer_redisplay: the current buffer's
+                // windows and mode lines redisplayed in full.
+                let current = interp.current_buffer_id();
+                interp.bset_update_mode_line(current);
+                interp.prevent_redisplay_optimizations(current);
                 Ok(Value::Nil)
             }
             "color-distance" => {
@@ -7176,7 +7316,8 @@ define_dispatch!(
                 }
                 if frame == interp.selected_frame_id {
                     let norecord = args.get(2).is_some_and(Value::is_truthy);
-                    let selected = select_window_value(interp, &args[1], norecord)?;
+                    let mark = !norecord || norecord_marks_for_redisplay(args.get(2));
+                    let selected = select_window_marking(interp, &args[1], norecord, mark)?;
                     if !norecord {
                         run_record_buffer_hook(interp, env)?;
                     }
@@ -7193,7 +7334,8 @@ define_dispatch!(
                     return Err(wrong_type_argument("window-live-p", args[0]));
                 }
                 let norecord = args.get(1).is_some_and(Value::is_truthy);
-                let selected = select_window_value(interp, &args[0], norecord)?;
+                let mark = !norecord || norecord_marks_for_redisplay(args.get(1));
+                let selected = select_window_marking(interp, &args[0], norecord, mark)?;
                 if !norecord {
                     run_record_buffer_hook(interp, env)?;
                 }
@@ -7206,7 +7348,6 @@ define_dispatch!(
             }
             "set-window-configuration" => {
                 need_arg_range(name, args, 1, 3)?;
-                interp.redisplay_other_windows();
                 let selected = interp.selected_frame_id;
                 let restored = interp.apply_window_configuration_value(
                     &args[0],
@@ -7251,34 +7392,43 @@ define_dispatch!(
             "force-window-update" => {
                 need_arg_range(name, args, 0, 1)?;
                 let Some(object) = args.first().filter(|value| !value.is_nil()) else {
-                    interp.redisplay_other_windows();
+                    interp.windows_or_buffers_changed = 29;
+                    interp.update_mode_lines = 28;
                     return Ok(Value::T);
                 };
                 if let Ok(window_id) = live_window_id_or_selected(interp, Some(object)) {
-                    // window.c: mark_window_display_accurate (OBJECT, false).
-                    mark_overlay_arrows_inaccurate(interp, env);
-                    interp.wset_redisplay(window_id);
+                    mark_window_display_inaccurate(interp, env, window_id);
+                    set_window_flag(interp, window_id, WINDOW_UPDATE_MODE_LINE_SLOT, true);
+                    if let Some(buffer_id) = window_buffer_id(interp, object) {
+                        interp.prevent_redisplay_optimizations(buffer_id);
+                    }
+                    interp.update_mode_lines = 29;
                     return Ok(Value::T);
                 }
                 let buffer_id = match object.kind() {
-                    Kind::Buffer(buffer) if interp.has_buffer_id(buffer.id) => Some(buffer.id),
-                    _ => interp.find_buffer_named(object),
+                    Kind::Buffer(buffer) => interp.live_buffer_id(buffer),
+                    _ if string_like(object).is_some() => interp.find_buffer_named(object),
+                    _ => None,
                 };
-                let showing: Vec<u64> = buffer_id
-                    .map(|buffer_id| {
-                        live_ordinary_window_ids(interp)
-                            .into_iter()
-                            .filter(|window_id| {
-                                window_buffer_id(interp, &interp.record_value(*window_id))
-                                    == Some(buffer_id)
-                            })
-                            .collect()
+                // A live buffer shown in a window: window_loop's
+                // REDISPLAY_BUFFER_WINDOWS over the windows showing it.
+                let Some(buffer_id) =
+                    buffer_id.filter(|buffer_id| interp.buffer_window_count(*buffer_id) > 0)
+                else {
+                    return Ok(Value::Nil);
+                };
+                let showing: Vec<u64> = live_ordinary_window_ids(interp)
+                    .into_iter()
+                    .filter(|window_id| {
+                        window_buffer_id(interp, &interp.record_value(*window_id))
+                            == Some(buffer_id)
                     })
-                    .unwrap_or_default();
+                    .collect();
                 for window_id in &showing {
-                    // window_loop's REDISPLAY_BUFFER_WINDOWS marks each.
-                    mark_overlay_arrows_inaccurate(interp, env);
-                    interp.wset_redisplay(*window_id);
+                    mark_window_display_inaccurate(interp, env, *window_id);
+                    set_window_flag(interp, *window_id, WINDOW_UPDATE_MODE_LINE_SLOT, true);
+                    interp.prevent_redisplay_optimizations(buffer_id);
+                    interp.update_mode_lines = 27;
                 }
                 Ok(if showing.is_empty() {
                     Value::Nil
@@ -7660,24 +7810,37 @@ define_dispatch!(
                     .map_or(Value::Nil, |id| interp.record_value(id)))
             }
             "split-window-internal" => {
-                // fset_redisplay: the frame's window tree changes.
-                interp.redisplay_other_windows();
                 need_args(name, args, 4)?;
-                split_window_tree(interp, &args[0], &args[1], &args[2], &args[3], env)
+                let new = split_window_tree(interp, &args[0], &args[1], &args[2], &args[3], env)?;
+                // fset_redisplay: the frame's window tree changed.
+                if let Ok(window_id) = live_window_id_or_selected(interp, Some(&new)) {
+                    interp.fset_redisplay_window_frame(window_id);
+                }
+                Ok(new)
             }
             "delete-window-internal" => {
-                // fset_redisplay: the frame's window tree changes.
-                interp.redisplay_other_windows();
                 need_args(name, args, 1)?;
-                delete_window_from_tree(interp, &args[0])
+                let frame = window_id_or_selected(interp, &args[0])
+                    .ok()
+                    .and_then(|window_id| interp.window_frame_id(window_id));
+                let result = delete_window_from_tree(interp, &args[0])?;
+                // fset_redisplay: the window was unlinked.
+                match frame {
+                    Some(frame) => interp.fset_redisplay(frame),
+                    None => interp.redisplay_other_windows(),
+                }
+                Ok(result)
             }
             "delete-other-windows-internal" => {
-                // fset_redisplay: the frame's window tree changes.
-                interp.redisplay_other_windows();
                 need_arg_range(name, args, 0, 2)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
                 let root = args.get(1).cloned().unwrap_or(Value::Nil);
-                delete_other_windows_from_tree(interp, &window, &root, env)
+                let result = delete_other_windows_from_tree(interp, &window, &root, env)?;
+                // fset_redisplay: the tree was replaced.
+                if let Ok(window_id) = live_window_id_or_selected(interp, Some(&window)) {
+                    interp.fset_redisplay_window_frame(window_id);
+                }
+                Ok(result)
             }
             "run-window-scroll-functions" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -7833,7 +7996,11 @@ define_dispatch!(
                 } else {
                     WINDOW_CURSOR_TYPE_SLOT
                 };
-                set_window_slot_value(interp, window_id, slot, args[1])
+                let value = set_window_slot_value(interp, window_id, slot, args[1])?;
+                if name == "set-window-cursor-type" {
+                    interp.wset_redisplay(window_id);
+                }
+                Ok(value)
             }
             "window-fringes" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -8325,6 +8492,29 @@ fn set_quit_char(interp: &mut Interpreter, quit: Value) -> Result<(), LispError>
         }
         _ => Err(LispError::Signal("QUIT must be an ASCII character".into())),
     }
+}
+
+/// `EQ (norecord, Qmark_for_redisplay)'.
+fn norecord_marks_for_redisplay(norecord: Option<&Value>) -> bool {
+    norecord.is_some_and(|value| {
+        crate::lisp::types::eq(
+            *value,
+            cached_symbol!("mark-for-redisplay").with(|symbol| Value::Symbol(*symbol)),
+        )
+    })
+}
+
+/// dispnew.c:redraw_frame's flags: `fset_redisplay (f)' and every window
+/// of the frame made inaccurate (mark_window_display_accurate of its root
+/// window with false).
+fn redraw_frame_flags(
+    interp: &mut Interpreter,
+    env: &crate::lisp::types::Env,
+    frame: crate::lisp::types::FrameRef,
+) {
+    interp.fset_redisplay(frame);
+    let root = frame.borrow().root_window_id();
+    mark_window_display_inaccurate(interp, env, root);
 }
 
 #[cfg(test)]

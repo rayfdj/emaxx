@@ -3961,6 +3961,16 @@ pub(crate) struct FrameState {
     /// (KEY NAME DEFS COLUMN) quadruples, the columns display_menu_bar
     /// placed them at (nil before the first update_menu_bar).
     pub(crate) menu_bar_items: Value,
+    /// frame.h's redisplay: the frame's windows must all be redisplayed
+    /// (fset_redisplay), until redisplay_internal updates it.
+    pub(crate) redisplay: bool,
+    /// frame.h's face_change: a face definition of the frame changed, so
+    /// the next init_iterator on one of its windows frees its realized
+    /// faces.
+    pub(crate) face_change: bool,
+    /// How many times the frame's realized faces were freed
+    /// (free_realized_faces), which a cache of them is valid for.
+    pub(crate) realized_faces_epoch: u64,
 }
 
 impl FrameState {
@@ -5394,6 +5404,10 @@ impl Interpreter {
                 buffer_list: Vec::new(),
                 buried_buffer_list: Vec::new(),
                 menu_bar_items: Value::Nil,
+                // make_frame: `f->redisplay = true'.
+                redisplay: true,
+                face_change: false,
+                realized_faces_epoch: 0,
             },
         )
     }
@@ -6740,12 +6754,21 @@ pub struct InterpreterState {
     /// unset until the first completed window-change cycle.
     /// Monotonic selection stamp used by `window-use-time'.
     window_select_count: i64,
-    /// xdisp.c's windows_or_buffers_changed: something since the last
-    /// redisplay (a window other than the selected one marked for
-    /// redisplay, a frame or window-tree change) makes the next one
-    /// consider every window's start afresh.  The initial frame starts
-    /// garbaged.
-    pub(crate) windows_or_buffers_changed: bool,
+    /// xdisp.c's windows_or_buffers_changed: nonzero when the next
+    /// redisplay must consider every window, REDISPLAY_SOME (2) for those
+    /// wset_redisplay, fset_redisplay and bset_redisplay marked, another
+    /// value (the number of the site that set it, which
+    /// `redisplay--all-windows-cause' counts) for all of them.  The
+    /// initial frame starts garbaged.
+    pub(crate) windows_or_buffers_changed: i32,
+    /// xdisp.c's update_mode_lines: nonzero when the next redisplay must
+    /// display mode lines, REDISPLAY_SOME for those of the windows marked
+    /// (bset_update_mode_line), another value for every window's.
+    pub(crate) update_mode_lines: i32,
+    /// xfaces.c's face_change: a face definition every frame's realized
+    /// faces depend on changed, so the next init_iterator frees them all,
+    /// and redisplay_internal considers every window.
+    pub(crate) face_change: bool,
     /// frame.c's live frame list. A frame owns its state and graph; deleting
     /// it removes this root, while escaped Lisp references retain the object.
     pub(crate) frame_states: Vec<crate::lisp::types::FrameRef>,
@@ -7143,14 +7166,6 @@ pub struct InterpreterState {
     /// that exchange it: while it holds, the stack has only lost entries.
     handler_generation: u64,
     handler_search_memo: Option<HandlerSearch>,
-    /// Live terminal color count published by the tty frontend; batch
-    /// sessions keep GNU's dumb-terminal zero.
-    /// True once a live tty published its frame size; the layout then
-    /// tracks `menu-bar-lines' changes like GNU's adjust_frame_size.
-    /// Bumped whenever a face definition changes, GNU's face_change
-    /// flag: the frontend invalidates its resolved-attribute cache on a
-    /// new value instead of re-resolving faces every redisplay.
-    pub(crate) face_change_count: u64,
 }
 
 /// One entry in the dynamic handler stack, mirroring GNU's handlerlist.
@@ -7368,6 +7383,10 @@ impl Interpreter {
                 buffer_list: vec![0],
                 buried_buffer_list: Vec::new(),
                 menu_bar_items: Value::Nil,
+                // make_frame: `f->redisplay = true'.
+                redisplay: true,
+                face_change: false,
+                realized_faces_epoch: 0,
             },
         );
         initial_terminal.borrow_mut().top_frame = Some(initial_frame);
@@ -7530,7 +7549,9 @@ impl Interpreter {
             window_cursor_visibility: HashMap::new(),
             old_selected_window_id: 0,
             window_select_count: 1,
-            windows_or_buffers_changed: true,
+            windows_or_buffers_changed: 1,
+            update_mode_lines: 0,
+            face_change: false,
             frame_states: vec![initial_frame],
             next_frame_id: 2,
             tty_frame_count: 1,
@@ -7815,7 +7836,6 @@ impl Interpreter {
             active_handlers: Vec::new(),
             handler_generation: 0,
             handler_search_memo: None,
-            face_change_count: 0,
         };
         let mut interp = Interpreter {
             state: Some(InterpreterStateOwner::new(state)),

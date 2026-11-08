@@ -16,22 +16,28 @@ pub(crate) enum CommandLoopHandlers {
     MinibufferQuit,
 }
 
+/// The terminal frontend's xdisp.c:resize_echo_area_exactly.
+pub(crate) type ResizeEchoAreaExactly = Box<dyn Fn(&mut Interpreter, &mut Env)>;
+
 thread_local! {
-    /// command_loop_1's resize_echo_area_exactly after a command, which
-    /// the frontend applies at its next update.
-    static RESIZE_ECHO_AREA_EXACTLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static RESIZE_ECHO_AREA_EXACTLY: std::cell::RefCell<Option<std::rc::Rc<ResizeEchoAreaExactly>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The frontend's resize_echo_area_exactly, none without a terminal.
+pub(crate) fn set_resize_echo_area_exactly(hook: Option<ResizeEchoAreaExactly>) {
+    RESIZE_ECHO_AREA_EXACTLY.with_borrow_mut(|slot| *slot = hook.map(std::rc::Rc::new));
 }
 
 /// xdisp.c:resize_echo_area_exactly as command_loop_1 calls it: the mini
-/// window takes the displayed message's own height again.
-pub(super) fn resize_echo_area_exactly() {
-    RESIZE_ECHO_AREA_EXACTLY.set(true);
-}
-
-/// Whether a command asked for resize_echo_area_exactly since the last
-/// update (the frontend's question, which clears it).
-pub(crate) fn take_resize_echo_area_exactly() -> bool {
-    RESIZE_ECHO_AREA_EXACTLY.replace(false)
+/// window showing a message resized to it (exactly, with no minibuffer
+/// active) and, when its height changed, redisplayed with
+/// windows_or_buffers_changed 42 and update_mode_lines 30.
+pub(super) fn resize_echo_area_exactly(interp: &mut Interpreter, env: &mut Env) {
+    let hook = RESIZE_ECHO_AREA_EXACTLY.with_borrow(|slot| slot.clone());
+    if let Some(hook) = hook {
+        hook(interp, env);
+    }
 }
 
 /// keyboard.c:Frecursive_edit: one more command loop level, the current
@@ -44,6 +50,7 @@ pub(crate) fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<
         .and_then(|_| interp.buffer_value(interp.current_buffer_id()))
         .unwrap_or(Value::Nil);
     interp.command_loop_recursion_depth += 1;
+    interp.update_mode_lines = 17;
     let result = interp.with_lisp_stack_roots(&buffer, |interp| recursive_edit_1(interp, env));
     // recursive_edit_unwind: Fset_buffer of BUFFER, which signals when it
     // was killed meanwhile (the level then stays counted, as GNU's does),
@@ -52,6 +59,7 @@ pub(crate) fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<
         super::call(interp, "set-buffer", &[buffer], env)?;
     }
     interp.command_loop_recursion_depth -= 1;
+    interp.update_mode_lines = 18;
     result.map(|()| Value::Nil)
 }
 
@@ -421,7 +429,7 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         // If displaying a message, resize the echo area window to fit
         // that message's size exactly.
         if crate::lisp::primitives::dispatch::display::echo_area_message_value().is_some() {
-            resize_echo_area_exactly();
+            resize_echo_area_exactly(interp, env);
         }
         // If there are warnings queued up, issue them.
         if interp
@@ -647,20 +655,49 @@ fn finalize_command(
     if interp.current_buffer_id() == prev_buffer
         && interp.selected_window_contents_buffer_id() == Some(prev_buffer)
         && last_point_position != interp.buffer.borrow().point()
-        && !interp
+    {
+        let (begv, zv) = interp.buffer.borrow().accessible_bounds();
+        if !interp
             .lookup_var_key(cached_symbol!("disable-point-adjustment"), env)
             .is_some_and(|value| value.is_truthy())
-        && !interp
-            .lookup_var_key(cached_symbol!("global-disable-point-adjustment"), env)
-            .is_some_and(|value| value.is_truthy())
-        && !interp
-            .lookup_var("composition-break-at-point", env)
-            .is_some_and(|value| value.is_truthy())
-    {
-        // (A last point inside a grapheme cluster has the display updated,
-        // which every redisplay here does.)
-        let modified = interp.buffer.borrow().modified_tick() != prev_modiff;
-        adjust_point_for_property(interp, env, last_point_position, modified)?;
+            && !interp
+                .lookup_var_key(cached_symbol!("global-disable-point-adjustment"), env)
+                .is_some_and(|value| value.is_truthy())
+            && !interp
+                .lookup_var("composition-break-at-point", env)
+                .is_some_and(|value| value.is_truthy())
+        {
+            // The last point was set within a grapheme cluster to prevent
+            // automatic composition; the display updated recovers it.
+            if last_point_position > begv
+                && last_point_position < zv
+                && crate::lisp::primitives::dispatch::composition_adjust_point(
+                    interp,
+                    env,
+                    last_point_position,
+                    last_point_position,
+                )? != last_point_position
+            {
+                interp.windows_or_buffers_changed = 21;
+            }
+            let modified = interp.buffer.borrow().modified_tick() != prev_modiff;
+            adjust_point_for_property(interp, env, last_point_position, modified)?;
+        } else {
+            // Point within a grapheme cluster: the display updated
+            // de-composes the cluster on the screen and places the cursor.
+            let point = interp.buffer.borrow().point();
+            if point > begv
+                && point < zv
+                && crate::lisp::primitives::dispatch::composition_adjust_point(
+                    interp,
+                    env,
+                    last_point_position,
+                    point,
+                )? != point
+            {
+                interp.windows_or_buffers_changed = 39;
+            }
+        }
     }
     let defining = interp
         .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)

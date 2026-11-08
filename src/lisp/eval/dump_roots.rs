@@ -318,6 +318,14 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "xdisp.c redisplay state: the new process's initial frame starts garbaged",
     ),
     (
+        "update_mode_lines",
+        "xdisp.c redisplay state: the new process's first redisplay displays every window",
+    ),
+    (
+        "face_change",
+        "xfaces.c state: the new process realizes its faces afresh",
+    ),
+    (
         "next_frame_id",
         "a process-local allocation counter, not frame identity: frame.c resets live frames at startup; install_dead_frame assigns each nilled image frame a fresh id and advances this counter",
     ),
@@ -477,7 +485,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("active_thread_id", "as main_thread_id"),
     ("handler_generation", "the running signal dispatch"),
     ("handler_search_memo", "the running signal dispatch"),
-    ("face_change_count", "carried in the remembered scalars"),
     ("pdumper_loaded", "set by the load itself"),
     ("buffer", "written through the buffer alist"),
 ];
@@ -887,10 +894,6 @@ impl Interpreter {
                             pair(Value::symbol(name), Value::Integer(*offset))
                         }),
                     ),
-                ),
-                pair(
-                    Value::String("face-change-count".into()),
-                    Value::Integer(self.face_change_count as i64),
                 ),
                 pair(
                     Value::String("finalizers-run".into()),
@@ -1422,7 +1425,6 @@ mod install {
                                     );
                                 }
                             }
-                            "face-change-count" => self.face_change_count = id(&name)?,
                             "finalizers-run" => self.finalizers_run = id(&name)?,
                             other => {
                                 return Err(format!("unknown remembered scalar {other}"));

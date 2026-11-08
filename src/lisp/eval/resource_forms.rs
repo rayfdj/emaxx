@@ -79,6 +79,8 @@ impl Interpreter {
             if final_buffer_id != saved.buffer_id {
                 let _ = self.set_current_buffer_id(saved.buffer_id);
             }
+            // `buf->clip_changed = 1' when the bounds are restored.
+            let bounds = self.buffer.borrow().accessible_bounds();
             match saved.bounds {
                 SavedRestrictionBounds::Wide => {
                     let full_end = self.buffer.borrow().size_total() + 1;
@@ -98,6 +100,9 @@ impl Interpreter {
                     let _ = self.set_marker(beginning_marker_id, None, None);
                     let _ = self.set_marker(end_marker_id, None, None);
                 }
+            }
+            if self.buffer.borrow().accessible_bounds() != bounds {
+                self.set_clip_changed(saved.buffer_id);
             }
             self.restore_labeled_restrictions(saved.buffer_id, saved.labeled);
             if final_buffer_id != saved.buffer_id && self.has_buffer_id(final_buffer_id) {

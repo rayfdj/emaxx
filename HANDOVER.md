@@ -17646,6 +17646,127 @@ setup_process_coding_systems's check now refuses). A 13-form
   sequence); clippy is clean; and the pseudo-terminal comparisons of
   each finding's probe match GNU's, but for the redisplays GNU makes for
   its native compilation's subprocesses.
+- **Round 349: what redisplay must do, as xdisp.c keeps it.** Emaxx's
+  frontend decided what to redisplay from its own comparison of each
+  buffer's modification counts and the layout, and recomputed the menu
+  bar when a cheap signature of the active minor-mode maps changed; the
+  mode line's point was a heuristic of its own.  It keeps xdisp.c's
+  requests now: windows_or_buffers_changed and update_mode_lines as
+  GNU's integers, 0, REDISPLAY_SOME (2) for what was marked, or the
+  number of the site that asked for everything, which
+  `redisplay--all-windows-cause' and `redisplay--mode-lines-cause' count
+  when they hold hash tables; the windows' redisplay and
+  update_mode_line flags, the frames' redisplay, and the buffers'
+  text->redisplay, clip_changed and prevent_redisplay_optimizations_p;
+  and what a window's last complete redisplay left
+  (mark_window_display_accurate_1: last_modified, last_overlay_modified,
+  last_had_star, last_point), with the column a mode line's `%c' showed
+  (column_number_displayed).  The sites GNU sets them from set them:
+  wset_redisplay, fset_redisplay, bset_redisplay and
+  bset_update_mode_line, force-mode-line-update, set-buffer-modified-p,
+  the overlay changes (modify_overlay), narrowing, the window, frame and
+  keyboard-macro primitives, recursive edits, process output, the
+  compositions after a command, with GNU's numbers.  redisplay_internal
+  goes as GNU's: face_change makes it 47; a garbaged frame is
+  fset_redisplay'd; prepare_menu_bars passes `pre-redisplay-function' t,
+  the windows needs_no_redisplay does not exempt, or nil, and
+  update_menu_bar recomputes a frame's menu bar on those requests alone,
+  or when its selected window's buffer was modified or saved since its
+  mode line showed it; reconsider_clip_changes forgets a narrowing put
+  back as it was shown and notices point moving into or out of a
+  composition; the selected window's mode line is updated for a star to
+  write or remove and for a column it no longer shows; update_mode_lines
+  follows windows_or_buffers_changed (32 unless REDISPLAY_SOME); a
+  changed overlay arrow marks its buffer; under REDISPLAY_SOME a window
+  nothing asked for and whose point did not move is left alone
+  (needs_no_redisplay), the buffers' flags passed to their windows
+  first; a forced window start that moved point into the window has
+  `pre-redisplay-function' called again for that window, its flags
+  cleared first, and the window displayed again if the function marked
+  it (or relative line numbers count from the new row);
+  redisplay_window's update_mode_line and display_mode_lines' conditions
+  (a window not full width under a full redisplay, a line number shown,
+  a column changed) decide which mode lines are written; and the windows
+  redisplayed are marked accurate, the requests reset.  Face changes are
+  xfaces.c's: a frame's face definition changing marks the frame
+  (f->face_change, fset_redisplay), set-face-attribute's FRAME nil doing
+  so for every frame and nothing for the definitions for new frames, a
+  face with `face-no-inherit' asking for nothing; a face made or copied
+  for new frames sets face_change (54, 55), as clear-face-cache does
+  (53) and `tty-suppress-bold-inverse-default-colors'; init_iterator, in
+  redisplay and in format-mode-line, vertical-motion,
+  pos-visible-in-window-p, window-text-pixel-size and line-pixel-height,
+  frees the realized faces they invalidate (free_all_realized_faces, 58
+  for every frame's) unless `inhibit-free-realized-faces', which
+  producing glyphs sets and only redisplay_internal clears, as
+  PRODUCE_GLYPHS and redisplay_internal leave it.  The frontend's cache
+  of realized faces is the displayed frame's, valid until they are
+  freed; Emaxx's own count of face definition changes is gone.
+  wait_reading_process_output zeroes the timeout of the pselect that
+  precedes status_notify, and the wait's own pselect then uses it, as
+  process.c's does: the loop comes round at once and timer_check runs a
+  timer the sentinels started, where Emaxx's wait kept the remaining
+  time (eshell's finish-io, retried on a 0-delay timer while its stderr
+  pipe is live, did not finish within the test's sit-for:
+  esh-proc-test/kill-pipeline in round 348's CI).  A review (one,
+  adversarial, every finding probed on GNU 30.2 and Emaxx in a
+  pseudo-terminal) found 2 P1, 5 P2 and 5 P3 differences.  Fixed:
+  check_point_in_composition handed the window's buffer to a lookup that
+  took every object for a string, so the first character typed panicked;
+  it is xdisp.c's now, the buffer searched, and with point moved within
+  one buffer from inside a composition the answer whether it left it.
+  buffer_window_count counted no windows for an indirect buffer, so
+  nothing marked a window showing one; it is buffer.h's, the base
+  buffer's count.  message_dolog marks the log buffer after its
+  insertion (bset_redisplay), its windows_or_buffers_changed as it was.
+  A message that changes the mini window's height resizes it before the
+  redisplay echo_area_display runs, the frame marked as
+  resize_mini_window_apply and echo_area_display mark it, and
+  resize_echo_area_exactly resizes at once after a command, redisplaying
+  with causes 42 and 30 when the height changed (the frontend's deferred
+  flag is gone).  Every restore of a window configuration marks its
+  frame, read_minibuf's at the minibuffer's exit too.  A window other
+  than the selected one that redisplay does not redisplay keeps the
+  cells its last display painted, and is neither fontified nor scrolled.
+  apply_window_adjustment (set-window-margins, set-window-buffer)
+  garbages the frame when a window shows margins, as adjust_frame_glyphs
+  does on a terminal.  The mini window is marked for a message shown
+  with the cursor in the echo area and when a message cannot show over
+  an active minibuffer; needs_no_redisplay looks at the frame's
+  face_change.  The probes run again found echo_area_display's last step
+  missing: a message that changed the mini window's height leaves its
+  frame marked for the next redisplay (fset_redisplay), as a long
+  "Wrote" or a multi-line message shows, and the mini window is sized as
+  `resize-mini-windows' says (nil never resizes it, a value other than
+  `grow-only' resizes it exactly), where Emaxx grew it only.  Recorded:
+  the selected window laid out again where needs_no_redisplay leaves it,
+  redisplay's retry when it marks a frame itself (cause 50;
+  free_realized_faces' mark of a frame whose faces it frees waits on it,
+  for without the retry the mark carries into the next command's
+  redisplay), mode lines displayed to measure by pos_visible_p, the
+  terminal's tab bar, the mini window's buffer at a minibuffer's exit,
+  and fontification past a window's end.  The grouped gate passed its
+  3,508 library tests, the new unit test running a timer a stderr
+  pipe's sentinel starts within the sleep-for that notified it among
+  them; the integration suites passed (two tty comparisons whose GNU run
+  fell behind its input while a profiler ran beside the suite, prefix
+  help's and keystroke echo's, passed alone three times each);
+  cli_parity with four new comparisons (the windows
+  `pre-redisplay-function' gets and the causes counted after mode-line,
+  buffer, window-start, overlay, narrowing, selection and modification
+  changes; after face changes for a frame, for every frame and for new
+  frames; after changes to an indirect buffer's base, the log and
+  margins, with typing over a composition; and after messages that
+  resize the mini window under each `resize-mini-windows'); the four
+  redisplay comparisons count from their first key, where they also
+  counted what startup redisplayed, GNU's for the output of its native
+  compilation of what it loaded among it; clippy is clean; and the
+  review's 25 pseudo-terminal probes, run again on the release build,
+  match GNU's but for the differences recorded (redisplay's retry, the
+  mode lines measured, the tab bar, the glyph matrices' this_line
+  optimization and fontification past a window's end) and the count of
+  redisplays that find nothing to do, which differs between GNU's own
+  runs as much.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -20604,7 +20725,70 @@ ert-tests as a whole 26,307 ms against 27,211.
   1.77) and simple-tests (4.67 against 3.35). The Rust gate (run
   42461015027) passed.
 
+**On `3d3c585`** (round 348): the frozen run (run 42472602825) matched
+  7,927 of 7,928 outcomes. Emaxx failed esh-proc-test/kill-pipeline,
+  which GNU passed: killing the pipeline's head left its sentinel's
+  finish-io waiting for the stderr pipe, and the 0-delay timer it
+  started to try again never ran within the test's sit-for, so the
+  prompt after it was not written. wait_reading_process_output zeroes the
+  timeout of the pselect before status_notify, and that zero timeout is
+  the one its own pselect then waits with, so the loop comes round at
+  once and timer_check runs what the sentinels started; Emaxx's wait
+  kept the remaining time. The wait had been so since round 339; the
+  round 348 build passes the test alone in 3 of 6 local runs, round
+  349's, whose wait zeroes it as GNU's does, in 10 of 10. Setup 54.7 s
+  against 47.7 s (1.147), test bodies 232.8 s against 217.7 s (1.069),
+  in all 1.083, on a runner faster than round 347's for both (setup
+  median 87 ms against 77; at round 347 130 against 91). The widest body
+  gaps are comp-tests (11.5 s against 10.2), tramp-tests (14.9 against
+  13.8), eglot-tests (29.2 against 28.3), semantic-utest-ia (2.65
+  against 1.83), mule-tests (1.92 against 1.21), ert-tests (26.6 against
+  26.0), process-tests (2.34 against 1.80) and package-tests (6.00
+  against 5.46). The Rust gate (run 42472600654) passed.
+
 **Findings recorded, not fixed:**
+- **The glyph matrices' state redisplay decides from (round 349).**
+  GNU's redisplay_internal and redisplay_window decide much from the
+  windows' glyph matrices: w->window_end_valid (a complete display of
+  the window that a later one may compare with, made invalid by some
+  forty sites), the this_line_* optimizations (only the line point is
+  on changed: text_outside_line_unchanged_p over BEG_UNCHANGED,
+  END_UNCHANGED and GPT, the line redisplayed alone, or point moved
+  within it), and try_cursor_movement and try_window_id.  Emaxx's
+  frontend keeps a display of each window instead (its start, buffer,
+  point and narrowing), which reconsider_clip_changes' tests use in
+  window_end_valid's place; which rows are written, and when
+  fontification-functions run for the rows the optimizations skip,
+  follow from it, not GNU's matrices.  A window other than the
+  selected one that redisplay leaves alone keeps the cells its last
+  display painted; the selected window is laid out again where
+  needs_no_redisplay would leave it, and adjust_glyph_matrix's
+  w->update_mode_line for a window whose matrix changes size (a buffer
+  without margins shown again after one with them) is not kept.
+- **Redisplay marking a frame again (round 349).**  When redisplaying a
+  frame's windows marks the frame (a face changed by
+  `fontification-functions', say), GNU's redisplay_internal goes back
+  to retry_frame, or for the selected frame alone sets
+  windows_or_buffers_changed to 50 and retries; Emaxx displays once.
+  free_realized_faces' mark of a frame whose faces it frees
+  (fset_redisplay) waits on the retry: without it the mark carries
+  into the next command's redisplay, every window displayed again.
+- **Mode lines displayed to measure (round 349).**  pos_visible_p, and
+  through it `pos-visible-in-window-p' and the scroll commands,
+  displays a window's mode line to know its height, which evaluates
+  its :eval forms and sets column_number_displayed; Emaxx's terminal
+  rows need no measuring and evaluate nothing.
+- **The terminal's tab bar (round 349).**  prepare_menu_bars has no
+  update_tab_bar, and a frame's `tab-bar-lines' draws no tab bar on a
+  terminal (`tab-bar-mode' shows nothing).
+- **The minibuffer window's buffer at the minibuffer's exit (round
+  349).**  Leaving a minibuffer, GNU's mini window shows the previous
+  level's minibuffer, which runs `window-buffer-change-functions' at
+  the next redisplay; Emaxx's mini window keeps its buffer.
+- **Fontification past the window's end (round 349).**  Emaxx's
+  frontend fontifies the window's cells from its start, about 160
+  characters past what a window shows; GNU's iterator stops at the
+  last row it displays.
 - **Deferred native compilation (round 348).** In GNU's native-comp
   build, defalias of a byte-compiled definition while a .elc file
   loads (maybe_defer_native_compilation) queues `native--compile-async'
@@ -20629,15 +20813,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   reads its entries at the indices it found when Fcall_interactively
   began, so an `e' after such a read can get what that read left in the
   slot.  Emaxx's `e' walks the keys as they were when the call began.
-- **When the menu bar is recomputed (round 347).** update_menu_bar
-  recomputes a frame's menu_bar_items when windows_or_buffers_changed,
-  update_mode_lines or the frame's window_buffer_changed asks; Emaxx has
-  no update_mode_lines and does not set windows_or_buffers_changed at
-  all of GNU's sites, so it recomputes also when the selected buffer,
-  its major mode or the number of active maps changed since the last
-  redisplay.  To be made: xdisp.c's update_mode_lines and
-  windows_or_buffers_changed as GNU sets them, and update_menu_bar on
-  them alone.
 - **A tty's glyphless characters and compositions in positions (round
   347).** With a terminal that cannot encode a character (LC_ALL=C), GNU
   displays it as produce_glyphless_glyph's acronym (`?'), where Emaxx

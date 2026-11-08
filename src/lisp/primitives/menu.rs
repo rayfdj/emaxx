@@ -2059,6 +2059,9 @@ pub(crate) fn update_menu_bar(
         let old = frame.borrow().menu_bar_items;
         let items = menu_bar_items(interp, old, env)?;
         frame.borrow_mut().menu_bar_items = items;
+        // On a terminal screen the menu bar is an ordinary screen line,
+        // which this makes redisplay update.
+        super::set_window_flag(interp, window, super::WINDOW_UPDATE_MODE_LINE_SLOT, true);
         Ok(hooks_run)
     })();
     let unbound = match &result {

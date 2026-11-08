@@ -524,6 +524,10 @@ define_dispatch!(
                     buffer.set_last_name(old_name);
                     buffer.set_name(new_name);
                 }
+                // Catch redisplay's attention, or the mode lines of the
+                // buffer's windows stay unchanged.
+                let renamed = interp.current_buffer_id();
+                interp.bset_update_mode_line(renamed);
                 // Fsetcar (Frassq (buf, Vbuffer_alist), newname).
                 let current = interp.current_buffer_id();
                 if let Some(entry) = interp.buffer_list.iter_mut().find(|(id, _)| *id == current) {
@@ -621,6 +625,11 @@ define_dispatch!(
                     ));
                 }
                 interp.swap_buffer_text_state(current_id, other_id)?;
+                // Both buffers' windows are redisplayed in full.
+                for buffer_id in [current_id, other_id] {
+                    interp.set_clip_changed(buffer_id);
+                    interp.prevent_redisplay_optimizations(buffer_id);
+                }
                 Ok(Value::Nil)
             }
             "buffer-local-value" => {

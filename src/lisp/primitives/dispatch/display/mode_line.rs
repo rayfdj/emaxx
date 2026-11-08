@@ -1396,6 +1396,13 @@ impl ModeLine<'_> {
                 let column = primitive(interp, env, "current-column", &[])?
                     .as_integer()
                     .unwrap_or(0);
+                // `w->column_number_displayed = col'.
+                crate::lisp::primitives::set_window_count_slot(
+                    interp,
+                    self.window_id,
+                    crate::lisp::primitives::WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT,
+                    Some(column),
+                );
                 let shown = if c == 'C' { column + 1 } else { column };
                 return Ok(text(&pint2str(width, shown)));
             }
@@ -1546,6 +1553,10 @@ impl ModeLine<'_> {
             bvar(interp, cached_symbol!("line-number-display-limit")).integer_value()
             && (zv - begv) as i64 > limit
         {
+            // If the buffer is very big, don't waste time.
+            base.pos = 0;
+            base.number = 0;
+            store(interp, &base);
             return no_value();
         }
         let selective = {
@@ -1601,6 +1612,8 @@ impl ModeLine<'_> {
         drop(buffer);
         store(interp, &base);
         line = topline + nlines;
+        // Record that the line number was displayed.
+        LINE_NUMBER_DISPLAYED.set(true);
         pint2str(width, line)
     }
 
@@ -1796,6 +1809,45 @@ fn decode_mode_spec_coding(
 
 // ── Window state the mode line keeps ───────────────────────────────────
 
+thread_local! {
+    /// xdisp.c's line_number_displayed: a `%l' of the mode line being
+    /// displayed showed a line number.
+    static LINE_NUMBER_DISPLAYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// display_mode_lines' start: the column and line number displayed are
+/// set again while WINDOW_ID's formats are processed.
+pub(crate) fn begin_display_mode_lines(interp: &mut Interpreter, window_id: u64) {
+    LINE_NUMBER_DISPLAYED.set(false);
+    crate::lisp::primitives::set_window_count_slot(
+        interp,
+        window_id,
+        crate::lisp::primitives::WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT,
+        None,
+    );
+}
+
+/// redisplay_window after display_mode_lines: a window whose mode line
+/// showed no line number forgets its base line, unless it gave up on
+/// line numbers (base_line_pos -1).
+pub(crate) fn end_display_mode_lines(interp: &mut Interpreter, window_id: u64) {
+    if LINE_NUMBER_DISPLAYED.get() {
+        return;
+    }
+    let mut base = BaseLine::read(interp, window_id);
+    if base.pos != -1 && (base.pos != 0 || base.number != 0) {
+        base.pos = 0;
+        base.number = 0;
+        base.write(interp, window_id);
+    }
+}
+
+/// w->base_line_pos: above 0 while the window's mode line shows a line
+/// number.
+pub(crate) fn window_base_line_pos(interp: &Interpreter, window_id: u64) -> i64 {
+    BaseLine::read(interp, window_id).pos
+}
+
 /// window.h's base_line_number and base_line_pos, with the buffer and
 /// the (modiff, begv, zv) they were computed under.
 #[derive(Default)]
@@ -1921,6 +1973,9 @@ pub(super) fn format_mode_line(
     if no_props {
         face = Value::Nil;
     }
+    // init_iterator on WINDOW frees its frame's realized faces after a face
+    // change.
+    interp.init_iterator_faces_window(window_id);
     // format_mode_line_unwind_data (XFRAME (WINDOW_FRAME (w)), old_buffer,
     // selected_window, true), recorded before the window is selected: the
     // selected window, the buffer, the window frame's selected window, its

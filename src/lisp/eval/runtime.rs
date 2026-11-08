@@ -37,6 +37,10 @@ impl RecordKey for &RecordRef {
     }
 }
 
+/// xdisp.c's REDISPLAY_SOME: windows_or_buffers_changed or
+/// update_mode_lines asking for the windows marked, not all of them.
+pub(crate) const REDISPLAY_SOME: i32 = 2;
+
 impl Interpreter {
     pub(crate) fn inhibit_garbage_collection(&mut self) {
         self.garbage_collection_inhibited = self.garbage_collection_inhibited.saturating_add(1);
@@ -918,16 +922,25 @@ impl Interpreter {
     }
 
     /// xdisp.c redisplay_other_windows: the next redisplay considers
-    /// every window, not just the selected one.
+    /// the windows marked for it, not just the selected one.
     pub(crate) fn redisplay_other_windows(&mut self) {
-        self.windows_or_buffers_changed = true;
+        if self.windows_or_buffers_changed == 0 {
+            self.windows_or_buffers_changed = REDISPLAY_SOME;
+        }
     }
 
-    /// buffer.c buffer_window_count: the live windows showing BUFFER_ID.
+    /// buffer.h buffer_window_count: the base buffer's window_count, which
+    /// adjust_window_count keeps on the base buffer of the windows'
+    /// buffers, so an indirect buffer and its base both count the windows
+    /// showing either.
     pub(crate) fn buffer_window_count(&self, buffer_id: u64) -> usize {
-        primitives::live_ordinary_window_ids(self)
+        let base = self.root_buffer_id(buffer_id);
+        primitives::frames_window_list(self)
             .into_iter()
-            .filter(|window_id| self.window_record_buffer_id(*window_id) == Some(buffer_id))
+            .filter(|window_id| {
+                self.window_record_buffer_id(*window_id)
+                    .is_some_and(|shown| self.root_buffer_id(shown) == base)
+            })
             .count()
     }
 
@@ -936,6 +949,199 @@ impl Interpreter {
     pub(crate) fn wset_redisplay(&mut self, window_id: u64) {
         if window_id != self.selected_window_id {
             self.redisplay_other_windows();
+        }
+        primitives::set_window_flag(self, window_id, primitives::WINDOW_REDISPLAY_SLOT, true);
+    }
+
+    /// xdisp.c wset_update_mode_line: the window's mode line is
+    /// redisplayed, the window considered for it.
+    pub(crate) fn wset_update_mode_line(&mut self, window_id: u64) {
+        primitives::set_window_flag(
+            self,
+            window_id,
+            primitives::WINDOW_UPDATE_MODE_LINE_SLOT,
+            true,
+        );
+        self.wset_redisplay(window_id);
+    }
+
+    /// xdisp.c fset_redisplay: every window of the frame is redisplayed.
+    pub(crate) fn fset_redisplay(&mut self, frame: crate::lisp::types::FrameRef) {
+        self.redisplay_other_windows();
+        frame.borrow_mut().redisplay = true;
+    }
+
+    /// xfaces.c's response to a change of the named face FACE's
+    /// definition: unless FACE has a `face-no-inherit' property, the
+    /// realized faces that may depend on it are invalid, FRAME's (its
+    /// face_change, and fset_redisplay) or, with no frame, every frame's
+    /// (face_change, and windows_or_buffers_changed set to CAUSE).
+    pub(crate) fn note_face_definition_change(
+        &mut self,
+        face: Value,
+        frame: Option<crate::lisp::types::FrameRef>,
+        cause: i32,
+    ) {
+        if self
+            .get_property_of_symbol_value(face, "face-no-inherit")
+            .is_some_and(|value| !value.is_nil())
+        {
+            return;
+        }
+        match frame {
+            Some(frame) => {
+                frame.borrow_mut().face_change = true;
+                self.fset_redisplay(frame);
+            }
+            None => {
+                self.face_change = true;
+                self.windows_or_buffers_changed = cause;
+            }
+        }
+    }
+
+    /// init_iterator's freeing of realized faces for a window on FRAME:
+    /// every frame's after face_change, FRAME's after its own, unless
+    /// `inhibit-free-realized-faces' (glyphs produced since the last
+    /// redisplay began may use them).
+    pub(crate) fn init_iterator_faces(&mut self, frame: crate::lisp::types::FrameRef) {
+        if self
+            .lookup_var_key(
+                cached_symbol!("inhibit-free-realized-faces"),
+                &crate::lisp::types::Env::new(),
+            )
+            .is_some_and(|value| !value.is_nil())
+        {
+            return;
+        }
+        if self.face_change {
+            self.face_change = false;
+            frame.borrow_mut().face_change = false;
+            self.free_all_realized_faces(None);
+        } else if frame.borrow().face_change {
+            frame.borrow_mut().face_change = false;
+            self.free_all_realized_faces(Some(frame));
+        }
+    }
+
+    /// init_iterator_faces for the frame of WINDOW_ID.
+    pub(crate) fn init_iterator_faces_window(&mut self, window_id: u64) {
+        if let Some(frame) = self.window_frame_id(window_id) {
+            self.init_iterator_faces(frame);
+        }
+    }
+
+    /// xfaces.c:free_all_realized_faces: FRAME's realized faces, or with
+    /// no frame every frame's (windows_or_buffers_changed 58).
+    /// free_realized_faces' own fset_redisplay is the retry's business
+    /// (redisplay_internal goes back to retry_frame, or retries with
+    /// windows_or_buffers_changed 50), which Emaxx's redisplay does not
+    /// make: the frame is not marked.
+    pub(crate) fn free_all_realized_faces(&mut self, frame: Option<crate::lisp::types::FrameRef>) {
+        match frame {
+            Some(frame) => {
+                let mut frame = frame.borrow_mut();
+                frame.realized_faces_epoch = frame.realized_faces_epoch.wrapping_add(1);
+            }
+            None => {
+                for frame in self.frame_states.iter().filter(|frame| frame.is_live()) {
+                    let mut frame = frame.borrow_mut();
+                    frame.realized_faces_epoch = frame.realized_faces_epoch.wrapping_add(1);
+                }
+                self.windows_or_buffers_changed = 58;
+            }
+        }
+    }
+
+    /// fset_redisplay of the frame of WINDOW_ID.
+    pub(crate) fn fset_redisplay_window_frame(&mut self, window_id: u64) {
+        if let Some(frame) = self.window_frame_id(window_id) {
+            self.fset_redisplay(frame);
+        } else {
+            self.redisplay_other_windows();
+        }
+    }
+
+    /// xdisp.c bset_redisplay: the windows showing the buffer's text are
+    /// redisplayed, and redisplay considers them all when one is not the
+    /// selected window.
+    pub(crate) fn bset_redisplay(&mut self, buffer_id: u64) {
+        let count = self.buffer_window_count(buffer_id);
+        if count > 0 {
+            let selected_buffer = self.window_record_buffer_id(self.selected_window_id);
+            if count > 1 || selected_buffer != Some(buffer_id) {
+                self.redisplay_other_windows();
+            }
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                buffer.set_text_redisplay(true);
+            }
+        }
+    }
+
+    /// xdisp.c bset_update_mode_line: the mode lines of the buffer's
+    /// windows are redisplayed.
+    pub(crate) fn bset_update_mode_line(&mut self, buffer_id: u64) {
+        if self.update_mode_lines == 0 {
+            self.update_mode_lines = REDISPLAY_SOME;
+        }
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.set_text_redisplay(true);
+        }
+    }
+
+    /// buffer.c:modify_overlay: an overlay's change over [START, END) of
+    /// BUFFER_ID's text, which redisplay shows anew.
+    pub(crate) fn modify_overlay(&mut self, buffer_id: u64, start: usize, end: usize) {
+        let (start, end) = if start > end {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.compute_unchanged(start as i64, end as i64);
+        }
+        self.bset_redisplay(buffer_id);
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.bump_overlay_modified_tick();
+        }
+    }
+
+    /// buffer.c:drop_overlay: OVERLAY's region shown anew, the overlay
+    /// taken from its buffer.
+    pub(crate) fn drop_overlay(&mut self, overlay: crate::lisp::types::OverlayRef) {
+        let Some(buffer) = overlay.buffer() else {
+            return;
+        };
+        if let Some(buffer_id) = self.live_buffer_id(buffer) {
+            self.modify_overlay(buffer_id, overlay.beg(), overlay.end());
+        }
+        overlay.detach();
+    }
+
+    /// buffer.c:Fforce_mode_line_update: every mode line with ALL, else
+    /// the current buffer's when it is shown.
+    pub(crate) fn force_mode_line_update(&mut self, all: bool) {
+        let current = self.current_buffer_id();
+        if all {
+            self.update_mode_lines = 10;
+            self.prevent_redisplay_optimizations(current);
+        } else if self.buffer_window_count(current) > 0 {
+            self.bset_update_mode_line(current);
+            self.prevent_redisplay_optimizations(current);
+        }
+    }
+
+    /// b->prevent_redisplay_optimizations_p = true.
+    pub(crate) fn prevent_redisplay_optimizations(&mut self, buffer_id: u64) {
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.set_prevent_redisplay_optimizations_p(true);
+        }
+    }
+
+    /// b->clip_changed = true.
+    pub(crate) fn set_clip_changed(&mut self, buffer_id: u64) {
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.set_clip_changed(true);
         }
     }
 
@@ -1072,6 +1278,7 @@ impl Interpreter {
         }
         self.stamp_buffer_display(buffer_id);
         self.wset_redisplay(window_id);
+        self.wset_update_mode_line(window_id);
     }
 
     /// buffer.c:reset_buffer: the visited file, its modification time,
@@ -1089,6 +1296,9 @@ impl Interpreter {
             buffer.set_autosave_modiff(0);
             buffer.auto_save_failure_time = 0;
             buffer.set_mark_active_value(Value::Nil);
+            // `b->clip_changed = 0; b->prevent_redisplay_optimizations_p = 1'.
+            buffer.set_clip_changed(false);
+            buffer.set_prevent_redisplay_optimizations_p(true);
         }
         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
             buffer.set_last_window_start(1);
@@ -1755,6 +1965,9 @@ impl Interpreter {
         if !self.frame_is_live(snapshot.frame_id) {
             return Ok(());
         }
+        // fset_redisplay (f) of the configuration's live frame, every
+        // caller's (read_minibuf's restore at its exit included).
+        self.fset_redisplay(snapshot.frame_id);
         let saved_windows = snapshot.saved_windows;
         // Each saved window's window, and the buffer save_window_save kept.
         let saved_ids: Vec<Option<u64>> = saved_windows

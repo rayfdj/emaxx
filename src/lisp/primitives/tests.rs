@@ -18096,6 +18096,32 @@ fn sleep_for_zero_returns_without_waiting_or_running_timers() {
 }
 
 #[test]
+fn a_timer_a_sentinel_starts_runs_in_the_same_wait() {
+    // process.c wait_reading_process_output zeroes the timeout of the
+    // pselect that checks for input before status_notify, and that zero
+    // timeout is the one the wait's own pselect then uses: the loop comes
+    // round at once, and its timer_check runs a timer the sentinels started.
+    // Here the stderr pipe process's EOF is read in the iteration that
+    // empties the child signal pipe, so nothing else would wake the wait.
+    let program = r#"
+        (let* (ran start (n 0)
+               (err (make-pipe-process
+                     :name "emaxx-stderr"
+                     :sentinel (lambda (_p _s)
+                                 (setq start t)
+                                 (run-at-time 0 nil (lambda () (setq ran t))))))
+               (p (make-process :name "emaxx-sleeper" :command '("sleep" "10")
+                                :connection-type 'pipe :stderr err
+                                :sentinel #'ignore)))
+          (kill-process p)
+          (while (and (not start) (< n 20))
+            (sleep-for 0.5)
+            (setq n (1+ n)))
+          (list (process-status p) (process-status err) start ran))"#;
+    assert_oracle_contract_matches_interpreter(program, "(signal closed t t)", "sentinel timer");
+}
+
+#[test]
 fn minibuffer_reads_under_a_keyboard_macro_follow_read_minibuf() {
     // minibuf.c read_minibuf takes the stdin reader only while
     // `noninteractive' and no keyboard macro executes; with

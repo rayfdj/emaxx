@@ -1,7 +1,7 @@
 use super::*;
 
 mod buffer_edit;
-pub(crate) use buffer_edit::insert_string;
+pub(crate) use buffer_edit::{current_column, insert_string};
 mod buffer_meta;
 mod coding_systems;
 mod collections;
@@ -11,7 +11,7 @@ pub(crate) use comp::{comp_el_to_eln_rel_filename, native_elisp_load};
 mod composition;
 pub(crate) use composition::{
     CHECK_ALL, CHECK_BORDER, CHECK_HEAD, CHECK_INSIDE, CHECK_TAIL, CompositionIterator,
-    StringCompositions, composition_adjust_point, update_compositions,
+    StringCompositions, check_point_in_composition, composition_adjust_point, update_compositions,
 };
 pub(crate) mod display;
 mod emacs_module;
@@ -46,10 +46,11 @@ pub(crate) use display::{
     EchoSpans, FACE_NO_UNDERLINE, FACE_TTY_DEFAULT_BG_COLOR, FACE_TTY_DEFAULT_COLOR,
     FACE_TTY_DEFAULT_FG_COLOR, FACE_UNDERLINE_SINGLE, LineNumberLayout, LineNumberMode,
     ModeLineCells, TtyFaceAttrs, WindowRenderInfo, adjust_frame_size,
-    apply_staged_root_window_height, change_frame_size, do_pending_window_change, frame_top_margin,
-    live_ordinary_window_ids, render_window_header_line, render_window_mode_line,
-    render_window_tab_line, replace_buffer_in_windows_safely, resolve_tty_face_attrs_remapped,
-    run_window_change_functions, set_window_buffer, store_window_hscroll_state, string_face_spans,
+    apply_staged_root_window_height, begin_display_mode_lines, change_frame_size,
+    do_pending_window_change, end_display_mode_lines, frame_top_margin, frames_window_list,
+    render_window_header_line, render_window_mode_line, render_window_tab_line,
+    replace_buffer_in_windows_safely, resolve_tty_face_attrs_remapped, run_window_change_functions,
+    set_window_buffer, store_window_hscroll_state, string_face_spans, window_base_line_pos,
     window_face_spans, window_hscroll_state, window_line_number_layout, window_render_layout,
     window_text_area_columns, window_total_columns,
 };

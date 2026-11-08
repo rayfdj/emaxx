@@ -231,6 +231,16 @@ pub struct Buffer {
 
     /// Whether positions in this buffer are interpreted as multibyte character positions.
     multibyte: bool,
+
+    /// buffer.h's clip_changed: the accessible region changed (or the
+    /// text was swapped, a file inserted) since the windows showing the
+    /// buffer were last redisplayed.
+    clip_changed: bool,
+
+    /// buffer.h's prevent_redisplay_optimizations_p: the next redisplay
+    /// of the buffer's windows must not take a shortcut (a fresh or reset
+    /// buffer, a forced mode-line update, an hscroll).
+    prevent_redisplay_optimizations_p: bool,
 }
 
 // A Buffer clone is a text snapshot, without linked Lisp overlay objects.
@@ -270,6 +280,8 @@ impl Clone for Buffer {
             text_conversion_style: self.text_conversion_style,
             text_conversion_style_is_local: self.text_conversion_style_is_local,
             multibyte: self.multibyte,
+            clip_changed: self.clip_changed,
+            prevent_redisplay_optimizations_p: self.prevent_redisplay_optimizations_p,
         }
     }
 }
@@ -338,6 +350,23 @@ struct BufferText {
     /// BUF_COMPACT: the value of modiff at the buffer's last
     /// compact_buffer, which a collection skips the buffer at.
     compact: ModCount,
+
+    /// buffer.h's text->redisplay: a window showing this text (the
+    /// buffer or one of its indirect family) must be redisplayed.
+    redisplay: bool,
+
+    /// buffer.h's overlay_modiff: bumped by every change of an overlay
+    /// (modify_overlay).
+    overlay_modiff: ModCount,
+
+    /// buffer.h's beg_unchanged, end_unchanged, unchanged_modified and
+    /// overlay_unchanged_modified: the characters at the start and the
+    /// end left unchanged since redisplay last took the counts
+    /// (BUF_COMPUTE_UNCHANGED), and those counts.
+    beg_unchanged: i64,
+    end_unchanged: i64,
+    unchanged_modified: ModCount,
+    overlay_unchanged_modified: ModCount,
 
     /// buffer_intervals: the intervals of the whole text [BEG, Z), none
     /// until a property is first given, and none again once a deletion
@@ -531,6 +560,12 @@ impl BufferText {
             edits: std::collections::VecDeque::new(),
             save_modiff: 1,
             compact: 1,
+            redisplay: false,
+            overlay_modiff: 1,
+            beg_unchanged: 0,
+            end_unchanged: 0,
+            unchanged_modified: 1,
+            overlay_unchanged_modified: 1,
             intervals: None,
             extended_chars: Vec::new(),
         }
@@ -799,7 +834,37 @@ impl BufferText {
         self.text.string(0..self.text.len())
     }
 
+    /// BUF_COMPUTE_UNCHANGED (buf, START, END).
+    fn compute_unchanged(&mut self, start: i64, end: i64) {
+        let z = self.len_chars() as i64 + 1;
+        if self.unchanged_modified == self.modiff
+            && self.overlay_unchanged_modified == self.overlay_modiff
+        {
+            self.beg_unchanged = start - 1;
+            self.end_unchanged = z - end;
+        } else {
+            if z - end < self.end_unchanged {
+                self.end_unchanged = z - end;
+            }
+            if start - 1 < self.beg_unchanged {
+                self.beg_unchanged = start - 1;
+            }
+        }
+    }
+
+    /// gap_left and gap_right's BUF_COMPUTE_UNCHANGED (current_buffer,
+    /// charpos, GPT) as the gap moves to CHAR_INDEX (0-based).
+    fn moving_gap_to(&mut self, char_index: usize) {
+        let gpt = self.text.gap_char();
+        if char_index != gpt {
+            self.compute_unchanged(char_index as i64 + 1, gpt as i64 + 1);
+        }
+    }
+
     fn insert(&mut self, char_index: usize, text: &str) {
+        if !text.is_empty() {
+            self.moving_gap_to(char_index);
+        }
         let added = ropey::str_utils::byte_to_char_idx(text, text.len());
         let raw_markers = count_raw_markers(text.as_bytes());
         let byte = self.char_to_byte(char_index);
@@ -811,6 +876,9 @@ impl BufferText {
     /// 0x7F: their raw-byte characters written into the gap.
     fn insert_raw_bytes(&mut self, char_index: usize, bytes: &[u8], high: usize) {
         let len = bytes.len() + 2 * high;
+        if len != 0 {
+            self.moving_gap_to(char_index);
+        }
         let byte = self.char_to_byte(char_index);
         self.text
             .insert_with(byte, char_index, len, bytes.len(), |gap| {
@@ -876,6 +944,16 @@ impl BufferText {
         bytes: usize,
         markers: usize,
     ) {
+        // del_range_2: gap_right to FROM past the gap, gap_left to TO
+        // before it.
+        if bytes != 0 {
+            let gpt = self.text.gap_char();
+            if gpt < range.start {
+                self.moving_gap_to(range.start);
+            } else if gpt > range.end {
+                self.moving_gap_to(range.end);
+            }
+        }
         self.text.delete(start..start + bytes, range.clone());
         self.positions.get_mut().removed(range.clone(), bytes);
         let checkpoints = self.checkpoints.get_mut();
@@ -1193,6 +1271,10 @@ impl Buffer {
             text_conversion_style: Value::Nil,
             text_conversion_style_is_local: false,
             multibyte: true,
+            clip_changed: false,
+            // Fget_buffer_create and reset_buffer: a new buffer's first
+            // redisplay takes no shortcut.
+            prevent_redisplay_optimizations_p: true,
         }
     }
 
@@ -1275,6 +1357,10 @@ impl Buffer {
             text_conversion_style: Value::Nil,
             text_conversion_style_is_local: false,
             multibyte: true,
+            clip_changed: false,
+            // Fget_buffer_create and reset_buffer: a new buffer's first
+            // redisplay takes no shortcut.
+            prevent_redisplay_optimizations_p: true,
         }
     }
 
@@ -2459,6 +2545,8 @@ impl Buffer {
     /// textprop.c:modify_text_properties's part of a property change:
     /// the first change since a save recorded, the modification counted.
     fn begin_text_property_change(&mut self, start: usize, end: usize) {
+        // BUF_COMPUTE_UNCHANGED (buf, b - 1, e).
+        self.compute_unchanged(start as i64 - 1, end as i64);
         if !self.is_modified() {
             self.record_first_change();
         }
@@ -3126,6 +3214,8 @@ impl Buffer {
     /// insdel.c:modify_text's count of a change to [START, END), the first
     /// change since a save recorded before it.
     pub(crate) fn modify_text(&mut self, start: usize, end: usize) {
+        // BUF_COMPUTE_UNCHANGED (current_buffer, start - 1, end).
+        self.compute_unchanged(start as i64 - 1, end as i64);
         if !self.is_modified() {
             self.record_first_change();
         }
@@ -3140,6 +3230,7 @@ impl Buffer {
     /// of t, so no first change), which leaves a buffer unmodified when
     /// the count moved by one.
     pub(crate) fn modify_text_unrecorded(&mut self, start: usize, end: usize) {
+        self.compute_unchanged(start as i64 - 1, end as i64);
         modiff_incr(&mut self.text.borrow_mut().modiff, end - start);
         {
             let mut text = self.text.borrow_mut();
@@ -4243,11 +4334,83 @@ impl Buffer {
             text_conversion_style: parts.text_conversion_style,
             text_conversion_style_is_local: parts.text_conversion_style_is_local,
             multibyte: parts.multibyte,
+            clip_changed: false,
+            // Fget_buffer_create and reset_buffer: a new buffer's first
+            // redisplay takes no shortcut.
+            prevent_redisplay_optimizations_p: true,
         }
     }
 
     pub fn modified_tick(&self) -> ModCount {
         self.text.borrow().modiff
+    }
+
+    /// BUF_OVERLAY_MODIFF.
+    pub(crate) fn overlay_modified_tick(&self) -> ModCount {
+        self.text.borrow().overlay_modiff
+    }
+
+    /// modify_overlay's `modiff_incr (&BUF_OVERLAY_MODIFF (buf), 1)'.
+    pub(crate) fn bump_overlay_modified_tick(&mut self) {
+        self.text.borrow_mut().overlay_modiff += 1;
+    }
+
+    /// buffer.h BUF_COMPUTE_UNCHANGED: a change of [START, END) shrinks
+    /// the text known unchanged since redisplay last took the counts,
+    /// which a first change since then sets afresh.
+    pub(crate) fn compute_unchanged(&mut self, start: i64, end: i64) {
+        self.text.borrow_mut().compute_unchanged(start, end);
+    }
+
+    /// BUF_BEG_UNCHANGED and BUF_END_UNCHANGED.
+    pub(crate) fn unchanged_extent(&self) -> (i64, i64) {
+        let text = self.text.borrow();
+        (text.beg_unchanged, text.end_unchanged)
+    }
+
+    /// mark_window_display_accurate_1's `BUF_UNCHANGED_MODIFIED (b) =
+    /// BUF_MODIFF (b)' and the rest: the counts taken, the unchanged text
+    /// what is before and after the gap.
+    pub(crate) fn take_unchanged_counts(&mut self) {
+        let mut text = self.text.borrow_mut();
+        text.unchanged_modified = text.modiff;
+        text.overlay_unchanged_modified = text.overlay_modiff;
+        let gpt = text.text.gap_char() as i64;
+        let z = text.len_chars() as i64;
+        text.beg_unchanged = gpt;
+        text.end_unchanged = z - gpt;
+    }
+
+    /// b->text->redisplay.
+    pub(crate) fn text_redisplay(&self) -> bool {
+        self.text.borrow().redisplay
+    }
+
+    pub(crate) fn set_text_redisplay(&mut self, on: bool) {
+        self.text.borrow_mut().redisplay = on;
+    }
+
+    /// BEGV and ZV.
+    pub(crate) fn accessible_bounds(&self) -> (usize, usize) {
+        (self.point_min(), self.point_max())
+    }
+
+    /// b->clip_changed.
+    pub(crate) fn clip_changed(&self) -> bool {
+        self.clip_changed
+    }
+
+    pub(crate) fn set_clip_changed(&mut self, on: bool) {
+        self.clip_changed = on;
+    }
+
+    /// b->prevent_redisplay_optimizations_p.
+    pub(crate) fn prevent_redisplay_optimizations_p(&self) -> bool {
+        self.prevent_redisplay_optimizations_p
+    }
+
+    pub(crate) fn set_prevent_redisplay_optimizations_p(&mut self, on: bool) {
+        self.prevent_redisplay_optimizations_p = on;
     }
 
     /// BUF_COMPACT.

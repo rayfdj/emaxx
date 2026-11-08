@@ -8302,3 +8302,214 @@ fn special_event_leaving_another_buffer_current_replays_the_key_sequence() {
     assert!(expected.is_some(), "GNU's session wrote nothing");
     assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }
+
+/// A probe's report of what each redisplay since the last one was asked
+/// for: `redisplay--all-windows-cause' and `redisplay--mode-lines-cause'
+/// counts but cause 0 (GNU's oracle compiles what it loaded natively at
+/// first, its subprocesses' output redisplaying for nothing), and the
+/// arguments `pre-redisplay-function' got but nil, the windows named.
+#[cfg(unix)]
+const REDISPLAY_REPORT: &str = r#"(setq redisplay--all-windows-cause (make-hash-table)
+      redisplay--mode-lines-cause (make-hash-table))
+(defvar rr-pre nil)
+(defvar rr-out nil)
+(defvar rr-w1 (selected-window))
+(defvar rr-w2 (split-window))
+(defun rr-name (w) (cond ((eq w rr-w1) 'w1) ((eq w rr-w2) 'w2) ((window-minibuffer-p w) 'mini) (t w)))
+(setq pre-redisplay-function
+      (lambda (w) (push (if (consp w) (mapcar #'rr-name w) w) rr-pre)))
+(defun rr-causes (h)
+  (let (l)
+    (maphash (lambda (k v) (unless (eq k 0) (push (cons k v) l))) h)
+    (sort l (lambda (a b) (< (car a) (car b))))))
+(defun rr-report (tag)
+  (push (list tag (rr-causes redisplay--all-windows-cause)
+              (rr-causes redisplay--mode-lines-cause) (delq nil (reverse rr-pre)))
+        rr-out)
+  (clrhash redisplay--all-windows-cause)
+  (clrhash redisplay--mode-lines-cause)
+  (setq rr-pre nil))
+(defvar rr-prev nil)
+(global-set-key [f5]
+  (lambda () (interactive)
+    ;; The first key starts the count: what startup redisplayed is not
+    ;; any step's.
+    (if rr-prev
+        (rr-report rr-prev)
+      (clrhash redisplay--all-windows-cause)
+      (clrhash redisplay--mode-lines-cause)
+      (setq rr-pre nil))
+    (let ((step (pop rr-steps))) (setq rr-prev (car step)) (funcall (cdr step)))))
+(global-set-key [f8]
+  (lambda () (interactive)
+    (rr-report rr-prev)
+    (with-temp-file (expand-file-name "redisplay.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse rr-out))))
+    (kill-emacs 0)))
+"#;
+
+#[cfg(unix)]
+#[test]
+fn redisplay_considers_the_windows_marked_as_xdisp_c_does() {
+    // redisplay_internal considers every window when
+    // windows_or_buffers_changed or update_mode_lines hold a cause, only
+    // those marked (REDISPLAY_SOME) when they hold 2, and passes
+    // `pre-redisplay-function' t, the marked windows, or nil.  Narrowing
+    // a buffer only another window shows asks for nothing; typing in the
+    // selected window's own buffer marks no other window.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "flags.el",
+        &format!(
+            "{REDISPLAY_REPORT}{}",
+            r#"(set-window-buffer rr-w2 (get-buffer-create "other"))
+(with-current-buffer "other" (dotimes (i 50) (insert (format "line %d\n" i))))
+(switch-to-buffer "t")
+(defvar rr-steps
+  (list (cons 'start #'ignore)
+        (cons 'fmlu (lambda () (force-mode-line-update)))
+        (cons 'fmlu-all (lambda () (force-mode-line-update t)))
+        (cons 'other-insert (lambda () (with-current-buffer "other" (goto-char (point-max)) (insert "x"))))
+        (cons 'set-start (lambda () (set-window-start rr-w2 20)))
+        (cons 'overlay (lambda () (with-current-buffer "other" (overlay-put (make-overlay 1 5) 'face 'bold))))
+        (cons 'narrow (lambda () (with-current-buffer "other" (narrow-to-region 1 30))))
+        (cons 'select (lambda () (select-window rr-w2)))
+        (cons 'select-back (lambda () (select-window rr-w1)))
+        (cons 'modified (lambda () (set-buffer-modified-p nil)))
+        (cons 'redraw (lambda () (redraw-display)))))"#
+        ),
+    );
+    // The first key comes once the oracle has natively compiled what its
+    // startup loaded (comp.c's deferred compilation, which Emaxx does not
+    // do), whose subprocesses' output asks for redisplays of its own.
+    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 9));
+    input.push((1.0, b"abc"));
+    input.push((1.0, b"\x1b[15~"));
+    input.push((1.0, b"\x1b[15~"));
+    input.push((1.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "redisplay.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "redisplay.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn indirect_buffers_the_log_and_margins_mark_windows_as_gnu_does() {
+    // buffer_window_count is the base buffer's, so a window showing an
+    // indirect buffer is marked by its buffer's changes; message_dolog
+    // marks the log buffer; apply_window_adjustment garbages the frame
+    // when a window shows margins; and typing then moving point by a
+    // character asks check_point_in_composition about the buffer.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "marks.el",
+        &format!(
+            "{REDISPLAY_REPORT}{}",
+            r#"(defvar rr-ind (make-indirect-buffer (get-buffer-create "base") "ind"))
+(set-window-buffer rr-w2 rr-ind)
+(switch-to-buffer "t")
+(defvar rr-steps
+  (list (cons 'start #'ignore)
+        (cons 'ind-fmlu (lambda () (with-current-buffer "ind" (force-mode-line-update))))
+        (cons 'base-insert (lambda () (with-current-buffer "base" (insert "x"))))
+        (cons 'ind-update (lambda () (force-window-update rr-ind)))
+        (cons 'log-shown (lambda () (set-window-buffer rr-w2 (messages-buffer))))
+        (cons 'logged (lambda () (message "logged")))
+        (cons 'margins (lambda () (set-window-margins rr-w2 2)))
+        (cons 'typed #'ignore)))"#
+        ),
+    );
+    // The first key comes once the oracle has natively compiled what its
+    // startup loaded (comp.c's deferred compilation, which Emaxx does not
+    // do), whose subprocesses' output asks for redisplays of its own.
+    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 7));
+    input.push((1.0, b"a"));
+    input.push((0.5, b"b"));
+    input.push((0.5, b"\x02"));
+    input.push((1.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "redisplay.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "redisplay.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn messages_resize_the_mini_window_as_xdisp_c_does() {
+    // echo_area_display: a message that changes the mini window's height
+    // has the frame redisplayed at once and marked again for the next
+    // redisplay; resize_echo_area_exactly shrinks the window after the
+    // command (causes 42 and 30); `resize-mini-windows' t resizes it
+    // exactly, nil never.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "tall.el",
+        &format!(
+            "{REDISPLAY_REPORT}{}",
+            r#"(defvar rr-steps
+  (list (cons 'start #'ignore)
+        (cons 'tall (lambda () (message "%s" (make-string 130 ?m))))
+        (cons 'short (lambda () (message "short")))
+        (cons 'cleared (lambda () (message nil)))
+        (cons 'exact (lambda () (setq resize-mini-windows t)
+                       (message "%s" (make-string 130 ?m))))
+        (cons 'exact-short (lambda () (message "short")))
+        (cons 'none (lambda () (setq resize-mini-windows nil)
+                      (message "%s" (make-string 130 ?m))))))"#
+        ),
+    );
+    // The first key comes once the oracle has natively compiled what its
+    // startup loaded (comp.c's deferred compilation, which Emaxx does not
+    // do), whose subprocesses' output asks for redisplays of its own.
+    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 6));
+    input.push((1.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "redisplay.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "redisplay.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn face_changes_free_realized_faces_as_xfaces_c_does() {
+    // A frame's face definition changing marks the frame for redisplay
+    // (f->face_change, fset_redisplay); a change for every frame
+    // (clear-face-cache, a face made or copied for new frames) sets
+    // face_change, which redisplay_internal turns into cause 47.  The
+    // definitions for new frames alone, or a face with `face-no-inherit',
+    // ask for nothing, and after anything is displayed init_iterator
+    // outside redisplay frees no realized faces
+    // (`inhibit-free-realized-faces').
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "faces.el",
+        &format!(
+            "{REDISPLAY_REPORT}{}",
+            r#"(defvar rr-steps
+  (list (cons 'start #'ignore)
+        (cons 'all-frames (lambda () (set-face-attribute 'bold nil :weight 'normal)))
+        (cons 'frame (lambda () (set-face-attribute 'bold (selected-frame) :weight 'bold)))
+        (cons 'defaults (lambda () (set-face-attribute 'italic t :slant 'normal)))
+        (cons 'clear (lambda () (clear-face-cache)))
+        (cons 'no-inherit (lambda () (put 'underline 'face-no-inherit t)
+                            (set-face-attribute 'underline (selected-frame) :underline nil)))
+        (cons 'copy (lambda () (internal-copy-lisp-face 'bold 'rr-copy t nil)))
+        (cons 'copy-format (lambda () (internal-copy-lisp-face 'bold 'rr-copy2 t nil)
+                             (list (format-mode-line "x") inhibit-free-realized-faces)))))"#
+        ),
+    );
+    // The first key comes once the oracle has natively compiled what its
+    // startup loaded (comp.c's deferred compilation, which Emaxx does not
+    // do), whose subprocesses' output asks for redisplays of its own.
+    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 7));
+    input.push((1.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "redisplay.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "redisplay.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}

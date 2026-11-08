@@ -303,6 +303,7 @@ fn internal_self_insert(
 /// (no labeled restriction is in effect then).
 pub(super) fn widen_current_buffer(interp: &mut Interpreter) {
     let buffer_id = interp.current_buffer_id();
+    let bounds = interp.buffer.borrow().accessible_bounds();
     match interp.innermost_labeled_restriction(buffer_id) {
         None => interp.buffer.borrow_mut().widen(),
         Some((label, start, end)) => {
@@ -311,6 +312,10 @@ pub(super) fn widen_current_buffer(interp: &mut Interpreter) {
                 interp.pop_labeled_restriction(buffer_id);
             }
         }
+    }
+    // `current_buffer->clip_changed = 1' when the bounds move.
+    if interp.buffer.borrow().accessible_bounds() != bounds {
+        interp.set_clip_changed(buffer_id);
     }
     // Changing the buffer bounds invalidates any recorded current column.
     interp.invalidate_current_column();
@@ -341,6 +346,10 @@ pub(super) fn narrow_current_buffer(
     if let Some((_, begv, zv)) = interp.innermost_labeled_restriction(interp.current_buffer_id()) {
         s = s.clamp(begv, zv);
         e = e.clamp(begv, zv);
+    }
+    if interp.buffer.borrow().accessible_bounds() != (s, e) {
+        let current = interp.current_buffer_id();
+        interp.set_clip_changed(current);
     }
     interp.buffer.borrow_mut().narrow_to_region(s, e);
     interp.invalidate_current_column();
@@ -663,6 +672,12 @@ define_dispatch!(
                 let window = live_motion_window(interp, args.get(1).unwrap_or(&Value::Nil))?;
                 let window_id = window_record_id_from_value(interp, &window)
                     .unwrap_or_else(|| interp.selected_window_id());
+                // Interactively the motion is start_display's, whose
+                // init_iterator frees the frame's realized faces after a
+                // face change.
+                if crate::lisp::primitives::interactive_window_metrics().is_some() {
+                    interp.init_iterator_faces_window(window_id);
+                }
                 let moved = visual_vertical_motion(interp, env, window_id, n, goal_col)?;
                 Ok(Value::Integer(moved))
             }
@@ -934,6 +949,7 @@ define_dispatch!(
                         && let Some(mut buffer) = interp.get_buffer_by_id_mut(*buffer_id)
                     {
                         buffer.set_multibyte(enabled);
+                        buffer.set_prevent_redisplay_optimizations_p(true);
                     }
                 }
                 interp.fetch_family_positions(&related);
@@ -948,10 +964,11 @@ define_dispatch!(
                         .borrow_mut()
                         .set_undo_list(Value::cons(entry, old_undo));
                 }
-                // A buffer shown in a window makes redisplay consider the
-                // other windows.
+                interp.prevent_redisplay_optimizations(current_id);
+                // A buffer shown in a window makes redisplay consider every
+                // window.
                 if interp.buffer_window_count(interp.current_buffer_id()) > 0 {
-                    interp.redisplay_other_windows();
+                    interp.windows_or_buffers_changed = 10;
                 }
                 // The modifiedness of the buffer restored.
                 if !modified_p && interp.buffer.borrow().is_modified() {
@@ -1380,6 +1397,7 @@ define_dispatch!(
                 // Frestore_buffer_modified_p, then Fforce_mode_line_update
                 // (Qnil)'s value.
                 restore_buffer_modified_p(interp, env, args[0])?;
+                interp.force_mode_line_update(false);
                 Ok(Value::Nil)
             }
             "restore-buffer-modified-p" => {
@@ -3067,7 +3085,7 @@ pub(super) fn direct_char_before(
 /// point nor the buffer's modiff has changed (nor the buffer, its
 /// restriction), else point's column scanned from its line's beginning,
 /// then recorded.
-fn current_column(
+pub(crate) fn current_column(
     interp: &mut Interpreter,
     env: &mut crate::lisp::types::Env,
 ) -> Result<usize, LispError> {

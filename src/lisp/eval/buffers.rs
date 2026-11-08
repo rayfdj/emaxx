@@ -626,7 +626,22 @@ impl Interpreter {
     }
 
     /// buffer.c:delete_all_overlays unlinks objects without destroying them.
+    /// buffer.c:delete_all_overlays: each overlay's region shown anew
+    /// (modify_overlay), then the buffer left without overlays.
     pub(crate) fn delete_buffer_overlays(&mut self, id: u64) {
+        let regions: Vec<(usize, usize)> = self
+            .get_buffer_by_id(id)
+            .map(|buffer| {
+                buffer
+                    .overlays
+                    .iter()
+                    .map(|overlay| (overlay.beg(), overlay.end()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (beg, end) in regions {
+            self.modify_overlay(id, beg, end);
+        }
         if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
             buffer.overlays.clear();
         }

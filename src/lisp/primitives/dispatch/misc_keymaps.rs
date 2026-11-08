@@ -1327,12 +1327,15 @@ define_dispatch!(
                     interp.set_buffer_local_value_symbol(buffer_id, &name, value);
                 }
                 interp.reset_major_mode_slots(buffer_id);
+                // Force mode-line redisplay: every major mode calls this.
+                interp.bset_update_mode_line(buffer_id);
                 Ok(Value::Nil)
             }
             "force-mode-line-update" => {
                 need_arg_range(name, args, 0, 1)?;
-                // buffer.c:Fforce_mode_line_update returns ALL.
-                Ok(args.first().copied().unwrap_or(Value::Nil))
+                let all = args.first().copied().unwrap_or(Value::Nil);
+                interp.force_mode_line_update(!all.is_nil());
+                Ok(all)
             }
             "garbage-collect" => direct_garbage_collect(interp, args, env),
             // alloc.c's watchers of the GC variables (abi's

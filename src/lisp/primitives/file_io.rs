@@ -1533,6 +1533,7 @@ fn write_region_with_coding(
             crate::lisp::primitives::fexpand_file_name(interp, env, visit, Value::Nil)?
         };
         interp.buffer.borrow_mut().set_file_name(visit_file);
+        interp.update_mode_lines = 14;
         // The time and size the written file has, unless its status cannot
         // be read.
         if let Ok(modtime) = stat_visited_modtime(interp, env, path)? {
@@ -2862,6 +2863,9 @@ fn insert_file_bytes(
 ) -> Result<(String, usize), LispError> {
     use super::hooks_overlays::{OverlayHookCalls, with_overlay_hook_roots};
     use super::insdel::{AfterChange, prepare_to_modify_buffer, signal_after_change};
+    // Prevent redisplay optimizations.
+    let current = interp.current_buffer_id();
+    interp.set_clip_changed(current);
     let buffer_was_empty = interp.buffer.borrow().size_total() == 0;
     let mut decision = if buffer_was_empty {
         None

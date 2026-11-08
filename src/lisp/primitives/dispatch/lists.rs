@@ -1069,6 +1069,7 @@ define_dispatch!(
                 {
                     return Err(LispError::Signal("Already defining kbd macro".into()));
                 }
+                interp.update_mode_lines = 19;
                 if args[0].is_truthy() {
                     let previous = interp
                         .lookup_var_key(cached_symbol!("last-kbd-macro"), env)
@@ -1116,7 +1117,9 @@ define_dispatch!(
                     .map(Value::as_integer)
                     .transpose()?
                     .unwrap_or(1);
+                // end_kbd_macro.
                 interp.set_variable_key(cached_symbol!("defining-kbd-macro"), Value::Nil, env);
+                interp.update_mode_lines = 20;
                 {
                     let state = &mut **interp;
                     state
