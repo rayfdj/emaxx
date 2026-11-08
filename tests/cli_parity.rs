@@ -8651,6 +8651,193 @@ fn positions_in_a_window_measure_its_display_as_the_iterator_does() {
 
 #[cfg(unix)]
 #[test]
+fn redisplay_and_the_display_iterator_run_lisp_as_xdisp_c_does() {
+    // The display iterator runs `fontification-functions' for the text
+    // it passes that is not yet fontified (handle_fontified_prop):
+    // pos-visible-in-window-p to POS, or through the window's last row
+    // when POS does not show or is t (whose answer is then that row's
+    // start), posn-at-x-y to the glyph it lands on, and
+    // window-text-pixel-size from FROM's line to TO.  redisplay_window
+    // runs a window other than the selected one with its buffer's point
+    // at the window's (TEMP_SET_PT_BOTH from w->pointm), so its
+    // fontification sees that point.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "iterlisp.el",
+        r#"(defvar il-log nil)
+(defvar il-calls nil)
+(defun il-fontify (pos)
+  (push (cons pos (point)) il-calls)
+  (put-text-property pos (min (point-max) (+ pos 100)) 'fontified t))
+(switch-to-buffer (get-buffer-create "il"))
+(dotimes (i 60) (insert (format "line %02d %s\n" i (make-string 60 ?x))))
+(goto-char 1)
+(setq-local fontification-functions '(il-fontify))
+(defun il-reset ()
+  (with-silent-modifications
+    (put-text-property (point-min) (point-max) 'fontified nil))
+  (setq il-calls nil))
+(defmacro il-call (tag form)
+  `(progn (il-reset)
+          (let ((value ,form))
+            (push (list ,tag value (mapcar #'car (reverse il-calls))) il-log))))
+(defun il-f5 () (interactive)
+  (il-call 'visible (pos-visible-in-window-p 700 nil t))
+  (il-call 'below (pos-visible-in-window-p 3000 nil t))
+  (il-call 'end (pos-visible-in-window-p t nil t))
+  (il-call 'xy (posn-point (posn-at-x-y 3 6)))
+  (il-call 'size (window-text-pixel-size nil 1 300))
+  (with-silent-modifications
+    (put-text-property (point-min) (point-max) 'fontified t)))
+(defun il-f6 () (interactive)
+  (split-window)
+  (set-window-point (next-window) 1500)
+  (with-silent-modifications
+    (put-text-property 1100 (point-max) 'fontified nil))
+  (setq il-calls nil)
+  (goto-char 200))
+(defun il-f7 () (interactive)
+  (push (list 'other-window-points
+              (delete-dups (mapcar #'cdr il-calls))
+              (point) (window-point (next-window)))
+        il-log))
+(global-set-key [f5] #'il-f5)
+(global-set-key [f6] #'il-f6)
+(global-set-key [f7] #'il-f7)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "iterlisp.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse il-log))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (15.0, b"\x1b[15~"),
+        (3.0, b"\x1b[17~"),
+        (3.0, b"\x1b[18~"),
+        (3.0, b"\x1b[19~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "iterlisp.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "iterlisp.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_display_iterator_fetches_text_where_xdisp_c_fetches_it() {
+    // A function in `fontification-functions' that marks one character
+    // a call shows each buffer position a display iterator fetches
+    // (get_next_display_element, whose handle_stop runs
+    // handle_fontified_prop), in order: a row walked to its end fetches
+    // through its newline, a continued row through the next row's first
+    // element, a row `word-wrap' broke through the element that did not
+    // fit, a truncated row through its newline (forward_to_next_line_start,
+    // no more than 500 elements past the edge); invisible text and text a
+    // display string replaces only where they start; start_display fetches
+    // the window's start before walking from its line's start.  So for
+    // vertical-motion, move-to-window-line (displayed_window_lines' walk
+    // first), pos-visible-in-window-p (POS's whole row when nothing shows
+    // before it, the last row whole), posn-at-x-y (to the glyph at X),
+    // posn-at-point and window-text-pixel-size (TO itself, no lower than
+    // Y-LIMIT's row).  A function that leaves its position unfontified is
+    // not called again until the next stop compute_stop_pos finds, and is
+    // called with `inhibit-redisplay' bound to t.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "iterfetch.el",
+        r#"(defvar ft-log nil)
+(defvar ft-decline nil)
+(defvar ft-seen nil)
+(defvar ft-res nil)
+(defun ft-fontify (pos)
+  (push pos ft-log)
+  (push inhibit-redisplay ft-seen)
+  (unless (memq pos ft-decline)
+    (put-text-property pos (1+ pos) 'fontified t)))
+(switch-to-buffer (get-buffer-create "ft"))
+(dotimes (i 40)
+  (insert (format "line %02d %s\n" i (make-string (if (= (% i 3) 0) 100 20) ?x))))
+(goto-char 1)
+(setq-local fontification-functions '(ft-fontify))
+(defun ft-reset ()
+  (with-silent-modifications
+    (put-text-property (point-min) (point-max) 'fontified nil)))
+(defun ft-ranges (l)
+  (let (out beg prev)
+    (dolist (p l)
+      (cond ((and prev (= p (1+ prev))) (setq prev p))
+            (t (when beg (push (if (= beg prev) beg (cons beg prev)) out))
+               (setq beg p prev p))))
+    (when beg (push (if (= beg prev) beg (cons beg prev)) out))
+    (nreverse out)))
+(defmacro ft-run (tag &rest body)
+  `(progn (ft-reset) (setq ft-log nil)
+          (let ((v (progn ,@body)))
+            (push (list ',tag v (point) (ft-ranges (reverse ft-log))) ft-res))))
+(defun ft-f5 () (interactive)
+  (ft-run vm3 (goto-char 1) (vertical-motion 3))
+  (ft-run vm-mid (goto-char 150) (vertical-motion 2))
+  (ft-run vm-back (goto-char 400) (vertical-motion -3))
+  (ft-run vm-col (goto-char 150) (vertical-motion '(5 . 2)))
+  (ft-run vm-bol (goto-char 139) (vertical-motion -1))
+  (ft-run mtwl (move-to-window-line -1))
+  (ft-run pv-mid (goto-char 1) (pos-visible-in-window-p 150 nil t))
+  (ft-run pv-row (goto-char 1) (pos-visible-in-window-p 247 nil t))
+  (ft-run pv-last (goto-char 1) (pos-visible-in-window-p 840 nil t))
+  (ft-run pv-far (goto-char 1) (pos-visible-in-window-p 1500 nil t))
+  (ft-run pv-t (goto-char 1) (pos-visible-in-window-p t nil t))
+  (ft-run xy (goto-char 1) (posn-point (posn-at-x-y 3 4)))
+  (ft-run xy0 (goto-char 1) (posn-point (posn-at-x-y 0 3)))
+  (ft-run pap (goto-char 200) (posn-point (posn-at-point 200)))
+  (ft-run size (goto-char 1) (window-text-pixel-size nil 150 300))
+  (ft-run size-bol (goto-char 1) (window-text-pixel-size nil 139 200))
+  (ft-run size-y (goto-char 1) (window-text-pixel-size nil 1 t nil 3))
+  (with-silent-modifications (put-text-property 120 130 'invisible t))
+  (ft-run invisible (goto-char 1) (pos-visible-in-window-p 150 nil t))
+  (with-silent-modifications (remove-text-properties 120 130 '(invisible nil)))
+  (with-silent-modifications (put-text-property 120 130 'display "ZZ"))
+  (ft-run display (goto-char 1) (pos-visible-in-window-p 150 nil t))
+  (with-silent-modifications (remove-text-properties 120 130 '(display nil)))
+  (with-silent-modifications (put-text-property 120 400 'invisible t))
+  (ft-run inside-invisible (goto-char 1) (pos-visible-in-window-p 200 nil t))
+  (with-silent-modifications (remove-text-properties 120 400 '(invisible nil)))
+  (setq truncate-lines t)
+  (ft-run tr-pos (goto-char 1) (pos-visible-in-window-p 300 nil t))
+  (ft-run tr-tail (goto-char 1) (pos-visible-in-window-p 100 nil t))
+  (ft-run tr-vm (goto-char 1) (vertical-motion 3))
+  (goto-char 1) (forward-line 2) (insert (make-string 1200 ?y))
+  (ft-run tr-long (goto-char 1) (pos-visible-in-window-p 1500 nil t))
+  (goto-char 1) (forward-line 2) (delete-char 1200)
+  (setq truncate-lines nil)
+  (setq word-wrap t)
+  (dotimes (i 3) (with-silent-modifications (goto-char (+ 20 (* i 15))) (insert " ")))
+  (ft-run ww-row (goto-char 1) (pos-visible-in-window-p 139 nil t))
+  (ft-run ww-overflow (goto-char 1) (pos-visible-in-window-p 70 nil t))
+  (ft-run ww-vm (goto-char 1) (vertical-motion 1))
+  (setq word-wrap nil)
+  (setq ft-decline '(30 31 32 33 34 35 36 37 38 39 40))
+  (ft-run declined (goto-char 1) (pos-visible-in-window-p 60 nil t))
+  (setq ft-decline '(1))
+  (ft-run declined-size (goto-char 1) (window-text-pixel-size nil 1 700))
+  (setq ft-decline nil)
+  (push (list 'inhibit-redisplay (delete-dups ft-seen)) ft-res)
+  (ft-reset) (goto-char 1))
+(global-set-key [f5] #'ft-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "iterfetch.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse ft-res))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~"), (5.0, b"\x1b[19~")];
+    let expected = corpus.run_tty(&oracle(), &probe, "iterfetch.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "iterfetch.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
 fn long_lines_turn_on_the_long_line_optimizations_as_xdisp_c_does() {
     // redisplay_window finds a line longer than `long-line-threshold' in
     // the buffer it displays and sets its long_line_optimizations_p for

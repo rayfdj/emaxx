@@ -774,9 +774,10 @@ pub(crate) fn recenter_selected_window(
         // The display code: the start of point's screen line, then
         // move_it_by_lines ARG lines back, which reseats at a line start.
         let nlines = clip_to_bounds(margin, iarg, ht - margin - 1).max(0);
-        let row = super::move_it::move_it_by_lines(interp, env, window_id, point, 0).0;
+        let fetches = &mut crate::tty::IteratorFetches::off();
+        let row = super::move_it::move_it_by_lines(interp, env, window_id, point, 0, fetches).0;
         if nlines > 0 {
-            super::move_it::move_it_by_lines(interp, env, window_id, row, -nlines).0
+            super::move_it::move_it_by_lines(interp, env, window_id, row, -nlines, fetches).0
         } else {
             row
         }

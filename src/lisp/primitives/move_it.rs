@@ -10,6 +10,20 @@ use super::{InvisibilitySpec, invisible_run_at, resolve_buffer_invisibility};
 use crate::buffer::Buffer;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::types::{Env, Kind, Value};
+use crate::tty::{IteratorFetches, IteratorWalk};
+
+/// Record move_it_to's walk from FROM to TO (MOVE_TO_POS) in WINDOW.
+fn fetch_walk_to(
+    interp: &Interpreter,
+    window_id: u64,
+    fetches: &mut IteratorFetches,
+    from: usize,
+    to: usize,
+) {
+    if let Some(geometry) = fetches.geometry() {
+        IteratorWalk::at(interp, window_id, geometry, from).walk_to(fetches, from, to);
+    }
+}
 
 /// A `display' string the iterator delivers in place of buffer text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,8 +229,24 @@ pub(crate) fn reseat_current(interp: &Interpreter, pos: usize) -> Reseated {
 /// handle_stop runs there); else at the first position at or after
 /// TARGET that the iterator delivers from the buffer -- after any
 /// `display' replacement covering TARGET or starting there, and after
-/// invisible text (BUFFER_POS_REACHED_P wants GET_FROM_BUFFER).
+/// invisible text (BUFFER_POS_REACHED_P wants GET_FROM_BUFFER).  What
+/// the walk fetches is recorded in FETCHES.
 pub(crate) fn pos_reached(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    from: usize,
+    target: usize,
+    fetches: &mut IteratorFetches,
+) -> usize {
+    let reached = pos_reached_by(interp, env, window_id, from, target);
+    if reached > from {
+        fetch_walk_to(interp, window_id, fetches, from, reached);
+    }
+    reached
+}
+
+fn pos_reached_by(
     interp: &mut Interpreter,
     env: &mut Env,
     window_id: u64,
@@ -264,14 +294,16 @@ fn screen_line_start(
     env: &mut Env,
     window_id: u64,
     from: usize,
+    fetches: &mut IteratorFetches,
 ) -> usize {
     use super::dispatch::{row_index_of, screen_row_starts, visual_line_bounds};
+    crate::tty::fetch_screen_line_start(interp, window_id, fetches, from);
     let (bol, eol) = visual_line_bounds(interp, from);
     let starts = screen_row_starts(interp, env, window_id, bol, eol);
     let index = row_index_of(&starts, from);
     let start = starts[index];
     if index > 0 && starts[index - 1] == start && reseat_current(interp, start).string.is_some() {
-        return pos_reached(interp, env, window_id, start, start + 1);
+        return pos_reached(interp, env, window_id, start, start + 1, fetches);
     }
     start
 }
@@ -295,12 +327,13 @@ pub(crate) fn rows_between(
     window_id: u64,
     from: usize,
     to: usize,
+    fetches: &mut IteratorFetches,
 ) -> i64 {
     use super::dispatch::{row_index_of, screen_row_starts, visual_line_bounds};
     if to <= from {
         return 0;
     }
-    let to = pos_reached(interp, env, window_id, from, to);
+    let to = pos_reached(interp, env, window_id, from, to, fetches);
     let zv = interp.buffer.borrow().point_max();
     let (mut bol, mut eol) = visual_line_bounds(interp, from);
     let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
@@ -337,8 +370,18 @@ fn forward_rows(
     window_id: u64,
     from: usize,
     count: i64,
+    fetches: &mut IteratorFetches,
 ) -> (usize, i64, bool) {
     use super::dispatch::{row_index_of, screen_row_starts, visual_line_bounds};
+    if let Some(geometry) = fetches.geometry()
+        && count > 0
+    {
+        IteratorWalk::at(interp, window_id, geometry, from).walk_rows(
+            fetches,
+            from,
+            count as usize,
+        );
+    }
     let zv = interp.buffer.borrow().point_max();
     let (mut bol, mut eol) = visual_line_bounds(interp, from);
     let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
@@ -372,12 +415,13 @@ pub(crate) fn move_it_by_lines(
     window_id: u64,
     from: usize,
     dvpos: i64,
+    fetches: &mut IteratorFetches,
 ) -> (usize, i64) {
     if dvpos == 0 {
-        return (screen_line_start(interp, env, window_id, from), 0);
+        return (screen_line_start(interp, env, window_id, from, fetches), 0);
     }
     if dvpos > 0 {
-        let (pos, moved, in_string) = forward_rows(interp, env, window_id, from, dvpos);
+        let (pos, moved, in_string) = forward_rows(interp, env, window_id, from, dvpos, fetches);
         if moved < dvpos {
             // move_it_to runs out at ZV.
             return (interp.buffer.borrow().point_max(), moved);
@@ -385,13 +429,16 @@ pub(crate) fn move_it_by_lines(
         // !IT_POS_VALID_AFTER_MOVE_P: inside a display string, on to the
         // buffer text after it (an overlay string keeps its position).
         if in_string && reseat_current(interp, pos).string.is_some() {
-            return (pos_reached(interp, env, window_id, pos, pos + 1), moved);
+            return (
+                pos_reached(interp, env, window_id, pos, pos + 1, fetches),
+                moved,
+            );
         }
         return (pos, moved);
     }
     let begv = interp.buffer.borrow().point_min();
     let orig_charpos = from;
-    let start_charpos = screen_line_start(interp, env, window_id, from);
+    let start_charpos = screen_line_start(interp, env, window_id, from, fetches);
     let truncate = crate::tty::window_truncates(interp, window_id, interp.current_buffer_id());
     let nchars_per_row = super::window_text_area_columns(interp, window_id) as i64;
     let pos_limit = if truncate || nchars_per_row == 0 {
@@ -408,13 +455,18 @@ pub(crate) fn move_it_by_lines(
         i -= 1;
     }
     let hit_pos_limit = i > 0 && it <= pos_limit;
+    // reseat (IT, ..., true): it2, a copy, walks from the line start.
+    fetches.begin_walk();
+    fetches.push(it, it + 1);
     let it = reseat_current(interp, it).pos;
     // Above may have moved too far if continuation lines are involved.
-    let it2_vpos = rows_between(interp, env, window_id, it, start_charpos);
+    let it2_vpos = rows_between(interp, env, window_id, it, start_charpos, fetches);
     let vpos = -it2_vpos;
     if it2_vpos > -dvpos {
         let delta = it2_vpos + dvpos;
-        let (forward, moved, _) = forward_rows(interp, env, window_id, it, delta);
+        // IT itself, which stops again at the line start.
+        fetches.begin_walk();
+        let (forward, moved, _) = forward_rows(interp, env, window_id, it, delta, fetches);
         // Back again if it did not move at all.
         if forward == orig_charpos {
             (it, vpos)
@@ -437,12 +489,14 @@ pub(crate) fn move_it_by_lines(
 }
 
 /// indent.c Fvertical_motion on a live display, from point: where the
-/// iterator lands LINES screen lines away and the screen lines moved.
+/// iterator lands LINES screen lines away and the screen lines moved,
+/// what its walks fetch recorded in FETCHES.
 pub(crate) fn vertical_motion(
     interp: &mut Interpreter,
     env: &mut Env,
     window_id: u64,
     lines: i64,
+    fetches: &mut IteratorFetches,
 ) -> (usize, i64) {
     let (begv, zv, pt) = {
         let buffer = interp.buffer.borrow();
@@ -450,6 +504,7 @@ pub(crate) fn vertical_motion(
     };
     let char_at = |interp: &Interpreter, pos: usize| interp.buffer.borrow().char_at(pos);
     // start_display: init_iterator reseats at PT.
+    crate::tty::fetch_start_display(interp, window_id, fetches, pt);
     let started = reseat_current(interp, pt);
     let it_start = started.pos;
     let disp_string_at_start_p = started.string.is_some_and(|string| string.text_area);
@@ -458,12 +513,12 @@ pub(crate) fn vertical_motion(
         Some(_) => -1,
         None => 1,
     };
-    // Scan from the start of the line containing PT.
-    let line_start = reseat_current(
-        interp,
-        back_to_previous_visible_line_start(interp, it_start),
-    )
-    .pos;
+    // Scan from the start of the line containing PT
+    // (reseat_at_previous_visible_line_start).
+    let previous_line_start = back_to_previous_visible_line_start(interp, it_start);
+    fetches.begin_walk();
+    fetches.push(previous_line_start, previous_line_start + 1);
+    let line_start = reseat_current(interp, previous_line_start).pos;
     let mut it = line_start;
     if it != pt {
         // When PT is covered by a display string, move_it_to would
@@ -474,14 +529,14 @@ pub(crate) fn vertical_motion(
         } else {
             pt - 1
         };
-        it = pos_reached(interp, env, window_id, it, target);
+        it = pos_reached(interp, env, window_id, it, target, fetches);
     }
     let mut nlines = lines;
     let mut vpos_init = 0i64;
     let mut overshoot_handled = false;
     if it > it_start {
         // IT overshot: back up to PT's screen line.
-        let it_vpos = rows_between(interp, env, window_id, line_start, it);
+        let it_vpos = rows_between(interp, env, window_id, line_start, it, fetches);
         if it_overshoot_count < 0 && char_at(interp, it) == Some('\n') {
             it_overshoot_count = 1;
         } else if it_overshoot_count == 1 && it_vpos == 0 {
@@ -490,7 +545,7 @@ pub(crate) fn vertical_motion(
             it_overshoot_count = it_vpos;
         }
         if it_overshoot_count > 0 {
-            it = move_it_by_lines(interp, env, window_id, it, -it_overshoot_count).0;
+            it = move_it_by_lines(interp, env, window_id, it, -it_overshoot_count, fetches).0;
         }
         overshoot_handled = true;
     } else if pt > begv && it == pt - 1 && char_at(interp, pt - 1) == Some('\n') && nlines <= 0 {
@@ -503,24 +558,24 @@ pub(crate) fn vertical_motion(
     if nlines <= 0 {
         let mut vpos = vpos_init;
         if (nlines < 0 && it > begv) || nlines == 0 {
-            let (landed, moved) = move_it_by_lines(interp, env, window_id, it, nlines);
+            let (landed, moved) = move_it_by_lines(interp, env, window_id, it, nlines, fetches);
             it = landed;
             vpos += moved;
         }
         return (it, vpos);
     }
     if overshoot_handled {
-        let (landed, moved) = move_it_by_lines(interp, env, window_id, it, nlines);
+        let (landed, moved) = move_it_by_lines(interp, env, window_id, it, nlines, fetches);
         return (landed, vpos_init + moved);
     }
     if it_start < zv {
         // From the last screen line PT occupies.
         let mut vpos = 0;
         if it < it_start {
-            (it, vpos) = move_it_by_lines(interp, env, window_id, it, 1);
+            (it, vpos) = move_it_by_lines(interp, env, window_id, it, 1, fetches);
         }
         while it == it_start {
-            let (landed, moved) = move_it_by_lines(interp, env, window_id, it, 1);
+            let (landed, moved) = move_it_by_lines(interp, env, window_id, it, 1, fetches);
             vpos = moved;
             if landed == it {
                 break;
@@ -528,13 +583,13 @@ pub(crate) fn vertical_motion(
             it = landed;
         }
         if nlines > 1 {
-            let (landed, moved) = move_it_by_lines(interp, env, window_id, it, nlines - 1);
+            let (landed, moved) = move_it_by_lines(interp, env, window_id, it, nlines - 1, fetches);
             it = landed;
             vpos += moved;
         }
         return (it, vpos);
     }
-    let (landed, mut vpos) = move_it_by_lines(interp, env, window_id, it, nlines);
+    let (landed, mut vpos) = move_it_by_lines(interp, env, window_id, it, nlines, fetches);
     if landed == pt && pt == it_start {
         vpos = 0;
     }
