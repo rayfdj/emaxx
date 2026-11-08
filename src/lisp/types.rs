@@ -3453,15 +3453,21 @@ fn format_value(
     }
 }
 
-/// An orderly process termination requested by `kill-emacs`.
+/// An orderly process termination requested by `kill-emacs`, or the
+/// return to the command loop after a C stack overflow.
 ///
 /// This is evaluator control flow, not a Lisp condition: GNU's native
 /// `kill-emacs` is `noreturn`, so `condition-case`, `handler-bind`, and
-/// `unwind-protect` cannot intercept it.
+/// `unwind-protect` cannot intercept it.  Neither can they intercept
+/// sysdep.c:handle_sigsegv's siglongjmp to keyboard.c's command_loop,
+/// which leaves every frame between without running its unwind forms or
+/// restoring its bindings; `c_stack_overflow' marks that exit, which the
+/// innermost command loop takes (`command_loop').
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmacsTermination {
     pub exit_code: i32,
     pub restart: bool,
+    pub c_stack_overflow: bool,
 }
 
 /// Lisp errors and non-local evaluator control flow: the kind, boxed in
@@ -3638,6 +3644,27 @@ pub struct LispError(Box<ErrorBox>);
 struct ErrorBox {
     kind: LispErrorKind,
     signaled: bool,
+    /// For a signal that left a `handler-bind' handler: the handler
+    /// search that chose its catcher passed over eval.c's SKIP_CONDITIONS
+    /// entries, those from the handler's own `handler-bind' form to the
+    /// first signal's point, so no catcher registered at or above this
+    /// index of `active_handlers' is it.
+    skip_floor: Option<usize>,
+    /// How Fsignal's ERROR-SYMBOL and DATA made the signal's object, which
+    /// `signal-hook-function' is called with as they were.
+    signal_form: SignalForm,
+}
+
+/// The form of a `signal' call's arguments, from which signal_or_quit's
+/// ERROR-SYMBOL and DATA come back out of its error object.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignalForm {
+    /// (ERROR-SYMBOL . DATA): the object's car and cdr.
+    Cons,
+    /// A nil ERROR-SYMBOL: DATA is the object.
+    NilSymbol,
+    /// An error object as ERROR-SYMBOL, DATA nil.
+    Object,
 }
 
 #[allow(non_snake_case)]
@@ -3647,7 +3674,22 @@ impl LispError {
         Self(Box::new(ErrorBox {
             kind,
             signaled: false,
+            skip_floor: None,
+            signal_form: SignalForm::Cons,
         }))
+    }
+
+    /// The signal of OBJECT that Fsignal's arguments in FORM made.
+    pub(crate) fn signal_of(object: Value, form: SignalForm) -> Self {
+        let mut error = Self::SignalValue(object);
+        error.0.signal_form = form;
+        error
+    }
+
+    /// The form of the `signal' call's arguments the object came from.
+    #[inline]
+    pub(crate) fn signal_form(&self) -> SignalForm {
+        self.0.signal_form
     }
 
     #[inline]
@@ -3675,6 +3717,18 @@ impl LispError {
     #[inline]
     pub(crate) fn mark_signaled(&mut self) {
         self.0.signaled = true;
+    }
+
+    /// Whether the catcher registered at REGISTRY in `active_handlers'
+    /// is among the entries this signal's handler search skipped.
+    #[inline]
+    pub(crate) fn skipped_by_search(&self, registry: usize) -> bool {
+        self.0.skip_floor.is_some_and(|floor| registry >= floor)
+    }
+
+    /// The entries from FLOOR up were skipped by this signal's search.
+    pub(crate) fn skip_entries_from(&mut self, floor: usize) {
+        self.0.skip_floor = Some(self.0.skip_floor.map_or(floor, |old| old.min(floor)));
     }
 
     pub fn condition_type(&self) -> String {

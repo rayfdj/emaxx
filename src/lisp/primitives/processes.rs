@@ -2972,7 +2972,6 @@ fn call_catching_process_errors(
     ) {
         return Err(error);
     }
-    interp.clear_batch_error_backtrace();
     let mut data = crate::lisp::eval::error_condition_value(&error);
     if sentinel && data.cons_ref().is_none() {
         data = Value::cons(Value::symbol("error"), data);
@@ -3119,6 +3118,8 @@ pub(crate) fn internal_default_process_filter(
     });
     let new_pos = interp.buffer.borrow().point();
     let result = inserted.and_then(|()| interp.set_marker(mark_id, Some(new_pos), Some(buffer_id)));
+    // read_process_output_after_insert.
+    interp.update_mode_lines = 23;
     let restored_point = if old_point >= insert_at {
         old_point + new_pos.saturating_sub(insert_at)
     } else {
@@ -3211,6 +3212,8 @@ pub(crate) fn internal_default_process_sentinel(
     });
     let new_pos = interp.buffer.borrow().point();
     let result = inserted.and_then(|()| interp.set_marker(mark_id, Some(new_pos), Some(buffer_id)));
+    // read_process_output_after_insert.
+    interp.update_mode_lines = 23;
     let restored_point = if old_point >= insert_at {
         old_point + new_pos.saturating_sub(insert_at)
     } else {
@@ -3809,6 +3812,10 @@ pub(crate) fn status_notify_walk(
             continue;
         };
         run_process_sentinel(interp, process_id, &message, env)?;
+        // In case the mode line shows the status (%s).
+        if let Some(buffer_id) = interp.process_buffer_id(process_id) {
+            interp.bset_update_mode_line(buffer_id);
+        }
         ran = true;
     }
     Ok((ran, got_some_output))
@@ -5925,6 +5932,10 @@ fn wait_reading_process_output_1(
             } else {
                 Vec::new()
             };
+            // The pselect's timeout is zeroed, and stays so for the wait
+            // below: it is okay to notify and then continue with the loop,
+            // whose next timer_check runs what the sentinels started.
+            timeout = std::time::Duration::ZERO;
             let ready = poll_now(&input, &write);
             if ready <= 0 {
                 crate::lisp::primitives::clear_waiting_for_input();

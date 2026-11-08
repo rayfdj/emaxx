@@ -262,8 +262,9 @@ pub(super) struct StartState {
     /// Tab and header rows above the text (their y precedes the text's).
     pub(super) top_rows: usize,
     pub(super) scroll: ScrollParams,
-    /// Resume at a stage with the start the scroll functions left.
-    pub(super) resume: Option<(Stage, usize)>,
+    /// Resume at a stage with the start the scroll functions left, and
+    /// whether the way there already had the mode line redisplayed.
+    pub(super) resume: Option<(Stage, usize, bool)>,
 }
 
 /// The start chosen, and what redisplay changed on the way.
@@ -278,6 +279,9 @@ pub(super) struct Chosen {
     /// Point moved into view (the force_start case).
     pub(super) point: Option<usize>,
     pub(super) start_at_line_beg: bool,
+    /// redisplay_window's local update_mode_line as its start decision
+    /// leaves it: set where it forces the start or tries to scroll.
+    pub(super) update_mode_line: bool,
 }
 
 pub(super) enum Decision {
@@ -286,6 +290,7 @@ pub(super) enum Decision {
     Hook {
         stage: Stage,
         start: usize,
+        update_mode_line: bool,
     },
     Display(Chosen),
 }
@@ -306,6 +311,8 @@ struct Planner<'r, 'a, 'c> {
     begv: usize,
     zv: usize,
     margin: usize,
+    /// The decision's update_mode_line so far.
+    update_mode_line: std::cell::Cell<bool>,
 }
 
 const SCROLL_LIMIT: i64 = 100;
@@ -324,9 +331,11 @@ pub(super) fn decide(rows: &Rows, state: &StartState, text_rows: usize) -> (Deci
         begv,
         zv,
         margin: state.scroll.margin,
+        update_mode_line: std::cell::Cell::new(false),
     };
     let mut consumed = Consumed::default();
-    if let Some((stage, start)) = state.resume {
+    if let Some((stage, start, update_mode_line)) = state.resume {
+        planner.update_mode_line.set(update_mode_line);
         let decision = match stage {
             Stage::ForceStart => planner.forced(start),
             Stage::Scrolled => planner.scrolled(start, state.start),
@@ -348,10 +357,13 @@ pub(super) fn decide(rows: &Rows, state: &StartState, text_rows: usize) -> (Deci
     if force {
         consumed.force_start = true;
         if state.scroll_functions {
+            // The force_start block redisplays the mode line before it
+            // runs the scroll functions.
             return (
                 Decision::Hook {
                     stage: Stage::ForceStart,
                     start,
+                    update_mode_line: true,
                 },
                 consumed,
             );
@@ -384,6 +396,7 @@ impl Planner<'_, '_, '_> {
             cursor_row,
             point,
             start_at_line_beg: self.rows.at_line_beg(start),
+            update_mode_line: self.update_mode_line.get(),
         })
     }
 
@@ -412,6 +425,8 @@ impl Planner<'_, '_, '_> {
 
     /// The force_start block, after the scroll functions ran.
     fn forced(&self, start: usize) -> Decision {
+        // `update_mode_line = true; w->update_mode_line = true'.
+        self.update_mode_line.set(true);
         let start = start.clamp(self.begv, self.zv);
         if !self.acceptable(start) {
             return self.ignore_start(start);
@@ -471,6 +486,8 @@ impl Planner<'_, '_, '_> {
     }
 
     fn try_to_scroll(&self, start: usize) -> Decision {
+        // try_to_scroll: redisplay the mode line.
+        self.update_mode_line.set(true);
         let scroll = &self.state.scroll;
         if (scroll.conservatively > 0
             || scroll.step > 0
@@ -483,6 +500,7 @@ impl Planner<'_, '_, '_> {
                 return Decision::Hook {
                     stage: Stage::Scrolled,
                     start: new_start,
+                    update_mode_line: true,
                 };
             }
             return self.scrolled(new_start, start);
@@ -672,6 +690,7 @@ impl Planner<'_, '_, '_> {
             return Decision::Hook {
                 stage: Stage::Recentered,
                 start: new_start,
+                update_mode_line: self.update_mode_line.get(),
             };
         }
         self.recentered(new_start)

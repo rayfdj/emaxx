@@ -10,7 +10,7 @@ mod key_sequence;
 pub(crate) use command_loop::select_window_buffer;
 pub(crate) use command_loop::{
     CommandLoopHandlers, command_loop_2, recursive_edit, recursive_edit_1,
-    take_resize_echo_area_exactly, top_level_1,
+    set_resize_echo_area_exactly, top_level_1,
 };
 pub(crate) use echo::{
     cancel_echoing, echo_after_command, echo_after_event, echo_before_wait, echo_dash,
@@ -21,22 +21,25 @@ pub(crate) use kbd_input::{
     KbdWait, KeyboardTerminal, clear_keyboard_waiting_thread, clear_waiting_for_input,
     detect_input_pending, detect_input_pending_run_timers, get_input_pending, gobble_input,
     kbd_buffer_get_event_wait, kbd_buffer_store_event, kbd_is_ours, keyboard_wait_descriptors,
-    redisplay_preserve_echo_area, set_keyboard_terminal, set_waiting_for_input, sit_for,
-    swallow_events,
+    note_redisplay_input_pending, record_auto_save, redisplay_preserve_echo_area,
+    set_keyboard_terminal, set_tty_showing_menu, set_waiting_for_input, sit_for, swallow_events,
 };
 #[cfg(unix)]
 pub(crate) use kbd_input::{
     ResetState, arm_emergency_reset, disarm_emergency_reset, emergency_reset,
 };
 pub(crate) use kbd_input::{
-    SysModes, TtyInputModes, change_tty_input_modes, dev_tty_terminal, frame_garbaged,
-    init_all_sys_modes, interrupt_signal_pending, note_tty_erase_char, process_interrupt_signal,
-    quit_char, refresh_emergency_reset, reset_all_sys_modes, set_frame_garbaged, set_quit_char,
-    set_tty_input_modes, stuff_buffered_input, sys_suspend, take_frame_garbaged,
-    take_window_change_signal, tty_input_modes, unread_command_events_pending,
+    SysModes, TtyInputModes, begin_redisplay, change_tty_input_modes, dev_tty_terminal,
+    frame_garbaged, init_all_sys_modes, interrupt_signal_pending, note_tty_erase_char,
+    process_interrupt_signal, quit_char, redisplaying_p, refresh_emergency_reset,
+    reset_all_sys_modes, set_frame_garbaged, set_quit_char, set_tty_input_modes,
+    stuff_buffered_input, sys_suspend, take_frame_garbaged, take_window_change_signal,
+    tty_input_modes, unread_command_events_pending, unwind_redisplay,
 };
 use kbd_input::{quit_throw_to_read_char_outside_signal, waiting_for_input};
-pub(crate) use key_sequence::{KeySequenceReader, read_key_sequence_vs};
+#[cfg(test)]
+pub(crate) use key_sequence::KeySequenceReader;
+pub(crate) use key_sequence::{read_key_sequence, read_key_sequence_vs};
 
 #[cfg(unix)]
 use std::sync::atomic::{AtomicUsize, Ordering as UserSignalOrdering};
@@ -511,7 +514,7 @@ pub(crate) fn emacs_backtrace(limit: i32) {
 /// emacs.c:terminate_due_to_signal's end: SIGNAL unblocked and raised at
 /// its default action, which ends the process.
 #[cfg(unix)]
-fn raise_unblocked(signal: libc::c_int) -> ! {
+pub(crate) fn raise_unblocked(signal: libc::c_int) -> ! {
     // SAFETY: async-signal-safe calls on owned storage.
     unsafe {
         let mut unblocked: libc::sigset_t = std::mem::zeroed();
@@ -582,6 +585,22 @@ pub(crate) fn run_pending_fatal_signal(
     }
     let _ = (interp, env);
     Ok(())
+}
+
+/// sysdep.c:deliver_fatal_thread_signal for a fault Emaxx finds itself
+/// rather than takes in a handler (a C stack overflow it cannot return
+/// from): terminate_due_to_signal (SIGNAL, 40), its orderly shutdown and
+/// backtrace run here, where the interpreter is at hand, and then the
+/// signal at its default action ends the process.
+#[cfg(unix)]
+#[cold]
+pub(crate) fn deliver_fatal_signal(
+    interp: &mut Interpreter,
+    signal: libc::c_int,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    PENDING_FATAL_SIGNAL.store(signal, UserSignalOrdering::Relaxed);
+    run_pending_fatal_signal(interp, env)
 }
 
 /// emacs.c:shut_down_emacs (0, ...), as Fkill_emacs runs it: Vrun_hooks
@@ -671,7 +690,39 @@ pub(crate) fn run_pending_user_signal_events(
     env: &mut Env,
 ) -> Result<bool, LispError> {
     let mut handled = false;
-    loop {
+    while let Some(outcome) = run_one_special_event(interp, env, false)? {
+        handled = true;
+        if matches!(outcome, SpecialEvent::Unread) {
+            // Keep later signals behind this unread event, matching the
+            // main keyboard queue's ordering.
+            break;
+        }
+    }
+    Ok(handled)
+}
+
+/// What read_char did with a special event.
+pub(crate) enum SpecialEvent {
+    /// Its `special-event-map' binding ran, BUFFER_CHANGED when the
+    /// binding left another buffer current.
+    Ran { buffer_changed: bool },
+    /// Unbound, the event is left to be read.
+    Unread,
+}
+
+/// read_char's processing of one special event from the keyboard buffer:
+/// its `special-event-map' binding run with `command-execute', or,
+/// unbound, the event left to be read; None when no user signal or
+/// thread event is pending.  With STOP_IDLE (a read_char without
+/// END_TIME), Emacs stops being idle for the event (non_reread's
+/// timer_stop_idle), and resumes for one `while-no-input-ignore-events'
+/// names once its binding has run.
+pub(crate) fn run_one_special_event(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    stop_idle: bool,
+) -> Result<Option<SpecialEvent>, LispError> {
+    {
         // User signals first (one occurrence at a time), then the THREAD_EVENTs
         // `thread-signal' stored for the main thread, in arrival order.
         let event = match take_pending_user_signal() {
@@ -679,9 +730,8 @@ pub(crate) fn run_pending_user_signal_events(
             None if !interp.pending_thread_events.is_empty() => {
                 interp.pending_thread_events.remove(0)
             }
-            None => break,
+            None => return Ok(None),
         };
-        handled = true;
         let keymap = interp
             .lookup_var_key(cached_symbol!("special-event-map"), env)
             .unwrap_or(Value::Nil);
@@ -691,14 +741,15 @@ pub(crate) fn run_pending_user_signal_events(
         let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![event, keymap]);
         let binding = keymap_access_event(interp, keymap, event, false, env)?.unwrap_or(Value::Nil);
         roots.push(binding);
-        interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
+        if stop_idle {
+            tty_note_idle_end();
+        }
         if binding.is_nil() {
             append_unread_command_events(interp, env, [event]);
-            // Keep later signals behind this unread event, matching the main
-            // keyboard queue's ordering.
-            break;
+            return Ok(Some(SpecialEvent::Unread));
         }
-
+        let prev_buffer = interp.current_buffer_id();
+        interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
         let keys = Value::vector([event]);
         interp.call_function_value(
             Value::Symbol("command-execute".into()),
@@ -706,8 +757,21 @@ pub(crate) fn run_pending_user_signal_events(
             &[binding, Value::Nil, keys, Value::T],
             env,
         )?;
+        // We stopped being idle for this event; undo that.  This prevents
+        // automatic window selection (under mouse-autoselect-window) from
+        // acting as a real input event (timer_resume_idle).
+        if stop_idle && let Some((head, _)) = event.cons_values() {
+            let ignored = interp
+                .lookup_var_key(cached_symbol!("while-no-input-ignore-events"), env)
+                .unwrap_or(Value::Nil);
+            if !super::dispatch::lists::direct_memq(interp, &[head, ignored], env)?.is_nil() {
+                tty_resume_idle();
+            }
+        }
+        Ok(Some(SpecialEvent::Ran {
+            buffer_changed: interp.current_buffer_id() != prev_buffer,
+        }))
     }
-    Ok(handled)
 }
 
 pub(crate) fn set_command_key_state(
@@ -1107,16 +1171,13 @@ pub(crate) fn parse_interactive_string(
     function: &Value,
     spec: &str,
     record_flag: bool,
+    keys: &[Value],
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<InteractiveStringArgs, LispError> {
-    // The events the `e' code walks: KEYS, or the current command's keys,
-    // starting at the first with parameters unless
+    // The events the `e' code walks (call-interactively's KEYS, or the
+    // command's keys), starting at the first with parameters unless
     // `inhibit-mouse-event-check' admits any event.
-    let keys = interp
-        .lookup_var_key(cached_symbol!("this-command-keys-vector"), env)
-        .and_then(|keys| vector_or_list_items(&keys).ok())
-        .unwrap_or_default();
     let inhibit_mouse_event_check = interp
         .lookup_var_key(cached_symbol!("inhibit-mouse-event-check"), env)
         .is_some_and(|value| value.is_truthy());
@@ -1584,6 +1645,7 @@ fn terminal_gone(interp: &mut Interpreter, env: &mut Env) -> LispError {
         Ok(_) => LispError::Terminate(crate::lisp::types::EmacsTermination {
             exit_code: SIGHUP as i32,
             restart: false,
+            c_stack_overflow: false,
         }),
     }
 }
@@ -1669,6 +1731,9 @@ pub(crate) enum KeyResolution {
     Command(Value),
     Prefix,
     Undefined,
+    /// read_char showed a menu and the user rejected it (its t), which
+    /// makes read_key_sequence return -1.
+    MenuRejected,
 }
 
 /// keyboard.c:EVENT_HEAD_KIND reads the live symbol property. A mouse
@@ -1700,32 +1765,10 @@ fn resolve_read_key_binding(
     let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![binding, Value::Nil]);
     if let Some(map) = keymap_reference_map(interp, &binding, env) {
         roots[0] = map;
-        let Some(event) = keys
-            .last()
-            .filter(|event| mouse_event_head(interp, event).is_some())
-        else {
-            return Ok(KeyResolution::Prefix);
-        };
-        if !has_tty_menu_executor() {
-            return Ok(KeyResolution::Prefix);
-        }
-        // read_char for the next key, PREV_EVENT the click: the echo
-        // area's test, and echoing at once after an event with parameters
-        // (a menu is about to show); then read_char_x_menu_prompt.
-        echo_before_wait(interp, env)?;
-        echo_timer(interp, env, *event)?;
-        roots[1] = super::call(interp, "x-popup-menu", &[*event, map], env)?;
-        let path = roots[1].to_vec()?;
-        if path.is_empty() {
-            return Ok(KeyResolution::Command(Value::symbol("ignore")));
-        }
-        for event in path {
-            roots[0] =
-                keymap_access_event(interp, roots[0], event, true, env)?.unwrap_or(Value::Nil);
-        }
-        if roots[0].is_nil() {
-            return Ok(KeyResolution::Command(Value::symbol("ignore")));
-        }
+        // A prefix keymap reads on: after a click, the next read_char
+        // shows its menu (read_char_x_menu_prompt).
+        let _ = keys;
+        return Ok(KeyResolution::Prefix);
     }
     if roots[0].is_symbol() {
         let remapped = command_remapping(interp, &roots[0], None, env)?;
@@ -1767,18 +1810,24 @@ pub(crate) fn add_command_undo_boundary(
 thread_local! {
     static TTY_IDLE_START: std::cell::Cell<Option<std::time::Instant>> =
         const { std::cell::Cell::new(None) };
+    // keyboard.c's timer_last_idleness_start_time.
+    static TTY_LAST_IDLE_START: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
 }
 
 // keyboard.c timer_start_idle: on entering the idle state (and only on
 // entering it), every idle timer becomes a candidate again -- GNU calls
 // timer.el's `internal-timer-start-idle' to clear the triggered flags,
-// and so do we.  The recorded instant backs `current-idle-time'.
+// and so do we.  The recorded instant backs `current-idle-time', and is
+// kept as timer_last_idleness_start_time for timer_resume_idle.
 pub(crate) fn tty_note_idle_start(interp: &mut Interpreter, env: &mut Env) {
     let already_idle = TTY_IDLE_START.with(|cell| cell.get().is_some());
     if already_idle {
         return;
     }
-    TTY_IDLE_START.with(|cell| cell.set(Some(std::time::Instant::now())));
+    let now = std::time::Instant::now();
+    TTY_IDLE_START.with(|cell| cell.set(Some(now)));
+    TTY_LAST_IDLE_START.set(Some(now));
     if interp
         .lookup_function_key(cached_symbol!("internal-timer-start-idle"), env)
         .is_ok()
@@ -1795,6 +1844,14 @@ pub(crate) fn tty_note_idle_start(interp: &mut Interpreter, env: &mut Env) {
 // keyboard.c timer_stop_idle: input ends the idle period.
 pub(crate) fn tty_note_idle_end() {
     TTY_IDLE_START.with(|cell| cell.set(None));
+}
+
+// keyboard.c timer_resume_idle: idle again since the idle period that
+// was stopped began, unless Emacs is idle already.
+fn tty_resume_idle() {
+    if TTY_IDLE_START.get().is_none() {
+        TTY_IDLE_START.set(TTY_LAST_IDLE_START.get());
+    }
 }
 
 // Fcurrent_idle_time's backing state: the elapsed idle span, when idle.
@@ -1954,6 +2011,11 @@ fn timer_check(
 // window-configuration changes made mid-read — a *Completions* pop-up —
 // reach the glass before the next key blocks.
 thread_local! {
+    /// read_char's `goto retry' after a special event's binding ran.
+    static READ_CHAR_RETRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+thread_local! {
     static TTY_FRAME_REDRAW: std::cell::RefCell<Option<TtyFrameRedraw>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -2031,7 +2093,7 @@ pub(crate) fn pop_unread_command_event_value(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    read_command_event(interp, env, false, Value::Nil)
+    read_command_event(interp, env, 0, false, Value::Nil, Value::Nil)
 }
 
 /// read_char under read_key_sequence: handle_interrupt's longjmp makes
@@ -2044,18 +2106,77 @@ pub(crate) fn pop_unread_command_event_value(
 pub(crate) fn read_key_sequence_event(
     interp: &mut Interpreter,
     env: &mut Env,
+    commandflag: i32,
     prev_event: Value,
+    map: Value,
 ) -> Result<Value, LispError> {
-    read_command_event(interp, env, true, prev_event)
+    read_command_event(interp, env, commandflag, true, prev_event, map)
 }
 
+/// read_char (COMMANDFLAG, Qnil, Qt, 0, NULL) as
+/// read_char_minibuf_menu_prompt reads its answer: no keymap, and t for
+/// the previous event.
+pub(crate) fn read_menu_prompt_char(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    commandflag: i32,
+    quit_char_is_event: bool,
+) -> Result<Value, LispError> {
+    read_command_event(
+        interp,
+        env,
+        commandflag,
+        quit_char_is_event,
+        Value::T,
+        Value::Nil,
+    )
+}
+
+/// Whether the event read_char returned last came from a mouse menu
+/// (its *USED_MOUSE_MENU), cleared by the read.
+pub(crate) fn take_read_used_mouse_menu() -> bool {
+    READ_USED_MOUSE_MENU.replace(false)
+}
+
+/// Whether read_char returned the event read last from a menu prompt,
+/// without adding it to this-command-keys; cleared by the read.
+pub(crate) fn take_read_menu_exit() -> bool {
+    READ_MENU_EXIT.replace(false)
+}
+
+/// read_char: MAP is the keymap the key sequence has reached (nil
+/// outside one), whose prompt read_char_minibuf_menu_prompt or
+/// read_char_x_menu_prompt may show a menu of.  COMMANDFLAG is 1 when
+/// read_key_sequence reads for the command loop (redisplay and auto-save
+/// both), 0 when anything else reads (redisplay, no auto-save), -2 when
+/// read_menu_command does (neither).
 fn read_command_event(
     interp: &mut Interpreter,
     env: &mut Env,
+    commandflag: i32,
     quit_char_is_event: bool,
     prev_event: Value,
+    map: Value,
 ) -> Result<Value, LispError> {
-    let event = read_command_event_1(interp, env, quit_char_is_event, prev_event)?;
+    READ_USED_MOUSE_MENU.set(false);
+    READ_MENU_EXIT.set(false);
+    let event = loop {
+        let event = read_command_event_1(
+            interp,
+            env,
+            commandflag,
+            quit_char_is_event,
+            prev_event,
+            map,
+        )?;
+        // retry: a special event processed, read_char starts again.
+        if !READ_CHAR_RETRY.take() {
+            break event;
+        }
+    };
+    // exit: input_was_pending = input_pending, which kbd_buffer_get_event
+    // left as readable_events.
+    kbd_input::note_input_was_pending(interp);
     read_char_help_form(interp, env, quit_char_is_event, event)
 }
 
@@ -2079,7 +2200,7 @@ fn read_char_help_form(
     add_read_event_to_command_keys(interp, event, env)?;
     interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
     run_help_form(interp, env, &mut |interp, env| {
-        read_command_event(interp, env, quit_char_is_event, Value::Nil)
+        read_command_event(interp, env, 0, quit_char_is_event, Value::Nil, Value::Nil)
     })
 }
 
@@ -2146,8 +2267,10 @@ pub(crate) fn run_help_form(
 fn read_command_event_1(
     interp: &mut Interpreter,
     env: &mut Env,
+    commandflag: i32,
     quit_char_is_event: bool,
     prev_event: Value,
+    map: Value,
 ) -> Result<Value, LispError> {
     if let Some(event) = pop_pending_input_event_value(interp, env)? {
         return Ok(event);
@@ -2157,10 +2280,10 @@ fn read_command_event_1(
     let cursor_in_echo_area = interp
         .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
         .is_some_and(|value| value.is_truthy());
-    // Redisplay if no pending input (COMMANDFLAG >= 0): the frontend
-    // paints unless input is pending, when redisplay_internal runs only
-    // the window change functions.
-    run_tty_frame_redraw(interp, env);
+    // If redisplay was requested.
+    if commandflag >= 0 {
+        kbd_input::read_char_redisplay(interp, env)?;
+    }
     // An embedder's (or a test's) event feed without a keyboard buffer
     // hands over its events one at a time, None ending the feed.
     if !has_tty_event_poller()
@@ -2182,14 +2305,114 @@ fn read_command_event_1(
     // (sit_for `echo-keystrokes', then echo_now) once the idle timers
     // have started.
     echo_before_wait(interp, env)?;
+    // Try reading a character via menu prompting in the minibuf.  Try
+    // this before the sit-for, because the sit-for would do the wrong
+    // thing if we are supposed to do menu prompting.  If
+    // EVENT_HAS_PARAMETERS then we are reading after a mouse event so
+    // don't try a minibuf menu.
+    let interactive = !executing_kbd_macro_p(interp, env)
+        && !interp
+            .forwarded_c_value("noninteractive", &Env::new())
+            .is_some_and(|value| value.is_truthy());
+    // EVENT_HAS_PARAMETERS: CONSP.
+    let has_parameters = prev_event.is_cons();
+    let unread_pending = interp
+        .lookup_var_key(cached_symbol!("unread-command-events"), env)
+        .is_some_and(|value| value.is_cons());
+    if keymapp(interp, map, env)
+        && interactive
+        && !prev_event.is_nil()
+        && !has_parameters
+        // Don't bring up a menu if we already have another event.
+        && !unread_pending
+        && !kbd_input::detect_input_pending_run_timers(interp, env, false)?
+    {
+        let c = crate::lisp::primitives::menu::read_char_minibuf_menu_prompt(
+            interp,
+            commandflag,
+            quit_char_is_event,
+            map,
+            env,
+        )?;
+        if !c.is_nil() {
+            // goto exit: the menu's own read_char recorded the key and
+            // added it to this-command-keys.
+            READ_RECORDED.set(true);
+            READ_MENU_EXIT.set(true);
+            return Ok(c);
+        }
+    }
     tty_note_idle_start(interp, env);
-    let mut echo_deadline = echo_timer(interp, env, prev_event)?
-        .and_then(|seconds| std::time::Instant::now().checked_add(seconds));
+    // If in middle of key sequence and minibuffer not active, start
+    // echoing if enough time elapses -- at once after a mouse event, as a
+    // menu is probably about to show: sit_for (Vecho_keystrokes, 1, 1),
+    // which process output also ends, then the echo unless events are to
+    // be reread.
+    if echo_timer(interp, env, prev_event)?.is_some() {
+        let timeout = interp
+            .lookup_var_key(cached_symbol!("echo-keystrokes"), env)
+            .unwrap_or(Value::Nil);
+        if kbd_input::sit_for(interp, env, timeout, true, 1)? {
+            echo_timer_expired(interp, env)?;
+        }
+    }
+    // Maybe auto save due to number of keystrokes.
+    if commandflag != 0
+        && commandflag != -2
+        && kbd_input::keystroke_auto_save_due(interp, env)
+        && !kbd_input::detect_input_pending_run_timers(interp, env, false)?
+    {
+        let no_message = kbd_input::auto_save_no_message(interp, env);
+        crate::lisp::primitives::file_io::do_auto_save(interp, env, no_message, Value::Nil)?;
+        // Hooks can actually change some buffers in auto save.
+        run_tty_frame_redraw(interp, env);
+    }
+    // Try reading using an X menu.  This is never confused with reading
+    // using the minibuf because the recursive call of read_char in
+    // read_char_minibuf_menu_prompt does not pass on any keymaps.
+    let head = prev_event.car_if_list().unwrap_or(Value::Nil);
+    if keymapp(interp, map, env)
+        && interactive
+        && !prev_event.is_nil()
+        && has_parameters
+        && !head.is_key(cached_symbol!("menu-bar"))
+        && !head.is_key(cached_symbol!("tab-bar"))
+        && !head.is_key(cached_symbol!("tool-bar"))
+        // Don't bring up a menu if we already have another event.
+        && !unread_pending
+    {
+        let mut used_mouse_menu = false;
+        let c = crate::lisp::primitives::menu::read_char_x_menu_prompt(
+            interp,
+            map,
+            prev_event,
+            &mut used_mouse_menu,
+            env,
+        )?;
+        READ_USED_MOUSE_MENU.set(used_mouse_menu);
+        // The menu's keys were recorded as record_menu_key records them.
+        READ_RECORDED.set(true);
+        READ_MENU_EXIT.set(true);
+        // Now that we have read an event, Emacs is not idle.
+        tty_note_idle_end();
+        return Ok(c);
+    }
+    // Whether read_char's idle step (its auto-save after
+    // `auto-save-timeout' and maybe_gc) has run: once, after the echo's
+    // own wait.
+    let mut idle_done = false;
     let result = (|| loop {
         // kbd_buffer_get_event: `unread-command-events' before the
         // keyboard buffer.
         if let Some(event) = take_unread_command_event(interp, env) {
             count_read_event(interp);
+            return Ok(event);
+        }
+        // Read something from current KBOARD's side queue, if possible.
+        if let Some(event) = take_kbd_queue_event(interp, env) {
+            interp.keyboard_input.last_event_reread = false;
+            record_external_input_event(interp, &event, env);
+            read_char_non_reread(interp, &event, env)?;
             return Ok(event);
         }
         if let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area, None) {
@@ -2206,21 +2429,31 @@ fn read_command_event_1(
                 Some(None) => {}
             }
         }
-        match kbd_input::kbd_buffer_get_event_wait(interp, env, echo_deadline, true)? {
+        // Maybe autosave and/or garbage collect due to idleness
+        // (INTERACTIVE, and no event read yet).
+        if !idle_done {
+            idle_done = true;
+            if interactive {
+                kbd_input::read_char_idle(interp, env, commandflag)?;
+                continue;
+            }
+        }
+        match kbd_input::kbd_buffer_get_event_wait(interp, env, None, true)? {
             kbd_input::KbdWait::Quit => {
                 if let Some(event) = read_char_quit(interp, env)? {
                     return Ok(event);
                 }
             }
-            kbd_input::KbdWait::TimedOut if echo_deadline.is_some() => {
-                // sit_for's t: no input arrived (none is pending) in
-                // `echo-keystrokes' seconds; the echo shows on the glass
-                // at once (message3_nolog's echo_area_display).
-                echo_deadline = None;
-                if !kbd_input::detect_input_pending(interp, env)? {
-                    echo_timer_expired(interp, env)?;
-                    run_tty_frame_redraw(interp, env);
+            // A special event's binding ran: read_char's goto retry, or,
+            // when the binding left another buffer current (which may have
+            // changed the keymaps), -2, as if there were input in another
+            // keyboard, for read_key_sequence to recalculate them.
+            kbd_input::KbdWait::Special { buffer_changed } => {
+                if buffer_changed {
+                    return Ok(Value::Integer(-2));
                 }
+                READ_CHAR_RETRY.set(true);
+                return Ok(Value::Nil);
             }
             kbd_input::KbdWait::Ready | kbd_input::KbdWait::TimedOut => {}
         }
@@ -2230,6 +2463,30 @@ fn read_command_event_1(
     // The quit character's quit, if `quit-flag' still holds it, comes at
     // the next quit check after the read returns.
     result
+}
+
+/// read_char's read from the kboard's side queue, kbd_queue: its first
+/// event while kbd_queue_has_data, a switch-frame event's frame becoming
+/// internal_last_event_frame, which `last-event-frame' is set to.
+fn take_kbd_queue_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
+    let input = &mut interp.keyboard_input;
+    if !input.kbd_queue_has_data || input.kbd_queue.is_empty() {
+        return None;
+    }
+    let event = input.kbd_queue.remove(0);
+    if input.kbd_queue.is_empty() {
+        input.kbd_queue_has_data = false;
+    }
+    if key_sequence::switch_frame_event_p(interp, event) {
+        interp.keyboard_input.internal_last_event_frame =
+            event.cons_values().and_then(|(_, tail)| tail.car_if_list());
+    }
+    let frame = interp
+        .keyboard_input
+        .internal_last_event_frame
+        .unwrap_or(Value::Nil);
+    interp.set_variable_key(cached_symbol!("last-event-frame"), frame, env);
+    Some(event)
 }
 
 /// read_char's setjmp for quit_throw_to_read_char: the quit character,
@@ -2430,235 +2687,6 @@ fn wrong_number_of_args(name: &str, count: usize) -> LispError {
     LispError::WrongNumberOfArgs(name.into(), count)
 }
 
-/// keyboard.c's menu_bar_items: the menu bar's top-level captions in
-/// display order.  Every active keymap's `menu-bar' prefix is scanned
-/// lowest-precedence first (global map, then local, then minor modes),
-/// so global menus lead the row and higher-precedence maps append or
-/// merge into existing entries; the keys named by
-/// `menu-bar-final-items' move to the end (Help).
-pub(crate) fn menu_bar_row_captions(interp: &mut Interpreter, env: &mut Env) -> Vec<String> {
-    menu_bar_row_items(interp, env)
-        .into_iter()
-        .map(|(caption, _, _)| caption)
-        .collect()
-}
-
-/// The menu bar's items with their display geometry: (CAPTION, KEY,
-/// COLUMN), column being where the caption starts on the row — the
-/// coordinates menu.c's menu-bar-menu-at-x-y answers from.
-pub(crate) fn menu_bar_row_items(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Vec<(String, Value, usize)> {
-    let maps = crate::lisp::alloc::RootedVec::from_vec(
-        super::call(interp, "current-active-maps", &[Value::T], env)
-            .ok()
-            .and_then(|maps| maps.to_vec().ok())
-            .unwrap_or_default(),
-    );
-    let menu_bar_key = Value::vector([Value::symbol("menu-bar")]);
-    let mut items = crate::lisp::alloc::RootedVec::<(Value, String)>::new();
-    interp.with_lisp_stack_roots(&menu_bar_key, |interp| {
-        for map in maps.iter().rev() {
-            let Ok(menu) = super::call(interp, "lookup-key", &[*map, menu_bar_key], env) else {
-                continue;
-            };
-            if !super::is_keymap_value(interp, &menu) {
-                continue;
-            }
-            // keyboard.c:menu_bar_items uses map_keymap_canonical, whose
-            // safe call to unchanged subr.el resolves included maps,
-            // inherited prefixes and duplicate definitions before display.
-            let Ok(menu) = interp.call_function_value(
-                Value::symbol("keymap-canonicalize"),
-                Some("keymap-canonicalize"),
-                &[menu],
-                env,
-            ) else {
-                continue;
-            };
-            let _ = super::map_keymap_own_entries(
-                interp,
-                menu,
-                &mut |interp, key, item, env| {
-                    if crate::lisp::types::eq_symbol_named(item, "undefined") {
-                        items.retain(|(existing, _)| !crate::lisp::types::eq(*existing, key));
-                    } else if let Some(caption) = menu_item_caption(interp, env, &item)
-                        && !items
-                            .iter()
-                            .any(|(existing, _)| crate::lisp::types::eq(*existing, key))
-                    {
-                        items.push((key, caption));
-                    }
-                    Ok(())
-                },
-                env,
-            );
-        }
-    });
-    if let Some(final_items) = interp
-        .lookup_var_key(cached_symbol!("menu-bar-final-items"), env)
-        .and_then(|value| value.to_vec().ok())
-    {
-        for name in final_items {
-            if let Some(position) = items
-                .iter()
-                .position(|(key, _)| crate::lisp::types::eq(*key, name))
-            {
-                let item = items.remove(position);
-                items.push(item);
-            }
-        }
-    }
-    let mut column = 0usize;
-    items
-        .into_iter()
-        .map(|(key, caption)| {
-            let start = column;
-            column += caption.chars().count() + 1;
-            (caption, key, start)
-        })
-        .collect()
-}
-
-/// parse_menu_item for the menu bar: the caption of a live top-level
-/// item, or None when the item is invisible, disabled, undefined, or
-/// not a menu item at all.
-fn menu_item_caption(interp: &mut Interpreter, env: &mut Env, item: &Value) -> Option<String> {
-    let (caption, def, enabled) = menu_item_details(interp, env, item)?;
-    // The menu bar drops disabled and definition-less items
-    // (parse_menu_item's inmenubar rules); a dropdown keeps them greyed.
-    (enabled && !def.is_nil()).then_some(caption)
-}
-
-/// parse_menu_item for a dropdown pane: (CAPTION, DEF, ENABLED) of a
-/// visible item — disabled and unselectable entries stay, drawn in
-/// tty-menu-disabled-face.  None only for invisible or non-items.
-pub(crate) fn menu_item_details(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    item: &Value,
-) -> Option<(String, Value, bool)> {
-    menu_item_details_with_button(interp, env, item).map(|(c, d, e, _)| (c, d, e))
-}
-
-/// A parsed pane item: (CAPTION, DEF, ENABLED, BUTTON), button being
-/// the :button spec's (TYPE-KEYWORD, SELECTED) for toggle/radio items —
-/// menu.c's checkbox prefix source.
-pub(crate) type MenuItemDetails = (String, Value, bool, Option<(String, bool)>);
-
-/// menu_item_details plus the :button spec.
-pub(crate) fn menu_item_details_with_button(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    item: &Value,
-) -> Option<MenuItemDetails> {
-    if !matches!(item.kind(), Kind::Cons(_)) {
-        return None;
-    }
-    let eval_property = |interp: &mut Interpreter, env: &mut Env, form: &Value| match form.kind() {
-        Kind::Symbol(name) if !name.is_named("t") && !name.is_named("nil") => {
-            interp.lookup_var_symbol(&name, env).unwrap_or(Value::Nil)
-        }
-        Kind::Cons(_) => interp.eval(form, env).unwrap_or(Value::Nil),
-        other => other.value(),
-    };
-    let car = item.car_if_list()?;
-    if let Ok(name) = crate::lisp::primitives::string_text(&car) {
-        // Old format (NAME [HELP-STRING] [CACHE] . DEF).
-        let mut def = item.cdr_if_list()?;
-        if def.car().is_ok_and(|help| help.is_string()) {
-            def = def.cdr_if_list()?;
-        }
-        // An obsolete key binding cache: a cons whose car is nil or a vector.
-        if def.car().is_ok_and(|cache| {
-            matches!(
-                cache.car().map(|v| v.kind()),
-                Ok(Kind::Nil | Kind::Vector(_))
-            )
-        }) {
-            def = def.cdr_if_list()?;
-        }
-        // Unselectable text (a separator) still draws in the enabled
-        // face; only the menu bar drops definition-less items.
-        return Some((name, def, true, None));
-    }
-    if !crate::lisp::types::eq_symbol_named(car, "menu-item") {
-        return None;
-    }
-    // New format (menu-item NAME DEF [CACHE] . PROPS).
-    let rest = item.cdr_if_list()?.to_vec().ok()?;
-    let name_form = *rest.first()?;
-    let mut def = rest.get(1).cloned().unwrap_or(Value::Nil);
-    let mut index = 2;
-    if matches!(rest.get(2).map(|v| v.kind()), Some(Kind::Cons(_))) {
-        index = 3;
-    }
-    let mut filter = None;
-    let mut enabled = true;
-    let mut button = None;
-    while index + 1 < rest.len() {
-        let Kind::Symbol(keyword) = rest[index].kind() else {
-            break;
-        };
-        let value = &rest[index + 1];
-        match keyword.as_ref() {
-            ":visible" if eval_property(interp, env, value).is_nil() => {
-                return None;
-            }
-            ":enable" if eval_property(interp, env, value).is_nil() => {
-                enabled = false;
-            }
-            ":filter" => filter = Some(*value),
-            ":button" => {
-                if let (Ok(Kind::Symbol(kind)), Ok(selected)) =
-                    (value.car().map(|v| v.kind()), value.cdr())
-                {
-                    let selected = eval_property(interp, env, &selected).is_truthy();
-                    button = Some((kind.to_string(), selected));
-                }
-            }
-            _ => {}
-        }
-        index += 2;
-    }
-    if let Some(filter) = filter {
-        def = interp
-            .call_function_value(filter, None, std::slice::from_ref(&def), env)
-            .unwrap_or(Value::Nil);
-    }
-    let name = eval_property(interp, env, &name_form);
-    let caption = crate::lisp::primitives::string_text(&name).ok()?;
-    Some((caption, def, enabled, button))
-}
-
-/// The menu bar's cheap per-redraw change signal: how many minor-mode
-/// maps are live plus whether an overriding map is installed.  Entering
-/// isearch (or any minor mode with a map) changes it, which triggers
-/// the recompute GNU gets from update_mode_lines — without walking the
-/// full active-keymap set on every keystroke.
-pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> usize {
-    let minors = interp
-        .lookup_var_key(cached_symbol!("minor-mode-map-alist"), env)
-        .and_then(|alist| alist.to_vec().ok())
-        .map(|entries| {
-            entries
-                .iter()
-                .filter(|entry| {
-                    entry.car().is_ok_and(|mode| {
-                        matches!(mode.kind(), Kind::Symbol(name)
-                            if interp.lookup_var_symbol(&name, env).is_some_and(|on| on.is_truthy()))
-                    })
-                })
-                .count()
-        })
-        .unwrap_or(0);
-    let overriding = interp
-        .lookup_var_key(cached_symbol!("overriding-terminal-local-map"), env)
-        .is_some_and(|map| map.is_truthy());
-    minors + usize::from(overriding)
-}
-
 /// read_char's events before the keyboard, in its order:
 /// `unread-post-input-method-events' (the rest of what an input method
 /// returned, not given to it again), `unread-command-events', then
@@ -2712,32 +2740,58 @@ pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env)
     None
 }
 
-/// Pop the first `unread-command-events' entry, unwrapping GNU's
-/// `(t . EVENT)' requeued-event form.
+/// read_char's `unread-command-events' branch: the first entry popped,
+/// `(t . EVENT)' (sit-for's requeued keys inside universal-argument) not
+/// reread, anything else reread and `(no-record . EVENT)' already
+/// recorded; then read_char_x_menu_prompt's `(EVENT . disabled)' undone
+/// (a symbol or fixnum the menu gave), which, like a menu-, tab- or
+/// tool-bar event, used the mouse.  The event and whether it counts as
+/// recorded.
 fn take_from_unread_command_events(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Option<(Value, bool)> {
-    let event = pop_unread_event_cell(interp, env)?;
-    match event.kind() {
-        Kind::Cons(_) if matches!(event.car().map(|v| v.kind()), Ok(Kind::T)) => {
-            interp.keyboard_input.last_event_reread = false;
-            event.cdr_if_list().map(|event| (event, false))
-        }
-        // (no-record . EVENT): EVENT, reread and not recorded again.
-        Kind::Cons(_)
-            if event
-                .car()
-                .is_ok_and(|head| crate::lisp::types::eq(head, Value::symbol("no-record"))) =>
+    let mut c = pop_unread_event_cell(interp, env)?;
+    let mut reread = false;
+    let mut recorded = false;
+    // Undo what sit-for did when it unread additional keys inside
+    // universal-argument.
+    if let Some((head, tail)) = c.cons_values()
+        && crate::lisp::types::eq(head, Value::T)
+    {
+        c = tail;
+    } else {
+        if let Some((head, tail)) = c.cons_values()
+            && head.is_key(cached_symbol!("no-record"))
         {
-            interp.keyboard_input.last_event_reread = true;
-            event.cdr_if_list().map(|event| (event, true))
+            c = tail;
+            recorded = true;
         }
-        _ => {
-            interp.keyboard_input.last_event_reread = true;
-            Some((event, false))
-        }
+        reread = true;
     }
+    // Undo what read_char_x_menu_prompt did when it unread additional
+    // keys returned by Fx_popup_menu.
+    let mut was_disabled = false;
+    if let Some((head, tail)) = c.cons_values()
+        && tail.is_key(cached_symbol!("disabled"))
+        && (head.is_symbol() || matches!(head.kind(), Kind::Integer(_)))
+    {
+        was_disabled = true;
+        c = head;
+    }
+    // If the queued event is something that used the mouse, set
+    // used_mouse_menu accordingly.  Also check was_disabled so
+    // last-nonmenu-event won't return a bad value when submenus are
+    // involved.
+    if c.is_key(cached_symbol!("tool-bar"))
+        || c.is_key(cached_symbol!("tab-bar"))
+        || c.is_key(cached_symbol!("menu-bar"))
+        || was_disabled
+    {
+        READ_USED_MOUSE_MENU.set(true);
+    }
+    interp.keyboard_input.last_event_reread = reread;
+    Some((c, recorded))
 }
 
 thread_local! {
@@ -2745,6 +2799,13 @@ thread_local! {
     /// taken from the unread lists or a macro until it is recorded past
     /// the input method step (record_unrecorded_event).
     static READ_RECORDED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// read_char's *USED_MOUSE_MENU for the event read last.
+    static READ_USED_MOUSE_MENU: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether read_char returned the event read last from a menu prompt
+    /// (`goto exit'), past its add_command_key: record_menu_key recorded
+    /// what an X menu chose, the minibuffer menu's read_char what it
+    /// read.
+    static READ_MENU_EXIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// An event taken from the executing keyboard macro: recorded past the
@@ -3119,9 +3180,11 @@ pub(crate) fn read_tty_event_with_timeout(
         if let Some(event) = pop_pending_input_event_value(interp, env)? {
             return Ok(Some(event));
         }
-        // read_char before it waits: the echo area's test (a read with an
-        // end time runs no echo timer).
+        // read_char before it waits: its redisplay (COMMANDFLAG 0), then
+        // the echo area's test (a read with an end time runs no echo
+        // timer).
         if std::mem::take(&mut before_wait) {
+            kbd_input::read_char_redisplay(interp, env)?;
             echo_before_wait(interp, env)?;
         }
         let cursor_in_echo_area = interp
@@ -3150,207 +3213,16 @@ pub(crate) fn read_tty_event_with_timeout(
                     return Ok(Some(event));
                 }
             }
+            // A special event's binding ran: read_char's goto retry, or its
+            // -2 when the binding left another buffer current.
+            kbd_input::KbdWait::Special { buffer_changed } => {
+                if buffer_changed {
+                    return Ok(Some(Value::Integer(-2)));
+                }
+                before_wait = true;
+            }
             kbd_input::KbdWait::Ready => {}
         }
-    }
-}
-
-/// One dropdown pane ready for the glass: term.c's tty_menu built from
-/// a menu keymap, item text already NAME-padded-plus-key-hint as
-/// tty_menu_show lays it out.
-pub(crate) struct TtyMenuPane {
-    pub title: String,
-    pub items: Vec<TtyMenuPaneItem>,
-    /// Pane text width (the widest NAME+DESCRIP); the drawn box adds
-    /// the two padding blanks.
-    pub width: usize,
-    /// tty_menu_activate's KBD_NAVIGATION: the next and previous menu
-    /// commands leave the menu (for its caller to open the adjacent
-    /// menu-bar menu) only when it was opened from the keyboard.
-    pub kbd_navigation: bool,
-}
-
-pub(crate) struct TtyMenuPaneItem {
-    pub text: String,
-    pub enabled: bool,
-    pub key: Value,
-}
-
-pub(crate) enum TtyMenuOutcome {
-    Selected(usize),
-    NextMenu,
-    PrevMenu,
-    /// A separator or disabled item was chosen: no selection, no quit
-    /// signal (GNU's TTYM_IA_SELECT).
-    NoSelect,
-    Quit,
-}
-
-// The frontend's modal dropdown executor — term.c's tty_menu_activate.
-thread_local! {
-    static TTY_MENU_EXECUTOR: std::cell::RefCell<Option<TtyMenuExecutor>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-pub(crate) type TtyMenuExecutor = Box<
-    dyn FnMut(
-        &mut Interpreter,
-        &mut Env,
-        &TtyMenuPane,
-        usize,
-        usize,
-    ) -> Result<TtyMenuOutcome, LispError>,
->;
-
-pub(crate) fn set_tty_menu_executor(executor: Option<TtyMenuExecutor>) {
-    TTY_MENU_EXECUTOR.with_borrow_mut(|slot| *slot = executor);
-}
-
-pub(crate) fn has_tty_menu_executor() -> bool {
-    TTY_MENU_EXECUTOR.with_borrow(|slot| slot.is_some())
-}
-
-pub(crate) fn run_tty_menu_executor(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    pane: &TtyMenuPane,
-    x: usize,
-    y: usize,
-) -> Result<Option<TtyMenuOutcome>, LispError> {
-    let Some(mut executor) = TTY_MENU_EXECUTOR.with_borrow_mut(|slot| slot.take()) else {
-        return Ok(None);
-    };
-    let outcome = executor(interp, env, pane, x, y);
-    TTY_MENU_EXECUTOR.with_borrow_mut(|slot| {
-        if slot.is_none() {
-            *slot = Some(executor);
-        }
-    });
-    outcome.map(Some)
-}
-
-/// tty_menu_show's pane construction: walk MENU's entries in keymap
-/// order, item text = NAME padded to the widest name + "  KEY-HINT"
-/// (parse_menu_item's equivalent-key description).
-pub(crate) fn tty_menu_pane_from_keymap(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    menu: &Value,
-    title: &str,
-) -> TtyMenuPane {
-    let menu = *menu;
-    #[allow(clippy::type_complexity)]
-    let mut raw: Vec<(Value, String, Value, bool, Option<(String, bool)>)> = Vec::new();
-    let mut tail = menu.cdr().unwrap_or(Value::Nil);
-    let mut seen: Vec<Value> = Vec::new();
-    let same_key = |a: &Value, b: &Value| match (a.kind(), b.kind()) {
-        (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
-        (Kind::Integer(a), Kind::Integer(b)) => a == b,
-        _ => false,
-    };
-    while let Kind::Cons(_) = tail.kind() {
-        let Ok(entry) = tail.car() else { break };
-        let next = tail.cdr().unwrap_or(Value::Nil);
-        if let Kind::Cons(_) = entry.kind() {
-            let key = entry.car().unwrap_or(Value::Nil);
-            let item = entry.cdr().unwrap_or(Value::Nil);
-            if !seen.iter().any(|earlier| same_key(earlier, &key)) {
-                seen.push(key);
-                if let Some((caption, def, enabled, button)) =
-                    menu_item_details_with_button(interp, env, &item)
-                {
-                    // A tty submenu item carries GNU's " >" marker,
-                    // counted by the pane's width scan.
-                    let caption = if super::is_keymap_value(interp, &def)
-                        || matches!(def.kind(), Kind::Symbol(name)
-                            if interp.lookup_function_symbol(&name, env)
-                                .is_ok_and(|f| super::is_keymap_value(interp, &f)))
-                    {
-                        format!("{caption} >")
-                    } else {
-                        caption
-                    };
-                    raw.push((key, caption, def, enabled, button));
-                }
-            }
-        }
-        tail = next;
-    }
-    // menu.c's checkbox column: once any item in the pane is a
-    // toggle/radio button, every other item gains a four-blank prefix
-    // so captions line up with "[X] " — separators and empty names
-    // excepted.  A buttonless pane keeps bare captions (Edit).
-    let has_buttons = raw.iter().any(|(_, _, _, _, button)| button.is_some());
-    let raw: Vec<(Value, String, Value, bool)> = raw
-        .into_iter()
-        .map(|(key, caption, def, enabled, button)| {
-            let prefixed = match button {
-                Some((kind, selected)) => {
-                    let mark = match (kind.as_str(), selected) {
-                        (":radio", true) => "(*) ",
-                        (":radio", false) => "( ) ",
-                        (_, true) => "[X] ",
-                        (_, false) => "[ ] ",
-                    };
-                    format!("{mark}{caption}")
-                }
-                None if has_buttons && !caption.is_empty() && !caption.starts_with('-') => {
-                    format!("    {caption}")
-                }
-                None => caption,
-            };
-            (key, prefixed, def, enabled)
-        })
-        .collect();
-    // The widest NAME sets the padding column for every key hint.
-    let max_name = raw
-        .iter()
-        .map(|(_, caption, _, _)| caption.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut items = Vec::new();
-    let mut width = 0usize;
-    for (key, caption, def, enabled) in raw {
-        // keyboard.c:parse_menu_item requests FIRSTONLY=t. That applies
-        // the preferred-modifier rules and rejects menu paths; taking
-        // the first entry of the complete binding list is different.
-        let hint = if matches!(def.kind(), Kind::Symbol(_)) {
-            super::call(
-                interp,
-                "where-is-internal",
-                &[def, Value::Nil, Value::T],
-                env,
-            )
-            .ok()
-            .filter(|key| !key.is_nil())
-            .and_then(|key| {
-                super::call(interp, "key-description", &[key], env)
-                    .ok()
-                    .and_then(|description| crate::lisp::primitives::string_text(&description).ok())
-            })
-        } else {
-            None
-        };
-        let text = match hint {
-            Some(hint) => {
-                let mut text = caption.clone();
-                for _ in caption.chars().count()..max_name {
-                    text.push(' ');
-                }
-                text.push_str("  ");
-                text.push_str(&hint);
-                text
-            }
-            None => caption,
-        };
-        width = width.max(text.chars().count());
-        items.push(TtyMenuPaneItem { text, enabled, key });
-    }
-    TtyMenuPane {
-        title: title.to_string(),
-        items,
-        width,
-        kbd_navigation: true,
     }
 }
 
@@ -3380,7 +3252,7 @@ pub(crate) fn run_post_command_hooks(
     // If displaying a message, resize the echo area window to fit that
     // message's size exactly.
     if crate::lisp::primitives::dispatch::display::echo_area_message_value().is_some() {
-        command_loop::resize_echo_area_exactly();
+        command_loop::resize_echo_area_exactly(interp, env);
     }
     if interp
         .lookup_var_key(cached_symbol!("delayed-warnings-list"), env)

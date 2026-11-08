@@ -318,12 +318,11 @@ impl Interpreter {
 
     #[inline(never)]
     fn eval_sub(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
-        // A form below the outermost evaluation and below the call gate (no
-        // termination or quit pending, the depth within its bound): the
-        // entry tests read the state through one borrow, and every other
-        // case takes the general entry.
+        // A form below the call gate (no termination or quit pending, the
+        // depth within its bound): the entry tests read the state through
+        // one borrow, and every other case takes the general entry.
         let state: &mut InterpreterState = self;
-        if state.lisp_eval_depth == 0 || state.lisp_eval_depth as i64 >= state.call_depth_gate {
+        if state.lisp_eval_depth as i64 >= state.call_depth_gate {
             return self.eval_sub_general(expr, env);
         }
         let Some(cell) = expr.cons_ref() else {
@@ -339,30 +338,17 @@ impl Interpreter {
         if state.lisp_eval_depth as i64 > state.max_lisp_eval_depth
             && self.lisp_eval_depth_exceeded()
         {
-            let reached = self.lisp_eval_depth;
-            self.lisp_eval_depth -= 1;
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("excessive-lisp-nesting"),
-                Value::Integer(reached as i64),
-            ])));
+            return Err(self.excessive_lisp_nesting(env));
         }
         let result = self.eval_cons(expr, cell, env);
         self.lisp_eval_depth -= 1;
         result
     }
 
-    /// eval_sub at the outermost evaluation, at the call gate, or with a
-    /// termination or a quit pending.
+    /// eval_sub at the call gate, or with a termination or a quit pending.
     #[inline(never)]
     fn eval_sub_general(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
-        // The entry tests read the state through one borrow.
-        let state: &InterpreterState = self;
-        let outermost = state.lisp_eval_depth == 0;
-        let terminating = state.pending_termination.is_some();
-        if outermost {
-            self.clear_batch_error_backtrace();
-        }
-        if terminating {
+        if self.pending_termination.is_some() {
             return Err(LispError::Terminate(
                 self.pending_termination()
                     .cloned()
@@ -373,11 +359,7 @@ impl Interpreter {
         // quit, collection and depth tests; the body below is inlined here,
         // one function as eval_sub is (its result crossed two frames before).
         if !expr.is_cons() {
-            let result = self.eval_inner(expr, env);
-            if outermost && result.is_ok() {
-                self.clear_batch_error_backtrace();
-            }
-            return result;
+            return self.eval_inner(expr, env);
         }
         // eval.c:eval_sub checks for a pending quit after the symbol/scalar
         // fast paths and before GC, depth accounting, or form dispatch.
@@ -409,18 +391,14 @@ impl Interpreter {
         // carrying the depth -- a condition this tree already defines
         // (eval.rs:732) and never signalled.
         if deeper && self.lisp_eval_depth_exceeded() {
-            let reached = self.lisp_eval_depth;
+            return Err(self.excessive_lisp_nesting(env));
+        }
+        if self.c_stack_test_due() && continuations::c_stack_overflowed() {
             self.lisp_eval_depth -= 1;
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("excessive-lisp-nesting"),
-                Value::Integer(reached as i64),
-            ])));
+            return Err(self.c_stack_overflow(env));
         }
         let result = self.eval_inner(expr, env);
         self.lisp_eval_depth -= 1;
-        if outermost && result.is_ok() {
-            self.clear_batch_error_backtrace();
-        }
         result
     }
 
@@ -1713,14 +1691,32 @@ impl Interpreter {
         self.maybe_quit(env)?;
         self.lisp_eval_depth += 1;
         if self.lisp_eval_depth_exceeded() {
-            let reached = self.lisp_eval_depth;
+            return Err(self.excessive_lisp_nesting(env));
+        }
+        if self.c_stack_test_due() && continuations::c_stack_overflowed() {
             self.lisp_eval_depth -= 1;
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("excessive-lisp-nesting"),
-                Value::Integer(reached as i64),
-            ])));
+            return Err(self.c_stack_overflow(env));
         }
         Ok(())
+    }
+
+    /// eval_sub's and Ffuncall's `xsignal1 (Qexcessive_lisp_nesting,
+    /// make_fixnum (lisp_eval_depth))': signal_or_quit runs at the depth
+    /// reached, so a `handler-bind' handler's max_ensure_room counts from
+    /// it, and the depth goes back as the signal leaves the call.
+    #[cold]
+    #[inline(never)]
+    fn excessive_lisp_nesting(&mut self, env: &mut Env) -> LispError {
+        let reached = self.lisp_eval_depth;
+        let error = self.signal_or_quit(
+            LispError::SignalValue(Value::list([
+                Value::symbol("excessive-lisp-nesting"),
+                Value::Integer(reached as i64),
+            ])),
+            env,
+        );
+        self.lisp_eval_depth -= 1;
+        error
     }
 
     /// bytecode.c's Bcall entry: maybe_quit, then the depth test, which
@@ -1737,6 +1733,10 @@ impl Interpreter {
                 "Lisp nesting exceeds `max-lisp-eval-depth'",
                 &[],
             ));
+        }
+        if self.c_stack_test_due() && continuations::c_stack_overflowed() {
+            self.lisp_eval_depth -= 1;
+            return Err(self.c_stack_overflow(env));
         }
         Ok(())
     }
@@ -1781,20 +1781,24 @@ impl Interpreter {
         Ok(())
     }
 
-    /// eval.c:process_quit_flag, reached only with a non-nil quit-flag
-    /// that `inhibit-quit' does not hold back.
-    #[cold]
-    fn process_quit_flag(&mut self, env: &mut Env) -> Result<(), LispError> {
-        let flag = self.quit_flag_value();
-
-        // process_quit_flag writes Vquit_flag, not a possibly detached plain
-        // Lisp binding with the same name.
+    /// `Vquit_flag = Qnil': the store into the C variable, whichever
+    /// binding of `quit-flag' is in place, not a detached plain Lisp
+    /// binding with the same name.
+    pub(crate) fn clear_quit_flag_in_place(&mut self) {
         if self.forwarded_variable_detached(&cached_symbol!("quit-flag").symbol()) {
             self.quit_flag = Value::Nil;
             self.refresh_call_depth_gate();
         } else {
             self.set_symbol_value_cell("quit-flag", Value::Nil);
         }
+    }
+
+    /// eval.c:process_quit_flag, reached only with a non-nil quit-flag
+    /// that `inhibit-quit' does not hold back.
+    #[cold]
+    fn process_quit_flag(&mut self, env: &mut Env) -> Result<(), LispError> {
+        let flag = self.quit_flag_value();
+        self.clear_quit_flag_in_place();
         if crate::lisp::types::eq_symbol_named(flag, "kill-emacs") {
             return primitives::call(self, "kill-emacs", &[Value::Nil, Value::Nil], env).map(drop);
         }
@@ -2119,9 +2123,7 @@ impl Interpreter {
         error: LispError,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let error = self.signal_or_quit(error, env);
-        self.capture_batch_error_backtrace(&error, env);
-        Err(error)
+        Err(self.signal_or_quit(error, env))
     }
 
     /// eval.c:funcall_lambda's direct `exec_byte_code' branch.  The caller
@@ -2578,6 +2580,9 @@ impl InterpreterState {
     /// `call_depth_gate' after a store of the quit flag, a pending
     /// termination, max-lisp-eval-depth or debug-on-next-call.
     pub(crate) fn refresh_call_depth_gate(&mut self) {
+        self.c_stack_safe_depth = self
+            .c_stack_safe_depth
+            .min(continuations::c_stack_safe_depth());
         self.call_depth_gate = if !self.quit_flag.is_nil()
             || self.pending_termination.is_some()
             || self.debug_on_next_call
@@ -2585,8 +2590,82 @@ impl InterpreterState {
         {
             i64::MIN
         } else {
-            self.max_lisp_eval_depth
+            self.max_lisp_eval_depth.min(self.c_stack_safe_depth)
         };
+    }
+
+    /// Whether a call entry at the current depth tests the C stack: at or
+    /// past the depth below which no call can reach the stack's floor
+    /// (`c_stack_safe_depth'), which the call gate keeps the fast entries
+    /// under.
+    #[inline(always)]
+    fn c_stack_test_due(&self) -> bool {
+        self.lisp_eval_depth as i64 > self.c_stack_safe_depth
+    }
+}
+
+/// The stack the fatal error after a C stack overflow is handled on, as
+/// GNU's on its sigaltstack: room for shut_down_emacs's Lisp (the
+/// auto-save) and the backtrace.
+#[cfg(unix)]
+const FATAL_SIGNAL_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+impl Interpreter {
+    /// sysdep.c:handle_sigsegv for the overflow a call entry found
+    /// (`continuations::c_stack_overflowed'): the siglongjmp to
+    /// keyboard.c's command_loop, as an exit nothing between catches and
+    /// whose frames pop their specpdl entries undone
+    /// (`c_stack_overflow_exit'), the pending termination keeping any Lisp
+    /// from running on the way.  The overflow is fatal, as GNU's
+    /// deliver_fatal_thread_signal makes it, on a thread other than the
+    /// main one, with `attempt-stack-overflow-recovery' nil (stack_overflow
+    /// answers false), or with no command loop to return to.  (GNU's other
+    /// fatal case, a fault during garbage collection, cannot arise: the
+    /// collector runs no Lisp and no call entry.)
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn c_stack_overflow(&mut self, env: &mut Env) -> LispError {
+        let recover = self.current_thread_is_main()
+            && self.command_loops_entered > 0
+            && self
+                .forwarded_c_value("attempt-stack-overflow-recovery", env)
+                .is_some_and(|value| value.is_truthy());
+        if !recover {
+            #[cfg(unix)]
+            {
+                if !self.current_thread_is_main() {
+                    // sysdep.c:deliver_thread_signal on another thread: the
+                    // signal at its default action, sent for the main
+                    // thread, which dies of it without the fatal error's
+                    // shutdown.
+                    // SAFETY: setting a disposition has no other effect.
+                    unsafe {
+                        libc::signal(libc::SIGSEGV, libc::SIG_DFL);
+                    }
+                    primitives::raise_unblocked(libc::SIGSEGV);
+                }
+                // handle_sigsegv's deliver_fatal_signal runs on the
+                // alternate signal stack, so the shutdown has the room this
+                // exhausted stack lacks: it runs on a fresh stack of its
+                // own.
+                if let Ok(stack) = corosensei::stack::DefaultStack::new(FATAL_SIGNAL_STACK_BYTES)
+                    && let Err(error) = continuations::on_stack(stack, || {
+                        primitives::deliver_fatal_signal(self, libc::SIGSEGV, env)
+                    })
+                {
+                    return error;
+                }
+            }
+            std::process::abort();
+        }
+        let termination = EmacsTermination {
+            exit_code: 0,
+            restart: false,
+            c_stack_overflow: true,
+        };
+        self.c_stack_overflow_exit = true;
+        self.request_termination(termination.clone());
+        LispError::Terminate(termination)
     }
 }
 

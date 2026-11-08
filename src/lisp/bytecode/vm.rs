@@ -3272,13 +3272,13 @@ fn nth_in_place(n: Value, list: Value) -> Option<Value> {
 /// any `sf_catch' frame.
 #[inline(never)]
 fn push_catch(interp: &mut Interpreter, tag: Value, dest: usize, stack_len: usize) {
-    interp.push_active_catch_tag(tag);
+    let registry_start = interp.push_active_catch_tag(tag);
     let handler = Handler {
         kind: HandlerKind::Catch(tag),
         dest,
         stack_len,
         unwind_len: interp.specpdl_index(),
-        registry_start: None,
+        registry_start: Some(registry_start),
     };
     interp.bc_handlers.push(handler);
 }
@@ -3306,13 +3306,10 @@ fn push_condition_case(interp: &mut Interpreter, conditions: Value, dest: usize,
 /// registry entries.
 #[inline(never)]
 fn pop_handler(interp: &mut Interpreter, handlers_base: usize) {
-    if let Some(handler) = interp.bc_handlers.pop_above(handlers_base) {
-        if matches!(handler.kind, HandlerKind::Catch(_)) {
-            interp.pop_active_catch_tag();
-        }
-        if let Some(start) = handler.registry_start {
-            interp.pop_handler_bindings(start);
-        }
+    if let Some(handler) = interp.bc_handlers.pop_above(handlers_base)
+        && let Some(start) = handler.registry_start
+    {
+        interp.pop_handler_bindings(start);
     }
 }
 
@@ -4557,9 +4554,6 @@ fn run_frames(
 /// active catches, a condition-case's clause the handler registry.
 fn pop_handlers_above(interp: &mut Interpreter, base: usize) {
     while let Some(handler) = interp.bc_handlers.pop_above(base) {
-        if matches!(handler.kind, HandlerKind::Catch(_)) {
-            interp.pop_active_catch_tag();
-        }
         if let Some(start) = handler.registry_start {
             interp.pop_handler_bindings(start);
         }
@@ -4933,9 +4927,6 @@ fn run_loop(
                         .last_above(frames_base)
                         .map_or(handlers_base, |frame| frame.handlers_len);
                     while let Some(handler) = interp.bc_handlers.pop_above(floor) {
-                        if matches!(handler.kind, HandlerKind::Catch(_)) {
-                            interp.pop_active_catch_tag();
-                        }
                         if let Some(start) = handler.registry_start {
                             interp.pop_handler_bindings(start);
                         }
@@ -4947,6 +4938,13 @@ fn run_loop(
                             (HandlerKind::ConditionCase(_), LispErrorKind::Throw(_, _))
                             | (HandlerKind::ConditionCase(_), LispErrorKind::Terminate(_))
                             | (HandlerKind::Catch(_), _) => None,
+                            (HandlerKind::ConditionCase(_), _)
+                                if handler
+                                    .registry_start
+                                    .is_some_and(|start| error.skipped_by_search(start)) =>
+                            {
+                                None
+                            }
                             (HandlerKind::ConditionCase(clause), kind) => {
                                 let condition = kind.condition_symbol();
                                 let condition_list = interp.error_condition_names_of(&condition);
@@ -4958,9 +4956,6 @@ fn run_loop(
                             }
                         };
                         if let Some(value) = matched_value {
-                            if matches!(handler.kind, HandlerKind::ConditionCase(_)) {
-                                interp.clear_batch_error_backtrace();
-                            }
                             // A caught signal unwinds the frame its byte op
                             // recorded (GNU unbinds specpdl to the handler).
                             while op_error_frames > 0 {

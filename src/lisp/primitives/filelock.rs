@@ -709,16 +709,18 @@ pub(crate) fn unlock_file_primitive(
     interp.pop_handler_bindings(handlers);
     env.truncate(depth);
     match result {
+        // A signal the search passed this handler for (a `handler-bind'
+        // handler's, skipping its form's entries) is not its to catch.
         Err(error)
             if !matches!(
                 error.kind(),
                 LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
-            ) && interp
-                .error_condition_names(&error.condition_type())
-                .iter()
-                .any(|name| name.as_str() == "file-error") =>
+            ) && !error.skipped_by_search(handlers)
+                && interp
+                    .error_condition_names(&error.condition_type())
+                    .iter()
+                    .any(|name| name.as_str() == "file-error") =>
         {
-            interp.clear_batch_error_backtrace();
             let error = crate::lisp::eval::error_condition_value(&error);
             call_named_function(interp, "userlock--handle-unlock-error", &[error], env)?;
             Ok(Value::Nil)

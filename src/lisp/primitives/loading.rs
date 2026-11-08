@@ -130,11 +130,12 @@ pub(crate) fn collect_interactive_args(
     func: &Value,
     spec: Value,
     record_flag: bool,
+    keys: &[Value],
     env: &mut Env,
 ) -> Result<InteractiveArgs, LispError> {
     if let Kind::StringObject(state) = spec.kind() {
         let text = state.borrow().text();
-        let parsed = parse_interactive_string(function, &text, record_flag, interp, env)?;
+        let parsed = parse_interactive_string(function, &text, record_flag, keys, interp, env)?;
         // Recorded when an argument came from the terminal, or on request:
         // point, mark and the region as the calls that find them again.
         let history = (record_flag || parsed.varies.contains(&0)).then(|| {
@@ -186,6 +187,31 @@ pub(crate) fn call_interactively_impl(
     if args.is_empty() {
         return Err(LispError::WrongNumberOfArgs("call-interactively".into(), 0));
     }
+    // callint.c: the events the `e' code walks are KEYS, a vector, or
+    // the current command's keys (this_command_keys up to
+    // this_command_key_count), as the call begins.
+    let keys = match args.get(2).filter(|keys| !keys.is_nil()) {
+        Some(keys) => {
+            let Kind::Vector(vector) = keys.kind() else {
+                return Err(wrong_type_argument("vectorp", *keys));
+            };
+            (0..vector.len())
+                .map(|index| vector.get(index).unwrap_or(Value::Nil))
+                .collect()
+        }
+        None => interp.keyboard_input.command_keys.clone(),
+    };
+    interp.with_lisp_stack_roots(&keys, |interp| {
+        call_interactively_checked(interp, args, &keys, env)
+    })
+}
+
+fn call_interactively_checked(
+    interp: &mut Interpreter,
+    args: &[Value],
+    keys: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
     // callint.c requires an interactive form, including forms supplied by
     // the Lisp generic for closures and advice; `interactive-form' loads
     // an autoloaded command.
@@ -225,8 +251,11 @@ pub(crate) fn call_interactively_impl(
         args,
         func,
         spec,
-        &saved_command_state,
-        &mut minibuffer_command,
+        keys,
+        CommandVariables {
+            saved: &saved_command_state,
+            minibuffer_command: &mut minibuffer_command,
+        },
         env,
     );
     if let Some(restore) = minibuffer_command {
@@ -235,27 +264,29 @@ pub(crate) fn call_interactively_impl(
     result
 }
 
+/// The command variables call-interactively saved, which the hooks see
+/// while the arguments are read, and its `current-minibuffer-command'
+/// binding, undone once a string spec's arguments are read.
+struct CommandVariables<'a> {
+    saved: &'a [(&'a str, Value)],
+    minibuffer_command: &'a mut Option<crate::lisp::eval::SpecpdlRef>,
+}
+
 fn call_interactively_bound(
     interp: &mut Interpreter,
     args: &[Value],
     func: Value,
     spec: Value,
-    saved_command_state: &[(&str, Value)],
-    minibuffer_command: &mut Option<crate::lisp::eval::SpecpdlRef>,
+    keys: &[Value],
+    command: CommandVariables<'_>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    let CommandVariables {
+        saved: saved_command_state,
+        minibuffer_command,
+    } = command;
     let string_spec = spec.is_string();
     let record_flag = args.get(1).is_some_and(Value::is_truthy);
-    // callint.c: a non-nil KEYS is the key sequence the spec codes (`e',
-    // `k'...) read instead of the current command's keys -- how
-    // `command-execute' hands a special event to its `special-event-map'
-    // binding.
-    let keys_binding = match args.get(2).filter(|keys| !keys.is_nil()) {
-        Some(keys) => {
-            Some(interp.bind_special_key(cached_symbol!("this-command-keys-vector"), *keys, env)?)
-        }
-        None => None,
-    };
     // A command whose `enable-recursive-minibuffers' property is set reads
     // its string spec's arguments with recursive minibuffers enabled.
     let recursive_binding = match args[0].symbol_cell() {
@@ -274,11 +305,8 @@ fn call_interactively_bound(
         _ => None,
     };
     let interactive_args =
-        collect_interactive_args(interp, &args[0], &func, spec, record_flag, env);
+        collect_interactive_args(interp, &args[0], &func, spec, record_flag, keys, env);
     if let Some(restore) = recursive_binding {
-        interp.restore_special_binding(restore, env)?;
-    }
-    if let Some(restore) = keys_binding {
         interp.restore_special_binding(restore, env)?;
     }
     if string_spec && let Some(restore) = minibuffer_command.take() {
@@ -443,7 +471,9 @@ pub(crate) fn eval_buffer_impl(
     )?;
     let previous_output =
         interp.bind_special_key(cached_symbol!("standard-output"), output, env)?;
-    let excursion = interp.save_excursion_state();
+    // Feval_buffer's record_unwind_protect_excursion.
+    let excursion = interp.specpdl_index();
+    interp.record_unwind_protect_excursion();
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
         let begv = buffer.point_min();
         buffer.goto_char(begv);
@@ -507,7 +537,11 @@ pub(crate) fn eval_buffer_impl(
             result = Err(error);
         }
     }
-    interp.restore_excursion_state(excursion);
+    if let Err(error) = interp.unbind_to(excursion, env)
+        && result.is_ok()
+    {
+        result = Err(error);
+    }
     for restore in [previous_output, previous_eval_buffer_list] {
         if let Err(error) = interp.restore_special_binding(restore, env)
             && result.is_ok()
@@ -767,13 +801,17 @@ fn read_region_form(
     if !interp.has_buffer_id(buffer_id) {
         return Err(LispError::Signal("Reading from killed buffer".into()));
     }
-    let outer = interp.save_excursion_state();
+    // readevalloop: record_unwind_protect_excursion, set_buffer_internal,
+    // record_unwind_protect_excursion again for point in it, and
+    // save_restriction_save for its ZV, unbound after one form is read.
+    let count = interp.specpdl_index();
+    interp.record_unwind_protect_excursion();
     if let Err(error) = interp.set_current_buffer_id(buffer_id) {
-        interp.restore_excursion_state(outer);
+        let _ = interp.unbind_to(count, env);
         return Err(error);
     }
-    let inner = interp.save_excursion_state();
-    let restriction = interp.save_restriction_state();
+    interp.record_unwind_protect_excursion();
+    interp.record_unwind_save_restriction();
     interp.restore_labeled_restrictions(buffer_id, Vec::new());
     let read = (|| {
         let stream = interp.buffer_value(buffer_id).expect("live buffer object");
@@ -813,10 +851,8 @@ fn read_region_form(
         }
         Ok(Some((form, stop)))
     })();
-    interp.restore_restriction_state(restriction);
-    interp.restore_excursion_state(inner);
-    interp.restore_excursion_state(outer);
-    read
+    let unbind = interp.unbind_to(count, env);
+    read.and_then(|read| unbind.map(|()| read))
 }
 
 /// lread.c lisp_file_lexical_cookie: the `lexical-binding' file variable

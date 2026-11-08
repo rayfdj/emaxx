@@ -147,6 +147,8 @@ pub(crate) fn prepare_to_modify_buffer(
     };
     barf_if_buffer_read_only(interp, start)?;
     run_undoable_change(interp, env);
+    let current = interp.current_buffer_id();
+    interp.bset_redisplay(current);
     let mut preserved = start;
     if interp.buffer.borrow().has_interval_tree() {
         verify_interval_modification(

@@ -902,9 +902,12 @@ pub(crate) fn read_next_load_input_form(
         let mut reader = reader.with_read_context(&mut context);
         let value = reader.read();
         *offset = base + reader.position();
-        let value = value?;
         (value, reader.emitted_reader_forms())
     };
+    // An end inside a datum is end_of_file_error, naming
+    // `load-true-file-name'.
+    let value = value
+        .map_err(|error| crate::lisp::primitives::print::reader_end_of_file(interp, error, env))?;
     match value {
         Some(value) if needs_materialization => interp
             .materialize_read_object_literals(value, env)
@@ -963,6 +966,8 @@ fn read_lisp_file_bytes(
             .display()
             .to_string()
     });
+    // Fload's `infile' for a file stream, until close_infile_unwind.
+    let _infile = matches!(text, LoadText::File(_)).then(reader::InfileLoad::enter);
     interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
         let previous = interp.set_current_load_file(Some(load_file.clone()));
         let mut env = if settings.lexical_binding {
@@ -1071,10 +1076,6 @@ fn read_lisp_file_bytes(
             };
             if let Err(error) = result {
                 if stop_after_error(&error) {
-                    // The recognized C handoff is successful control flow
-                    // for image reconstruction, not a batch error retained
-                    // in the restored process.
-                    interp.clear_batch_error_backtrace();
                     stopped = true;
                     break;
                 }
@@ -1089,13 +1090,6 @@ fn read_lisp_file_bytes(
                         path.display(),
                         form_index + 1
                     );
-                    // Peek, never take: the toplevel batch reporter prints
-                    // the GNU-format backtrace from this same snapshot.
-                    if let Some(snapshot) = interp.peek_batch_error_backtrace() {
-                        for (_, function, _, _) in snapshot.frames.iter().take(20) {
-                            eprintln!("  load frame: {function}");
-                        }
-                    }
                 }
                 let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
                 interp.set_current_load_file(previous);

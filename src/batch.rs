@@ -152,13 +152,41 @@ fn run_initialized_batch(
     let selector_string =
         env::var("EMAXX_COMPAT_SELECTOR").unwrap_or_else(|_| "(quote t)".to_string());
     let mut eval_env: Env = crate::lisp::types::Env::new();
+    // The embedder's actions stand where startup.el's command-line-1 runs
+    // `-l', `--eval' and `-f': inside keyboard.c's top_level_2, whose
+    // handler in batch is `debug-early--handler', printing an error's
+    // backtrace where it is signaled, and top_level_1's cmd_error.
+    let handler = push_batch_error_handler(interpreter);
+    let ran = run_batch_actions(interpreter, actions, &selector_string, &mut eval_env);
+    if let Some(handler) = handler {
+        interpreter.pop_handler_bindings(handler);
+    }
+    match ran? {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => Ok(report_batch_action_error(
+            interpreter,
+            &error,
+            &mut eval_env,
+        )),
+    }
+}
+
+/// The embedder's actions in order, each ending the run when it asks
+/// for termination; an error leaves with the error, a load error after
+/// the compat harness's report of it.
+fn run_batch_actions(
+    interpreter: &mut Interpreter,
+    actions: &[BatchAction],
+    selector_string: &str,
+    eval_env: &mut Env,
+) -> Result<Result<BatchRunOutcome, LispError>, String> {
     for action in actions {
         match action {
             BatchAction::Load(target) => {
                 let resolved = PathBuf::from(target);
-                if let Err(error) = interpreter.load_target_with_env(target, &eval_env) {
+                if let Err(error) = interpreter.load_target_with_env(target, eval_env) {
                     if let LispErrorKind::Terminate(termination) = error.kind() {
-                        return Ok(termination.clone().into());
+                        return Ok(Ok(termination.clone().into()));
                     }
                     let mut error_text = error.to_string();
                     let backtrace = format_backtrace_summary(interpreter);
@@ -169,7 +197,7 @@ fn run_initialized_batch(
                     let report = BatchReport {
                         runner: "emaxx".into(),
                         file: report_file_name(&resolved),
-                        selector: selector_string.clone(),
+                        selector: selector_string.to_string(),
                         file_status: FileStatus::LoadError,
                         file_error: Some(error_text),
                         discovered_tests: interpreter.discovered_tests(),
@@ -180,20 +208,7 @@ fn run_initialized_batch(
                     emit_artifacts(&report)?;
                     emit_human_log(&report);
                     write_junit_report_if_requested(&report)?;
-                    // GNU prints an uncaught load error to stderr and exits
-                    // 255; Emaxx used to write only the structured report, so
-                    // `emaxx --batch -l broken.el' failed with no diagnostic
-                    // at all.  The report is for the harness; the message is
-                    // for whoever ran the command.
-                    emit_unhandled_batch_error(
-                        interpreter,
-                        &error,
-                        &command_line_bottom_frames(actions, Some(&resolved)),
-                    );
-                    return Ok(BatchRunOutcome::Exit(255));
-                }
-                if let Some(termination) = interpreter.take_pending_termination() {
-                    return Ok(termination.into());
+                    return Ok(Err(error));
                 }
             }
             BatchAction::Eval(expression) => {
@@ -217,47 +232,38 @@ fn run_initialized_batch(
                     // symbols as well as keywords.
                     interpreter.intern_symbols_in_value(&form);
                     match interpreter
-                        .materialize_read_object_literals(form, &mut eval_env)
-                        .and_then(|form| interpreter.eval(&form, &mut eval_env))
+                        .materialize_read_object_literals(form, eval_env)
+                        .and_then(|form| interpreter.eval(&form, eval_env))
                         .map_err(LispError::into_kind)
                     {
                         Ok(_) => {}
-                        Err(LispErrorKind::Terminate(termination)) => return Ok(termination.into()),
-                        Err(error) => {
-                            emit_unhandled_batch_error(
-                                interpreter,
-                                &LispError::from(error.clone()),
-                                &command_line_bottom_frames(actions, None),
-                            );
-                            return Ok(BatchRunOutcome::Exit(255));
+                        Err(LispErrorKind::Terminate(termination)) => {
+                            return Ok(Ok(termination.into()));
                         }
+                        Err(error) => return Ok(Err(LispError::from(error))),
                     }
                     if let Some(termination) = interpreter.take_pending_termination() {
-                        return Ok(termination.into());
+                        return Ok(Ok(termination.into()));
                     }
                 }
+                continue;
             }
             BatchAction::Funcall(function) => {
                 let form = Value::list([Value::Symbol(function.clone().into())]);
                 match interpreter
-                    .eval(&form, &mut eval_env)
+                    .eval(&form, eval_env)
                     .map_err(LispError::into_kind)
                 {
                     Ok(_) => {}
-                    Err(LispErrorKind::Terminate(termination)) => return Ok(termination.into()),
-                    Err(error) => {
-                        emit_unhandled_batch_error(
-                            interpreter,
-                            &LispError::from(error.clone()),
-                            &command_line_bottom_frames(actions, None),
-                        );
-                        return Ok(BatchRunOutcome::Exit(255));
+                    Err(LispErrorKind::Terminate(termination)) => {
+                        return Ok(Ok(termination.into()));
                     }
-                }
-                if let Some(termination) = interpreter.take_pending_termination() {
-                    return Ok(termination.into());
+                    Err(error) => return Ok(Err(LispError::from(error))),
                 }
             }
+        }
+        if let Some(termination) = interpreter.take_pending_termination() {
+            return Ok(Ok(termination.into()));
         }
     }
 
@@ -265,7 +271,28 @@ fn run_initialized_batch(
     // compat reporter) runs the tests, writes any structured artifacts, and
     // exits through `kill-emacs'.  Reaching this point means every action
     // evaluated without a termination request.
-    Ok(BatchRunOutcome::Exit(0))
+    Ok(Ok(BatchRunOutcome::Exit(0)))
+}
+
+/// keyboard.c:top_level_1's handler for an error leaving the actions:
+/// cmd_error, whose `command-error-default-function' prints the message
+/// to stderr and kills Emacs with -1 in batch.  Where a
+/// `command-error-function' returns instead, GNU's session goes on to
+/// read input; the embedder has none, and its run ends as that
+/// `kill-emacs' -1 would end it.
+fn report_batch_action_error(
+    interpreter: &mut Interpreter,
+    error: &LispError,
+    env: &mut Env,
+) -> BatchRunOutcome {
+    if let Err(LispErrorKind::Terminate(termination)) =
+        lisp::primitives::cmd_error(interpreter, env, error).map_err(LispError::into_kind)
+    {
+        return termination.into();
+    }
+    interpreter
+        .take_pending_termination()
+        .map_or(BatchRunOutcome::Exit(-1), Into::into)
 }
 
 /// emacs.c's `command-line-args': the arguments as unibyte strings.
@@ -318,20 +345,26 @@ pub(crate) fn top_level_2(
     form: Value,
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let handler = interpreter
-        .symbol_value_cell("noninteractive")
-        .is_ok_and(|value| value.is_truthy())
-        .then(|| {
-            interpreter.push_handler_bindings(&[(
-                vec!["error".into()],
-                Value::symbol("debug-early--handler"),
-            )])
-        });
+    let handler = push_batch_error_handler(interpreter);
     let result = lisp::primitives::call(interpreter, "eval", &[form, Value::T], env);
     if let Some(handler) = handler {
         interpreter.pop_handler_bindings(handler);
     }
     result
+}
+
+/// top_level_2's `push_handler_bind (list1 (Qerror),
+/// Qdebug_early__handler, 0)' when `noninteractive'.
+fn push_batch_error_handler(interpreter: &mut Interpreter) -> Option<usize> {
+    interpreter
+        .symbol_value_cell("noninteractive")
+        .is_ok_and(|value| value.is_truthy())
+        .then(|| {
+            interpreter.push_handler_bindings(&[(
+                Value::symbol("error"),
+                Value::symbol("debug-early--handler"),
+            )])
+        })
 }
 
 fn run_batch_through_normal_top_level(
@@ -375,142 +408,6 @@ fn run_embedder_top_level(
     Ok(interpreter
         .take_pending_termination()
         .map_or(BatchRunOutcome::Exit(0), Into::into))
-}
-
-/// GNU's batch backtrace bottoms out through the startup frames that ran
-/// the failing action: an optional `load' frame for `-l', then
-/// command-line-1 with the action arguments, command-line, and
-/// normal-top-level.  The argument list is reconstructed with canonical
-/// flag spellings, which is what the compat harness passes.
-fn command_line_bottom_frames(
-    actions: &[BatchAction],
-    load_target: Option<&Path>,
-) -> Vec<(String, Vec<Value>)> {
-    let mut frames = Vec::new();
-    if let Some(path) = load_target {
-        frames.push((
-            "load".to_string(),
-            vec![
-                Value::String(path.display().to_string().into()),
-                Value::Nil,
-                Value::T,
-            ],
-        ));
-    }
-    let mut cli_args = Vec::new();
-    for action in actions {
-        match action {
-            BatchAction::Load(target) => {
-                cli_args.push(Value::String("-l".into()));
-                cli_args.push(Value::String(target.clone().into()));
-            }
-            BatchAction::Eval(expression) => {
-                cli_args.push(Value::String("--eval".into()));
-                cli_args.push(Value::String(expression.clone().into()));
-            }
-            BatchAction::Funcall(function) => {
-                cli_args.push(Value::String("-f".into()));
-                cli_args.push(Value::String(function.clone().into()));
-            }
-        }
-    }
-    frames.push(("command-line-1".to_string(), vec![Value::list(cli_args)]));
-    frames.push(("command-line".to_string(), Vec::new()));
-    frames
-}
-
-/// cmd_error_internal's batch report: print_error_message to stderr.
-fn emit_batch_error_message(interpreter: &mut Interpreter, error: &LispError) {
-    // print_error_message: the same rendering `error-message-string'
-    // performs (error-message property through `substitute-command-keys',
-    // condition-specific data quoting), falling back to the native text
-    // if that primitive cannot run this early.  cmd_error sets
-    // `print-level' and `print-length' to 10 around it, against circular
-    // data.
-    let message = lisp::primitives::with_cmd_error_print_limits(interpreter, |interpreter| {
-        lisp::primitives::call(
-            interpreter,
-            "error-message-string",
-            &[lisp::eval::error_condition_value(error)],
-            &mut crate::lisp::types::Env::new(),
-        )
-    })
-    .ok()
-    .and_then(|value| lisp::primitives::string_like(&value).map(|text| text.text))
-    .unwrap_or_else(|| error.to_string());
-    eprintln!("{message}");
-}
-
-fn emit_unhandled_batch_error(
-    interpreter: &mut Interpreter,
-    error: &LispError,
-    bottom_frames: &[(String, Vec<Value>)],
-) {
-    emit_batch_error_message(interpreter, error);
-    let Some(backtrace) = interpreter.take_batch_error_backtrace() else {
-        return;
-    };
-    if !backtrace.enabled {
-        return;
-    }
-    // debug-early.el's debug--early: "\nError: " + prin1 of the error
-    // symbol and data under default print settings, then the frames under
-    // debug-early-backtrace's binds (print-escape-newlines,
-    // print-escape-control-characters, print-escape-nonascii all t).
-    let mut render_env: Env = crate::lisp::types::Env::new();
-    let prin1 = |interpreter: &mut Interpreter, env: &mut Env, value: &Value| {
-        lisp::primitives::print::render_prin1(interpreter, value, env)
-            .unwrap_or_else(|_| value.to_string())
-    };
-    let condition = lisp::eval::error_condition_value(error);
-    let rendered_condition = match condition.to_vec() {
-        Ok(items) if !items.is_empty() => {
-            let kind = prin1(interpreter, &mut render_env, &items[0]);
-            let data = Value::list(items.into_iter().skip(1));
-            let data = prin1(interpreter, &mut render_env, &data);
-            format!("{kind} {data}")
-        }
-        _ => prin1(interpreter, &mut render_env, &condition),
-    };
-    eprintln!("\nError: {rendered_condition}");
-    // Dynamic bindings, as debug-early-backtrace's `let' of these special
-    // variables makes them: the printer reads them as C reads its DEFVARs.
-    let mut restores = Vec::new();
-    for name in [
-        "print-escape-newlines",
-        "print-escape-control-characters",
-        "print-escape-nonascii",
-    ] {
-        if let Ok(restore) = interpreter.bind_special_dynamic(name, Value::T, &mut render_env) {
-            restores.push(restore);
-        }
-    }
-    for (evald, function, args, _) in backtrace.frames {
-        let function = prin1(interpreter, &mut render_env, &function);
-        let args = args
-            .iter()
-            .map(|value| prin1(interpreter, &mut render_env, value))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if evald {
-            eprintln!("  {function}({args})");
-        } else {
-            let separator = if args.is_empty() { "" } else { " " };
-            eprintln!("  ({function}{separator}{args})");
-        }
-    }
-    for (function, args) in bottom_frames {
-        let args = args
-            .iter()
-            .map(|value| prin1(interpreter, &mut render_env, value))
-            .collect::<Vec<_>>()
-            .join(" ");
-        eprintln!("  {function}({args})");
-    }
-    eprintln!("  normal-top-level()");
-    for restore in restores.into_iter().rev() {
-        let _ = interpreter.restore_special_dynamic(restore, &mut render_env);
-    }
 }
 
 /// In the test build every interpreter these constructors hand out is an
@@ -1358,18 +1255,7 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     interpreter.image_reconstruction_handoff = false;
     let stopped = match loaded {
         Ok(stopped) => stopped,
-        Err(error) => {
-            let backtrace = interpreter
-                .take_batch_error_backtrace()
-                .map(|snapshot| format_backtrace_frames(snapshot.frames))
-                .unwrap_or_default();
-            let suffix = if backtrace.is_empty() {
-                String::new()
-            } else {
-                format!(" | backtrace: {backtrace}")
-            };
-            return Err(format!("preload GNU loadup.el: {error}{suffix}"));
-        }
+        Err(error) => return Err(format!("preload GNU loadup.el: {error}")),
     };
     if !stopped {
         return Err("preload GNU loadup.el: portable-dump handoff was not found".to_string());
@@ -1598,12 +1484,12 @@ mod tests {
         // With no active catch GNU signals no-catch, which a safe hook
         // handles like any other signal. Register the enclosing catch so
         // this exercises a nonlocal exit, not that error path.
-        interpreter.push_catch_tag(Value::symbol("stop"));
+        let catcher = interpreter.push_active_catch_tag(Value::symbol("stop"));
         let result = super::safe_run_hooks(
             &mut interpreter,
             &crate::lisp::types::SymbolName::intern_str("zz-hook"),
         );
-        interpreter.pop_catch_tag();
+        interpreter.pop_handler_bindings(catcher);
         assert!(matches!(result.as_ref().map_err(LispError::kind),
             Err(LispErrorKind::Throw(tag, value)) if *value == Value::Integer(7) && tag.as_symbol().is_ok_and(|name| name == "stop")));
         assert_eq!(
@@ -1653,8 +1539,8 @@ mod tests {
                  (setq zz-watcher-seen (list value operation where)))))",
         )
         .expect("watch the hook removal");
-        let handlers =
-            interpreter.push_handler_bindings(&[(vec!["error".into()], Value::symbol("zz-outer"))]);
+        let handlers = interpreter
+            .push_handler_bindings(&[(Value::symbol("error"), Value::symbol("zz-outer"))]);
         super::safe_run_hooks(
             &mut interpreter,
             &crate::lisp::types::SymbolName::intern_str("zz-hook"),
@@ -1863,6 +1749,70 @@ mod tests {
                 .expect("the function body executed")
                 .to_string(),
             "(\"arbitrary/workload\" 37 2 9)"
+        );
+    }
+
+    #[test]
+    fn embedder_action_errors_reach_debug_early_handler_then_cmd_error() {
+        // keyboard.c's top_level_2 handler and top_level_1 cmd_error around
+        // the actions: `debug-early--handler' sees the error where it is
+        // signaled, then `command-error-function' reports it, and the
+        // actions after the error do not run.
+        let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+        let actions = vec![
+            BatchAction::Eval(
+                "(progn
+                   (defvar emaxx-test-seen nil)
+                   (fset 'debug-early--handler
+                         (lambda (err) (push (cons 'handler err) emaxx-test-seen)))
+                   (setq command-error-function
+                         (lambda (data context signal)
+                           (push (list 'reported data context signal) emaxx-test-seen))))"
+                    .into(),
+            ),
+            BatchAction::Eval("(car 1)".into()),
+            BatchAction::Eval("(setq emaxx-test-after t)".into()),
+        ];
+        assert_eq!(
+            run_initialized_batch(&mut interpreter, &BatchRunOptions::default(), &actions)
+                .expect("the actions run"),
+            BatchRunOutcome::Exit(-1),
+            "a reporting function that returns ends the run as kill-emacs -1"
+        );
+        let seen = interpreter
+            .lookup_var("emaxx-test-seen", &Env::new())
+            .expect("the handlers ran");
+        let seen = lisp::primitives::call(&mut interpreter, "reverse", &[seen], &mut Env::new())
+            .expect("reverse");
+        let seen = lisp::primitives::call(
+            &mut interpreter,
+            "prin1-to-string",
+            &[seen],
+            &mut Env::new(),
+        )
+        .expect("print");
+        // signal_or_quit's signaling function is the frame below `car''s,
+        // none at the embedder's top level.
+        assert_eq!(
+            lisp::primitives::string_like(&seen).expect("a string").text,
+            "((handler wrong-type-argument listp 1) \
+             (reported (wrong-type-argument listp 1) \"\" nil))"
+        );
+        assert_eq!(
+            interpreter.lookup_var("emaxx-test-after", &Env::new()),
+            None
+        );
+        // The handler went with the actions: an error now reaches no
+        // `debug-early--handler'.
+        interpreter.set_global_binding("emaxx-test-seen", Value::Nil);
+        let form = Reader::new("(car 1)")
+            .read()
+            .expect("read")
+            .expect("a form");
+        assert!(interpreter.eval(&form, &mut Env::new()).is_err());
+        assert_eq!(
+            interpreter.lookup_var("emaxx-test-seen", &Env::new()),
+            Some(Value::Nil)
         );
     }
 
@@ -2264,10 +2214,9 @@ mod tests {
             Err(error) => error,
         };
         // The image is reconstructed by GNU's loadup.el itself, so the
-        // failure is loadup's, with the broken library in its backtrace.
+        // failure is loadup's, with the broken library's error.
         assert!(error.contains("preload GNU loadup.el"), "{error}");
         assert!(error.contains("broken seq preload"), "{error}");
-        assert!(error.contains("load(\"emacs-lisp/seq\")"), "{error}");
         fs::remove_dir_all(root).expect("remove temp root");
     }
 

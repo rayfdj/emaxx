@@ -3266,9 +3266,10 @@ define_dispatch!(
                 // Run hooks with the buffer to be killed as the current
                 // buffer, in record_unwind_protect_excursion: the buffer
                 // that was current, and its point, come back after.
-                let excursion = interp.save_excursion_state();
+                let excursion = interp.specpdl_index();
+                interp.record_unwind_protect_excursion();
                 if let Err(error) = interp.set_current_buffer_id(id) {
-                    interp.restore_excursion_state(excursion);
+                    let _ = interp.unbind_to(excursion, env);
                     return Err(error);
                 }
                 // Some(answer) returns ANSWER (unbind_to (count, ...)),
@@ -3378,8 +3379,8 @@ define_dispatch!(
                     }
                     Ok(None)
                 })();
-                interp.restore_excursion_state(excursion);
-                if let Some(answer) = consultation? {
+                let unbind = interp.unbind_to(excursion, env);
+                if let Some(answer) = consultation.and_then(|answer| unbind.map(|()| answer))? {
                     return Ok(answer);
                 }
                 // buffer.c:Fkill_buffer once nothing more is asked: a buffer

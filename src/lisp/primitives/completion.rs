@@ -1375,7 +1375,12 @@ pub(crate) fn run_active_minibuffer<T>(
         body(interp, env)
     })();
     // The unwinding of every exit: `minibuffer-exit-hook' first, then
-    // the rest of read_minibuf's unwind records.
+    // the rest of read_minibuf's unwind records -- none for the exit after
+    // a C stack overflow, which leaves GNU's specpdl entries undone, the
+    // minibuffer active at its depth.
+    if interp.c_stack_overflow_exit {
+        return result;
+    }
     let exit = run_exit_minibuf_hook(interp, minibuffer.buffer_id, env);
     unwind_active_minibuffer(interp, minibuffer, env)?;
     let value = result?;
@@ -1764,6 +1769,9 @@ pub(crate) fn activate_minibuffer_with_history(
         super::dispatch::clear_message(interp, env, true, true)
     })();
     if let Err(error) = setup {
+        if interp.c_stack_overflow_exit {
+            return Err(error);
+        }
         // Run the exit hook before restoring state, and restore even if
         // that hook itself exits nonlocally.
         let exit_result = run_exit_minibuf_hook(interp, buffer_id, env);

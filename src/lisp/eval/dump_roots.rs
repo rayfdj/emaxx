@@ -38,6 +38,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "composite.c's staticpro'd gstring_hash_table, gstring_work and gstring_work_headers: loadup composes no text, so the dumped table is empty (a session's first cached glyph-string gets id 0) and the work vectors hold nothing a call reads before refilling them; the image starts them fresh, as syms_of_composite makes them",
     ),
     (
+        "menu",
+        "keyboard.c's item_properties and menu_bar_items_vector and menu.c's menu_items are scratch vectors staticpro'd for the menu being built or shown, which loadup builds none of, so their dumped contents are never read: init_menu_items and parse_menu_item refill them before any read; the image starts them empty",
+    ),
+    (
         "where_is_cache_keymaps",
         "the keymaps where_is_cache was built for (t while none is complete); reset with where_is_cache",
     ),
@@ -106,20 +110,12 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "the main thread's handlerlist is per-thread runtime state, not dumped",
     ),
     (
-        "active_catch_tags",
-        "catch tags live on the handlerlist, not dumped",
-    ),
-    (
         "backtrace_frames",
         "the specpdl's backtrace entries, not dumped",
     ),
     (
         "frame_environments",
         "the lexical environments interpreted code installed, recorded beside the specpdl's backtrace entries, not dumped",
-    ),
-    (
-        "batch_error_backtrace",
-        "a rendering of the specpdl kept for the batch error report, not dumped",
     ),
     (
         "doomed_finalizers",
@@ -236,6 +232,18 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "a word derived from the quit flag, the pending termination and max-lisp-eval-depth, refreshed as each is installed",
     ),
     (
+        "c_stack_safe_depth",
+        "the Lisp depth below which no call reaches the C stack's floor, derived from the running stack's size, which the new process measures for itself",
+    ),
+    (
+        "c_stack_overflow_exit",
+        "set only while a C stack overflow's exit travels to the command loop, as sysdep.c's siglongjmp does, which no dump outlives",
+    ),
+    (
+        "command_loops_entered",
+        "keyboard.c's return_to_command_loop, set by the running command loops; the new process has none until it enters its own",
+    ),
+    (
         "debug_on_next_call",
         "the forwarded C slot of debug-on-next-call, refilled likewise",
     ),
@@ -308,6 +316,14 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "windows_or_buffers_changed",
         "xdisp.c redisplay state: the new process's initial frame starts garbaged",
+    ),
+    (
+        "update_mode_lines",
+        "xdisp.c redisplay state: the new process's first redisplay displays every window",
+    ),
+    (
+        "face_change",
+        "xfaces.c state: the new process realizes its faces afresh",
     ),
     (
         "next_frame_id",
@@ -467,15 +483,8 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "the main thread is the running process's (runtime magic)",
     ),
     ("active_thread_id", "as main_thread_id"),
-    ("handler_dispatch_depth", "the running signal dispatch"),
-    ("dispatched_signal", "the running signal dispatch"),
-    (
-        "suspend_condition_case_count",
-        "the running signal dispatch",
-    ),
     ("handler_generation", "the running signal dispatch"),
     ("handler_search_memo", "the running signal dispatch"),
-    ("face_change_count", "carried in the remembered scalars"),
     ("pdumper_loaded", "set by the load itself"),
     ("buffer", "written through the buffer alist"),
 ];
@@ -885,10 +894,6 @@ impl Interpreter {
                             pair(Value::symbol(name), Value::Integer(*offset))
                         }),
                     ),
-                ),
-                pair(
-                    Value::String("face-change-count".into()),
-                    Value::Integer(self.face_change_count as i64),
                 ),
                 pair(
                     Value::String("finalizers-run".into()),
@@ -1420,7 +1425,6 @@ mod install {
                                     );
                                 }
                             }
-                            "face-change-count" => self.face_change_count = id(&name)?,
                             "finalizers-run" => self.finalizers_run = id(&name)?,
                             other => {
                                 return Err(format!("unknown remembered scalar {other}"));

@@ -981,19 +981,12 @@ define_dispatch!(
                         &[],
                     ));
                 }
+                // A nil CONDITIONS pushes nothing; any other is the
+                // handler's own object, walked at each signal.
                 let mut active = Vec::with_capacity(args.len() / 2);
                 for pair in args[1..].as_chunks::<2>().0 {
-                    let conditions = match pair[0].kind() {
-                        Kind::Nil => Vec::new(),
-                        Kind::Cons(_) => pair[0]
-                            .to_vec()?
-                            .iter()
-                            .map(|condition| condition.as_symbol().map(str::to_string))
-                            .collect::<Result<Vec<_>, _>>()?,
-                        condition => vec![condition.value().as_symbol()?.to_string()],
-                    };
-                    if !conditions.is_empty() {
-                        active.push((conditions, pair[1]));
+                    if !pair[0].is_nil() {
+                        active.push((pair[0], pair[1]));
                     }
                 }
                 active.reverse();
@@ -1334,12 +1327,15 @@ define_dispatch!(
                     interp.set_buffer_local_value_symbol(buffer_id, &name, value);
                 }
                 interp.reset_major_mode_slots(buffer_id);
+                // Force mode-line redisplay: every major mode calls this.
+                interp.bset_update_mode_line(buffer_id);
                 Ok(Value::Nil)
             }
             "force-mode-line-update" => {
                 need_arg_range(name, args, 0, 1)?;
-                // buffer.c:Fforce_mode_line_update returns ALL.
-                Ok(args.first().copied().unwrap_or(Value::Nil))
+                let all = args.first().copied().unwrap_or(Value::Nil);
+                interp.force_mode_line_update(!all.is_nil());
+                Ok(all)
             }
             "garbage-collect" => direct_garbage_collect(interp, args, env),
             // alloc.c's watchers of the GC variables (abi's

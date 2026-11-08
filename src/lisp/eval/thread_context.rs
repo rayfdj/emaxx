@@ -22,12 +22,7 @@ pub(super) struct ThreadExecutionContext {
     bc_handlers: crate::lisp::bytecode::vm::BcHandlers,
     pub(super) backtrace_frames: Vec<BacktraceFrame>,
     frame_environments: Vec<FrameEnvironment>,
-    batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
-    active_catch_tags: Vec<Value>,
-    handler_dispatch_depth: usize,
-    dispatched_signal: Option<Value>,
-    suspend_condition_case_count: usize,
 }
 
 impl ThreadExecutionContext {
@@ -56,12 +51,7 @@ impl ThreadExecutionContext {
             bc_handlers,
             backtrace_frames,
             frame_environments,
-            batch_error_backtrace,
-            active_handlers,
-            active_catch_tags,
-            handler_dispatch_depth,
-            dispatched_signal,
-            suspend_condition_case_count
+            active_handlers
         );
         interpreter.handler_generation += 1;
     }
@@ -95,21 +85,17 @@ impl TraceLispRoots for ThreadExecutionContext {
         {
             marker.value(&Value::Buffer(*buffer));
         }
-        if let Some(snapshot) = &self.batch_error_backtrace {
-            for (_, function, arguments, _) in &snapshot.frames {
-                marker.value(function);
-                arguments.trace_lisp_roots(marker);
-            }
-        }
         for handler in &self.active_handlers {
             match handler {
-                ActiveHandler::Module | ActiveHandler::Internal(_) => {}
-                ActiveHandler::Bind(_, value) => marker.value(value),
+                ActiveHandler::Module | ActiveHandler::Internal(_) | ActiveHandler::Skip(_) => {}
+                ActiveHandler::Bind(conditions, value, _) => {
+                    marker.value(conditions);
+                    marker.value(value);
+                }
+                ActiveHandler::Catch(value) => marker.value(value),
                 ActiveHandler::Case(values) => values.trace_lisp_roots(marker),
             }
         }
-        self.active_catch_tags.trace_lisp_roots(marker);
-        // dispatched_signal is an identity memo, not an independent GC root.
     }
 }
 
@@ -206,6 +192,7 @@ impl Interpreter {
             self.request_termination(EmacsTermination {
                 exit_code: 0,
                 restart: false,
+                c_stack_overflow: false,
             });
         }
         while let Some(thread_id) = self.continuations.threads.keys().next().copied() {

@@ -568,7 +568,8 @@ pub(crate) fn make_temp_file_internal(
                 Value::Nil,
                 Value::Nil,
             ];
-            let saved = interp.save_restriction_state();
+            let count = interp.specpdl_index();
+            interp.record_unwind_save_restriction();
             interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
             let written = write_region_with_coding(
                 interp,
@@ -580,8 +581,9 @@ pub(crate) fn make_temp_file_internal(
                 Some(&mut file),
                 env,
             );
-            interp.restore_restriction_state(saved);
+            let unbind = interp.unbind_to(count, env);
             written?;
+            unbind?;
         }
     }
     // failed = NILP (dir_flag) && emacs_close (fd) != 0.
@@ -1195,7 +1197,8 @@ pub(crate) fn write_region_value_with_logical_path(
     }
     // write_region saves restriction state even for explicit/string input;
     // nil START temporarily exposes the entire buffer to coding callbacks.
-    let saved = interp.save_restriction_state();
+    let count = interp.specpdl_index();
+    interp.record_unwind_save_restriction();
     interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
     if args[0].is_nil() {
         interp.buffer.borrow_mut().widen();
@@ -1210,8 +1213,8 @@ pub(crate) fn write_region_value_with_logical_path(
         None,
         env,
     );
-    interp.restore_restriction_state(saved);
-    result
+    let unbind = interp.unbind_to(count, env);
+    result.and_then(|value| unbind.map(|()| value))
 }
 
 /// callproc.c create_temp_file: the input `call-process-region' gives
@@ -1229,13 +1232,14 @@ pub(crate) fn encode_process_input(
     let restore_coding = interp.bind_special_dynamic("coding-system-for-write", coding, env)?;
     let result = match interp.bind_special_dynamic("file-name-handler-alist", Value::Nil, env) {
         Ok(restore_handlers) => {
-            let saved = interp.save_restriction_state();
+            let count = interp.specpdl_index();
+            interp.record_unwind_save_restriction();
             interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
             if start.is_nil() {
                 interp.buffer.borrow_mut().widen();
             }
             let result = encode_region_for_write(interp, start, end, env);
-            interp.restore_restriction_state(saved);
+            let result = interp.unbind_to(count, env).and(result);
             let restored = interp.restore_special_dynamic(restore_handlers, env);
             result.and_then(|bytes| restored.map(|()| bytes))
         }
@@ -1529,6 +1533,7 @@ fn write_region_with_coding(
             crate::lisp::primitives::fexpand_file_name(interp, env, visit, Value::Nil)?
         };
         interp.buffer.borrow_mut().set_file_name(visit_file);
+        interp.update_mode_lines = 14;
         // The time and size the written file has, unless its status cannot
         // be read.
         if let Ok(modtime) = stat_visited_modtime(interp, env, path)? {
@@ -2858,6 +2863,9 @@ fn insert_file_bytes(
 ) -> Result<(String, usize), LispError> {
     use super::hooks_overlays::{OverlayHookCalls, with_overlay_hook_roots};
     use super::insdel::{AfterChange, prepare_to_modify_buffer, signal_after_change};
+    // Prevent redisplay optimizations.
+    let current = interp.current_buffer_id();
+    interp.set_clip_changed(current);
     let buffer_was_empty = interp.buffer.borrow().size_total() == 0;
     let mut decision = if buffer_was_empty {
         None
@@ -3658,6 +3666,8 @@ pub(crate) fn do_auto_save(
                 }
             }
         }
+        // Prevent another auto save till enough input events come in.
+        super::record_auto_save(interp);
         Ok(auto_saved)
     })();
     // do_auto_save_unwind.
@@ -3668,8 +3678,9 @@ pub(crate) fn do_auto_save(
     if auto_saved && !no_message {
         if old_message_p {
             // If we are going to restore an old message, give time to
-            // read ours.
-            call_named_function(interp, "sit-for", &[Value::Integer(1)], env)?;
+            // read ours: dispnew.c's sit_for (1, 0, 0), which neither
+            // reads events nor redisplays.
+            crate::lisp::primitives::sit_for(interp, env, Value::Integer(1), false, 0)?;
             // restore_message: message3_nolog of the old message.
             super::dispatch::display::set_echo_area_message_value(old_message)?;
         } else if !AUTO_SAVE_ERROR_OCCURRED.get() {

@@ -79,6 +79,8 @@ impl Interpreter {
             if final_buffer_id != saved.buffer_id {
                 let _ = self.set_current_buffer_id(saved.buffer_id);
             }
+            // `buf->clip_changed = 1' when the bounds are restored.
+            let bounds = self.buffer.borrow().accessible_bounds();
             match saved.bounds {
                 SavedRestrictionBounds::Wide => {
                     let full_end = self.buffer.borrow().size_total() + 1;
@@ -98,6 +100,9 @@ impl Interpreter {
                     let _ = self.set_marker(beginning_marker_id, None, None);
                     let _ = self.set_marker(end_marker_id, None, None);
                 }
+            }
+            if self.buffer.borrow().accessible_bounds() != bounds {
+                self.set_clip_changed(saved.buffer_id);
             }
             self.restore_labeled_restrictions(saved.buffer_id, saved.labeled);
             if final_buffer_id != saved.buffer_id && self.has_buffer_id(final_buffer_id) {
@@ -163,18 +168,19 @@ impl Interpreter {
         let success = cached_symbol!(":success").with(|symbol| Value::Symbol(*symbol));
 
         // Each clause is nil or a list whose car is a symbol or a list of
-        // them; the last `:success' clause is the one that runs, and the
-        // others' conditions are the heads signal-time dispatch (and
-        // `handler-bind') sees on the handler list.
+        // them; the last `:success' clause is the one that runs, and each
+        // other clause, a nil one too, is a CONDITION_CASE entry on the
+        // handler list, the first clause innermost
+        // (internal_lisp_condition_case), each a step of a signal's search.
         let mut success_handler = None;
-        let mut heads = 0usize;
-        let mut first_head = Value::Nil;
+        let mut clauses: Vec<(Value, Value)> = Vec::new();
         let mut tail = handlers;
         while let Some(cell) = tail.cons_ref() {
             let clause = cell.car.get();
             tail = cell.cdr.get();
             let Some(clause_cell) = clause.cons_ref() else {
                 if clause.is_nil() {
+                    clauses.push((Value::Nil, Value::Nil));
                     continue;
                 }
                 return Err(self.invalid_condition_handler(clause, env));
@@ -190,23 +196,13 @@ impl Interpreter {
             if crate::lisp::types::eq(head, success) {
                 success_handler = Some(clause_cell.cdr.get());
             } else {
-                if heads == 0 {
-                    first_head = head;
-                }
-                heads += 1;
+                clauses.push((head, clause_cell.cdr.get()));
             }
         }
-        let case_heads = if heads == 1 {
-            crate::lisp::eval::CaseHeads::One(first_head)
-        } else {
-            crate::lisp::eval::CaseHeads::Many(
-                list_forms(&handlers)
-                    .filter_map(|clause| clause.cons_ref().map(|cell| cell.car.get()))
-                    .filter(|head| !crate::lisp::types::eq(*head, success))
-                    .collect(),
-            )
-        };
-        let handler_start = self.push_condition_case_handler(case_heads);
+        let handler_start = self.active_handlers.len();
+        for (head, _) in clauses.iter().rev() {
+            self.push_condition_case_handler(crate::lisp::eval::CaseHeads::One(*head));
+        }
         let depth = env.len();
         // A signal no frame boundary settled (a variable's, say) has
         // signal_or_quit's work done while these clauses are active.
@@ -225,9 +221,6 @@ impl Interpreter {
                 None => Ok(val),
             },
             Err(e) => {
-                if self.take_condition_case_suspend() {
-                    return Err(e);
-                }
                 // `throw' passes through `condition-case' untouched; only
                 // signals are eligible for the handlers.
                 if matches!(
@@ -239,27 +232,20 @@ impl Interpreter {
                 let symbol = e.condition_symbol();
                 // find_handler_clause: a clause whose condition is `t' or
                 // `memq' in the signaled symbol's `error-conditions', the
-                // first clause first.
+                // first clause first, past the clauses the signal's search
+                // skipped (a `handler-bind' handler's own signal).
                 let condition_list = self.error_condition_names_of(&symbol);
-                let mut tail = handlers;
-                while let Some(cell) = tail.cons_ref() {
-                    let clause = cell.car.get();
-                    tail = cell.cdr.get();
-                    let Some(clause_cell) = clause.cons_ref() else {
-                        continue;
-                    };
-                    let head = clause_cell.car.get();
-                    if crate::lisp::types::eq(head, success)
-                        || !Self::clause_head_matches(&head, &condition_list)
+                let innermost = handler_start + clauses.len();
+                for (position, (head, body)) in clauses.iter().enumerate() {
+                    if e.skipped_by_search(innermost - 1 - position)
+                        || !Self::clause_head_matches(head, &condition_list)
                     {
                         continue;
                     }
-                    let body = clause_cell.cdr.get();
-                    self.clear_batch_error_backtrace();
                     return self.eval_condition_case_handler(
                         var.as_ref(),
                         error_condition_value(&e),
-                        &body,
+                        body,
                         env,
                     );
                 }
@@ -314,39 +300,46 @@ impl Interpreter {
         }
     }
 
+    /// editfns.c:Fsave_excursion: record_unwind_protect_excursion, the
+    /// body, unbind_to.
     pub(super) fn sf_save_excursion(
         &mut self,
         args: &Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let saved = self.save_excursion_state();
+        let count = self.specpdl_index();
+        self.record_unwind_protect_excursion();
         let result = self.progn_list(args, env);
-        self.restore_excursion_state(saved);
-        result
+        let unbind = self.unbind_to(count, env);
+        result.and_then(|value| unbind.map(|()| value))
     }
 
+    /// editfns.c:Fsave_current_buffer: record_unwind_current_buffer, the
+    /// body, unbind_to.
     pub(super) fn sf_save_current_buffer(
         &mut self,
         args: &Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let saved_buffer_id = self.current_buffer_id();
+        let count = self.specpdl_index();
+        self.record_unwind_current_buffer();
         let result = self.progn_list(args, env);
-        if self.has_buffer_id(saved_buffer_id) {
-            let _ = self.set_current_buffer_id(saved_buffer_id);
-        }
-        result
+        let unbind = self.unbind_to(count, env);
+        result.and_then(|value| unbind.map(|()| value))
     }
 
+    /// editfns.c:Fsave_restriction: record_unwind_protect of
+    /// save_restriction_save, the body, unbind_to.
     pub(super) fn sf_save_restriction(
         &mut self,
         args: &Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let saved = self.save_restriction_state();
+        let count = self.specpdl_index();
+        self.record_unwind_save_restriction();
         let result = self.progn_list(args, env);
-        self.restore_restriction_state(saved);
-        result
+        let unbind = self.unbind_to(count, env);
+        result.and_then(|value| unbind.map(|()| value))
     }
 
     // ── cl-destructuring-bind ──

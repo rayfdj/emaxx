@@ -94,7 +94,25 @@ pub(crate) const WINDOW_TOTAL_LINES_SLOT: usize = 44;
 /// GNU's 0).
 pub(crate) const WINDOW_LEFT_MARGIN_COLS_SLOT: usize = 45;
 pub(crate) const WINDOW_RIGHT_MARGIN_COLS_SLOT: usize = 46;
-const WINDOW_SLOT_COUNT: usize = 47;
+/// window.h's redisplay and update_mode_line: the window must be
+/// redisplayed (wset_redisplay), and its mode line with it
+/// (wset_update_mode_line), until mark_window_display_accurate_1 clears
+/// them (absent, read as false).
+pub(crate) const WINDOW_REDISPLAY_SLOT: usize = 47;
+pub(crate) const WINDOW_UPDATE_MODE_LINE_SLOT: usize = 48;
+/// window.h's last_had_star: whether the buffer was modified when the
+/// window's mode line was last displayed.
+pub(crate) const WINDOW_LAST_HAD_STAR_SLOT: usize = 49;
+/// window.h's column_number_displayed: the column a `%c' or `%C' of the
+/// mode line last showed (absent or nil for -1, none).
+pub(crate) const WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT: usize = 50;
+/// window.h's last_point, last_modified and last_overlay_modified: point
+/// and the buffer's modification counts as the window's last complete
+/// redisplay left them (absent, read as 0).
+pub(crate) const WINDOW_LAST_POINT_SLOT: usize = 51;
+pub(crate) const WINDOW_LAST_MODIFIED_SLOT: usize = 52;
+pub(crate) const WINDOW_LAST_OVERLAY_MODIFIED_SLOT: usize = 53;
+const WINDOW_SLOT_COUNT: usize = 54;
 
 /// WINDOW_ID's character geometry as (total_cols, total_lines, left_col,
 /// top_line), in window_geometry's order.  A record from before these
@@ -190,6 +208,29 @@ pub(crate) fn set_window_flag(interp: &mut Interpreter, window_id: u64, slot: us
             record.slots.resize(slot + 1, Value::Nil);
         }
         record.slots[slot] = if on { Value::T } else { Value::Nil };
+    }
+}
+
+/// One of WINDOW_ID's integer redisplay fields (the slots above), or
+/// None where the window holds none.
+pub(crate) fn window_count_slot(interp: &Interpreter, window_id: u64, slot: usize) -> Option<i64> {
+    interp
+        .find_record(window_id)
+        .and_then(|record| record.slots.get(slot))
+        .and_then(Value::integer_value)
+}
+
+pub(crate) fn set_window_count_slot(
+    interp: &mut Interpreter,
+    window_id: u64,
+    slot: usize,
+    value: Option<i64>,
+) {
+    if let Some(record) = interp.find_record_mut(window_id) {
+        if record.slots.len() <= slot {
+            record.slots.resize(slot + 1, Value::Nil);
+        }
+        record.slots[slot] = value.map_or(Value::Nil, Value::Integer);
     }
 }
 
@@ -633,6 +674,7 @@ pub(crate) fn set_window_start_value(
     if !noforce {
         set_window_flag(interp, id, WINDOW_FORCE_START_SLOT, true);
     }
+    interp.wset_update_mode_line(id);
     interp.wset_redisplay(id);
     Ok(())
 }
@@ -714,7 +756,9 @@ pub(crate) fn recenter_selected_window(
                 .lookup_var_key(cached_symbol!("recenter-redisplay"), env)
                 .is_some_and(|value| value.is_truthy())
         {
-            interp.redisplay_other_windows();
+            // redraw_frame: fset_redisplay (f).
+            let selected = interp.selected_window_id();
+            interp.fset_redisplay_window_frame(selected);
         }
         center = true;
     } else if matches!(arg.kind(), Kind::Cons(_)) {
@@ -896,6 +940,7 @@ pub(crate) fn window_scroll(
 ) -> Result<(), LispError> {
     use super::dispatch::visual_vertical_motion;
     let window_id = interp.selected_window_id();
+    interp.wset_redisplay(window_id);
     let window = interp.record_value(window_id);
     let opoint = interp.buffer.borrow().point();
     let ht = text_height.max(1) as i64;
@@ -975,6 +1020,7 @@ pub(crate) fn window_scroll(
     let margin = selected_scroll_margin(interp, env, text_height) as i64;
     set_window_start_marker(interp, window_id, pos);
     set_window_flag(interp, window_id, WINDOW_START_AT_LINE_BEG_SLOT, bolp);
+    interp.wset_update_mode_line(window_id);
     // force_start so redisplay runs the window-scroll-functions.
     set_window_flag(interp, window_id, WINDOW_FORCE_START_SLOT, true);
     let (preserve_hpos, preserve_vpos) = original;

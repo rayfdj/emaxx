@@ -340,6 +340,9 @@ fn try_main() -> Result<u8, String> {
         }
     }
 
+    #[cfg(unix)]
+    extend_stack_limit();
+
     // Handle the -t switch, which specifies filename to use as terminal.
     if !only_version {
         while let Some(term) = argmatch(&argv, "-t", Some("--terminal"), 4, true, &mut skip) {
@@ -561,6 +564,50 @@ fn try_main() -> Result<u8, String> {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     linux_startup::ignore_broken_pipe();
     tty::run(&command_line_args, &options).map(|code| code as u8)
+}
+
+/// emacs.c:main's extension of the stack space available: RLIMIT_STACK's
+/// soft limit raised to what regex-emacs.c's failure stack needs at
+/// `emacs_re_max_failures' plus room for a GC's frames, rounded to a page
+/// and within the hard limit, never shrunk.  GNU tests `!noninteractive ||
+/// initialized' here, before `--batch' is looked at, so it always grows.
+/// Child processes inherit the limit, as GNU's do.  GNU's other use of
+/// the limit, `emacs_re_safe_alloca', has no counterpart: Emaxx's failure
+/// stack is always on the heap.
+#[cfg(unix)]
+fn extend_stack_limit() {
+    const EMACS_RE_MAX_FAILURES: u64 = 40_000;
+    let mut rlim = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    // SAFETY: getrlimit fills RLIM on success, the only case read.
+    if unsafe { libc::getrlimit(libc::RLIMIT_STACK, rlim.as_mut_ptr()) } != 0 {
+        return;
+    }
+    // SAFETY: initialized by the successful getrlimit above.
+    let mut rlim = unsafe { rlim.assume_init() };
+    // 0 <= rlim_cur <= LONG_MAX: RLIM_INFINITY is not.
+    if rlim.rlim_cur > i64::MAX as libc::rlim_t {
+        return;
+    }
+    let lim = rlim.rlim_cur;
+    // Approximately what regex-emacs.c needs per unit of
+    // emacs_re_max_failures, plus 33% for the smaller stacks it
+    // allocates and discards on its way to the maximum.
+    let min_ratio = 20 * std::mem::size_of::<*const u8>() as u64;
+    let ratio = min_ratio + min_ratio / 3;
+    // Extra space for other uses: a typical GC might take 30K stack frames.
+    let extra = 30 * 1000 * 50;
+    // SAFETY: sysconf reads a configuration value (GNU calls getpagesize).
+    let pagesize = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as libc::rlim_t;
+    let mut newlim = EMACS_RE_MAX_FAILURES * ratio + extra + pagesize - 1;
+    if rlim.rlim_max < newlim {
+        newlim = rlim.rlim_max;
+    }
+    newlim -= newlim % pagesize;
+    if newlim > lim && pagesize <= newlim - lim {
+        rlim.rlim_cur = newlim;
+        // SAFETY: RLIM is a valid rlimit; a failure leaves the limit as is.
+        unsafe { libc::setrlimit(libc::RLIMIT_STACK, &rlim) };
+    }
 }
 
 /// emacs.c:main's `-t DEVICE': the device replaces standard input and

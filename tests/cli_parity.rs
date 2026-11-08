@@ -5883,7 +5883,11 @@ fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
     // read of WAIT_PROC sets wait to MINIMUM, the next select finds a child
     // that has just written and is exiting either still running (the wait
     // returns) or reaped (status_notify runs its sentinel first), a race in
-    // GNU's loop as in Emaxx's.
+    // GNU's loop as in Emaxx's.  Which thread's wait runs the sentinel of
+    // the child the other thread made, and so where it falls in the log,
+    // is a race in GNU (under load its main thread's sleeps pass it by
+    // now and then), so the threads probe compares the log's entries, not
+    // their order.
     let corpus = Corpus::new();
     for program in [
         r##";;; -*- lexical-binding: t -*-
@@ -5959,7 +5963,7 @@ fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
               (with-mutex m (while (not go) (condition-wait cv)))
               (push (list 'thread-wait (accept-process-output nil 0.3)) log))
             "T")))
-  (while (not p) (sleep-for 0.05) (push 'slept log))
+  (while (not p) (sleep-for 0.05))
   (busy 0.4)
   (make-process :name "mp" :command '("true") :noquery t :connection-type 'pipe
                 :sentinel (lambda (_ e) (push (list 'mp (string-trim e)) log)))
@@ -5967,7 +5971,7 @@ fn the_wait_reads_its_channels_as_wait_reading_process_output_does() {
   (accept-process-output nil 0.2)
   (with-mutex m (setq go t) (condition-notify cv t))
   (thread-join th)
-  (princ (format "threads %S\n" (reverse log))))
+  (princ (format "threads %S\n" (sort log (lambda (a b) (string< (prin1-to-string a) (prin1-to-string b)))))))
 (princ "end\n")"##,
         r##";;; -*- lexical-binding: t -*-
 (defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
@@ -6118,7 +6122,7 @@ fn the_processes_at_exit_are_shut_down_as_shut_down_emacs_does() {
   (set-process-query-on-exit-flag c nil)
   (set-process-sentinel c (lambda (_p e) (princ (format "sentinel %S\n" e))))
   (princ (format "boot %S\n" (gnutls-boot c 'gnutls-x509pki '(:hostname "localhost" :priority "NORMAL:%NO_SHUFFLE_EXTENSIONS" :loglevel 2)))))
-(add-hook 'kill-emacs-hook (lambda () (princ "hook\n")))
+(add-hook 'kill-emacs-hook (lambda () (princ "hook\n") (signal-process srv 'SIGTERM)))
 (princ "end\n"))"##
             .replace("KEYFILE", &resources.join("key.pem").display().to_string())
             .replace("CERTFILE", &resources.join("cert.pem").display().to_string()),
@@ -7124,6 +7128,244 @@ fn read_buffer_and_read_command_read_as_minibuf_c_does() {
 }
 
 #[test]
+fn c_stack_overflow_returns_to_the_top_level_without_unwinding() {
+    // sysdep.c:handle_sigsegv's siglongjmp to keyboard.c's command_loop:
+    // `condition-case' does not catch the overflow, no unwind form runs and
+    // no binding is undone; command_loop's init_eval and top_level_1 again,
+    // `normal-top-level' showing internal--top-level-message, and then the
+    // batch session's command_loop_2, which waits (a timer ends it).  The
+    // depth reached differs (Rust frames are not C's), so only its size is
+    // compared.  The children inherit the stack limit emacs.c raised.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "so.el",
+        r#"(setq max-lisp-eval-depth 10000000)
+(defvar so-v 'outer)
+(defvar so-log nil)
+(add-hook 'kill-emacs-hook
+          (lambda ()
+            (princ (format "hook %S %S %S %S\n" (integerp so-v) (and (integerp so-v) (> so-v 1000))
+                           (recursion-depth) so-log)
+                   #'external-debugging-output)))
+(defun so-f (n) (let ((so-v n)) (unwind-protect (1+ (so-f (1+ n))) (setq so-log 'ran))))
+(run-at-time 2 nil (lambda () (kill-emacs 7)))
+(message "before")
+(condition-case e (so-f 0) (error (message "caught %S" e)))
+(message "after %S" so-v)"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = corpus.write(
+        "ulimit.el",
+        r#"(princ (shell-command-to-string "ulimit -s"))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[cfg(unix)]
+#[test]
+fn c_stack_overflow_in_a_terminal_command_returns_to_its_command_loop() {
+    // A command that recurses past the C stack: handle_sigsegv's
+    // siglongjmp to command_loop, which shows "Re-entering top level after
+    // C stack overflow" at the top level and reads the next command, the
+    // command's binding of so-v not undone.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "so.el",
+        r#"(setq max-lisp-eval-depth 10000000)
+(defvar so-v 'outer)
+(defvar so-log nil)
+(defun so-f (n) (let ((so-v n)) (1+ (so-f (1+ n)))))
+(add-hook 'echo-area-clear-hook (lambda () (push (list 'clear (current-message)) so-log)))
+(global-set-key [f5] (lambda () (interactive) (so-f 0)))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (push (list (current-message) (integerp so-v) (recursion-depth)) so-log)
+    (with-temp-file (expand-file-name "so.out" command-line-default-directory)
+      (insert (format "%S\n" so-log)))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![(6.5, b"\x1b[15~"), (4.0, b"\x1b[17~")];
+    let expected = corpus.run_tty(&oracle(), &probe, "so.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "so.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn c_stack_overflow_leaves_the_frames_unwind_records_undone() {
+    // init_eval empties the specpdl without unbinding: `save-excursion',
+    // `save-restriction' and `save-current-buffer' (interpreted or
+    // compiled), `eval-buffer''s excursion, `execute-kbd-macro''s
+    // pop_kbd_macro (so the recovered command loop goes on reading the
+    // macro) are not undone, and when_entered_debugger is -1 again.
+    let corpus = Corpus::new();
+    let common = r#"(setq max-lisp-eval-depth 10000000)
+(defvar so-log nil)
+(defun so-f (n) (1+ (so-f (1+ n))))
+(run-at-time 2 nil (lambda () (kill-emacs 7)))
+"#;
+    let excursion = |name: &str, compile: &str| {
+        corpus.write(
+            name,
+            &format!(
+                r#"{common}(defvar so-b (get-buffer-create "so"))
+(with-current-buffer so-b (insert "hello world, hello"))
+(defun so-x ()
+  (with-current-buffer so-b
+    (save-excursion
+      (save-restriction
+        (narrow-to-region 2 8)
+        (goto-char 5)
+        (save-current-buffer (set-buffer (get-buffer-create "other")) (so-f 0))))))
+{compile}
+(add-hook 'kill-emacs-hook
+          (lambda ()
+            (princ (format "hook %S\n" (with-current-buffer so-b (list (point) (buffer-narrowed-p))))
+                   #'external-debugging-output)))
+(so-x)"#
+            ),
+        )
+    };
+    let program = excursion("sx.el", "");
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = excursion("sxb.el", "(byte-compile 'so-x)");
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = corpus.write(
+        "evb.el",
+        &format!(
+            r#"{common}(defvar so-b (get-buffer-create "evb"))
+(with-current-buffer so-b (insert "(push 'one so-log)\n(so-f 0)\n(push 'three so-log)\n"))
+(add-hook 'kill-emacs-hook
+          (lambda ()
+            (princ (format "hook %S\n" (list so-log (mapcar #'buffer-name eval-buffer-list)
+                                             (with-current-buffer so-b (point))))
+                   #'external-debugging-output)))
+(with-current-buffer so-b (goto-char 3) (eval-buffer so-b nil nil nil t))"#
+        ),
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = corpus.write(
+        "kmac.el",
+        &format!(
+            r#"{common}(add-hook 'kill-emacs-hook
+          (lambda ()
+            (princ (format "hook %S\n" (list (reverse so-log) executing-kbd-macro
+                                             executing-kbd-macro-index))
+                   #'external-debugging-output)))
+(global-set-key [f5] (lambda () (interactive) (push 'f5 so-log) (so-f 0)))
+(global-set-key [f6] (lambda () (interactive) (push 'f6 so-log)))
+(execute-kbd-macro [f5 f6])"#
+        ),
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = corpus.write(
+        "wed.el",
+        r#"(setq max-lisp-eval-depth 10000000)
+(defvar so-log nil)
+(defun so-f (n) (1+ (so-f (1+ n))))
+(setq debug-on-error t debugger (lambda (&rest a) (push (list 'dbg (cadr a)) so-log) nil))
+(condition-case nil (error "first") ((debug error) nil))
+(push (list 'entered internal-when-entered-debugger) so-log)
+(run-at-time 2 nil (lambda ()
+  (push (list 'entered internal-when-entered-debugger) so-log)
+  (condition-case nil (error "second") ((debug error) nil))
+  (princ (format "%S\n" (reverse so-log)) #'external-debugging-output)
+  (kill-emacs 7)))
+(so-f 0)"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[cfg(unix)]
+#[test]
+fn c_stack_overflow_in_minibuffer_setup_leaves_the_minibuffer_active() {
+    // read_minibuf's unwind records are dropped with the rest: the
+    // recovered command loop runs with the minibuffer at its depth.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "so.el",
+        r#"(setq max-lisp-eval-depth 10000000)
+(defvar so-go nil)
+(defun so-f (n) (1+ (so-f (1+ n))))
+(add-hook 'minibuffer-setup-hook (lambda () (when so-go (setq so-go nil) (so-f 0))))
+(global-set-key [f5] (lambda () (interactive) (setq so-go t) (read-from-minibuffer "Q: ")))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "so.out" command-line-default-directory)
+      (insert (format "%S\n" (list (recursion-depth) (minibuffer-depth) (minibufferp)
+                                   (minibuffer-window-active-p (minibuffer-window))))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![(6.5, b"\x1b[15~"), (6.0, b"\x1b[17~")];
+    let expected = corpus.run_tty(&oracle(), &probe, "so.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "so.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn signals_in_handler_bind_handlers_are_signal_or_quit_s() {
+    // signal_or_quit's SKIP_CONDITIONS around a handler-bind handler: a
+    // signal inside it is searched as any other, so Vsignaling_function
+    // is set from the last one (here a void-variable that loading
+    // cl-print for debug-early's backtrace signals and catches in
+    // custom-initialize-reset), and handler-binds inside the handler and
+    // outside its form see the signals.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "sf.el",
+        r#"(setq command-error-function
+      (lambda (data context signal)
+        (princ (format "%S|%S|%S\n" data context signal) #'external-debugging-output)
+        (kill-emacs 3)))
+(car 1)"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    let program = corpus.write(
+        "hb.el",
+        r#"(define-error 'hb-custom "Custom")
+(defvar hb-log nil)
+(condition-case nil
+    (handler-bind ((error (lambda (e) (push (list 'outermost e) hb-log))))
+      (handler-bind ((error (lambda (_e)
+                              (condition-case nil
+                                  (handler-bind ((error (lambda (e2) (push (list 'inner e2) hb-log))))
+                                    (car 1))
+                                (error (push 'inner-caught hb-log)))
+                              (signal 'hb-custom nil)))
+                     (hb-custom (lambda (e) (push (list 'sibling e) hb-log))))
+        (car 2)))
+  (error (push 'caught hb-log)))
+(let ((signal-hook-function (lambda (s d) (push (list 'hook s d) hb-log))))
+  (condition-case nil
+      (handler-bind ((error (lambda (_e) (condition-case nil (aref [] 3) (error nil)))))
+        (car 2))
+    (error nil)))
+(princ (format "%S\n" (reverse hb-log)))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn handler_bind_handlers_get_room_as_signal_or_quit_gives_them() {
+    // eval.c:signal_or_quit's HANDLER_BIND case runs the handler after
+    // max_ensure_room (20), so a handler for `excessive-lisp-nesting' runs
+    // at the depth that signaled it.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "hb.el",
+        r#"(defun f (n) (f (1+ n)))
+(defvar hb-log nil)
+(condition-case nil
+    (handler-bind ((excessive-lisp-nesting (lambda (e) (push (list 'hb (car e)) hb-log))))
+      (f 0))
+  (error (push 'caught hb-log)))
+(princ (format "%S %S\n" (reverse hb-log) max-lisp-eval-depth))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
 fn read_event_runs_help_form_as_read_char_does() {
     // keyboard.c:read_char: a help character read while `help-form' is
     // non-nil is made part of this-command-keys and `last-input-event',
@@ -7380,6 +7622,894 @@ fn a_macro_takes_a_command_s_keys_once_no_prefix_argument_is_pending() {
     ];
     let expected = corpus.run_tty(&oracle(), &probe, "km.out", "C", &input);
     let actual = corpus.run_tty(emaxx(), &probe, "km.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn signals_through_catches_and_out_of_handlers_follow_signal_or_quit() {
+    // An interpreted `catch' passes a signal on as it came, its search and
+    // what that skipped kept; a handler's `kill-emacs' or throw leaves
+    // signal_or_quit at once (no debugger, no panic); handlers run for
+    // each signal however the collector reused the objects of earlier
+    // ones, and for a signal of an object already handled; the C core's
+    // condition-case handlers (unlock-file's `file-error') respect the
+    // skipped entries; GNU's skip count, which a marker passed on the way
+    // advances by one step; the conditions of `handler-bind-1' as the
+    // objects themselves; `signal-hook-function' given `signal''s own
+    // arguments; and lexbound_p seeing the environments `eval' and a
+    // load replaced.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "c1.el",
+            r##";;; -*- lexical-binding: t -*-
+(define-error 'p-custom "Custom")
+(defvar log nil)
+(defun show (n r) (princ (format "%s: %S %S\n" n r (reverse log))) (setq log nil))
+;; 1: catch between first signal and form; cc between catch and form
+(show 1 (condition-case e
+    (handler-bind ((error (lambda (_e) (push 'h log) (signal 'p-custom nil))))
+      (condition-case nil
+          (catch 'tag (car 1))
+        (p-custom 'wrong)))
+  (p-custom (list 'right e))))
+;; 2: function frame between catch and cc
+(defun c1-f () (catch 'tag (car 1)))
+(show 2 (condition-case e
+    (handler-bind ((error (lambda (_e) (push 'h log) (signal 'p-custom nil))))
+      (condition-case nil
+          (list (c1-f))
+        (p-custom 'wrong)))
+  (p-custom (list 'right e))))
+;; 3: signal-hook-function count for an error passing through catch
+(show 3 (let ((signal-hook-function (lambda (s _d) (push s log))))
+  (condition-case nil (list (catch 'x (car 1))) (error 'caught))))
+;; 4: handler-bind run count through catch
+(show 4 (condition-case nil
+    (handler-bind ((error (lambda (e) (push (car e) log))))
+      (list (catch 'x (list (car 1)))))
+  (error 'caught)))
+;; 5: hook count, handler's error through a catch
+(show 5 (let ((signal-hook-function (lambda (s _d) (push s log))))
+  (condition-case nil
+      (handler-bind ((wrong-type-argument (lambda (_e) (signal 'p-custom nil))))
+        (list (catch 'x (list (car 1)))))
+    (error 'caught))))
+;; 6: debugger count via debug-on-error
+(show 6 (let ((debug-on-error t) (debugger (lambda (&rest a) (push (cadr a) log) (throw 'out 'dbg))))
+          (catch 'out (handler-bind ((error (lambda (_e) (signal 'p-custom nil))))
+                        (list (catch 'x (list (car 1))))))))
+;; 7: outer handler-bind sees handler's error once
+(show 7 (condition-case nil
+    (handler-bind ((p-custom (lambda (e) (push (list 'outer e) log))))
+      (handler-bind ((wrong-type-argument (lambda (_e) (signal 'p-custom nil))))
+        (list (catch 'x (list (car 1))))))
+  (error 'caught)))"##,
+        ),
+        (
+            "r1.el",
+            r##";;; -*- lexical-binding: t -*-
+(defvar log nil)
+(defun show (n r) (princ (format "%s: %S %S\n" n r (reverse log))) (setq log nil))
+(show 1 (condition-case e2
+  (handler-bind ((error (lambda (_e) (push 'outer log))))
+    (condition-case e
+        (handler-bind ((error (lambda (_e) (push 'inner log))))
+          (car 1))
+      (error (signal e nil))))
+  (error (list 'top e2))))
+(show 2 (condition-case e2
+  (handler-bind ((error (lambda (_e) (push 'outer log))))
+    (let ((saved nil))
+      (condition-case e
+          (handler-bind ((error (lambda (_e) (push 'inner log))))
+            (car 1))
+        (error (setq saved e)))
+      (push 'between log)
+      (signal saved nil)))
+  (error (list 'top e2))))
+(show 3 (let ((obj nil))
+  (condition-case nil (handler-bind ((error (lambda (e) (setq obj e) (push 'h1 log)))) (car 1)) (error nil))
+  (condition-case nil (handler-bind ((error (lambda (e) (push (list 'h2 (eq e obj)) log)))) (signal obj nil)) (error nil))
+  'done))
+(show 4 (let ((signal-hook-function (lambda (s d) (push (list 'hook s) log))))
+  (condition-case e (handler-bind ((error (lambda (e) (push 'h log)))) (condition-case e (car 1) (error (signal e nil)))) (error 'x))))"##,
+        ),
+        (
+            "hb1.el",
+            r##";;; -*- lexical-binding: t -*-
+(defvar log nil)
+(defun show (n r) (princ (format "%s: %S %S\n" n r (reverse log))) (setq log nil))
+(show 1 (condition-case e (handler-bind-1 (lambda () (car 1)) '("x" error) (lambda (e) (push 'ran log))) (error (car e))))
+(show 2 (condition-case e (handler-bind-1 (lambda () (car 1)) 42 (lambda (e) (push 'ran log))) (error (car e))))
+(show 3 (condition-case e (handler-bind-1 (lambda () (car 1)) (list (make-symbol "error")) (lambda (e) (push 'ran log))) (error (car e))))
+(show 4 (let ((conds (list 'arith-error)))
+  (condition-case e (handler-bind-1 (lambda () (setcar conds 'error) (car 1)) conds (lambda (e) (push 'ran log))) (error (car e)))))
+(show 5 (condition-case e (handler-bind-1 (lambda () (car 1)) '(error . arith-error) (lambda (e) (push 'ran log))) (error (car e))))
+(show 6 (condition-case e (handler-bind-1 (lambda () (car 1)) (list (make-symbol "t")) (lambda (e) (push 'ran log))) (error (car e))))
+(show 7 (condition-case e (handler-bind-1 (lambda () (signal 'quit nil)) 'error (lambda (e) (push 'ran log))) (t (car e))))"##,
+        ),
+        (
+            "g1.el",
+            r##";;; -*- lexical-binding: t -*-
+(let ((n 0) (iters 300))
+  (dotimes (i iters)
+    (condition-case nil
+        (handler-bind ((error (lambda (_e) (setq n (1+ n)))))
+          (car i))
+      (error nil))
+    (when (= 0 (% i 3)) (garbage-collect)))
+  (princ (format "ran %d of %d\n" n iters)))
+(let ((n 0) (iters 300))
+  (dotimes (i iters)
+    (condition-case nil
+        (handler-bind ((error (lambda (_e) (setq n (1+ n)))))
+          (signal 'error (list i)))
+      (error nil))
+    (garbage-collect))
+  (princ (format "ran2 %d of %d\n" n iters)))"##,
+        ),
+        (
+            "lexdef.el",
+            r##";;; -*- lexical-binding: t -*-
+(defvar lexdef-file (make-temp-file "lexdef" nil ".el"))
+(princ (format "r1 %S\n" (condition-case e (let ((byte-compile-dest-file-function 1)) (require 'bytecomp) 'no-error) (error e))))
+(princ (format "r2 %S\n" (condition-case e (let ((lexdef-zz 1)) (eval '(defvar lexdef-zz 2) t) 'no-error) (error e))))
+(princ (format "r3 %S\n" (condition-case e (let ((lexdef-yy 1)) (funcall (lambda () (eval '(defvar lexdef-yy 2) t))) 'no-error) (error e))))
+(princ (format "r4 %S\n" (condition-case e (let ((lexdef-xx 1)) (with-temp-buffer (insert "(defvar lexdef-xx 2)") (eval-buffer)) 'no-error) (error e))))
+(princ (format "r5 %S\n" (condition-case e (let ((lexdef-ww 1)) (with-temp-buffer (insert "(defvar lexdef-ww 2)") (write-region nil nil lexdef-file nil 'q)) (load lexdef-file nil t t) 'no-error) (error e))))"##,
+        ),
+        (
+            "ul.el",
+            r##";;; -*- lexical-binding: t -*-
+(put 'my-c 'error-conditions '(my-c))
+(put 'my-c 'error-message "My C")
+(defvar log nil)
+(advice-add 'make-lock-file-name :override (lambda (_fn) (push 'mlfn log) (signal 'my-c nil)))
+(princ (format "r %S %S\n"
+  (condition-case e
+      (handler-bind ((my-c (lambda (_) (push 'h log) (signal 'file-error '("from handler")))))
+        (unlock-file (expand-file-name "emaxx-ul-target" temporary-file-directory)))
+    (file-error (list 'outer e)))
+  (reverse log)))"##,
+        ),
+        (
+            "k1.el",
+            r##";;; -*- lexical-binding: t -*-
+(define-error 'p-custom "Custom")
+(define-error 'p-other "Other")
+(defvar log nil)
+;; Nested SKIP_CONDITIONS: GNU's `skip' counter advances by one per loop
+;; step, not by the entries a SKIP_CONDITIONS jump passed over.
+(princ (format "k1 %S\n"
+  (condition-case e
+      (handler-bind ((error (lambda (_e) (push 'h2 log) (signal 'p-other (list 'h2)))))
+        (condition-case e2
+            (handler-bind ((error (lambda (_e) (push 'h1 log) (signal 'p-custom '(h1)))))
+              (condition-case nil (car 1) (arith-error 'no)))
+          (p-other (list 'cc2-caught e2))))
+    (error (list 'outer e)))) #'external-debugging-output)
+(princ (format "k1log %S\n" (reverse log)) (function external-debugging-output))
+(setq log nil)"##,
+        ),
+        (
+            "t9.el",
+            r##"(handler-bind ((error (lambda (e) (kill-emacs 9))))
+  (car 1))"##,
+        ),
+        (
+            "t11.el",
+            r##"(setq debugger (lambda (&rest a) (princ (format "DEBUGGER %S\n" a) #'external-debugging-output) (throw 'dbg 'from-debugger)))
+(princ (format "r1 %S\n" (catch 'dbg (let ((debug-on-error t)) (catch 'x (handler-bind ((error (lambda (e) (throw 'x 'thrown)))) (car 1)))))))"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[test]
+fn nested_data_reads_on_the_read_stack_as_read0_s() {
+    // read0 keeps the data nested in an object on its read stack, in the
+    // heap: a million levels of lists, vectors, quotes, `function',
+    // backquotes and commas, records, closures and dotted tails read as
+    // GNU's, a hundred thousand nested labels too, and a function stream
+    // collecting garbage in the middle of nested data finds each element
+    // read so far kept (mark_lread marks the stack's entries).
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "deep.el",
+        r##";;; -*- lexical-binding: t -*-
+(defun rd-depth (v step)
+  (let ((d 0)) (while (setq v (funcall step v)) (setq d (1+ d))) d))
+(defun rd-probe (name text step)
+  (condition-case err
+      (princ (format "%s %d\n" name (rd-depth (car (read-from-string text)) step)))
+    (error (princ (format "%s err %S\n" name err)))))
+(defun rd-repeat (n s) (let ((parts nil)) (dotimes (_ n) (push s parts)) (apply #'concat parts)))
+(let ((n 1000000))
+  (rd-probe "list" (concat (make-string n ?\() (make-string n ?\))) #'car)
+  (rd-probe "vector" (concat (make-string n ?\[) (make-string n ?\]))
+            (lambda (v) (and (> (length v) 0) (aref v 0))))
+  (rd-probe "quote" (concat (make-string n ?') "a") (lambda (v) (and (consp v) (cadr v))))
+  (rd-probe "function" (concat (rd-repeat n "#'") "f") (lambda (v) (and (consp v) (cadr v))))
+  (rd-probe "backquote" (concat (rd-repeat n "`,") "a") (lambda (v) (and (consp v) (cadr v))))
+  (rd-probe "record" (concat (rd-repeat n "#s(r ") (make-string n ?\)))
+            (lambda (v) (and (recordp v) (> (length v) 1) (aref v 1))))
+  (rd-probe "bytecode" (concat (rd-repeat n "#[(x) (") "x" (rd-repeat n ") nil]"))
+            (lambda (v) (and (interpreted-function-p v) (car (aref v 1)))))
+  (rd-probe "dotted" (concat (rd-repeat n "(a . ") "nil" (make-string n ?\)))
+            (lambda (v) (and (consp v) (cdr v))))
+  (rd-probe "unclosed" (make-string n ?\() #'car)
+  (rd-probe "mismatched" (concat (make-string n ?\() "]") #'car))
+(let* ((n 100000)
+       (text (let ((parts nil))
+               (dotimes (i n) (push (format "#%d=(#%d# " (1+ i) (1+ i)) parts))
+               (concat (apply #'concat (nreverse parts)) (make-string n ?\)))))
+       (v (car (read-from-string text)))
+       (d 0))
+  (while (and (consp v) (eq (car v) v)) (setq v (cadr v) d (1+ d)))
+  (princ (format "labels %d %S\n" d v)))
+(defun rd-gc-stream (s)
+  (let ((i 0) (n (length s)))
+    (lambda (&optional ch)
+      (if ch (setq i (1- i))
+        (when (zerop (% i 2000)) (garbage-collect))
+        (when (< i n) (prog1 (aref s i) (setq i (1+ i))))))))
+(dolist (shape '(("[" "]" aref) ("(" ")" nth) ("#s(r " ")" record)))
+  (let* ((n 20000)
+         (text (let ((parts nil))
+                 (dotimes (i n) (push (format "%s\"s%d\" " (car shape) i) parts))
+                 (concat (apply #'concat (nreverse parts)) (rd-repeat n (cadr shape)))))
+         (v (read (rd-gc-stream text)))
+         (d 0))
+    (while (and v (equal (if (eq (nth 2 shape) 'record) (aref v 1) (elt v 0)) (format "s%d" d)))
+      (setq v (if (eq (nth 2 shape) 'record) (and (> (length v) 2) (aref v 2)) (and (> (length v) 1) (elt v 1)))
+            d (1+ d)))
+    (princ (format "gc %s %d %S\n" (car shape) d v))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    // Each entry's closer, the syntax errors of the entries an object goes
+    // into, and string_props_from_rev_list's triples set in order (an
+    // out-of-range one signals before a later triple is found short).
+    let program = corpus.write(
+        "syntax.el",
+        r##"(dolist (s '("#(\"abc\" 0 10 (face bold) 1)" "#(\"abc\" 0 1 (face bold) 1)" "#(\"abc\" 0 1)" "#()" "#(1 2 3)" "#s()" "#s(hash-table data (1 2))" "#^[nil]" "#^^[3 0]" "#[1 2]" "#[(x) (x)]" "(a . b c)" "(a . )" "( . a)" "[a . b]" "'." "(a . b" "#1=(a . #1#)" "#1=#1#" "#1=[#1#]" "(quote . a)" "`(a ,b ,@c)" "#'f" "(#! foo\n a)" "[a )" "#s(a ]" "(a]" "#&3\"a\"" ")" "]" "(a . b . c)" "(a #@3xyzb)"))
+  (condition-case err (princ (format "%S -> %S\n" s (let ((print-circle t)) (format "%S" (car (read-from-string s)))))
+    (error (princ (format "%S -> err %S\n" s err)))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn reads_share_the_read_stack_and_end_as_read0_ends() {
+    // Every read works on the one read stack (lread.c's rdstack), from the
+    // depth it finds there: a read the main thread makes through while a
+    // thread's read is suspended in a collection pushes above the thread's
+    // entries and leaves them as it found them; the end of the input after
+    // a `#!' line or a `#@' skip at the top level, or inside a datum from a
+    // function stream, is end_of_file_error; and a label naming a symbol
+    // with position signals in the substitution while
+    // `symbols-with-pos-enabled' is nil, as substitute_object_recurse does.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "threads.el",
+            r##";;; -*- lexical-binding: t -*-
+(defun ystream (s)
+  (let ((i 0))
+    (lambda (&optional ch)
+      (if ch (setq i (1- i))
+        (thread-yield)
+        (when (< i (length s)) (prog1 (aref s i) (setq i (1+ i))))))))
+(let ((th (make-thread (lambda () (read (ystream "[a (b c) #s(r d) e]"))))))
+  (garbage-collect)
+  (princ (format "main: %S\n" (read "[x y z]")))
+  (princ (format "thread: %S\n" (thread-join th))))"##,
+        ),
+        (
+            "stream-eof.el",
+            r##";;; -*- lexical-binding: t -*-
+(defun str-stream (s)
+  (let ((i 0) (n (length s)))
+    (lambda (&optional ch)
+      (if ch (setq i (1- i))
+        (when (< i n) (prog1 (aref s i) (setq i (1+ i))))))))
+(dolist (s '("" "(a" "[a" "'" "#s(a" "\"abc" "?" "(a . b"))
+  (princ (format "%S -> %S\n" s (condition-case err (read (str-stream s)) (error err)))))"##,
+        ),
+        (
+            "positions.el",
+            r##";;; -*- lexical-binding: t -*-
+(defun show (tag f)
+  (condition-case err
+      (princ (format "%s -> %s\n" tag (let ((print-circle t) (print-symbols-bare nil)) (format "%S" (funcall f)))))
+    (error (princ (format "%s -> err %S\n" tag err)))))
+(dolist (swp '(nil t))
+  (dolist (s '("(#1=a #1# b)" "#1=[a #1# b]" "#1=[(a) #1#]" "(x #1=[(a) #1#])" "#1=(a #1#)" "(#1=\"s\" #1#)" "(#1=[b] #1#)" "(#1=[] #1#)" "(#1=#s(a b) #1#)" "(#1=#'a #1#)" "(#1=nil #1#)" "(#1=#:u #1#)"))
+    (show (format "swp=%S %S" swp s) (lambda () (let ((symbols-with-pos-enabled swp)) (read-positioning-symbols s))))))"##,
+        ),
+        (
+            "load-end.el",
+            r##";;; -*- lexical-binding: t -*-
+(defvar v1)
+(dolist (text '("(setq v1 1)\n#!foo" "(setq v1 3)\n#@5abcde" "(setq v1 12) #@0 (setq v1 13)" "(setq v1 4)\n#!foo\n(setq v1 5)"))
+  (let ((file (make-temp-file "rdend" nil ".el" text)))
+    (setq v1 nil)
+    (princ (format "%S load %S v1=%S\n" text
+                   (condition-case err (load file nil t) (error (car err))) v1))
+    (setq v1 nil)
+    (princ (format "%S eval-buffer %S v1=%S\n" text
+                   (condition-case err (with-temp-buffer (insert text) (eval-buffer) 'ok) (error (car err))) v1))
+    (delete-file file)))"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[test]
+fn menus_parse_their_items_as_parse_menu_item_and_menu_c_do() {
+    // x-popup-menu parses MENU into menu_items as menu.c does even where
+    // no menu can show (a batch session's initial frame): each item's
+    // :visible, name, :enable, :filter, :keys and :button forms and a
+    // command's `menu-enable' property are evaluated, errors in them
+    // ignored, `x-pre-popup-menu-hook' run, a menu inside a menu entry
+    // refused; old-fashioned menus, lists of keymaps and POSITION are
+    // checked as list_of_panes and x_popup_menu_1 check them, and
+    // x-popup-dialog emulates its dialog with a menu.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "menus.el",
+        r##"(defvar log nil)
+(defun note (x) (push x log) t)
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(setq x-pre-popup-menu-hook (list (lambda () (note 'hook))))
+(defvar m (make-sparse-keymap "Title"))
+(define-key m [a] (list 'menu-item "A" 'ignore :visible '(note 'vis-a)))
+(define-key m [b] (list 'menu-item '(progn (note 'name-b) "B") 'ignore :enable '(note 'en-b)))
+(define-key m [c] (list 'menu-item "C" 'forward-char :keys (lambda () (note 'keys-c) "K")))
+(define-key m [d] (list 'menu-item "D" 'ignore :filter (lambda (d) (note (list 'filter d)) 'backward-char)))
+(define-key m [e] (list 'menu-item "E" 'ignore :visible '(error "boom")))
+(define-key m [f] (list 'menu-item "F" 'ignore :button '(:toggle . (note 'sel-f))))
+(define-key m [g] '("Old" "help" . ignore))
+(put 'my-cmd 'menu-enable '(note 'menu-enable))
+(define-key m [h] '("H" . my-cmd))
+(show "t" (lambda () (x-popup-menu t m)))
+(show "log" (lambda () (reverse log)))
+(setq log nil)
+(show "list" (lambda () (x-popup-menu t (list m (make-sparse-keymap "Two")))))
+(show "log2" (lambda () (reverse log)))
+(setq log nil)
+(show "old" (lambda () (x-popup-menu t '("T" ("P" ("a" . 1) "s" nil ("b" . 2))))))
+(show "log3" (lambda () (reverse log)))
+(show "bad1" (lambda () (x-popup-menu t '("T" (1 ("a" . 1))))))
+(show "bad2" (lambda () (x-popup-menu t '("T" ("P")))))
+(show "bad3" (lambda () (x-popup-menu t '("T" ("P" (1 . 1))))))
+(show "bad4" (lambda () (x-popup-menu t '(1 ("P" ("a" . 1))))))
+(show "bad5" (lambda () (x-popup-menu t 'foo)))
+(show "bad6" (lambda () (x-popup-menu t (list m 'foo))))
+(show "pos1" (lambda () (x-popup-menu '((1 2) foo) m)))
+(show "pos2" (lambda () (x-popup-menu '((1.5 2) nil) m)))
+(show "pos3" (lambda () (x-popup-menu (list (list 1 2) (selected-frame)) m)))
+(show "pos4" (lambda () (x-popup-menu (list (list (expt 2 40) 2) (selected-frame)) m)))
+(show "pos5" (lambda () (x-popup-menu (list (list 1 2) (selected-window)) m)))
+(show "pos6" (lambda () (x-popup-menu 'sym m)))
+(show "pos7" (lambda () (x-popup-menu nil 'foo)))
+(show "reent" (lambda () (let ((mm (make-sparse-keymap "R")))
+   (define-key mm [z] (list 'menu-item "Z" 'ignore :visible '(progn (x-popup-menu t (make-sparse-keymap "In")) t)))
+   (x-popup-menu t mm))))
+(show "reent2" (lambda () (let ((mm (make-sparse-keymap "R")))
+   (define-key mm [z] (list 'menu-item "Z" 'ignore :visible '(condition-case e (x-popup-menu t (make-sparse-keymap "In")) (error (note e)))))
+   (x-popup-menu t mm))))
+(show "log4" (lambda () (reverse log)))
+(show "dialog" (lambda () (x-popup-dialog t '("Q" ("Yes" . y) ("No" . n)))))
+(show "dialog2" (lambda () (x-popup-dialog 'foo '("Q" ("Yes" . y)))))
+(show "event" (lambda () (x-popup-menu (list 'mouse-1 (list (selected-window) 1 '(0 . 0) 0)) m)))
+"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn call_interactively_reads_keys_as_callint_c_reads_them() {
+    // callint.c checks KEYS as a vector before anything else (before the
+    // interactive form, so a non-command with a bad KEYS signals
+    // `vectorp'), and the `e' code takes the first event with
+    // parameters from KEYS or, with none, from the command's keys.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "callint.el",
+        r##"(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun pick (&rest events) (interactive "e\ne") events)
+(show "str" (lambda () (call-interactively 'car nil "x")))
+(show "list" (lambda () (call-interactively 'forward-char nil (list 1))))
+(show "none" (lambda () (call-interactively (lambda (e) (interactive "e") e) nil [a b])))
+(show "one" (lambda () (call-interactively (lambda (e) (interactive "e") e) nil [a (mouse-1 (nil)) (b)])))
+(show "two" (lambda () (call-interactively 'pick nil [a (down-mouse-1 (nil)) b (mouse-1 (nil))])))
+(show "short" (lambda () (call-interactively 'pick nil [(mouse-1 (nil))])))
+(show "inhibit" (lambda () (let ((inhibit-mouse-event-check t)) (call-interactively 'pick nil [a b]))))
+(show "cmdkeys" (lambda () (call-interactively (lambda (e) (interactive "e") e))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_mouse_command_gets_its_event_as_callint_c_gives_it() {
+    // A click the terminal reports (xt-mouse's translation) runs its
+    // `mouse-1' binding with the click, the command's keys giving the
+    // `e' code its event; a click on the menu bar runs
+    // `menu-bar-open-mouse', whose menu C-g cancels.  post-command-hook
+    // notes each command and its keys.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "mouse.el",
+        r#"(xterm-mouse-mode 1)
+(defvar ms-log nil)
+(global-set-key [mouse-1]
+  (lambda (e) (interactive "e")
+    (push (list 'click (car e) (posn-point (event-start e))) ms-log)))
+(define-key global-map [down-mouse-1] nil)
+(add-hook 'post-command-hook
+  (lambda ()
+    (push (list (if (symbolp this-command) this-command 'lambda)
+                (mapcar (lambda (k) (if (consp k) (car k) k)) (this-command-keys-vector)))
+          ms-log)))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "mouse.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse ms-log))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"\x1b[<0;5;3M"),
+        (0.1, b"\x1b[<0;5;3m"),
+        (1.0, b"\x1b[<0;2;1M"),
+        (0.1, b"\x1b[<0;2;1m"),
+        (1.5, b"\x07"),
+        (1.0, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "mouse.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "mouse.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_click_on_a_prompting_keymap_menus_as_read_char_x_menu_prompt_does() {
+    // read_char after a click (an event with parameters) echoes the keys
+    // at once, then pops up the keymap's menu (read_char_x_menu_prompt):
+    // C-g refuses it, so read_key_sequence returns -1 and no command runs;
+    // a choice is recorded as record_menu_key records it, after the keys
+    // the menu read, and echoed.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "menu.el",
+        r#"(xterm-mouse-mode 1)
+(defvar ms-log nil)
+(defvar pick-map (make-sparse-keymap "Pick"))
+(defun pick-b () (interactive) (push 'ran-b ms-log))
+(defun pick-a () (interactive) (push 'ran-a ms-log))
+(define-key pick-map [b] '(menu-item "Bee" pick-b))
+(define-key pick-map [a] '(menu-item "Ay" pick-a))
+(global-set-key [mouse-3] pick-map)
+(global-set-key [down-mouse-3] nil)
+(add-hook 'pre-command-hook
+  (lambda () (push (list 'pre (if (symbolp this-command) this-command 'lambda)) ms-log)))
+(add-hook 'post-command-hook
+  (lambda ()
+    (push (list 'post (if (symbolp this-command) this-command 'lambda) this-original-command
+                (mapcar (lambda (k) (if (consp k) (car k) k)) (this-command-keys-vector))
+                (if (consp last-nonmenu-event) (car last-nonmenu-event) last-nonmenu-event)
+                (current-message))
+          ms-log)))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "menu.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse ms-log))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"\x1b[<2;5;3M"),
+        (0.1, b"\x1b[<2;5;3m"),
+        (1.5, b"\x07"),
+        (1.0, b"\x1b[<2;5;3M"),
+        (0.1, b"\x1b[<2;5;3m"),
+        (1.5, b"\x1b[B"),
+        (0.3, b"\r"),
+        (1.0, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "menu.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "menu.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn unread_events_unwrap_as_read_char_unwraps_them() {
+    // read_char takes `(t . EVENT)' as not reread, `(no-record . EVENT)'
+    // as reread and already recorded, then undoes read_char_x_menu_prompt's
+    // `(EVENT . disabled)' for a symbol or fixnum, which counts as a menu
+    // event for `last-nonmenu-event'; x_popup_menu_1 measures a list of
+    // keymaps with list_length before reading any of them.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "unread.el",
+        r##"(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun rks (events)
+  (let ((unread-command-events events))
+    (list (read-key-sequence nil) (this-command-keys-vector)
+          last-input-event last-nonmenu-event unread-command-events)))
+(define-key global-map "\C-cz" 'ignore)
+(show "plain" (lambda () (rks (list ?\C-c ?z))))
+(show "dis" (lambda () (rks (list '(3 . disabled) '(122 . disabled)))))
+(show "dis1" (lambda () (rks (list 3 '(122 . disabled)))))
+(show "t-dis" (lambda () (rks (list '(t . (3 . disabled)) '(no-record . (122 . disabled))))))
+(show "t" (lambda () (rks (list '(t . 3) '(t . 122)))))
+(show "norec" (lambda () (rks (list '(no-record . 3) '(no-record . 122)))))
+(show "dis-str" (lambda () (rks (list '("x" . disabled)))))
+(show "menu-bar" (lambda () (let ((last-nonmenu-event 'before)) (rks (list 'menu-bar ?\C-c ?z)))))
+(show "recent" (lambda () (let ((unread-command-events (list '(no-record . 97) '(t . 98) 99)))
+   (list (read-event) (read-event) (read-event) (append (last (append (recent-keys) nil) 3) nil)))))
+(defvar m (make-sparse-keymap "Title"))
+(define-key m [a] '(menu-item "A" ignore))
+(setq x-pre-popup-menu-hook (list (lambda () (princ "hook\n"))))
+(show "dotted-maps" (lambda () (x-popup-menu t (cons m 5))))
+(show "circ-maps" (lambda () (let ((l (list m m))) (setcdr (cdr l) l) (x-popup-menu t l))))
+(show "maps-2" (lambda () (x-popup-menu t (list m (make-sparse-keymap "Two")))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tty_menu_tracks_the_mouse_and_holds_off_collection_as_term_c_does() {
+    // read_menu_input sets `track-mouse' to t around read_menu_command, so
+    // xt-mouse reports the pointer's motion and the item under it is the
+    // one RET picks; a timer run inside the menu sees `track-mouse' t,
+    // `inhibit-redisplay' t and `garbage-collect' returning nil, since
+    // tty_menu_show inhibits collection while the menu shows; both are as
+    // they were once the menu is gone.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "track.el",
+        r#"(xterm-mouse-mode 1)
+(defvar ms-log nil)
+(defvar mm-map (make-sparse-keymap "MousePick"))
+(define-key mm-map [three] '(menu-item "Three" (lambda () (interactive) (push 'three ms-log))))
+(define-key mm-map [two] '(menu-item "Two" (lambda () (interactive) (push 'two ms-log))))
+(define-key mm-map [one] '(menu-item "One" (lambda () (interactive) (push 'one ms-log))))
+(global-set-key [mouse-3] mm-map)
+(global-set-key [down-mouse-3] nil)
+(defvar mp-a (make-sparse-keymap "PA"))
+(define-key mp-a [b] '(menu-item "Bee" ignore))
+(define-key mp-a [a] '(menu-item "Ay" ignore))
+(global-set-key [f5] (lambda () (interactive)
+  (run-at-time 0.5 nil (lambda () (push (list 'timer track-mouse inhibit-redisplay (and (garbage-collect) t)) ms-log)))
+  (push (list 'menu (x-popup-menu t mp-a) track-mouse) ms-log)))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "track.out" command-line-default-directory)
+      (insert (format "%S\n" (list (reverse ms-log) track-mouse (and (garbage-collect) t)))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (2.5, b"\x1b[<2;5;3M"),
+        (0.1, b"\x1b[<2;5;3m"),
+        (1.5, b"\x1b[<35;6;5M"),
+        (0.5, b"\r"),
+        (1.0, b"\x1b[15~"),
+        (1.5, b"\x1b[B"),
+        (0.3, b"\r"),
+        (1.0, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "track.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "track.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn read_char_auto_saves_and_redisplays_as_keyboard_c_does() {
+    // read_char auto-saves when more than `auto-save-interval' (and 20)
+    // input events have come since the last auto-save and no input is
+    // pending, and, for a key sequence the command loop reads, once
+    // `auto-save-timeout' seconds (a quarter of it times the buffer's
+    // delay level, four for a small one) pass without input; Fredisplay
+    // with input pending and `redisplay-dont-pause' nil does nothing.
+    // GNU's first seconds compile what it loaded, whose output would cut
+    // the idle wait short, so the keys come after them.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "autosave.el",
+        r#"(defvar as-log nil)
+(setq auto-save-interval 20 auto-save-timeout 1000)
+(find-file (expand-file-name "f.txt" (make-temp-file "as" t)))
+(add-hook 'auto-save-hook (lambda () (push (list 'save num-nonmacro-input-events) as-log)))
+(global-set-key [f5] (lambda () (interactive)
+  (push (list 'f5 (buffer-size) (and buffer-auto-save-file-name (file-exists-p buffer-auto-save-file-name))) as-log)))
+(global-set-key [f7] (lambda () (interactive) (setq auto-save-interval 0 auto-save-timeout 1)))
+(global-set-key [f6] (lambda () (interactive)
+  (sleep-for 1.5)
+  (push (list 'redisplay (let ((redisplay-dont-pause nil)) (redisplay)) (input-pending-p)) as-log)))
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "autosave.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse as-log))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (9.0, b"aaaaaaaaaaaaaaaaaaaaaaaaa"),
+        (1.0, b"\x1b[15~"),
+        (0.5, b"\x1b[18~"),
+        (0.5, b"bbb"),
+        (2.5, b"\x1b[15~"),
+        (0.5, b"\x1b[17~"),
+        (0.3, b"xyz"),
+        (2.5, b"\x1b[19~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "autosave.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "autosave.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn special_event_leaving_another_buffer_current_replays_the_key_sequence() {
+    // read_char runs a special event's `special-event-map' binding and,
+    // when the binding leaves another buffer current, returns -2: the
+    // keymaps may have changed, so read_key_sequence puts the keys read so
+    // far on the kboard's side queue (which, with one kboard, read_char
+    // does not read) and reads the sequence from its start.  The C-x typed
+    // before SIGUSR1 is gone, and the b after it inserts itself.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "sigbuf.el",
+        r#"(switch-to-buffer "t")
+(get-buffer-create "other")
+(defvar sb-cmds nil)
+(add-hook 'pre-command-hook
+  (lambda () (push (list (key-description (this-command-keys)) (buffer-name)) sb-cmds)))
+(define-key special-event-map [sigusr1] (lambda () (interactive) (set-buffer "other")))
+(global-set-key [f5] (lambda () (interactive)
+  (run-at-time 1 nil (lambda () (signal-process (emacs-pid) 'sigusr1)))))
+(global-set-key [f6]
+  (lambda () (interactive)
+    (let ((out (list (with-current-buffer "t" (buffer-string))
+                     (with-current-buffer "other" (buffer-string))
+                     (reverse sb-cmds))))
+      (with-temp-file (expand-file-name "sigbuf.out" command-line-default-directory)
+        (insert (format "%S\n" out))))
+    (kill-emacs 0)))"#,
+    );
+    let input: Vec<(f64, &[u8])> = vec![
+        (9.0, b"\x1b[15~"),
+        (0.2, b"\x18"),
+        (2.0, b"b"),
+        (1.0, b"\x1b[17~"),
+    ];
+    let expected = corpus.run_tty(&oracle(), &probe, "sigbuf.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "sigbuf.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+/// A probe's report of what each redisplay since the last one was asked
+/// for: `redisplay--all-windows-cause' and `redisplay--mode-lines-cause'
+/// counts but cause 0 (GNU's oracle compiles what it loaded natively at
+/// first, its subprocesses' output redisplaying for nothing), and the
+/// arguments `pre-redisplay-function' got but nil, the windows named.
+#[cfg(unix)]
+const REDISPLAY_REPORT: &str = r#"(setq redisplay--all-windows-cause (make-hash-table)
+      redisplay--mode-lines-cause (make-hash-table))
+(defvar rr-pre nil)
+(defvar rr-out nil)
+(defvar rr-w1 (selected-window))
+(defvar rr-w2 (split-window))
+(defun rr-name (w) (cond ((eq w rr-w1) 'w1) ((eq w rr-w2) 'w2) ((window-minibuffer-p w) 'mini) (t w)))
+(setq pre-redisplay-function
+      (lambda (w) (push (if (consp w) (mapcar #'rr-name w) w) rr-pre)))
+(defun rr-causes (h)
+  (let (l)
+    (maphash (lambda (k v) (unless (eq k 0) (push (cons k v) l))) h)
+    (sort l (lambda (a b) (< (car a) (car b))))))
+(defun rr-report (tag)
+  (push (list tag (rr-causes redisplay--all-windows-cause)
+              (rr-causes redisplay--mode-lines-cause) (delq nil (reverse rr-pre)))
+        rr-out)
+  (clrhash redisplay--all-windows-cause)
+  (clrhash redisplay--mode-lines-cause)
+  (setq rr-pre nil))
+(defvar rr-prev nil)
+(global-set-key [f5]
+  (lambda () (interactive)
+    ;; The first key starts the count: what startup redisplayed is not
+    ;; any step's.
+    (if rr-prev
+        (rr-report rr-prev)
+      (clrhash redisplay--all-windows-cause)
+      (clrhash redisplay--mode-lines-cause)
+      (setq rr-pre nil))
+    (let ((step (pop rr-steps))) (setq rr-prev (car step)) (funcall (cdr step)))))
+(global-set-key [f8]
+  (lambda () (interactive)
+    (rr-report rr-prev)
+    (with-temp-file (expand-file-name "redisplay.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse rr-out))))
+    (kill-emacs 0)))
+"#;
+
+#[cfg(unix)]
+#[test]
+fn redisplay_considers_the_windows_marked_as_xdisp_c_does() {
+    // redisplay_internal considers every window when
+    // windows_or_buffers_changed or update_mode_lines hold a cause, only
+    // those marked (REDISPLAY_SOME) when they hold 2, and passes
+    // `pre-redisplay-function' t, the marked windows, or nil.  Narrowing
+    // a buffer only another window shows asks for nothing; typing in the
+    // selected window's own buffer marks no other window.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "flags.el",
+        &format!(
+            "{REDISPLAY_REPORT}{}",
+            r#"(set-window-buffer rr-w2 (get-buffer-create "other"))
+(with-current-buffer "other" (dotimes (i 50) (insert (format "line %d\n" i))))
+(switch-to-buffer "t")
+(defvar rr-steps
+  (list (cons 'start #'ignore)
+        (cons 'fmlu (lambda () (force-mode-line-update)))
+        (cons 'fmlu-all (lambda () (force-mode-line-update t)))
+        (cons 'other-insert (lambda () (with-current-buffer "other" (goto-char (point-max)) (insert "x"))))
+        (cons 'set-start (lambda () (set-window-start rr-w2 20)))
+        (cons 'overlay (lambda () (with-current-buffer "other" (overlay-put (make-overlay 1 5) 'face 'bold))))
+        (cons 'narrow (lambda () (with-current-buffer "other" (narrow-to-region 1 30))))
+        (cons 'select (lambda () (select-window rr-w2)))
+        (cons 'select-back (lambda () (select-window rr-w1)))
+        (cons 'modified (lambda () (set-buffer-modified-p nil)))
+        (cons 'redraw (lambda () (redraw-display)))))"#
+        ),
+    );
+    // The first key comes once the oracle has natively compiled what its
+    // startup loaded (comp.c's deferred compilation, which Emaxx does not
+    // do), whose subprocesses' output asks for redisplays of its own.
+    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 9));
+    input.push((1.0, b"abc"));
+    input.push((1.0, b"\x1b[15~"));
+    input.push((1.0, b"\x1b[15~"));
+    input.push((1.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "redisplay.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "redisplay.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn indirect_buffers_the_log_and_margins_mark_windows_as_gnu_does() {
+    // buffer_window_count is the base buffer's, so a window showing an
+    // indirect buffer is marked by its buffer's changes; message_dolog
+    // marks the log buffer; apply_window_adjustment garbages the frame
+    // when a window shows margins; and typing then moving point by a
+    // character asks check_point_in_composition about the buffer.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "marks.el",
+        &format!(
+            "{REDISPLAY_REPORT}{}",
+            r#"(defvar rr-ind (make-indirect-buffer (get-buffer-create "base") "ind"))
+(set-window-buffer rr-w2 rr-ind)
+(switch-to-buffer "t")
+(defvar rr-steps
+  (list (cons 'start #'ignore)
+        (cons 'ind-fmlu (lambda () (with-current-buffer "ind" (force-mode-line-update))))
+        (cons 'base-insert (lambda () (with-current-buffer "base" (insert "x"))))
+        (cons 'ind-update (lambda () (force-window-update rr-ind)))
+        (cons 'log-shown (lambda () (set-window-buffer rr-w2 (messages-buffer))))
+        (cons 'logged (lambda () (message "logged")))
+        (cons 'margins (lambda () (set-window-margins rr-w2 2)))
+        (cons 'typed #'ignore)))"#
+        ),
+    );
+    // The first key comes once the oracle has natively compiled what its
+    // startup loaded (comp.c's deferred compilation, which Emaxx does not
+    // do), whose subprocesses' output asks for redisplays of its own.
+    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 7));
+    input.push((1.0, b"a"));
+    input.push((0.5, b"b"));
+    input.push((0.5, b"\x02"));
+    input.push((1.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "redisplay.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "redisplay.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn messages_resize_the_mini_window_as_xdisp_c_does() {
+    // echo_area_display: a message that changes the mini window's height
+    // has the frame redisplayed at once and marked again for the next
+    // redisplay; resize_echo_area_exactly shrinks the window after the
+    // command (causes 42 and 30); `resize-mini-windows' t resizes it
+    // exactly, nil never.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "tall.el",
+        &format!(
+            "{REDISPLAY_REPORT}{}",
+            r#"(defvar rr-steps
+  (list (cons 'start #'ignore)
+        (cons 'tall (lambda () (message "%s" (make-string 130 ?m))))
+        (cons 'short (lambda () (message "short")))
+        (cons 'cleared (lambda () (message nil)))
+        (cons 'exact (lambda () (setq resize-mini-windows t)
+                       (message "%s" (make-string 130 ?m))))
+        (cons 'exact-short (lambda () (message "short")))
+        (cons 'none (lambda () (setq resize-mini-windows nil)
+                      (message "%s" (make-string 130 ?m))))))"#
+        ),
+    );
+    // The first key comes once the oracle has natively compiled what its
+    // startup loaded (comp.c's deferred compilation, which Emaxx does not
+    // do), whose subprocesses' output asks for redisplays of its own.
+    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 6));
+    input.push((1.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "redisplay.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "redisplay.out", "C", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn face_changes_free_realized_faces_as_xfaces_c_does() {
+    // A frame's face definition changing marks the frame for redisplay
+    // (f->face_change, fset_redisplay); a change for every frame
+    // (clear-face-cache, a face made or copied for new frames) sets
+    // face_change, which redisplay_internal turns into cause 47.  The
+    // definitions for new frames alone, or a face with `face-no-inherit',
+    // ask for nothing, and after anything is displayed init_iterator
+    // outside redisplay frees no realized faces
+    // (`inhibit-free-realized-faces').
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "faces.el",
+        &format!(
+            "{REDISPLAY_REPORT}{}",
+            r#"(defvar rr-steps
+  (list (cons 'start #'ignore)
+        (cons 'all-frames (lambda () (set-face-attribute 'bold nil :weight 'normal)))
+        (cons 'frame (lambda () (set-face-attribute 'bold (selected-frame) :weight 'bold)))
+        (cons 'defaults (lambda () (set-face-attribute 'italic t :slant 'normal)))
+        (cons 'clear (lambda () (clear-face-cache)))
+        (cons 'no-inherit (lambda () (put 'underline 'face-no-inherit t)
+                            (set-face-attribute 'underline (selected-frame) :underline nil)))
+        (cons 'copy (lambda () (internal-copy-lisp-face 'bold 'rr-copy t nil)))
+        (cons 'copy-format (lambda () (internal-copy-lisp-face 'bold 'rr-copy2 t nil)
+                             (list (format-mode-line "x") inhibit-free-realized-faces)))))"#
+        ),
+    );
+    // The first key comes once the oracle has natively compiled what its
+    // startup loaded (comp.c's deferred compilation, which Emaxx does not
+    // do), whose subprocesses' output asks for redisplays of its own.
+    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 7));
+    input.push((1.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "redisplay.out", "C", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "redisplay.out", "C", &input);
     assert!(expected.is_some(), "GNU's session wrote nothing");
     assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }

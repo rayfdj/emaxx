@@ -3492,7 +3492,8 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         error.kind(),
         LispErrorKind::Terminate(EmacsTermination {
             exit_code: 7,
-            restart: false
+            restart: false,
+            c_stack_overflow: false,
         })
     ));
     assert_eq!(
@@ -3508,6 +3509,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         Some(EmacsTermination {
             exit_code: 7,
             restart: false,
+            c_stack_overflow: false,
         })
     );
 
@@ -3531,6 +3533,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: 0,
             restart: false,
+            c_stack_overflow: false,
         }
     );
     assert_eq!(
@@ -3538,6 +3541,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: -1,
             restart: false,
+            c_stack_overflow: false,
         }
     );
     assert_eq!(
@@ -3545,6 +3549,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: i32::MAX,
             restart: false,
+            c_stack_overflow: false,
         },
         "most-positive-fixnum masked to INT_MAX"
     );
@@ -3553,6 +3558,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: 0,
             restart: false,
+            c_stack_overflow: false,
         },
         "past most-positive-fixnum make_int gives a bignum, which FIXNUMP rejects"
     );
@@ -3561,6 +3567,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: 0,
             restart: false,
+            c_stack_overflow: false,
         },
         "emacs.c uses FIXNUMP, so a bignum is not an exit status"
     );
@@ -3569,6 +3576,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         EmacsTermination {
             exit_code: 0,
             restart: true,
+            c_stack_overflow: false,
         }
     );
 }
@@ -18088,6 +18096,32 @@ fn sleep_for_zero_returns_without_waiting_or_running_timers() {
 }
 
 #[test]
+fn a_timer_a_sentinel_starts_runs_in_the_same_wait() {
+    // process.c wait_reading_process_output zeroes the timeout of the
+    // pselect that checks for input before status_notify, and that zero
+    // timeout is the one the wait's own pselect then uses: the loop comes
+    // round at once, and its timer_check runs a timer the sentinels started.
+    // Here the stderr pipe process's EOF is read in the iteration that
+    // empties the child signal pipe, so nothing else would wake the wait.
+    let program = r#"
+        (let* (ran start (n 0)
+               (err (make-pipe-process
+                     :name "emaxx-stderr"
+                     :sentinel (lambda (_p _s)
+                                 (setq start t)
+                                 (run-at-time 0 nil (lambda () (setq ran t))))))
+               (p (make-process :name "emaxx-sleeper" :command '("sleep" "10")
+                                :connection-type 'pipe :stderr err
+                                :sentinel #'ignore)))
+          (kill-process p)
+          (while (and (not start) (< n 20))
+            (sleep-for 0.5)
+            (setq n (1+ n)))
+          (list (process-status p) (process-status err) start ran))"#;
+    assert_oracle_contract_matches_interpreter(program, "(signal closed t t)", "sentinel timer");
+}
+
+#[test]
 fn minibuffer_reads_under_a_keyboard_macro_follow_read_minibuf() {
     // minibuf.c read_minibuf takes the stdin reader only while
     // `noninteractive' and no keyboard macro executes; with
@@ -30449,9 +30483,22 @@ fn tty_menu_key_hints_follow_preferred_binding_and_live_removal() {
             )
             .expect("add symbolic binding");
         }
-        let pane = tty_menu_pane_from_keymap(&mut interp, &mut env, &menu, "Sample");
-        assert_eq!(pane.items.len(), 1);
-        assert_eq!(pane.items[0].text, expected);
+        // parse_menu_item's key equivalent, two blanks before the
+        // `where-is-internal' first key's description.
+        assert!(
+            crate::lisp::primitives::menu::parse_menu_item(&mut interp, item, 0, &mut env)
+                .expect("parse")
+        );
+        let keyeq = crate::lisp::primitives::menu::item_property(
+            &interp,
+            crate::lisp::primitives::menu::ITEM_PROPERTY_KEYEQ,
+        );
+        let text = if keyeq.is_nil() {
+            "Action".to_string()
+        } else {
+            format!("Action{}", string_text(&keyeq).expect("keyeq"))
+        };
+        assert_eq!(text, expected);
     }
 }
 

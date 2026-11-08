@@ -949,6 +949,13 @@ fn set_face_attribute_on(
             None => Value::symbol("unspecified"),
         };
         interp.set_lisp_face_attribute_on(face, index, value, frame)?;
+        // A changed value of a frame's face has its realized faces freed
+        // (the definitions for new frames have none).
+        if let Some(frame) = frame
+            && !values_equal(interp, &old_value, &value)?
+        {
+            interp.note_face_definition_change(face, Some(frame), 0);
+        }
         frame_parameter_of_face_change(interp, face, attribute, value, old_value, frame, env)?;
     }
     Ok(face)
@@ -1211,6 +1218,11 @@ define_dispatch!(
             }
             "clear-face-cache" => {
                 need_arg_range(name, args, 0, 1)?;
+                // clear_face_cache only drops GCs and fonts a terminal has
+                // none of; face_change has the next init_iterator free
+                // every realized face.
+                interp.face_change = true;
+                interp.windows_or_buffers_changed = 53;
                 Ok(Value::Nil)
             }
             "bitmap-spec-p" => {
@@ -1272,7 +1284,9 @@ define_dispatch!(
                         true,
                     )?),
                 };
-                interp.make_lisp_face_on(face, target, true)
+                let lface = interp.make_lisp_face_on(face, target, true)?;
+                interp.note_face_definition_change(face, target, 54);
+                Ok(lface)
             }
             // xfaces.c: resolve_face_name, then CHECK_LIVE_FRAME of a
             // non-nil FRAME, then the face's Lisp vector (none for a name
@@ -1319,6 +1333,8 @@ define_dispatch!(
                     (Some(source), Some(target))
                 };
                 interp.copy_lisp_face_attributes(from, to, source, target)?;
+                // The copy's Finternal_make_lisp_face (cause 54), then 55.
+                interp.note_face_definition_change(to, target, 55);
                 Ok(to)
             }
             "internal-set-lisp-face-attribute" => {
@@ -1626,6 +1642,7 @@ define_dispatch!(
             "tty-suppress-bold-inverse-default-colors" => {
                 need_args(name, args, 1)?;
                 interp.tty_suppress_bold_inverse_default_colors = args[0].is_truthy();
+                interp.face_change = true;
                 Ok(args[0])
             }
             // xfaces.c:Fx_family_fonts decodes FRAME before FAMILY; a

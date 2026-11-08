@@ -49,6 +49,7 @@ pub(crate) mod coding;
 mod color_lcms;
 mod completion;
 mod dispatch;
+pub(crate) use dispatch::current_column;
 pub(crate) use dispatch::restore_unicode_menu_case_table;
 mod file_io;
 mod filelock;
@@ -172,6 +173,7 @@ mod invisibility;
 mod keymap;
 mod keys;
 mod loading;
+pub(crate) mod menu;
 pub(crate) mod move_it;
 mod numeric_time;
 pub(crate) mod pdumper;
@@ -205,6 +207,7 @@ pub(crate) use color_lcms::*;
 pub(crate) use completion::*;
 pub(crate) use dispatch::display::log_message_text;
 pub(crate) use dispatch::display::prin1_to_string;
+pub(crate) use dispatch::pop_kbd_macro;
 pub(crate) use dispatch::realize_basic_faces;
 pub(crate) use dispatch::{
     CHECK_ALL, CHECK_BORDER, CHECK_HEAD, StringCompositions, update_compositions,
@@ -296,13 +299,14 @@ pub(crate) fn arith_error() -> LispError {
 pub(crate) use dispatch::DirectPrimitive;
 pub(crate) use dispatch::FnvBuildHasher;
 pub(crate) use dispatch::NameFacts;
+pub(crate) use dispatch::check_point_in_composition;
 pub(crate) use dispatch::compute_name_facts;
 pub(crate) use dispatch::echo_area_message;
 #[cfg(test)]
 pub(crate) use dispatch::echo_area_message_with_spans;
+pub(crate) use dispatch::frames_window_list;
 #[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;
-pub(crate) use dispatch::live_ordinary_window_ids;
 pub(crate) use dispatch::mark_thread_local_roots;
 pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::native_elisp_load;
@@ -316,8 +320,8 @@ pub(crate) use dispatch::set_echo_area_message;
 pub(crate) use dispatch::set_window_buffer;
 pub(crate) use dispatch::unibyte_doc_string;
 pub(crate) use dispatch::{
-    EchoSpans, echo_area_message_tick, echo_area_print_logged, echo_display_message,
-    string_face_spans,
+    EchoSpans, echo_area_message_tick, echo_area_message_value, echo_area_print_logged,
+    echo_display_message, set_echo_area_display, string_face_spans,
 };
 pub(crate) use dispatch::{
     FACE_NO_UNDERLINE, FACE_TTY_DEFAULT_BG_COLOR, FACE_TTY_DEFAULT_COLOR,
@@ -329,6 +333,7 @@ pub(crate) use dispatch::{
     window_face_spans, window_hscroll_state, window_line_number_layout, window_render_layout,
     window_text_area_columns, window_total_columns,
 };
+pub(crate) use dispatch::{begin_display_mode_lines, end_display_mode_lines, window_base_line_pos};
 pub use dispatch::{call, is_builtin};
 pub(crate) use dispatch::{call_with_facts, call_with_facts_arity_checked};
 pub(crate) use dispatch::{set_default_internal_symbol, set_internal_symbol};

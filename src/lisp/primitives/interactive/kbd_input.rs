@@ -61,6 +61,29 @@ thread_local! {
     /// dispnew.c's frame_garbaged: a size change (SIGWINCH's) the frame
     /// has not been redisplayed for yet.
     static FRAME_GARBAGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// termchar.h's tty_display_info showing_menu: the terminal is
+    /// displaying a tty menu (term.c's read_menu_input sets it around its
+    /// read_menu_command loop), so a wait for input must not redisplay.
+    static TTY_SHOWING_MENU: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// keyboard.c's input_was_pending: whether input was pending when
+    /// read_char last returned (or last redisplayed), which with
+    /// `redisplay-dont-pause' lets read_char skip one redisplay of two
+    /// while it cannot keep up with the input.
+    static INPUT_WAS_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// keyboard.c's input_pending while read_char's redisplay runs: what
+    /// it was before, set when input is detected during the redisplay
+    /// (update_frame's pause, a Lisp `input-pending-p'); a redisplay that
+    /// does not pause leaves it alone.
+    static REDISPLAY_INPUT_PENDING: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// keyboard.c's last_auto_save: `num-nonmacro-input-events' at the
+    /// last auto-save.
+    static LAST_AUTO_SAVE: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+    /// keyboard.c's last_non_minibuf_size: the size of the buffer read_char
+    /// last found current outside the minibuffer.
+    static LAST_NON_MINIBUF_SIZE: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+    /// xdisp.c's redisplaying_p: a redisplay is running, cleared by its
+    /// unwind_redisplay record.
+    static REDISPLAYING_P: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// get_named_terminal (DEV_TTY): the session's terminal is the
     /// controlling one.
     static DEV_TTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -388,6 +411,23 @@ pub(crate) fn set_frame_garbaged() {
     FRAME_GARBAGED.set(true);
 }
 
+/// xdisp.c's redisplaying_p.
+pub(crate) fn redisplaying_p() -> bool {
+    REDISPLAYING_P.get()
+}
+
+/// redisplay_internal's `record_unwind_protect_void (unwind_redisplay);
+/// redisplaying_p = true;', as the redisplay starts.
+pub(crate) fn begin_redisplay(interp: &mut Interpreter) {
+    interp.record_unwind(crate::lisp::eval::UnwindAction::Redisplay);
+    REDISPLAYING_P.set(true);
+}
+
+/// xdisp.c:unwind_redisplay.
+pub(crate) fn unwind_redisplay() {
+    REDISPLAYING_P.set(false);
+}
+
 /// Whether the frame awaits a whole redisplay.
 pub(crate) fn frame_garbaged() -> bool {
     FRAME_GARBAGED.get()
@@ -596,7 +636,9 @@ pub(crate) fn quit_char() -> i64 {
 /// thread, or a user signal's (store_user_signal_events's, which
 /// gobble_input stores).
 pub(crate) fn readable_events(interp: &Interpreter) -> bool {
-    terminal_buffer_nonempty() || special_events_pending(interp)
+    terminal_buffer_nonempty()
+        || special_events_pending(interp)
+        || interp.keyboard_input.kbd_queue_has_data
 }
 
 /// The terminal's events in the keyboard buffer.
@@ -660,6 +702,9 @@ pub(crate) fn get_input_pending(
         gobble_input(interp, env);
         pending = readable(interp, env)?;
     }
+    if pending {
+        note_redisplay_input_pending();
+    }
     Ok((pending, timers_ran))
 }
 
@@ -691,9 +736,12 @@ pub(crate) fn detect_input_pending_run_timers(
 /// dispnew.c:sit_for: TIMEOUT seconds (an integer or a float, t for a
 /// pass that does not wait) or until input is pending, at once nil when
 /// input is pending (after the ripe timers) or a keyboard macro executes;
-/// READING waits as a read of the keyboard would (`throw-on-input' t),
+/// READING waits as a read of the keyboard would (READ_KBD -1), after
+/// which the selected window's buffer is current again if it was before
+/// (timers and process filters may have selected another window);
 /// DISPLAY_OPTION 1 redisplays as timers and output arrive, 2 also
-/// first.  t when it waited the whole time.
+/// first.  t when it waited the whole time with no process output read
+/// and no input pending.
 pub(crate) fn sit_for(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -701,7 +749,13 @@ pub(crate) fn sit_for(
     reading: bool,
     display_option: u8,
 ) -> Result<bool, LispError> {
+    use crate::lisp::primitives::processes::WAIT_READING_MAX;
     let do_display = display_option > 0;
+    let selected_window_buffer = |interp: &Interpreter| {
+        let window = interp.record_value(interp.selected_window_id());
+        crate::lisp::primitives::window_buffer_id(interp, &window)
+    };
+    let curbuf_eq_winbuf = selected_window_buffer(interp) == Some(interp.current_buffer_id());
     swallow_events(interp, env, do_display)?;
     if detect_input_pending_run_timers(interp, env, do_display)?
         || interp
@@ -718,7 +772,17 @@ pub(crate) fn sit_for(
             if seconds <= 0 {
                 return Ok(true);
             }
+            // min (sec, WAIT_READING_MAX): intmax_t's own maximum, so a
+            // fixnum is never above it.
             (seconds, 0)
+        }
+        // integer_to_intmax fails: a bignum beyond intmax_t, a negative
+        // one no wait, a positive one the longest.
+        Kind::BigInteger(_) => {
+            if super::call(interp, "natnump", &[timeout], env)?.is_nil() {
+                return Ok(true);
+            }
+            (WAIT_READING_MAX, 0)
         }
         Kind::Float(seconds) => {
             let seconds = seconds.get();
@@ -733,11 +797,8 @@ pub(crate) fn sit_for(
         Kind::T => (0, 0),
         _ => return Err(LispError::WrongTypeArgument("numberp".into(), timeout)),
     };
-    let count = interp.specpdl_index();
-    if reading {
-        interp.specbind_symbol(&"throw-on-input".into(), Value::T, env)?;
-    }
-    let waited = crate::lisp::primitives::processes::wait_reading_process_output(
+    gobble_input(interp, env);
+    let nbytes = crate::lisp::primitives::processes::wait_reading_process_output(
         interp,
         env,
         crate::lisp::primitives::processes::WaitRequest {
@@ -748,10 +809,17 @@ pub(crate) fn sit_for(
             wait_proc: None,
             just_wait_proc: 0,
         },
-    );
-    interp.unbind_to(count, env)?;
-    waited?;
-    Ok(!detect_input_pending(interp, env)?)
+    )?;
+    if reading
+        && curbuf_eq_winbuf
+        && let Some(buffer) = selected_window_buffer(interp)
+    {
+        // Timers and process filters/sentinels may have changed the
+        // selected window (e.g. in response to a connection from
+        // emacsclient), in which case we should follow it.
+        interp.set_current_buffer_id(buffer)?;
+    }
+    Ok(!(nbytes > 0 || detect_input_pending(interp, env)?))
 }
 
 /// keyboard.c:swallow_events: process_special_events (the selection
@@ -915,6 +983,162 @@ pub(crate) enum KbdWait {
     Quit,
     /// END_TIME passed with no input ("Finished waiting").
     TimedOut,
+    /// A special event's binding ran (read_char's goto retry, or its -2
+    /// when the binding left another buffer current).
+    Special { buffer_changed: bool },
+}
+
+/// Set or clear the tty's showing_menu (term.c:read_menu_input).
+pub(crate) fn set_tty_showing_menu(showing: bool) {
+    TTY_SHOWING_MENU.set(showing);
+}
+
+/// read_char's exit: input_was_pending = input_pending, which
+/// kbd_buffer_get_event left as readable_events (0).
+pub(crate) fn note_input_was_pending(interp: &Interpreter) {
+    INPUT_WAS_PENDING.set(readable_events(interp));
+}
+
+/// keyboard.c:record_auto_save: prevent another auto save till enough
+/// input events come in.
+pub(crate) fn record_auto_save(interp: &Interpreter) {
+    LAST_AUTO_SAVE.set(num_nonmacro_input_events(interp));
+}
+
+fn num_nonmacro_input_events(interp: &Interpreter) -> i64 {
+    interp
+        .global_binding_value("num-nonmacro-input-events")
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(0)
+}
+
+/// read_char's "If redisplay was requested" (COMMANDFLAG >= 0): the
+/// events no one sees processed when input is pending, then redisplay
+/// unless input is pending and either was pending already or
+/// `redisplay-dont-pause' is nil, again while input that arrives during
+/// a redisplay is all swallowed.
+pub(crate) fn read_char_redisplay(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    // If there is pending input, process any events which are not
+    // user-visible, such as X selection_request events.
+    if detect_input_pending_run_timers(interp, env, false)? {
+        // May clear input_pending.
+        swallow_events(interp, env, false)?;
+    }
+    let dont_pause = interp
+        .lookup_var_key(cached_symbol!("redisplay-dont-pause"), env)
+        .is_some_and(|value| value.is_truthy());
+    let mut input_pending = detect_input_pending(interp, env)?;
+    // Redisplay if no pending input.
+    while !(input_pending && (INPUT_WAS_PENDING.get() || !dont_pause)) {
+        INPUT_WAS_PENDING.set(input_pending);
+        REDISPLAY_INPUT_PENDING.set(Some(input_pending));
+        if interp.menu.help_echo_showing_p
+            && interp.selected_window_id() != interp.minibuffer_window_id()
+        {
+            redisplay_preserve_echo_area(interp, env);
+        } else {
+            super::run_tty_frame_redraw(interp, env);
+        }
+        input_pending = REDISPLAY_INPUT_PENDING.take().unwrap_or(input_pending);
+        if !input_pending {
+            // Normal case: no input arrived during redisplay.
+            break;
+        }
+        // Input arrived and pre-empted redisplay.  Process any events
+        // which are not user-visible.
+        swallow_events(interp, env, false)?;
+        // If that cleared input_pending, try again to redisplay.
+        input_pending = detect_input_pending(interp, env)?;
+    }
+    Ok(())
+}
+
+/// input_pending set by a detection during read_char's redisplay.
+pub(crate) fn note_redisplay_input_pending() {
+    REDISPLAY_INPUT_PENDING.with(|cell| {
+        if cell.get().is_some() {
+            cell.set(Some(true));
+        }
+    });
+}
+
+/// read_char's Fdo_auto_save argument: t with `auto-save-no-message'.
+pub(crate) fn auto_save_no_message(interp: &Interpreter, env: &Env) -> Value {
+    if interp
+        .lookup_var_key(cached_symbol!("auto-save-no-message"), env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        Value::T
+    } else {
+        Value::Nil
+    }
+}
+
+/// read_char's "Maybe auto save due to number of keystrokes" test:
+/// `auto-save-interval' positive and more than it (and 20) input events
+/// since the last auto-save.
+pub(crate) fn keystroke_auto_save_due(interp: &Interpreter, env: &Env) -> bool {
+    let interval = interp
+        .lookup_var_key(cached_symbol!("auto-save-interval"), env)
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(0);
+    interval > 0 && num_nonmacro_input_events(interp) - LAST_AUTO_SAVE.get() > interval.max(20)
+}
+
+/// read_char's "Maybe autosave and/or garbage collect due to idleness":
+/// with COMMANDFLAG neither 0 nor -2 and input events since the last
+/// auto-save, an auto-save once `auto-save-timeout' seconds (scaled up
+/// logarithmically for a large buffer) pass without input, then a
+/// collection asked for if there is still none.
+pub(crate) fn read_char_idle(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    commandflag: i32,
+) -> Result<(), LispError> {
+    // Slow down auto saves logarithmically in size of current buffer, and
+    // garbage collect while we're at it.
+    if interp.selected_window_id() != interp.minibuffer_window_id() {
+        LAST_NON_MINIBUF_SIZE.set(interp.buffer.borrow().size_total() as i64);
+    }
+    let mut buffer_size = (LAST_NON_MINIBUF_SIZE.get() >> 8) + 1;
+    let mut delay_level: i64 = 0;
+    while buffer_size > 64 {
+        delay_level += 1;
+        buffer_size -= buffer_size >> 2;
+    }
+    // delay_level is 4 for files under around 50k, 7 at 100k, 9 at 200k,
+    // 11 at 300k, and 12 at 500k.  It is 15 at 1 meg.
+    delay_level = delay_level.max(4);
+    // Auto save if enough time goes by without input.
+    let timeout = interp
+        .lookup_var_key(cached_symbol!("auto-save-timeout"), env)
+        .and_then(|value| match value.kind() {
+            Kind::Integer(seconds) if seconds > 0 => Some(seconds),
+            _ => None,
+        });
+    if commandflag != 0
+        && commandflag != -2
+        && num_nonmacro_input_events(interp) > LAST_AUTO_SAVE.get()
+        && let Some(timeout) = timeout
+    {
+        const MOST_POSITIVE_FIXNUM: i64 = (1 << 61) - 1;
+        let timeout = timeout.min(MOST_POSITIVE_FIXNUM / delay_level * 4);
+        let timeout = delay_level * timeout / 4;
+        let waited = sit_for(interp, env, Value::Integer(timeout), true, 1)?;
+        if waited && !unread_command_events_pending(interp, env) {
+            let no_message = auto_save_no_message(interp, env);
+            crate::lisp::primitives::file_io::do_auto_save(interp, env, no_message, Value::Nil)?;
+            super::run_tty_frame_redraw(interp, env);
+        }
+    }
+    // If there is still no input available, ask for GC.
+    if !detect_input_pending_run_timers(interp, env, false)? {
+        crate::lisp::native_comp::maybe_gc(interp, env);
+    }
+    Ok(())
 }
 
 /// keyboard.c:kbd_buffer_get_event's loop "until there is input
@@ -944,7 +1168,12 @@ pub(crate) fn kbd_buffer_get_event_wait(
         // the map does not bind is the read's, through
         // `unread-command-events'.
         if special_events_pending(interp) {
-            super::run_pending_user_signal_events(interp, env)?;
+            // read_char's timer_stop_idle at non_reread, without END_TIME.
+            if let Some(super::SpecialEvent::Ran { buffer_changed }) =
+                super::run_one_special_event(interp, env, end_time.is_none())?
+            {
+                return Ok(KbdWait::Special { buffer_changed });
+            }
             continue;
         }
         // If the quit flag is set, then read_char will return quit_char,
@@ -976,11 +1205,16 @@ pub(crate) fn kbd_buffer_get_event_wait(
                 just_wait_proc: 0,
             }
         } else {
+            // When this TTY is displaying a menu, we must prevent any
+            // redisplay, because we modify the frame's glyph matrix behind
+            // the back of the display engine.
+            let showing_menu = TTY_SHOWING_MENU.get()
+                && crate::lisp::primitives::menu::frame_termcap_p(interp.selected_frame_value());
             WaitRequest {
                 time_limit: 0,
                 nsecs: 0,
                 read_kbd: -1,
-                do_display,
+                do_display: do_display && !showing_menu,
                 wait_proc: None,
                 just_wait_proc: 0,
             }

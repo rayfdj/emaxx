@@ -148,7 +148,9 @@ impl OverlayValue {
         None
     }
 
-    pub fn put_prop(&self, key: Value, value: Value) {
+    /// buffer.c:Foverlay_put's plist update: whether the value changed
+    /// (a new property counts when its value is non-nil).
+    pub fn put_prop(&self, key: Value, value: Value) -> bool {
         // buffer.c:Foverlay_put: EQ keys, replace the existing value car,
         // otherwise prepend two conses to the authoritative Lisp plist.
         let mut tail = self.plist();
@@ -157,13 +159,15 @@ impl OverlayValue {
                 break;
             };
             if crate::lisp::types::eq(property.car.get(), key) {
+                let changed = !crate::lisp::types::eq(value_cell.car.get(), value);
                 value_cell.car.set(value);
-                return;
+                return changed;
             }
             tail = value_cell.cdr.get();
         }
         self.plist
             .set(Value::cons(key, Value::cons(value, self.plist())));
+        !value.is_nil()
     }
 }
 

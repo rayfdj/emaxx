@@ -9107,3 +9107,143 @@ fn string_match_keeps_search_c_match_data() {
         Value::string("((7 12 7 10) nil (7 12 7 10) 0 (0 1) nil 0 2 (2 2) 0 0 (0 0) 0 \"-a-b-c\")")
     );
 }
+
+#[test]
+fn c_stack_overflow_leaves_for_the_command_loop_without_unwinding() {
+    // sysdep.c:handle_sigsegv's siglongjmp to keyboard.c's command_loop, as
+    // GNU 30.2 shows it in batch: `condition-case' does not catch it, the
+    // unwind-protect cleanup does not run, and the innermost `let' binding
+    // of so-v stays made.  On a 16 MB stack the call entries find the floor
+    // long before max-lisp-eval-depth.
+    let stack = corosensei::stack::DefaultStack::new(16 * 1024 * 1024).expect("a 16 MB stack");
+    super::continuations::on_stack(stack, || {
+        let mut interp = gnu_early_lisp_interpreter();
+        // The command loop the exit returns to.
+        interp.command_loops_entered = 1;
+        eval_str_with(
+            &mut interp,
+            "(progn (setq max-lisp-eval-depth 10000000)
+                    (defvar so-v 'outer)
+                    (defvar so-log nil)
+                    (defun so-f (n)
+                      (let ((so-v n))
+                        (unwind-protect (1+ (so-f (1+ n))) (setq so-log 'ran)))))",
+        );
+        let form = Reader::new("(condition-case nil (so-f 0) (error 'caught))")
+            .read()
+            .expect("parse")
+            .expect("a form");
+        interp.intern_symbols_in_value(&form);
+        let mut env = Env::new();
+        let error = interp
+            .eval(&form, &mut env)
+            .expect_err("the overflow exits");
+        assert!(
+            matches!(error.kind(), crate::lisp::types::LispErrorKind::Terminate(t) if t.c_stack_overflow),
+            "{error:?}"
+        );
+        // keyboard.c's command_loop takes the exit back (init_eval).
+        assert!(interp.c_stack_overflow_exit);
+        interp.c_stack_overflow_exit = false;
+        interp.take_pending_termination();
+        let state = eval_str_with(&mut interp, "(list (integerp so-v) (> so-v 1000) so-log)");
+        assert_eq!(state, Value::list([Value::T, Value::T, Value::Nil]));
+    });
+}
+
+#[test]
+fn signals_inside_handler_bind_handlers_are_searched_past_skip_conditions() {
+    // eval.c:signal_or_quit runs a `handler-bind' handler under a
+    // SKIP_CONDITIONS entry: a signal inside it is a signal of its own,
+    // seen by `signal-hook-function' and by handler-binds inside the
+    // handler and outside the form, but not by the form's other pairs or
+    // a `condition-case' between the first signal and the form, compiled
+    // or not.  GNU 30.2 gives the expected list.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let value = eval_str_with(
+        &mut interp,
+        r#"(progn
+  (defvar hb-log nil)
+  (define-error 'hb-custom "Custom")
+  (defun hb-probe-skip ()
+    (let ((log nil))
+      (condition-case nil
+          (handler-bind ((error (lambda (_e) (signal 'hb-custom nil))))
+            (condition-case nil (car 2) (hb-custom (push 'inner log))))
+        (hb-custom (push 'outer log)))
+      log))
+  (let ((results nil))
+    ;; An inner handler-bind in a handler sees the signal inside it.
+    (setq hb-log nil)
+    (condition-case nil
+        (handler-bind ((error (lambda (_e)
+                                (condition-case nil
+                                    (handler-bind ((error (lambda (e2) (push (list 'inner e2) hb-log))))
+                                      (car 1))
+                                  (error (push 'inner-caught hb-log))))))
+          (car 2))
+      (error (push 'outer-caught hb-log)))
+    (push (reverse hb-log) results)
+    ;; signal-hook-function sees it.
+    (setq hb-log nil)
+    (let ((signal-hook-function (lambda (s d) (push (list s d) hb-log))))
+      (condition-case nil
+          (handler-bind ((error (lambda (_e) (condition-case nil (aref [] 3) (error nil)))))
+            (car 2))
+        (error nil)))
+    (push (reverse hb-log) results)
+    ;; An outer handler-bind sees the handler's own error; the form's
+    ;; other pairs do not.
+    (setq hb-log nil)
+    (condition-case nil
+        (handler-bind ((error (lambda (e) (push (list 'outermost e) hb-log))))
+          (handler-bind ((error (lambda (_e) (push 'first hb-log) (signal 'hb-custom nil)))
+                         (hb-custom (lambda (e) (push (list 'sibling e) hb-log))))
+            (car 2)))
+      (error (push 'caught hb-log)))
+    (push (reverse hb-log) results)
+    ;; The condition-case between the first signal and the form is not
+    ;; the handler's error's catcher, interpreted or byte-compiled.
+    (push (hb-probe-skip) results)
+    (byte-compile 'hb-probe-skip)
+    (push (list (byte-code-function-p (symbol-function 'hb-probe-skip)) (hb-probe-skip)) results)
+    (reverse results)))"#,
+    );
+    let mut printed = value
+        .to_vec()
+        .expect("the results")
+        .into_iter()
+        .map(|result| {
+            let text = crate::lisp::primitives::call(
+                &mut interp,
+                "prin1-to-string",
+                &[result],
+                &mut Env::new(),
+            )
+            .expect("print a result");
+            crate::lisp::primitives::string_like(&text)
+                .expect("a string")
+                .text
+        });
+    assert_eq!(
+        printed.next().as_deref(),
+        Some("((inner (wrong-type-argument listp 1)) inner-caught outer-caught)"),
+        "a handler-bind inside the handler"
+    );
+    assert_eq!(
+        printed.next().as_deref(),
+        Some("((wrong-type-argument (listp 2)) (args-out-of-range ([] 3)))"),
+        "signal-hook-function"
+    );
+    assert_eq!(
+        printed.next().as_deref(),
+        Some("(first (outermost (hb-custom)) caught)"),
+        "an outer handler-bind, not the form's other pair"
+    );
+    assert_eq!(printed.next().as_deref(), Some("(outer)"), "interpreted");
+    assert_eq!(
+        printed.next().as_deref(),
+        Some("(t (outer))"),
+        "byte-compiled"
+    );
+}

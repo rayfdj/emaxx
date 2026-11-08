@@ -68,17 +68,15 @@ fn execute_kbd_macro(
         .lookup_var_key(cached_symbol!("real-this-command"), env)
         .unwrap_or(Value::Nil);
     // macros.c:Fexecute_kbd_macro saves the public state in two ordinary
-    // conses. Use the same allocations, including their normal GC charge,
+    // conses, the argument of its record_unwind_protect (pop_kbd_macro),
     // while a borrowed stack root keeps the final array and loop function
     // alive across replacement, nested commands and collecting callbacks.
-    let roots = [
-        final_macro,
-        loop_function,
-        Value::cons(
-            previous_macro,
-            Value::cons(previous_index, previous_real_this_command),
-        ),
-    ];
+    let pdlcount = interp.specpdl_index();
+    interp.record_unwind(crate::lisp::eval::UnwindAction::KbdMacro(Value::cons(
+        previous_macro,
+        Value::cons(previous_index, previous_real_this_command),
+    )));
+    let roots = [final_macro, loop_function];
     interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
         let mut result = Ok(());
         let mut success_count = 0;
@@ -138,34 +136,41 @@ fn execute_kbd_macro(
         if result.is_ok() {
             interp.executing_kbd_macro = false;
         }
-        let (previous_macro, tail) = roots[2].cons_values().expect("saved macro pair");
-        let (previous_index, previous_real_this_command) =
-            tail.cons_values().expect("saved macro index and command");
-        interp.set_variable_key(cached_symbol!("executing-kbd-macro"), previous_macro, env);
-        interp.set_variable_key(
-            cached_symbol!("executing-kbd-macro-index"),
-            previous_index,
-            env,
-        );
-        interp.set_variable_key(
-            cached_symbol!("real-this-command"),
-            previous_real_this_command,
-            env,
-        );
-        // This is an unwind cleanup in GNU: it runs once for normal completion,
-        // loop-function termination, and command errors.
-        let mut result = result.map(|()| Value::Nil);
-        if let Err(hook_error) = interp.with_lisp_stack_roots(&result, |interp| {
-            run_hook(
-                interp,
-                &cached_symbol!("kbd-macro-termination-hook").symbol(),
-                env,
-            )
-        }) {
-            result = Err(hook_error);
-        }
-        result
+        // unbind_to (pdlcount, Qnil): pop_kbd_macro, once for normal
+        // completion, loop-function termination and command errors.
+        let result = result.map(|()| Value::Nil);
+        let unbind =
+            interp.with_lisp_stack_roots(&result, |interp| interp.unbind_to(pdlcount, env));
+        result.and_then(|value| unbind.map(|()| value))
     })
+}
+
+/// macros.c:pop_kbd_macro of INFO, (MACRO INDEX . REAL-THIS-COMMAND):
+/// the outer macro's state back, then `kbd-macro-termination-hook'.
+pub(crate) fn pop_kbd_macro(
+    interp: &mut Interpreter,
+    info: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let (previous_macro, tail) = info.cons_values().expect("saved macro pair");
+    let (previous_index, previous_real_this_command) =
+        tail.cons_values().expect("saved macro index and command");
+    interp.set_variable_key(cached_symbol!("executing-kbd-macro"), previous_macro, env);
+    interp.set_variable_key(
+        cached_symbol!("executing-kbd-macro-index"),
+        previous_index,
+        env,
+    );
+    interp.set_variable_key(
+        cached_symbol!("real-this-command"),
+        previous_real_this_command,
+        env,
+    );
+    run_hook(
+        interp,
+        &cached_symbol!("kbd-macro-termination-hook").symbol(),
+        env,
+    )
 }
 
 pub(crate) fn next_kbd_macro_event(
@@ -500,10 +505,7 @@ fn string_to_object(
 fn read_char_after_help(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
     let event = match pop_pending_input_event_value(interp, env)? {
         Some(event) => event,
-        None => {
-            crate::lisp::primitives::run_tty_frame_redraw(interp, env);
-            pop_unread_command_event_value(interp, env)?
-        }
+        None => pop_unread_command_event_value(interp, env)?,
     };
     crate::lisp::primitives::record_unrecorded_event(interp, &event, env);
     crate::lisp::primitives::add_read_event_to_command_keys(interp, event, env)?;
@@ -527,9 +529,6 @@ fn read_event_within(
     if let Some(event) = pop_pending_input_event_value(interp, env)? {
         return Ok(Some(event));
     }
-    // read_char's redisplay when no input is pending (COMMANDFLAG 0),
-    // END_TIME or not.
-    crate::lisp::primitives::run_tty_frame_redraw(interp, env);
     // kbd_buffer_get_event with END_TIME: until an event comes or the
     // time is up, wait_reading_process_output (the time left, -1, 1, Qnil,
     // NULL, 0) with the keyboard in its select.
@@ -1070,6 +1069,7 @@ define_dispatch!(
                 {
                     return Err(LispError::Signal("Already defining kbd macro".into()));
                 }
+                interp.update_mode_lines = 19;
                 if args[0].is_truthy() {
                     let previous = interp
                         .lookup_var_key(cached_symbol!("last-kbd-macro"), env)
@@ -1117,7 +1117,9 @@ define_dispatch!(
                     .map(Value::as_integer)
                     .transpose()?
                     .unwrap_or(1);
+                // end_kbd_macro.
                 interp.set_variable_key(cached_symbol!("defining-kbd-macro"), Value::Nil, env);
+                interp.update_mode_lines = 20;
                 {
                     let state = &mut **interp;
                     state
@@ -1542,17 +1544,12 @@ define_dispatch!(
                         }
                         None => {
                             // read_char takes an unread or keyboard-macro
-                            // event at once; else it redisplays before
-                            // blocking for input: window-configuration
-                            // changes a command made before reading (rmc's
-                            // help pop-up, y-or-n-p's prompt context) reach
-                            // the glass while the read waits.
+                            // event at once; else its COMMANDFLAG 0 read
+                            // redisplays (as input_pending lets it) before
+                            // blocking for input.
                             match pop_pending_input_event_value(interp, env)? {
                                 Some(event) => event,
-                                None => {
-                                    crate::lisp::primitives::run_tty_frame_redraw(interp, env);
-                                    pop_unread_command_event_value(interp, env)?
-                                }
+                                None => pop_unread_command_event_value(interp, env)?,
                             }
                         }
                     };

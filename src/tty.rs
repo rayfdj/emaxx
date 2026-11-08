@@ -26,6 +26,7 @@ use crate::lisp::primitives::{
 use crate::lisp::types::{Env, Kind, LispError, LispErrorKind, Value};
 
 mod layout;
+mod redisplay_flags;
 mod redisplay_window;
 mod sysdep;
 
@@ -84,9 +85,13 @@ struct WindowView {
     last_cursor: Option<(usize, usize)>,
     last_top_pos: Option<usize>,
     last_chars_modiff: Option<crate::buffer::ModCount>,
-    /// The point GNU's incremental mode-line matrix keeps displaying until
-    /// the next input event after a folded same-row motion.
-    deferred_mode_line_point: Option<usize>,
+    /// The window's `w->cursor' as its last display left it, in frame
+    /// cells (column, row): update_frame_1 puts the terminal's one cursor
+    /// there while the window is the frame's selected one.
+    frame_cursor: Option<(u16, u16)>,
+    /// The frame cells (top, left, width, height) its last display
+    /// painted, which a redisplay that leaves the window alone keeps.
+    painted_rect: Option<(usize, usize, usize, usize)>,
 }
 
 fn terminal_output() -> Box<dyn Write> {
@@ -387,49 +392,58 @@ struct TtyState {
     /// `max-mini-window-height' as resolved at the last full redisplay,
     /// so the interpreter-less painter can grow the echo area too.
     echo_max_rows: usize,
-    /// Rows the mini window currently occupies.  GNU's
-    /// `resize-mini-windows' default `grow-only': a message taller than
-    /// the window grows it (up to `max-mini-window-height'), a shorter
-    /// one keeps the height, and an empty echo area returns it to one
-    /// row.
+    /// Rows the mini window currently occupies, as `resize-mini-windows'
+    /// sizes it: under its default `grow-only' a message taller than the
+    /// window grows it (up to `max-mini-window-height'), a shorter one
+    /// keeps the height, and an empty echo area returns it to one row.
     echo_rows: usize,
     painted_size: (usize, usize),
     /// The terminal's size when last read: a change is GNU's
     /// SIGWINCH (handle_window_change_signal), none yet its
     /// init_display_interactive.
     terminal_size: Option<(usize, usize)>,
-    /// Resolved face attributes, valid while the interpreter's face
-    /// generation is unchanged (GNU's face_change flag).
+    /// Resolved face attributes, GNU's realized faces of the frame and
+    /// the count of its frees they belong to.
     face_cache: std::collections::HashMap<String, CellAttrs>,
-    face_cache_generation: u64,
-    /// The composed echo row currently belongs to an active minibuffer:
-    /// the interpreter-less blocking-read repaint must not overwrite it
-    /// with the plain message channel (the composed paint carries the
-    /// prompt face and overlay strings).
-    minibuffer_owns_echo: bool,
+    face_cache_epoch: Option<(crate::lisp::types::FrameRef, u64)>,
     /// Identity of the read whose grow-only minibuffer height is retained.
     /// Minibuffer buffers are reused, so the buffer id alone cannot detect
     /// entry into a fresh read.
     minibuffer_activation_id: Option<u64>,
-    /// The menu-bar row's caption text, valid while the selected
-    /// window's buffer, major mode, and active keymap set are unchanged
-    /// — GNU recomputes menu_bar_items on buffer, window, or mode-line
-    /// changes (isearch entering is one), not per key.
-    menu_bar_row: Option<((u64, String, usize), String)>,
-    /// The message-emission count the glass reflects.  A menu's modal
-    /// loop repaints the echo row only when this falls behind — GNU's
-    /// message3 paints through a frozen redisplay while read_char's
+    /// The message-emission count the glass reflects: a wait for input
+    /// repaints the echo row only when this falls behind, as read_char's
     /// input-arrival wipe waits for the next redisplay.
     painted_message_tick: u64,
+    /// The selected window's cursor the last redisplay computed:
+    /// update_frame_1's cursor on a terminal frame when it is not in the
+    /// echo area.
+    window_cursor: (u16, u16),
+    /// Where the last frame update left the cursor (the tty's curX and
+    /// curY after update_frame_1's cursor_to).
+    update_cursor: (u16, u16),
     /// The window layout the last redisplay showed (each window's id and
-    /// edges) and each shown buffer's modification count then: a change
-    /// in either is a windows_or_buffers_changed event (fset_redisplay,
-    /// bset_redisplay).
+    /// edges).
     last_layout: Vec<(u64, usize, usize, usize, usize)>,
-    buffer_modiffs: std::collections::HashMap<u64, crate::buffer::ModCount>,
 }
 
 impl TtyState {
+    /// The frame's row Y as last painted: a window row, or below them one
+    /// of the echo area's (the frame's current matrix, all its lines).
+    fn screen_row(&self, y: usize) -> Option<&PaintRow> {
+        match y.checked_sub(self.painted_rows.len()) {
+            None => self.painted_rows.get(y),
+            Some(echo) => self.painted_echo.get(echo),
+        }
+    }
+
+    /// Record ROW as painted at the frame's row Y (see `screen_row').
+    fn set_screen_row(&mut self, y: usize, row: PaintRow) {
+        match y.checked_sub(self.painted_rows.len()) {
+            None => self.painted_rows[y] = row,
+            Some(echo) => self.painted_echo[echo] = row,
+        }
+    }
+
     fn activate_terminal(&mut self, id: u64) {
         if id == self.terminal_id {
             return;
@@ -458,19 +472,12 @@ impl TtyState {
             painted_size: (0, 0),
             terminal_size: None,
             face_cache: std::collections::HashMap::new(),
-            face_cache_generation: 0,
-            minibuffer_owns_echo: false,
+            face_cache_epoch: None,
             minibuffer_activation_id: None,
-            menu_bar_row: None,
             painted_message_tick: 0,
+            window_cursor: (0, 0),
+            update_cursor: (0, 0),
             last_layout: Vec::new(),
-            buffer_modiffs: std::collections::HashMap::new(),
-        }
-    }
-
-    fn note_input(&mut self) {
-        for view in self.views.values_mut() {
-            view.deferred_mode_line_point = None;
         }
     }
 }
@@ -618,24 +625,85 @@ fn run_owned(
         let queue = queue.clone();
         let state = std::rc::Rc::clone(&state);
         move |interpreter, env| {
-            if queue.input_pending() {
+            // redisplay_internal: nothing while a redisplay runs (or after
+            // a C stack overflow left one without its unwind_redisplay),
+            // nor while `inhibit-redisplay' is non-nil.
+            if crate::lisp::primitives::redisplaying_p()
+                || interpreter
+                    .forwarded_c_value("inhibit-redisplay", env)
+                    .is_some_and(|value| value.is_truthy())
+            {
+                return;
+            }
+            let count = interpreter.specpdl_index();
+            crate::lisp::primitives::begin_redisplay(interpreter);
+            // specbind (Qinhibit_free_realized_faces, Qnil): realized faces
+            // may be freed until this redisplay produces glyphs.
+            let _ = interpreter.specbind_symbol(
+                &cached_symbol!("inhibit-free-realized-faces").with(|symbol| *symbol),
+                Value::Nil,
+                env,
+            );
+            // "Record this function, so it appears on the profiler's
+            // backtraces": record_in_backtrace with no arguments, popped by
+            // the unbind_to.
+            interpreter.push_backtrace_frame(Value::symbol("redisplay_internal (C function)"), &[]);
+            // update_frame pauses for pending input only without
+            // `redisplay-dont-pause' (redisplay_dont_pause forces it).
+            let dont_pause = interpreter
+                .lookup_var_key(cached_symbol!("redisplay-dont-pause"), env)
+                .is_some_and(|value| value.is_truthy());
+            if !dont_pause && queue.input_pending() {
+                // update_frame's detect_input_pending_ignore_squeezables
+                // sets input_pending.
+                crate::lisp::primitives::note_redisplay_input_pending();
                 // Painting yields to the input, but redisplay_internal
                 // runs the window change functions before any update.
                 let _ = crate::lisp::primitives::run_window_change_functions(interpreter, env);
+            } else if let Ok(mut state) = state.try_borrow_mut() {
+                let _ = redraw_with_echo_policy(interpreter, env, &mut state, false);
+            }
+            let _ = interpreter.unbind_to(count, env);
+        }
+    })));
+    // command_loop_1's resize_echo_area_exactly after a command: the mini
+    // window showing a message takes the message's own height (exactly,
+    // with no minibuffer active), and a changed height is redisplayed at
+    // once with windows_or_buffers_changed 42 and update_mode_lines 30.
+    crate::lisp::primitives::set_resize_echo_area_exactly(Some(Box::new({
+        let state = std::rc::Rc::clone(&state);
+        move |interpreter, env| {
+            if crate::lisp::primitives::echo_area_message_value().is_none() {
                 return;
             }
-            // command_loop_1's resize_echo_area_exactly after a command:
-            // a displayed message's mini window takes its own height again.
-            let exact = crate::lisp::primitives::take_resize_echo_area_exactly();
-            if let Ok(mut state) = state.try_borrow_mut() {
-                let _ = redraw_with_echo_policy(interpreter, env, &mut state, exact);
+            let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
+                return;
+            };
+            let cols = usize::from(cols.max(1)).min(interpreter.frame_width().max(1) as usize);
+            let rows = usize::from(rows.max(1)).min(interpreter.frame_height().max(1) as usize);
+            let exactly = interpreter.minibuffer_depth() == 0;
+            let resized = {
+                let Ok(mut state) = state.try_borrow_mut() else {
+                    return;
+                };
+                resize_mini_window(interpreter, env, &mut state, cols, rows, exactly).changed
+            };
+            if resized {
+                interpreter.windows_or_buffers_changed = 42;
+                interpreter.update_mode_lines = 30;
+                crate::lisp::primitives::run_tty_frame_redraw(interpreter, env);
             }
         }
     })));
+    // message3_nolog's echo_area_display (true): a message, or its
+    // clearing, reaches the glass when it is made.
+    crate::lisp::primitives::set_echo_area_display(Some(Box::new({
+        let state = std::rc::Rc::clone(&state);
+        move |interpreter, env| draw_echo_row_composed(interpreter, env, &state)
+    })));
     // term.c's menu_show_hook: the dropdown executor F10's popup path
     // reaches through x-popup-menu.
-    crate::lisp::primitives::set_tty_menu_executor(Some(make_menu_executor(
-        queue.clone(),
+    crate::lisp::primitives::menu::set_tty_menu_activate(Some(make_menu_activate(
         std::rc::Rc::clone(&state),
     )));
     // term.c:init_tty's terminal: its read_socket_hook
@@ -693,7 +761,9 @@ fn run_owned(
     crate::lisp::primitives::set_tty_input_modes(None, false, None);
     drop(tty_modes);
     crate::lisp::primitives::set_tty_input_discard(None);
-    crate::lisp::primitives::set_tty_menu_executor(None);
+    crate::lisp::primitives::menu::set_tty_menu_activate(None);
+    crate::lisp::primitives::set_echo_area_display(None);
+    crate::lisp::primitives::set_resize_echo_area_exactly(None);
     crate::lisp::primitives::set_interactive_window_metrics(None);
     // Fkill_emacs's exit leaves each child as shut_down_emacs left it
     // (hung up, not killed), as the batch exit does.
@@ -953,6 +1023,7 @@ impl SharedEventQueue {
                 true,
             ) {
                 Ok(crate::lisp::primitives::KbdWait::Ready) if self.input_pending() => {}
+                Ok(crate::lisp::primitives::KbdWait::Special { .. }) => {}
                 Ok(crate::lisp::primitives::KbdWait::Quit) => return RawNext::Quit,
                 _ => return RawNext::Ended,
             }
@@ -1048,9 +1119,6 @@ fn make_event_poller(
             return None;
         }
         while let Some(input) = queue.pop() {
-            if let Ok(mut state) = state.try_borrow_mut() {
-                state.note_input();
-            }
             if let Some(event) = input.into_lisp(interpreter) {
                 return Some(Some(queue.decode_event(
                     interpreter,
@@ -1061,36 +1129,6 @@ fn make_event_poller(
         }
         Some(None)
     })
-}
-
-/// A tty menu's read_menu_input: the keyboard buffer's next event, read
-/// as read_key_sequence's read_char waits for it, in kbd_buffer_get_event
-/// with DO_DISPLAY false (tty->showing_menu).  A quit is the quit
-/// character, `quit-flag' cleared as read_key_sequence clears it; None
-/// when the terminal is gone.
-fn menu_read_event(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    queue: &SharedEventQueue,
-) -> Result<Option<QueuedInput>, LispError> {
-    loop {
-        if let Some(QueuedInput::Lisp(event)) = queue.pop() {
-            return Ok(Some(QueuedInput::Lisp(queue.decode_event(
-                interpreter,
-                env,
-                event,
-            ))));
-        }
-        if TERMINAL_GONE.get() {
-            return Ok(None);
-        }
-        if crate::lisp::primitives::kbd_buffer_get_event_wait(interpreter, env, None, false)?
-            == crate::lisp::primitives::KbdWait::Quit
-        {
-            interpreter.set_c_variable("quit-flag", Value::Nil);
-            return Ok(Some(QueuedInput::Lisp(Value::Integer(7))));
-        }
-    }
 }
 
 /// Slice one unbounded echo paint into mini-window rows exactly as the
@@ -1265,55 +1303,137 @@ fn draw_echo_row_composed(
     env: &mut Env,
     state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) {
+    // echo_area_display displays nothing while redisplay is inhibited (a
+    // tty menu's activation sets `inhibit-redisplay').
+    if interpreter
+        .forwarded_c_value("inhibit-redisplay", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return;
+    }
+    // `if (!NILP (echo_area_buffer[0]) || minibuf_level == 0)': with no
+    // message an active minibuffer's row is redisplay's, as it is now,
+    // not as the last redisplay found it; a mini window not selected is
+    // marked for it.
+    if crate::lisp::primitives::echo_area_message_value().is_none()
+        && interpreter.minibuffer_depth() > 0
+    {
+        let mini = interpreter.minibuffer_window_id();
+        if mini != interpreter.selected_window_id() {
+            interpreter.wset_redisplay(mini);
+        }
+        return;
+    }
+    // It updates the frame only `if (update_frame_p && !redisplaying_p)'.
+    if crate::lisp::primitives::redisplaying_p() {
+        return;
+    }
     let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
         return;
     };
     let Ok(mut state) = state.try_borrow_mut() else {
         return;
     };
-    if state.minibuffer_owns_echo {
-        return;
-    }
     let cols = usize::from(cols.max(1));
     let rows = usize::from(rows.max(1));
-    let max_rows = state.echo_max_rows.max(1);
-    let (long, _, echo_cursor) =
-        compose_echo_row(interpreter, env, cols * max_rows, &mut state.face_cache);
-    let mut echo_paint = wrap_echo_paint(&long, cols, max_rows);
-    let mut mini_rows = state.echo_rows.max(1);
-    if echo_paint.len() > mini_rows {
-        for row in rows.saturating_sub(echo_paint.len())..rows {
-            if row < state.painted_rows.len() {
-                state.painted_rows[row] = PaintRow::unpainted();
-            }
+    // display_echo_area_1 resizes the mini window before displaying, so
+    // that its matrix is large enough (resize_mini_window_apply marking
+    // the frame when the height changes).
+    let frame_rows = rows.min(interpreter.frame_height().max(1) as usize);
+    let frame_cols = cols.min(interpreter.frame_width().max(1) as usize);
+    let MiniWindowEcho {
+        echo_long: long,
+        echo_cursor,
+        mut echo_paint,
+        changed,
+        ..
+    } = resize_mini_window(interpreter, env, &mut state, frame_cols, frame_rows, false);
+    let mini_rows = state.echo_rows.max(1);
+    // Not once shut_down_emacs has cleared Vrun_hooks: redisplay needs
+    // to run hooks.
+    if changed && !interpreter.hooks_cleared {
+        // "Must update other windows": the frame marked and a
+        // redisplay_internal that pending input does not interrupt
+        // (`redisplay-dont-pause' bound to t), in place of the echo
+        // area's own update_frame.
+        drop(state);
+        let frame = interpreter.selected_frame_id;
+        interpreter.fset_redisplay(frame);
+        let count = interpreter.specpdl_index();
+        if interpreter
+            .specbind_symbol(
+                &cached_symbol!("redisplay-dont-pause").with(|symbol| *symbol),
+                Value::T,
+                env,
+            )
+            .is_ok()
+        {
+            crate::lisp::primitives::run_tty_frame_redraw(interpreter, env);
         }
-        state.echo_rows = echo_paint.len();
-        mini_rows = echo_paint.len();
+        let _ = interpreter.unbind_to(count, env);
+        mark_mini_window_for_echo_cursor(interpreter, env);
+        // The window's height changed: the frame is marked again for the
+        // next redisplay.
+        interpreter.fset_redisplay(frame);
+        return;
     }
     echo_paint.resize(mini_rows, PaintRow::blank(cols));
+    // display_echo_area's display_line produces glyphs, after which
+    // realized faces may not be freed (PRODUCE_GLYPHS).
+    interpreter.set_variable_key(cached_symbol!("inhibit-free-realized-faces"), Value::T, env);
     encode_terminal_cells(interpreter, &mut echo_paint);
     let base = rows.saturating_sub(mini_rows);
     let mut out = terminal_output();
     for (index, echo_row) in echo_paint.iter().enumerate() {
         let _ = paint_row(&mut out, base + index, echo_row);
     }
+    // update_frame_1's cursor: in the echo area with `cursor-in-echo-area'
+    // or a message shown over the selected minibuffer; otherwise the frame's
+    // selected window's own, as its last display computed it (none kept,
+    // where the last frame update left the terminal's).
+    let cursor_position = if interpreter
+        .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
+        .is_some_and(|value| value.is_truthy())
+        || (interpreter.active_minibuffer_buffer_id().is_some()
+            && interpreter.selected_window_id() == interpreter.minibuffer_window_id()
+            && crate::lisp::primitives::echo_area_message_value().is_some())
+    {
+        let (row, col) = wrapped_echo_cursor(&long, echo_cursor.unwrap_or(0), cols, mini_rows);
+        (
+            col.min(cols.saturating_sub(1)) as u16,
+            (base + row).min(rows.saturating_sub(1)) as u16,
+        )
+    } else {
+        state
+            .views
+            .get(&interpreter.selected_window_id())
+            .and_then(|view| view.frame_cursor)
+            .unwrap_or(state.window_cursor)
+    };
+    state.update_cursor = cursor_position;
+    let _ = queue!(
+        out,
+        cursor::MoveTo(cursor_position.0, cursor_position.1),
+        cursor::Show,
+    );
+    let _ = out.flush();
+    state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
+    state.painted_echo = echo_paint;
+    drop(state);
+    mark_mini_window_for_echo_cursor(interpreter, env);
+}
+
+/// echo_area_display after its update: with the cursor in the echo area,
+/// the next redisplay displays the minibuffer, so that the cursor is put
+/// where the minibuffer wants it.
+fn mark_mini_window_for_echo_cursor(interpreter: &mut Interpreter, env: &Env) {
     if interpreter
         .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
         .is_some_and(|value| value.is_truthy())
     {
-        let (row, col) = wrapped_echo_cursor(&long, echo_cursor.unwrap_or(0), cols, mini_rows);
-        let _ = queue!(
-            out,
-            cursor::MoveTo(
-                col.min(cols.saturating_sub(1)) as u16,
-                (base + row).min(rows.saturating_sub(1)) as u16,
-            ),
-            cursor::Show,
-        );
+        let mini = interpreter.minibuffer_window_id();
+        interpreter.wset_redisplay(mini);
     }
-    let _ = out.flush();
-    state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
-    state.painted_echo = echo_paint;
 }
 
 /// The readers already hold the interpreter, so table selection and face
@@ -1322,9 +1442,8 @@ fn draw_echo_row(interpreter: &mut Interpreter, state: &std::rc::Rc<std::cell::R
     let Ok(current) = state.try_borrow() else {
         return;
     };
-    if current.minibuffer_owns_echo
-        || (current.painted_message_tick == crate::lisp::primitives::echo_area_message_tick()
-            && !crate::lisp::primitives::tty_cursor_in_echo_area())
+    if current.painted_message_tick == crate::lisp::primitives::echo_area_message_tick()
+        && !crate::lisp::primitives::tty_cursor_in_echo_area()
     {
         return;
     }
@@ -1332,6 +1451,7 @@ fn draw_echo_row(interpreter: &mut Interpreter, state: &std::rc::Rc<std::cell::R
     draw_echo_row_composed(interpreter, &mut Env::new(), state);
 }
 
+#[cfg(test)]
 use crate::lisp::primitives::KeyResolution as Resolution;
 
 #[cfg(test)]
@@ -1450,6 +1570,9 @@ struct WindowPlan {
     /// Cursor cell within the window body (including any line-number gutter),
     /// for the selected window.
     cursor: Option<(usize, usize)>,
+    /// The same cell for any window showing its point: the window's own
+    /// `w->cursor', which update_frame_1 uses once the window is selected.
+    point_cursor: Option<(usize, usize)>,
 }
 
 /// GNU's `truncate-partial-width-windows' default: windows narrower than
@@ -3590,6 +3713,7 @@ enum PlanOutcome {
     Hook {
         stage: redisplay_window::Stage,
         start: usize,
+        update_mode_line: bool,
         consumed: redisplay_window::Consumed,
     },
     Planned {
@@ -3624,10 +3748,15 @@ fn plan_window_text(
     let rows = redisplay_window::Rows::new(buffer, spec, glyphless, body_width, truncate);
     let (decision, consumed) = redisplay_window::decide(&rows, state, text_rows);
     let chosen = match decision {
-        redisplay_window::Decision::Hook { stage, start } => {
+        redisplay_window::Decision::Hook {
+            stage,
+            start,
+            update_mode_line,
+        } => {
             return PlanOutcome::Hook {
                 stage,
                 start,
+                update_mode_line,
                 consumed,
             };
         }
@@ -3782,6 +3911,7 @@ fn plan_window_text(
             top_pos,
             window_end,
             cursor: selected.then_some((point_row, cursor_col)),
+            point_cursor: chosen.cursor_row.map(|_| (point_row, cursor_col)),
         },
         chosen,
         consumed,
@@ -3980,37 +4110,6 @@ fn publish_window_start(
     }
 }
 
-/// Point to use while rendering this frame's mode/header line.
-///
-/// GNU's redisplay matrix keeps the previous point-dependent mode-line cells
-/// after motion within one folded display row, until a subsequent input event
-/// invalidates that state.  Preserve only the point argument, and only when
-/// buffer text, cursor row, and window start are unchanged; every other
-/// mode-line input is still evaluated from current state.
-#[allow(clippy::too_many_arguments)]
-fn mode_line_display_point(
-    previous: WindowView,
-    buffer_id: u64,
-    point: usize,
-    cursor: Option<(usize, usize)>,
-    top_pos: usize,
-    chars_modiff: crate::buffer::ModCount,
-    invisibility_active: bool,
-) -> usize {
-    if cursor.is_some()
-        && invisibility_active
-        && previous.last_buffer_id == Some(buffer_id)
-        && previous.last_point.is_some_and(|old| old != point)
-        && previous.last_cursor.map(|(row, _)| row) == cursor.map(|(row, _)| row)
-        && previous.last_top_pos == Some(top_pos)
-        && previous.last_chars_modiff == Some(chars_modiff)
-    {
-        previous.last_point.unwrap_or(point)
-    } else {
-        point
-    }
-}
-
 // xdisp.c:4532 handle_fontified_prop, at window granularity: before a
 // window's glyphs are produced, every visible position must carry a
 // non-nil `fontified' char-property, or `fontification-functions' runs
@@ -4175,51 +4274,34 @@ fn run_fontification_functions(
     }
 }
 
-fn redraw_with_echo_policy(
+/// What the mini window shows and how its sizing went
+/// (resize_mini_window): the echo row's text, whether it is an active
+/// minibuffer's, its cursor, its paint, and whether the mini window's
+/// height changed.
+struct MiniWindowEcho {
+    echo_long: PaintRow,
+    echo_from_minibuffer: bool,
+    echo_cursor: Option<usize>,
+    echo_paint: Vec<PaintRow>,
+    changed: bool,
+}
+
+/// xdisp.c resize_mini_window for what the mini window shows: its rows
+/// for the echo area's message or the active minibuffer (growing only,
+/// unless EXACT_ECHO sizes a message exactly), the window tree above it
+/// resized to them on a COLS x ROWS frame.  A changed height is
+/// resize_mini_window_apply's, which marks the frame (fset_redisplay).
+fn resize_mini_window(
     interpreter: &mut Interpreter,
     env: &mut Env,
     state: &mut TtyState,
+    cols: usize,
+    rows: usize,
     exact_echo: bool,
-) -> io::Result<()> {
-    state.activate_terminal(interpreter.selected_terminal_id());
-    // redisplay_internal: a frame the terminal did not show last is
-    // garbaged and its `tty-color-mode' set up; it paints with its
-    // terminal's colors.
-    interpreter.note_tty_frame_displayed(env);
-    set_paint_terminal(interpreter.selected_terminal_output());
-    // What a fatal signal resets the terminal with follows its size and
-    // `tty-mode-reset-strings' as of this update.
-    crate::lisp::primitives::refresh_emergency_reset();
-    let (cols, rows) = crate::lisp::eval::terminal::output_size()?;
-    // The terminal's size as init_display accepted it (at least 3x3) or
-    // as a later SIGWINCH reported it: painted as it is, never widened.
-    let cols = usize::from(cols.max(1));
-    let rows = usize::from(rows.max(1));
-    // The frame takes the terminal's size when the session starts on it
-    // (init_display_interactive), and at the next redisplay after the
-    // terminal changes size (handle_window_change_signal's delayed
-    // change_frame_size); redisplay_internal first applies what is
-    // pending, `menu-bar-lines' changes included.
-    // handle_window_change_signal takes a size only above 5x2; a
-    // smaller terminal leaves the frames their size.
-    match state.terminal_size {
-        None => interpreter.set_tty_frame_size(cols as i64, rows as i64),
-        Some(size) if size != (cols, rows) && cols > 5 && rows > 2 => {
-            interpreter.tty_window_change(cols as i64, rows as i64)
-        }
-        Some(_) => {}
-    }
-    state.terminal_size = Some((cols, rows));
-    let _ = crate::lisp::primitives::do_pending_window_change(interpreter, env);
-    // The frame's size as it stands: set-frame-size can make it smaller
-    // than the terminal, whose remaining rows and columns stay as they
-    // were.
-    let cols = cols.min(interpreter.frame_width().max(1) as usize);
-    let rows = rows.min(interpreter.frame_height().max(1) as usize);
-    run_pre_redisplay_function(interpreter, env);
-    // Rows above the window tree belong to the frame's menu and tab bars.
+) -> MiniWindowEcho {
     let menu_lines = crate::lisp::primitives::frame_top_margin(interpreter.selected_frame_id)
         .clamp(0, (rows as i64 - 2).max(0)) as usize;
+    let old_rows = state.echo_rows;
     // The mini window's height comes first: a tall message shrinks the
     // window tree above it (GNU's resize_mini_window, grow-only policy).
     let max_mini = max_mini_window_rows(interpreter, rows - menu_lines, rows);
@@ -4238,7 +4320,18 @@ fn redraw_with_echo_policy(
     let echo_empty = echo_paint.len() == 1
         && echo_paint[0].text.iter().all(|c| *c == ' ')
         && !echo_from_minibuffer;
-    state.echo_rows = if echo_empty {
+    // `resize-mini-windows': nil never resizes (a tty frame is never
+    // minibuffer-only), `grow-only' grows until an empty echo area or an
+    // exact resize shrinks it, and any other value resizes exactly.
+    let policy = interpreter
+        .lookup_var_key(cached_symbol!("resize-mini-windows"), env)
+        .unwrap_or(Value::Nil);
+    let grow_only = matches!(policy.kind(), Kind::Symbol(name) if name.is_named("grow-only"));
+    state.echo_rows = if policy.is_nil() {
+        state.echo_rows.max(1)
+    } else if !grow_only {
+        echo_paint.len().min(max_mini.max(1))
+    } else if echo_empty {
         1
     } else if new_minibuffer_activation {
         // read_minibuf starts a fresh mini-window sizing lifecycle even
@@ -4300,9 +4393,119 @@ fn redraw_with_echo_policy(
             Ok(())
         },
     );
+    if state.echo_rows != old_rows {
+        let frame = interpreter.selected_frame_id;
+        interpreter.fset_redisplay(frame);
+    }
+    MiniWindowEcho {
+        echo_long,
+        echo_from_minibuffer,
+        echo_cursor,
+        echo_paint,
+        changed: state.echo_rows != old_rows,
+    }
+}
+
+fn redraw_with_echo_policy(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    state: &mut TtyState,
+    exact_echo: bool,
+) -> io::Result<()> {
+    state.activate_terminal(interpreter.selected_terminal_id());
+    // redisplay_internal: a frame the terminal did not show last is
+    // garbaged and its `tty-color-mode' set up; it paints with its
+    // terminal's colors.
+    interpreter.note_tty_frame_displayed(env);
+    set_paint_terminal(interpreter.selected_terminal_output());
+    // What a fatal signal resets the terminal with follows its size and
+    // `tty-mode-reset-strings' as of this update.
+    crate::lisp::primitives::refresh_emergency_reset();
+    let (cols, rows) = crate::lisp::eval::terminal::output_size()?;
+    // The terminal's size as init_display accepted it (at least 3x3) or
+    // as a later SIGWINCH reported it: painted as it is, never widened.
+    let cols = usize::from(cols.max(1));
+    let rows = usize::from(rows.max(1));
+    // The frame takes the terminal's size when the session starts on it
+    // (init_display_interactive), and at the next redisplay after the
+    // terminal changes size (handle_window_change_signal's delayed
+    // change_frame_size); redisplay_internal first applies what is
+    // pending, `menu-bar-lines' changes included.
+    // handle_window_change_signal takes a size only above 5x2; a
+    // smaller terminal leaves the frames their size.
+    match state.terminal_size {
+        None => interpreter.set_tty_frame_size(cols as i64, rows as i64),
+        Some(size) if size != (cols, rows) && cols > 5 && rows > 2 => {
+            interpreter.tty_window_change(cols as i64, rows as i64)
+        }
+        Some(_) => {}
+    }
+    state.terminal_size = Some((cols, rows));
+    let _ = crate::lisp::primitives::do_pending_window_change(interpreter, env);
+    // The frame's size as it stands: set-frame-size can make it smaller
+    // than the terminal, whose remaining rows and columns stay as they
+    // were.
+    let cols = cols.min(interpreter.frame_width().max(1) as usize);
+    let rows = rows.min(interpreter.frame_height().max(1) as usize);
+    // redisplay_internal: a face change makes the current matrices
+    // unusable, and clear_garbaged_frames has a garbaged (or resized)
+    // frame redisplayed whole.
+    if interpreter.face_change {
+        interpreter.windows_or_buffers_changed = 47;
+    }
+    if crate::lisp::primitives::frame_garbaged() || state.painted_size != (cols, rows) {
+        let frame = interpreter.selected_frame_id;
+        interpreter.fset_redisplay(frame);
+    }
+    prepare_menu_bars(interpreter, env);
+    selected_window_mode_line_checks(interpreter, env, state);
+    // Rows above the window tree belong to the frame's menu and tab bars.
+    let menu_lines = crate::lisp::primitives::frame_top_margin(interpreter.selected_frame_id)
+        .clamp(0, (rows as i64 - 2).max(0)) as usize;
+    let MiniWindowEcho {
+        echo_long,
+        echo_from_minibuffer,
+        echo_cursor,
+        echo_paint,
+        ..
+    } = resize_mini_window(interpreter, env, state, cols, rows, exact_echo);
     // xdisp.c:redisplay_internal runs the window change functions once
     // the mini window has its size; their errors are already muted.
     let _ = crate::lisp::primitives::run_window_change_functions(interpreter, env);
+    // Code that sets windows_or_buffers_changed does not say whether the
+    // mode lines need a refresh too: they do.
+    if interpreter.windows_or_buffers_changed != 0 && interpreter.update_mode_lines == 0 {
+        interpreter.update_mode_lines = if interpreter.windows_or_buffers_changed
+            == crate::lisp::eval::runtime::REDISPLAY_SOME
+        {
+            crate::lisp::eval::runtime::REDISPLAY_SOME
+        } else {
+            32
+        };
+    }
+    // Arrows whose specs changed have their buffers redisplayed, to remove
+    // any arrow that should no longer exist.
+    redisplay_flags::overlay_arrows_changed(interpreter);
+    let mut consider_all_windows =
+        interpreter.update_mode_lines != 0 || interpreter.windows_or_buffers_changed != 0;
+    {
+        let (all_cause, mode_lines_cause) = (
+            interpreter.windows_or_buffers_changed,
+            interpreter.update_mode_lines,
+        );
+        redisplay_flags::count_redisplay_cause(
+            interpreter,
+            env,
+            cached_symbol!("redisplay--all-windows-cause"),
+            all_cause,
+        );
+        redisplay_flags::count_redisplay_cause(
+            interpreter,
+            env,
+            cached_symbol!("redisplay--mode-lines-cause"),
+            mode_lines_cause,
+        );
+    }
     let frame_rows = rows - state.echo_rows; // everything above the echo area
     let full_repaint = state.painted_size != (cols, rows);
     // frame_garbaged: the terminal's screen is not what was painted (the
@@ -4314,14 +4517,24 @@ fn redraw_with_echo_policy(
         // index; re-anchor each window instead of trusting stale ones.
         state.views.clear();
     }
-    // Resolved faces stay cached until a face definition changes (GNU's
-    // face_change flag) — resolution evaluates Lisp per attribute.
-    let face_generation = interpreter.face_definitions_generation();
-    let face_changed = state.face_cache_generation != face_generation;
+    // init_iterator frees the realized faces after a face change (every
+    // frame's for face_change, the frame's for its own); the faces cached
+    // here are the displayed frame's, as GNU realizes faces per frame.
+    let displayed_frame = interpreter.selected_frame_id;
+    interpreter.init_iterator_faces(displayed_frame);
+    let face_epoch = (
+        displayed_frame,
+        displayed_frame.borrow().realized_faces_epoch,
+    );
+    let face_changed = state.face_cache_epoch != Some(face_epoch);
     if full_repaint || face_changed {
         state.face_cache.clear();
-        state.face_cache_generation = face_generation;
+        state.face_cache_epoch = Some(face_epoch);
     }
+    // PRODUCE_GLYPHS of what follows: the realized faces glyphs now use
+    // may not be freed (inhibit_free_realized_faces) until a redisplay
+    // starts afresh.
+    interpreter.set_variable_key(cached_symbol!("inhibit-free-realized-faces"), Value::T, env);
     // The frame's default face (realize_basic_faces's DEFAULT_FACE_ID, no
     // buffer's remapping), which every glyph's face is merged over, and
     // the variables turn_on_face and realize_tty_face read.  A window
@@ -4395,11 +4608,6 @@ fn redraw_with_echo_policy(
         .views
         .retain(|id, _| layout.iter().any(|window| window.window_id == *id));
 
-    // Fontify what this frame will show before any text is snapshotted:
-    // GNU's iterator handles the `fontified' property before producing
-    // glyphs (xdisp.c handle_fontified_prop).
-    fontify_window_ranges(interpreter, env, &layout);
-
     let mut frame = vec![PaintRow::blank(cols); frame_rows];
     // GNU's tty vertical border draws in the vertical-border face (its
     // inherit chain reaches mode-line-inactive's reverse video).
@@ -4414,52 +4622,71 @@ fn redraw_with_echo_policy(
     } else {
         CellAttrs::default()
     };
-    // xdisp.c's windows_or_buffers_changed for this redisplay: set by the
-    // interpreter (wset_redisplay of another window, window-tree and
-    // frame changes), by a resize or face change (face_change), by window
-    // edges differing from the last ones shown (a mini window's growth),
-    // and by bset_redisplay's rule: a buffer modified since then that
-    // shows in a window other than the selected one, or in two windows.
+    // windows_or_buffers_changed as redisplay_window reads it: window
+    // starts on continuation lines adjusted, no current matrix trusted.
+    // Window functions flag a change of the window tree's geometry
+    // (fset_redisplay); one that reaches the frame unflagged still has
+    // every window redisplayed.
     let windows_or_buffers_changed = {
-        // Window edges only: a buffer shown or a window selected marks
-        // the windows involved (wset_redisplay) when GNU does.
         let signature: Vec<(u64, usize, usize, usize, usize)> = layout
             .iter()
             .map(|info| (info.window_id, info.left, info.top, info.width, info.height))
             .collect();
-        let mut changed = std::mem::take(&mut interpreter.windows_or_buffers_changed)
-            || full_repaint
-            || face_changed
-            || signature != state.last_layout;
-        let selected_buffer = layout
-            .iter()
-            .find(|info| info.selected)
-            .map(|info| info.buffer_id);
-        let mut seen = std::collections::HashSet::new();
-        for info in &layout {
-            if !seen.insert(info.buffer_id) {
-                continue;
-            }
-            let modiff = if info.buffer_id == interpreter.current_buffer_id() {
-                interpreter.buffer.borrow().modified_tick()
-            } else if let Some(buffer) = interpreter.get_buffer_by_id(info.buffer_id) {
-                buffer.modified_tick()
-            } else {
-                continue;
-            };
-            let shown = layout
-                .iter()
-                .filter(|other| other.buffer_id == info.buffer_id)
-                .count();
-            if (shown > 1 || Some(info.buffer_id) != selected_buffer)
-                && state.buffer_modiffs.get(&info.buffer_id) != Some(&modiff)
-            {
-                changed = true;
-            }
+        if signature != state.last_layout && !consider_all_windows {
+            let frame = interpreter.selected_frame_id;
+            interpreter.fset_redisplay(frame);
+            consider_all_windows = true;
         }
         state.last_layout = signature;
-        changed
+        interpreter.windows_or_buffers_changed != 0 || full_repaint || face_changed
     };
+    // The windows redisplay_window redisplays: with every window
+    // considered, those not under REDISPLAY_SOME's exemption (their
+    // buffers' flags copied to them first, propagate_buffer_redisplay);
+    // else the selected window alone.
+    let window_ids: Vec<u64> = layout.iter().map(|info| info.window_id).collect();
+    if consider_all_windows {
+        redisplay_flags::propagate_buffer_redisplay(interpreter, &window_ids);
+    }
+    let redisplayed: std::collections::HashSet<u64> = layout
+        .iter()
+        .filter(|info| {
+            if consider_all_windows {
+                !redisplay_flags::needs_no_redisplay(interpreter, info.window_id)
+            } else {
+                info.selected
+            }
+        })
+        .map(|info| info.window_id)
+        .collect();
+    // The windows redisplay_window leaves alone keep what the terminal
+    // shows of them (their current matrices): every window other than the
+    // selected one that is not redisplayed and whose cells the last paint
+    // has where the window still is.
+    let painted_valid = !full_repaint && !garbaged && state.painted_rows.len() == frame_rows;
+    let kept: std::collections::HashSet<u64> = layout
+        .iter()
+        .filter(|info| {
+            painted_valid
+                && !info.selected
+                && !redisplayed.contains(&info.window_id)
+                && state.views.get(&info.window_id).is_some_and(|view| {
+                    view.painted_rect == Some((info.top, info.left, info.width, info.height))
+                })
+        })
+        .map(|info| info.window_id)
+        .collect();
+    // Fontify what the windows redisplayed will show before any text is
+    // snapshotted: GNU's iterator handles the `fontified' property before
+    // producing glyphs (xdisp.c handle_fontified_prop).
+    {
+        let shown: Vec<crate::lisp::primitives::WindowRenderInfo> = layout
+            .iter()
+            .filter(|info| !kept.contains(&info.window_id))
+            .copied()
+            .collect();
+        fontify_window_ranges(interpreter, env, &shown);
+    }
     let mut cursor_position = (0u16, 0u16);
     let mut selected_sync: Option<crate::lisp::primitives::InteractiveWindowMetrics> = None;
     struct ModeLineJob {
@@ -4472,8 +4699,20 @@ fn redraw_with_echo_policy(
         metrics: crate::lisp::primitives::InteractiveWindowMetrics,
         /// The window's mode line shows in `mode-line-active'.
         active: bool,
+        /// redisplay_window displays the window's mode lines
+        /// (display_mode_lines); otherwise the frame keeps their cells.
+        display: bool,
+    }
+    impl ModeLineCellsJob for ModeLineJob {
+        fn cells(&self) -> (usize, usize, usize) {
+            (self.row, self.left, self.body_width)
+        }
     }
     let mut mode_line_jobs: Vec<ModeLineJob> = Vec::new();
+    // finish_menu_bars: the frame's selected window redisplayed with its
+    // mode line to update redoes the menu bar row.
+    let mut menu_bar_display =
+        selected_mini_window_updates_menu_bar(interpreter, &layout, consider_all_windows);
     // A tab line and header line consume body rows above the window text,
     // in that order.  Both render through display-mode-line machinery in
     // their respective faces and leave at least one text row visible.
@@ -4542,6 +4781,17 @@ fn redraw_with_echo_policy(
     let mut overlay_arrow_jobs: Vec<(usize, usize, String)> = Vec::new();
 
     'windows: for info in &layout {
+        if kept.contains(&info.window_id) {
+            // Its text, mode line and border as the last paint left them.
+            for row in info.top..(info.top + info.height).min(frame_rows) {
+                keep_painted_cells(
+                    &mut frame,
+                    &state.painted_rows,
+                    &(row, info.left, info.width),
+                );
+            }
+            continue 'windows;
+        }
         // A window not flush with the frame's right edge spends its last
         // column on the vertical border; the mode line spans the body.
         let body_width = if info.left + info.width < cols {
@@ -4612,115 +4862,123 @@ fn redraw_with_echo_policy(
             windows_or_buffers_changed,
         );
         let mut hook_rounds = 0usize;
-        let (geometry, plan, chosen, invisibility_active, chars_modiff) = loop {
-            let outcome = loop {
-                let geometry =
-                    window_render_geometry(interpreter, env, info, text_body_width, cols, lnum);
-                let view = state.views.entry(info.window_id).or_default();
-                let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
-                    Some(interpreter.buffer.borrow())
-                } else {
-                    interpreter.get_buffer_by_id(info.buffer_id)
-                }) else {
-                    continue 'windows;
-                };
-                let invisibility =
-                    resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
-                let glyphless =
-                    CharacterDisplayContext::new(interpreter, info.buffer_id, info.window_id)
-                        .with_line_numbers(geometry.lnum.map_or(0, |layout| layout.cols));
-                match plan_window_text(
-                    &buffer,
-                    &invisibility,
-                    Some(&glyphless),
-                    view,
-                    &start_state,
-                    text_rows,
-                    text_body_width,
-                    geometry.truncate,
-                    &geometry,
-                    info.selected,
-                ) {
-                    PlanOutcome::Hook {
-                        stage,
-                        start,
-                        consumed,
-                    } => break Err((stage, start, consumed)),
-                    PlanOutcome::Planned {
-                        plan,
-                        chosen,
-                        consumed,
-                    } => {
-                        let top_line = view.top_line;
-                        let settled = lnum_for(interpreter, top_line);
-                        if settled.map(|layout| layout.cols) == lnum.map(|layout| layout.cols) {
-                            break Ok((
-                                geometry,
-                                plan,
-                                chosen,
-                                consumed,
-                                invisibility.active,
-                                buffer.chars_modified_tick(),
-                            ));
+        let mut planned_info = *info;
+        let (geometry, plan, chosen, chars_modiff, published) = loop {
+            let info = &planned_info;
+            let (geometry, plan, chosen, chars_modiff) = loop {
+                let outcome = loop {
+                    let geometry =
+                        window_render_geometry(interpreter, env, info, text_body_width, cols, lnum);
+                    let view = state.views.entry(info.window_id).or_default();
+                    let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
+                        Some(interpreter.buffer.borrow())
+                    } else {
+                        interpreter.get_buffer_by_id(info.buffer_id)
+                    }) else {
+                        continue 'windows;
+                    };
+                    let invisibility =
+                        resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
+                    let glyphless =
+                        CharacterDisplayContext::new(interpreter, info.buffer_id, info.window_id)
+                            .with_line_numbers(geometry.lnum.map_or(0, |layout| layout.cols));
+                    match plan_window_text(
+                        &buffer,
+                        &invisibility,
+                        Some(&glyphless),
+                        view,
+                        &start_state,
+                        text_rows,
+                        text_body_width,
+                        geometry.truncate,
+                        &geometry,
+                        info.selected,
+                    ) {
+                        PlanOutcome::Hook {
+                            stage,
+                            start,
+                            update_mode_line,
+                            consumed,
+                        } => break Err((stage, start, update_mode_line, consumed)),
+                        PlanOutcome::Planned {
+                            plan,
+                            chosen,
+                            consumed,
+                        } => {
+                            let top_line = view.top_line;
+                            let settled = lnum_for(interpreter, top_line);
+                            if settled.map(|layout| layout.cols) == lnum.map(|layout| layout.cols) {
+                                break Ok((
+                                    geometry,
+                                    plan,
+                                    chosen,
+                                    consumed,
+                                    buffer.chars_modified_tick(),
+                                ));
+                            }
+                            lnum = settled;
                         }
-                        lnum = settled;
+                    }
+                };
+                match outcome {
+                    Err((stage, start, update_mode_line, consumed)) => {
+                        // run_window_scroll_functions: the hooks see the start
+                        // redisplay chose, and redisplay continues from the
+                        // start they leave.
+                        consume_window_start_flags(interpreter, info.window_id, consumed);
+                        crate::lisp::primitives::set_window_start_marker(
+                            interpreter,
+                            info.window_id,
+                            start,
+                        );
+                        run_window_scroll_functions(
+                            interpreter,
+                            env,
+                            info.window_id,
+                            info.buffer_id,
+                            start,
+                        );
+                        start_state.resume = Some((
+                            stage,
+                            crate::lisp::primitives::window_start_marker(
+                                interpreter,
+                                info.window_id,
+                                info.buffer_id,
+                            ),
+                            update_mode_line,
+                        ));
+                        hook_rounds += 1;
+                        if hook_rounds >= 4 {
+                            start_state.scroll_functions = false;
+                        }
+                    }
+                    Ok((geometry, plan, chosen, consumed, chars)) => {
+                        consume_window_start_flags(interpreter, info.window_id, consumed);
+                        break (geometry, plan, chosen, chars);
                     }
                 }
             };
-            match outcome {
-                Err((stage, start, consumed)) => {
-                    // run_window_scroll_functions: the hooks see the start
-                    // redisplay chose, and redisplay continues from the
-                    // start they leave.
-                    consume_window_start_flags(interpreter, info.window_id, consumed);
-                    crate::lisp::primitives::set_window_start_marker(
-                        interpreter,
-                        info.window_id,
-                        start,
-                    );
-                    run_window_scroll_functions(
-                        interpreter,
-                        env,
-                        info.window_id,
-                        info.buffer_id,
-                        start,
-                    );
-                    start_state.resume = Some((
-                        stage,
-                        crate::lisp::primitives::window_start_marker(
-                            interpreter,
-                            info.window_id,
-                            info.buffer_id,
-                        ),
-                    ));
-                    hook_rounds += 1;
-                    if hook_rounds >= 4 {
-                        start_state.scroll_functions = false;
-                    }
-                }
-                Ok((geometry, plan, chosen, consumed, active, chars)) => {
-                    consume_window_start_flags(interpreter, info.window_id, consumed);
-                    break (geometry, plan, chosen, active, chars);
-                }
+            let published = publish_window_start(interpreter, info, &chosen, plan.window_end);
+            // The force_start block moved point into the window: with the
+            // window's redisplay done but for the cursor, `pre-redisplay-function'
+            // runs again for it, and what it marks is displayed again from the
+            // same start (try_window).
+            if chosen.point.is_some()
+                && rerun_pre_redisplay_function(interpreter, env, info.window_id, chosen.cursor_row)
+            {
+                planned_info = published;
+                start_state.point = published.point;
+                start_state.resume = Some((
+                    redisplay_window::Stage::ForceStart,
+                    chosen.start,
+                    chosen.update_mode_line,
+                ));
+                continue;
             }
+            break (geometry, plan, chosen, chars_modiff, published);
         };
-        let info = &publish_window_start(interpreter, info, &chosen, plan.window_end);
-        let newly_deferred_point = mode_line_display_point(
-            previous_view,
-            info.buffer_id,
-            info.point,
-            plan.cursor,
-            plan.top_pos,
-            chars_modiff,
-            invisibility_active,
-        );
-        let existing_deferred_point = previous_view.deferred_mode_line_point.filter(|_| {
-            invisibility_active
-                && previous_view.last_buffer_id == Some(info.buffer_id)
-                && previous_view.last_top_pos == Some(plan.top_pos)
-                && previous_view.last_chars_modiff == Some(chars_modiff)
-        });
-        let mode_line_point = existing_deferred_point.unwrap_or(newly_deferred_point);
+        let info = &published;
+        let mode_line_point = info.point;
         // The pre-pass fontified a cell-count estimate of the window;
         // the plan knows the real end, which invisible text (org's
         // folds) can push thousands of characters past the estimate.
@@ -5008,17 +5266,22 @@ fn redraw_with_echo_policy(
             text_height: text_rows,
             window_end: plan.window_end,
         };
+        let to_frame = |(row, col): (usize, usize)| {
+            (
+                (info.left + left_margin + col).min(cols - 1) as u16,
+                (text_top + row).min(frame_rows - 1) as u16,
+            )
+        };
+        let frame_cursor = plan.point_cursor.map(to_frame);
         if info.selected {
-            if let Some((row, col)) = plan.cursor {
-                cursor_position = (
-                    (info.left + left_margin + col).min(cols - 1) as u16,
-                    (text_top + row).min(frame_rows - 1) as u16,
-                );
+            if let Some(position) = plan.cursor.map(to_frame) {
+                cursor_position = position;
             }
             selected_sync = Some(metrics);
         }
         {
             let view = state.views.entry(info.window_id).or_default();
+            view.frame_cursor = frame_cursor;
             view.last_start = Some(info.start);
             view.last_restriction = Some(restriction);
             view.last_modiff = Some(modiff);
@@ -5027,9 +5290,21 @@ fn redraw_with_echo_policy(
             view.last_cursor = plan.cursor;
             view.last_top_pos = Some(plan.top_pos);
             view.last_chars_modiff = Some(chars_modiff);
-            view.deferred_mode_line_point =
-                (mode_line_point != info.point).then_some(mode_line_point);
+            view.painted_rect = Some((info.top, info.left, info.width, info.height));
         }
+        let display = window_displays_mode_line(
+            interpreter,
+            env,
+            info,
+            cols,
+            redisplayed.contains(&info.window_id),
+            consider_all_windows,
+            chosen.update_mode_line,
+        );
+        if info.selected && display.update_mode_line {
+            menu_bar_display = true;
+        }
+        let display = display.mode_lines;
         let mode_line_active = info.selected
             || interpreter
                 .lookup_var_key(cached_symbol!("mode-line-in-non-selected-windows"), env)
@@ -5046,6 +5321,7 @@ fn redraw_with_echo_policy(
             body_width,
             metrics,
             active: mode_line_active,
+            display,
         });
         if header_rows > 0 {
             header_line_jobs.push(ModeLineJob {
@@ -5057,6 +5333,7 @@ fn redraw_with_echo_policy(
                 body_width,
                 metrics,
                 active: mode_line_active,
+                display,
             });
         }
         if tab_rows > 0 {
@@ -5069,6 +5346,7 @@ fn redraw_with_echo_policy(
                 body_width,
                 metrics,
                 active: mode_line_active,
+                display,
             });
         }
     }
@@ -5079,22 +5357,6 @@ fn redraw_with_echo_policy(
     if let Some(metrics) = selected_sync {
         crate::lisp::primitives::set_interactive_window_metrics(Some(metrics));
     }
-    // The shown buffers' modification counts as of this redisplay (after
-    // its fontification): bset_redisplay's flag is cleared with the rest
-    // of windows_or_buffers_changed at the end of redisplay_internal.
-    state.buffer_modiffs = layout
-        .iter()
-        .filter_map(|info| {
-            let modiff = if info.buffer_id == interpreter.current_buffer_id() {
-                interpreter.buffer.borrow().modified_tick()
-            } else {
-                interpreter
-                    .get_buffer_by_id(info.buffer_id)?
-                    .modified_tick()
-            };
-            Some((info.buffer_id, modiff))
-        })
-        .collect();
 
     // Face spans over window text — buffer `face' properties, the
     // selected window's active region, and overlay faces (isearch's
@@ -5671,6 +5933,10 @@ fn redraw_with_echo_policy(
     // from), `mode-line-inactive' for the others.
     // Each face as the window's buffer remaps it (lookup_basic_face).
     for job in &mode_line_jobs {
+        if !job.display && keep_painted_cells(&mut frame, &state.painted_rows, job) {
+            continue;
+        }
+        crate::lisp::primitives::begin_display_mode_lines(interpreter, job.window_id);
         let remapping = face_remapping(interpreter, Some(job.buffer_id));
         let measure = ModeLineMeasure {
             buffer_id: job.buffer_id,
@@ -5735,6 +6001,7 @@ fn redraw_with_echo_policy(
             let to = job.left + to.min(shown);
             frame[job.row].overlay(from, to, attrs);
         }
+        crate::lisp::primitives::end_display_mode_lines(interpreter, job.window_id);
     }
 
     // Tab lines sit above header lines and use the `tab-line' face.  A
@@ -5742,6 +6009,9 @@ fn redraw_with_echo_policy(
     // enabling the global tab-bar UI (Flycheck's grouping controls do so).
     if !tab_line_jobs.is_empty() {
         for job in &tab_line_jobs {
+            if !job.display && keep_painted_cells(&mut frame, &state.painted_rows, job) {
+                continue;
+            }
             let remapping = face_remapping(interpreter, Some(job.buffer_id));
             let tab_attrs = realized_face(
                 &mut state.face_cache,
@@ -5796,6 +6066,9 @@ fn redraw_with_echo_policy(
     // display_mode_line for the header row).
     if !header_line_jobs.is_empty() {
         for job in &header_line_jobs {
+            if !job.display && keep_painted_cells(&mut frame, &state.painted_rows, job) {
+                continue;
+            }
             let remapping = face_remapping(interpreter, Some(job.buffer_id));
             let header_attrs = realized_face(
                 &mut state.face_cache,
@@ -5853,41 +6126,19 @@ fn redraw_with_echo_policy(
         }
     }
 
-    // The menu bar row (GNU's display_menu_bar): every active keymap's
-    // top-level captions one space apart, the whole row in the `menu'
-    // face.  Recomputed — after menu-bar-update-hook, like GNU's
-    // update_menu_bar — when the selected buffer or its major mode
-    // changed, not per keystroke.
-    if menu_lines > 0 && !frame.is_empty() {
-        let mode = interpreter
-            .lookup_var_key(cached_symbol!("major-mode"), env)
-            .map(|mode| format!("{mode}"))
-            .unwrap_or_default();
-        let cache_key = (
-            interpreter.current_buffer_id(),
-            mode,
-            crate::lisp::primitives::active_keymap_count(interpreter, env),
-        );
-        if state
-            .menu_bar_row
-            .as_ref()
-            .is_none_or(|(key, _)| *key != cache_key)
-        {
-            // update_menu_bar: safe_run_hooks of each, quits inhibited.
-            for hook in ["activate-menubar-hook", "menu-bar-update-hook"] {
-                let _ = batch::safe_run_hooks(
-                    interpreter,
-                    &crate::lisp::types::symbols::SymbolKey::new(hook).symbol(),
-                );
-            }
-            let captions = crate::lisp::primitives::menu_bar_row_captions(interpreter, env);
-            let mut text = String::new();
-            for caption in &captions {
-                text.push_str(caption);
-                text.push(' ');
-            }
-            state.menu_bar_row = Some((cache_key, text));
-        }
+    // The menu bar row (GNU's display_menu_bar): FRAME_MENU_BAR_ITEMS'
+    // names, each padded with one space and drawn over the `menu' face
+    // with its own face properties, their columns recorded on the frame.
+    if menu_lines > 0
+        && !frame.is_empty()
+        && !(!menu_bar_display
+            && state
+                .painted_rows
+                .first()
+                .filter(|row| row.text.len() == cols && row.text != ['\u{0}'])
+                .map(|row| frame[0] = row.clone())
+                .is_some())
+    {
         let menu_attrs = realized_face(
             &mut state.face_cache,
             interpreter,
@@ -5895,14 +6146,31 @@ fn redraw_with_echo_policy(
             &frame_faces,
             &Value::symbol("menu"),
         );
-        let text = state
-            .menu_bar_row
-            .as_ref()
-            .map(|(_, text)| text.clone())
-            .unwrap_or_default();
         let mut row = PaintRow::blank(cols);
         row.attrs = vec![menu_attrs; cols];
-        row.blit(0, &text, menu_attrs);
+        let items = crate::lisp::primitives::menu::display_menu_bar_items(
+            interpreter,
+            interpreter.selected_frame_id,
+        );
+        for (string, column) in items {
+            let Some(text) = crate::lisp::primitives::string_like(&string) else {
+                continue;
+            };
+            row.blit(column, &text.text, menu_attrs);
+            if let Some(props) = &text.props {
+                for (from, to, plist) in props.iter() {
+                    let face = crate::intervals::plist_get(plist, Value::symbol("face"));
+                    if face.is_nil() {
+                        continue;
+                    }
+                    let attrs = merge_cell_attrs(
+                        menu_attrs,
+                        realized_face(&mut state.face_cache, interpreter, env, &frame_faces, &face),
+                    );
+                    row.overlay((column + from).min(cols), (column + to).min(cols), attrs);
+                }
+            }
+        }
         frame[0] = row;
     }
 
@@ -5937,7 +6205,6 @@ fn redraw_with_echo_policy(
     // active minibuffer's row comes from its buffer with the text
     // properties read_minibuf applied — the prompt's face reaches the
     // glass.
-    state.minibuffer_owns_echo = echo_from_minibuffer;
     // Full redisplay reflects the message channel; the glass is caught
     // up with every emission made so far.
     state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
@@ -5953,6 +6220,7 @@ fn redraw_with_echo_policy(
     // update_frame_1's cursor: in the echo area with `cursor-in-echo-area'
     // or a message shown over the selected active minibuffer; otherwise
     // the selected window's, echoing included.
+    state.window_cursor = cursor_position;
     if (minibuffer_echo_owns_hardware_cursor(interpreter, echo_from_minibuffer)
         || (!echo_from_minibuffer
             && interpreter.active_minibuffer_buffer_id().is_some()
@@ -5976,11 +6244,13 @@ fn redraw_with_echo_policy(
             (frame_rows + row).min(rows.saturating_sub(1)) as u16,
         );
     }
+    state.update_cursor = cursor_position;
     queue!(
         out,
         cursor::MoveTo(cursor_position.0, cursor_position.1),
         cursor::Show
     )?;
+    mark_redisplay_done(interpreter, &window_ids, consider_all_windows);
     out.flush()
 }
 
@@ -5990,7 +6260,7 @@ fn redraw_with_echo_policy(
 /// being considered.  Among other things, simple.el uses this to maintain the
 /// window-local cursor-face overlay in *Completions*.  Like GNU's dsafe call,
 /// redisplay must survive a callback error and continue painting the frame.
-fn run_pre_redisplay_function(interpreter: &mut Interpreter, env: &mut Env) {
+fn run_pre_redisplay_function(interpreter: &mut Interpreter, env: &mut Env, windows: Value) {
     let Some(function) = interpreter
         .lookup_var_key(cached_symbol!("pre-redisplay-function"), env)
         .filter(Value::is_truthy)
@@ -5998,7 +6268,131 @@ fn run_pre_redisplay_function(interpreter: &mut Interpreter, env: &mut Env) {
         return;
     };
     // dsafe_calln (true, Vpre_redisplay_function, windows).
-    dsafe_call(interpreter, env, true, function, &[Value::T]);
+    dsafe_call(interpreter, env, true, function, &[windows]);
+}
+
+/// redisplay_window's force_start block, point moved into WINDOW_ID: the
+/// window's and its buffer's redisplay flags cleared (all but the cursor
+/// is done, and propagate_buffer_redisplay passed the buffer's on), then
+/// `pre-redisplay-function' called with the window alone so that it can
+/// update the region for the new point.  Whether the window must be
+/// displayed again: the function marked it or its buffer, or relative or
+/// visual line numbers count from a row point moved off the first.
+fn rerun_pre_redisplay_function(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    cursor_row: Option<usize>,
+) -> bool {
+    use crate::lisp::primitives::{WINDOW_REDISPLAY_SLOT, set_window_flag, window_flag};
+    set_window_flag(interpreter, window_id, WINDOW_REDISPLAY_SLOT, false);
+    let buffer_id = redisplay_flags::window_buffer(interpreter, window_id);
+    if let Some(mut buffer) = buffer_id.and_then(|id| interpreter.get_buffer_by_id_mut(id)) {
+        buffer.set_text_redisplay(false);
+    }
+    let window = Value::list([interpreter.record_value(window_id)]);
+    run_pre_redisplay_function(interpreter, env, window);
+    let relative_numbers = interpreter
+        .lookup_var_key(cached_symbol!("display-line-numbers"), env)
+        .is_some_and(|value| {
+            crate::lisp::types::eq_symbol_named(value, "relative")
+                || crate::lisp::types::eq_symbol_named(value, "visual")
+        });
+    window_flag(interpreter, window_id, WINDOW_REDISPLAY_SLOT)
+        || buffer_id
+            .and_then(|id| interpreter.get_buffer_by_id(id))
+            .is_some_and(|buffer| buffer.text_redisplay())
+        || (relative_numbers && cursor_row.is_some_and(|row| row != 0))
+}
+
+/// xdisp.c:prepare_menu_bars: `pre-redisplay-function' called with the
+/// windows redisplay will consider (t for every window, nil when only
+/// the selected one), then the menu bar items recomputed where
+/// update_menu_bar asks: on each frame something marked when any window
+/// may change, else on the selected frame.
+fn prepare_menu_bars(interpreter: &mut Interpreter, env: &mut Env) {
+    let all_windows =
+        interpreter.windows_or_buffers_changed != 0 || interpreter.update_mode_lines != 0;
+    let some_windows = redisplay_flags::redisplay_some_p(interpreter);
+    let windows = if !all_windows {
+        Value::Nil
+    } else if !some_windows {
+        Value::T
+    } else {
+        // Cf. conditions for redisplaying a window at the beginning of
+        // redisplay_window: those needs_no_redisplay does not exempt.
+        let mut windows = Value::Nil;
+        for window_id in crate::lisp::primitives::frames_window_list(interpreter) {
+            if !redisplay_flags::needs_no_redisplay(interpreter, window_id) {
+                windows = Value::cons(interpreter.record_value(window_id), windows);
+            }
+        }
+        windows
+    };
+    run_pre_redisplay_function(interpreter, env, windows);
+    // update_menu_bar recomputes when the windows or buffers changed, any
+    // mode line is to be updated, or the selected window's buffer was
+    // modified or saved since its mode line showed it.
+    let wants_update = |interpreter: &Interpreter, frame: crate::lisp::types::FrameRef| {
+        let window = frame.borrow().selected_window_id();
+        interpreter.windows_or_buffers_changed != 0
+            || interpreter.update_mode_lines != 0
+            || redisplay_flags::window_buffer_changed(interpreter, window)
+    };
+    if all_windows {
+        let mut hooks_run = false;
+        let frames: Vec<_> = interpreter
+            .frame_states
+            .iter()
+            .copied()
+            .filter(|frame| frame.is_live())
+            .collect();
+        for frame in frames {
+            let window = frame.borrow().selected_window_id();
+            if some_windows
+                && !frame.borrow().redisplay
+                && !crate::lisp::primitives::window_flag(
+                    interpreter,
+                    window,
+                    crate::lisp::primitives::WINDOW_REDISPLAY_SLOT,
+                )
+                && !redisplay_flags::window_buffer(interpreter, window)
+                    .and_then(|buffer| {
+                        interpreter
+                            .get_buffer_by_id(buffer)
+                            .map(|b| b.text_redisplay())
+                    })
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+            let changed = wants_update(interpreter, frame);
+            match crate::lisp::primitives::menu::update_menu_bar(
+                interpreter,
+                frame,
+                false,
+                hooks_run,
+                changed,
+                env,
+            ) {
+                Ok(run) => hooks_run = run,
+                Err(error) => debug_log(&format!("update_menu_bar: {error:?}")),
+            }
+        }
+    } else {
+        let frame = interpreter.selected_frame_id;
+        let changed = wants_update(interpreter, frame);
+        if let Err(error) = crate::lisp::primitives::menu::update_menu_bar(
+            interpreter,
+            frame,
+            true,
+            false,
+            changed,
+            env,
+        ) {
+            debug_log(&format!("update_menu_bar: {error:?}"));
+        }
+    }
 }
 
 /// xdisp.c:dsafe__call: FUNCTION called with ARGS, `inhibit-redisplay'
@@ -7520,63 +7914,6 @@ mod tests {
     }
 
     #[test]
-    fn invisible_same_row_motion_defers_mode_line_point_until_input() {
-        let previous = WindowView {
-            last_buffer_id: Some(7),
-            last_point: Some(11),
-            last_cursor: Some((3, 4)),
-            last_top_pos: Some(1),
-            last_chars_modiff: Some(9),
-            ..WindowView::default()
-        };
-        assert_eq!(
-            mode_line_display_point(previous, 7, 30, Some((3, 12)), 1, 9, true),
-            11,
-            "same-row invisible motion keeps the preceding point"
-        );
-        assert_eq!(
-            mode_line_display_point(previous, 7, 30, Some((3, 4)), 1, 9, false),
-            30,
-            "ordinary visible motion renders the live point"
-        );
-        assert_eq!(
-            mode_line_display_point(previous, 7, 30, None, 1, 9, true),
-            30,
-            "a non-selected window has no cursor row whose motion can be deferred"
-        );
-        assert_eq!(
-            mode_line_display_point(previous, 7, 30, Some((3, 4)), 1, 10, true),
-            30,
-            "a text change must refresh the mode line"
-        );
-
-        let next = WindowView {
-            last_buffer_id: Some(7),
-            last_point: Some(30),
-            last_cursor: Some((3, 4)),
-            last_top_pos: Some(1),
-            last_chars_modiff: Some(9),
-            ..WindowView::default()
-        };
-        assert_eq!(
-            mode_line_display_point(next, 7, 30, Some((3, 4)), 1, 9, true),
-            30,
-            "without a stored deferral, an unchanged point renders live"
-        );
-
-        let mut state = TtyState::new();
-        state.views.insert(
-            2,
-            WindowView {
-                deferred_mode_line_point: Some(11),
-                ..WindowView::default()
-            },
-        );
-        state.note_input();
-        assert_eq!(state.views[&2].deferred_mode_line_point, None);
-    }
-
-    #[test]
     fn align_to_display_specs_lay_out_as_blank_columns() {
         let mut interp = Interpreter::new();
         let mut env: Env = crate::lisp::types::Env::new();
@@ -8522,7 +8859,10 @@ mod tests {
             .eval(&setup, &mut env)
             .expect("pre-redisplay setup evaluates");
 
-        run_pre_redisplay_function(&mut interpreter, &mut env);
+        // A new session's first redisplay considers every window
+        // (windows_or_buffers_changed starts nonzero), so the function
+        // gets t.
+        prepare_menu_bars(&mut interpreter, &mut env);
 
         assert_eq!(
             interpreter.lookup_var("tty--pre-redisplay-argument", &env),
@@ -9872,25 +10212,66 @@ fn tty_differential_end_to_end() {
     assert!(status.success(), "TTY differential gate failed");
 }
 
-/// term.c's tty_menu_activate: draw the dropdown over the glass, run a
-/// modal key loop under tty-menu-navigation-map (bound by the caller),
-/// and restore the screen behind on exit.  Keyboard navigation drives a
-/// virtual selection row exactly as GNU drives its virtual mouse.
-fn make_menu_executor(
-    queue: SharedEventQueue,
+/// term.c's tty_menu_activate for the frontend: MENU drawn over the glass
+/// at X0, Y0 (its first item's cell, one-based) and run modally under
+/// `tty-menu-navigation-map' (bound by tty_menu_show), keyboard
+/// navigation driving GNU's virtual mouse, submenus opening beside their
+/// pane; the screen behind restored on exit.
+fn make_menu_activate(
     state: std::rc::Rc<std::cell::RefCell<TtyState>>,
-) -> crate::lisp::primitives::TtyMenuExecutor {
-    use crate::lisp::primitives::{TtyMenuOutcome, TtyMenuPane};
+) -> crate::lisp::primitives::menu::TtyMenuActivate {
+    use crate::lisp::primitives::menu::{
+        TTYM_IA_SELECT, TTYM_NEXT, TTYM_NO_SELECT, TTYM_PREV, TTYM_SUCCESS, TtyMenu,
+        TtyMenuActivation,
+    };
+    // tty_menu_state: a shown menu (its path of submenu indices from the
+    // root), its pane number, its origin and the screen behind it.
+    struct MenuLevel {
+        path: Vec<usize>,
+        pane: i32,
+        x: i64,
+        y: i64,
+        screen_behind: Vec<(usize, PaintRow)>,
+    }
+    fn menu_at<'a>(root: &'a TtyMenu, path: &[usize]) -> &'a TtyMenu {
+        let mut menu = root;
+        for &index in path {
+            menu = menu.submenu[index].as_deref().expect("menu path");
+        }
+        menu
+    }
+    // read_menu_input's results.
+    #[derive(PartialEq)]
+    enum MiResult {
+        QuitMenu,
+        Continue,
+        ItemSelected,
+        NextItem,
+        PrevItem,
+        ScrollForward,
+        ScrollBack,
+    }
     Box::new(
         move |interpreter: &mut Interpreter,
               env: &mut Env,
-              pane: &TtyMenuPane,
-              x0: usize,
-              y0: usize| {
+              menu: &mut TtyMenu,
+              x0: i64,
+              y0: i64,
+              kbd_navigation: bool| {
             let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
-                return Ok(TtyMenuOutcome::Quit);
+                return Ok(TtyMenuActivation {
+                    status: crate::lisp::primitives::menu::TTYM_FAILURE,
+                    pane: 0,
+                    selidx: 0,
+                });
             };
             let (cols, rows) = (usize::from(cols.max(1)), usize::from(rows.max(1)));
+            let total_lines = interpreter.frame_height().max(1);
+            let sf = interpreter.selected_frame_id;
+            // Don't allow non-positive x0 and y0, lest the menu will wrap
+            // around the display.
+            let x0 = x0.max(1);
+            let y0 = y0.max(1);
             let mut resolve_face = |name: &str| {
                 let mut state = state.borrow_mut();
                 // A tty menu's faces are the frame's.
@@ -9902,233 +10283,893 @@ fn make_menu_executor(
                     &Value::symbol(name),
                 )
             };
-            let disabled_attrs = resolve_face("tty-menu-disabled-face");
-            let enabled_attrs = resolve_face("tty-menu-enabled-face");
-            let selected_raw = resolve_face("tty-menu-selected-face");
-            // GNU derives the selected face over the enabled one
-            // (lookup_derived_face with faces[1] as its base).
-            let selected_attrs = merge_cell_attrs(enabled_attrs, selected_raw);
-
-            let left = x0.saturating_sub(1).min(cols.saturating_sub(1));
-            let box_width = (pane.width + 2).min(cols - left);
-            let title_row = y0.saturating_sub(1);
-            let max_items = pane
-                .items
-                .len()
-                .min(rows.saturating_sub(1) - y0.min(rows - 2));
-            if max_items == 0 {
-                return Ok(TtyMenuOutcome::Quit);
-            }
-
-            // The screen behind the menu, restored on the way out
-            // (save_and_enable_current_matrix / screen_update).
-            let saved: Vec<(usize, PaintRow)> = {
-                let state = state.borrow();
-                std::iter::once(title_row)
-                    .chain(y0..y0 + max_items)
-                    .filter(|row| *row < state.painted_rows.len())
-                    .map(|row| (row, state.painted_rows[row].clone()))
+            let disabled = resolve_face("tty-menu-disabled-face");
+            let enabled = resolve_face("tty-menu-enabled-face");
+            let selected = resolve_face("tty-menu-selected-face");
+            // faces[2] and faces[3]: the selected face derived from the
+            // disabled and the enabled one.
+            let faces = [
+                disabled,
+                enabled,
+                merge_cell_attrs(disabled, selected),
+                merge_cell_attrs(enabled, selected),
+            ];
+            // Make sure the menu title is always displayed with
+            // `tty-menu-selected-face', no matter where the mouse pointer
+            // is.
+            let title_faces = [faces[3]; 4];
+            // save_and_enable_current_matrix: every line of the frame, the
+            // echo area's included.
+            let save_rows = |state: &TtyState| -> Vec<(usize, PaintRow)> {
+                state
+                    .painted_rows
+                    .iter()
+                    .chain(state.painted_echo.iter())
+                    .cloned()
+                    .enumerate()
                     .collect()
             };
-
-            let menu_cell = |text: &str, width: usize, attrs: CellAttrs, base: &PaintRow| {
-                let mut row = base.clone();
-                let mut painted = String::from(" ");
-                painted.push_str(text);
-                while painted.chars().count() < width {
-                    painted.push(' ');
-                }
-                let painted: String = painted.chars().take(width).collect();
-                row.blit(left, &painted, attrs);
-                row
-            };
-            // The title cell: the pane name with the " >" submenu marker,
-            // in the selected face — ' File > ' clobbering the bar.
-            let title_width = pane.title.chars().count() + 4;
-            let draw = |state: &mut TtyState, selected_row: usize, first_item: usize| {
-                let mut out = terminal_output();
-                let _ = queue!(out, cursor::Hide);
-                if title_row < state.painted_rows.len() {
-                    let cell = menu_cell(
-                        &format!("{} >", pane.title),
-                        title_width.min(cols - left),
-                        selected_attrs,
-                        &state.painted_rows[title_row],
-                    );
-                    let _ = paint_row(&mut out, title_row, &cell);
-                    state.painted_rows[title_row] = cell;
-                }
-                // tty_menu_display starts at FIRST_ITEM: a pane taller
-                // than the glass shows a window of itself and scrolls.
-                for (index, item) in pane
-                    .items
-                    .iter()
-                    .skip(first_item)
-                    .take(max_items)
-                    .enumerate()
-                {
-                    let row = y0 + index;
-                    if row >= state.painted_rows.len() {
-                        break;
-                    }
-                    let attrs = if index == selected_row {
-                        if item.enabled {
-                            selected_attrs
-                        } else {
-                            merge_cell_attrs(disabled_attrs, selected_raw)
-                        }
-                    } else if item.enabled {
-                        enabled_attrs
-                    } else {
-                        disabled_attrs
-                    };
-                    let cell = menu_cell(&item.text, box_width, attrs, &state.painted_rows[row]);
-                    let _ = paint_row(&mut out, row, &cell);
-                    state.painted_rows[row] = cell;
-                }
-                let _ = queue!(
-                    out,
-                    cursor::MoveTo(
-                        left.min(cols.saturating_sub(1)) as u16,
-                        (y0 + selected_row).min(rows.saturating_sub(1)) as u16,
-                    ),
-                    cursor::Show,
-                );
-                let _ = out.flush();
-            };
-            let place_cursor = |selected_row: usize| {
-                let mut out = terminal_output();
-                let _ = queue!(
-                    out,
-                    cursor::MoveTo(
-                        left.min(cols.saturating_sub(1)) as u16,
-                        (y0 + selected_row).min(rows.saturating_sub(1)) as u16,
-                    ),
-                    cursor::Show,
-                );
-                let _ = out.flush();
-            };
-
-            // GNU's virtual mouse: a visible row plus the scroll base
-            // (tty_menu_activate's y and first_item).
-            let mut selected_row = 0usize;
-            let mut first_item = 0usize;
-            let outcome = (|| -> Result<TtyMenuOutcome, LispError> {
-                Ok(loop {
-                    {
-                        let mut state = state.borrow_mut();
-                        draw(&mut state, selected_row, first_item);
-                    }
-                    // One key sequence under the navigation map; prefixes keep
-                    // reading, everything else maps per read_menu_input.
-                    crate::lisp::primitives::init_raw_keybuf_count(interpreter);
-                    let mut reader = crate::lisp::primitives::KeySequenceReader::new(
-                        interpreter,
-                        Value::Nil,
-                        env,
-                    )?;
-                    let command = loop {
-                        // Live echo under the menu, but only for messages
-                        // emitted since the glass was last painted: GNU's
-                        // message3 repaints through a frozen redisplay (the
-                        // `(message "")' between cycled menus), while
-                        // read_char's input-arrival wipe leaves the old
-                        // pixels alone until the next full redisplay.
-                        let emitted = crate::lisp::primitives::echo_area_message_tick();
-                        if state
-                            .try_borrow()
-                            .is_ok_and(|state| state.painted_message_tick != emitted)
-                        {
-                            draw_echo_row_composed(interpreter, env, &state);
-                            place_cursor(selected_row);
-                        }
-                        // read_menu_command binds `echo-keystrokes' to 0: no
-                        // echoing while navigating the menu.
-                        let event = menu_read_event(interpreter, env, &queue)?;
-                        let Some(event) = event else {
-                            break Value::T;
-                        };
-                        let QueuedInput::Lisp(event) = event;
-                        if event == Value::Integer(7) {
-                            break Value::T;
-                        }
-                        interpreter.keyboard_input.last_event_reread = false;
-                        match reader.read_event(interpreter, event, env)? {
-                            Resolution::Command(binding) => break binding,
-                            Resolution::Prefix => {}
-                            Resolution::Undefined => break Value::Nil,
-                        }
-                    };
-                    let name = match command.kind() {
-                        Kind::Symbol(_) => command.as_symbol().expect("symbol command"),
-                        Kind::T => "tty-menu-exit",
-                        _ => "",
-                    };
-                    match name {
-                        "tty-menu-exit" => break TtyMenuOutcome::Quit,
-                        // MI_NEXT_ITEM and MI_PREV_ITEM leave only under
-                        // KBD_NAVIGATION; otherwise the menu stays up.
-                        "tty-menu-next-menu" if pane.kbd_navigation => {
-                            break TtyMenuOutcome::NextMenu;
-                        }
-                        "tty-menu-prev-menu" if pane.kbd_navigation => {
-                            break TtyMenuOutcome::PrevMenu;
-                        }
-                        "tty-menu-next-item" => {
-                            // Below the last visible row GNU scrolls forward
-                            // (MI_SCROLL_FORWARD): the window advances until
-                            // the selection sits on the final item, and one
-                            // more step wraps to the top of the whole menu.
-                            if selected_row + 1 < max_items {
-                                selected_row += 1;
-                            } else if selected_row + first_item + 1 == pane.items.len() {
-                                selected_row = 0;
-                                first_item = 0;
-                            } else {
-                                first_item += 1;
-                            }
-                        }
-                        "tty-menu-prev-item" => {
-                            // MI_SCROLL_BACK: above the first visible row the
-                            // window retreats; at the very top it wraps to
-                            // the menu's last window with the final item
-                            // selected.
-                            if selected_row > 0 {
-                                selected_row -= 1;
-                            } else if first_item == 0 {
-                                selected_row = max_items - 1;
-                                first_item = pane.items.len() - max_items;
-                            } else {
-                                first_item -= 1;
-                            }
-                        }
-                        "tty-menu-select" => {
-                            // A separator or disabled item answers no selection
-                            // (TTYM_IA_SELECT), like GNU.
-                            let selection = selected_row + first_item;
-                            if pane.items[selection].enabled {
-                                break TtyMenuOutcome::Selected(selection);
-                            }
-                            break TtyMenuOutcome::NoSelect;
-                        }
-                        _ => {}
-                    }
-                })
-            })();
-
-            // screen_update: put back what the menu covered.
-            {
-                let mut state = state.borrow_mut();
+            // screen_update: the saved rows restored by
+            // update_frame_with_menu (f, -1, -1), which leaves the cursor
+            // where a frame update puts it.
+            let screen_update = |state: &mut TtyState, saved: &[(usize, PaintRow)]| -> (i64, i64) {
                 let mut out = terminal_output();
                 for (row, cell) in saved {
-                    let _ = paint_row(&mut out, row, &cell);
-                    if row < state.painted_rows.len() {
-                        state.painted_rows[row] = cell;
+                    if state
+                        .screen_row(*row)
+                        .is_some_and(|painted| painted != cell)
+                    {
+                        let _ = paint_row(&mut out, *row, cell);
+                        state.set_screen_row(*row, cell.clone());
                     }
                 }
+                let (col, row) = state.update_cursor;
+                let _ = queue!(out, cursor::MoveTo(col, row));
+                let _ = out.flush();
+                (i64::from(col), i64::from(row))
+            };
+            // display_tty_menu_item: ITEM_TEXT at X, Y in FACE, a blank
+            // before it, padded to WIDTH, " >" after a submenu's name,
+            // clipped before the frame's last column.
+            let display_item = |state: &mut TtyState,
+                                interpreter: &Interpreter,
+                                text: &[u8],
+                                width: usize,
+                                face: CellAttrs,
+                                x: usize,
+                                y: usize,
+                                submenu: bool| {
+                let Some(painted) = state.screen_row(y) else {
+                    return;
+                };
+                let mut row = painted.clone();
+                let last_visible_x = cols.saturating_sub(1);
+                let mut cells = String::from(" ");
+                let item = menu_item_display_text(interpreter, text);
+                if submenu {
+                    cells.push_str(&item);
+                    let used = 1 + text.len();
+                    cells.push_str(" >");
+                    let mut count = cell_count(&cells);
+                    while count < width.max(used) {
+                        cells.push(' ');
+                        count += 1;
+                    }
+                } else {
+                    cells.push_str(&item);
+                    let mut count = cell_count(&cells);
+                    while count < width {
+                        cells.push(' ');
+                        count += 1;
+                    }
+                }
+                let room = last_visible_x.saturating_sub(x);
+                let (cells, _) = take_cells_padded(&cells, room.min(cell_count(&cells)), ' ');
+                if row.text.len() < cols {
+                    row = PaintRow::blank(cols);
+                }
+                row.blit(x, &cells, face);
+                let mut out = terminal_output();
+                let _ = paint_row(&mut out, y, &row);
+                state.set_screen_row(y, row);
+            };
+            // menu_help_message and prev_menu_help_message, as the item
+            // whose help text they point at (none for a null pointer),
+            // with the pane and item numbers it was shown for.
+            let mut prev_help: Option<(Vec<usize>, usize)> = None;
+            let mut help_message: Option<(Vec<usize>, usize)> = None;
+            let mut help_paneno = 0i32;
+            let mut help_itemno = 0i32;
+            // tty_menu_display: MENU at X, Y from FIRST_ITEM, the item
+            // under (MX, MY) in its selected face, its help noted when
+            // DISP_HELP; update_frame_with_menu's cursor at that item, or
+            // where the tty's cursor (CURSOR) already was.
+            let menu_display = |state: &mut TtyState,
+                                interpreter: &Interpreter,
+                                cursor: (i64, i64),
+                                root: &TtyMenu,
+                                path: &[usize],
+                                x: i64,
+                                y: i64,
+                                pn: i32,
+                                faces: &[CellAttrs; 4],
+                                mx: i64,
+                                my: i64,
+                                first_item: usize,
+                                disp_help: bool,
+                                help: &mut Option<(Vec<usize>, usize)>,
+                                help_paneno: &mut i32,
+                                help_itemno: &mut i32,
+                                title_cut: Option<usize>|
+             -> (i64, i64) {
+                let menu = menu_at(root, path);
+                // Don't try to display more menu items than the console
+                // can display using the available screen lines.  Exclude
+                // the echo area line, as it will be overwritten by the
+                // help-echo anyway.
+                let max_items = (menu.count() as i64 - first_item as i64)
+                    .min(total_lines - 1 - y)
+                    .max(0) as usize;
+                *help = None;
+                let width = menu.width;
+                let (mut col, mut row) = cursor;
+                for i in 0..max_items {
+                    // +2 for padding blanks on each side.
+                    let mut max_width = width + 2;
+                    let j = i + first_item;
+                    let submenu = menu.submenu[j].is_some();
+                    if submenu {
+                        // for displaying " >" after the item
+                        max_width += 2;
+                    }
+                    let enabled = usize::from((!submenu && menu.panenumber[j] != 0) || submenu);
+                    let mousehere = y + i as i64 == my && x <= mx && mx < x + max_width as i64;
+                    let face = faces[enabled + usize::from(mousehere) * 2];
+                    // Display the menu help string for the i-th menu item
+                    // even if the menu item is currently disabled.
+                    if disp_help && enabled + usize::from(mousehere) * 2 >= 2 {
+                        *help = menu.help_text[j].as_ref().map(|_| (path.to_vec(), j));
+                        *help_paneno = pn - 1;
+                        *help_itemno = j as i32;
+                    }
+                    // Take note of the coordinates of the active menu
+                    // item, to display the cursor there.
+                    if mousehere {
+                        row = y + i as i64;
+                        col = x;
+                    }
+                    let mut text = menu.text[j].clone();
+                    if j == 0
+                        && let Some(cut) = title_cut
+                    {
+                        text.truncate(cut);
+                    }
+                    display_item(
+                        state,
+                        interpreter,
+                        &text,
+                        max_width,
+                        face,
+                        x.max(0) as usize,
+                        (y + i as i64).max(0) as usize,
+                        submenu,
+                    );
+                }
+                let mut out = terminal_output();
+                let _ = queue!(
+                    out,
+                    cursor::MoveTo(
+                        (col.max(0) as usize).min(cols.saturating_sub(1)) as u16,
+                        (row.max(0) as usize).min(rows.saturating_sub(1)) as u16,
+                    ),
+                );
+                let _ = out.flush();
+                (col, row)
+            };
+            // cursor_to: the (hidden) cursor at COL, ROW.
+            let cursor_to = |col: i64, row: i64| {
+                let mut out = terminal_output();
+                let _ = queue!(
+                    out,
+                    cursor::MoveTo(
+                        (col.max(0) as usize).min(cols.saturating_sub(1)) as u16,
+                        (row.max(0) as usize).min(rows.saturating_sub(1)) as u16,
+                    ),
+                );
+                let _ = out.flush();
+            };
+            let hide_cursor = || {
+                let mut out = terminal_output();
+                let _ = queue!(out, cursor::Hide);
+                let _ = out.flush();
+            };
+
+            // Don't let the title for the "Buffers" popup menu include a
+            // digit (which is ugly).
+            let buffers_num_deleted = menu.count() > 0 && menu.text[0].starts_with(b"Buffers 1");
+            // Inhibit redisplay for as long as the menu is active, to avoid
+            // messing the screen if some timer calls sit-for or a similar
+            // function.
+            let prev_inhibit_redisplay = interpreter
+                .lookup_var_key(cached_symbol!("inhibit-redisplay"), env)
+                .unwrap_or(Value::Nil);
+            interpreter.set_variable_key(cached_symbol!("inhibit-redisplay"), Value::T, env);
+            let mut levels: Vec<MenuLevel> = Vec::new();
+            // Force update of the current frame, so that the desired and
+            // the current matrices are identical: the cursor where a frame
+            // update leaves it.
+            let (update_col, update_row) = state.borrow().update_cursor;
+            cursor_to(i64::from(update_col), i64::from(update_row));
+            let mut cur = (i64::from(update_col), i64::from(update_row));
+            let screen_behind = save_rows(&state.borrow());
+            // Display the menu title.  We subtract 1 from x0 and y0
+            // because we want to interpret them as zero-based column and
+            // row coordinates, and also because we want the first item of
+            // the menu, not its title, to appear at x0,y0.
+            cur = {
+                let mut state = state.borrow_mut();
+                menu_display(
+                    &mut state,
+                    interpreter,
+                    cur,
+                    menu,
+                    &[],
+                    x0 - 1,
+                    y0 - 1,
+                    1,
+                    &title_faces,
+                    x0 - 1,
+                    y0 - 1,
+                    0,
+                    false,
+                    &mut None,
+                    &mut 0,
+                    &mut 0,
+                    buffers_num_deleted.then_some(7),
+                )
+            };
+            // Turn off the cursor.  Otherwise it shows through the menu
+            // panes, which is ugly.
+            let (mut col, mut row) = cur;
+            hide_cursor();
+            let onepane = menu.count() == 1 && menu.submenu[0].is_some();
+            if onepane {
+                menu.width = menu.submenu[0].as_ref().map_or(0, |sub| sub.width);
+            }
+            levels.push(MenuLevel {
+                path: if onepane { vec![0] } else { Vec::new() },
+                pane: i32::from(onepane),
+                x: x0 - 1,
+                y: y0,
+                screen_behind,
+            });
+            let mut x = levels[0].x;
+            let mut y = levels[0].y;
+            let mut first_time = true;
+            let mut mouse_moved = false;
+            let mut first_item = 0usize;
+            let mut pane = 0i32;
+            let mut selidx = 0i32;
+            let mut result = TTYM_IA_SELECT;
+            let mut leave = false;
+            let outcome = (|| -> Result<(), LispError> {
+                while !leave {
+                    let min_y = levels[0].y;
+                    let count0 = menu_at(menu, &levels[0].path).count() as i64;
+                    let max_y = (min_y + count0).min(total_lines - 1) - 1;
+                    // read_menu_input.
+                    let input_status = if first_time {
+                        first_time = false;
+                        mouse_moved = true;
+                        MiResult::Continue
+                    } else {
+                        // term.c:read_menu_input.  Signal the keyboard
+                        // reading routines we are displaying a menu on
+                        // this terminal, and have mouse movements reported
+                        // by read_menu_command (do_mouse_tracking, the C
+                        // variable of `track-mouse', set as it is, not
+                        // bound; a nonlocal exit leaves both as they are).
+                        let saved_mouse_tracking = interpreter
+                            .symbol_value_cell("track-mouse")
+                            .unwrap_or(Value::Nil);
+                        crate::lisp::primitives::set_tty_showing_menu(true);
+                        interpreter.set_symbol_value_cell("track-mouse", Value::T);
+                        let command = loop {
+                            let command = read_menu_command(interpreter, env)?;
+                            if !command.is_nil() {
+                                break command;
+                            }
+                        };
+                        crate::lisp::primitives::set_tty_showing_menu(false);
+                        interpreter.set_symbol_value_cell("track-mouse", saved_mouse_tracking);
+                        let name = match command.kind() {
+                            Kind::Symbol(_) => command.as_symbol().unwrap_or(""),
+                            Kind::T => "tty-menu-exit",
+                            _ => "",
+                        };
+                        let mut usable_input = true;
+                        let mut st = MiResult::Continue;
+                        if name == "tty-menu-exit"
+                            // If some input switched frames under our
+                            // feet, exit the menu, since the menu faces
+                            // are no longer valid, and the menu is no
+                            // longer relevant anyway.
+                            || interpreter.selected_frame_id != sf
+                        {
+                            st = MiResult::QuitMenu;
+                            usable_input = false;
+                        } else if name == "tty-menu-mouse-movement" {
+                            mouse_get_xy(interpreter, env, &mut x, &mut y)?;
+                        } else if name == "tty-menu-next-menu" {
+                            usable_input = false;
+                            st = MiResult::NextItem;
+                        } else if name == "tty-menu-prev-menu" {
+                            usable_input = false;
+                            st = MiResult::PrevItem;
+                        } else if name == "tty-menu-next-item" {
+                            if y < max_y {
+                                y += 1;
+                            } else {
+                                st = MiResult::ScrollForward;
+                            }
+                        } else if name == "tty-menu-prev-item" {
+                            if y > min_y {
+                                y -= 1;
+                            } else {
+                                st = MiResult::ScrollBack;
+                            }
+                        } else if name == "tty-menu-select" {
+                            st = MiResult::ItemSelected;
+                        } else if name != "tty-menu-ignore" {
+                            usable_input = false;
+                        }
+                        if usable_input {
+                            mouse_moved = true;
+                        }
+                        st
+                    };
+                    if input_status != MiResult::Continue {
+                        leave = true;
+                        match input_status {
+                            MiResult::QuitMenu => {
+                                // Remove the last help-echo, so that it
+                                // doesn't re-appear after "Quit".
+                                crate::lisp::primitives::menu::show_help_echo(
+                                    interpreter,
+                                    Value::Nil,
+                                    Value::Nil,
+                                    Value::Nil,
+                                    Value::Nil,
+                                    env,
+                                )?;
+                                result = TTYM_NO_SELECT;
+                            }
+                            MiResult::NextItem => {
+                                if kbd_navigation {
+                                    result = TTYM_NEXT;
+                                } else {
+                                    leave = false;
+                                }
+                            }
+                            MiResult::PrevItem => {
+                                if kbd_navigation {
+                                    result = TTYM_PREV;
+                                } else {
+                                    leave = false;
+                                }
+                            }
+                            MiResult::ScrollForward => {
+                                if y - min_y == count0 - 1 - first_item as i64 {
+                                    y = min_y;
+                                    first_item = 0;
+                                } else {
+                                    first_item += 1;
+                                }
+                                leave = false;
+                            }
+                            MiResult::ScrollBack => {
+                                if first_item == 0 {
+                                    y = max_y;
+                                    first_item = (count0 - 1 - (y - min_y)).max(0) as usize;
+                                } else {
+                                    first_item -= 1;
+                                }
+                                leave = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if mouse_moved && input_status != MiResult::QuitMenu {
+                        mouse_moved = false;
+                        result = TTYM_IA_SELECT;
+                        let mut i = 0usize;
+                        while i < levels.len() {
+                            let level_menu = menu_at(menu, &levels[i].path);
+                            if levels[i].x <= x && x < levels[i].x + level_menu.width as i64 + 2 {
+                                let dy = y - levels[i].y + first_item as i64;
+                                if 0 <= dy && (dy as usize) < level_menu.count() {
+                                    let dy = dy as usize;
+                                    let has_submenu = level_menu.submenu[dy].is_some();
+                                    if !has_submenu {
+                                        result = if level_menu.panenumber[dy] != 0 {
+                                            TTYM_SUCCESS
+                                        } else {
+                                            TTYM_IA_SELECT
+                                        };
+                                    }
+                                    pane = levels[i].pane - 1;
+                                    selidx = dy as i32;
+                                    // We hit some part of a menu, so drop
+                                    // extra menus that have been opened.
+                                    // That does not include an open and
+                                    // active submenu.
+                                    let mut sub_path = levels[i].path.clone();
+                                    sub_path.push(dy);
+                                    let active_submenu = i + 2 == levels.len()
+                                        && has_submenu
+                                        && levels[i + 1].path == sub_path;
+                                    if !active_submenu {
+                                        while i + 1 < levels.len() {
+                                            let level = levels.pop().expect("open level");
+                                            cur = screen_update(
+                                                &mut state.borrow_mut(),
+                                                &level.screen_behind,
+                                            );
+                                        }
+                                    }
+                                    if i + 1 == levels.len() && has_submenu {
+                                        let level_x = levels[i].x;
+                                        let level_y = levels[i].y;
+                                        let level_pane = levels[i].pane;
+                                        let width = level_menu.width as i64;
+                                        let sub_pane = level_menu.panenumber[dy];
+                                        let path = levels[i].path.clone();
+                                        let mut state_ref = state.borrow_mut();
+                                        cur = menu_display(
+                                            &mut state_ref,
+                                            interpreter,
+                                            cur,
+                                            menu,
+                                            &path,
+                                            level_x,
+                                            level_y,
+                                            level_pane,
+                                            &faces,
+                                            x,
+                                            y,
+                                            first_item,
+                                            true,
+                                            &mut help_message,
+                                            &mut help_paneno,
+                                            &mut help_itemno,
+                                            None,
+                                        );
+                                        let behind = save_rows(&state_ref);
+                                        drop(state_ref);
+                                        levels.push(MenuLevel {
+                                            path: sub_path,
+                                            pane: sub_pane,
+                                            screen_behind: behind,
+                                            x: level_x + width + 2,
+                                            y,
+                                        });
+                                    }
+                                }
+                            }
+                            i += 1;
+                        }
+                        let top = levels.last().expect("a shown menu");
+                        let (path, top_x, top_y, top_pane) =
+                            (top.path.clone(), top.x, top.y, top.pane);
+                        // The call to display help-echo below will move the
+                        // cursor, so remember its current position as
+                        // computed by tty_menu_display.
+                        cur = menu_display(
+                            &mut state.borrow_mut(),
+                            interpreter,
+                            cur,
+                            menu,
+                            &path,
+                            top_x,
+                            top_y,
+                            top_pane,
+                            &faces,
+                            x,
+                            y,
+                            first_item,
+                            true,
+                            &mut help_message,
+                            &mut help_paneno,
+                            &mut help_itemno,
+                            None,
+                        );
+                        (col, row) = cur;
+                    } else {
+                        help_message = prev_help.clone();
+                    }
+                    // Display the help-echo message for the
+                    // currently-selected menu item.
+                    if (help_message.is_some() || prev_help.is_some()) && help_message != prev_help
+                    {
+                        let text = help_message
+                            .as_ref()
+                            .and_then(|(path, j)| menu_at(menu, path).help_text[*j].clone());
+                        // Its message waits for redisplay, which the menu
+                        // inhibits.
+                        crate::lisp::primitives::menu::tty_menu_help_callback(
+                            interpreter,
+                            text.as_deref(),
+                            help_paneno,
+                            help_itemno,
+                            env,
+                        )?;
+                        // Move the cursor to the beginning of the current
+                        // menu item, so that screen readers and other
+                        // accessibility aids know where the active region
+                        // is.
+                        cursor_to(col, row);
+                        prev_help = help_message.clone();
+                    }
+                }
+                Ok(())
+            })();
+            // Restore what the menus covered, all the way down, and turn
+            // the cursor back on where the frame update leaves it.
+            let first = levels.into_iter().next().expect("the menu's own level");
+            screen_update(&mut state.borrow_mut(), &first.screen_behind);
+            {
+                let mut out = terminal_output();
+                let _ = queue!(out, cursor::Show);
                 let _ = out.flush();
             }
-            outcome
+            interpreter.set_variable_key(
+                cached_symbol!("inhibit-redisplay"),
+                prev_inhibit_redisplay,
+                env,
+            );
+            outcome?;
+            Ok(TtyMenuActivation {
+                status: result,
+                pane,
+                selidx,
+            })
         },
     )
+}
+
+/// The display text of a tty menu item's C string: its characters, each
+/// wide one followed by its padding cells.
+fn menu_item_display_text(interpreter: &Interpreter, bytes: &[u8]) -> String {
+    let env = Env::new();
+    let mut text = String::new();
+    let mut p = 0;
+    while p < bytes.len() && bytes[p] != 0 {
+        let (code, len) = crate::lisp::primitives::syntax::string_char_and_length(&bytes[p..]);
+        p += len;
+        let character = char::from_u32(code as u32).unwrap_or('\u{FFFD}');
+        text.push(character);
+        let width = crate::lisp::primitives::character_width(interpreter, code as u32, &env);
+        for _ in 1..width {
+            text.push(PADDING_GLYPH);
+        }
+    }
+    text
+}
+
+/// term.c:mouse_get_xy: the mouse's position on the selected frame
+/// (mouse_position, calling `mouse-position-function' when
+/// `tty-menu-calls-mouse-position-function' says so) into X and Y.
+fn mouse_get_xy(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    x: &mut i64,
+    y: &mut i64,
+) -> Result<(), LispError> {
+    let frame = interpreter.selected_frame_value();
+    let mut mouse = Value::cons(frame, Value::cons(Value::Nil, Value::Nil));
+    let call_function = interpreter
+        .lookup_var_key(
+            cached_symbol!("tty-menu-calls-mouse-position-function"),
+            env,
+        )
+        .is_some_and(|value| value.is_truthy());
+    let function = interpreter
+        .lookup_var_key(cached_symbol!("mouse-position-function"), env)
+        .unwrap_or(Value::Nil);
+    if call_function && !function.is_nil() {
+        mouse = interpreter.call_function_value(function, None, &[mouse], env)?;
+    }
+    if let Some((head, rest)) = mouse.cons_values()
+        && crate::lisp::types::eq(head, frame)
+        && let Some((lmx, lmy)) = rest.cons_values()
+        && !lmx.is_nil()
+    {
+        *x = lmx.as_integer().unwrap_or(*x);
+        *y = lmy.as_integer().unwrap_or(*y);
+    }
+    Ok(())
+}
+
+/// keyboard.c:read_menu_command: a key sequence read in the menu's
+/// navigation map without echoing its keys, t for none (an end of input
+/// or a menu rejected), else its command (nil for an undefined key);
+/// Emacs killed if the selected frame died meanwhile.
+fn read_menu_command(interpreter: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
+    let count = interpreter.specpdl_index();
+    // We don't want to echo the keystrokes while navigating the menus.
+    interpreter.specbind_symbol(
+        &cached_symbol!("echo-keystrokes").with(|symbol| *symbol),
+        Value::Integer(0),
+        env,
+    )?;
+    let read =
+        crate::lisp::primitives::read_key_sequence(interpreter, Value::Nil, false, true, true, env);
+    let unbound = match &read {
+        Err(error) => interpreter
+            .with_lisp_stack_roots(error, |interpreter| interpreter.unbind_to(count, env)),
+        Ok(_) => interpreter.unbind_to(count, env),
+    };
+    unbound?;
+    let read = read?;
+    if !interpreter.frame_is_live(interpreter.selected_frame_id) {
+        crate::lisp::primitives::call(interpreter, "kill-emacs", &[], env)?;
+    }
+    if read.menu_rejected || read.keys.is_empty() {
+        return Ok(Value::T);
+    }
+    Ok(read.cmd)
+}
+
+/// redisplay_internal before its echo area: reconsider_clip_changes of
+/// the selected window (a narrowing put back as it was displayed is no
+/// change), then, when the window shows the current buffer, its mode line
+/// updated for a star to write or remove or a column it no longer shows,
+/// and every window of a buffer whose narrowing changed.
+fn selected_window_mode_line_checks(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    state: &TtyState,
+) {
+    use crate::lisp::primitives::{WINDOW_LAST_HAD_STAR_SLOT, WINDOW_UPDATE_MODE_LINE_SLOT};
+    let window = interpreter.selected_window_id();
+    let Some(buffer_id) = redisplay_flags::window_buffer(interpreter, window) else {
+        return;
+    };
+    let shown_bounds = state
+        .views
+        .get(&window)
+        .filter(|view| view.last_buffer_id == Some(buffer_id))
+        .and_then(|view| view.last_restriction);
+    if let Some(mut buffer) = interpreter.get_buffer_by_id_mut(buffer_id)
+        && buffer.clip_changed()
+        && shown_bounds == Some(buffer.accessible_bounds())
+    {
+        buffer.set_clip_changed(false);
+    }
+    // Point moved into or out of a composition since the window's last
+    // display (window_end_valid: a display of it to compare with) has the
+    // window redisplayed as for a narrowing change.
+    let shown = state
+        .views
+        .get(&window)
+        .and_then(|view| view.last_buffer_id);
+    if let Some(shown_buffer) = shown
+        && interpreter
+            .get_buffer_by_id(buffer_id)
+            .is_some_and(|buffer| !buffer.clip_changed())
+    {
+        let last_point = crate::lisp::primitives::window_count_slot(
+            interpreter,
+            window,
+            crate::lisp::primitives::WINDOW_LAST_POINT_SLOT,
+        )
+        .and_then(|point| usize::try_from(point).ok());
+        let point = redisplay_flags::window_point(interpreter, window);
+        if let (Some(last_point), Some(point)) = (last_point, point)
+            && (shown_buffer != buffer_id || point != last_point)
+            && crate::lisp::primitives::check_point_in_composition(
+                interpreter,
+                shown_buffer,
+                last_point,
+                buffer_id,
+                point,
+            )
+            && let Some(mut buffer) = interpreter.get_buffer_by_id_mut(buffer_id)
+        {
+            buffer.set_clip_changed(true);
+        }
+    }
+    if buffer_id != interpreter.current_buffer_id() {
+        return;
+    }
+    let modified = interpreter.buffer.borrow().is_modified();
+    if modified
+        != crate::lisp::primitives::window_flag(interpreter, window, WINDOW_LAST_HAD_STAR_SLOT)
+        || redisplay_flags::mode_line_update_needed(interpreter, env, window)
+    {
+        crate::lisp::primitives::set_window_flag(
+            interpreter,
+            window,
+            WINDOW_UPDATE_MODE_LINE_SLOT,
+            true,
+        );
+    }
+    if interpreter.buffer.borrow().clip_changed() {
+        interpreter.bset_update_mode_line(buffer_id);
+    }
+}
+
+/// What redisplay_window decides for a window's mode lines: whether it
+/// has them to update (its local update_mode_line), and whether it
+/// displays them (display_mode_lines).
+struct ModeLineDecision {
+    update_mode_line: bool,
+    mode_lines: bool,
+}
+
+/// redisplay_window's update_mode_line for INFO, which REDISPLAYED says
+/// it redisplays: the window's own flag, update_mode_lines, the buffer's
+/// changed narrowing or forbidden shortcuts, or the start decision
+/// (PLANNED, set where it forced the start or scrolled).  The mode lines
+/// are displayed for it, for a window narrower than the frame when
+/// every window is considered (frame-based redisplay redraws its side),
+/// for a line number shown, or a column shown that point left.
+fn window_displays_mode_line(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    info: &crate::lisp::primitives::WindowRenderInfo,
+    cols: usize,
+    redisplayed: bool,
+    consider_all_windows: bool,
+    planned: bool,
+) -> ModeLineDecision {
+    if !redisplayed {
+        return ModeLineDecision {
+            update_mode_line: false,
+            mode_lines: false,
+        };
+    }
+    let (clip_changed, prevent) =
+        interpreter
+            .get_buffer_by_id(info.buffer_id)
+            .map_or((false, false), |buffer| {
+                (
+                    buffer.clip_changed(),
+                    buffer.prevent_redisplay_optimizations_p(),
+                )
+            });
+    let update_mode_line = planned
+        || crate::lisp::primitives::window_flag(
+            interpreter,
+            info.window_id,
+            crate::lisp::primitives::WINDOW_UPDATE_MODE_LINE_SLOT,
+        )
+        || interpreter.update_mode_lines != 0
+        || clip_changed
+        || prevent;
+    let full_width = info.left == 0 && info.width >= cols;
+    let column_left = info.selected
+        && info.buffer_id == interpreter.current_buffer_id()
+        && crate::lisp::primitives::window_count_slot(
+            interpreter,
+            info.window_id,
+            crate::lisp::primitives::WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT,
+        )
+        .is_some_and(|displayed| {
+            crate::lisp::primitives::current_column(interpreter, env)
+                .is_ok_and(|column| column as i64 != displayed)
+        });
+    let mode_lines = update_mode_line
+        || (consider_all_windows && !full_width)
+        || crate::lisp::primitives::window_base_line_pos(interpreter, info.window_id) > 0
+        || column_left;
+    ModeLineDecision {
+        update_mode_line,
+        mode_lines,
+    }
+}
+
+/// finish_menu_bars when the frame's selected window is its minibuffer
+/// window, which the window layout leaves out: redisplay_window of the
+/// mini window reaches the menu bar with its mode line to update.
+fn selected_mini_window_updates_menu_bar(
+    interpreter: &Interpreter,
+    layout: &[crate::lisp::primitives::WindowRenderInfo],
+    consider_all_windows: bool,
+) -> bool {
+    let window = interpreter.selected_window_id();
+    if layout.iter().any(|info| info.window_id == window) {
+        return false;
+    }
+    if consider_all_windows && redisplay_flags::needs_no_redisplay(interpreter, window) {
+        return false;
+    }
+    let buffer = redisplay_flags::window_buffer(interpreter, window)
+        .and_then(|buffer| {
+            interpreter
+                .get_buffer_by_id(buffer)
+                .map(|b| (b.clip_changed(), b.prevent_redisplay_optimizations_p()))
+        })
+        .unwrap_or((false, false));
+    crate::lisp::primitives::window_flag(
+        interpreter,
+        window,
+        crate::lisp::primitives::WINDOW_UPDATE_MODE_LINE_SLOT,
+    ) || interpreter.update_mode_lines != 0
+        || buffer.0
+        || buffer.1
+}
+
+/// A mode, header or tab line that redisplay does not display keeps the
+/// cells the terminal shows, when the last paint has them.
+fn keep_painted_cells(
+    frame: &mut [PaintRow],
+    painted: &[PaintRow],
+    job: &impl ModeLineCellsJob,
+) -> bool {
+    let (row, left, width) = job.cells();
+    let Some(old) = painted.get(row) else {
+        return false;
+    };
+    let Some(new) = frame.get_mut(row) else {
+        return false;
+    };
+    let end = left + width;
+    if old.text.len() != new.text.len() || end > old.text.len() || old.text == ['\u{0}'] {
+        return false;
+    }
+    new.text[left..end].copy_from_slice(&old.text[left..end]);
+    new.attrs[left..end].copy_from_slice(&old.attrs[left..end]);
+    new.marks.retain(|(cell, _)| *cell < left || *cell >= end);
+    new.marks.extend(
+        old.marks
+            .iter()
+            .filter(|(cell, _)| *cell >= left && *cell < end),
+    );
+    true
+}
+
+/// The cells a mode-line job paints: its row, first column and width.
+trait ModeLineCellsJob {
+    fn cells(&self) -> (usize, usize, usize);
+}
+
+/// A row's cells given as (row, first column, width).
+impl ModeLineCellsJob for (usize, usize, usize) {
+    fn cells(&self) -> (usize, usize, usize) {
+        *self
+    }
+}
+
+/// The end of redisplay_internal, its update done: the windows displayed
+/// marked accurate (every considered window, else the selected one, its
+/// buffer's flag first copied to the buffer's other windows), the overlay
+/// arrows recorded as drawn, the frame's and the global requests cleared.
+fn mark_redisplay_done(interpreter: &mut Interpreter, windows: &[u64], consider_all_windows: bool) {
+    if consider_all_windows {
+        for &window in windows {
+            redisplay_flags::mark_window_display_accurate(interpreter, window);
+        }
+        let mini = interpreter.minibuffer_window_id();
+        if !windows.contains(&mini) {
+            redisplay_flags::mark_window_display_accurate(interpreter, mini);
+        }
+        let frame = interpreter.selected_frame_id;
+        frame.borrow_mut().redisplay = false;
+    } else {
+        let window = interpreter.selected_window_id();
+        if let Some(buffer) = redisplay_flags::window_buffer(interpreter, window)
+            && interpreter
+                .get_buffer_by_id(buffer)
+                .is_some_and(|b| b.text_redisplay())
+            && interpreter.buffer_window_count(buffer) > 1
+        {
+            let all = crate::lisp::primitives::frames_window_list(interpreter);
+            redisplay_flags::propagate_buffer_redisplay(interpreter, &all);
+        }
+        redisplay_flags::mark_window_display_accurate(interpreter, window);
+    }
+    redisplay_flags::update_overlay_arrows(interpreter, 1);
+    interpreter.update_mode_lines = 0;
+    interpreter.windows_or_buffers_changed = 0;
 }

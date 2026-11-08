@@ -17137,6 +17137,636 @@ setup_process_coding_systems's check now refuses). A 13-form
   echo probes whose 0.2-second samples straddle the echo's appearance.
   A terminal probe of `help-form' in `read-event' (C-h, then x) gives
   GNU's screen and events, round 342's binary not.
+- **Round 344: a C stack overflow returns to the command loop, as
+  sysdep.c's handle_sigsegv and keyboard.c's command_loop have it, and
+  the startup raises the stack limit as emacs.c's main does.** GNU finds
+  an overflow in the SIGSEGV handler (the fault in the guard region past
+  the known stack, stack_overflow) and siglongjmps to the command loop
+  entered last, whose init_eval empties the specpdl without unbinding
+  and which runs again with `internal--top-level-message' "Re-entering
+  top level after C stack overflow"; a Rust frame cannot be unwound from
+  a fault, so Emaxx tests the stack before it is exhausted.  Each stack
+  keeps a floor 1 MB above its lowest usable address, or a quarter of a
+  stack smaller than 4 MB (continuations.rs: an owned stack's limit, the
+  top of the main thread's stack mapping less RLIMIT_STACK, another OS
+  thread's pthread stack), and the call entries that test
+  max-lisp-eval-depth (eval_sub's general entry, Ffuncall's and Bcall's)
+  test the floor too, past the depth below which no call can reach it (8
+  KB a level from the stack's base, against the 0.4 to 2.4 KB a level
+  interpreted, byte-compiled and native code take), the call gate
+  keeping the fast entries under that depth.  At the floor the overflow
+  is an exit nothing catches, `kill-emacs''s kind of termination marked
+  as a stack overflow: no `condition-case', `catch', `handler-bind' or
+  debugger takes it, no unwind form runs, and the frames it leaves pop
+  their specpdl entries without undoing them; the innermost running
+  command loop takes it, clears `quit-flag' and debug_on_next_call
+  (init_eval) and enters its loop again with the recovery message, which
+  `normal-top-level' shows at the top level.  With
+  `attempt-stack-overflow-recovery' nil or with no command loop running
+  it is fatal (terminate_due_to_signal (SIGSEGV), its shutdown and
+  backtrace, run on a fresh stack as GNU's handler runs on its
+  sigaltstack), and on a thread other than the main one it is SIGSEGV at
+  its default action, as deliver_thread_signal makes it.  emacs.c's main
+  raises RLIMIT_STACK's soft limit to emacs_re_max_failures' need plus
+  room for a GC's frames, within the hard limit, so a child process sees
+  the grown limit (9,788 KB under 8 MB) as GNU's children do; its
+  emacs_re_safe_alloca has no counterpart (Emaxx's failure stack is
+  always on the heap).  An adversarial review of the round, probing GNU
+  and Emaxx in batch and in a pseudo-terminal, found three P1s, eight
+  P2s and two P3s.  P1: interpreted `save-excursion', `save-restriction'
+  and `save-current-buffer' restored in Rust after their bodies, outside
+  the specpdl the exit leaves undone, as did `eval-buffer''s and
+  `eval-region''s readevalloop (GNU's point 5 in a narrowed buffer came
+  back as 19, widened); they are record_unwind_protect_excursion,
+  save_restriction_save's record and record_unwind_current_buffer now,
+  with the other Rust excursions and restrictions GNU records (the
+  scroll commands', `kill-buffer''s, write_region's and
+  call-process-region's); `execute-kbd-macro' restored the outer macro
+  and ran `kbd-macro-termination-hook' on any exit, where pop_kbd_macro
+  is a specpdl unwind, so GNU's recovered command loop goes on reading
+  the macro (F5 then F6 of [f5 f6]) and Emaxx's abandoned it; and the
+  reader's recursion on deeply nested data, which crashed before the
+  round too, is recorded below.  P2: init_eval's when_entered_debugger =
+  -1 was missing, so a debugger entered before the overflow kept the
+  next error out of it; an overflow in `minibuffer-setup-hook' tore the
+  minibuffer down, where GNU's read_minibuf unwinds are dropped and the
+  minibuffer stays active at its depth; an overflow inside redisplay
+  left Emaxx drawing, where GNU's redisplaying_p stays set without its
+  unwind_redisplay and the display freezes: redisplay_internal's
+  redisplaying_p, its unwind record and its `redisplay_internal (C
+  function)' backtrace frame are Emaxx's, the terminal's redisplay does
+  nothing while it is set or `inhibit-redisplay' is non-nil (which it
+  never tested), and the echo area's immediate display updates the frame
+  only when no redisplay runs; the main thread's floor was measured from
+  a local below the arguments and environment, so 1.4 MB of environment
+  put it past the kernel's limit (the floor now counts from the stack
+  mapping's top, the page above AT_EXECFN); a hard limit near 1 MB left
+  no floor at all (a stack smaller than four margins keeps a quarter of
+  itself); and the fatal path ran its shutdown on the exhausted stack,
+  where its first Lisp call met the floor again, so no backtrace was
+  printed and the lock files stayed (it runs on a fresh 16 MB stack, as
+  GNU's handler on its sigaltstack).  P3: an overflow on another Lisp
+  thread ran the fatal shutdown, where GNU's deliver_thread_signal
+  raises SIGSEGV at its default action for the main thread, silently.
+  Recorded with the terminal's differences: which limit a deep recursion
+  meets first (the 128 MB batch stack against the byte-code stack, where
+  GNU's 9.8 MB C stack overflows first), GNU's stack_overflow answering
+  false for a fault far past the last backtrace record (a byte-code
+  caller's, or inside redisplay), the overflow inside a recursive edit
+  (GNU's init_eval drops the outer levels' specpdl entries and handlers
+  too, their unbind_to then walking below the specpdl's start), an
+  unlimited RLIMIT_STACK (no floor), the reader's recursion, to be made
+  as read0's explicit stack, and the read_char wipe reaching the
+  terminal before the next redisplay.  Local validation: the grouped
+  gate's 3,506 library tests pass on the round's source as built before
+  clippy's three rewrites of a lazily evaluated value as an eager one
+  (`.and()', the same values), and the integration targets on the final
+  source: cli's 30, cli_parity's 112 (its five new comparisons of the
+  return to the top level without unwinding, in batch and from a
+  terminal command, of the frames' unwind records the exit leaves
+  undone, of the minibuffer an overflow in its setup leaves active, and
+  of the room `handler-bind''s handlers get among them), ert_runner's 3,
+  native_comp_identity's, native_thread_continuations',
+  package_lifecycle's 5 and runtime_ownership's 3.  cli_parity's
+  comparison of the wait failed once among the parallel targets, in its
+  threads probe: the main thread's one 50 ms `sleep-for' ended before
+  the other thread's child had exited, so its sentinel ran at the later
+  `accept-process-output', after the main thread's mark and the second
+  child's, which GNU gives too for a child that takes 0.1 seconds to
+  exit; the probe now sleeps until that child's sentinel has run (at
+  most 5 seconds), and both Emacsen give the same log for a child
+  exiting at once, after 0.1 seconds and after 0.7 seconds, the
+  comparison passing alone.  clippy with `--all-targets --all-features
+  -D warnings' passes on the final source, and the review's batch, fatal
+  and terminal probes give GNU's results on the rebuilt binary but for
+  the read_char wipe recorded above.
+- **Round 345: a signal inside a `handler-bind' handler is a signal of
+  its own, as signal_or_quit's SKIP_CONDITIONS entry makes it, and a
+  batch error is reported only through top_level_2's
+  `debug-early--handler' and cmd_error.** GNU's signal_or_quit calls a
+  `handler-bind' handler under a SKIP_CONDITIONS entry on the handler
+  list, covering every entry from the signal's point down to the
+  handler's form and the form's other pairs (Fhandler_bind_1's
+  `bytecode_dest'), so a signal inside the handler is searched as any
+  other is: `signal-hook-function' sees it, Vsignaling_function is set
+  from it, the handler-binds inside the handler and outside the form run
+  for it, the debugger may be entered for it, and its catcher is found
+  past the skipped entries.  Emaxx did none of this while a handler ran
+  (signal_or_quit and the dispatch returned at once inside one): a
+  handler-bind established inside a handler never ran,
+  `signal-hook-function' never saw a signal inside one, an outer
+  handler-bind never saw an error leaving one (GNU: ((outermost
+  (hb-custom)) caught), Emaxx (caught)), and a byte-compiled or native
+  `condition-case' between the first signal and the form caught that
+  error (a count of interpreted ones to pass was all Emaxx had; GNU's
+  compiled probe gives (outer), Emaxx's gave (inner)).
+  `ActiveHandler::Skip' is the entry, pushed around each handler's call;
+  every search of the active handlers (signal_or_quit's dispatch, the
+  debugger's clause, the trace's) passes over what it covers; a Bind
+  entry carries its pair's count of the form's pairs below it; and an
+  error leaving a handler carries the index of the form's first pair,
+  its search having skipped everything from there up, which the
+  interpreted, byte-code and native `condition-case's test before
+  catching it.  The handler's own signal is settled with the entry in
+  place, so no later frame boundary searches without it.  Batch errors
+  had a Rust copy of the backtrace too: every frame an uncaught error
+  left made a snapshot of the frames (batch_error_backtrace, a GC root
+  carried across Lisp threads, cleared at each handled error and each
+  outermost evaluation), and the in-process action runner printed it
+  with startup frames it made up (command-line-1 with reconstructed
+  arguments, command-line, normal-top-level) after the message, where
+  the process's own startup runs GNU's normal-top-level under
+  top_level_2's `debug-early--handler'.  The snapshot, its printer and
+  the made-up frames are gone; the runner's actions run under
+  top_level_2's handler, `debug-early--handler' printing the real frames
+  where the error is signaled, and an error leaving them goes to
+  cmd_error, whose `command-error-default-function' prints it and kills
+  Emacs with -1 (GNU's order: the backtrace, then the message).
+  eval_sub's outermost evaluation no longer takes the general entry,
+  which only cleared the snapshot.  An adversarial review of the round,
+  probing GNU and Emaxx in batch and in a pseudo-terminal with the
+  signaling and the handling code each interpreted, byte-compiled and
+  native, found four P1s, four P2s and five P3s, all fixed but two P3s.
+  P1: an interpreted `catch' rebuilt each error that passed it, losing
+  its record of signal_or_quit's work and of the entries its search
+  skipped, so a `condition-case' between the catch and a `handler-bind'
+  form caught the handler's error (GNU (right (p-custom)), Emaxx
+  `wrong') and each catch an error crossed ran `signal-hook-function'
+  again; internal_catch's, `symbol-value''s, the module boundary's and
+  `load''s `substitute-in-file-name' paths rebuilt it too, and all pass
+  the error on as it came.  `kill-emacs' or a throw in a handler went on
+  to the debugger's clause test as a signal would, which panicked (a
+  handler's `kill-emacs' 7) or entered the debugger with a made-up
+  (no-catch TAG VALUE), so an ERT run under `debug-on-error' stopped at
+  its first erroring test: signal_or_quit leaves at once, as the
+  handler's longjmp does.  And the record of the object the handlers
+  last ran for, kept so that they did not run twice, was never cleared
+  and not marked, so after a collection a new error at a reused address
+  ran none of them (GNU 300 of 300, Emaxx 3), nor did a signal of an
+  object already handled: the record is gone, the error's own mark of
+  signal_or_quit's work being enough now that nothing rebuilds an error.
+  P2: signal_or_quit's SKIP_CONDITIONS extent is `skip +
+  h->bytecode_dest', SKIP counting the steps of its walk, a marker
+  passed on the way one step whatever it covered, so a handler reached
+  past an earlier marker covers fewer entries and the search sees its
+  own form's `condition-case's again (GNU (cc2-caught (p-other h2)),
+  Emaxx (outer ...)).  Emaxx's walk counts as GNU's on a handler list
+  with GNU's entries: a `catch' (Fcatch, internal_catch, Bpushcatch, the
+  native catch) is a CATCHER entry on it, where `throw' finds it, the
+  separate list of catch tags gone, and an interpreted `condition-case'
+  pushes an entry for each clause, a nil one too, the first innermost,
+  catching with the first clause the search did not skip; where GNU's
+  count makes a handler run again without end (a handler signaling
+  inside another's) Emaxx now meets its stack floor as GNU its segfault,
+  each nested dispatch walking the live list instead of copying it.
+  `unlock-file''s `file-error' and the macro loop's `minibuffer-quit'
+  catchers caught signals the search had skipped (an advice signaling in
+  `make-lock-file-name' under a handler gave a warning where GNU's outer
+  clause caught the handler's error), and test the skip as the Lisp
+  catchers do.  And lexbound_p read only the frames of the environment
+  in effect, so a lexical `let' around an `eval', a call or a file
+  loaded on demand defining the variable (`(let
+  ((byte-compile-dest-file-function ...)) (require \='bytecomp))')
+  passed where GNU signals "Defining as dynamic an already lexical var":
+  the environments installed before the one in effect, the specpdl's
+  saved values of `internal-interpreter-environment', count too.  P3:
+  `excessive-lisp-nesting' was signaled after the depth was given back,
+  so a handler's max_ensure_room counted from one level less (1621 and
+  221 against GNU's 1622 and 222), and is signaled at the depth reached;
+  `signal-hook-function' got an error object's car and cdr for `(signal
+  OBJECT nil)', where GNU passes OBJECT and nil, and ran (and the
+  signaling function was set) for a nil ERROR-SYMBOL, GNU's memory-full
+  form, which does neither; and `handler-bind-1' copied its conditions
+  as names, signaling for a non-symbol element or a dotted list
+  find_handler_clause passes over and missing a change made to the list
+  while the body runs, where it keeps the object and matches by EQ.
+  Recorded: a quit a handler leaves pending, which GNU processes during
+  the rest of the search (its Fmemq of each clause's conditions polls
+  for quit) and Emaxx after it, and how often redisplay logs a mode
+  line's error (redisplay's frequency, not the search).  Local
+  validation: the grouped gate's 3,507 library tests pass on the round's
+  source as built before clippy's rewrites of a collapsible `if', a
+  binding returned at once and a function placed after a test module
+  (the same code), and the integration targets on the final source:
+  cli's 30, cli_parity's 114 (its two new comparisons, of the
+  handler-bind cases and of the review's signals through catches and out
+  of handlers, in batch with the code interpreted, byte-compiled and
+  native), ert_runner's 3, native_comp_identity's,
+  native_thread_continuations', package_lifecycle's 5 and
+  runtime_ownership's 3.  cli_parity's comparison of a help character
+  after a prefix failed once among the parallel targets, Emaxx's echo of
+  `C-x 4' having appeared before the help character came where GNU's had
+  not (the one-second echo timer against the probe's pauses, which the
+  round does not touch), and it passes alone three times of three.
+  clippy with `--all-targets --all-features -D warnings' passes on the
+  final source, and the review's probes give GNU's results on the
+  rebuilt binary but where GNU itself crashes, there meeting Emaxx's
+  stack floor, and for the two timings recorded above.
+- **Round 346: the reader keeps the data nested in an object on an
+  explicit stack, as lread.c's read0 keeps it on rdstack.** Emaxx's
+  reader read the elements of a list, a vector, a quotation, `#'' and
+  each `#' syntax that holds objects by calling itself, a Rust frame a
+  level, so a million-deep list (`(make-string 1000000 ?\()' and its
+  closers) overflowed the stack, killing Emaxx, where GNU reads it.
+  read0's loop is Emaxx's now: read_obj reads an atom, or pushes an
+  entry for the syntax that opens one (RE_list_start for `(', RE_vector,
+  RE_record, RE_char_table, RE_sub_char_table, RE_byte_code and
+  RE_string_props for `[', `#s(', `#^[', `#^^[', `#[' and `#(',
+  RE_special for `'', `#'', `\`', `,' and `,@', RE_numbered for `#N='),
+  `#!' and `#@' reading on; and each object read goes into the innermost
+  entry, which conses it onto a list's tail, collects it as a sequence's
+  element, makes (SYMBOL OBJECT) of a special or completes a label, an
+  entry so completed giving the object for the next.  A separate dot
+  after a list's element makes RE_list RE_list_dot, whose object is the
+  tail, its `)' read after it, and its (#$ . FIXNUM) the doc string at
+  once under `load-force-doc-strings'; `)' and `]' take the innermost
+  entry they close (an RE_list_start is nil) and are invalid syntax for
+  any other, the sequence's object made as vector_from_rev_list,
+  record_from_list or hash_table_from_plist, char_table_from_rev_list,
+  sub_char_table_from_rev_list, bytecode_from_rev_list and
+  string_props_from_rev_list make it, after the locate_syms its opener
+  saved is restored.  The entries' values stay on the read root stack,
+  as mark_lread marks rdstack's: a list's first cons, a sequence's
+  elements, a label's placeholder, so a function stream that collects
+  garbage in the middle of nested data loses none of it.
+  string_props_from_rev_list sets each BEG END PLIST triple as it comes,
+  so an out-of-range triple signals args-out-of-range before a later one
+  is found short, where Emaxx counted the triples first
+  (invalid-read-syntax "Invalid string property list"); and the reader's
+  backquote depth, which nothing read, is gone.
+  lread--substitute-object-in-subtree's walk recurses as GNU's
+  substitute_object_recurse does (GNU's batch session dies at ten
+  thousand nested vectors around a `#1#').  cli_parity's comparison of a
+  TLS connection at exit now stops its gnutls-serv in `kill-emacs-hook':
+  the server ignores the SIGHUP shut_down_emacs sends its children, so
+  each run, GNU's and Emaxx's alike, left one listening, and later runs'
+  clients reached a stale server.  An adversarial review of the round,
+  probing GNU and Emaxx in batch, found one P1 new in the round, and two
+  P2s and five P3s present before it, all fixed but one P3.  P1: the
+  entries' values lived on one thread-local root stack, addressed by
+  depth, which reads suspended in two Lisp threads (a function stream's
+  callback yielding) shared, so they took each other's elements (GNU's
+  main: [x y z], thread: [a b c]; Emaxx's main: [x a y b z c], thread:
+  []) or aborted Emaxx on an index past the stack: each reader keeps its
+  own, scanned while it lives, which also takes back what the deepest
+  read grew (the collector scanned the shared stack's peak capacity at
+  every collection after a 3,000,000-deep read, a P3).  P2: a top-level
+  `#!' line or `#@' skip reaching the end of the input ended the read as
+  an empty input, so `load', `eval-buffer' and a `.elc' load finished
+  silently where GNU's read0, having consumed the `#', signals
+  end-of-file: the end once read0 has consumed syntax is
+  end_of_file_error, as inside any entry; and an end inside a datum read
+  from a function stream, or in a `.elc' load's last form, signaled a
+  bare `end-of-file', where end_of_file_error names
+  `load-true-file-name' whatever the stream: those reads map it as the
+  string and buffer reads did.  P3: a label naming a symbol with
+  position, or an object holding one, read with
+  `read-positioning-symbols' while `symbols-with-pos-enabled' is nil,
+  went through the substitution as an atom, where GNU's
+  substitute_object_recurse takes it for an unknown pseudovector and
+  signals (wrong-type-argument sequencep #<symbol a at 4>): the walk
+  signals it so; get_lazy_string undoes a saved doc string's ^A quoting
+  in the saved bytes themselves, so a second reference to the same text
+  reads what the first left, as Emaxx's now does; and
+  bytecode_from_rev_list reads lazily loaded code whenever lread.c's
+  `infile' is set, for any read while a file stream is loaded (a `(read
+  "#[...]")' from a string a `.elc' evaluates), where Emaxx asked only
+  the reader of the file: the file loads' extent is the reader's to ask.
+  Recorded: the reader state GNU shares between nested reads, a
+  callback's `read' inside a datum clearing the outer read's labels or a
+  hash table test's moving `read-from-string''s index, which Emaxx keeps
+  per reader (GNU dies when both reads use labels).  Local validation:
+  the grouped gate's 3,508 library tests pass, and the integration
+  targets: cli's 30, cli_parity's 116 (its new comparison of the
+  review's reads: a million-deep list, vector and quotation, the
+  suspended reads of two threads, the ends after `#!' and `#@', a doc
+  string referenced twice and the labels of symbols with position),
+  ert_runner's 3, native_comp_identity's, native_thread_continuations',
+  package_lifecycle's 5 and runtime_ownership's 3.  Among the parallel
+  targets two cli_parity comparisons failed once: the help character
+  after a prefix, Emaxx's echo of `C-x 4' having come before the help
+  character (the one-second echo timer against the probe's pauses, as in
+  round 345), and the process descriptors' comparison, where GNU's own
+  run lost a child's output under the load; each passes alone three
+  times of three.  clippy with `--all-targets --all-features -D
+  warnings' passes, and the review's probes give GNU's results on the
+  rebuilt binary but for the reader state recorded above.
+- **Round 347: menus as keyboard.c, menu.c and term.c make them.**
+  Emaxx's menus were its own: the tty menu bar's captions and items came
+  from a Rust walk of the menu-bar keymaps, a dropdown's panes and items
+  from another, and its executor ran the chosen binding, so none of
+  parse_menu_item's evaluations happened as GNU's do, x-popup-menu took
+  no menu apart as menu.c does, and read_char's menu prompting did not
+  exist.  Now keyboard.c's parse_menu_item fills item_properties for
+  every item, evaluating its :visible form during the property walk and
+  then its name, :filter, :enable (or a command's `menu-enable'),
+  :button and :keys through menu_item_eval_property, errors in them
+  ignored; menu_bar_items, menu_bar_one_keymap and menu_bar_item build
+  the frame's menu_bar_items vector, `menu-bar-final-items' last, under
+  `inhibit-quit'; update_menu_bar recomputes it before redisplay when
+  windows or buffers changed or the selected buffer, mode or active maps
+  did, running `activate-menubar-hook' and `menu-bar-update-hook' as GNU
+  does; and the tty's menu-bar row is drawn from that vector, its
+  columns recorded for menu-bar-menu-at-x-y, which reads the item at X
+  from it.  menu.c's menu_items is the interpreter's own vector (marked,
+  reset after a dump's load): init_menu_items refuses a menu inside a
+  menu entry, single_keymap_panes walks a keymap through
+  `keymap-canonicalize', single_menu_item and list_of_panes push panes
+  and items, and Fx_popup_menu (after init_raw_keybuf_count) decodes its
+  POSITION as x_popup_menu_1 does, a window's edges, left margin, tab
+  and header lines added to a text-area position before
+  check_integer_range, runs `x-pre-popup-menu-hook' and hands the menu
+  to the terminal; Fx_popup_dialog emulates its dialog with a menu, as
+  emulate_dialog_with_menu does.  term.c's tty_menu_show builds the
+  tty_menu from menu_items (the names padded to the widest's bytes, a
+  submenu's name followed by \" >\", a toggle or radio's [X] or (*)
+  prefix lining up the rest), and tty_menu_activate runs it as GNU's
+  does: the menu faces, the title in tty-menu-selected-face, the
+  \"Buffers 1\" kludge, the one-pane case, scrolling, submenus opened
+  and dropped as the item under the pointer changes, the help callback
+  with `inhibit-redisplay' bound so that no help echo reaches the glass,
+  `tty-menu-navigation-map' as `overriding-terminal-local-map', and the
+  cursor hidden where tty_menu_display's update_frame_with_menu leaves
+  it (the item under the pointer, else where the tty's cursor already
+  was); keys and selections come back as tty_menu_new_item_coords and
+  tty_menu_last_menubar_item make them.  read_char prompts with a
+  keymap's menu as read_char_x_menu_prompt and
+  read_char_minibuf_menu_prompt do (the latter's toggle and radio marks
+  inverted, as GNU's are), record_menu_key records the choice in
+  `this-command-keys' and the echo, a menu's events after the first are
+  unread as (EVENT . disabled), `last-nonmenu-event' is left at the last
+  event not from a menu, and a menu refused makes read_key_sequence
+  return -1, so that command_loop_1 cancels the echo and runs no
+  command.  xdisp.c's message3_nolog calls echo_area_display (true) as
+  GNU's does, a message, or its clearing, reaching the glass when made
+  unless redisplay is inhibited or running, so that `popup-menu''s
+  `(message \"\")' between two menu-bar menus clears the echo row as
+  GNU's does; and the frontend records the cursor each frame update
+  leaves, which tty menus start from.  callint.c's `e' code takes its
+  event from call-interactively's KEYS, checked as a vector before
+  anything else, or from the command's keys, where Emaxx bound a
+  variable for KEYS and read nothing without one, so a mouse command run
+  from the command loop (`menu-bar-open-mouse' for a click on the menu
+  bar) signalled \"must be bound to an event with parameters\".  The
+  Rust menu walks, the executor and their captions are gone.  Two
+  differences in a pseudo-terminal comparison are the GNU builds'
+  configuration, not Emaxx's: GNU here is an X build, whose dump loads
+  x-win.el (binding <XF86WakeUp> to `ignore', which a menu's key hints
+  then show for `ignore') and whose xsettings.c provides
+  `system-font-setting' (the Options menu's \"Use System Font\"); with
+  those two taken out of GNU, every screen of the comparison is the
+  same.  One adversarial review of the round's diff, in batch and a
+  pseudo-terminal against GNU's, found 3 P1, 4 P2 and 5 P3, all fixed
+  but one recorded.  A message made after the minibuffer had exited (an
+  M-x command's) or over an active minibuffer waited for the next
+  redisplay: the echo row decided from the last redisplay's minibuffer
+  flag, where echo_area_display decides from echo_area_buffer[0] and
+  minibuf_level as they are, and update_frame_1 puts the cursor at the
+  frame's selected window's own cursor (now kept per window as its last
+  display computed it).  A tty menu did not follow the mouse:
+  read_menu_input sets do_mouse_tracking (`track-mouse', set and
+  restored, not bound) and the tty's showing_menu (no redisplay while
+  the menu's read waits) around read_menu_command, and neither was
+  Emaxx's.  The menu's keys bypassed read_char, so unread events and
+  keyboard macros never reached it.  A message needing more echo rows
+  painted the echo area alone, where echo_area_display runs
+  redisplay_internal with `redisplay-dont-pause' bound.  A tty menu
+  stopped above a multi-line echo area, and the screen saved behind it
+  left the echo rows out.  A click's menu opened before read_char's
+  echo.  The menu's keys were missing from `this-command-keys' and the
+  raw keys; and the minibuffer menu prompt's own read_char now records
+  and adds the keys it reads (a continuation's SPC among them), the
+  prompting read_char going to its exit, so `this-single-command-keys'
+  counts back from them as GNU's does.  `unread-command-events'' (t .
+  X), (no-record . X) and (EVENT . disabled) were not unwrapped in
+  read_char's order.  read_char_minibuf_menu_prompt's continuation lines
+  did not start from the strings its Fnreverse relinks into
+  prompt_strings.  x_popup_menu_1 did not measure a list of keymaps with
+  list_length (a dotted list's listp, a circular one's circular-list).
+  tty_menu_show did not inhibit garbage collection while it builds and
+  shows the menu (`garbage-collect' returns nil inside it).  Recorded:
+  the menu bar's recomputation as update_mode_lines and
+  windows_or_buffers_changed drive it.  Found while fixing these: the
+  frontend's redisplay paused for pending input where GNU's update_frame
+  does not under `redisplay-dont-pause' (recorded with read_char's
+  auto-saves, the same COMMANDFLAG block); a tty posn's glyph was one
+  row high and an appended end-of-line space none wide, where GNU's
+  terminal glyphs have no ascent or descent (fixed); and two older
+  display differences recorded below, a composition in posn-at-x-y and a
+  character the terminal cannot encode.  The grouped gate passed its
+  3,508 library tests; the integration suites passed (two tty
+  comparisons whose GNU run fell behind its input under the parallel
+  run's load, prefix help's echo and while-no-input's key, passed alone
+  three times each), cli_parity with two new comparisons (read_char's
+  unread-event unwrapping and the list of keymaps' length in batch, a
+  tty menu following the mouse with a timer inside it seeing
+  `track-mouse' t and collection inhibited); clippy is clean; and the
+  pseudo-terminal comparisons of each finding's probe match GNU's.
+- **Round 348: the read stack and read_char's COMMANDFLAG as GNU has
+  them.** Since round 346 each Emaxx reader kept its own read stack,
+  where lread.c's rdstack is one static stack for every read, reads
+  suspended in different Lisp threads included: each read0 works on the
+  entries above the depth it found (base_sp), and a nonlocal exit
+  returns the stack to that depth (read_stack_reset).  Emaxx's read
+  stack is that one stack now (Lisp threads are continuations on one OS
+  thread, so a thread-local stack is GNU's static), a read working above
+  its base and resetting to it on error, and each entry holding its own
+  values, a sequence's elements as the reversed list read0 keeps, which
+  the collector finds in the stack's buffer as mark_lread marks rdstack.
+  read_char takes keyboard.c's COMMANDFLAG: 1 for a key sequence the
+  command loop reads, 0 with a prompt and for `read-event' and its kin
+  and the help character's next read, -2 for read_menu_command
+  (read_key_sequence's prevent_redisplay), passed on to the minibuffer
+  menu prompt's own read.  With it come read_char's blocks that use it:
+  its redisplay only with COMMANDFLAG >= 0, swallowing the events no one
+  sees, then redisplaying unless input is pending and either was pending
+  when read_char last returned (input_was_pending) or
+  `redisplay-dont-pause' is nil, again while input that arrives during a
+  redisplay is all swallowed; the auto-save once more than
+  `auto-save-interval' (and 20) input events have come since the last
+  (keyboard.c's last_auto_save, which Fdo_auto_save's record_auto_save
+  sets) and no input is pending; and, for a read with COMMANDFLAG
+  neither 0 nor -2, the auto-save once `auto-save-timeout' seconds,
+  times the delay level of the last buffer current outside the
+  minibuffer over four, pass without input, then maybe_gc if there is
+  still none, both with `auto-save-no-message'.  The frontend's
+  redisplay pauses for pending input only when `redisplay-dont-pause' is
+  nil, as update_frame does; Emaxx's frontend skipped every paint while
+  input was pending, which read_char's loop now decides.  dispnew.c's
+  sit_for no longer binds `throw-on-input' when it reads (GNU's does
+  not), takes a bignum timeout as GNU does, reads the keyboard first
+  (gobble_input), makes the selected window's buffer current again after
+  a reading wait if it was before, and is nil when process output came
+  in; Fredisplay swallows the events no one sees and returns nil with
+  nothing redisplayed when input is pending without FORCE or
+  `redisplay-dont-pause', or a keyboard macro executes, binding
+  `redisplay-dont-pause' for FORCE.  A pseudo-terminal comparison found
+  GNU's idle auto-save cut short in its first seconds: the oracle build
+  compiles the Lisp it loaded natively in subprocesses whose output ends
+  sit_for's wait, so the comparison types after them.  One adversarial
+  review of the round's diff, in batch and a pseudo-terminal against
+  GNU's, found 5 P2 and 2 P3 and two incidental differences, all fixed
+  but one already recorded, with two more recorded.  The keystroke
+  auto-save came before the echo-keystrokes wait, where read_char waits
+  first, with sit_for (Vecho_keystrokes, 1, 1), which process output
+  cuts short: Emaxx's wait was a deadline of its own, and the echo it
+  ended in redisplayed the frame where GNU's updates the echo area
+  alone.  do-auto-save's pause to let its message be read called the
+  Lisp `sit-for', where GNU calls the C sit_for (1, 0, 0).  A special
+  event's binding ran inside the wait without read_char's `goto retry',
+  so neither read_char's redisplay nor a second idle auto-save followed
+  it.  The wait now hands each event back once its binding has run,
+  read_char retrying, or returning -2 when the binding left another
+  buffer current: read_key_sequence then puts the keys read so far on
+  the kboard's side queue (kbd_queue, which with one kboard read_char
+  never reads, kbd_queue_has_data staying false) and reads the sequence
+  from its start in the new keymaps.  A special event also stops Emacs
+  being idle, as non_reread's timer_stop_idle does, resuming
+  (timer_resume_idle) for one `while-no-input-ignore-events' names.
+  `read-event', `read-char' and `read-char-exclusive' redisplayed before
+  read_char whatever its loop decided.  The redisplay loop looked for
+  input again after a redisplay, so input arriving during one under
+  `redisplay-dont-pause' redisplayed twice, where GNU's loop goes on
+  from the input_pending the redisplay left.  `current-idle-time''s
+  picoseconds were a thousand times too large.  Recorded already: a
+  string read inside another clobbers the outer read's index in GNU
+  (D75).  Recorded: redisplay of a buffer whose one line holds 100,000
+  characters takes 1.3 s against GNU's few milliseconds, which delayed
+  an idle auto-save; and comp.c's deferred native compilation
+  (maybe_defer_native_compilation, from defalias while a .elc file
+  loads), whose subprocesses' output redisplays and cuts GNU's waits
+  short, which Emaxx, answering t to `native-comp-available-p', does not
+  do.  The grouped gate passed its 3,508 library tests; the
+  integration suites passed (two tty comparisons whose GNU run fell
+  behind its input under the parallel run's load, prefix help's echo and
+  while-no-input's key, passed alone three times each), cli_parity with
+  the renamed read stack comparison and two new ones (a session's
+  keystroke and idle auto-saves and `redisplay' under pending input, and
+  a special event leaving another buffer current in the middle of a key
+  sequence); clippy is clean; and the pseudo-terminal comparisons of
+  each finding's probe match GNU's, but for the redisplays GNU makes for
+  its native compilation's subprocesses.
+- **Round 349: what redisplay must do, as xdisp.c keeps it.** Emaxx's
+  frontend decided what to redisplay from its own comparison of each
+  buffer's modification counts and the layout, and recomputed the menu
+  bar when a cheap signature of the active minor-mode maps changed; the
+  mode line's point was a heuristic of its own.  It keeps xdisp.c's
+  requests now: windows_or_buffers_changed and update_mode_lines as
+  GNU's integers, 0, REDISPLAY_SOME (2) for what was marked, or the
+  number of the site that asked for everything, which
+  `redisplay--all-windows-cause' and `redisplay--mode-lines-cause' count
+  when they hold hash tables; the windows' redisplay and
+  update_mode_line flags, the frames' redisplay, and the buffers'
+  text->redisplay, clip_changed and prevent_redisplay_optimizations_p;
+  and what a window's last complete redisplay left
+  (mark_window_display_accurate_1: last_modified, last_overlay_modified,
+  last_had_star, last_point), with the column a mode line's `%c' showed
+  (column_number_displayed).  The sites GNU sets them from set them:
+  wset_redisplay, fset_redisplay, bset_redisplay and
+  bset_update_mode_line, force-mode-line-update, set-buffer-modified-p,
+  the overlay changes (modify_overlay), narrowing, the window, frame and
+  keyboard-macro primitives, recursive edits, process output, the
+  compositions after a command, with GNU's numbers.  redisplay_internal
+  goes as GNU's: face_change makes it 47; a garbaged frame is
+  fset_redisplay'd; prepare_menu_bars passes `pre-redisplay-function' t,
+  the windows needs_no_redisplay does not exempt, or nil, and
+  update_menu_bar recomputes a frame's menu bar on those requests alone,
+  or when its selected window's buffer was modified or saved since its
+  mode line showed it; reconsider_clip_changes forgets a narrowing put
+  back as it was shown and notices point moving into or out of a
+  composition; the selected window's mode line is updated for a star to
+  write or remove and for a column it no longer shows; update_mode_lines
+  follows windows_or_buffers_changed (32 unless REDISPLAY_SOME); a
+  changed overlay arrow marks its buffer; under REDISPLAY_SOME a window
+  nothing asked for and whose point did not move is left alone
+  (needs_no_redisplay), the buffers' flags passed to their windows
+  first; a forced window start that moved point into the window has
+  `pre-redisplay-function' called again for that window, its flags
+  cleared first, and the window displayed again if the function marked
+  it (or relative line numbers count from the new row);
+  redisplay_window's update_mode_line and display_mode_lines' conditions
+  (a window not full width under a full redisplay, a line number shown,
+  a column changed) decide which mode lines are written; and the windows
+  redisplayed are marked accurate, the requests reset.  Face changes are
+  xfaces.c's: a frame's face definition changing marks the frame
+  (f->face_change, fset_redisplay), set-face-attribute's FRAME nil doing
+  so for every frame and nothing for the definitions for new frames, a
+  face with `face-no-inherit' asking for nothing; a face made or copied
+  for new frames sets face_change (54, 55), as clear-face-cache does
+  (53) and `tty-suppress-bold-inverse-default-colors'; init_iterator, in
+  redisplay and in format-mode-line, vertical-motion,
+  pos-visible-in-window-p, window-text-pixel-size and line-pixel-height,
+  frees the realized faces they invalidate (free_all_realized_faces, 58
+  for every frame's) unless `inhibit-free-realized-faces', which
+  producing glyphs sets and only redisplay_internal clears, as
+  PRODUCE_GLYPHS and redisplay_internal leave it.  The frontend's cache
+  of realized faces is the displayed frame's, valid until they are
+  freed; Emaxx's own count of face definition changes is gone.
+  wait_reading_process_output zeroes the timeout of the pselect that
+  precedes status_notify, and the wait's own pselect then uses it, as
+  process.c's does: the loop comes round at once and timer_check runs a
+  timer the sentinels started, where Emaxx's wait kept the remaining
+  time (eshell's finish-io, retried on a 0-delay timer while its stderr
+  pipe is live, did not finish within the test's sit-for:
+  esh-proc-test/kill-pipeline in round 348's CI).  A review (one,
+  adversarial, every finding probed on GNU 30.2 and Emaxx in a
+  pseudo-terminal) found 2 P1, 5 P2 and 5 P3 differences.  Fixed:
+  check_point_in_composition handed the window's buffer to a lookup that
+  took every object for a string, so the first character typed panicked;
+  it is xdisp.c's now, the buffer searched, and with point moved within
+  one buffer from inside a composition the answer whether it left it.
+  buffer_window_count counted no windows for an indirect buffer, so
+  nothing marked a window showing one; it is buffer.h's, the base
+  buffer's count.  message_dolog marks the log buffer after its
+  insertion (bset_redisplay), its windows_or_buffers_changed as it was.
+  A message that changes the mini window's height resizes it before the
+  redisplay echo_area_display runs, the frame marked as
+  resize_mini_window_apply and echo_area_display mark it, and
+  resize_echo_area_exactly resizes at once after a command, redisplaying
+  with causes 42 and 30 when the height changed (the frontend's deferred
+  flag is gone).  Every restore of a window configuration marks its
+  frame, read_minibuf's at the minibuffer's exit too.  A window other
+  than the selected one that redisplay does not redisplay keeps the
+  cells its last display painted, and is neither fontified nor scrolled.
+  apply_window_adjustment (set-window-margins, set-window-buffer)
+  garbages the frame when a window shows margins, as adjust_frame_glyphs
+  does on a terminal.  The mini window is marked for a message shown
+  with the cursor in the echo area and when a message cannot show over
+  an active minibuffer; needs_no_redisplay looks at the frame's
+  face_change.  The probes run again found echo_area_display's last step
+  missing: a message that changed the mini window's height leaves its
+  frame marked for the next redisplay (fset_redisplay), as a long
+  "Wrote" or a multi-line message shows, and the mini window is sized as
+  `resize-mini-windows' says (nil never resizes it, a value other than
+  `grow-only' resizes it exactly), where Emaxx grew it only.  Recorded:
+  the selected window laid out again where needs_no_redisplay leaves it,
+  redisplay's retry when it marks a frame itself (cause 50;
+  free_realized_faces' mark of a frame whose faces it frees waits on it,
+  for without the retry the mark carries into the next command's
+  redisplay), mode lines displayed to measure by pos_visible_p, the
+  terminal's tab bar, the mini window's buffer at a minibuffer's exit,
+  and fontification past a window's end.  The grouped gate passed its
+  3,508 library tests, the new unit test running a timer a stderr
+  pipe's sentinel starts within the sleep-for that notified it among
+  them; the integration suites passed (two tty comparisons whose GNU run
+  fell behind its input while a profiler ran beside the suite, prefix
+  help's and keystroke echo's, passed alone three times each);
+  cli_parity with four new comparisons (the windows
+  `pre-redisplay-function' gets and the causes counted after mode-line,
+  buffer, window-start, overlay, narrowing, selection and modification
+  changes; after face changes for a frame, for every frame and for new
+  frames; after changes to an indirect buffer's base, the log and
+  margins, with typing over a composition; and after messages that
+  resize the mini window under each `resize-mini-windows'); the four
+  redisplay comparisons count from their first key, where they also
+  counted what startup redisplayed, GNU's for the output of its native
+  compilation of what it loaded among it; clippy is clean; and the
+  review's 25 pseudo-terminal probes, run again on the release build,
+  match GNU's but for the differences recorded (redisplay's retry, the
+  mode lines measured, the tab bar, the glyph matrices' this_line
+  optimization and fontification past a window's end) and the count of
+  redisplays that find nothing to do, which differs between GNU's own
+  runs as much.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -20026,9 +20656,190 @@ ert-tests as a whole 26,307 ms against 27,211.
   20 times in Emaxx and 19 in GNU. Round 343 has p2 sleep after its
   output, which both take the same way every time.
 
+**On `4940498`** (round 343): the frozen run (run 42433135825) matched
+  all 7,928 outcomes at its first attempt. Setup 70.1 s against 59.2 s
+  (1.183), test bodies 278.7 s against 253.3 s (1.100), in all 1.118,
+  with a per-file setup median of 106 ms against 91. The widest body
+  gaps are ert-tests (38.3 s against 35.7), comp-tests (16.2 against
+  13.7), tramp-tests (19.0 against 16.6), eglot-tests (33.4 against
+  32.0), process-tests (2.86 against 1.53), semantic-utest-ia (3.52
+  against 2.45), mule-tests (2.78 against 1.77) and icalendar-tests
+  (1.37 against 0.38). The Rust gate (run 42433133267) passed.
+
+**On `e4a83ad`** (round 344): the frozen run (run 42440808780) matched
+  all 7,928 outcomes at its first attempt. Setup 79.5 s against 66.5 s
+  (1.195), test bodies 302.1 s against 266.2 s (1.135), in all 1.130,
+  with a per-file setup median of 122 ms against 104, on a runner slower
+  for both than round 343's (GNU's bodies 266.2 s against 253.3). The
+  widest body gaps are ert-tests (45.8 s against 37.9), tramp-tests
+  (22.6 against 19.4), comp-tests (16.8 against 14.2), eglot-tests
+  (34.0 against 32.3), semantic-utest-ia (4.09 against 2.74),
+  mule-tests (3.20 against 2.04), process-tests (2.73 against 1.77)
+  and electric-tests (1.14 against 0.60). The Rust gate (run
+  42440807126) passed.
+
+**On `6fb64a9`** (round 345): the frozen run (run 42447670550) matched
+  all 7,928 outcomes at its first attempt. Setup 55.2 s against 47.8 s
+  (1.154), test bodies 240.7 s against 224.8 s (1.071), in all 1.078,
+  on a runner faster for both than round 344's (GNU's bodies 224.8 s
+  against 266.2). The widest body gaps are tramp-tests (15.5 s against
+  13.7), ert-tests (29.8 against 28.3), icalendar-tests (1.72 against
+  0.41), comp-tests (12.9 against 11.7), semantic-utest-ia (3.16
+  against 2.37), mule-tests (1.98 against 1.33), process-tests (2.19
+  against 1.76) and electric-tests (0.70 against 0.39). The Rust gate (run 42447668332) passed.
+
+**On `6d3e986`** (round 346): the frozen run (run 42452286349) matched
+  all 7,928 outcomes at its first attempt. Setup 79.3 s against 67.1 s
+  (1.182), test bodies 302.1 s against 266.9 s (1.132), in all 1.125,
+  on a runner slower for both than round 345's (GNU's bodies 266.9 s
+  against 224.8). The widest body gaps are ert-tests (45.1 s against
+  37.9), tramp-tests (22.5 against 19.5), comp-tests (17.7 against
+  14.9), eglot-tests (34.4 against 32.3), semantic-utest-ia (4.16
+  against 2.70), mule-tests (3.23 against 2.02) and process-tests (2.81
+  against 1.62). The Rust gate (run 42452284831) failed one cli_parity
+  comparison, of two threads each reading from a stream that yields:
+  GNU's own run read `main: []' and `thread: [a b x y z c]' where
+  Emaxx's reads each kept their own elements. lread.c's rdstack is
+  one static stack, so GNU's two suspended reads push into each other's
+  entries as its threads happen to switch (locally 9 runs in 10 kept
+  them apart and one ended in end-of-file); the comparison compared a
+  race. Round 347 replaces it with a read suspended in a thread across a
+  collection while the main thread reads a string through without
+  yielding, the same in every GNU run, and records the per-reader stack
+  round 346 gave Emaxx.
+
+**On `6609b37`** (round 347): the frozen run (run 42461016805) matched
+  all 7,928 outcomes at its second attempt. The first attempt differed
+  in one outcome, eglot-test-rust-completion-exit-function, which GNU's
+  own oracle run failed with a jsonrpc-error and Emaxx passed: the
+  oracle flake rounds 296, 317, 321 and 327 met. Setup 84.7 s against
+  59.8 s (1.416), test bodies 296.3 s against 252.7 s (1.173), in all
+  1.219, on a runner faster than round 346's for GNU (setup median 91
+  ms against 103) and slower for Emaxx (130 against 120). The code did
+  not change the cost: the setup of cl-lib-tests counts 743.4 million
+  instructions under callgrind at round 347 against 743.7 million at
+  round 346. The widest body gaps are ert-tests (43.1 s against 35.8),
+  comp-tests (18.0 against 13.5), tramp-tests (19.2 against 16.2),
+  eglot-tests (33.7 against 31.9), mule-tests (3.48 against 1.92),
+  semantic-utest-ia (4.11 against 2.66), process-tests (3.14 against
+  1.77) and simple-tests (4.67 against 3.35). The Rust gate (run
+  42461015027) passed.
+
+**On `3d3c585`** (round 348): the frozen run (run 42472602825) matched
+  7,927 of 7,928 outcomes. Emaxx failed esh-proc-test/kill-pipeline,
+  which GNU passed: killing the pipeline's head left its sentinel's
+  finish-io waiting for the stderr pipe, and the 0-delay timer it
+  started to try again never ran within the test's sit-for, so the
+  prompt after it was not written. wait_reading_process_output zeroes the
+  timeout of the pselect before status_notify, and that zero timeout is
+  the one its own pselect then waits with, so the loop comes round at
+  once and timer_check runs what the sentinels started; Emaxx's wait
+  kept the remaining time. The wait had been so since round 339; the
+  round 348 build passes the test alone in 3 of 6 local runs, round
+  349's, whose wait zeroes it as GNU's does, in 10 of 10. Setup 54.7 s
+  against 47.7 s (1.147), test bodies 232.8 s against 217.7 s (1.069),
+  in all 1.083, on a runner faster than round 347's for both (setup
+  median 87 ms against 77; at round 347 130 against 91). The widest body
+  gaps are comp-tests (11.5 s against 10.2), tramp-tests (14.9 against
+  13.8), eglot-tests (29.2 against 28.3), semantic-utest-ia (2.65
+  against 1.83), mule-tests (1.92 against 1.21), ert-tests (26.6 against
+  26.0), process-tests (2.34 against 1.80) and package-tests (6.00
+  against 5.46). The Rust gate (run 42472600654) passed.
+
 **Findings recorded, not fixed:**
+- **The glyph matrices' state redisplay decides from (round 349).**
+  GNU's redisplay_internal and redisplay_window decide much from the
+  windows' glyph matrices: w->window_end_valid (a complete display of
+  the window that a later one may compare with, made invalid by some
+  forty sites), the this_line_* optimizations (only the line point is
+  on changed: text_outside_line_unchanged_p over BEG_UNCHANGED,
+  END_UNCHANGED and GPT, the line redisplayed alone, or point moved
+  within it), and try_cursor_movement and try_window_id.  Emaxx's
+  frontend keeps a display of each window instead (its start, buffer,
+  point and narrowing), which reconsider_clip_changes' tests use in
+  window_end_valid's place; which rows are written, and when
+  fontification-functions run for the rows the optimizations skip,
+  follow from it, not GNU's matrices.  A window other than the
+  selected one that redisplay leaves alone keeps the cells its last
+  display painted; the selected window is laid out again where
+  needs_no_redisplay would leave it, and adjust_glyph_matrix's
+  w->update_mode_line for a window whose matrix changes size (a buffer
+  without margins shown again after one with them) is not kept.
+- **Redisplay marking a frame again (round 349).**  When redisplaying a
+  frame's windows marks the frame (a face changed by
+  `fontification-functions', say), GNU's redisplay_internal goes back
+  to retry_frame, or for the selected frame alone sets
+  windows_or_buffers_changed to 50 and retries; Emaxx displays once.
+  free_realized_faces' mark of a frame whose faces it frees
+  (fset_redisplay) waits on the retry: without it the mark carries
+  into the next command's redisplay, every window displayed again.
+- **Mode lines displayed to measure (round 349).**  pos_visible_p, and
+  through it `pos-visible-in-window-p' and the scroll commands,
+  displays a window's mode line to know its height, which evaluates
+  its :eval forms and sets column_number_displayed; Emaxx's terminal
+  rows need no measuring and evaluate nothing.
+- **The terminal's tab bar (round 349).**  prepare_menu_bars has no
+  update_tab_bar, and a frame's `tab-bar-lines' draws no tab bar on a
+  terminal (`tab-bar-mode' shows nothing).
+- **The minibuffer window's buffer at the minibuffer's exit (round
+  349).**  Leaving a minibuffer, GNU's mini window shows the previous
+  level's minibuffer, which runs `window-buffer-change-functions' at
+  the next redisplay; Emaxx's mini window keeps its buffer.
+- **Fontification past the window's end (round 349).**  Emaxx's
+  frontend fontifies the window's cells from its start, about 160
+  characters past what a window shows; GNU's iterator stops at the
+  last row it displays.
+- **Deferred native compilation (round 348).** In GNU's native-comp
+  build, defalias of a byte-compiled definition while a .elc file
+  loads (maybe_defer_native_compilation) queues `native--compile-async'
+  for the file's source, whose subprocesses compile it into the
+  eln-cache while the session runs; their output redisplays
+  (wait_reading_process_output's redisplay_preserve_echo_area) and ends
+  a sit_for, an idle auto-save's wait among them, and the first change
+  to their log buffer starts the undo boundary timer.  Emaxx answers t
+  to `native-comp-available-p' but defers nothing: in a pseudo-terminal
+  session GNU spawns eight compilations at startup (cl-lib, time-date,
+  rx, ring, ansi-color, ansi-osc, subr-x, comint) and redisplays 21
+  times in its first ten seconds where Emaxx redisplays three.
+- **Redisplay of a long line (round 348).** A buffer whose one line
+  holds 100,000 multibyte characters takes Emaxx's tty redisplay about
+  1.3 s, where GNU's takes a few milliseconds, which delays what waits
+  on it (an idle auto-save came 8.2 s after the last key against GNU's
+  3.0 s).
+- **callint's `e' code after a key read in the middle of a command
+  (round 347).** GNU's this_command_keys is one vector that a key
+  sequence read while a command reads its arguments (a `k' argument, the
+  minibuffer's commands) writes over from its start, while the `e' code
+  reads its entries at the indices it found when Fcall_interactively
+  began, so an `e' after such a read can get what that read left in the
+  slot.  Emaxx's `e' walks the keys as they were when the call began.
+- **A tty's glyphless characters and compositions in positions (round
+  347).** With a terminal that cannot encode a character (LC_ALL=C), GNU
+  displays it as produce_glyphless_glyph's acronym (`?'), where Emaxx
+  shows a `\u4E2D' escape; and posn-at-x-y finds the glyph under a
+  column through compositions (a combining mark composed with the
+  character before it covers the base's columns), where Emaxx's motion
+  gives the mark a zero-width column of its own.  To be made: glyphless
+  characters as term.c's produce_glyphs and produce_glyphless_glyph, and
+  compositions in buffer_posn_from_coords.
+- **The reader's state between nested reads (round 346).** GNU's read0
+  keeps its label maps and `read-from-string''s index in globals, which
+  a `read' run in the middle of another read (a function stream's
+  callback, a hash table test's hash function) clears or moves: the
+  outer read's `#1#' is then invalid syntax, or its datum reads to
+  end-of-file, and GNU dies when both reads use labels. Emaxx keeps that
+  state per reader, so the outer read goes on as if nothing had run.
+- **The handler search's remaining differences (round 345).** A quit a
+  `handler-bind' handler leaves pending (`quit-flag' set under
+  `inhibit-quit', and the handler returns) is processed after the
+  search, where GNU's find_handler_clause polls for it in the Fmemq of
+  each later clause's conditions, so that a `condition-case' for `quit'
+  inside the form catches it there and Emaxx's reaches the top level.
+  And redisplay logs a mode line's `:eval' error as often as it
+  redisplays, which is not GNU's count (GNU's *Messages* "[8 times]"
+  against Emaxx's "[3 times]" and "[2 times]").
 - **The terminal session's remaining keyboard and display differences
-  (rounds 340-343).** The secondary terminals `make-terminal-frame'
+  (rounds 340-344).** The secondary terminals `make-terminal-frame'
   opens read their bytes through Emaxx's own decoder into
   `unread-command-events', with no quit character and no
   `throw-on-input', where GNU's tty_read_avail_input stores them in the
@@ -20044,35 +20855,45 @@ ert-tests as a whole 26,307 ms against 27,211.
   order. `suspend-tty' and `resume-tty' signal that every terminal is a
   non-text one ("Attempt to suspend a non-text terminal device"), and
   `tty--output-buffer-size' that it is not a tty, as on the batch frame.
-  A C stack overflow (unbounded recursion with `max-lisp-eval-depth'
-  raised) kills Emaxx with signal 11 after resetting the terminal, where
-  GNU's handle_sigsegv sees the fault in the stack's guard region and
-  stack_overflow's siglongjmp returns to the top level ("Re-entering top
-  level after C stack overflow"), Emacs still running; unwinding Rust
-  frames from a signal handler is not sound, so Emaxx needs its own
-  check of the native stack before it is exhausted, ending in the same
-  top-level re-entry. emacs.c's main also grows RLIMIT_STACK at startup
-  (to emacs_re_max_failures' need plus room for a GC's frames, within
-  the hard limit), which Emaxx does not, so a child process sees the
-  soft limit Emaxx was started with (8,192 KB under the usual 8 MB)
-  where GNU's children see the grown one (9,788 KB). With interrupt
-  input off nothing polls the keyboard during a busy command, where a
-  GNU build with POLL_FOR_INPUT reads it every `polling-period'
-  (start_polling's atimer, poll_for_input), so a `discard-input' after a
-  long command keeps typeahead GNU has read and discards. Two C-g's
-  typed before the main thread's next quit check count as one, where
-  GNU's SIGINT handler runs handle_interrupt in the signal itself (the
-  second, with `quit-flag' still set, the emergency escape); and a
-  background thread runs process_pending_signals at each of its quit
-  checks while an interrupt waits for the main thread. A face's tty
-  attributes come from faces.el's `face-attribute' and the frontend's
-  merge of realized attributes, where GNU merges the face's Lisp
-  attributes over the default face's (merge_face_ref) and realizes the
-  result once in the face cache, and
-  `display-supports-face-attributes-p' reads the frame's `default'
-  definition where GNU reads its realized default face, which differs
-  between a change to the default face and the next redisplay. The
-  frontend moves the cursor, clears and scrolls with fixed ANSI
+  A C stack overflow inside a recursive edit returns to that edit's
+  command loop with the outer levels' specpdl entries, handlers and
+  depth kept, where GNU's init_eval drops them all (their unbind_to
+  later walks below the specpdl's start, and GNU dies when the edit
+  exits; at the top level there are none); with RLIMIT_STACK unlimited
+  the main thread's stack has no floor, so an overflow on it still
+  faults, as it did before round 344 (GNU's guard-region test still
+  catches it).  Which limit a deep recursion meets first can differ,
+  Rust frames not being C's: the batch session's 128 MB stack (sized for
+  GNU's depths, not its bytes, and not RLIMIT_STACK) outlasts the
+  byte-code stack in a recursion through byte-compiled callers such as
+  `seq-reduce', which signals "Bytecode stack overflow" where GNU's 9.8
+  MB C stack overflows first.  GNU's stack_overflow also answers false,
+  and the overflow is fatal, when the fault lies further past the stack
+  top the last record_in_backtrace left than the known stack's 256th
+  part, as when that record was a byte-code call's (its arguments on the
+  heap byte-code stack) or redisplay's C frames took the stack's last
+  bytes; Emaxx tests the floor at its call entries and recovers there.
+  And the read_char wipe of a
+  message reaches the terminal when the keyboard is polled, where GNU's
+  waits for the next redisplay, which shows only when that redisplay
+  never comes (a C stack overflow in one leaves GNU's display frozen
+  with the old message, Emaxx's with none). With interrupt input off
+  nothing polls the keyboard during a busy command, where a GNU build
+  with POLL_FOR_INPUT reads it every `polling-period' (start_polling's
+  atimer, poll_for_input), so a `discard-input' after a long command
+  keeps typeahead GNU has read and discards. Two C-g's typed before the
+  main thread's next quit check count as one, where GNU's SIGINT handler
+  runs handle_interrupt in the signal itself (the second, with
+  `quit-flag' still set, the emergency escape); and a background thread
+  runs process_pending_signals at each of its quit checks while an
+  interrupt waits for the main thread. A face's tty attributes come from
+  faces.el's `face-attribute' and the frontend's merge of realized
+  attributes, where GNU merges the face's Lisp attributes over the
+  default face's (merge_face_ref) and realizes the result once in the
+  face cache, and `display-supports-face-attributes-p' reads the frame's
+  `default' definition where GNU reads its realized default face, which
+  differs between a change to the default face and the next redisplay.
+  The frontend moves the cursor, clears and scrolls with fixed ANSI
   sequences where term.c sends the entry's cm, ce, cd and cl (with their
   padding), which matters on a terminal that is not ANSI. A message
   taller than `max-mini-window-height' shows its first lines, where
@@ -20084,30 +20905,22 @@ ert-tests as a whole 26,307 ms against 27,211.
   non-selected window showing the same buffer, frames on a second
   terminal are not redrawn when the selected one changes their buffer,
   the second terminal echoes escape sequences as keys, and
-  `tab-bar-mode' draws nothing on a tty. read_char's mouse-menu
-  prompting is not GNU's: a menu cancelled with C-g runs `ignore' with
-  the command hooks and leaves the echo shown, where read_key_sequence
-  returns -1 and command_loop_1 runs no command, and a chosen item is
-  not recorded (record_menu_key's this-command-keys and echo); an
-  unbound down-mouse event after an echoed prefix is not echoed before
-  it is dropped; and the cursor after a minibuffer's read-only error is
-  one column right of GNU's. A menu chosen on a terminal leaves
-  `this-original-command' the menu's keymap, where GNU's read_char
-  returns the chosen event to read_key_sequence and the command is the
-  binding found; command_loop_1 runs the command hooks without the
+  `tab-bar-mode' draws nothing on a tty. An unbound down-mouse event
+  after an echoed prefix is not echoed before it is dropped, and the
+  cursor after a minibuffer's read-only error is one column right of
+  GNU's. command_loop_1 runs the command hooks without the
   long-line narrowing of safe_run_hooks_maybe_narrowed; and a quit
   check's quit is never continuable, where eval.c's quit () is
   signal_or_quit with CONTINUABLE, a debugger `debug-on-quit' entered
-  returning to the check. To be made: read_char's menu prompting, the C
-  stack overflow's return to the top level and the startup's stack
-  limit, input polling, the secondary terminals' input, modes and sizes
-  as the controlling terminal's, sys_subshell, the special events in the
-  keyboard buffer's order, handle_interrupt in the signal handler,
-  suspend-tty and resume-tty with the output buffer size as term.c's,
-  faces realized from their merged Lisp attributes in a face cache as
-  xfaces.c's, the entry's cursor motion and clear strings, the command
-  hooks' long-line narrowing, resize_mini_window's window start for a
-  tall message, and the remaining keyboard and display details above.
+  returning to the check. To be made: input polling,
+  the secondary terminals' input, modes and sizes as the controlling
+  terminal's, sys_subshell, the special events in the keyboard buffer's
+  order, handle_interrupt in the signal handler, suspend-tty and
+  resume-tty with the output buffer size as term.c's, faces realized
+  from their merged Lisp attributes in a face cache as xfaces.c's, the
+  entry's cursor motion and clear strings, the command hooks' long-line
+  narrowing, resize_mini_window's window start for a tall message, and
+  the remaining keyboard and display details above.
 - **TLS over a process that is no network connection (round 337).**
   gnutls-boot on a pipe process or a subprocess gives GnuTLS the
   process's p->infd and p->outfd as its transport

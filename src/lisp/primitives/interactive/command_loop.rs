@@ -16,22 +16,28 @@ pub(crate) enum CommandLoopHandlers {
     MinibufferQuit,
 }
 
+/// The terminal frontend's xdisp.c:resize_echo_area_exactly.
+pub(crate) type ResizeEchoAreaExactly = Box<dyn Fn(&mut Interpreter, &mut Env)>;
+
 thread_local! {
-    /// command_loop_1's resize_echo_area_exactly after a command, which
-    /// the frontend applies at its next update.
-    static RESIZE_ECHO_AREA_EXACTLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static RESIZE_ECHO_AREA_EXACTLY: std::cell::RefCell<Option<std::rc::Rc<ResizeEchoAreaExactly>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The frontend's resize_echo_area_exactly, none without a terminal.
+pub(crate) fn set_resize_echo_area_exactly(hook: Option<ResizeEchoAreaExactly>) {
+    RESIZE_ECHO_AREA_EXACTLY.with_borrow_mut(|slot| *slot = hook.map(std::rc::Rc::new));
 }
 
 /// xdisp.c:resize_echo_area_exactly as command_loop_1 calls it: the mini
-/// window takes the displayed message's own height again.
-pub(super) fn resize_echo_area_exactly() {
-    RESIZE_ECHO_AREA_EXACTLY.set(true);
-}
-
-/// Whether a command asked for resize_echo_area_exactly since the last
-/// update (the frontend's question, which clears it).
-pub(crate) fn take_resize_echo_area_exactly() -> bool {
-    RESIZE_ECHO_AREA_EXACTLY.replace(false)
+/// window showing a message resized to it (exactly, with no minibuffer
+/// active) and, when its height changed, redisplayed with
+/// windows_or_buffers_changed 42 and update_mode_lines 30.
+pub(super) fn resize_echo_area_exactly(interp: &mut Interpreter, env: &mut Env) {
+    let hook = RESIZE_ECHO_AREA_EXACTLY.with_borrow(|slot| slot.clone());
+    if let Some(hook) = hook {
+        hook(interp, env);
+    }
 }
 
 /// keyboard.c:Frecursive_edit: one more command loop level, the current
@@ -44,6 +50,7 @@ pub(crate) fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<
         .and_then(|_| interp.buffer_value(interp.current_buffer_id()))
         .unwrap_or(Value::Nil);
     interp.command_loop_recursion_depth += 1;
+    interp.update_mode_lines = 17;
     let result = interp.with_lisp_stack_roots(&buffer, |interp| recursive_edit_1(interp, env));
     // recursive_edit_unwind: Fset_buffer of BUFFER, which signals when it
     // was killed meanwhile (the level then stays counted, as GNU's does),
@@ -52,6 +59,7 @@ pub(crate) fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<
         super::call(interp, "set-buffer", &[buffer], env)?;
     }
     interp.command_loop_recursion_depth -= 1;
+    interp.update_mode_lines = 18;
     result.map(|()| Value::Nil)
 }
 
@@ -87,14 +95,64 @@ pub(crate) fn recursive_edit_1(interp: &mut Interpreter, env: &mut Env) -> Resul
 /// is command_loop_2 under a catch for `exit', whose thrown value it
 /// returns; at the top level it runs the startup (top_level_1) and then
 /// command_loop_2, each under a catch for `top-level', for ever.
+///
+/// HAVE_STACK_OVERFLOW_HANDLING's entry is where a C stack overflow
+/// returns to (sysdep.c:handle_sigsegv's siglongjmp to
+/// return_to_command_loop, here the exit `Interpreter::c_stack_overflow'
+/// starts, which the innermost running command loop takes): init_eval's
+/// resets, and the loop entered again with `internal--top-level-message'
+/// saying so, which `normal-top-level' shows at the top level.
 pub(crate) fn command_loop(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
-    // HAVE_STACK_OVERFLOW_HANDLING's entry, its stack overflow recovery
-    // aside: `normal-top-level''s message is the regular one again.
+    interp.command_loops_entered += 1;
+    let mut message = "Back to top level";
+    let result = loop {
+        interp.set_variable_key(
+            cached_symbol!("internal--top-level-message"),
+            Value::string(message),
+            env,
+        );
+        match command_loop_body(interp, env) {
+            Err(error) if is_c_stack_overflow_exit(&error) => {
+                init_eval_after_overflow(interp, env);
+                message = "Re-entering top level after C stack overflow";
+            }
+            result => break result,
+        }
+    };
+    interp.command_loops_entered -= 1;
+    result
+}
+
+/// Whether ERROR is the exit after a C stack overflow.
+fn is_c_stack_overflow_exit(error: &LispError) -> bool {
+    matches!(error.kind(), LispErrorKind::Terminate(termination) if termination.c_stack_overflow)
+}
+
+/// eval.c:init_eval as command_loop runs it after a C stack overflow:
+/// `quit-flag' nil, debug_on_next_call cleared and when_entered_debugger
+/// -1 (less than any `num-nonmacro-input-events', so the next error may
+/// enter the debugger), here with the exit's pending termination taken
+/// back.  Its `specpdl_ptr = specpdl' and
+/// `lisp_eval_depth = 0' were done by the frames the exit left, which
+/// popped their specpdl entries undone and gave their depth back; the
+/// entries and depth of the frames outside this command loop stay.  (GNU's
+/// drop the outer recursive edits' entries too, so that their unbind_to
+/// later walks below the specpdl's start; there are none at the top
+/// level.)
+fn init_eval_after_overflow(interp: &mut Interpreter, env: &mut Env) {
+    interp.c_stack_overflow_exit = false;
+    interp.take_pending_termination();
+    interp.clear_quit_flag_in_place();
+    interp.clear_debug_on_next_call();
     interp.set_variable_key(
-        cached_symbol!("internal--top-level-message"),
-        Value::string("Back to top level"),
+        cached_symbol!("internal-when-entered-debugger"),
+        Value::Integer(-1),
         env,
     );
+}
+
+/// command_loop past its HAVE_STACK_OVERFLOW_HANDLING entry.
+fn command_loop_body(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
     if interp.command_loop_recursion_depth > 0 || interp.minibuffer_depth() > 0 {
         let result = internal_catch(interp, env, "exit", |interp, env| {
             command_loop_2(interp, env, CommandLoopHandlers::Error).map(|()| Value::Nil)
@@ -151,17 +209,21 @@ fn internal_catch(
 ) -> Result<Value, LispError> {
     let tag = Value::symbol(tag);
     let count = interp.specpdl_index();
-    interp.push_catch_tag(tag);
+    let catcher = interp.push_active_catch_tag(tag);
     let result = body(interp, env);
-    interp.pop_catch_tag();
-    match result.map_err(LispError::into_kind) {
-        Ok(value) => Ok(value),
-        Err(LispErrorKind::Throw(thrown, value)) if crate::lisp::types::eq(thrown, tag) => {
-            interp.unbind_to(count, env)?;
-            Ok(value)
-        }
-        Err(error) => Err(LispError::from(error)),
+    interp.pop_handler_bindings(catcher);
+    let error = match result {
+        Ok(value) => return Ok(value),
+        Err(error) => error,
+    };
+    if let LispErrorKind::Throw(thrown, value) = error.kind()
+        && crate::lisp::types::eq(*thrown, tag)
+    {
+        let value = *value;
+        interp.unbind_to(count, env)?;
+        return Ok(value);
     }
+    Err(error)
 }
 
 /// keyboard.c:top_level_1: the startup, `top-level''s form (normal
@@ -232,6 +294,8 @@ pub(crate) fn command_loop_2(
             LispErrorKind::Throw(..) | LispErrorKind::Terminate(_) => false,
             _ => match handlers {
                 CommandLoopHandlers::Error => true,
+                // Not a signal the search passed this handler for.
+                CommandLoopHandlers::MinibufferQuit if error.skipped_by_search(start) => false,
                 CommandLoopHandlers::MinibufferQuit => error_data_has_condition(
                     interp,
                     &crate::lisp::eval::error_condition_value(&error),
@@ -257,6 +321,10 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
     // = 0, then the post-command hooks, so they run after commands that
     // left with an error or a throw to top level, and `last-command'.
     command_loop_entry(interp, env)?;
+    // command_loop_1's prev_buffer and prev_modiff and the static
+    // last_point_position, as the last command left them (a rejected
+    // menu's finalize reads them).
+    let mut carried: Option<(u64, crate::buffer::ModCount, usize)> = None;
     loop {
         // Make sure the current window's buffer is selected.
         select_window_buffer(interp)?;
@@ -267,10 +335,12 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         clear_this_command(interp, env);
         // Read next key sequence; i gets its length.
         init_raw_keybuf_count(interp);
-        let read = super::key_sequence::read_key_sequence(interp, Value::Nil, false, true, env)?;
+        let read =
+            super::key_sequence::read_key_sequence(interp, Value::Nil, false, true, false, env)?;
         // read_key_sequence_cmd, read_key_sequence_remapped and the last
         // key, held across what runs before the command does.
-        let end_of_input = read.keys.is_empty();
+        let end_of_input = read.keys.is_empty() && !read.menu_rejected;
+        let menu_rejected = read.menu_rejected;
         let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![
             read.cmd,
             read.remapped,
@@ -283,6 +353,16 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         // End of file -- happens only in a kbd macro, at the end.
         if end_of_input {
             return Ok(());
+        }
+        // -1 means read_key_sequence got a menu that was rejected.  Just
+        // loop around and read another command.
+        if menu_rejected {
+            super::echo::cancel_echoing(interp);
+            clear_command_keys(interp);
+            if let Some((prev_buffer, prev_modiff, last_point_position)) = carried {
+                finalize_command(interp, env, prev_buffer, prev_modiff, last_point_position)?;
+            }
+            continue;
         }
         interp.set_variable_key(cached_symbol!("last-command-event"), roots[2], env);
         if interp
@@ -299,6 +379,7 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         let prev_buffer = interp.current_buffer_id();
         let prev_modiff = interp.buffer.borrow().modified_tick();
         let last_point_position = interp.buffer.borrow().point();
+        carried = Some((prev_buffer, prev_modiff, last_point_position));
         interp.set_variable_key(cached_symbol!("disable-point-adjustment"), Value::Nil, env);
         // Process filters and timers may have messed with
         // deactivate-mark; reset it before we execute the command.
@@ -348,7 +429,7 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         // If displaying a message, resize the echo area window to fit
         // that message's size exactly.
         if crate::lisp::primitives::dispatch::display::echo_area_message_value().is_some() {
-            resize_echo_area_exactly();
+            resize_echo_area_exactly(interp, env);
         }
         // If there are warnings queued up, issue them.
         if interp
@@ -574,20 +655,49 @@ fn finalize_command(
     if interp.current_buffer_id() == prev_buffer
         && interp.selected_window_contents_buffer_id() == Some(prev_buffer)
         && last_point_position != interp.buffer.borrow().point()
-        && !interp
+    {
+        let (begv, zv) = interp.buffer.borrow().accessible_bounds();
+        if !interp
             .lookup_var_key(cached_symbol!("disable-point-adjustment"), env)
             .is_some_and(|value| value.is_truthy())
-        && !interp
-            .lookup_var_key(cached_symbol!("global-disable-point-adjustment"), env)
-            .is_some_and(|value| value.is_truthy())
-        && !interp
-            .lookup_var("composition-break-at-point", env)
-            .is_some_and(|value| value.is_truthy())
-    {
-        // (A last point inside a grapheme cluster has the display updated,
-        // which every redisplay here does.)
-        let modified = interp.buffer.borrow().modified_tick() != prev_modiff;
-        adjust_point_for_property(interp, env, last_point_position, modified)?;
+            && !interp
+                .lookup_var_key(cached_symbol!("global-disable-point-adjustment"), env)
+                .is_some_and(|value| value.is_truthy())
+            && !interp
+                .lookup_var("composition-break-at-point", env)
+                .is_some_and(|value| value.is_truthy())
+        {
+            // The last point was set within a grapheme cluster to prevent
+            // automatic composition; the display updated recovers it.
+            if last_point_position > begv
+                && last_point_position < zv
+                && crate::lisp::primitives::dispatch::composition_adjust_point(
+                    interp,
+                    env,
+                    last_point_position,
+                    last_point_position,
+                )? != last_point_position
+            {
+                interp.windows_or_buffers_changed = 21;
+            }
+            let modified = interp.buffer.borrow().modified_tick() != prev_modiff;
+            adjust_point_for_property(interp, env, last_point_position, modified)?;
+        } else {
+            // Point within a grapheme cluster: the display updated
+            // de-composes the cluster on the screen and places the cursor.
+            let point = interp.buffer.borrow().point();
+            if point > begv
+                && point < zv
+                && crate::lisp::primitives::dispatch::composition_adjust_point(
+                    interp,
+                    env,
+                    last_point_position,
+                    point,
+                )? != point
+            {
+                interp.windows_or_buffers_changed = 39;
+            }
+        }
     }
     let defining = interp
         .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)

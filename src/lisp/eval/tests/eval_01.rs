@@ -10344,7 +10344,8 @@ fn menu_bar_captions_follow_keymap_order_and_final_items() {
            (setq menu-bar-final-items '(help-menu)))",
     );
     let mut env: Env = crate::lisp::types::Env::new();
-    let captions = crate::lisp::primitives::menu_bar_row_captions(&mut interp, &mut env);
+    let captions =
+        crate::lisp::primitives::menu::menu_bar_item_names(&mut interp, &mut env).expect("items");
     assert_eq!(
         captions,
         vec!["File".to_string(), "Tools".to_string(), "Help".to_string()],
@@ -10361,7 +10362,7 @@ fn menu_bar_captions_include_composed_major_mode_maps() {
         "File", "Edit", "Options", "Buffers", "Tools", "Table", "Org", "Text", "Help",
     ];
     assert_eq!(
-        crate::lisp::primitives::menu_bar_row_captions(&mut interp, &mut env),
+        crate::lisp::primitives::menu::menu_bar_item_names(&mut interp, &mut env).expect("items"),
         expected,
         "composed Org and text-mode menu prefixes have GNU's visible order"
     );
@@ -10370,7 +10371,7 @@ fn menu_bar_captions_include_composed_major_mode_maps() {
         "(advice-add 'keymap-canonicalize :before (lambda (&rest _) (garbage-collect)))",
     );
     assert_eq!(
-        crate::lisp::primitives::menu_bar_row_captions(&mut interp, &mut env),
+        crate::lisp::primitives::menu::menu_bar_item_names(&mut interp, &mut env).expect("items"),
         expected,
         "active maps and collected menu entries survive Lisp canonicalization"
     );
@@ -10378,7 +10379,10 @@ fn menu_bar_captions_include_composed_major_mode_maps() {
 
 #[test]
 fn tty_menu_pane_lays_out_margins_hints_and_submenu_markers() {
-    let mut interp = Interpreter::new();
+    // single_keymap_panes walks the keymap through keymap.el's
+    // `keymap-canonicalize' (map_keymap_canonical), so the menu needs the
+    // loaded Lisp.
+    let (_permit, mut interp) = upstream_batch_interpreter_with_features(&[]);
     eval_str_with(
         &mut interp,
         "(progn
@@ -10395,43 +10399,62 @@ fn tty_menu_pane_lays_out_margins_hints_and_submenu_markers() {
     );
     let mut env: Env = crate::lisp::types::Env::new();
     let menu = eval_str_with(&mut interp, "demo-menu");
-    let pane =
-        crate::lisp::primitives::tty_menu_pane_from_keymap(&mut interp, &mut env, &menu, "Demo");
-    let texts: Vec<&str> = pane.items.iter().map(|item| item.text.as_str()).collect();
+    let built =
+        crate::lisp::primitives::menu::tty_menu_of_menu(&mut interp, menu, &mut env).expect("menu");
+    // One pane, named by the keymap's prompt, whose submenu holds the
+    // items (tty_menu_activate's onepane).
+    assert_eq!(built.text, vec![b"Demo".to_vec()]);
+    let pane = built.submenu[0].as_ref().expect("the pane's items");
+    let texts: Vec<String> = pane
+        .text
+        .iter()
+        .map(|text| String::from_utf8_lossy(text).into_owned())
+        .collect();
     assert_eq!(
         texts,
-        vec!["    Swap    C-t", "--", "[X] Marker", "    More >"],
-        "a pane with a button gains the four-blank checkbox margin \
-         (separators excepted), submenus carry the \" >\" marker before \
-         the width scan, and key hints sit two blanks past the widest name"
+        vec!["    Swap    C-t", "--", "[X] Marker", "    More"],
+        "the first button lines up the items before it with four blanks \
+         and every later item gets them (separators excepted); a key \
+         equivalent follows the name padded to the widest name's bytes; \
+         a submenu gets \" >\" only on a text terminal's frame"
     );
-    assert_eq!(pane.width, 15, "pane width is the widest laid-out item");
-    assert!(
-        pane.items[1].enabled,
-        "a separator draws in the enabled face; only the menu bar drops it"
+    assert_eq!(pane.width, 15, "pane width is the widest item");
+    assert_eq!(
+        pane.panenumber[1], 1,
+        "a separator is enabled; only the menu bar drops definition-less items"
     );
 }
 
 #[test]
 fn menu_bar_menu_at_x_y_maps_columns_to_bar_items() {
     let mut interp = gnu_early_lisp_interpreter();
-    let result = eval_str_with(
+    eval_str_with(
         &mut interp,
         "(progn
            (use-global-map (make-sparse-keymap))
            (define-key (current-global-map) [menu-bar edit]
              (cons \"Edit\" (make-sparse-keymap \"Edit\")))
            (define-key (current-global-map) [menu-bar file]
-             (cons \"File\" (make-sparse-keymap \"File\")))
-           (prin1-to-string
-            (list (menu-bar-menu-at-x-y 0 0)
-                  (menu-bar-menu-at-x-y 4 0)
-                  (menu-bar-menu-at-x-y 5 0)
-                  (menu-bar-menu-at-x-y 42 0)
-                  (menu-bar-menu-at-x-y 0 1))))",
+             (cons \"File\" (make-sparse-keymap \"File\"))))",
     );
+    let query = "(prin1-to-string
+        (list (menu-bar-menu-at-x-y 0 0)
+              (menu-bar-menu-at-x-y 4 0)
+              (menu-bar-menu-at-x-y 5 0)
+              (menu-bar-menu-at-x-y 42 0)
+              (menu-bar-menu-at-x-y 0 1)))";
+    // Before any redisplay computed and placed the frame's menu-bar items
+    // there is nothing to find (GNU's batch frame has no items vector,
+    // which its menu-bar-menu-at-x-y does not check for).
+    assert_string_value(eval_str_with(&mut interp, query), "(nil nil nil nil nil)");
+    let mut env = Env::new();
+    let frame = interp.selected_frame_id;
+    frame.borrow_mut().menu_bar_lines = 1;
+    crate::lisp::primitives::menu::update_menu_bar(&mut interp, frame, true, false, true, &mut env)
+        .expect("update_menu_bar");
+    crate::lisp::primitives::menu::display_menu_bar_items(&interp, frame);
     assert_string_value(
-        result,
+        eval_str_with(&mut interp, query),
         "(file file edit nil nil)",
         // Each caption owns its columns plus the separating blank
         // (menu.c's menu_bar_menu_at_x_y); anything off the bar row or

@@ -205,8 +205,7 @@ impl Interpreter {
             // `(catch 'ert--pass ...)'.  Register the catch while the body is
             // running so Lisp `ert-pass' reaches this runner boundary instead
             // of being rejected early as an unhandled `no-catch'.
-            self.active_catch_tags
-                .push(Value::Symbol("ert--pass".into()));
+            let catcher = self.push_active_catch_tag(Value::Symbol("ert--pass".into()));
             let test_started = std::time::Instant::now();
             let mut result = match (
                 stats_restore.as_ref(),
@@ -216,7 +215,7 @@ impl Interpreter {
                 (Ok(_), Ok(_), Ok(_)) => self.call_function_value(test.body, None, &[], &mut env),
                 (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => Err(error.clone()),
             };
-            self.active_catch_tags.pop();
+            self.pop_handler_bindings(catcher);
             // GNU's native `kill-emacs` exits immediately: ERT never turns it
             // into a failed test and never runs its ordinary per-test unwind
             // cleanup.  The process-owning batch boundary consumes the

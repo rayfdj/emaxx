@@ -150,7 +150,6 @@ impl Interpreter {
                 global
             }
         };
-        self.face_change_count += 1;
         let Some(frame) = frame else {
             return Ok(global);
         };
@@ -187,11 +186,6 @@ impl Interpreter {
     pub(crate) fn reset_frame_face_hash_table(&mut self, frame: FrameRef) {
         let table = crate::lisp::json::make_hash_table(self, "eq", Vec::new());
         frame.borrow_mut().face_hash_table = Some(table);
-        self.face_change_count = self.face_change_count.wrapping_add(1);
-    }
-
-    pub(crate) fn face_definitions_generation(&self) -> u64 {
-        self.face_change_count
     }
 
     /// Store VALUE in attribute INDEX of FACE's definition on FRAME (the
@@ -206,7 +200,6 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let vector = self.make_lisp_face_on(face, frame, false)?;
         aset_vector_value(&vector, index, value)?;
-        self.face_change_count += 1;
         Ok(value)
     }
 

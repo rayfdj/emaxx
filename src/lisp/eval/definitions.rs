@@ -197,14 +197,32 @@ impl Interpreter {
     }
 
     /// eval.c:lexbound_p: whether an interpreter environment that an inner
-    /// let, call or load replaced, and so saved, binds SYMBOL.  Each such
-    /// replacement is a frame of ENV above the one it replaced; the frame
-    /// on top is the environment in effect.
+    /// let, call, `eval' or load replaced, and so saved, binds SYMBOL: the
+    /// old values of the specpdl's bindings of
+    /// `internal-interpreter-environment'.  A replacement within ENV is a
+    /// frame above the one it replaced, the frame on top the environment
+    /// in effect; one that started a fresh environment (`eval', a load)
+    /// left the environments installed before it on the installed chain
+    /// (`frame_environments'), whose last entry, when it is the environment
+    /// in effect, saved nothing yet.
     fn lexbound_p(&self, symbol: &SymbolName, env: &Env) -> bool {
-        let saved = env.len().saturating_sub(1);
-        env.iter().take(saved).any(|frame| {
-            crate::lisp::types::assq_binding(frame.environment(), symbol)
+        let binds = |environment: &Value| {
+            crate::lisp::types::assq_binding(environment, symbol)
                 .is_ok_and(|binding| binding.is_some())
+        };
+        let saved = env.len().saturating_sub(1);
+        if env
+            .iter()
+            .take(saved)
+            .any(|frame| binds(frame.environment()))
+        {
+            return true;
+        }
+        let current = crate::lisp::types::current_environment_value(env);
+        let installed = &self.frame_environments;
+        installed.iter().enumerate().any(|(index, entry)| {
+            !(index + 1 == installed.len() && entry.environment.word() == current.word())
+                && binds(&entry.environment)
         })
     }
 
