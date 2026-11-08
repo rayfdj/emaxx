@@ -6122,7 +6122,7 @@ fn the_processes_at_exit_are_shut_down_as_shut_down_emacs_does() {
   (set-process-query-on-exit-flag c nil)
   (set-process-sentinel c (lambda (_p e) (princ (format "sentinel %S\n" e))))
   (princ (format "boot %S\n" (gnutls-boot c 'gnutls-x509pki '(:hostname "localhost" :priority "NORMAL:%NO_SHUFFLE_EXTENSIONS" :loglevel 2)))))
-(add-hook 'kill-emacs-hook (lambda () (princ "hook\n")))
+(add-hook 'kill-emacs-hook (lambda () (princ "hook\n") (signal-process srv 'SIGTERM)))
 (princ "end\n"))"##
             .replace("KEYFILE", &resources.join("key.pem").display().to_string())
             .replace("CERTFILE", &resources.join("cert.pem").display().to_string()),
@@ -7802,6 +7802,144 @@ fn signals_through_catches_and_out_of_handlers_follow_signal_or_quit() {
             "t11.el",
             r##"(setq debugger (lambda (&rest a) (princ (format "DEBUGGER %S\n" a) #'external-debugging-output) (throw 'dbg 'from-debugger)))
 (princ (format "r1 %S\n" (catch 'dbg (let ((debug-on-error t)) (catch 'x (handler-bind ((error (lambda (e) (throw 'x 'thrown)))) (car 1)))))))"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[test]
+fn nested_data_reads_on_the_read_stack_as_read0_s() {
+    // read0 keeps the data nested in an object on its read stack, in the
+    // heap: a million levels of lists, vectors, quotes, `function',
+    // backquotes and commas, records, closures and dotted tails read as
+    // GNU's, a hundred thousand nested labels too, and a function stream
+    // collecting garbage in the middle of nested data finds each element
+    // read so far kept (mark_lread marks the stack's entries).
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "deep.el",
+        r##";;; -*- lexical-binding: t -*-
+(defun rd-depth (v step)
+  (let ((d 0)) (while (setq v (funcall step v)) (setq d (1+ d))) d))
+(defun rd-probe (name text step)
+  (condition-case err
+      (princ (format "%s %d\n" name (rd-depth (car (read-from-string text)) step)))
+    (error (princ (format "%s err %S\n" name err)))))
+(defun rd-repeat (n s) (let ((parts nil)) (dotimes (_ n) (push s parts)) (apply #'concat parts)))
+(let ((n 1000000))
+  (rd-probe "list" (concat (make-string n ?\() (make-string n ?\))) #'car)
+  (rd-probe "vector" (concat (make-string n ?\[) (make-string n ?\]))
+            (lambda (v) (and (> (length v) 0) (aref v 0))))
+  (rd-probe "quote" (concat (make-string n ?') "a") (lambda (v) (and (consp v) (cadr v))))
+  (rd-probe "function" (concat (rd-repeat n "#'") "f") (lambda (v) (and (consp v) (cadr v))))
+  (rd-probe "backquote" (concat (rd-repeat n "`,") "a") (lambda (v) (and (consp v) (cadr v))))
+  (rd-probe "record" (concat (rd-repeat n "#s(r ") (make-string n ?\)))
+            (lambda (v) (and (recordp v) (> (length v) 1) (aref v 1))))
+  (rd-probe "bytecode" (concat (rd-repeat n "#[(x) (") "x" (rd-repeat n ") nil]"))
+            (lambda (v) (and (interpreted-function-p v) (car (aref v 1)))))
+  (rd-probe "dotted" (concat (rd-repeat n "(a . ") "nil" (make-string n ?\)))
+            (lambda (v) (and (consp v) (cdr v))))
+  (rd-probe "unclosed" (make-string n ?\() #'car)
+  (rd-probe "mismatched" (concat (make-string n ?\() "]") #'car))
+(let* ((n 100000)
+       (text (let ((parts nil))
+               (dotimes (i n) (push (format "#%d=(#%d# " (1+ i) (1+ i)) parts))
+               (concat (apply #'concat (nreverse parts)) (make-string n ?\)))))
+       (v (car (read-from-string text)))
+       (d 0))
+  (while (and (consp v) (eq (car v) v)) (setq v (cadr v) d (1+ d)))
+  (princ (format "labels %d %S\n" d v)))
+(defun rd-gc-stream (s)
+  (let ((i 0) (n (length s)))
+    (lambda (&optional ch)
+      (if ch (setq i (1- i))
+        (when (zerop (% i 2000)) (garbage-collect))
+        (when (< i n) (prog1 (aref s i) (setq i (1+ i))))))))
+(dolist (shape '(("[" "]" aref) ("(" ")" nth) ("#s(r " ")" record)))
+  (let* ((n 20000)
+         (text (let ((parts nil))
+                 (dotimes (i n) (push (format "%s\"s%d\" " (car shape) i) parts))
+                 (concat (apply #'concat (nreverse parts)) (rd-repeat n (cadr shape)))))
+         (v (read (rd-gc-stream text)))
+         (d 0))
+    (while (and v (equal (if (eq (nth 2 shape) 'record) (aref v 1) (elt v 0)) (format "s%d" d)))
+      (setq v (if (eq (nth 2 shape) 'record) (and (> (length v) 2) (aref v 2)) (and (> (length v) 1) (elt v 1)))
+            d (1+ d)))
+    (princ (format "gc %s %d %S\n" (car shape) d v))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    // Each entry's closer, the syntax errors of the entries an object goes
+    // into, and string_props_from_rev_list's triples set in order (an
+    // out-of-range one signals before a later triple is found short).
+    let program = corpus.write(
+        "syntax.el",
+        r##"(dolist (s '("#(\"abc\" 0 10 (face bold) 1)" "#(\"abc\" 0 1 (face bold) 1)" "#(\"abc\" 0 1)" "#()" "#(1 2 3)" "#s()" "#s(hash-table data (1 2))" "#^[nil]" "#^^[3 0]" "#[1 2]" "#[(x) (x)]" "(a . b c)" "(a . )" "( . a)" "[a . b]" "'." "(a . b" "#1=(a . #1#)" "#1=#1#" "#1=[#1#]" "(quote . a)" "`(a ,b ,@c)" "#'f" "(#! foo\n a)" "[a )" "#s(a ]" "(a]" "#&3\"a\"" ")" "]" "(a . b . c)" "(a #@3xyzb)"))
+  (condition-case err (princ (format "%S -> %S\n" s (let ((print-circle t)) (format "%S" (car (read-from-string s)))))
+    (error (princ (format "%S -> err %S\n" s err)))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn reads_keep_their_own_stacks_and_end_as_read0_ends() {
+    // Each reader's read stack and roots are its own, so reads suspended in
+    // two Lisp threads keep their elements apart; the end of the input after
+    // a `#!' line or a `#@' skip at the top level, or inside a datum from a
+    // function stream, is end_of_file_error; and a label naming a symbol
+    // with position signals in the substitution while
+    // `symbols-with-pos-enabled' is nil, as substitute_object_recurse does.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "threads.el",
+            r##";;; -*- lexical-binding: t -*-
+(defun ystream (s)
+  (let ((i 0))
+    (lambda (&optional ch)
+      (if ch (setq i (1- i))
+        (thread-yield)
+        (when (< i (length s)) (prog1 (aref s i) (setq i (1+ i))))))))
+(let ((th (make-thread (lambda () (read (ystream "[a b c]"))))))
+  (princ (format "main: %S\n" (read (ystream "[x y z]"))))
+  (princ (format "thread: %S\n" (thread-join th))))"##,
+        ),
+        (
+            "stream-eof.el",
+            r##";;; -*- lexical-binding: t -*-
+(defun str-stream (s)
+  (let ((i 0) (n (length s)))
+    (lambda (&optional ch)
+      (if ch (setq i (1- i))
+        (when (< i n) (prog1 (aref s i) (setq i (1+ i))))))))
+(dolist (s '("" "(a" "[a" "'" "#s(a" "\"abc" "?" "(a . b"))
+  (princ (format "%S -> %S\n" s (condition-case err (read (str-stream s)) (error err)))))"##,
+        ),
+        (
+            "positions.el",
+            r##";;; -*- lexical-binding: t -*-
+(defun show (tag f)
+  (condition-case err
+      (princ (format "%s -> %s\n" tag (let ((print-circle t) (print-symbols-bare nil)) (format "%S" (funcall f)))))
+    (error (princ (format "%s -> err %S\n" tag err)))))
+(dolist (swp '(nil t))
+  (dolist (s '("(#1=a #1# b)" "#1=[a #1# b]" "#1=[(a) #1#]" "(x #1=[(a) #1#])" "#1=(a #1#)" "(#1=\"s\" #1#)" "(#1=[b] #1#)" "(#1=[] #1#)" "(#1=#s(a b) #1#)" "(#1=#'a #1#)" "(#1=nil #1#)" "(#1=#:u #1#)"))
+    (show (format "swp=%S %S" swp s) (lambda () (let ((symbols-with-pos-enabled swp)) (read-positioning-symbols s))))))"##,
+        ),
+        (
+            "load-end.el",
+            r##";;; -*- lexical-binding: t -*-
+(defvar v1)
+(dolist (text '("(setq v1 1)\n#!foo" "(setq v1 3)\n#@5abcde" "(setq v1 12) #@0 (setq v1 13)" "(setq v1 4)\n#!foo\n(setq v1 5)"))
+  (let ((file (make-temp-file "rdend" nil ".el" text)))
+    (setq v1 nil)
+    (princ (format "%S load %S v1=%S\n" text
+                   (condition-case err (load file nil t) (error (car err))) v1))
+    (setq v1 nil)
+    (princ (format "%S eval-buffer %S v1=%S\n" text
+                   (condition-case err (with-temp-buffer (insert text) (eval-buffer) 'ok) (error (car err))) v1))
+    (delete-file file)))"##,
         ),
     ] {
         let program = corpus.write(name, text);

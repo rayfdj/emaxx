@@ -1124,6 +1124,10 @@ impl CallableReader<'_> {
 }
 
 impl crate::lisp::reader::ReadContext for CallableReader<'_> {
+    fn symbols_with_pos_enabled(&mut self) -> bool {
+        crate::lisp::primitives::symbols_with_pos_enabled(self.interp, self.env)
+    }
+
     fn intern(&mut self, name: &str, _multibyte: bool) -> Result<Value, LispError> {
         crate::lisp::reader::ReaderStream::intern_symbol(self, name, false)
     }
@@ -1202,11 +1206,16 @@ fn read_callable_source(
             env,
         };
         let mut reader = crate::lisp::reader::Reader::from_stream(&mut stream, locate_symbols);
-        let value = reader.read()?;
-        reader.finish_stream()?;
+        let value = reader.read().and_then(|value| {
+            reader.finish_stream()?;
+            Ok(value)
+        });
         (value, reader.emitted_reader_forms())
     };
-    let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
+    // end_of_file_error names `load-true-file-name' whatever the stream.
+    let value = value
+        .map_err(|error| reader_end_of_file(interp, error, env))?
+        .ok_or_else(|| end_of_file_error(interp, env))?;
     if needs_materialization {
         interp.materialize_read_object_literals(value, env)
     } else {

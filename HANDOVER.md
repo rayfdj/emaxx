@@ -17362,6 +17362,95 @@ setup_process_coding_systems's check now refuses). A 13-form
   final source, and the review's probes give GNU's results on the
   rebuilt binary but where GNU itself crashes, there meeting Emaxx's
   stack floor, and for the two timings recorded above.
+- **Round 346: the reader keeps the data nested in an object on an
+  explicit stack, as lread.c's read0 keeps it on rdstack.** Emaxx's
+  reader read the elements of a list, a vector, a quotation, `#'' and
+  each `#' syntax that holds objects by calling itself, a Rust frame a
+  level, so a million-deep list (`(make-string 1000000 ?\()' and its
+  closers) overflowed the stack, killing Emaxx, where GNU reads it.
+  read0's loop is Emaxx's now: read_obj reads an atom, or pushes an
+  entry for the syntax that opens one (RE_list_start for `(', RE_vector,
+  RE_record, RE_char_table, RE_sub_char_table, RE_byte_code and
+  RE_string_props for `[', `#s(', `#^[', `#^^[', `#[' and `#(',
+  RE_special for `'', `#'', `\`', `,' and `,@', RE_numbered for `#N='),
+  `#!' and `#@' reading on; and each object read goes into the innermost
+  entry, which conses it onto a list's tail, collects it as a sequence's
+  element, makes (SYMBOL OBJECT) of a special or completes a label, an
+  entry so completed giving the object for the next.  A separate dot
+  after a list's element makes RE_list RE_list_dot, whose object is the
+  tail, its `)' read after it, and its (#$ . FIXNUM) the doc string at
+  once under `load-force-doc-strings'; `)' and `]' take the innermost
+  entry they close (an RE_list_start is nil) and are invalid syntax for
+  any other, the sequence's object made as vector_from_rev_list,
+  record_from_list or hash_table_from_plist, char_table_from_rev_list,
+  sub_char_table_from_rev_list, bytecode_from_rev_list and
+  string_props_from_rev_list make it, after the locate_syms its opener
+  saved is restored.  The entries' values stay on the read root stack,
+  as mark_lread marks rdstack's: a list's first cons, a sequence's
+  elements, a label's placeholder, so a function stream that collects
+  garbage in the middle of nested data loses none of it.
+  string_props_from_rev_list sets each BEG END PLIST triple as it comes,
+  so an out-of-range triple signals args-out-of-range before a later one
+  is found short, where Emaxx counted the triples first
+  (invalid-read-syntax "Invalid string property list"); and the reader's
+  backquote depth, which nothing read, is gone.
+  lread--substitute-object-in-subtree's walk recurses as GNU's
+  substitute_object_recurse does (GNU's batch session dies at ten
+  thousand nested vectors around a `#1#').  cli_parity's comparison of a
+  TLS connection at exit now stops its gnutls-serv in `kill-emacs-hook':
+  the server ignores the SIGHUP shut_down_emacs sends its children, so
+  each run, GNU's and Emaxx's alike, left one listening, and later runs'
+  clients reached a stale server.  An adversarial review of the round,
+  probing GNU and Emaxx in batch, found one P1 new in the round, and two
+  P2s and five P3s present before it, all fixed but one P3.  P1: the
+  entries' values lived on one thread-local root stack, addressed by
+  depth, which reads suspended in two Lisp threads (a function stream's
+  callback yielding) shared, so they took each other's elements (GNU's
+  main: [x y z], thread: [a b c]; Emaxx's main: [x a y b z c], thread:
+  []) or aborted Emaxx on an index past the stack: each reader keeps its
+  own, scanned while it lives, which also takes back what the deepest
+  read grew (the collector scanned the shared stack's peak capacity at
+  every collection after a 3,000,000-deep read, a P3).  P2: a top-level
+  `#!' line or `#@' skip reaching the end of the input ended the read as
+  an empty input, so `load', `eval-buffer' and a `.elc' load finished
+  silently where GNU's read0, having consumed the `#', signals
+  end-of-file: the end once read0 has consumed syntax is
+  end_of_file_error, as inside any entry; and an end inside a datum read
+  from a function stream, or in a `.elc' load's last form, signaled a
+  bare `end-of-file', where end_of_file_error names
+  `load-true-file-name' whatever the stream: those reads map it as the
+  string and buffer reads did.  P3: a label naming a symbol with
+  position, or an object holding one, read with
+  `read-positioning-symbols' while `symbols-with-pos-enabled' is nil,
+  went through the substitution as an atom, where GNU's
+  substitute_object_recurse takes it for an unknown pseudovector and
+  signals (wrong-type-argument sequencep #<symbol a at 4>): the walk
+  signals it so; get_lazy_string undoes a saved doc string's ^A quoting
+  in the saved bytes themselves, so a second reference to the same text
+  reads what the first left, as Emaxx's now does; and
+  bytecode_from_rev_list reads lazily loaded code whenever lread.c's
+  `infile' is set, for any read while a file stream is loaded (a `(read
+  "#[...]")' from a string a `.elc' evaluates), where Emaxx asked only
+  the reader of the file: the file loads' extent is the reader's to ask.
+  Recorded: the reader state GNU shares between nested reads, a
+  callback's `read' inside a datum clearing the outer read's labels or a
+  hash table test's moving `read-from-string''s index, which Emaxx keeps
+  per reader (GNU dies when both reads use labels).  Local validation:
+  the grouped gate's 3,508 library tests pass, and the integration
+  targets: cli's 30, cli_parity's 116 (its new comparison of the
+  review's reads: a million-deep list, vector and quotation, the
+  suspended reads of two threads, the ends after `#!' and `#@', a doc
+  string referenced twice and the labels of symbols with position),
+  ert_runner's 3, native_comp_identity's, native_thread_continuations',
+  package_lifecycle's 5 and runtime_ownership's 3.  Among the parallel
+  targets two cli_parity comparisons failed once: the help character
+  after a prefix, Emaxx's echo of `C-x 4' having come before the help
+  character (the one-second echo timer against the probe's pauses, as in
+  round 345), and the process descriptors' comparison, where GNU's own
+  run lost a child's output under the load; each passes alone three
+  times of three.  clippy with `--all-targets --all-features -D
+  warnings' passes, and the review's probes give GNU's results on the
+  rebuilt binary but for the reader state recorded above.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -20273,7 +20362,24 @@ ert-tests as a whole 26,307 ms against 27,211.
   and electric-tests (1.14 against 0.60). The Rust gate (run
   42440807126) passed.
 
+**On `6fb64a9`** (round 345): the frozen run (run 42447670550) matched
+  all 7,928 outcomes at its first attempt. Setup 55.2 s against 47.8 s
+  (1.154), test bodies 240.7 s against 224.8 s (1.071), in all 1.078,
+  on a runner faster for both than round 344's (GNU's bodies 224.8 s
+  against 266.2). The widest body gaps are tramp-tests (15.5 s against
+  13.7), ert-tests (29.8 against 28.3), icalendar-tests (1.72 against
+  0.41), comp-tests (12.9 against 11.7), semantic-utest-ia (3.16
+  against 2.37), mule-tests (1.98 against 1.33), process-tests (2.19
+  against 1.76) and electric-tests (0.70 against 0.39). The Rust gate (run 42447668332) passed.
+
 **Findings recorded, not fixed:**
+- **The reader's state between nested reads (round 346).** GNU's read0
+  keeps its label maps and `read-from-string''s index in globals, which
+  a `read' run in the middle of another read (a function stream's
+  callback, a hash table test's hash function) clears or moves: the
+  outer read's `#1#' is then invalid syntax, or its datum reads to
+  end-of-file, and GNU dies when both reads use labels. Emaxx keeps that
+  state per reader, so the outer read goes on as if nothing had run.
 - **The handler search's remaining differences (round 345).** A quit a
   `handler-bind' handler leaves pending (`quit-flag' set under
   `inhibit-quit', and the handler returns) is processed after the
@@ -20318,9 +20424,7 @@ ert-tests as a whole 26,307 ms against 27,211.
   part, as when that record was a byte-code call's (its arguments on the
   heap byte-code stack) or redisplay's C frames took the stack's last
   bytes; Emaxx tests the floor at its call entries and recovers there.
-  The reader recurses for nested lists and vectors where lread.c's read0
-  keeps an explicit read_stack, so a datum nested a million deep crashes
-  Emaxx (SIGSEGV) where GNU reads it.  And the read_char wipe of a
+  And the read_char wipe of a
   message reaches the terminal when the keyboard is polled, where GNU's
   waits for the next redisplay, which shows only when that redisplay
   never comes (a C stack overflow in one leaves GNU's display frozen

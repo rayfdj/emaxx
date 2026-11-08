@@ -45,6 +45,10 @@ impl<'i> LispReadContext<'i> {
 }
 
 impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
+    fn symbols_with_pos_enabled(&mut self) -> bool {
+        crate::lisp::primitives::symbols_with_pos_enabled(self.interp, self.env)
+    }
+
     fn intern(&mut self, name: &str, multibyte: bool) -> Result<Value, LispError> {
         // read0 interns each symbol in `check_obarray (Vobarray)', read
         // as the symbol is: Lisp run in the middle of a read can bind it.

@@ -902,9 +902,12 @@ pub(crate) fn read_next_load_input_form(
         let mut reader = reader.with_read_context(&mut context);
         let value = reader.read();
         *offset = base + reader.position();
-        let value = value?;
         (value, reader.emitted_reader_forms())
     };
+    // An end inside a datum is end_of_file_error, naming
+    // `load-true-file-name'.
+    let value = value
+        .map_err(|error| crate::lisp::primitives::print::reader_end_of_file(interp, error, env))?;
     match value {
         Some(value) if needs_materialization => interp
             .materialize_read_object_literals(value, env)
@@ -963,6 +966,8 @@ fn read_lisp_file_bytes(
             .display()
             .to_string()
     });
+    // Fload's `infile' for a file stream, until close_infile_unwind.
+    let _infile = matches!(text, LoadText::File(_)).then(reader::InfileLoad::enter);
     interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
         let previous = interp.set_current_load_file(Some(load_file.clone()));
         let mut env = if settings.lexical_binding {

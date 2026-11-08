@@ -129,6 +129,11 @@ pub(crate) trait ReadContext {
     /// or `;' CHARACTER on `lread--unescaped-character-literals', as it is
     /// read.
     fn unescaped_character_literal(&mut self, character: u8) -> Result<(), LispError>;
+    /// symbols_with_pos_enabled: whether SYMBOLP takes a symbol with
+    /// position for its symbol.
+    fn symbols_with_pos_enabled(&mut self) -> bool {
+        false
+    }
 }
 
 /// One of lread.c's saved_strings: the bytes `#@' skipped in a file while
@@ -142,32 +147,6 @@ thread_local! {
     /// lread.c saved_strings: the last two, the most recent first.
     static SAVED_STRINGS: std::cell::RefCell<[Option<SavedString>; 2]> =
         const { std::cell::RefCell::new([None, None]) };
-    /// lread.c's rdstack, as mark_lread marks it: each completed datum of
-    /// a read in progress stays rooted while a later one is read, for Lisp
-    /// can run in the middle of a read (a function stream's callbacks,
-    /// `char-from-name' for a `\N{NAME}' escape) and collect.  A completed
-    /// parent replaces its children here; each reader works above the
-    /// depth it found, as each read0 above its saved base.
-    static READ_ROOTS: std::cell::RefCell<crate::lisp::alloc::RootedVec<Value>> =
-        const { std::cell::RefCell::new(crate::lisp::alloc::RootedVec::new()) };
-}
-
-/// The depth of the read root stack.
-#[inline]
-fn read_roots_depth() -> usize {
-    READ_ROOTS.with_borrow(|roots| roots.len())
-}
-
-/// The read roots back to DEPTH, the depth before a datum's read, and that
-/// datum, VALUE, rooted in its children's place.
-#[inline]
-fn root_read_result(depth: usize, value: Option<Value>) {
-    READ_ROOTS.with_borrow_mut(|roots| {
-        roots.truncate(depth);
-        if let Some(value) = value {
-            roots.push(value);
-        }
-    });
 }
 
 /// skip_lazy_string's record of a skipped doc string.
@@ -179,28 +158,65 @@ fn save_lazy_string(position: usize, bytes: Vec<u8>) {
 }
 
 /// get_lazy_string from the saved strings: the text at file POSITION up to
-/// its ^_, the ^A quoting undone; None when no saved string holds it.
+/// its ^_, the ^A quoting undone in the saved bytes themselves, as GNU's
+/// loop rewrites them (a second reference to the same text reads what the
+/// first left); None when no saved string holds it.
 fn saved_lazy_string(position: usize) -> Option<Vec<u8>> {
-    SAVED_STRINGS.with_borrow(|saved| {
-        let saved = saved.iter().flatten().find(|saved| {
+    SAVED_STRINGS.with_borrow_mut(|saved| {
+        let saved = saved.iter_mut().flatten().find(|saved| {
             position >= saved.position && position - saved.position < saved.bytes.len()
         })?;
-        let mut bytes = saved.bytes[position - saved.position..].iter().copied();
-        let mut text = Vec::new();
-        while let Some(byte) = bytes.next().filter(|byte| *byte != 0o37) {
-            text.push(if byte == 1 {
-                match bytes.next() {
-                    Some(b'0') => 0,
-                    Some(b'_') => 0o37,
-                    Some(other) => other,
-                    None => break,
+        let bytes = &mut saved.bytes;
+        let start = position - saved.position;
+        let (mut from, mut to) = (start, start);
+        while let Some(&byte) = bytes.get(from).filter(|byte| **byte != 0o37) {
+            from += 1;
+            let character = if byte == 1 {
+                let Some(&quoted) = bytes.get(from) else {
+                    break;
+                };
+                from += 1;
+                match quoted {
+                    b'0' => 0,
+                    b'_' => 0o37,
+                    other => other,
                 }
             } else {
                 byte
-            });
+            };
+            bytes[to] = character;
+            to += 1;
         }
-        Some(text)
+        Some(bytes[start..to].to_vec())
     })
+}
+
+thread_local! {
+    /// The `load's of a file stream running (lread.c's `infile' set):
+    /// bytecode_from_rev_list reads lazily loaded code for any read while
+    /// one runs, from a string as from the file.
+    static INFILE_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Fload's `infile = &input' for a file stream, given back as
+/// close_infile_unwind does when the guard goes.
+pub(crate) struct InfileLoad(());
+
+impl InfileLoad {
+    pub(crate) fn enter() -> Self {
+        INFILE_LOADS.with(|loads| loads.set(loads.get() + 1));
+        InfileLoad(())
+    }
+}
+
+impl Drop for InfileLoad {
+    fn drop(&mut self) {
+        INFILE_LOADS.with(|loads| loads.set(loads.get().saturating_sub(1)));
+    }
+}
+
+fn infile_load_running() -> bool {
+    INFILE_LOADS.with(|loads| loads.get() > 0)
 }
 
 /// Fload's end: the strings saved while it read are freed.
@@ -228,17 +244,19 @@ fn encoded_code_char(code: u32) -> char {
     }
 }
 
-/// The objects substitute_object_recurse does not look inside: symbols,
-/// numbers and strings without text properties.
-fn atomic_for_substitution(value: &Value) -> bool {
+/// The objects substitute_object_recurse does not look inside: symbols
+/// (a symbol with position too, SYMBOLP's, only while
+/// `symbols-with-pos-enabled' is non-nil, SYMBOLS_WITH_POS), numbers and
+/// strings without text properties.
+fn atomic_for_substitution(value: &Value, symbols_with_pos: bool) -> bool {
     match value.kind() {
         Kind::Nil
         | Kind::T
         | Kind::Symbol(_)
-        | Kind::SymbolWithPos(_)
         | Kind::Integer(_)
         | Kind::BigInteger(_)
         | Kind::Float(_) => true,
+        Kind::SymbolWithPos(_) => symbols_with_pos,
         Kind::StringObject(string) => !string.borrow().props.has_intervals(),
         _ => false,
     }
@@ -252,20 +270,35 @@ struct Substitution<'c> {
     placeholder: Value,
     completed: &'c HashSet<usize, IdentityBuildHasher>,
     seen: HashSet<usize, IdentityBuildHasher>,
+    /// symbols_with_pos_enabled, under which SYMBOLP takes a symbol with
+    /// position.
+    symbols_with_pos: bool,
+    /// The walk's signal (a symbol with position met while SYMBOLP takes
+    /// none, an unknown pseudovector to it): the walk stops, and the read
+    /// signals it.
+    failure: Option<LispError>,
 }
 
 impl Substitution<'_> {
     /// substitute_object_recurse: SUBTREE, with each placeholder in it
     /// replaced by the object, in place.
     fn recurse(&mut self, subtree: Value) -> Value {
+        if self.failure.is_some() {
+            return subtree;
+        }
         if subtree.eq_value(self.placeholder) {
             return self.object;
         }
-        if atomic_for_substitution(&subtree) || !self.enter(&subtree) {
+        if atomic_for_substitution(&subtree, self.symbols_with_pos) || !self.enter(&subtree) {
             return subtree;
         }
         match subtree.kind() {
             Kind::Cons(_) => self.recurse_list(subtree),
+            // An unknown pseudovector: `wrong_type_argument (Qsequencep,
+            // subtree)', as Flength once signaled.
+            Kind::SymbolWithPos(_) => {
+                self.failure = Some(LispError::WrongTypeArgument("sequencep".into(), subtree));
+            }
             Kind::Vector(vector) => {
                 for index in 0..vector.len() {
                     let slot = vector.get(index).expect("an index below the length");
@@ -461,6 +494,85 @@ pub(crate) fn apply_symbol_shorthands_to_token(
     token
 }
 
+/// An entry of read0's read stack: the syntactic context the next object
+/// read goes into, the innermost entry last, so nested data takes heap
+/// rather than Rust frames, as lread.c's rdstack does.  The values an
+/// entry holds stay rooted on the read root stack from its BASE, as
+/// mark_lread marks rdstack's entries: a list's first cons, a sequence's
+/// elements, a label's placeholder.
+struct ReadFrame {
+    entry: ReadEntry,
+    base: usize,
+}
+
+/// lread.c's read_entry_type, with each type's data.
+enum ReadEntry {
+    /// RE_list_start (no cons yet), RE_list and, once DOTTED, RE_list_dot:
+    /// the list's first and last conses.
+    List {
+        cells: Option<(Value, Value)>,
+        dotted: bool,
+    },
+    /// RE_vector, RE_record, RE_char_table, RE_sub_char_table,
+    /// RE_byte_code and RE_string_props: the elements are the read roots
+    /// from the entry's base on; OLD_LOCATE is the locate_syms the opener
+    /// saved.
+    Sequence {
+        syntax: SequenceSyntax,
+        old_locate: bool,
+    },
+    /// RE_special: `'', `#'', `\`', `,' or `,@', the object read making
+    /// (SYMBOL OBJECT).
+    Special { symbol: &'static str },
+    /// RE_numbered: `#N=', with the label's placeholder.
+    Numbered { id: u64, placeholder: Value },
+}
+
+/// The bracketed syntaxes whose elements read0 collects.
+#[derive(Clone, Copy)]
+enum SequenceSyntax {
+    /// `[': a vector.
+    Vector,
+    /// `#s(': a record or a hash table.
+    Record,
+    /// `#^[': a char-table.
+    CharTable,
+    /// `#^^[': a sub-char-table.
+    SubCharTable,
+    /// `#[': a byte-code function or an interpreted closure.
+    ByteCode,
+    /// `#(': a string with text properties.
+    StringProps,
+}
+
+impl SequenceSyntax {
+    /// The character that closes the syntax.
+    fn closer(self) -> u8 {
+        match self {
+            SequenceSyntax::Record | SequenceSyntax::StringProps => b')',
+            _ => b']',
+        }
+    }
+}
+
+/// What read0's read_obj makes of the syntax at point: an object, a read
+/// stack entry for the objects that follow, nothing yet (`#!' and `#@'
+/// skip text and read on), or the end of the input.
+enum ReadStep {
+    Object(Value),
+    Open(ReadEntry),
+    Again,
+    End,
+}
+
+impl ReadStep {
+    /// The step of an object a reading function returned, None at the end
+    /// of the input.
+    fn of(value: Option<Value>) -> Self {
+        value.map_or(ReadStep::End, ReadStep::Object)
+    }
+}
+
 /// A simple s-expression reader. Handles the subset of Elisp syntax
 /// that appears in ERT test files: atoms, lists, strings, quotes,
 /// backquote, characters, and comments.
@@ -472,7 +584,6 @@ pub struct Reader<'a> {
     pos: usize,
     symbol_shorthands: Vec<(String, String)>,
     context: Option<&'a mut dyn ReadContext>,
-    backquote_depth: usize,
     /// read0's LOCATE_SYMS: allocate a symbol-with-position for each
     /// occurrence except the canonical nil symbol.
     locate_symbols: bool,
@@ -505,20 +616,14 @@ pub struct Reader<'a> {
     /// file `load' reads, but not a unibyte string or buffer or a
     /// function.  read0 makes a new symbol's name of this multibyteness.
     multibyte_source: bool,
-    /// The read root stack's depth when this reader began: its roots lie
-    /// above it, and go when it does.
-    roots_base: usize,
-}
-
-impl Drop for Reader<'_> {
-    fn drop(&mut self) {
-        let base = self.roots_base;
-        READ_ROOTS.with_borrow_mut(|roots| {
-            if roots.len() > base {
-                roots.truncate(base);
-            }
-        });
-    }
+    /// lread.c's rdstack, as mark_lread marks it: each completed datum of
+    /// a read in progress stays rooted while a later one is read, for Lisp
+    /// can run in the middle of a read (a function stream's callbacks,
+    /// `char-from-name' for a `\N{NAME}' escape) and collect.  A completed
+    /// entry's object replaces the values it held here.  The reader's own,
+    /// so that reads suspended in different Lisp threads (a stream's
+    /// callback yielding) keep their entries apart.
+    roots: crate::lisp::alloc::RootedVec<Value>,
 }
 
 impl<'a> Reader<'a> {
@@ -536,7 +641,6 @@ impl<'a> Reader<'a> {
             pos: 0,
             symbol_shorthands,
             context: None,
-            backquote_depth: 0,
             // GNU's reader always encodes quote shorthands with the raw
             // `\``/`\,'/`\,@' symbols; pcase.el's pattern expanders are
             // registered under those names.
@@ -544,7 +648,7 @@ impl<'a> Reader<'a> {
             read_objects_map: HashMap::default(),
             read_objects_completed: HashSet::default(),
             read_depth: 0,
-            roots_base: read_roots_depth(),
+            roots: crate::lisp::alloc::RootedVec::new(),
             locate_symbols: false,
             position_base: 0,
             position_cursor_byte: 0,
@@ -797,16 +901,24 @@ impl<'a> Reader<'a> {
             return Ok(placeholder);
         }
         // If it can be recursive, remember it for future substitutions.
-        if !atomic_for_substitution(&object) {
+        let symbols_with_pos = self
+            .read_context()
+            .is_some_and(|context| context.symbols_with_pos_enabled());
+        if !atomic_for_substitution(&object, symbols_with_pos) {
             self.read_objects_completed.insert(object.word());
         }
-        Substitution {
+        let mut substitution = Substitution {
             object,
             placeholder,
             completed: &self.read_objects_completed,
             seen: HashSet::default(),
+            symbols_with_pos,
+            failure: None,
+        };
+        substitution.recurse(object);
+        if let Some(failure) = substitution.failure {
+            return Err(failure);
         }
-        .recurse(object);
         self.read_objects_map.insert(id, object);
         Ok(object)
     }
@@ -952,9 +1064,25 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    /// The depth of the read root stack.
+    #[inline]
+    fn roots_depth(&self) -> usize {
+        self.roots.len()
+    }
+
+    /// The read roots back to DEPTH, the depth before a datum's read, and
+    /// that datum, VALUE, rooted in its children's place.
+    #[inline]
+    fn root_read_result(&mut self, depth: usize, value: Option<Value>) {
+        self.roots.truncate(depth);
+        if let Some(value) = value {
+            self.roots.push(value);
+        }
+    }
+
     /// Read one s-expression. Returns None at end of input.
     pub fn read(&mut self) -> Result<Option<Value>, LispError> {
-        let roots = read_roots_depth();
+        let roots = self.roots_depth();
         self.read_depth += 1;
         let result = self.read_datum();
         self.read_depth -= 1;
@@ -966,7 +1094,7 @@ impl<'a> Reader<'a> {
         // it; a whole one goes to the caller, as read0 leaves rdstack at
         // its base.
         let datum = result.as_ref().ok().copied().flatten();
-        root_read_result(roots, datum.filter(|_| self.read_depth != 0));
+        self.root_read_result(roots, datum.filter(|_| self.read_depth != 0));
         let value = result?;
         // Every placeholder is the value of some `read' call, nested ones
         // included (lists, vectors and quotes read their elements here).
@@ -983,44 +1111,357 @@ impl<'a> Reader<'a> {
         self.emitted_reader_forms
     }
 
+    /// read0: one object, the data nested in it read on the read stack.
+    /// None at the end of the input before any object.
     fn read_datum(&mut self) -> Result<Option<Value>, LispError> {
-        self.skip_whitespace_and_comments()?;
+        let mut stack = Vec::new();
+        let locate_symbols = self.locate_symbols;
+        let result = self.read_object(&mut stack);
+        // The entries an error leaves go, and the locate_syms they saved
+        // with them (read0's locals).
+        if result.is_err() {
+            self.locate_symbols = locate_symbols;
+        }
+        result
+    }
 
-        match self.peek()? {
-            None => Ok(None),
-            Some(b'(') => self.read_list(),
-            Some(b'[') => self.read_vector(),
-            // read0 reads the stray closer before invalid_syntax.
+    /// read0's loop: read_obj reads an object or pushes an entry for the
+    /// objects that follow it, and each object read goes into the
+    /// innermost entry, an entry it completes giving the object for the
+    /// next, until the stack is empty.
+    fn read_object(&mut self, stack: &mut Vec<ReadFrame>) -> Result<Option<Value>, LispError> {
+        // Whether read0 has consumed syntax yet (a `#!' line or a `#@'
+        // skip): from then on the end of the input is end_of_file_error,
+        // as it is inside any entry.
+        let mut consumed = false;
+        loop {
+            let mut obj = match self.read_step(stack)? {
+                ReadStep::Object(obj) => obj,
+                ReadStep::Open(entry) => {
+                    let base = self.roots_depth();
+                    if let ReadEntry::Numbered { placeholder, .. } = entry {
+                        self.root_read_result(base, Some(placeholder));
+                    }
+                    stack.push(ReadFrame { entry, base });
+                    continue;
+                }
+                ReadStep::Again => {
+                    consumed = true;
+                    continue;
+                }
+                ReadStep::End if stack.is_empty() && !consumed => return Ok(None),
+                ReadStep::End => return Err(LispError::EndOfInput()),
+            };
+            // We have read an object in OBJ: the stack decides what to do
+            // with it.
+            loop {
+                // Every placeholder is an object read here, nested ones
+                // included.
+                if matches!(obj.kind(), Kind::ReaderForm(_)) {
+                    self.emitted_reader_forms = true;
+                }
+                let Some(frame) = stack.last_mut() else {
+                    return Ok(Some(obj));
+                };
+                let base = frame.base;
+                // OBJ stays rooted until its entry holds it: a sequence's
+                // element until the sequence is complete.
+                self.roots.push(obj);
+                match &mut frame.entry {
+                    ReadEntry::List {
+                        cells: cells @ None,
+                        ..
+                    } => {
+                        let cell = Value::cons(obj, Value::Nil);
+                        *cells = Some((cell, cell));
+                        self.root_read_result(base, Some(cell));
+                        break;
+                    }
+                    ReadEntry::List {
+                        cells: Some((_, tail)),
+                        dotted: false,
+                    } => {
+                        let cell = Value::cons(obj, Value::Nil);
+                        tail.cons_cells().expect("a list cell").1.set(cell);
+                        *tail = cell;
+                        // The list's first cons holds it.
+                        self.root_read_result(base + 1, None);
+                        break;
+                    }
+                    ReadEntry::List {
+                        cells: Some((head, tail)),
+                        dotted: true,
+                    } => {
+                        let (head, tail) = (*head, *tail);
+                        // RE_list_dot: skip_space_and_comments, which
+                        // signals at the end, then the character read.
+                        self.skip_whitespace_and_comments()?;
+                        self.input.unread_lookahead()?;
+                        match self.read_code()? {
+                            Some(0x29) => {}
+                            None => return Err(LispError::EndOfInput()),
+                            Some(_) => {
+                                return Err(LispError::ReadError("expected )".into()));
+                            }
+                        }
+                        tail.cons_cells().expect("a list cell").1.set(obj);
+                        stack.pop();
+                        obj = self.list_dot_result(head)?;
+                    }
+                    ReadEntry::Sequence { .. } => break,
+                    ReadEntry::Special { symbol } => {
+                        let symbol = *symbol;
+                        stack.pop();
+                        obj = Value::list([Value::symbol(symbol), obj]);
+                    }
+                    ReadEntry::Numbered { id, placeholder } => {
+                        let (id, placeholder) = (*id, *placeholder);
+                        stack.pop();
+                        obj = self.complete_numbered(id, placeholder, obj)?;
+                    }
+                }
+                // The completed entry's object takes its roots' place.
+                self.root_read_result(base, None);
+            }
+        }
+    }
+
+    /// read_obj: the syntax at point, after the whitespace and comments
+    /// before it.
+    fn read_step(&mut self, stack: &mut Vec<ReadFrame>) -> Result<ReadStep, LispError> {
+        self.skip_whitespace_and_comments()?;
+        Ok(match self.peek()? {
+            None => ReadStep::End,
+            Some(b'(') => {
+                self.advance()?;
+                ReadStep::Open(ReadEntry::List {
+                    cells: None,
+                    dotted: false,
+                })
+            }
+            Some(b'[') => {
+                self.advance()?;
+                self.open_sequence(SequenceSyntax::Vector)
+            }
+            // read0 reads the closer before it looks at the stack.
             Some(close @ (b')' | b']')) => {
                 self.advance()?;
-                Err(LispError::ReadError(
-                    if close == b')' { ")" } else { "]" }.into(),
-                ))
+                ReadStep::Object(self.close_entry(stack, close)?)
             }
-            Some(b'"') => self.read_string(),
-            Some(b'\'') => self.read_quote("quote"),
-            Some(b'`') => self.read_quote("backquote"),
+            Some(b'"') => ReadStep::of(self.read_string()?),
+            // lread.c: the heads are the symbols named "`", "," and ",@".
+            Some(b'\'') => {
+                self.advance()?;
+                ReadStep::Open(ReadEntry::Special { symbol: "quote" })
+            }
+            Some(b'`') => {
+                self.advance()?;
+                ReadStep::Open(ReadEntry::Special { symbol: "`" })
+            }
             Some(b',') => {
                 self.advance()?;
-                if self.peek()? == Some(b'@') {
+                let symbol = if self.peek()? == Some(b'@') {
                     self.advance()?;
-                    self.read_quote("comma-at")
+                    ",@"
                 } else {
                     self.input.unread_lookahead()?;
-                    self.read_quote("comma")
-                }
+                    ","
+                };
+                ReadStep::Open(ReadEntry::Special { symbol })
             }
-            Some(b'?') => self.read_character(),
-            Some(b'#') => self.read_hash(),
+            Some(b'?') => ReadStep::of(self.read_character()?),
+            Some(b'#') => self.read_hash()?,
             Some(b'.') => {
-                if self.read_dot_separator()? {
-                    Err(LispError::ReadError(".".into()))
-                } else {
-                    self.read_atom()
+                if !self.read_dot_separator()? {
+                    // The dot lookahead has already happened: this atom is
+                    // read directly.
+                    return Ok(ReadStep::of(self.read_atom()?));
+                }
+                // A separate dot after a list's element starts its tail
+                // (RE_list becomes RE_list_dot); anywhere else it is
+                // invalid syntax.
+                match stack.last_mut() {
+                    Some(ReadFrame {
+                        entry:
+                            ReadEntry::List {
+                                cells: Some(_),
+                                dotted,
+                            },
+                        ..
+                    }) if !*dotted => {
+                        *dotted = true;
+                        ReadStep::Again
+                    }
+                    _ => return Err(LispError::ReadError(".".into())),
                 }
             }
-            _ => self.read_atom(),
+            _ => ReadStep::of(self.read_atom()?),
+        })
+    }
+
+    /// read0's `)' and `]': the object of the innermost entry they close,
+    /// popped, its roots back to its base; for any other entry, or none,
+    /// invalid syntax.
+    fn close_entry(&mut self, stack: &mut Vec<ReadFrame>, close: u8) -> Result<Value, LispError> {
+        let invalid = || LispError::ReadError(if close == b')' { ")" } else { "]" }.into());
+        let Some(frame) = stack.last() else {
+            return Err(invalid());
+        };
+        let base = frame.base;
+        let obj = match frame.entry {
+            ReadEntry::List { cells: None, .. } if close == b')' => Value::Nil,
+            ReadEntry::List {
+                cells: Some((head, _)),
+                dotted: false,
+            } if close == b')' => head,
+            ReadEntry::Sequence { syntax, old_locate } if syntax.closer() == close => {
+                self.locate_symbols = old_locate;
+                let elements = self.roots[base..].to_vec();
+                self.sequence_object(syntax, elements)?
+            }
+            _ => return Err(invalid()),
+        };
+        stack.pop();
+        self.root_read_result(base, None);
+        Ok(obj)
+    }
+
+    /// A sequence's read stack entry, the locate_syms it saves, which each
+    /// opener but `[' then clears.
+    fn open_sequence(&mut self, syntax: SequenceSyntax) -> ReadStep {
+        let old_locate = self.locate_symbols;
+        if !matches!(syntax, SequenceSyntax::Vector) {
+            self.locate_symbols = false;
         }
+        ReadStep::Open(ReadEntry::Sequence { syntax, old_locate })
+    }
+
+    /// The object a sequence's ELEMENTS make: vector_from_rev_list,
+    /// record_from_list or hash_table_from_plist, char_table_from_rev_list,
+    /// sub_char_table_from_rev_list, bytecode_from_rev_list and
+    /// string_props_from_rev_list.
+    fn sequence_object(
+        &mut self,
+        syntax: SequenceSyntax,
+        elements: Vec<Value>,
+    ) -> Result<Value, LispError> {
+        match syntax {
+            SequenceSyntax::Vector => Ok(Value::vector(elements)),
+            SequenceSyntax::Record => {
+                // RE_record: a `#s(' closed with no elements is invalid
+                // syntax named "#s".
+                let Some((&kind, fields)) = elements.split_first() else {
+                    return Err(LispError::ReadError("#s".into()));
+                };
+                // `BASE_EQ (XCAR (elems), Qhash_table)'.
+                if matches!(kind.kind(), Kind::Symbol(kind_name) if kind_name.is_named("hash-table"))
+                {
+                    let fields = fields.to_vec();
+                    self.literal_object(ReaderForm::HashTable { fields })
+                } else {
+                    self.literal_object(ReaderForm::Record { slots: elements })
+                }
+            }
+            SequenceSyntax::CharTable => {
+                if !(68..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
+                    .contains(&elements.len())
+                {
+                    return Err(LispError::ReadError("Invalid size char-table".into()));
+                }
+                self.literal_object(ReaderForm::CharTable { fields: elements })
+            }
+            SequenceSyntax::SubCharTable => {
+                // lread.c sub_char_table_from_rev_list signals `error'.
+                if elements.len() < 2 {
+                    return Err(LispError::Signal("Invalid size of sub-char-table".into()));
+                }
+                let Some(Kind::Integer(depth @ 1..=3)) = elements.first().map(|v| v.kind()) else {
+                    return Err(LispError::Signal("Invalid depth in sub-char-table".into()));
+                };
+                let expected_contents = [0usize, 16, 32, 128][depth as usize];
+                if elements.len() != expected_contents + 2 {
+                    return Err(LispError::Signal("Invalid size in sub-char-table".into()));
+                }
+                if !matches!(
+                    elements.get(1).map(|v| v.kind()),
+                    Some(Kind::Integer(0..=0x3f_ffff))
+                ) {
+                    return Err(LispError::Signal(
+                        "Invalid minimum character in sub-char-table".into(),
+                    ));
+                }
+                self.literal_object(ReaderForm::SubCharTable { fields: elements })
+            }
+            SequenceSyntax::ByteCode => {
+                let mut fields = elements;
+                if (self.from_file || infile_load_running()) && fields.len() >= 2 {
+                    self.read_lazy_closure_slots(&mut fields)?;
+                }
+                // GNU uses the same `#[...]' syntax for both kinds of
+                // closure pseudovector.  Byte-compiled functions have a
+                // string in the code slot and at least four fields, while an
+                // interpreted lexical closure has a cons-list body and can
+                // contain only ARGS, BODY, and ENV.  The latter occurs in
+                // ordinary `.elc' constants (notably cl-generic.elc), so it
+                // must not be rejected as malformed bytecode.
+                let interpreted =
+                    fields.len() == 3 || fields.get(1).is_some_and(interpreted_closure_code_syntax);
+                let valid_len = if interpreted {
+                    (3..=6).contains(&fields.len())
+                } else {
+                    (4..=6).contains(&fields.len())
+                };
+                if !valid_len {
+                    return Err(LispError::ReadError("Invalid byte-code object".into()));
+                }
+                self.literal_object(ReaderForm::Closure {
+                    kind: if interpreted {
+                        ReaderClosureKind::Interpreted
+                    } else {
+                        ReaderClosureKind::ByteCode
+                    },
+                    slots: fields,
+                })
+            }
+            SequenceSyntax::StringProps => {
+                // lread.c string_props_from_rev_list: the first element
+                // must be a string, then each BEG END PLIST triple is
+                // Fset_text_properties on the string read itself, in
+                // order, a triple cut short invalid when it is reached.
+                let Some((&string, mut properties)) = elements
+                    .split_first()
+                    .filter(|(first, _)| matches!(first.kind(), Kind::StringObject(_)))
+                else {
+                    return Err(LispError::ReadError("#".into()));
+                };
+                while !properties.is_empty() {
+                    let [start, end, plist, rest @ ..] = properties else {
+                        return Err(LispError::ReadError("Invalid string property list".into()));
+                    };
+                    crate::lisp::primitives::textprop::set_string_text_properties_value(
+                        &string, start, end, *plist,
+                    )?;
+                    properties = rest;
+                }
+                Ok(string)
+            }
+        }
+    }
+
+    /// RE_list_dot's hack: a (#$ . FIXNUM) read while
+    /// `load-force-doc-strings' is set is the doc string it names, at once.
+    fn list_dot_result(&mut self, list: Value) -> Result<Value, LispError> {
+        let lazy_head = list.cons_values().and_then(|(first, end)| {
+            (!first.is_nil() && matches!(end.kind(), Kind::Integer(_))).then_some(first)
+        });
+        if let Some(head) = lazy_head
+            && self.read_context().is_some_and(|context| {
+                context.force_doc_strings() && context.load_file_name().eq_value(head)
+            })
+        {
+            return self.get_lazy_string(list);
+        }
+        Ok(list)
     }
 
     /// Read all expressions from the input.
@@ -1059,107 +1500,6 @@ impl<'a> Reader<'a> {
             self.retreat_ascii(b'.');
         }
         Ok(separator)
-    }
-
-    fn read_list(&mut self) -> Result<Option<Value>, LispError> {
-        self.advance()?; // consume '('
-        // read0's RE_list_start and RE_list: each element is consed onto
-        // the list's tail as soon as it is read, the list rooted in its
-        // elements' place from the first one on.
-        let roots = read_roots_depth();
-        let mut head = Value::Nil;
-        let mut tail: Option<(Value, usize)> = None;
-        let mut dotted = false;
-
-        loop {
-            self.skip_whitespace_and_comments()?;
-            match self.peek()? {
-                None => return Err(LispError::EndOfInput()),
-                Some(b')') => {
-                    self.advance()?;
-                    break;
-                }
-                _ => {
-                    let val = if self.peek()? == Some(b'.') {
-                        if self.read_dot_separator()? {
-                            let Some((last, _)) = tail else {
-                                return Err(LispError::ReadError(".".into()));
-                            };
-                            let val = self.read()?.ok_or(LispError::EndOfInput())?;
-                            last.cons_cells().expect("a list cell").1.set(val);
-                            dotted = true;
-                            // RE_list_dot: skip_space_and_comments, which
-                            // signals at the end, then the character read.
-                            self.skip_whitespace_and_comments()?;
-                            self.input.unread_lookahead()?;
-                            match self.read_code()? {
-                                Some(0x29) => break,
-                                None => return Err(LispError::EndOfInput()),
-                                Some(_) => {
-                                    return Err(LispError::ReadError("expected )".into()));
-                                }
-                            }
-                        }
-                        // The dot lookahead has already happened: this
-                        // atom is read directly.
-                        self.read_atom()?.ok_or(LispError::EndOfInput())?
-                    } else {
-                        self.read()?.ok_or(LispError::EndOfInput())?
-                    };
-                    let cell = Value::cons(val, Value::Nil);
-                    tail = Some(match tail {
-                        None => {
-                            head = cell;
-                            root_read_result(roots, Some(head));
-                            (cell, 1)
-                        }
-                        Some((last, count)) => {
-                            last.cons_cells().expect("a list cell").1.set(cell);
-                            (cell, count + 1)
-                        }
-                    });
-                }
-            }
-        }
-
-        // read0's RE_list_dot hack: (#$ . FIXNUM) is the doc string it
-        // names at once when `load-force-doc-strings' is set.
-        let result = head;
-        let lazy_head = result.cons_values().and_then(|(first, end)| {
-            (dotted
-                && tail.is_some_and(|(_, count)| count == 1)
-                && !first.is_nil()
-                && matches!(end.kind(), Kind::Integer(_)))
-            .then_some(first)
-        });
-        if let Some(head) = lazy_head
-            && self.read_context().is_some_and(|context| {
-                context.force_doc_strings() && context.load_file_name().eq_value(head)
-            })
-        {
-            return self.get_lazy_string(result).map(Some);
-        }
-        Ok(Some(result))
-    }
-
-    fn read_vector(&mut self) -> Result<Option<Value>, LispError> {
-        self.advance()?; // consume '['
-        let mut items = Vec::new();
-        loop {
-            self.skip_whitespace_and_comments()?;
-            match self.peek()? {
-                None => return Err(LispError::EndOfInput()),
-                Some(b']') => {
-                    self.advance()?;
-                    break;
-                }
-                _ => {
-                    let val = self.read()?.ok_or(LispError::EndOfInput())?;
-                    items.push(val);
-                }
-            }
-        }
-        Ok(Some(Value::vector(items)))
     }
 
     fn read_string(&mut self) -> Result<Option<Value>, LispError> {
@@ -1603,30 +1943,6 @@ impl<'a> Reader<'a> {
         self.advance_char()
     }
 
-    fn read_quote(&mut self, name: &str) -> Result<Option<Value>, LispError> {
-        if name != "comma" && name != "comma-at" {
-            self.advance()?; // consume the quote/backquote char
-        }
-        let inner = if name == "backquote" {
-            self.backquote_depth += 1;
-            let result = self
-                .read()
-                .and_then(|value| value.ok_or(LispError::EndOfInput()));
-            self.backquote_depth = self.backquote_depth.saturating_sub(1);
-            result?
-        } else {
-            self.read()?.ok_or(LispError::EndOfInput())?
-        };
-        // lread.c: the heads are the symbols named "`", "," and ",@".
-        let symbol = match name {
-            "backquote" => "`",
-            "comma" => ",",
-            "comma-at" => ",@",
-            _ => name,
-        };
-        Ok(Some(Value::list([Value::symbol(symbol), inner])))
-    }
-
     fn read_character(&mut self) -> Result<Option<Value>, LispError> {
         let space_or_tab = matches!(self.peek_at(1)?, Some(b' ' | b'\t'));
         let value = self.read_character_body()?;
@@ -1712,13 +2028,13 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn read_hash(&mut self) -> Result<Option<Value>, LispError> {
+    fn read_hash(&mut self) -> Result<ReadStep, LispError> {
         self.advance()?; // consume '#'
         match self.peek()? {
             None => Err(LispError::ReadError("#".into())),
             Some(b'#') => {
                 self.advance()?;
-                self.resolve_symbol("").map(Some)
+                self.resolve_symbol("").map(ReadStep::Object)
             }
             // lread.c read0: `#!' (the shebang line of an executable
             // script) skips the rest of the line and reads on.
@@ -1729,7 +2045,7 @@ impl<'a> Reader<'a> {
                         break;
                     }
                 }
-                self.read()
+                Ok(ReadStep::Again)
             }
             Some(b'_') => {
                 self.advance()?;
@@ -1737,16 +2053,16 @@ impl<'a> Reader<'a> {
                     // No symbol character follows: this is the empty
                     // symbol.
                     self.input.unread_lookahead()?;
-                    self.resolve_symbol("").map(Some)
+                    self.resolve_symbol("").map(ReadStep::Object)
                 } else {
                     self.read_atom_in_syntax(AtomSyntax::ShorthandExempt)
+                        .map(ReadStep::of)
                 }
             }
             Some(b'\'') => {
-                // #'symbol — function quote, treat as (function sym)
+                // #'X -- special syntax for (function X).
                 self.advance()?;
-                let inner = self.read()?.ok_or(LispError::EndOfInput())?;
-                Ok(Some(Value::list([Value::symbol("function"), inner])))
+                Ok(ReadStep::Open(ReadEntry::Special { symbol: "function" }))
             }
             Some(b'<') => {
                 // read0's default: INVALID_SYNTAX_WITH_BUFFER.
@@ -1777,7 +2093,7 @@ impl<'a> Reader<'a> {
                                 } else {
                                     while self.read_code()?.is_some() {}
                                 }
-                                return Ok(Some(Value::Nil));
+                                return Ok(ReadStep::Object(Value::Nil));
                             }
                         }
                         _ => {
@@ -1812,7 +2128,7 @@ impl<'a> Reader<'a> {
                         }
                     }
                 }
-                self.read()
+                Ok(ReadStep::Again)
             }
             Some(b'^') => {
                 self.advance()?;
@@ -1837,101 +2153,17 @@ impl<'a> Reader<'a> {
                         reader_code_text(offender)
                     )));
                 }
-                // read0 clears locate_syms across a char-table literal.
-                let saved_locate = self.locate_symbols;
-                self.locate_symbols = false;
-                let fields = self.read_bracketed_fields();
-                self.locate_symbols = saved_locate;
-                let fields = fields?;
-                if !sub_table {
-                    if !(68..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
-                        .contains(&fields.len())
-                    {
-                        return Err(LispError::ReadError("Invalid size char-table".into()));
-                    }
+                self.advance()?; // consume '['
+                Ok(self.open_sequence(if sub_table {
+                    SequenceSyntax::SubCharTable
                 } else {
-                    // lread.c sub_char_table_from_rev_list signals `error'.
-                    if fields.len() < 2 {
-                        return Err(LispError::Signal("Invalid size of sub-char-table".into()));
-                    }
-                    let Some(Kind::Integer(depth @ 1..=3)) = fields.first().map(|v| v.kind())
-                    else {
-                        return Err(LispError::Signal("Invalid depth in sub-char-table".into()));
-                    };
-                    let expected_contents = [0usize, 16, 32, 128][depth as usize];
-                    if fields.len() != expected_contents + 2 {
-                        return Err(LispError::Signal("Invalid size in sub-char-table".into()));
-                    }
-                    if !matches!(
-                        fields.get(1).map(|v| v.kind()),
-                        Some(Kind::Integer(0..=0x3f_ffff))
-                    ) {
-                        return Err(LispError::Signal(
-                            "Invalid minimum character in sub-char-table".into(),
-                        ));
-                    }
-                }
-                self.literal_object(if sub_table {
-                    ReaderForm::SubCharTable { fields }
-                } else {
-                    ReaderForm::CharTable { fields }
-                })
-                .map(Some)
+                    SequenceSyntax::CharTable
+                }))
             }
             Some(b'[') => {
+                // #[...] -- byte-code.
                 self.advance()?;
-                // read0 clears locate_syms across a `#[...]' literal.
-                let saved_locate = self.locate_symbols;
-                self.locate_symbols = false;
-                let fields = (|| {
-                    let mut fields = Vec::new();
-                    loop {
-                        self.skip_whitespace_and_comments()?;
-                        match self.peek()? {
-                            None => return Err(LispError::EndOfInput()),
-                            Some(b']') => {
-                                self.advance()?;
-                                break;
-                            }
-                            _ => {
-                                let value = self.read()?.ok_or(LispError::EndOfInput())?;
-                                fields.push(value);
-                            }
-                        }
-                    }
-                    Ok(fields)
-                })();
-                self.locate_symbols = saved_locate;
-                let mut fields = fields?;
-                if self.from_file && fields.len() >= 2 {
-                    self.read_lazy_closure_slots(&mut fields)?;
-                }
-                // GNU uses the same `#[...]' syntax for both kinds of
-                // closure pseudovector.  Byte-compiled functions have a
-                // string in the code slot and at least four fields, while an
-                // interpreted lexical closure has a cons-list body and can
-                // contain only ARGS, BODY, and ENV.  The latter occurs in
-                // ordinary `.elc' constants (notably cl-generic.elc), so it
-                // must not be rejected as malformed bytecode.
-                let interpreted =
-                    fields.len() == 3 || fields.get(1).is_some_and(interpreted_closure_code_syntax);
-                let valid_len = if interpreted {
-                    (3..=6).contains(&fields.len())
-                } else {
-                    (4..=6).contains(&fields.len())
-                };
-                if !valid_len {
-                    return Err(LispError::ReadError("Invalid byte-code object".into()));
-                }
-                self.literal_object(ReaderForm::Closure {
-                    kind: if interpreted {
-                        ReaderClosureKind::Interpreted
-                    } else {
-                        ReaderClosureKind::ByteCode
-                    },
-                    slots: fields,
-                })
-                .map(Some)
+                Ok(self.open_sequence(SequenceSyntax::ByteCode))
             }
             Some(b'&') => {
                 // lread.c read_bool_vector: the length's digits and then at
@@ -1977,7 +2209,7 @@ impl<'a> Reader<'a> {
                         vector.set(bit, true);
                     }
                 }
-                Ok(Some(Value::BoolVector(vector)))
+                Ok(ReadStep::Object(Value::BoolVector(vector)))
             }
             Some(b':') => {
                 self.advance()?;
@@ -1985,7 +2217,7 @@ impl<'a> Reader<'a> {
                     self.input.unread_lookahead()?;
                     // lread.c's empty #: branch returns a bare fresh symbol.
                     let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-                    Ok(Some(Value::Symbol(
+                    Ok(ReadStep::Object(Value::Symbol(
                         crate::lisp::types::SymbolName::make_uninterned_with_text(
                             make_uninterned_symbol_name("", id),
                             None,
@@ -1993,46 +2225,13 @@ impl<'a> Reader<'a> {
                     )))
                 } else {
                     self.read_atom_in_syntax(AtomSyntax::Uninterned)
+                        .map(ReadStep::of)
                 }
             }
             Some(b'(') => {
-                // #(...) — a string literal with text properties.  read0 clears
-                // locate_syms across the literal (lread.c RE_string_props).
+                // #(...) -- a string with text properties.
                 self.advance()?; // consume '('
-                let saved_locate = self.locate_symbols;
-                self.locate_symbols = false;
-                let items = (|| {
-                    let mut items = Vec::new();
-                    loop {
-                        self.skip_whitespace_and_comments()?;
-                        match self.peek()? {
-                            None => return Err(LispError::EndOfInput()),
-                            Some(b')') => {
-                                self.advance()?;
-                                break;
-                            }
-                            _ => {
-                                let val = self.read()?.ok_or(LispError::EndOfInput())?;
-                                items.push(val);
-                            }
-                        }
-                    }
-                    Ok(items)
-                })();
-                self.locate_symbols = saved_locate;
-                let items = items?;
-                // lread.c string_props_from_rev_list: the first element
-                // must be a string, then BEG END PLIST triples.
-                if !items
-                    .first()
-                    .is_some_and(|first| matches!(first.kind(), Kind::StringObject(_)))
-                {
-                    return Err(LispError::ReadError("#".into()));
-                }
-                if !(items.len() - 1).is_multiple_of(3) {
-                    return Err(LispError::ReadError("Invalid string property list".into()));
-                }
-                Ok(self.try_read_string_literal_with_properties(&items)?)
+                Ok(self.open_sequence(SequenceSyntax::StringProps))
             }
             Some(ch) if ch.is_ascii_digit() => {
                 // #N=OBJ, #N# or #NrDIGITS: the number N first, each
@@ -2058,7 +2257,7 @@ impl<'a> Reader<'a> {
                     if n > 36 {
                         return Err(LispError::ReadError(format!("integer, radix {n}")));
                     }
-                    return Ok(Some(self.read_integer(n as u32)?));
+                    return Ok(ReadStep::Object(self.read_integer(n as u32)?));
                 }
                 // read0 reads a label only up to MOST_POSITIVE_FIXNUM and
                 // while `read-circle' is non-nil.
@@ -2074,30 +2273,27 @@ impl<'a> Reader<'a> {
                     // the `#N#' inside OBJ until OBJ is read.
                     let placeholder = Value::cons(Value::Nil, Value::Nil);
                     self.read_objects_map.insert(id, placeholder);
-                    let roots = read_roots_depth();
-                    root_read_result(roots, Some(placeholder));
-                    let object = self.read()?.ok_or(LispError::EndOfInput())?;
-                    return self.complete_numbered(id, placeholder, object).map(Some);
+                    return Ok(ReadStep::Open(ReadEntry::Numbered { id, placeholder }));
                 }
                 if c == i64::from(b'#')
                     && let Some(object) = self.read_objects_map.get(&id)
                 {
                     // #N# -- reference to numbered object.
-                    return Ok(Some(*object));
+                    return Ok(ReadStep::Object(*object));
                 }
                 Err(LispError::ReadError(token))
             }
             Some(b'x' | b'X') => {
                 self.advance()?;
-                Ok(Some(self.read_integer(16)?))
+                Ok(ReadStep::Object(self.read_integer(16)?))
             }
             Some(b'o' | b'O') => {
                 self.advance()?;
-                Ok(Some(self.read_integer(8)?))
+                Ok(ReadStep::Object(self.read_integer(8)?))
             }
             Some(b'b' | b'B') => {
                 self.advance()?;
-                Ok(Some(self.read_integer(2)?))
+                Ok(ReadStep::Object(self.read_integer(2)?))
             }
             Some(b's') => {
                 self.advance()?;
@@ -2112,56 +2308,14 @@ impl<'a> Reader<'a> {
                         reader_code_text(offender)
                     )));
                 }
+                // #s(...) -- a record or hash table.
                 self.advance()?; // consume '('
-                self.skip_whitespace_and_comments()?;
-                // read0 clears locate_syms for the ENTIRE `#s(...)' payload
-                // (lread.c RE_record push), so a positioned read keeps
-                // record slots and hash-table data bare.
-                let saved_locate = self.locate_symbols;
-                self.locate_symbols = false;
-                let result = (|| {
-                    // RE_record: a `#s(' closed with no elements is invalid
-                    // syntax named "#s".
-                    if self.peek()? == Some(b')') {
-                        self.advance()?;
-                        return Err(LispError::ReadError("#s".into()));
-                    }
-                    let Some(kind) = self.read()? else {
-                        return Err(LispError::EndOfInput());
-                    };
-                    let mut fields = Vec::new();
-                    loop {
-                        self.skip_whitespace_and_comments()?;
-                        match self.peek()? {
-                            None => return Err(LispError::EndOfInput()),
-                            Some(b')') => {
-                                self.advance()?;
-                                break;
-                            }
-                            _ => {
-                                let value = self.read()?.ok_or(LispError::EndOfInput())?;
-                                fields.push(value);
-                            }
-                        }
-                    }
-                    Ok((kind, fields))
-                })();
-                self.locate_symbols = saved_locate;
-                let (kind, fields) = result?;
-                // `BASE_EQ (XCAR (elems), Qhash_table)'.
-                if matches!(kind.kind(), Kind::Symbol(kind_name) if kind_name.is_named("hash-table"))
-                {
-                    self.literal_object(ReaderForm::HashTable { fields })
-                        .map(Some)
-                } else {
-                    let slots = std::iter::once(kind).chain(fields).collect();
-                    self.literal_object(ReaderForm::Record { slots }).map(Some)
-                }
+                Ok(self.open_sequence(SequenceSyntax::Record))
             }
             // `#$': the reference to the file being loaded.
             Some(b'$') => {
                 self.advance()?;
-                Ok(Some(self.load_file_name()))
+                Ok(ReadStep::Object(self.load_file_name()))
             }
             // read0's default: INVALID_SYNTAX_WITH_BUFFER, `#' and the
             // character after it.
@@ -2173,51 +2327,6 @@ impl<'a> Reader<'a> {
                 )))
             }
         }
-    }
-
-    fn read_bracketed_fields(&mut self) -> Result<Vec<Value>, LispError> {
-        debug_assert_eq!(self.peek()?, Some(b'['));
-        self.advance()?;
-        let mut fields = Vec::new();
-        loop {
-            self.skip_whitespace_and_comments()?;
-            match self.peek()? {
-                None => return Err(LispError::EndOfInput()),
-                Some(b']') => {
-                    self.advance()?;
-                    return Ok(fields);
-                }
-                _ => fields.push(self.read()?.ok_or(LispError::EndOfInput())?),
-            }
-        }
-    }
-
-    fn try_read_string_literal_with_properties(
-        &self,
-        items: &[Value],
-    ) -> Result<Option<Value>, LispError> {
-        let Some(first) = items.first() else {
-            return Ok(None);
-        };
-        // lread.c:string_props_from_rev_list: Fset_text_properties of each
-        // (BEG END PLIST) on the string read itself.
-        if !matches!(first.kind(), Kind::StringObject(_)) {
-            return Ok(None);
-        }
-        if !(items.len() - 1).is_multiple_of(3) {
-            return Ok(None);
-        }
-        let mut index = 1usize;
-        while index + 2 < items.len() {
-            crate::lisp::primitives::textprop::set_string_text_properties_value(
-                first,
-                &items[index],
-                &items[index + 1],
-                items[index + 2],
-            )?;
-            index += 3;
-        }
-        Ok(Some(*first))
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
@@ -2766,6 +2875,49 @@ mod tests {
         assert_eq!(items[0], Value::Symbol("+".into()));
         assert_eq!(items[1], Value::Integer(1));
         assert!(items[2].is_cons());
+    }
+
+    #[test]
+    fn nested_data_takes_the_read_stack_not_a_rust_frame_a_level() {
+        // read0's read stack: each level of a list holding a vector holding
+        // a backquoted comma is an entry in the heap, so a reader on a
+        // 256 KB stack reads two hundred thousand levels, which a Rust
+        // frame a level has no room for, and its levels are the ones
+        // written.
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let depth = 200_000;
+                let text = format!("{}x{}", "([`,".repeat(depth), "])".repeat(depth));
+                let mut value = read_one(&text);
+                let mut levels = 0;
+                while let Some((vector, _)) = value.cons_values() {
+                    let Kind::Vector(vector) = vector.kind() else {
+                        panic!("level {levels}: not a vector");
+                    };
+                    let quoted = vector.get(0).expect("the vector's element");
+                    let items = quoted.to_vec().unwrap();
+                    assert_eq!(items[0], Value::Symbol("`".into()), "level {levels}");
+                    let items = items[1].to_vec().unwrap();
+                    assert_eq!(items[0], Value::Symbol(",".into()), "level {levels}");
+                    value = items[1];
+                    levels += 1;
+                }
+                assert_eq!((levels, value), (depth, Value::Symbol("x".into())));
+                // A dot after the last element starts the tail at any depth,
+                // and a closer the innermost entry does not take is invalid
+                // syntax.
+                let text = format!("{}nil{}", "(a . ".repeat(depth), ")".repeat(depth));
+                assert_eq!(read_one(&text).to_vec().unwrap().len(), depth);
+                let text = format!("{}]", "(".repeat(depth));
+                assert!(matches!(
+                    Reader::new(&text).read().as_ref().map_err(LispError::kind),
+                    Err(LispErrorKind::ReadError(message)) if message == "]"
+                ));
+            })
+            .expect("small-stack reader")
+            .join()
+            .expect("nested data reads without a stack overflow");
     }
 
     #[test]
