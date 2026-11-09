@@ -3870,6 +3870,112 @@ impl ScreenLineLayout {
         self.position_cell(pos)
     }
 
+    /// The row and column of this line where move_it_to POS (MOVE_TO_POS)
+    /// stops when a `display' string replaces POS's text: the iterator's
+    /// object is the string while it delivers its glyphs, so it stops
+    /// only where the string ends (replaced_end), at the first element
+    /// there (stop_cell), or at the next line's first row, column 0,
+    /// when the string replaces the line's newline -- the number of the
+    /// line's rows.  None when no string replaces POS's text.
+    pub(crate) fn replaced_stop(&self, pos: usize) -> Option<(usize, usize)> {
+        let end = self.replaced_end(pos);
+        (end > pos).then(|| {
+            if end > self.line_end() {
+                (self.row_starts.len(), 0)
+            } else {
+                self.stop_cell(end)
+            }
+        })
+    }
+
+    /// Where move_it_to POS stops for a `display' string replacing POS's
+    /// text: where the string ends -- pop_it's iterate_out_of_display_
+    /// property leaves IT_CHARPOS there, and the check at the top of
+    /// move_it_in_display_line_to's loop stops the move before handle_stop
+    /// loads whatever comes next, another string included -- past the
+    /// line's end when the string replaces its newline.  At a string's
+    /// own start right after another string that ends part-way along a
+    /// row, the iterator coming out of that one stops there already (its
+    /// prev_method GET_FROM_STRING, IT_CHARPOS at POS); one ending in a
+    /// newline ended the row, and the move's next row starts afresh into
+    /// the string at POS.  POS itself when no string replaces its text.
+    pub(crate) fn replaced_end(&self, pos: usize) -> usize {
+        let Some(offset) = pos.checked_sub(self.bol) else {
+            return pos;
+        };
+        match self.covering_run(offset) {
+            Some((run, _))
+                if run == offset
+                    && self
+                        .strings
+                        .iter()
+                        .any(|&(before, end)| end == run && !self.run_string_ends_row(before)) =>
+            {
+                pos
+            }
+            Some(_) => self.string_end(pos),
+            None => pos,
+        }
+    }
+
+    /// Where the `display' string replacing POS's text ends, past the
+    /// line's end when it replaces the newline: where an iterator
+    /// delivering it comes out of it.  POS when none replaces its text.
+    pub(crate) fn string_end(&self, pos: usize) -> usize {
+        let Some(offset) = pos.checked_sub(self.bol) else {
+            return pos;
+        };
+        let line_end = self.line_end() - self.bol;
+        match self.covering_run(offset) {
+            Some((_, end)) if self.newline_replaced && end == line_end => self.line_end() + 1,
+            Some((_, end)) => self.bol + end,
+            None => pos,
+        }
+    }
+
+    /// The raw offsets [RUN, END) of the `display' string replacing the
+    /// text at raw OFFSET, the line's newline included when a string
+    /// replaces that.
+    fn covering_run(&self, offset: usize) -> Option<(usize, usize)> {
+        let line_end = self.line_end() - self.bol;
+        self.strings
+            .iter()
+            .find(|&&(run, end)| {
+                run <= offset
+                    && (offset < end || (self.newline_replaced && offset == end && end == line_end))
+            })
+            .copied()
+    }
+
+    /// Whether the `display' string replacing the text from raw offset
+    /// RUN ends in a newline, which ends its row.
+    fn run_string_ends_row(&self, run: usize) -> bool {
+        (0..self.glyphs.len())
+            .find(|&glyph| {
+                self.glyphs[glyph].2 == run
+                    && self.glyph_display.get(glyph).copied().unwrap_or(false)
+                    && self.glyph_objects.get(glyph).copied().flatten().is_some()
+            })
+            .and_then(|glyph| self.glyph_objects[glyph])
+            .and_then(|(string, _)| crate::lisp::primitives::string_text(&string).ok())
+            .is_some_and(|text| text.ends_with('\n'))
+    }
+
+    /// Where the iterator stands when a move stops at END in the line's
+    /// text: the first element at or past END -- an overlay string there
+    /// comes after the stop (handle_stop has not loaded it) -- else END's
+    /// own cell.
+    fn stop_cell(&self, end: usize) -> (usize, usize) {
+        let offset = end.saturating_sub(self.bol);
+        self.glyphs
+            .iter()
+            .find(|&&(_, _, raw)| raw >= offset)
+            .map_or_else(
+                || self.position_cell(end),
+                |&(row, column, _)| (row, column),
+            )
+    }
+
     /// move_it_in_display_line to x TO_X on ROW (buffer_posn_from_
     /// coords), each glyph at the x GLYPH_X gives its column: the
     /// iterator stops at the first glyph reaching past TO_X -- inside a
@@ -4072,6 +4178,23 @@ impl WindowTextGeometry {
     }
 }
 
+/// Where pos_visible_p puts a position: its x and y, and RBOT, the part
+/// of its row below the window's last (pos_visible_p's *rbot, in the
+/// terminal's one-pixel rows): not 0 only for a position the iterator
+/// reaches on a row below the window, which is partly visible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct VisibleAt {
+    pub(crate) x: i64,
+    pub(crate) y: usize,
+    pub(crate) rbot: usize,
+}
+
+impl VisibleAt {
+    fn full(x: i64, y: usize) -> Self {
+        VisibleAt { x, y, rbot: 0 }
+    }
+}
+
 /// pos_visible_p on a terminal: start_display at START in WINDOW, which
 /// shows the current buffer, then move_it_to POS: POS's x -- the
 /// line-number glyphs counted, the hscroll taken off, a position past a
@@ -4084,7 +4207,7 @@ pub(crate) fn window_position_xy(
     pos: usize,
     geometry: WindowTextGeometry,
     text_rows: usize,
-) -> Option<(i64, usize)> {
+) -> Option<VisibleAt> {
     window_cell_xy(
         interpreter,
         window_id,
@@ -4114,6 +4237,7 @@ pub(crate) fn window_end_xy(
 ) -> Option<(i64, usize)> {
     let zv = interpreter.buffer.borrow().point_max();
     window_cell_xy(interpreter, window_id, start, zv, geometry, text_rows, true)
+        .map(|at| (at.x, at.y))
 }
 
 /// Fwindow_end's walk over WINDOW, which shows the current buffer:
@@ -4196,7 +4320,7 @@ fn window_cell_xy(
     geometry: WindowTextGeometry,
     text_rows: usize,
     window_end: bool,
-) -> Option<(i64, usize)> {
+) -> Option<VisibleAt> {
     let layouter = ScreenLineLayouter::new(interpreter, window_id, geometry.lnum_cols);
     let zv = interpreter.buffer.borrow().point_max();
     let mut layout = layouter.layout_from(start, geometry.text_width, geometry.truncate);
@@ -4216,25 +4340,70 @@ fn window_cell_xy(
             };
             let line_y = y;
             let y = y + row;
-            if y >= text_rows {
-                // move_it_to stops at the last row's start, x 0, still
-                // short of POS's glyph: a row of a string at POS has its
+            // Past a `display' string replacing POS's text move_it_to
+            // stops only after the string.
+            let replaced_stop = layout.replaced_stop(pos);
+            let stop_y = line_y + replaced_stop.map_or(row, |(stop, _)| stop.max(row));
+            // Its MOVE_TO_Y stops at the last row's start, x 0, when that
+            // row comes before POS is reached: below the window, or on the
+            // last row past its start, the element after the string.
+            if stop_y >= text_rows
+                || (!window_end && replaced_stop.is_some() && stop_y + 1 == text_rows)
+            {
+                // Still short of POS's glyph or the element after the
+                // string covering it: a row of a string at POS has its
                 // position there, IT_CHARPOS >= POS, so POS is visible.
                 // At POS itself, with the line number not yet produced,
                 // pos_visible_p adds its width once x is at or past
                 // first_visible_x.
                 let last = text_rows - 1;
-                let row_start = layout.row_starts.get(last - line_y).copied();
-                let lnum = if row_start == Some(pos) && geometry.first_visible == 0 {
-                    geometry.lnum_cols as i64
-                } else {
-                    0
+                let row_start = layout.row_starts.get(last - line_y).copied()?;
+                if window_end {
+                    return None;
+                }
+                if row_start >= pos {
+                    let lnum = if row_start == pos && geometry.first_visible == 0 {
+                        geometry.lnum_cols as i64
+                    } else {
+                        0
+                    };
+                    return Some(VisibleAt::full(lnum - geometry.hscroll as i64, last));
+                }
+                // Short of POS, the last row partly visible: off a
+                // newline move_it_by_lines 1 from the row's start lands on
+                // the row below, going on to the text after a string it
+                // lands inside (!IT_POS_VALID_AFTER_MOVE_P); POS before
+                // that is visible where move_it_to reaches it with no
+                // limit, where the string replacing its text ends, on the
+                // last row or one below the window.
+                let (stop, column) = replaced_stop?;
+                let below = last - line_y + 1;
+                let landed = match layout.row_starts.get(below) {
+                    None => layout.line_end() + 1,
+                    Some(&below_start) if layout.row_begins_inside_string(below) => {
+                        layout.string_end(below_start)
+                    }
+                    Some(&below_start) => below_start,
                 };
-                return (!window_end && row_start.is_some_and(|row_start| row_start >= pos))
-                    .then(|| (lnum - geometry.hscroll as i64, last));
+                if interpreter.buffer.borrow().char_at(row_start) == Some('\n') || pos >= landed {
+                    return None;
+                }
+                // At a row's start move_it_to stops before the row's line
+                // number and glyphs are produced: the row has no height.
+                let x = if column == 0 {
+                    0
+                } else {
+                    (geometry.lnum_cols + column) as i64
+                };
+                let y = line_y + stop;
+                return Some(VisibleAt {
+                    x: x - geometry.hscroll as i64,
+                    y,
+                    rbot: (y + usize::from(column > 0)).saturating_sub(text_rows),
+                });
             }
             if window_end && y + 1 == text_rows {
-                return Some((-(geometry.hscroll as i64), y));
+                return Some(VisibleAt::full(-(geometry.hscroll as i64), y));
             }
             // The start itself, after start_display walked to it from
             // its line's start: the walk produced the line's number on
@@ -4255,7 +4424,7 @@ fn window_cell_xy(
                     .row_starts
                     .contains(&start)
             {
-                return Some((column as i64, 0));
+                return Some(VisibleAt::full(column as i64, 0));
             }
             let x = if geometry.truncate {
                 // last_visible_x: the text area less the truncation glyph.
@@ -4272,7 +4441,7 @@ fn window_cell_xy(
                     column
                 };
                 if window_end && x > last_visible_x {
-                    return Some((-(geometry.hscroll as i64), y + 1));
+                    return Some(VisibleAt::full(-(geometry.hscroll as i64), y + 1));
                 }
                 x.min(last_visible_x) as i64 - geometry.hscroll as i64
             } else if window_end && column == 0 {
@@ -4280,7 +4449,7 @@ fn window_cell_xy(
             } else {
                 (geometry.lnum_cols + column) as i64
             };
-            return Some((x, y));
+            return Some(VisibleAt::full(x, y));
         }
         y += layout.row_starts.len();
         if y >= text_rows || layout.line_end() >= zv {
@@ -4585,7 +4754,11 @@ impl<'a> ScreenLineLayouter<'a> {
                 if row == 0 {
                     origin.unwrap_or(line_start)
                 } else {
-                    line_start + raw_of(segment.start_index)
+                    // A display starting inside text a string replaces
+                    // delivers the string at the start: IT_CHARPOS there.
+                    line_start
+                        + raw_of(segment.start_index)
+                            .max(origin.map_or(0, |origin| origin - line_start))
                 }
             })
             .collect();
@@ -5194,7 +5367,7 @@ fn plan_window_text(
     let cursor_col = match chosen.cursor_row {
         Some(row_from_top) => {
             let row = rows.forward(chosen.top, row_from_top).0;
-            match rows.string_row_cursor_x(row) {
+            match rows.string_row_cursor_x(row, point) {
                 Some((x, after_gutter)) if row != rows.row_in(chosen.top, point) => {
                     if after_gutter { lnum_cols + x } else { 0 }
                 }
@@ -5911,7 +6084,8 @@ fn fontify_window_steps(
                         pos,
                         geometry,
                         text_rows,
-                    );
+                    )
+                    .map(|at| (at.x, at.y));
                     fetch_pos_visible(
                         interpreter,
                         info.window_id,
@@ -12064,6 +12238,106 @@ mod tests {
             PlanOutcome::Hook { .. } => unreachable!("no window-scroll-functions"),
         };
         (plan, start)
+    }
+
+    /// A forced window start at 46, where a `display' string of LINES
+    /// lines replaces "line", with point at POINT and the cursor's last
+    /// row CURSOR_Y when point did not move, in a window of 21 rows: the
+    /// plan.
+    fn forced_start_at_a_display_string(
+        lines: usize,
+        point: usize,
+        cursor_y: Option<usize>,
+    ) -> WindowPlan {
+        let mut interpreter = Interpreter::new();
+        let mut env: Env = crate::lisp::types::Env::new();
+        let text: String = (0..100).map(|i| format!("line {i:03}\\n")).collect();
+        let display: String = (0..lines).map(|i| format!("D{i:02}\\n")).collect();
+        // Line 5 starts at 46.
+        let form = crate::lisp::reader::Reader::new(&format!(
+            "(progn
+               (insert \"{text}\")
+               (put-text-property 46 50 'display \"{display}\")
+               46)"
+        ))
+        .read()
+        .expect("read display-string window probe")
+        .expect("display-string window probe exists");
+        let start = interpreter
+            .eval(&form, &mut env)
+            .expect("evaluate display-string window probe")
+            .as_integer()
+            .expect("the display string's position") as usize;
+        let spec = resolve_buffer_invisibility(
+            &interpreter,
+            &interpreter.buffer.borrow(),
+            interpreter.current_buffer_id(),
+        );
+        let state = redisplay_window::StartState {
+            start,
+            point,
+            buffer_point: point,
+            force_start: cursor_y.is_none(),
+            optional_new_start: false,
+            start_at_line_beg: true,
+            windows_or_buffers_changed: false,
+            window_outdated: true,
+            cursor_unmoved: cursor_y.is_some(),
+            last_point: cursor_y.map(|_| point),
+            matrix_current: cursor_y.is_some(),
+            cursor_y: cursor_y.unwrap_or(0),
+            scroll_functions: false,
+            make_window_start_visible: false,
+            total_cells: 22 * 80,
+            top_rows: 0,
+            scroll: Default::default(),
+            changed_region: (1, 1),
+            track_mouse: false,
+            resume: None,
+        };
+        let geometry = RenderGeometry {
+            truncate: false,
+            hscroll: 0,
+            current_line_only: false,
+            min_hscroll: 0,
+            lnum: None,
+            store: None,
+        };
+        let mut view = WindowView::default();
+        let plan = match super::plan_window_text(
+            &interpreter.buffer.borrow(),
+            &spec,
+            None,
+            &mut view,
+            &state,
+            21,
+            80,
+            false,
+            &geometry,
+            true,
+        ) {
+            PlanOutcome::Planned { plan, .. } => plan,
+            PlanOutcome::Hook { .. } => unreachable!("no window-scroll-functions"),
+        };
+        assert_eq!(start, 46);
+        plan
+    }
+
+    #[test]
+    fn a_display_string_taller_than_the_window_takes_the_cursor_on_its_row() {
+        // Point past a `display' string of 30 lines at the window's start
+        // does not show: the force_start block moves point to the start
+        // of the row half way down, a row of the string, whose position
+        // is point's, so set_cursor_from_row puts the cursor on that row's
+        // first glyph (string_buffer_position_lim's TEM == pt_old).
+        let plan = forced_start_at_a_display_string(30, 52, None);
+        assert_eq!(plan.rendered[0].0, "D00");
+        assert_eq!(plan.rendered[9].0, "D09");
+        assert_eq!(plan.cursor, Some((9, 0)));
+        // Point unmoved, try_cursor_movement keeps the cursor on the row
+        // it was on, though point's position begins the string's first.
+        let plan = forced_start_at_a_display_string(30, 46, Some(9));
+        assert_eq!(plan.cursor, Some((9, 0)));
     }
 
     #[test]

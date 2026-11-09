@@ -9678,6 +9678,158 @@ fn vertical_motion_goal_columns_and_rows_at_zv_answer_as_gnu_does() {
 }
 
 #[test]
+fn the_review_of_round_358_is_answered_as_gnu_answers() {
+    // A `display' string ends where pop_it's iterate_out_of_display_
+    // property leaves IT_CHARPOS, and the check at the top of
+    // move_it_in_display_line_to's loop stops a move there before
+    // handle_stop loads the next string: adjacent strings are not one.
+    // pos_visible_p at a window start inside replaced text reaches it
+    // at once; a string ending on the window's last row past its start
+    // answers the element after it there (the it2 branch), and one
+    // replacing the line's newline ends past the line.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "rv358.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defun bs-buf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "bs"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil display-line-numbers nil header-line-format nil)
+  (dotimes (i 100) (insert (format "line %03d\n" i)))
+  (goto-char 1) (set-window-start nil 1) (sit-for 0) 46)
+(defun bs-tall (n &optional pfx)
+  (mapconcat (lambda (i) (format "%s%02d\n" (or pfx "T") i)) (number-sequence 0 (1- n)) ""))
+(defun bs-at (q)
+  (list q (pos-visible-in-window-p q nil t) (pos-visible-in-window-p q)
+        (let ((pp (posn-at-point q))) (and pp (list (posn-col-row pp) (posn-point pp))))))
+(defun bs-q (tag)
+  (push (list tag (window-start) (point) (window-end) (window-end nil t)
+              (let ((pp (posn-at-point))) (and pp (list (posn-col-row pp) (posn-point pp))))
+              (mapcar #'bs-at '(46 47 48 49 50 51)))
+        bs-res))
+(defun bs-pv (tag qs)
+  (push (list tag (window-start) (mapcar #'bs-at qs)) bs-res))
+(defconst bs-stages
+  '((let ((p (bs-buf))) (put-text-property p (+ p 2) 'display "A") (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 30 "B")) (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (put-text-property p (+ p 2) 'display "A\n") (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 30 "B")) (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (put-text-property p (+ p 2) 'display (bs-tall 30 "A")) (put-text-property (+ p 2) (+ p 4) 'display "B") (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (put-text-property p (+ p 2) 'display (bs-tall 30 "A")) (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 3 "B")) (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (put-text-property p (+ p 2) 'display (bs-tall 10 "A")) (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 30 "B")) (set-window-start nil p) (goto-char p))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(defun bs-f6 () (interactive)
+  (let ((p (bs-buf))) (put-text-property 136 138 'display "A") (put-text-property 138 140 'display (bs-tall 10 "B")) (set-window-start nil 1) (bs-pv 'J1 '(136 137 138 139 140)))
+  (let ((p (bs-buf))) (setq display-line-numbers t) (put-text-property 136 138 'display "A") (put-text-property 138 140 'display (bs-tall 10 "B")) (set-window-start nil 1) (bs-pv 'J2 '(136 137 138 139 140)))
+  (let ((p (bs-buf)) (o nil)) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (setq o (make-overlay (+ p 4) (+ p 4))) (overlay-put o 'before-string "BEF") (set-window-start nil p) (bs-pv 'J3 '(46 47 49 50)))
+  (let ((p (bs-buf))) (put-text-property 228 229 'display "S") (put-text-property 229 230 'display (bs-tall 5 "T")) (set-window-start nil p) (bs-pv 'J4 '(227 228 229 230)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 2) 'display (bs-tall 3 "A")) (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 30 "B")) (set-window-start nil p) (bs-pv 'J5 '(46 47 48 49 50)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (concat (bs-tall 20 "D") "E")) (set-window-start nil p) (bs-pv 'A '(46 47 49 50 51)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 8) 'display (concat (bs-tall 20 "D") "E")) (set-window-start nil p) (bs-pv 'B '(46 47 53 54 55)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 8) 'display (bs-tall 21 "D")) (set-window-start nil p) (bs-pv 'B2 '(46 47 53 54 55)))
+  (let ((p (bs-buf))) (setq display-line-numbers t) (put-text-property p (+ p 4) 'display (concat (bs-tall 20 "D") "E")) (set-window-start nil p) (bs-pv 'B3 '(46 47 49 50 51)))
+  (let ((p (bs-buf))) (put-text-property 226 230 'display (bs-tall 5 "S")) (set-window-start nil p) (bs-pv 'C '(225 226 227 229 230 231)))
+  (let ((p (bs-buf))) (put-text-property 228 230 'display (bs-tall 5 "S")) (set-window-start nil p) (bs-pv 'C2 '(226 227 228 229 230 231)))
+  (let ((p (bs-buf))) (put-text-property 228 230 'display "SS") (set-window-start nil p) (bs-pv 'C3 '(226 227 228 229 230 231)))
+  (let ((p (bs-buf))) (setq display-line-numbers t) (put-text-property 228 230 'display (bs-tall 5 "S")) (set-window-start nil p) (bs-pv 'C4 '(226 227 228 229 230 231)))
+  (let ((p (bs-buf))) (setq header-line-format "H") (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil p) (bs-pv 'D '(46 47 49 50)))
+  (let ((p (bs-buf))) (setq header-line-format "H" display-line-numbers t) (put-text-property p (+ p 4) 'display (concat (bs-tall 25 "D") "XYZ")) (set-window-start nil p) (bs-pv 'D2 '(46 47 49 50)))
+  (let ((p (bs-buf))) (goto-char p) (insert (make-string 200 ?x)) (put-text-property (+ p 100) (+ p 104) 'display (bs-tall 30 "D")) (set-window-start nil p) (bs-pv 'E (list (+ p 99) (+ p 100) (+ p 101) (+ p 104) (+ p 105))))
+  (let ((p (bs-buf))) (goto-char p) (insert (make-string 200 ?x)) (put-text-property (+ p 100) (+ p 104) 'display (concat (bs-tall 25 "D") "XYZ")) (set-window-start nil p) (bs-pv 'E2 (list (+ p 99) (+ p 100) (+ p 101) (+ p 104) (+ p 105))))
+  (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (concat (bs-tall 10 "D") "E")) (set-window-start nil 1) (bs-pv 'G '(46 47 49 50 51)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil (+ p 1)) (bs-pv 'S1 '(46 47 48 49 50)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil (+ p 2)) (bs-pv 'S2 '(47 48 49 50)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (concat (bs-tall 21 "D") "E")) (set-window-start nil p) (bs-pv 'S4 '(46 47 49 50 51)))
+  (let ((p (bs-buf)) (o nil)) (setq o (make-overlay p (+ p 4))) (overlay-put o 'display (bs-tall 30 "D")) (set-window-start nil p) (bs-pv 'S5 '(46 47 49 50)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 9) 'display (bs-tall 30 "D")) (set-window-start nil p) (bs-pv 'S6 '(46 47 54 55 56))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f6] #'bs-f6)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "rv358.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 5));
+    input.push((1.5, b"\x1b[17~"));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "rv358.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "rv358.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn a_display_string_taller_than_the_window_answers_as_gnu_does() {
+    // move_it_to does not stop inside a `display' string: pos_visible_p
+    // of the string's position stops at the last row, IT_CHARPOS there,
+    // and of the text it replaces finds the last row partly visible and
+    // answers where the element after the string falls below the window.
+    // The force_start block puts point at the string's position on the
+    // row half way down, where set_cursor_from_row puts the cursor on
+    // the string's first glyph (or one with a `cursor' property), and
+    // try_cursor_movement keeps it there while point does not move.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "tall358.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defun bs-buf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "bs"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil display-line-numbers nil)
+  (dotimes (i 100) (insert (format "line %03d\n" i)))
+  (goto-char 1) (set-window-start nil 1) (sit-for 0) 46)
+(defun bs-tall (n &optional pfx)
+  (mapconcat (lambda (i) (format "%s%02d\n" (or pfx "T") i)) (number-sequence 0 (1- n)) ""))
+(defun bs-q (tag)
+  (let ((p 46))
+    (push (list tag (window-start) (point) (window-end) (window-end nil t)
+                (pos-visible-in-window-p (point) nil t)
+                (let ((pp (posn-at-point))) (and pp (posn-col-row pp)))
+                (mapcar (lambda (q) (list q (pos-visible-in-window-p q nil t) (pos-visible-in-window-p q)))
+                        (list p (+ p 1) (+ p 3) (+ p 4) (+ p 9) (+ p 10))))
+          bs-res)))
+(defconst bs-stages
+  '((let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (setq display-line-numbers t) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (concat (bs-tall 25 "D") "XYZ")) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (setq display-line-numbers t) (put-text-property p (+ p 4) 'display (concat (bs-tall 25 "D") "XYZ")) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 9) 'display (bs-tall 30 "D")) (set-window-start nil p) (goto-char (+ p 12)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (concat (bs-tall 3 "D") (propertize "CUR" 'cursor t) "\n" (bs-tall 25 "E"))) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil (- p 18)) (goto-char (- p 18)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (bs-tall 21 "D")) (set-window-start nil p) (goto-char p))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "tall358.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 9));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "tall358.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "tall358.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
 fn the_review_of_round_357_is_answered_as_gnu_answers() {
     // Fvertical_motion's goal: move_it_in_display_line to first_x + to_x
     // stops at the element whose glyph reaches past it (a TAB's, a wide

@@ -18204,6 +18204,65 @@ setup_process_coding_systems's check now refuses). A 13-form
   better (cn, vm, vm2 and st.el's stage 13 now match GNU's), round 355's
   (rv1 to rv5, hs3) and round 354's review probes as on round 356's
   build.
+- **Round 358: a `display' string taller than the window.**
+  tty::window_cell_xy, pos_visible_p's move_it_to, stops for a position
+  whose text a `display' string replaces only at the element after the
+  string (ScreenLineLayout::replaced_stop, replaced_end; the next line's
+  first row past the line's end): when that falls below the window it
+  stops at the last row's start, IT_CHARPOS the string's position, so
+  the position the string replaces from is visible on the last row (the
+  line numbers' width added), and a position inside the replaced text
+  takes GNU's partly visible last row: off a newline move_it_by_lines 1
+  from the last row's start goes on past a string it lands inside
+  (row_begins_inside_string), and a position before where it lands is
+  visible where move_it_to reaches it with no limit, the element after
+  the string, below the window, its row's height 0 at a row's start.
+  tty::VisibleAt carries that row's RBOT; pos-visible-in-window-p
+  answers nil for it without PARTIALLY and (X Y RTOP RBOT ROWH VPOS)
+  with, as Fpos_visible_in_window_p's fully_p does, and posn-at-point
+  takes it.  Rows::string_row_cursor_x is set_cursor_from_row's string
+  loop for the row the force_start block moved point to: a `display'
+  string at point or after it (string_buffer_position_lim's TEM) takes
+  the cursor on its first glyph with a `cursor' property, else its
+  first, and ends the search; an overlay string's `cursor' glyph is a
+  candidate, the last one taken.  Planner::ignore_start with point
+  unmoved and the matrix current tries the row the cursor was on
+  (unmoved_cursor_row) before point's glyph's row, as
+  try_cursor_movement starts from last_cursor_vpos.  The round's review:
+  ScreenLineLayout::replaced_end is where the string replacing POS's
+  text ends (string_end, covering_run), not past any string that follows
+  (pop_it's iterate_out_of_display_property and the loop-top check of
+  move_it_in_display_line_to stop the move before handle_stop loads the
+  next), except at a string's own start right after one ending part-way
+  along a row (run_string_ends_row), where the iterator stops already;
+  replaced_stop gives the row and column of the stop, the first element
+  at or past the end (stop_cell, before an overlay string there), or the
+  next line's first row when the string replaces the line's newline
+  (newline_replaced, string_end past line_end); a window start inside
+  replaced text begins its later rows at the start (row_starts from the
+  origin), so it is visible; a stop on the last row past its start, at
+  the element after the string, is the it2 branch's, visible there.
+  Recorded, unchanged by the round: um.el stage 1 (a before-string
+  "AB\nCD" with `cursor' on B: GNU row 5 column 1, Emaxx row 6 column
+  2); cur3.el stage 4 (force_start onto a before-string with line
+  numbers: GNU column 79, Emaxx 0); cur2.el stage 1 (invisible text
+  after a before-string at the start: handle_invisible_prop loads the
+  strings with IT_CHARPOS past the invisible run, so their rows begin
+  there and the force_start moves point to 48, and the bidi ppos_it rule
+  answers (0 0) for 46; Emaxx 46 and (2 9)); pv2.el S7 (a string
+  replacing a newline whose last line has no newline does not join the
+  next line onto its row); truncated lines (pv1.el F, round 359).  The
+  grouped gate passed its 3,511 library tests
+  (a_display_string_taller_than_the_window_takes_the_cursor_on_its_row
+  new); the integration targets (cli, cli_parity with
+  a_display_string_taller_than_the_window_answers_as_gnu_does and
+  the_review_of_round_358_is_answered_as_gnu_answers, ert_runner,
+  native_comp_identity, native_thread_continuations, package_lifecycle,
+  runtime_ownership) passed, and clippy is clean.  On the final build
+  the round's probes (dv, dv2: nine stages, their answers and screens)
+  match GNU's, as do the round 356 review's tall.el stages 2, 6 and 9
+  and pv.el's disp, which had differed; the other probes answer as on
+  round 357's build.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -21279,6 +21338,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   package-tests (5.98 against 5.52).  The Rust gate (run 42635782591)
   passed.
 
+**On `4f2be43`** (round 357): the frozen run (run 42687428366) matched
+  all 7,928 outcomes.  Setup 82.3 s against 67.2 s (1.225), test bodies
+  306.2 s against 268.2 s (1.142), in all 1.140, on a runner slower than
+  round 356's (setup median 125 ms against 105; at round 356 82 against
+  72).  The widest body gap is ert-tests (48.4 s against 38.3 s), then
+  tramp-tests (22.7 against 19.6), comp-tests (17.3 against 14.8),
+  eglot-tests (33.9 against 32.0), semantic-utest-ia (4.08 against
+  2.75), process-tests (3.05 against 1.89), mule-tests (3.18 against
+  2.04) and package-tests (7.08 against 6.19).  The Rust gate (run
+  42687423972) passed.
+
 **Findings recorded, not fixed:**
 - **Redisplay paths not modelled (round 353 review).**  try_window_id,
   `redisplay-skip-fontification-on-input' and f->cursor_type_changed;
@@ -21321,13 +21391,9 @@ ert-tests as a whole 26,307 ms against 27,211.
   cases (vertical-motion's goal column, the backward moves from two
   before-strings in a continued line, a before-string at ZV) and
   window-end of a `display' string taller than the window (tall.el
-  stages 3 and 9) as GNU's:
-  - A `display' string taller than the window: set_cursor_from_row puts
-    the cursor on the row's first glyph (its `tem == pt_old' branch)
-    and pos-visible-in-window-p answers the last row, where move_it_to
-    stops at the last row whose IT_CHARPOS is the string's position;
-    Emaxx answers the first row (tall.el stages 2, 6 and 9, pv.el
-    disp).
+  stages 3 and 9) as GNU's, and round 358 the cursor and
+  pos-visible-in-window-p at such a string (tall.el stages 2, 6 and 9,
+  pv.el disp):
   - With `truncate-lines' (or a horizontal scroll) a multi-line
     before-string at the window's start loses or garbles rows (st.el
     stages 5 and 6, pv.el trunc, trunc-hs and hscroll).
@@ -21339,6 +21405,21 @@ ert-tests as a whole 26,307 ms against 27,211.
     round 357.  seq.el's stages 5, 6, 13 and
     14, where GNU's window goes back to BEGV after point stays at a tall
     before-string, are the move_it_to (PT) finding above.
+- **A `display' string taller than the window (round 358 review).**
+  Answered the same way before round 358 (r357h):
+  - A before-string "AB\nCD" with a `cursor' property on B: GNU's
+    cursor is on row 5, column 1, Emaxx's on row 6, column 2 (um.el
+    stage 1).
+  - The force_start block onto a before-string with line numbers: GNU
+    puts the cursor at column 79, Emaxx at 0 (cur3.el stage 4).
+  - Invisible text after a before-string at the window's start:
+    handle_invisible_prop loads the strings with IT_CHARPOS past the
+    invisible run, so their rows begin there and the force_start block
+    moves point to 48, and the bidi ppos_it rule answers (0 0) for 46;
+    Emaxx answers 46 and (2 9) (cur2.el stage 1).
+  - A `display' string replacing a newline whose last line has no
+    newline does not join the next line onto its row in Emaxx (pv2.el
+    S7).
 - **Display strings across newlines (round 357 reviews).**  Answered
   the same way before round 357 (r356h):
   - A `display' string nested in an overlay string is not drawn: Emaxx

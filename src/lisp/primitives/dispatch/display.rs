@@ -1725,7 +1725,7 @@ fn pos_visible_xy(
     start: usize,
     pos: Option<usize>,
     text_rows: usize,
-) -> Option<(i64, usize)> {
+) -> Option<crate::tty::VisibleAt> {
     let mut passes = 0;
     let mut fetches = crate::tty::IteratorFetches::off();
     loop {
@@ -1734,11 +1734,15 @@ fn pos_visible_xy(
             Some(target) => crate::tty::window_position_xy(
                 interp, window_id, start, target, geometry, text_rows,
             ),
-            None => crate::tty::window_end_xy(interp, window_id, start, geometry, text_rows),
+            None => crate::tty::window_end_xy(interp, window_id, start, geometry, text_rows)
+                .map(|(x, y)| crate::tty::VisibleAt { x, y, rbot: 0 }),
         };
         let xy = shown.or_else(|| {
-            pos.is_none()
-                .then(|| (-(geometry.hscroll as i64), text_rows.saturating_sub(1)))
+            pos.is_none().then(|| crate::tty::VisibleAt {
+                x: -(geometry.hscroll as i64),
+                y: text_rows.saturating_sub(1),
+                rbot: 0,
+            })
         });
         passes += 1;
         fetches.begin_pass(interp, env, window_id);
@@ -1751,7 +1755,7 @@ fn pos_visible_xy(
             &mut fetches,
             geometry,
             (start, pos),
-            shown,
+            shown.map(|at| (at.x, at.y)),
             text_rows,
         );
         if !fetches.fontify(interp, env, window_id) {
@@ -6499,23 +6503,38 @@ define_dispatch!(
                     }
                     xy
                 };
-                let Some((x, y)) = xy else {
+                let Some(crate::tty::VisibleAt { x, y, rbot }) = xy else {
                     return Ok(Value::Nil);
                 };
+                // fully_p: no part of the row above or below the window
+                // (a terminal's rows are never cut at the top); a row
+                // partly visible counts only with PARTIALLY.
+                let partially = args.get(2).is_some_and(Value::is_truthy);
+                if !partially && rbot > 0 {
+                    return Ok(Value::Nil);
+                }
                 // With PARTIALLY non-nil GNU answers a list (X Y [RTOP RBOT
                 // ROWH VPOS]) — two elements for a fully visible position.
                 // Text-terminal frames measure pixels in character cells, so
                 // X is the column in the text area (the line-number glyphs
                 // counted, the hscroll taken off) and Y the window row.
-                if args.get(2).is_some_and(Value::is_truthy) {
+                if partially {
                     // The iterator's y starts below the tab and header
                     // lines (start_display's current_y).
                     let top = window_line_height(interp, buffer_id, "tab-line-format", env)
                         + window_line_height(interp, buffer_id, "header-line-format", env);
-                    return Ok(Value::list([
-                        Value::Integer(x),
-                        Value::Integer(y as i64 + top),
-                    ]));
+                    let mut answer = vec![Value::Integer(x), Value::Integer(y as i64 + top)];
+                    if rbot > 0 {
+                        // RTOP RBOT ROWH VPOS: the row lies wholly below
+                        // the window, none of it shown.
+                        answer.extend([
+                            Value::Integer(0),
+                            Value::Integer(rbot as i64),
+                            Value::Integer(0),
+                            Value::Integer(y as i64),
+                        ]);
+                    }
+                    return Ok(Value::list(answer));
                 }
                 Ok(Value::T)
             }

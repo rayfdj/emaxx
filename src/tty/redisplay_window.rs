@@ -462,14 +462,18 @@ impl<'a, 'c> Rows<'a, 'c> {
     }
 
     /// set_cursor_from_row's x on ROW, every glyph of which comes from a
-    /// string, for a point whose glyph it does not show (the row the
+    /// string, for POINT, whose glyph it does not show (the row the
     /// force_start block moves point to): step 2 finds no glyph for
-    /// point, so the cursor goes on a glyph whose character has a
-    /// non-nil `cursor' property, else past the row's glyphs onto its
-    /// newline's.  A row the string continues past puts it on the row's
-    /// first glyph, a line number's included (the FALSE answer: before
-    /// the gutter).
-    pub(super) fn string_row_cursor_x(&self, row: Row) -> Option<(usize, bool)> {
+    /// point and looks through the row's strings in turn.  A `display'
+    /// string at point or after it (string_buffer_position_lim's TEM)
+    /// puts the cursor on its first glyph whose character has a non-nil
+    /// `cursor' property, else on its first glyph, and the search ends;
+    /// an overlay string's (TEM 0) `cursor' glyph is a candidate, the
+    /// last one found taken.  With none the cursor goes past the row's
+    /// glyphs onto its newline's.  A row the string continues past puts
+    /// it on the row's first glyph, a line number's included (the FALSE
+    /// answer: before the gutter).
+    pub(super) fn string_row_cursor_x(&self, row: Row, point: usize) -> Option<(usize, bool)> {
         if self.truncate {
             return None;
         }
@@ -494,12 +498,35 @@ impl<'a, 'c> Rows<'a, 'c> {
                 .unwrap_or(start)
                 .saturating_sub(start)
         };
-        let cursor = indexes.clone().find(|&index| {
+        let has_cursor = |index: usize| {
             visual.object_at(index).is_some_and(|(value, character)| {
                 crate::lisp::primitives::string_property_at(&value, character, "cursor")
                     .is_some_and(|cursor| cursor.is_truthy())
             })
-        });
+        };
+        let line_start = self.buffer.display_line_start_of(row.line);
+        let mut cursor = None;
+        let mut index = indexes.start;
+        while index < indexes.end {
+            let object = visual_object(&visual, index);
+            let run_end = (index..indexes.end)
+                .find(|&next| visual_object(&visual, next) != object)
+                .unwrap_or(indexes.end);
+            let found = (index..run_end).find(|&glyph| has_cursor(glyph));
+            if visual.object_from_display(index) {
+                let tem = visual
+                    .raw_of_display
+                    .get(index)
+                    .map(|&raw| line_start + raw);
+                if tem.is_some_and(|tem| tem >= point) {
+                    cursor = Some(found.unwrap_or(index));
+                    break;
+                }
+            } else if found.is_some() {
+                cursor = found;
+            }
+            index = run_end;
+        }
         match (cursor, self.string_newline_ending(row)) {
             (Some(index), _) | (None, Some((index, _))) => Some((column(index), true)),
             (None, None) => Some((0, false)),
@@ -862,10 +889,11 @@ impl Planner<'_, '_, '_> {
     }
 
     /// try_cursor_movement with point where the window's last display
-    /// left it: the row the cursor was on then (w->last_cursor_vpos)
-    /// while point is within that row's start and end positions, as for
-    /// a row of a string before point's glyph, where the force_start
-    /// block put the cursor.
+    /// left it: the row the cursor was on then (w->last_cursor_vpos),
+    /// which an unmoved point does not leave, while point is within that
+    /// row's start and end positions -- a row of a string before point's
+    /// glyph or of a `display' string taller than the window, where the
+    /// force_start block put the cursor, rather than point's glyph's.
     fn unmoved_cursor_row(&self, start: usize) -> Option<usize> {
         let vpos = self.state.cursor_y;
         if self.point < start || !self.in_range(start) || vpos >= self.height {
@@ -977,8 +1005,8 @@ impl Planner<'_, '_, '_> {
         if state.cursor_unmoved
             && self.point >= start
             && let Some(row) = self
-                .visible_row(start)
-                .or_else(|| self.unmoved_cursor_row(start))
+                .unmoved_cursor_row(start)
+                .or_else(|| self.visible_row(start))
         {
             // try_cursor_movement: the current matrix, no iterator.
             return self.done(start, Some(row), None);
