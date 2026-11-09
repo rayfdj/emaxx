@@ -1226,6 +1226,8 @@ impl Interpreter {
     /// point; KEEP (KEEP-MARGINS on the buffer the window already shows)
     /// leaves the start, point and hscroll alone.
     pub(crate) fn show_buffer_in_window(&mut self, window_id: u64, buffer_id: u64, keep: bool) {
+        // adjust_window_count's `w->window_end_valid = false'.
+        crate::lisp::primitives::invalidate_window_end(self, window_id);
         let (point_min, point_max, point) = if buffer_id == self.current_buffer_id {
             let buffer = self.buffer.borrow();
             (buffer.point_min(), buffer.point_max(), buffer.point())

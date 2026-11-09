@@ -1366,9 +1366,9 @@ pub(crate) fn buffer_property_at_with_category(
     pos: usize,
     prop: impl PropertyKey,
 ) -> Result<Option<Value>, LispError> {
-    // Out of the accessible text there is no interval: the empty plist's
-    // textget, `default-text-properties' alone (Ftext_properties_at's nil
-    // at the end).
+    // Out of the accessible text, or at Z, there is no interval: the
+    // empty plist's textget, `default-text-properties' alone
+    // (Ftext_properties_at's nil at the end).
     property_from_props_with_category(interp, buffer.text_plist_at(pos), prop)
 }
 

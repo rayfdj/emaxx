@@ -8838,6 +8838,166 @@ fn the_display_iterator_fetches_text_where_xdisp_c_fetches_it() {
 
 #[cfg(unix)]
 #[test]
+fn redisplay_fontifies_the_text_its_walks_fetch_as_redisplay_window_does() {
+    // A function in `fontification-functions' that marks one character a
+    // call shows the text each of redisplay_window's iterator walks
+    // fetches, in order: try_window's rows from a start, with
+    // TRY_WINDOW_CHECK_MARGINS start_display again and partial_line_height
+    // (the row below the window); the recenter label's init_iterator at
+    // point, the scroll margin's walk and move_it_vertically_backward;
+    // try_scrolling's walks to point, below the window and above it,
+    // under `scroll-conservatively', `scroll-step' with `scroll-margin' and
+    // `scroll-*-aggressively'; the check of a start set with NOFORCE; and
+    // Frecenter's own walks (start_display at point, move_it_by_lines,
+    // move_it_vertically_backward) for no argument, a positive and a
+    // negative one.  Each step records what the previous one's command
+    // and redisplay fontified.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "redisplayfetch.el",
+        r#"(defvar rf-log nil)
+(defvar rf-res nil)
+(defvar rf-stage 0)
+(defun rf-fontify (pos)
+  (push pos rf-log)
+  (put-text-property pos (1+ pos) 'fontified t))
+(switch-to-buffer (get-buffer-create "rf"))
+(dotimes (i 120)
+  (insert (format "line %03d %s\n" i (make-string (if (= (% i 3) 0) 100 20) ?x))))
+(goto-char 1)
+(setq-local fontification-functions '(rf-fontify))
+(defun rf-ranges (l)
+  (let (out beg prev)
+    (dolist (p l)
+      (cond ((and prev (= p (1+ prev))) (setq prev p))
+            (t (when beg (push (if (= beg prev) beg (cons beg prev)) out))
+               (setq beg p prev p))))
+    (when beg (push (if (= beg prev) beg (cons beg prev)) out))
+    (nreverse out)))
+(defun rf-note (tag)
+  (push (list tag (point) (window-start) (rf-ranges (reverse rf-log))) rf-res)
+  (setq rf-log nil))
+(defun rf-scene (vars)
+  (dolist (v '(scroll-conservatively scroll-step scroll-margin
+               scroll-up-aggressively scroll-down-aggressively))
+    (kill-local-variable v))
+  (dolist (b vars) (set (make-local-variable (car b)) (cdr b)))
+  (set-window-start nil 1)
+  (goto-char 1))
+(defconst rf-stages
+  '((initial (goto-char 3000))
+    (far (forward-line 12))
+    (below (scroll-up 5))
+    (scrolled (rf-scene nil))
+    (scene (goto-char 3000) (recenter) (rf-note 'recenter))
+    (centered (goto-char 5000) (recenter 3) (rf-note 'recenter-3))
+    (at-3 (goto-char 6100) (recenter -4) (rf-note 'recenter-minus-4))
+    (at-minus-4 (rf-scene '((scroll-conservatively . 101))))
+    (conservative (forward-line 30))
+    (conservative-down (forward-line -40))
+    (conservative-up (rf-scene '((scroll-margin . 3) (scroll-step . 2))))
+    (stepped (forward-line 15))
+    (step-down (forward-line -14))
+    (step-up (forward-line 2))
+    (step-on (rf-scene nil))
+    (noforce (set-window-start nil 1001 t))
+    (noforce-shown (goto-char 1500) (set-window-start nil 2001 t))
+    (noforce-hidden (rf-scene '((scroll-margin . 2) (scroll-up-aggressively . 0.3)
+                                (scroll-down-aggressively . 0.2))))
+    (aggressive (forward-line 25))
+    (aggressive-down (forward-line -30))
+    (aggressive-up)))
+(defun rf-f5 () (interactive)
+  (let ((stage (nth rf-stage rf-stages)))
+    (rf-note (car stage))
+    (with-silent-modifications
+      (put-text-property (point-min) (point-max) 'fontified nil))
+    (setq rf-stage (1+ rf-stage))
+    (eval (cons 'progn (cdr stage)) t)))
+(global-set-key [f5] #'rf-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "redisplayfetch.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse rf-res))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 20));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "redisplayfetch.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "redisplayfetch.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn redisplay_offers_a_declined_position_once_a_walk_and_none_from_the_current_matrix() {
+    // A function in `fontification-functions' that marks one character a
+    // call but leaves one position unfontified: each walk of the display
+    // iterator that stops there offers it again (try_window's rows, then
+    // partial_line_height's walk under TRY_WINDOW_CHECK_MARGINS), while
+    // the iterator moves past it to its next stop; a command that only
+    // moves point inside the window is served from the current matrix
+    // (try_cursor_movement) with no walk and no call; point moved below
+    // the window recenters, and an edit is displayed again.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "declinedwalks.el",
+        r#"(defvar dw-log nil)
+(defvar dw-res nil)
+(defvar dw-decline nil)
+(defvar dw-stage 0)
+(defun dw-fontify (pos)
+  (push pos dw-log)
+  (unless (memq pos dw-decline)
+    (put-text-property pos (1+ pos) 'fontified t)))
+(switch-to-buffer (get-buffer-create "dw"))
+(dotimes (i 120)
+  (insert (format "line %03d %s\n" i (make-string (if (= (% i 3) 0) 100 20) ?x))))
+(goto-char 1)
+(setq-local fontification-functions '(dw-fontify))
+(defun dw-ranges (l)
+  (let (out beg prev)
+    (dolist (p l)
+      (cond ((and prev (= p (1+ prev))) (setq prev p))
+            (t (when beg (push (if (= beg prev) beg (cons beg prev)) out))
+               (setq beg p prev p))))
+    (when beg (push (if (= beg prev) beg (cons beg prev)) out))
+    (nreverse out)))
+(defconst dw-stages
+  '((initial (setq dw-decline '(500))
+             (with-silent-modifications
+               (put-text-property (point-min) (point-max) 'fontified nil)))
+    (declined (forward-line 1))
+    (moved (forward-line 30))
+    (below (scroll-up 3))
+    (scrolled (goto-char 2000) (insert "y"))
+    (inserted)))
+(defun dw-f5 () (interactive)
+  (let ((stage (nth dw-stage dw-stages)))
+    (push (list (car stage) (point) (window-start) (dw-ranges (reverse dw-log))) dw-res)
+    (setq dw-log nil)
+    (setq dw-stage (1+ dw-stage))
+    (eval (cons 'progn (cdr stage)) t)))
+(global-set-key [f5] #'dw-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "declinedwalks.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse dw-res))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 5));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "declinedwalks.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "declinedwalks.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
 fn long_lines_turn_on_the_long_line_optimizations_as_xdisp_c_does() {
     // redisplay_window finds a line longer than `long-line-threshold' in
     // the buffer it displays and sets its long_line_optimizations_p for

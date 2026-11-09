@@ -403,6 +403,13 @@ fn forward_rows(
     (starts[index], moved, in_string)
 }
 
+/// (it->last_visible_x - it->first_visible_x) / FRAME_COLUMN_WIDTH, the
+/// columns of WINDOW's text area less the one init_iterator leaves for
+/// the continuation or truncation glyph.
+pub(crate) fn iterator_row_chars(interp: &Interpreter, window_id: u64) -> usize {
+    super::window_text_area_columns(interp, window_id).saturating_sub(1)
+}
+
 /// move_it_by_lines from an iterator at FROM on vpos 0: where it lands
 /// and its vpos there.  DVPOS 0 is the start of FROM's screen line
 /// (move_it_vertically_backward, no reseat); forward, the start of the
@@ -440,7 +447,7 @@ pub(crate) fn move_it_by_lines(
     let orig_charpos = from;
     let start_charpos = screen_line_start(interp, env, window_id, from, fetches);
     let truncate = crate::tty::window_truncates(interp, window_id, interp.current_buffer_id());
-    let nchars_per_row = super::window_text_area_columns(interp, window_id) as i64;
+    let nchars_per_row = iterator_row_chars(interp, window_id) as i64;
     let pos_limit = if truncate || nchars_per_row == 0 {
         begv
     } else {

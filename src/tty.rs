@@ -76,6 +76,9 @@ struct WindowView {
     last_start: Option<usize>,
     last_restriction: Option<(usize, usize)>,
     last_modiff: Option<crate::buffer::ModCount>,
+    /// The text row of `w->cursor.y' as the last display that showed
+    /// point left it (try_window resets only its vpos).
+    last_cursor_y: Option<usize>,
     /// Redisplay state from the preceding frame.  GNU can leave point-based
     /// mode-line constructs on their preceding value after point moves inside
     /// invisible text, until the next input invalidates that incremental
@@ -3570,6 +3573,7 @@ fn glyphless_visual_line_at(
 /// screen column of each of the line's buffer positions.  Interactive
 /// `vertical-motion', `posn-at-point', recentering and scrolling walk
 /// these rows, exactly as GNU's commands walk its display iterator.
+#[derive(Clone)]
 pub(crate) struct ScreenLineLayout {
     /// Buffer position where each row begins.
     pub(crate) row_starts: Vec<usize>,
@@ -4014,7 +4018,10 @@ pub(crate) fn screen_line_layout(
     truncate: bool,
     lnum_cols: usize,
 ) -> ScreenLineLayout {
-    ScreenLineLayouter::new(interpreter, window_id, lnum_cols).layout(bol, text_width, truncate)
+    std::rc::Rc::unwrap_or_clone(
+        ScreenLineLayouter::new(interpreter, window_id, lnum_cols)
+            .layout(bol, text_width, truncate),
+    )
 }
 
 /// The display context and invisibility spec screen_line_layout reads,
@@ -4024,6 +4031,29 @@ pub(crate) struct ScreenLineLayouter<'a> {
     interpreter: &'a Interpreter,
     spec: crate::lisp::primitives::InvisibilitySpec,
     context: CharacterDisplayContext<'a>,
+    window_id: u64,
+    lnum_cols: usize,
+}
+
+/// A display line's layout key while redisplay records a window's walks:
+/// the window, its line-number columns, the line's start, the start a
+/// start_display anchors its first row at, the text width and whether
+/// lines truncate.
+type WalkLayoutKey = (u64, usize, usize, Option<usize>, usize, bool);
+
+thread_local! {
+    /// The display lines the walks of one window's redisplay lay out,
+    /// while no Lisp runs between them: each walk takes the window's
+    /// lines from here rather than laying them out again.
+    static WALK_LAYOUTS: std::cell::RefCell<
+        Option<std::collections::HashMap<WalkLayoutKey, std::rc::Rc<ScreenLineLayout>>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Keep the layouts redisplay's walks make (true) until Lisp may run and
+/// change the text again (false).
+fn share_walk_layouts(on: bool) {
+    WALK_LAYOUTS.with(|cache| *cache.borrow_mut() = on.then(Default::default));
 }
 
 impl<'a> ScreenLineLayouter<'a> {
@@ -4039,11 +4069,18 @@ impl<'a> ScreenLineLayouter<'a> {
             interpreter,
             spec,
             context,
+            window_id,
+            lnum_cols,
         }
     }
 
     /// screen_line_layout of the display line starting at BOL.
-    pub(crate) fn layout(&self, bol: usize, text_width: usize, truncate: bool) -> ScreenLineLayout {
+    pub(crate) fn layout(
+        &self,
+        bol: usize,
+        text_width: usize,
+        truncate: bool,
+    ) -> std::rc::Rc<ScreenLineLayout> {
         self.lay_out(bol, text_width, truncate, None)
     }
 
@@ -4054,7 +4091,7 @@ impl<'a> ScreenLineLayouter<'a> {
         start: usize,
         text_width: usize,
         truncate: bool,
-    ) -> ScreenLineLayout {
+    ) -> std::rc::Rc<ScreenLineLayout> {
         self.lay_out(start, text_width, truncate, Some(start))
     }
 
@@ -4064,15 +4101,52 @@ impl<'a> ScreenLineLayouter<'a> {
         text_width: usize,
         truncate: bool,
         origin: Option<usize>,
-    ) -> ScreenLineLayout {
-        let (interpreter, spec, context) = (self.interpreter, &self.spec, &self.context);
+    ) -> std::rc::Rc<ScreenLineLayout> {
+        let (interpreter, spec) = (self.interpreter, &self.spec);
 
         let buffer = interpreter.buffer.borrow();
         let first_line = visual_line_first_line(&buffer, spec, buffer.line_number_at_pos(bol));
         let line_start = buffer.display_line_start_of(first_line);
-        let visual = glyphless_visual_line_at(&buffer, spec, first_line, Some(context));
         // A start inside the line: rows from there (start_display).
         let origin = origin.filter(|origin| *origin != line_start);
+        let key = (
+            self.window_id,
+            self.lnum_cols,
+            line_start,
+            origin,
+            text_width,
+            truncate,
+        );
+        if let Some(layout) = WALK_LAYOUTS.with(|cache| {
+            cache
+                .borrow()
+                .as_ref()
+                .and_then(|layouts| layouts.get(&key).cloned())
+        }) {
+            return layout;
+        }
+        let layout = std::rc::Rc::new(self.lay_out_line(
+            &buffer, first_line, line_start, text_width, truncate, origin,
+        ));
+        WALK_LAYOUTS.with(|cache| {
+            if let Some(layouts) = cache.borrow_mut().as_mut() {
+                layouts.insert(key, std::rc::Rc::clone(&layout));
+            }
+        });
+        layout
+    }
+
+    fn lay_out_line(
+        &self,
+        buffer: &crate::buffer::Buffer,
+        first_line: usize,
+        line_start: usize,
+        text_width: usize,
+        truncate: bool,
+        origin: Option<usize>,
+    ) -> ScreenLineLayout {
+        let (spec, context) = (&self.spec, &self.context);
+        let visual = glyphless_visual_line_at(buffer, spec, first_line, Some(context));
         let walk = origin.is_some_and(|origin| {
             !(origin <= buffer.point_min() || buffer.char_at(origin - 1) == Some('\n'))
         });
@@ -4114,21 +4188,21 @@ impl<'a> ScreenLineLayouter<'a> {
         {
             row_starts.push(line_end);
         }
+        let rows = RowOfColumn::new(&laid.rows);
         let cells = (0..visual.map.len())
             .map(|offset| {
                 let index = visual.map[offset];
                 let column = laid.columns[index.min(laid.columns.len() - 1)];
                 if truncate {
                     (0, column)
+                } else if visual
+                    .glyphless_spans
+                    .iter()
+                    .any(|(from, _)| *from == index)
+                {
+                    rows.first(column)
                 } else {
-                    wrapped_position_of_column(
-                        &laid.rows,
-                        column,
-                        visual
-                            .glyphless_spans
-                            .iter()
-                            .any(|(from, _)| *from == index),
-                    )
+                    rows.last(column)
                 }
             })
             .collect();
@@ -4138,7 +4212,7 @@ impl<'a> ScreenLineLayouter<'a> {
                 let (row, column) = if truncate {
                     (0, column)
                 } else {
-                    wrapped_position_of_column(&laid.rows, column, true)
+                    rows.first(column)
                 };
                 (index, row, column, raw_of(index))
             })
@@ -4175,7 +4249,7 @@ impl<'a> ScreenLineLayouter<'a> {
             .zip(&row_starts)
             .map(|(row, start)| {
                 (row.prefix_cols > 0)
-                    .then(|| context.prefix_value_at(&buffer, *start, row.continuation))
+                    .then(|| context.prefix_value_at(buffer, *start, row.continuation))
                     .filter(|value| crate::lisp::primitives::string_text(value).is_ok())
             })
             .collect();
@@ -4546,11 +4620,13 @@ enum PlanOutcome {
         start: usize,
         update_mode_line: bool,
         consumed: redisplay_window::Consumed,
+        steps: Vec<redisplay_window::FetchStep>,
     },
     Planned {
         plan: WindowPlan,
         chosen: redisplay_window::Chosen,
         consumed: redisplay_window::Consumed,
+        steps: Vec<redisplay_window::FetchStep>,
     },
 }
 
@@ -4576,7 +4652,7 @@ fn plan_window_text(
     let lnum_cols = geometry.lnum.map_or(0, |layout| layout.cols);
     let body_width = body_width.saturating_sub(lnum_cols).max(1);
     let rows = redisplay_window::Rows::new(buffer, spec, glyphless, body_width, truncate);
-    let (decision, consumed) = redisplay_window::decide(&rows, state, text_rows);
+    let (decision, consumed, steps) = redisplay_window::decide(&rows, state, text_rows);
     let chosen = match decision {
         redisplay_window::Decision::Hook {
             stage,
@@ -4588,6 +4664,7 @@ fn plan_window_text(
                 start,
                 update_mode_line,
                 consumed,
+                steps,
             };
         }
         redisplay_window::Decision::Display(chosen) => chosen,
@@ -4794,7 +4871,96 @@ fn plan_window_text(
         },
         chosen,
         consumed,
+        steps,
     }
+}
+
+/// redisplay_flags::window_outdated for the planner.
+fn redisplay_window_outdated(interpreter: &Interpreter, window_id: u64) -> bool {
+    redisplay_flags::window_outdated(interpreter, window_id)
+}
+
+/// try_cursor_movement's conditions besides the current matrix's: no
+/// update_mode_lines, no `show-trailing-whitespace' in INFO's buffer,
+/// `display-line-numbers' neither relative nor visual and, when on, the
+/// current line's number face no different from the others', and no
+/// overlay arrow in the buffer (overlay_arrow_in_current_buffer_p).
+fn cursor_movement_usable(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    info: &crate::lisp::primitives::WindowRenderInfo,
+) -> bool {
+    if interpreter.update_mode_lines != 0 {
+        return false;
+    }
+    let value = |interpreter: &Interpreter, name: &str| {
+        interpreter
+            .buffer_local_value(info.buffer_id, name)
+            .or_else(|| interpreter.default_value(name))
+            .unwrap_or(Value::Nil)
+    };
+    if value(interpreter, "show-trailing-whitespace").is_truthy() {
+        return false;
+    }
+    // composition_break_at_point, and hscrolling_current_line_p's
+    // `auto-hscroll-mode' of `current-line' (not suspended).
+    if value(interpreter, "composition-break-at-point").is_truthy() {
+        return false;
+    }
+    if crate::lisp::types::eq_symbol_named(value(interpreter, "auto-hscroll-mode"), "current-line")
+        && !crate::lisp::primitives::window_flag(
+            interpreter,
+            info.window_id,
+            crate::lisp::primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
+        )
+    {
+        return false;
+    }
+    let numbers = value(interpreter, "display-line-numbers");
+    if crate::lisp::types::eq_symbol_named(numbers, "relative")
+        || crate::lisp::types::eq_symbol_named(numbers, "visual")
+    {
+        return false;
+    }
+    if numbers.is_truthy() {
+        let frame = interpreter.selected_frame_value();
+        let equal = call(
+            interpreter,
+            env,
+            "internal-lisp-face-equal-p",
+            &[
+                Value::Symbol("line-number".into()),
+                Value::Symbol("line-number-current-line".into()),
+                frame,
+            ],
+        );
+        if !equal.is_ok_and(|equal| equal.is_truthy()) {
+            return false;
+        }
+    }
+    let mut variables = interpreter
+        .lookup_var_key(
+            cached_symbol!("overlay-arrow-variable-list"),
+            &crate::lisp::types::Env::new(),
+        )
+        .unwrap_or(Value::Nil);
+    while let Some(cell) = variables.cons_ref() {
+        let variable = cell.car.get();
+        variables = cell.cdr.get();
+        let Some(symbol) = variable.symbol_cell() else {
+            continue;
+        };
+        // find_symbol_value with the window's buffer current.
+        if let Some(Kind::Marker(marker)) = interpreter
+            .buffer_local_value_symbol(info.buffer_id, &symbol)
+            .or_else(|| interpreter.default_value_symbol(&symbol).ok().flatten())
+            .map(|value| value.kind())
+            && interpreter.marker_buffer_id(marker) == Some(info.buffer_id)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// What redisplay_window reads of INFO's window: its start and point,
@@ -4808,6 +4974,7 @@ fn window_start_state(
     text_rows: usize,
     top_rows: usize,
     windows_or_buffers_changed: bool,
+    cursor_movement_usable: bool,
 ) -> (
     redisplay_window::StartState,
     (usize, usize),
@@ -4871,15 +5038,38 @@ fn window_start_state(
     let force_start = window_flag(interpreter, info.window_id, WINDOW_FORCE_START_SLOT);
     let optional_new_start =
         window_flag(interpreter, info.window_id, WINDOW_OPTIONAL_NEW_START_SLOT);
-    let window_outdated =
-        previous.last_buffer_id != Some(info.buffer_id) || previous.last_modiff != Some(modiff);
-    let cursor_unmoved = !windows_or_buffers_changed
+    // window.c window_outdated: the text's or the overlays' count moved
+    // since the window's last complete redisplay
+    // (mark_window_display_accurate_1, at the end of redisplay_internal).
+    let window_outdated = previous.last_buffer_id != Some(info.buffer_id)
+        || redisplay_window_outdated(interpreter, info.window_id);
+    // current_matrix_up_to_date_p (window_end_valid, no clip_changed or
+    // prevent_redisplay_optimizations_p in the buffer, not outdated) and
+    // try_cursor_movement's own conditions.
+    let (clip_changed, prevent_optimizations) = interpreter
+        .get_buffer_by_id(info.buffer_id)
+        .map(|buffer| {
+            (
+                buffer.clip_changed(),
+                buffer.prevent_redisplay_optimizations_p(),
+            )
+        })
+        .unwrap_or((true, true));
+    let matrix_current = !windows_or_buffers_changed
         && !window_outdated
         && !force_start
         && !optional_new_start
-        && previous.last_point == Some(info.point)
+        && window_flag(
+            interpreter,
+            info.window_id,
+            crate::lisp::primitives::WINDOW_END_VALID_SLOT,
+        )
+        && !clip_changed
+        && !prevent_optimizations
         && previous.last_start == Some(info.start)
-        && previous.last_restriction == Some(restriction);
+        && previous.last_restriction == Some(restriction)
+        && cursor_movement_usable;
+    let cursor_unmoved = matrix_current && previous.last_point == Some(info.point);
     let state = redisplay_window::StartState {
         start: info.start,
         point: info.point,
@@ -4890,6 +5080,9 @@ fn window_start_state(
         windows_or_buffers_changed,
         window_outdated,
         cursor_unmoved,
+        matrix_current,
+        // A window never displayed has its struct zeroed.
+        cursor_y: previous.last_cursor_y.unwrap_or(0),
         scroll_functions: value("window-scroll-functions").is_some_and(|hook| hook.is_truthy()),
         make_window_start_visible: value("make-window-start-visible")
             .is_some_and(|flag| flag.is_truthy()),
@@ -5059,61 +5252,6 @@ fn publish_window_start(
     }
 }
 
-// xdisp.c:4532 handle_fontified_prop, at window granularity: before a
-// window's glyphs are produced, every visible position must carry a
-// non-nil `fontified' char-property, or `fontification-functions' runs
-// for it -- jit-lock fontifies a chunk and marks it -- with the
-// variable rebound to nil around the call exactly as GNU specbinds it.
-// A `t' in a buffer-local hook value runs the global entries too.
-fn fontify_window_ranges(
-    interpreter: &mut Interpreter,
-    env: &mut Env,
-    layout: &[crate::lisp::primitives::WindowRenderInfo],
-    declined: &mut std::collections::HashMap<u64, Vec<usize>>,
-) {
-    let saved_buffer = interpreter.current_buffer_id();
-    for info in layout {
-        if interpreter.current_buffer_id() != info.buffer_id
-            && interpreter.set_current_buffer_id(info.buffer_id).is_err()
-        {
-            continue;
-        }
-        // The variable is buffer-local where jit-lock registered it:
-        // GNU's handle_fontified_prop reads it with the window's buffer
-        // current, so a window whose buffer fontifies must not be
-        // skipped because the selected buffer does not.
-        if interpreter
-            .lookup_var_key(cached_symbol!("fontification-functions"), env)
-            .is_none_or(|value| value.is_nil())
-        {
-            continue;
-        }
-        let (begv, z) = {
-            let buffer = interpreter.buffer.borrow();
-            (buffer.point_min(), buffer.point_max())
-        };
-        // Every cell could hold one character (continuation lines
-        // included); past that the window cannot reach this frame.  The
-        // window's start is clipped into the accessible text, as
-        // redisplay_window clips it.
-        let start = info.start.clamp(begv, z);
-        let end = info.start.saturating_add(info.width * info.height).min(z);
-        with_window_point(interpreter, info, |interpreter| {
-            fontify_buffer_range(
-                interpreter,
-                env,
-                start,
-                end,
-                info.point,
-                Declined::of_window(declined.entry(info.window_id).or_default()),
-            );
-        });
-    }
-    if interpreter.current_buffer_id() != saved_buffer {
-        let _ = interpreter.set_current_buffer_id(saved_buffer);
-    }
-}
-
 /// xdisp.c compute_stop_pos for an iterator at POS in the current
 /// buffer: the next overlay change, else the first text property
 /// interval after POS whose `fontified', `face', `display', `invisible'
@@ -5185,24 +5323,260 @@ fn iterator_next_stop(interpreter: &Interpreter, pos: usize) -> usize {
     stop.max(pos + 1)
 }
 
+/// handle_fontified_prop over what redisplay_window's walks fetch for
+/// INFO's window, in their order (redisplay_window.rs's steps): try_window
+/// at a start -- start_display, then the window's rows each to its end --
+/// and the walks of the optional new start's check, try_scrolling, the
+/// recenter label and compute_window_start_on_continuation_line; with the
+/// window's point (with_window_point), DECLINED keeping what the
+/// functions declined for the window's redisplay.  Answers whether any
+/// function ran.
+fn fontify_window_steps(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    info: &crate::lisp::primitives::WindowRenderInfo,
+    steps: &[redisplay_window::FetchStep],
+    text_rows: usize,
+    declined: &mut Vec<usize>,
+) -> bool {
+    if steps.is_empty() {
+        return false;
+    }
+    let saved = interpreter.current_buffer_id();
+    if saved != info.buffer_id && interpreter.set_current_buffer_id(info.buffer_id).is_err() {
+        return false;
+    }
+    let ran = with_window_point(interpreter, info, |interpreter| {
+        let mut fetches = IteratorFetches::new(interpreter, env, info.window_id);
+        let Some(geometry) = fetches.geometry() else {
+            return false;
+        };
+        fetches.declined_before = std::mem::take(declined);
+        use redisplay_window::FetchStep;
+        let mut ran = false;
+        share_walk_layouts(true);
+        // partial_line_height and the recenter label skip their walks for
+        // very long truncated lines.
+        let long_truncated =
+            geometry.truncate && interpreter.buffer.borrow().long_line_optimizations_p();
+        for step in steps {
+            match *step {
+                FetchStep::Display { start } => {
+                    // try_window's set_marker_both (w->start, ...) first:
+                    // the walks so far fontify under the start they saw.
+                    if !fetches.ranges.is_empty() {
+                        share_walk_layouts(false);
+                        ran |= fetches.fontify(interpreter, env, info.window_id);
+                        fetches.ranges.clear();
+                        share_walk_layouts(true);
+                    }
+                    crate::lisp::primitives::set_window_start_marker(
+                        interpreter,
+                        info.window_id,
+                        start,
+                    );
+                    fetch_start_display(interpreter, info.window_id, &mut fetches, start);
+                    IteratorWalk::from_window_start(interpreter, info.window_id, geometry, start)
+                        .walk_rows(&mut fetches, start, text_rows);
+                }
+                FetchStep::Init { pos } => {
+                    fetches.begin_walk();
+                    fetches.push_stop(pos);
+                }
+                FetchStep::StartDisplay { start } => {
+                    fetch_start_display(interpreter, info.window_id, &mut fetches, start);
+                }
+                FetchStep::MoveTo { from, pos, rows } => {
+                    IteratorWalk::from_window_start(interpreter, info.window_id, geometry, from)
+                        .walk_to_within(&mut fetches, from, pos, rows);
+                }
+                FetchStep::Lines { from, rows } => {
+                    IteratorWalk::from_window_start(interpreter, info.window_id, geometry, from)
+                        .walk_rows(&mut fetches, from, rows);
+                }
+                FetchStep::Partial { from } => {
+                    // A copy (SAVE_IT) moves to the last visible y, then
+                    // move_it_by_lines 1: the window's rows and the one
+                    // below, each to its end; the original goes on after.
+                    if !long_truncated {
+                        let original = fetches.copy_walk();
+                        IteratorWalk::from_window_start(
+                            interpreter,
+                            info.window_id,
+                            geometry,
+                            from,
+                        )
+                        .walk_rows(&mut fetches, from, text_rows + 1);
+                        fetches.resume_walk(original);
+                    }
+                }
+                FetchStep::Back { pos, rows } => {
+                    fetch_move_vertically_backward(
+                        interpreter,
+                        env,
+                        info.window_id,
+                        &mut fetches,
+                        pos,
+                        rows,
+                    );
+                }
+                FetchStep::RecenterBack { pos, rows } => {
+                    if !long_truncated {
+                        fetch_move_vertically_backward(
+                            interpreter,
+                            env,
+                            info.window_id,
+                            &mut fetches,
+                            pos,
+                            rows,
+                        );
+                    }
+                }
+                FetchStep::SetStart { start } => {
+                    // The walks so far fontify under the start they saw;
+                    // the rest under this one.
+                    share_walk_layouts(false);
+                    ran |= fetches.fontify(interpreter, env, info.window_id);
+                    fetches.ranges.clear();
+                    share_walk_layouts(true);
+                    crate::lisp::primitives::set_window_start_marker(
+                        interpreter,
+                        info.window_id,
+                        start,
+                    );
+                }
+                FetchStep::ContinuationLine {
+                    start,
+                    line_start,
+                    rows,
+                } => {
+                    fetches.begin_walk();
+                    fetches.push_stop(start);
+                    fetches.begin_walk();
+                    fetches.push_stop(line_start);
+                    if rows > 0 {
+                        IteratorWalk::at(interpreter, info.window_id, geometry, line_start)
+                            .walk_rows(&mut fetches, line_start, rows);
+                    }
+                }
+            }
+        }
+        share_walk_layouts(false);
+        ran |= fetches.fontify(interpreter, env, info.window_id);
+        *declined = std::mem::take(&mut fetches.declined_before);
+        declined.append(&mut fetches.declined);
+        ran
+    });
+    if interpreter.current_buffer_id() != saved && interpreter.has_buffer_id(saved) {
+        let _ = interpreter.set_current_buffer_id(saved);
+    }
+    ran
+}
+
+/// move_it_vertically_backward ROWS rows from an iterator at POINT in
+/// WINDOW: from where it is (start_pos), back max (1, dy) line starts, no
+/// farther than dy full rows of text (pos_limit), reseat_1 there, and
+/// it2 walks on to start_pos; while that did not go far enough and BEGV
+/// is not reached, back again from there by what is missing
+/// (move_further_back), the y it reached counted as GNU counts it.  The
+/// rows it then moves forward were walked already.
+pub(crate) fn fetch_move_vertically_backward(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    fetches: &mut IteratorFetches,
+    point: usize,
+    rows: usize,
+) {
+    use crate::lisp::primitives::move_it::{back_to_previous_visible_line_start, rows_between};
+    let Some(geometry) = fetches.geometry() else {
+        return;
+    };
+    let begv = interpreter.buffer.borrow().point_min();
+    let nchars_per_row =
+        crate::lisp::primitives::move_it::iterator_row_chars(interpreter, window_id);
+    let mut it = point;
+    // IT's current_y, relative to where it started.
+    let mut it_y = 0i64;
+    let mut dy = rows as i64;
+    loop {
+        let start_pos = it;
+        let nlines = dy.max(1) as usize;
+        let pos_limit = if geometry.truncate || nchars_per_row == 0 {
+            begv
+        } else {
+            start_pos.saturating_sub(nlines * nchars_per_row).max(begv)
+        };
+        for _ in 0..nlines {
+            if it <= pos_limit {
+                break;
+            }
+            it = back_to_previous_visible_line_start(interpreter, it);
+        }
+        // it2, a copy of the iterator reseat_1 left at IT, walks to
+        // start_pos.
+        fetches.begin_walk();
+        IteratorWalk::at(interpreter, window_id, geometry, it).walk_to(fetches, it, start_pos);
+        let h = rows_between(
+            interpreter,
+            env,
+            window_id,
+            it,
+            start_pos,
+            &mut IteratorFetches::off(),
+        );
+        it_y -= h;
+        if dy == 0 {
+            break;
+        }
+        // The y to reach; a line's height is one row, two thirds of it
+        // none.
+        let target_y = it_y + h - dy;
+        if target_y < it_y && it > begv {
+            dy = it_y - target_y;
+            continue;
+        }
+        break;
+    }
+}
+
+/// What a window's layout reads of the current buffer and could change
+/// while `fontification-functions' run: the buffer, its text, overlays
+/// and layout-affecting text properties (Buffer::layout_properties_tick),
+/// its accessible region and point.
+#[derive(PartialEq, Eq)]
+struct LayoutStamp {
+    buffer_id: u64,
+    counts: (
+        crate::buffer::ModCount,
+        crate::buffer::ModCount,
+        crate::buffer::ModCount,
+    ),
+    region: (usize, usize, usize),
+}
+
+impl LayoutStamp {
+    fn of(interpreter: &Interpreter) -> Self {
+        let buffer = interpreter.buffer.borrow();
+        LayoutStamp {
+            buffer_id: interpreter.current_buffer_id(),
+            counts: (
+                buffer.chars_modified_tick(),
+                buffer.overlay_modified_tick(),
+                buffer.layout_properties_tick(),
+            ),
+            region: (buffer.point_min(), buffer.point_max(), buffer.point()),
+        }
+    }
+}
+
 /// The positions where `fontification-functions' ran and left the text
-/// unfontified: NOW those of this pass, offered again at REOFFER (where a
-/// walk begins, which stops there anew), BEFORE those of earlier passes.
+/// unfontified: NOW those of this walk, whose iterator moved on to its
+/// next stop past them (another walk, stopping there anew, offers them
+/// again), BEFORE those of earlier passes over the same walks.
 pub(crate) struct Declined<'a> {
     now: &'a mut Vec<usize>,
     before: &'a [usize],
-    reoffer: Option<usize>,
-}
-
-impl<'a> Declined<'a> {
-    /// Redisplay's: what its passes over a window declined.
-    fn of_window(now: &'a mut Vec<usize>) -> Self {
-        Declined {
-            now,
-            before: &[],
-            reoffer: None,
-        }
-    }
 }
 
 /// xdisp.c TEXT_PROP_DISTANCE_LIMIT: compute_stop_pos looks no further
@@ -5229,7 +5603,6 @@ fn fontify_buffer_range(
     let Declined {
         now: declined,
         before,
-        reoffer,
     } = declined;
     let mut ran = false;
     let z = interpreter.buffer.borrow().size_total() + 1;
@@ -5253,7 +5626,7 @@ fn fontify_buffer_range(
             pos = span_end.max(pos + 1);
             continue;
         }
-        if before.contains(&pos) || (declined.contains(&pos) && reoffer != Some(pos)) {
+        if before.contains(&pos) || declined.contains(&pos) {
             pos = next_stop(interpreter, pos);
             continue;
         }
@@ -5359,6 +5732,8 @@ pub(crate) struct IteratorFetches {
     /// The walk being recorded: a new iterator (start_display, a copy
     /// SAVE_IT made) or one reseated, which stops again where it starts.
     walk: usize,
+    /// The walks begun so far, each one's number.
+    walks: usize,
     /// Positions where the functions ran this pass and left the text
     /// unfontified, offered again only where a walk starts.
     declined: Vec<usize>,
@@ -5408,7 +5783,22 @@ impl IteratorFetches {
     /// A new walk: an iterator start_display set up, a copy of one, or
     /// one reseated.
     pub(crate) fn begin_walk(&mut self) {
-        self.walk += 1;
+        self.walks += 1;
+        self.walk = self.walks;
+    }
+
+    /// SAVE_IT: a copy of the iterator walks from here, with stops of its
+    /// own; answers the original's walk for resume_walk (RESTORE_IT).
+    pub(crate) fn copy_walk(&mut self) -> usize {
+        let original = self.walk;
+        self.begin_walk();
+        original
+    }
+
+    /// RESTORE_IT: the original iterator goes on, past what it declined
+    /// itself but not what its copy did.
+    pub(crate) fn resume_walk(&mut self, walk: usize) {
+        self.walk = walk;
     }
 
     /// The iterator fetches [FROM, TO) (nothing at or past ZV, where
@@ -5443,24 +5833,33 @@ impl IteratorFetches {
         env: &mut Env,
         window_id: u64,
     ) -> bool {
+        let before = LayoutStamp::of(interpreter);
         let mut ran = false;
-        let mut walk = None;
+        // What each walk's iterator declined; each iterator computes its
+        // stops anew.
+        let mut walk_declined: std::collections::HashMap<usize, Vec<usize>> =
+            std::collections::HashMap::new();
         for &(from, to, range_walk) in &self.ranges {
-            let reoffer = (walk != Some(range_walk)).then_some(from);
-            walk = Some(range_walk);
+            let declined = walk_declined.entry(range_walk).or_default();
             ran |= fontify_iterated_text(
                 interpreter,
                 env,
                 window_id,
                 (from, to),
                 Declined {
-                    now: &mut self.declined,
+                    now: declined,
                     before: &self.declined_before,
-                    reoffer,
                 },
             );
+            for &pos in declined.iter() {
+                if !self.declined.contains(&pos) {
+                    self.declined.push(pos);
+                }
+            }
         }
-        ran
+        // What the walks measured holds unless the functions changed what
+        // the layout reads.
+        ran && LayoutStamp::of(interpreter) != before
     }
 }
 
@@ -5592,7 +5991,7 @@ pub(crate) struct IteratorWalk<'a> {
     layouter: ScreenLineLayouter<'a>,
     geometry: WindowTextGeometry,
     zv: usize,
-    layout: ScreenLineLayout,
+    layout: std::rc::Rc<ScreenLineLayout>,
 }
 
 impl<'a> IteratorWalk<'a> {
@@ -6375,20 +6774,11 @@ fn redraw_with_echo_policy(
             long_lines::note_long_lines(interpreter, info.buffer_id);
         }
     }
-    // Fontify what the windows redisplayed will show before any text is
-    // snapshotted: GNU's iterator handles the `fontified' property before
-    // producing glyphs (xdisp.c handle_fontified_prop).  A window's one
-    // redisplay offers a position its functions declined once.
+    // A window's one redisplay offers a position its functions declined
+    // once; the walks planning it fetch the text (fontify_window_steps).
     let mut declined_by_window: std::collections::HashMap<u64, Vec<usize>> =
         std::collections::HashMap::new();
-    {
-        let shown: Vec<crate::lisp::primitives::WindowRenderInfo> = layout
-            .iter()
-            .filter(|info| !kept.contains(&info.window_id))
-            .copied()
-            .collect();
-        fontify_window_ranges(interpreter, env, &shown, &mut declined_by_window);
-    }
+
     let mut cursor_position = (0u16, 0u16);
     let mut selected_sync: Option<crate::lisp::primitives::InteractiveWindowMetrics> = None;
     struct ModeLineJob {
@@ -6558,6 +6948,7 @@ fn redraw_with_echo_policy(
             .get(&info.window_id)
             .copied()
             .unwrap_or_default();
+        let cursor_movement_usable = cursor_movement_usable(interpreter, env, info);
         let (mut start_state, restriction, modiff) = window_start_state(
             interpreter,
             info,
@@ -6565,6 +6956,7 @@ fn redraw_with_echo_policy(
             text_rows,
             tab_rows + header_rows,
             windows_or_buffers_changed,
+            cursor_movement_usable,
         );
         let mut hook_rounds = 0usize;
         let mut planned_info = *info;
@@ -6581,6 +6973,10 @@ fn redraw_with_echo_policy(
                 buffer.and_then(|buffer| cursor_row_origin(&buffer, info.start, info.point))
             };
             let mut hscroll_retried = false;
+            let mut fontify_passes = 0usize;
+            // What the functions declined in the walks before a
+            // `window-scroll-functions' round.
+            let mut declined_before_hook: Vec<usize> = Vec::new();
             let (geometry, plan, chosen, chars_modiff) = loop {
                 let outcome = loop {
                     let geometry = window_render_geometry(
@@ -6622,11 +7018,13 @@ fn redraw_with_echo_policy(
                             start,
                             update_mode_line,
                             consumed,
-                        } => break Err((stage, start, update_mode_line, consumed)),
+                            steps,
+                        } => break Err((stage, start, update_mode_line, consumed, steps)),
                         PlanOutcome::Planned {
                             plan,
                             chosen,
                             consumed,
+                            steps,
                         } => {
                             // The row the plan shows point on decides the
                             // hscroll (hscroll_windows after the window's
@@ -6648,6 +7046,7 @@ fn redraw_with_echo_policy(
                                     chosen,
                                     consumed,
                                     buffer.chars_modified_tick(),
+                                    steps,
                                 ));
                             }
                             lnum = settled;
@@ -6655,7 +7054,25 @@ fn redraw_with_echo_policy(
                     }
                 };
                 match outcome {
-                    Err((stage, start, update_mode_line, consumed)) => {
+                    Err((stage, start, update_mode_line, consumed, steps)) => {
+                        // What the walks before the hook fetched is fontified
+                        // first (try_window at the old start, recenter's), and
+                        // the start the hook sees is planned again while the
+                        // functions ran, as GNU decides it after its walks.
+                        if fontify_window_steps(
+                            interpreter,
+                            env,
+                            info,
+                            &steps,
+                            text_rows,
+                            &mut declined_before_hook,
+                        ) && fontify_passes < ITERATOR_FONTIFICATION_PASSES
+                        {
+                            fontify_passes += 1;
+                            continue;
+                        }
+                        // The walks after the hook are new iterators.
+                        declined_before_hook.clear();
                         // run_window_scroll_functions: the hooks see the start
                         // redisplay chose, and redisplay continues from the
                         // start they leave.
@@ -6680,7 +7097,21 @@ fn redraw_with_echo_policy(
                             start_state.scroll_functions = false;
                         }
                     }
-                    Ok((geometry, plan, chosen, consumed, chars)) => {
+                    Ok((geometry, plan, chosen, consumed, chars, steps)) => {
+                        // handle_fontified_prop as the walks reach the text:
+                        // what the functions change is planned again.
+                        if fontify_window_steps(
+                            interpreter,
+                            env,
+                            info,
+                            &steps,
+                            text_rows,
+                            declined_by_window.entry(info.window_id).or_default(),
+                        ) && fontify_passes < ITERATOR_FONTIFICATION_PASSES
+                        {
+                            fontify_passes += 1;
+                            continue;
+                        }
                         consume_window_start_flags(interpreter, info.window_id, consumed);
                         break (geometry, plan, chosen, chars);
                     }
@@ -6716,81 +7147,6 @@ fn redraw_with_echo_policy(
         }
         let info = &published;
         let mode_line_point = info.point;
-        // The pre-pass fontified a cell-count estimate of the window;
-        // the plan knows the real end, which invisible text (org's
-        // folds) can push thousands of characters past the estimate.
-        // Fontify exactly the VISIBLE stretches: GNU's iterator jumps
-        // invisible runs, so hidden text is never fontified — a folded
-        // src block must not load its language mode (whose setup
-        // message would land in the echo area) until it unfolds.
-        {
-            let visible_ranges: Vec<(usize, usize)> = {
-                let window_buffer = if info.buffer_id == interpreter.current_buffer_id() {
-                    Some(interpreter.buffer.borrow())
-                } else {
-                    interpreter.get_buffer_by_id(info.buffer_id)
-                };
-                if let Some(buffer) = window_buffer {
-                    let spec = resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
-                    let z = buffer.point_max();
-                    let mut pos = plan.top_pos.min(z);
-                    let end = plan.window_end.min(z);
-                    let mut ranges = Vec::new();
-                    if !spec.active {
-                        ranges.push((pos, end));
-                    } else {
-                        while pos < end {
-                            if crate::lisp::primitives::invisible_class_at(&buffer, &spec, pos) != 0
-                            {
-                                let run_end =
-                                    crate::lisp::primitives::invisible_run_at(&buffer, &spec, pos)
-                                        .map(|(run_end, _)| run_end)
-                                        .unwrap_or(pos + 1);
-                                pos = run_end.max(pos + 1);
-                                continue;
-                            }
-                            let visible_start = pos;
-                            while pos < end
-                                && crate::lisp::primitives::invisible_class_at(&buffer, &spec, pos)
-                                    == 0
-                            {
-                                pos += 1;
-                            }
-                            ranges.push((visible_start, pos));
-                        }
-                    }
-                    ranges
-                } else {
-                    Vec::new()
-                }
-            };
-            let saved = interpreter.current_buffer_id();
-            if saved == info.buffer_id || interpreter.set_current_buffer_id(info.buffer_id).is_ok()
-            {
-                if interpreter
-                    .lookup_var_key(cached_symbol!("fontification-functions"), env)
-                    .is_some_and(|value| !value.is_nil())
-                {
-                    with_window_point(interpreter, info, |interpreter| {
-                        for (start, end) in visible_ranges {
-                            fontify_buffer_range(
-                                interpreter,
-                                env,
-                                start,
-                                end,
-                                info.point,
-                                Declined::of_window(
-                                    declined_by_window.entry(info.window_id).or_default(),
-                                ),
-                            );
-                        }
-                    });
-                }
-                if interpreter.current_buffer_id() != saved {
-                    let _ = interpreter.set_current_buffer_id(saved);
-                }
-            }
-        }
         let lnum_cols = geometry.lnum.map_or(0, |layout| layout.cols);
         let text_left = info.left + left_margin + lnum_cols;
         for (row, (rendered, _, _, _, _)) in plan.rendered.iter().enumerate() {
@@ -7028,6 +7384,9 @@ fn redraw_with_echo_policy(
             }
             selected_sync = Some(metrics);
         }
+        // mark_window_display_accurate_1: the buffer's modification count
+        // once its display is done, `fontification-functions' and the
+        // other redisplay Lisp included.
         {
             let view = state.views.entry(info.window_id).or_default();
             view.frame_cursor = frame_cursor;
@@ -7037,6 +7396,9 @@ fn redraw_with_echo_policy(
             view.last_buffer_id = Some(info.buffer_id);
             view.last_point = Some(info.point);
             view.last_cursor = plan.cursor;
+            if let Some((row, _)) = plan.point_cursor {
+                view.last_cursor_y = Some(row);
+            }
             view.last_top_pos = Some(plan.top_pos);
             view.last_chars_modiff = Some(chars_modiff);
             view.painted_rect = Some((info.top, info.left, info.width, info.height));
@@ -9137,6 +9499,55 @@ fn wrap_glyphless_visual_line(visual: &VisualLine, cols: usize) -> Vec<WrappedVi
     layout::lay_out_visual_line(visual, cols, false).rows
 }
 
+/// `wrapped_position_of_column' for columns asked in the order a line's
+/// glyphs come: the row the last column was found on answers again
+/// while it holds the column and no other row would be preferred.
+struct RowOfColumn<'a> {
+    segments: &'a [WrappedVisualSegment],
+    last: std::cell::Cell<usize>,
+}
+
+impl<'a> RowOfColumn<'a> {
+    fn new(segments: &'a [WrappedVisualSegment]) -> Self {
+        Self {
+            segments,
+            last: std::cell::Cell::new(0),
+        }
+    }
+
+    fn first(&self, column: usize) -> (usize, usize) {
+        let row = self.last.get();
+        if let Some(segment) = self.segments.get(row)
+            && segment.start_column <= column
+            && column < segment.end_column
+            && (row == 0 || self.segments[row - 1].end_column <= column)
+        {
+            return (row, column - segment.start_column);
+        }
+        let found = wrapped_position_of_column(self.segments, column, true);
+        self.last.set(found.0);
+        found
+    }
+
+    /// The last row holding COLUMN (prefer_first false).
+    fn last(&self, column: usize) -> (usize, usize) {
+        let row = self.last.get();
+        if let Some(segment) = self.segments.get(row)
+            && segment.start_column <= column
+            && column < segment.end_column
+            && self
+                .segments
+                .get(row + 1)
+                .is_none_or(|next| next.start_column > column)
+        {
+            return (row, column - segment.start_column);
+        }
+        let found = wrapped_position_of_column(self.segments, column, false);
+        self.last.set(found.0);
+        found
+    }
+}
+
 fn wrapped_position_of_column(
     segments: &[WrappedVisualSegment],
     column: usize,
@@ -9210,6 +9621,8 @@ mod tests {
             windows_or_buffers_changed: false,
             window_outdated: true,
             cursor_unmoved: false,
+            matrix_current: false,
+            cursor_y: 0,
             scroll_functions: false,
             make_window_start_visible: false,
             total_cells: (text_rows + 1) * body_width,
@@ -9694,6 +10107,58 @@ mod tests {
             },
         ];
         assert_eq!(wrapped_position_of_column(&boundary, 79, true), (1, 0));
+    }
+
+    #[test]
+    fn rows_found_from_the_last_answer_as_wrapped_position_of_column_finds_them() {
+        // Rows meeting at their ends, a word-wrapped row ending short of
+        // the next one's start, an empty row and columns past the last:
+        // asked forward, backward and out of order, each answer is the
+        // binary search's.
+        let segment = |start_column: usize, end_column: usize| WrappedVisualSegment {
+            text: String::new(),
+            start_column,
+            end_column,
+            start_index: start_column,
+            prefix_cols: 0,
+            continuation: start_column > 0,
+            continued_glyph: true,
+            overflow_index: None,
+        };
+        let layouts = [
+            vec![segment(0, 79), segment(79, 158), segment(158, 170)],
+            vec![
+                segment(0, 70),
+                segment(79, 120),
+                segment(120, 120),
+                segment(120, 130),
+            ],
+            vec![segment(0, 10)],
+            vec![segment(5, 5), segment(5, 9)],
+        ];
+        for segments in &layouts {
+            let columns: Vec<usize> = (0..180)
+                .chain((0..180).rev())
+                .chain((0..180).map(|column| column * 37 % 181))
+                .collect();
+            let rows = RowOfColumn::new(segments);
+            for &column in &columns {
+                assert_eq!(
+                    rows.first(column),
+                    wrapped_position_of_column(segments, column, true),
+                    "first row of column {column} in {:?}",
+                    segments
+                        .iter()
+                        .map(|segment| (segment.start_column, segment.end_column))
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    rows.last(column),
+                    wrapped_position_of_column(segments, column, false),
+                    "last row of column {column}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -11019,6 +11484,8 @@ mod tests {
                 windows_or_buffers_changed: false,
                 window_outdated: true,
                 cursor_unmoved: false,
+                matrix_current: false,
+                cursor_y: 0,
                 scroll_functions: false,
                 make_window_start_visible: false,
                 total_cells: (rows + 1) * 80,

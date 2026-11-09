@@ -3028,6 +3028,8 @@ fn window_resize_apply(interp: &mut Interpreter, id: u64, horflag: bool) -> Resu
         set_window_slot_value(interp, id, slot, new_normal)?;
     }
     let Some(horizontal) = window_combination(interp, id) else {
+        // Bug#15957.
+        crate::lisp::primitives::invalidate_window_end(interp, id);
         return Ok(());
     };
     let mut edge = if horflag { left } else { top };
@@ -3651,6 +3653,7 @@ fn set_window_margins(
 /// garbages the frame whenever a window shows margins
 /// (adjust_frame_glyphs_for_frame_redisplay's showing_window_margins_p).
 fn apply_window_adjustment(interp: &mut Interpreter, window_id: u64) {
+    crate::lisp::primitives::invalidate_window_end(interp, window_id);
     interp.wset_redisplay(window_id);
     let showing_margins = crate::lisp::primitives::frames_window_list(interp)
         .into_iter()
@@ -7980,8 +7983,10 @@ define_dispatch!(
                 let window = args.first().cloned().unwrap_or(Value::Nil);
                 let root = args.get(1).cloned().unwrap_or(Value::Nil);
                 let result = delete_other_windows_from_tree(interp, &window, &root, env)?;
-                // fset_redisplay: the tree was replaced.
+                // fset_redisplay: the tree was replaced; the window that
+                // stays is to be displayed anew.
                 if let Ok(window_id) = live_window_id_or_selected(interp, Some(&window)) {
+                    crate::lisp::primitives::invalidate_window_end(interp, window_id);
                     interp.fset_redisplay_window_frame(window_id);
                 }
                 Ok(result)

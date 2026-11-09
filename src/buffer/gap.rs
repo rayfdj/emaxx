@@ -23,6 +23,20 @@ const NEW_BUFFER_GAP: usize = 20;
 #[derive(Clone, Default)]
 pub struct GapText {
     data: Rc<GapData>,
+    /// The text's newlines, once its scans for them since its last
+    /// change have cost what finding them all costs.
+    newlines: NewlineIndex,
+}
+
+/// The byte offsets of a text's newlines, kept until the text changes.
+/// Scans count the bytes they read; once they have read as many as the
+/// text holds, one more pass records every newline and later questions
+/// about lines are answered from the record.  A text that changes
+/// between each question never has one made.
+#[derive(Clone, Default)]
+struct NewlineIndex {
+    scanned: std::cell::Cell<usize>,
+    offsets: std::cell::OnceCell<Rc<[u32]>>,
 }
 
 #[derive(Clone, Default)]
@@ -159,6 +173,7 @@ impl GapText {
                 gap_char: chars,
                 chars,
             }),
+            newlines: NewlineIndex::default(),
         }
     }
 
@@ -448,7 +463,35 @@ impl GapText {
     /// The bytes, for a change: copied first while a scan shares them.
     #[inline]
     fn data_mut(&mut self) -> &mut GapData {
+        self.newlines = NewlineIndex::default();
         Rc::make_mut(&mut self.data)
+    }
+
+    /// The byte offsets of the text's newlines when they are recorded,
+    /// recording them first once the scans since the last change have
+    /// read as many bytes as the text holds; None while scanning is the
+    /// cheaper answer.
+    pub(crate) fn newline_offsets(&self) -> Option<&[u32]> {
+        if let Some(offsets) = self.newlines.offsets.get() {
+            return Some(offsets);
+        }
+        let len = self.len();
+        if self.newlines.scanned.get() < len || u32::try_from(len).is_err() {
+            return None;
+        }
+        let (first, second) = self.halves();
+        let offsets = memchr::memchr_iter(b'\n', first.as_bytes())
+            .chain(memchr::memchr_iter(b'\n', second.as_bytes()).map(|at| at + first.len()))
+            .map(|at| at as u32)
+            .collect();
+        Some(self.newlines.offsets.get_or_init(|| offsets))
+    }
+
+    /// Count BYTES read by a scan for newlines toward recording them.
+    #[inline]
+    pub(crate) fn note_newline_scan(&self, bytes: usize) {
+        let scanned = &self.newlines.scanned;
+        scanned.set(scanned.get().saturating_add(bytes));
     }
 
     /// insert_1_both's make_gap for an insertion of NEEDED bytes, without

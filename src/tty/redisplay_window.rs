@@ -393,8 +393,10 @@ impl<'a, 'c> Rows<'a, 'c> {
         row
     }
 
+    /// FETCH_BYTE (BYTEPOS (pos) - 1) == '\n', which reads the text
+    /// before POS wherever the restriction lies.
     fn char_before_is_newline(&self, pos: usize) -> bool {
-        pos > 1 && self.buffer.char_at(pos - 1) == Some('\n')
+        pos > 1 && self.buffer.fetch_char(pos - 1) == Some('\n')
     }
 
     pub(super) fn at_line_beg(&self, pos: usize) -> bool {
@@ -440,6 +442,14 @@ pub(super) struct StartState {
     /// try_cursor_movement's success without motion: nothing about the
     /// window, its buffer or point changed since its last display.
     pub(super) cursor_unmoved: bool,
+    /// current_matrix_up_to_date_p with try_cursor_movement's other
+    /// conditions: the window's text, start and restriction as its last
+    /// display left them, point aside.
+    pub(super) matrix_current: bool,
+    /// `w->cursor.y' as a text row, from the window's last display that
+    /// showed point: try_window's margin test reads it when point does
+    /// not show.
+    pub(super) cursor_y: usize,
     /// `window-scroll-functions' is non-nil in the window's buffer.
     pub(super) scroll_functions: bool,
     pub(super) make_window_start_visible: bool,
@@ -475,6 +485,54 @@ pub(super) struct Chosen {
     pub(super) update_mode_line: bool,
 }
 
+/// A walk of the display iterator redisplay_window makes on its way to
+/// a window's display, recorded so the text it fetches is fontified
+/// (handle_fontified_prop) in the order GNU's walks fetch it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FetchStep {
+    /// try_window at START: start_display, then the window's rows, each
+    /// to its end, whether or not they then show point.
+    Display { start: usize },
+    /// init_iterator at POS: reseat's handle_stop there.
+    Init { pos: usize },
+    /// start_display at START.
+    StartDisplay { start: usize },
+    /// move_it_to POS (MOVE_TO_POS | MOVE_TO_Y) from the iterator
+    /// start_display left at FROM, no lower than ROWS rows below FROM's.
+    MoveTo {
+        from: usize,
+        pos: usize,
+        rows: usize,
+    },
+    /// move_it_by_lines 1, ROWS times, from the iterator start_display
+    /// left at FROM (try_scrolling under `scroll-conservatively' past
+    /// SCROLL_LIMIT).
+    Lines { from: usize, rows: usize },
+    /// partial_line_height of the iterator start_display left at FROM:
+    /// a copy moved to the window's last visible y, then a line on
+    /// unless it reached ZV (none for very long truncated lines).
+    Partial { from: usize },
+    /// move_it_vertically_backward ROWS rows from an iterator at POS.
+    Back { pos: usize, rows: usize },
+    /// The recenter label's move back ROWS rows from its iterator at
+    /// POS: move_it_vertically_backward, or for very long truncated
+    /// lines back_to_previous_visible_line_start and reseat_1, which
+    /// fetch nothing.
+    RecenterBack { pos: usize, rows: usize },
+    /// run_window_scroll_functions' SET_MARKER_FROM_TEXT_POS: the
+    /// window's start is START from here on (try_scrolling's and the
+    /// recenter label's new start, which try_window then displays).
+    SetStart { start: usize },
+    /// compute_window_start_on_continuation_line: init_iterator at
+    /// START, reseat_at_previous_visible_line_start to LINE_START, then
+    /// move_it_by_lines 1 ROWS times.
+    ContinuationLine {
+        start: usize,
+        line_start: usize,
+        rows: usize,
+    },
+}
+
 pub(super) enum Decision {
     /// Run `window-scroll-functions' with START as the window's start,
     /// then resume at STAGE with the start they leave.
@@ -504,12 +562,18 @@ struct Planner<'r, 'a, 'c> {
     margin: usize,
     /// The decision's update_mode_line so far.
     update_mode_line: std::cell::Cell<bool>,
+    /// The iterator's walks so far.
+    steps: std::cell::RefCell<Vec<FetchStep>>,
 }
 
 const SCROLL_LIMIT: i64 = 100;
 
 /// redisplay_window's decision for one window of TEXT_ROWS rows.
-pub(super) fn decide(rows: &Rows, state: &StartState, text_rows: usize) -> (Decision, Consumed) {
+pub(super) fn decide(
+    rows: &Rows,
+    state: &StartState,
+    text_rows: usize,
+) -> (Decision, Consumed, Vec<FetchStep>) {
     let begv = rows.buffer.point_min();
     let zv = rows.buffer.point_max();
     let point = state.point.clamp(begv, zv);
@@ -523,6 +587,11 @@ pub(super) fn decide(rows: &Rows, state: &StartState, text_rows: usize) -> (Deci
         zv,
         margin: state.scroll.margin,
         update_mode_line: std::cell::Cell::new(false),
+        steps: std::cell::RefCell::new(Vec::new()),
+    };
+    let finish = |decision: Decision, consumed: Consumed| {
+        let steps = planner.steps.take();
+        (decision, consumed, steps)
     };
     let mut consumed = Consumed::default();
     if let Some((stage, start, update_mode_line)) = state.resume {
@@ -532,7 +601,7 @@ pub(super) fn decide(rows: &Rows, state: &StartState, text_rows: usize) -> (Deci
             Stage::Scrolled => planner.scrolled(start, state.start),
             Stage::Recentered => planner.recentered(start),
         };
-        return (decision, consumed);
+        return finish(decision, consumed);
     }
     let mut start = state.start;
     if state.windows_or_buffers_changed {
@@ -543,8 +612,18 @@ pub(super) fn decide(rows: &Rows, state: &StartState, text_rows: usize) -> (Deci
     let mut force = state.force_start;
     if state.optional_new_start && planner.in_range(start) {
         consumed.optional_new_start = true;
-        if !force && planner.visible_row(start).is_some() {
-            force = true;
+        if !force {
+            // start_display at the start, then move_it_to PT no lower
+            // than the window's last visible y.
+            planner.walk(FetchStep::StartDisplay { start });
+            planner.walk(FetchStep::MoveTo {
+                from: start,
+                pos: point,
+                rows: planner.height,
+            });
+            if planner.visible_row(start).is_some() {
+                force = true;
+            }
         }
     }
     if force {
@@ -552,7 +631,7 @@ pub(super) fn decide(rows: &Rows, state: &StartState, text_rows: usize) -> (Deci
         if state.scroll_functions {
             // The force_start block redisplays the mode line before it
             // runs the scroll functions.
-            return (
+            return finish(
                 Decision::Hook {
                     stage: Stage::ForceStart,
                     start,
@@ -561,9 +640,11 @@ pub(super) fn decide(rows: &Rows, state: &StartState, text_rows: usize) -> (Deci
                 consumed,
             );
         }
-        return (planner.forced(start), consumed);
+        let decision = planner.forced(start);
+        return finish(decision, consumed);
     }
-    (planner.ignore_start(start), consumed)
+    let decision = planner.ignore_start(start);
+    finish(decision, consumed)
 }
 
 impl Planner<'_, '_, '_> {
@@ -580,6 +661,27 @@ impl Planner<'_, '_, '_> {
         self.rows
             .distance(top, self.rows.row_in(top, self.point), self.height)
             .filter(|row| *row < self.height)
+    }
+
+    /// The iterator walks STEP.
+    fn walk(&self, step: FetchStep) {
+        self.steps.borrow_mut().push(step);
+    }
+
+    /// try_window at START: with CHECK_MARGINS, start_display at START
+    /// again and partial_line_height, which the bottom margin test
+    /// evaluates unless the cursor is in the top margin: point's row ROW,
+    /// or where the window's last display left it when point does not
+    /// show.
+    fn try_window(&self, start: usize, check_margins: bool, row: Option<usize>) {
+        self.walk(FetchStep::Display { start });
+        if check_margins {
+            self.walk(FetchStep::StartDisplay { start });
+            let cursor_y = row.unwrap_or(self.state.cursor_y);
+            if !(cursor_y < self.margin && start > self.begv) {
+                self.walk(FetchStep::Partial { from: start });
+            }
+        }
     }
 
     fn done(&self, start: usize, cursor_row: Option<usize>, point: Option<usize>) -> Decision {
@@ -624,6 +726,8 @@ impl Planner<'_, '_, '_> {
         if !self.acceptable(start) {
             return self.ignore_start(start);
         }
+        // try_window (window, startp, 0).
+        self.try_window(start, false, None);
         match self.visible_row(start) {
             None => {
                 // Point does not appear: move it to the row GNU's
@@ -652,7 +756,23 @@ impl Planner<'_, '_, '_> {
             && self.point >= start
             && let Some(row) = self.visible_row(start)
         {
+            // try_cursor_movement: the current matrix, no iterator.
             return self.done(start, Some(row), None);
+        }
+        if state.matrix_current && self.point >= start {
+            // try_cursor_movement over the current matrix: point's row,
+            // or, past the rows or in a scroll margin, the scroll it needs
+            // (CURSOR_MOVEMENT_MUST_SCROLL), with no iterator walking the
+            // window.
+            return match self.visible_row(start) {
+                Some(row)
+                    if !(row < self.margin && start > self.begv)
+                        && row + self.margin < self.height =>
+                {
+                    self.done(start, Some(row), None)
+                }
+                _ => self.try_to_scroll(start),
+            };
         }
         if state.start_at_line_beg
             && ((start > self.begv && !self.rows.char_before_is_newline(start))
@@ -688,8 +808,11 @@ impl Planner<'_, '_, '_> {
             if !self.acceptable(start) {
                 return self.recenter(start);
             }
-            // try_window with CHECK_MARGINS.
-            if let Some(row) = self.visible_row(start)
+            // try_window with CHECK_MARGINS: it displays the window's
+            // rows before finding point outside them or in a margin.
+            let row = self.visible_row(start);
+            self.try_window(start, true, row);
+            if let Some(row) = row
                 && !(row < self.margin && start > self.begv)
                 && row + self.margin < self.height
             {
@@ -717,6 +840,7 @@ impl Planner<'_, '_, '_> {
                     update_mode_line: true,
                 };
             }
+            self.walk(FetchStep::SetStart { start: new_start });
             return self.scrolled(new_start, start);
         }
         self.recenter(start)
@@ -725,6 +849,7 @@ impl Planner<'_, '_, '_> {
     /// try_scrolling's display at its new start; failing that, recenter
     /// from the window's original start.
     fn scrolled(&self, new_start: usize, start: usize) -> Decision {
+        self.try_window(new_start, false, None);
         match self.visible_row(new_start) {
             Some(row) => self.done(new_start, Some(row), None),
             None => self.recenter(start),
@@ -766,13 +891,25 @@ impl Planner<'_, '_, '_> {
         let mut dy = 0i64;
         let mut scroll_down = false;
         if self.point > start {
+            // start_display at the start, partial_line_height, then
             // move_it_to the row holding the bottom margin's top or PT,
             // whichever comes first.
+            self.walk(FetchStep::StartDisplay { start });
+            self.walk(FetchStep::Partial { from: start });
             let stop = (height - margin - 1).max(0) as usize;
             let (stop_row, reached) = self.rows.forward(start_row, stop);
+            let walk_to = |rows: usize| {
+                self.walk(FetchStep::MoveTo {
+                    from: start,
+                    pos: self.point,
+                    rows,
+                })
+            };
             if reached == stop && self.point > self.rows.start_pos(stop_row) {
                 let slack = scroll_max.max(10) as usize;
                 let limit = self.height + slack;
+                // On to PT, no lower than the slack below the window.
+                walk_to(limit);
                 let point_row = self.rows.row_in(start_row, self.point);
                 let to_point = match self.rows.distance(start_row, point_row, limit) {
                     Some(rows) => rows,
@@ -785,6 +922,8 @@ impl Planner<'_, '_, '_> {
                 if dy > 0 {
                     scroll_down = true;
                 }
+            } else {
+                walk_to(stop);
             }
         }
         let new_start = if scroll_down {
@@ -798,6 +937,21 @@ impl Planner<'_, '_, '_> {
             if amount <= 0 {
                 return None;
             }
+            // start_display at the start, move_it_vertically AMOUNT, or
+            // past SCROLL_LIMIT move_it_by_lines until AMOUNT is reached.
+            self.walk(FetchStep::StartDisplay { start });
+            if scroll.conservatively <= SCROLL_LIMIT {
+                self.walk(FetchStep::MoveTo {
+                    from: start,
+                    pos: self.zv,
+                    rows: amount as usize,
+                });
+            } else {
+                self.walk(FetchStep::Lines {
+                    from: start,
+                    rows: amount as usize,
+                });
+            }
             let (mut row, _) = self.rows.forward(start_row, amount as usize);
             if self.rows.start_pos(row) == start
                 && let Some(next) = self.rows.next(row)
@@ -809,6 +963,14 @@ impl Planner<'_, '_, '_> {
             // Is point inside the top scroll margin, or above the window?
             let (margin_row, moved) = self.rows.forward(start_row, self.margin);
             let (scroll_margin_pos, y_offset) = if self.margin > 0 {
+                // start_display at the start, move_it_vertically the
+                // margin.
+                self.walk(FetchStep::StartDisplay { start });
+                self.walk(FetchStep::MoveTo {
+                    from: start,
+                    pos: self.zv,
+                    rows: self.margin,
+                });
                 let pos = if moved < self.margin && self.rows.next(margin_row).is_none() {
                     self.zv
                 } else {
@@ -832,11 +994,19 @@ impl Planner<'_, '_, '_> {
             // position: the rows of a display starting at point.
             let from = self.rows.top_row(self.point);
             let target = self.rows.row_in(from, scroll_margin_pos);
+            self.walk(FetchStep::StartDisplay { start: self.point });
+            self.walk(FetchStep::MoveTo {
+                from: self.point,
+                pos: scroll_margin_pos,
+                rows: allowed,
+            });
             let rows_up = self.rows.distance(from, target, allowed)? as i64;
             if rows_up > scroll_max {
                 return None;
             }
             let dy = rows_up + y_offset;
+            // start_display at the start before the amount is known.
+            self.walk(FetchStep::StartDisplay { start });
             let amount = if conservatively != 0 {
                 dy.max(1).min(conservatively)
             } else if scroll.step > 0 {
@@ -847,6 +1017,11 @@ impl Planner<'_, '_, '_> {
             if amount <= 0 {
                 return None;
             }
+            // move_it_vertically_backward from it.
+            self.walk(FetchStep::Back {
+                pos: start,
+                rows: amount as usize,
+            });
             self.rows
                 .start_pos(self.rows.backward(start_row, amount as usize))
         };
@@ -859,7 +1034,16 @@ impl Planner<'_, '_, '_> {
         let scroll = &self.state.scroll;
         let height = self.height as i64;
         let mut margin = self.margin as i64;
+        // init_iterator at PT.
+        self.walk(FetchStep::Init { pos: self.point });
         let margin_pos = if margin > 0 && self.in_range(start) {
+            // A copy start_display'ed at the start moves the margin down.
+            self.walk(FetchStep::StartDisplay { start });
+            self.walk(FetchStep::MoveTo {
+                from: start,
+                pos: self.zv,
+                rows: self.margin,
+            });
             let (row, moved) = self.rows.forward(self.rows.top_row(start), self.margin);
             if moved < self.margin && self.rows.next(row).is_none() {
                 self.zv
@@ -896,6 +1080,11 @@ impl Planner<'_, '_, '_> {
         } else {
             height / 2
         };
+        // move_it_vertically_backward from PT.
+        self.walk(FetchStep::RecenterBack {
+            pos: self.point,
+            rows: centering.max(0) as usize,
+        });
         let row = self
             .rows
             .backward(self.point_row, centering.max(0) as usize);
@@ -907,11 +1096,13 @@ impl Planner<'_, '_, '_> {
                 update_mode_line: self.update_mode_line.get(),
             };
         }
+        self.walk(FetchStep::SetStart { start: new_start });
         self.recentered(new_start)
     }
 
     fn recentered(&self, start: usize) -> Decision {
         let start = start.clamp(self.begv, self.zv);
+        self.try_window(start, false, None);
         match self.visible_row(start) {
             Some(row) => self.done(start, Some(row), None),
             // Point stays out of the window the scroll functions chose: the
@@ -935,10 +1126,20 @@ impl Planner<'_, '_, '_> {
         };
         // reseat_at_previous_visible_line_start: past what handle_stop
         // skips there, so a start move_it_by_lines reseated stays.
+        let visible_line_start = rows.start_pos(row);
         let line_start =
-            crate::lisp::primitives::move_it::reseat(rows.buffer, rows.spec, rows.start_pos(row))
+            crate::lisp::primitives::move_it::reseat(rows.buffer, rows.spec, visible_line_start)
                 .pos;
+        let mut walked = 0;
+        let walk = |walked: usize| {
+            self.walk(FetchStep::ContinuationLine {
+                start,
+                line_start: visible_line_start,
+                rows: walked,
+            })
+        };
         if line_start > pt || start.saturating_sub(line_start) >= self.state.total_cells {
+            walk(walked);
             return None;
         }
         let mut it = line_start;
@@ -955,6 +1156,8 @@ impl Planner<'_, '_, '_> {
                 pos_before_pt = pos;
             }
             pos = it;
+            // move_it_by_lines (&it, 1).
+            walked += 1;
             match rows.next(row) {
                 Some(next) => {
                     row = next;
@@ -963,6 +1166,10 @@ impl Planner<'_, '_, '_> {
                 None => it = self.zv,
             }
         }
-        Some(if pos > pt { pos_before_pt } else { pos })
+        walk(walked);
+        let new_start = if pos > pt { pos_before_pt } else { pos };
+        // SET_MARKER_FROM_TEXT_POS (w->start, pos).
+        self.walk(FetchStep::SetStart { start: new_start });
+        Some(new_start)
     }
 }
