@@ -636,11 +636,20 @@ fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &
     // `cache-long-scans' nil in the log buffer on every message.
     cached_symbol!("cache-long-scans")
         .with(|symbol| interp.set_buffer_local_value_symbol(buffer_id, symbol, Value::Nil));
-    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-        buffer.set_undo_list(Value::T);
-        // FIXNATP: any other non-nil value keeps every line.
-        let max_lines = log_max.fixnum().and_then(|max| usize::try_from(max).ok());
-        message_dolog(&mut buffer, text, nlflag, max_lines);
+    // The log is the current buffer for its changes, whose marker
+    // adjustments make adjust_suspend_auto_hscroll's check.
+    let old_point = interp.suspended_old_point_in(buffer_id);
+    let touched = match interp.get_buffer_by_id_mut(buffer_id) {
+        Some(mut buffer) => {
+            buffer.set_undo_list(Value::T);
+            // FIXNATP: any other non-nil value keeps every line.
+            let max_lines = log_max.fixnum().and_then(|max| usize::try_from(max).ok());
+            message_dolog(&mut buffer, text, nlflag, max_lines, old_point)
+        }
+        None => false,
+    };
+    if touched {
+        interp.resume_auto_hscroll();
     }
     // The insertion prepared nothing, so nothing counted the change in a
     // window showing the log: windows_or_buffers_changed as it was, and
@@ -654,13 +663,17 @@ fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &
 /// after it, the line folded into an identical previous one (" [N times]")
 /// or replacing a previous "...", and at most MAX_LINES lines kept. Point,
 /// BEGV and ZV are restored as GNU's insertion-type-nil markers leave
-/// them, and point or ZV at the end stays at the end.
+/// them, and point or ZV at the end stays at the end.  Answers whether
+/// a change covered or touched OLD_POINT, the selected window's old point
+/// while it shows the log with its auto-hscroll suspended, as each change
+/// moves it (adjust_suspend_auto_hscroll).
 fn message_dolog(
     buffer: &mut crate::buffer::Buffer,
     text: &str,
     nlflag: bool,
     max_lines: Option<usize>,
-) {
+    mut old_point: Option<usize>,
+) -> bool {
     fn after_delete(position: &mut usize, from: usize, to: usize) {
         if *position > to {
             *position -= to - from;
@@ -668,6 +681,10 @@ fn message_dolog(
             *position = from;
         }
     }
+    let mut touched = false;
+    let mut changed = |old_point: &Option<usize>, from: usize, to: usize| {
+        touched |= old_point.is_some_and(|old| from <= old && old <= to);
+    };
     let end = buffer.size_total() + 1;
     let (begv, zv) = buffer.restriction();
     let point_at_end = buffer.point() == end;
@@ -677,16 +694,18 @@ fn message_dolog(
     buffer.widen();
     buffer.goto_char(end);
     if !nlflag {
+        changed(&old_point, end, end + text.chars().count());
         buffer.insert(text);
         let end = buffer.size_total() + 1;
         let [point, begv, zv] = saved;
         buffer.restore_restriction(begv, if zv_at_end { end } else { zv });
         buffer.goto_char(if point_at_end { end } else { point });
-        return;
+        return touched;
     }
     let mut line = String::with_capacity(text.len() + 1);
     line.push_str(text);
     line.push('\n');
+    changed(&old_point, end, end + line.chars().count());
     buffer.insert(&line);
     let end = buffer.size_total() + 1;
     let this_bol = buffer.line_start_at(end - 1);
@@ -701,8 +720,9 @@ fn message_dolog(
             .map_or(lines.len(), |(byte, _)| byte);
         let dups = message_log_check_duplicate(lines.as_bytes(), this_bol_byte);
         if dups > 0 {
+            changed(&old_point, prev_bol, this_bol);
             let _ = buffer.delete_region(prev_bol, this_bol);
-            for position in &mut saved {
+            for position in saved.iter_mut().chain(old_point.as_mut()) {
                 after_delete(position, prev_bol, this_bol);
             }
             if dups > 1 {
@@ -710,8 +730,9 @@ fn message_dolog(
                 let count = format!(" [{dups} times]");
                 let at = buffer.size_total();
                 buffer.goto_char(at);
+                changed(&old_point, at, at + count.len());
                 buffer.insert_before_markers(&count);
-                for position in &mut saved {
+                for position in saved.iter_mut().chain(old_point.as_mut()) {
                     if *position >= at {
                         *position += count.len();
                     }
@@ -722,6 +743,7 @@ fn message_dolog(
     if let Some(cut) =
         max_lines.and_then(|max| buffer.after_newlines_from_end(max.saturating_add(1)))
     {
+        changed(&old_point, 1, cut);
         let _ = buffer.delete_region(1, cut);
         for position in &mut saved {
             after_delete(position, 1, cut);
@@ -731,6 +753,7 @@ fn message_dolog(
     let [point, begv, zv] = saved;
     buffer.restore_restriction(begv, if zv_at_end { end } else { zv });
     buffer.goto_char(if point_at_end { end } else { point });
+    touched
 }
 
 /// xdisp.c message_log_check_duplicate. LINES runs from the previous line's
@@ -1690,9 +1713,11 @@ fn position_at_coordinates(
 /// it before POS (line_bottom_y moves a line down for the row's
 /// height); when POS is on the last row or does not show, every row to
 /// its end (move_it_to MOVE_TO_Y scans each row it leaves, and stops at
-/// the last row's start, which move_it_by_lines then walks).  No POS (t, charpos -1) asks for
-/// the window's end: ZV's place when it shows, else where the last row
-/// begins (it2's x, the hscroll taken off).
+/// the last row's start, which move_it_by_lines then walks).  No POS (t,
+/// charpos -1) asks for the window's end: past the glyphs of ZV's row
+/// when ZV shows above the last row (the next row's start when a
+/// truncated row reaches its edge first), else where the last row begins
+/// (it2's x, the hscroll taken off).
 fn pos_visible_xy(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1705,9 +1730,12 @@ fn pos_visible_xy(
     let mut fetches = crate::tty::IteratorFetches::off();
     loop {
         let geometry = super::buffer_edit::window_text_geometry(interp, env, window_id);
-        let target = pos.unwrap_or_else(|| interp.buffer.borrow().point_max());
-        let shown =
-            crate::tty::window_position_xy(interp, window_id, start, target, geometry, text_rows);
+        let shown = match pos {
+            Some(target) => crate::tty::window_position_xy(
+                interp, window_id, start, target, geometry, text_rows,
+            ),
+            None => crate::tty::window_end_xy(interp, window_id, start, geometry, text_rows),
+        };
         let xy = shown.or_else(|| {
             pos.is_none()
                 .then(|| (-(geometry.hscroll as i64), text_rows.saturating_sub(1)))
@@ -1717,25 +1745,15 @@ fn pos_visible_xy(
         if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES || fetches.geometry().is_none() {
             return xy;
         }
-        crate::tty::fetch_start_display(interp, window_id, &mut fetches, start);
-        let mut walk =
-            crate::tty::IteratorWalk::from_window_start(interp, window_id, geometry, start);
-        match (pos, shown) {
-            // Above the last row: up to POS, its row as well when POS
-            // begins it bare.
-            (Some(pos), Some((_, row))) if row + 1 < text_rows => {
-                let landed = walk.walk_to(&mut fetches, start, pos);
-                if walk.bare_row_start(landed) {
-                    walk.walk_rows(&mut fetches, landed, 1);
-                }
-            }
-            // On the last row move_it_to stops where the row begins
-            // (MOVE_TO_Y), and the fallback's move_it_by_lines walks the
-            // row; so it does when POS does not show, or is t.
-            _ => {
-                walk.walk_rows(&mut fetches, start, text_rows);
-            }
-        }
+        crate::tty::fetch_pos_visible(
+            interp,
+            window_id,
+            &mut fetches,
+            geometry,
+            (start, pos),
+            shown,
+            text_rows,
+        );
         if !fetches.fontify(interp, env, window_id) {
             return xy;
         }

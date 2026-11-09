@@ -566,18 +566,6 @@ struct SourceFileSettings {
     read_symbol_shorthands: Vec<(String, String)>,
 }
 
-fn append_message(interp: &mut eval::Interpreter, text: &str) {
-    let buffer_id = interp
-        .find_buffer("*Messages*")
-        .map(|(id, _)| id)
-        .unwrap_or_else(|| interp.create_buffer("*Messages*").0);
-    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-        let end = buffer.point_max();
-        buffer.goto_char(end);
-        buffer.insert(&(text.to_string() + "\n"));
-    }
-}
-
 pub(crate) fn unescaped_character_literal_warning(
     interp: &mut eval::Interpreter,
     env: &mut types::Env,
@@ -601,16 +589,17 @@ pub(crate) fn unescaped_character_literal_warning(
     }
 }
 
-fn format_loading_warning(
+/// load_warn_unescaped_character_literals' CALLN (Fmessage, "Loading
+/// `%s': %s", file, warning): shown in the echo area and logged.
+fn message_loading_warning(
     interp: &mut eval::Interpreter,
     env: &mut types::Env,
     path: &Path,
     warning: String,
-) -> Result<String, types::LispError> {
-    let function = interp.lookup_function_key(cached_symbol!("format-message"), env)?;
-    let message = interp.call_function_value(
-        function,
-        Some("format-message"),
+) -> Result<(), types::LispError> {
+    primitives::call(
+        interp,
+        "message",
         &[
             types::Value::String("Loading `%s': %s".into()),
             types::Value::String(path.display().to_string().into()),
@@ -618,7 +607,7 @@ fn format_loading_warning(
         ],
         env,
     )?;
-    primitives::string_text(&message)
+    Ok(())
 }
 
 /// What `load' reads a file's bytes as.
@@ -1110,25 +1099,19 @@ fn read_lisp_file_bytes(
         }
         // Fload's load_warn_unescaped_character_literals, once the forms
         // have run and before the load's bindings unwind.
-        let warning_message = match (if outer_load_history.is_some() {
+        if let Err(error) = (if outer_load_history.is_some() {
             Ok(None)
         } else {
             unescaped_character_literal_warning(interp, &mut env)
         })
         .and_then(|warning| {
             warning
-                .map(|warning| format_loading_warning(interp, &mut env, path, warning))
+                .map(|warning| message_loading_warning(interp, &mut env, path, warning))
                 .transpose()
         }) {
-            Ok(message) => message,
-            Err(error) => {
-                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-                interp.set_current_load_file(previous);
-                return Err(error);
-            }
-        };
-        if let Some(message) = warning_message {
-            append_message(interp, &message);
+            let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+            interp.set_current_load_file(previous);
+            return Err(error);
         }
         restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env)?;
         interp.set_current_load_file(previous);

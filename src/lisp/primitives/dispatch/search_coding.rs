@@ -1114,6 +1114,11 @@ define_dispatch!(
                             Value::Integer(end2 as i64),
                         ])));
                     }
+                    // LEAVE_MARKERS: adjust_markers_bytepos over the
+                    // whole span (transpose_markers makes no such check).
+                    if leave_markers {
+                        interp.adjust_suspend_auto_hscroll(start1, end2);
+                    }
                     interp.buffer.borrow_mut().transpose_regions(
                         (start1, end1),
                         (start2, end2),

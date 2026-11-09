@@ -332,6 +332,83 @@ impl Interpreter {
         }
     }
 
+    /// insdel.c's adjust_suspend_auto_hscroll, which each adjustment of
+    /// the markers for a change from FROM to TO in the current buffer
+    /// makes before it moves them: when the selected window shows the
+    /// buffer and its old point (w->old_pointm) is in the change or at
+    /// its ends, auto-hscroll works there again (suspend_auto_hscroll,
+    /// which `set-window-hscroll' sets, cleared).
+    pub(crate) fn adjust_suspend_auto_hscroll(&mut self, from: usize, to: usize) {
+        if self
+            .suspended_old_point()
+            .is_some_and(|old_point| from <= old_point && old_point <= to)
+        {
+            self.resume_auto_hscroll();
+        }
+    }
+
+    /// The selected window's old point while its auto-hscroll is
+    /// suspended and it shows the current buffer: what
+    /// adjust_suspend_auto_hscroll compares a change with.
+    fn suspended_old_point(&self) -> Option<usize> {
+        self.suspended_old_point_in(self.current_buffer_id())
+    }
+
+    /// `suspended_old_point' for a change made in BUFFER_ID as the
+    /// current buffer.
+    pub(crate) fn suspended_old_point_in(&self, buffer_id: u64) -> Option<usize> {
+        use crate::lisp::primitives::{WINDOW_OLD_POINT_SLOT, WINDOW_SUSPEND_AUTO_HSCROLL_SLOT};
+        let window_id = self.selected_window_id();
+        let suspended = self
+            .find_record(window_id)
+            .and_then(|record| record.slots.get(WINDOW_SUSPEND_AUTO_HSCROLL_SLOT))
+            .is_some_and(|value| value.is_truthy());
+        if !suspended
+            || crate::lisp::primitives::window_buffer_id(self, &self.record_value(window_id))
+                != Some(buffer_id)
+        {
+            return None;
+        }
+        crate::lisp::primitives::window_marker_position(self, window_id, WINDOW_OLD_POINT_SLOT)
+    }
+
+    /// The selected window's w->suspend_auto_hscroll.
+    pub(crate) fn auto_hscroll_suspended(&self) -> bool {
+        self.find_record(self.selected_window_id())
+            .and_then(|record| {
+                record
+                    .slots
+                    .get(crate::lisp::primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT)
+            })
+            .is_some_and(|value| value.is_truthy())
+    }
+
+    /// w->suspend_auto_hscroll set again for the selected window, after
+    /// edits made in another order than GNU's that its own check, made
+    /// apart, found leave it suspended.
+    pub(crate) fn suspend_auto_hscroll_again(&mut self) {
+        let window_id = self.selected_window_id();
+        if let Some(record) = self.find_record_mut(window_id)
+            && let Some(slot) = record
+                .slots
+                .get_mut(crate::lisp::primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT)
+        {
+            *slot = Value::T;
+        }
+    }
+
+    /// w->suspend_auto_hscroll = 0 for the selected window.
+    pub(crate) fn resume_auto_hscroll(&mut self) {
+        let window_id = self.selected_window_id();
+        if let Some(record) = self.find_record_mut(window_id)
+            && let Some(slot) = record
+                .slots
+                .get_mut(crate::lisp::primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT)
+        {
+            *slot = Value::Nil;
+        }
+    }
+
     /// insdel.c's insertion of S at point in the current buffer and the
     /// rest of its indirect family, PROPS what its intervals get, markers
     /// at point advanced with BEFORE_MARKERS.
@@ -344,6 +421,13 @@ impl Interpreter {
         let pos = self.buffer.borrow().point();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let vars = self.insertion_property_variables();
+        // adjust_markers_for_insert (PT, ..., PT + nchars, ...).
+        if let Some(old_point) = self.suspended_old_point()
+            && pos <= old_point
+            && old_point <= pos + s.chars().count()
+        {
+            self.resume_auto_hscroll();
+        }
         let nchars = self
             .buffer
             .borrow_mut()
@@ -363,6 +447,8 @@ impl Interpreter {
         let pos = self.buffer.borrow().point();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let vars = self.insertion_property_variables();
+        // The insertion's adjust_markers_for_insert, a character a byte.
+        self.adjust_suspend_auto_hscroll(pos, pos + bytes.len());
         let nchars = self.buffer.borrow_mut().insert_raw_bytes(bytes, &vars) - pos;
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
         self.family_after_insert(&related, pos, nchars, false);
@@ -413,6 +499,11 @@ impl Interpreter {
         };
         let inschars = text.chars().count();
         let vars = self.insertion_property_variables();
+        // replace_range's adjust_markers_for_replace (FROM, ..., TO - FROM,
+        // ...), after its return when nothing is deleted or inserted.
+        if to > from || inschars > 0 {
+            self.adjust_suspend_auto_hscroll(from, to);
+        }
         self.buffer
             .borrow_mut()
             .replace_range(from, to, text, extended, true, props, &vars);
@@ -453,6 +544,19 @@ impl Interpreter {
             return;
         }
         let related = self.related_buffer_ids(self.current_buffer_id());
+        // Each deletion's adjust_markers_for_delete, against the old point
+        // as the deletions before it have moved it.
+        if let Some(mut old_point) = self.suspended_old_point() {
+            for &position in positions {
+                if position <= old_point && old_point <= position + 1 {
+                    self.resume_auto_hscroll();
+                    break;
+                }
+                if old_point > position {
+                    old_point -= 1;
+                }
+            }
+        }
         self.buffer.borrow_mut().delete_chars_each(positions);
         for &position in positions {
             self.family_after_delete(&related, position, position + 1);
@@ -488,6 +592,10 @@ impl Interpreter {
         let related = self.related_buffer_ids(self.current_buffer_id());
         // evaporate_overlays' Foverlay_get reads the alternatives.
         let aliases = self.property_alias_alist();
+        // del_range_2's adjust_markers_for_delete.
+        if from < to {
+            self.adjust_suspend_auto_hscroll(from, to);
+        }
         let deleted = self
             .buffer
             .borrow_mut()

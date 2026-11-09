@@ -3847,6 +3847,46 @@ pub(crate) fn window_position_xy(
     geometry: WindowTextGeometry,
     text_rows: usize,
 ) -> Option<(i64, usize)> {
+    window_cell_xy(
+        interpreter,
+        window_id,
+        start,
+        pos,
+        geometry,
+        text_rows,
+        false,
+    )
+}
+
+/// pos_visible_p with charpos -1 (POS t) when the window shows ZV:
+/// move_it_to the last visible y, its x 0 on each row.  On a row above
+/// the last it stops at ZV past every glyph ZV's row produces, an
+/// ellipsis or an after-string at ZV among them, where
+/// `window_position_xy' places ZV itself; on the last row at its first
+/// glyph.  A truncated row reaching its edge before ZV goes on to the
+/// next line (MOVE_LINE_TRUNCATED), which begins at ZV.  ZV beginning
+/// its row stops the iterator before the row's line number is produced.
+/// The hscroll comes off either x.
+pub(crate) fn window_end_xy(
+    interpreter: &Interpreter,
+    window_id: u64,
+    start: usize,
+    geometry: WindowTextGeometry,
+    text_rows: usize,
+) -> Option<(i64, usize)> {
+    let zv = interpreter.buffer.borrow().point_max();
+    window_cell_xy(interpreter, window_id, start, zv, geometry, text_rows, true)
+}
+
+fn window_cell_xy(
+    interpreter: &Interpreter,
+    window_id: u64,
+    start: usize,
+    pos: usize,
+    geometry: WindowTextGeometry,
+    text_rows: usize,
+    window_end: bool,
+) -> Option<(i64, usize)> {
     let layouter = ScreenLineLayouter::new(interpreter, window_id, geometry.lnum_cols);
     let zv = interpreter.buffer.borrow().point_max();
     let mut layout = layouter.layout_from(start, geometry.text_width, geometry.truncate);
@@ -3854,9 +3894,22 @@ pub(crate) fn window_position_xy(
     loop {
         if pos <= layout.line_end() {
             let (row, column) = layout.shown_cell(pos, start);
+            let column = if window_end {
+                layout
+                    .row_ends
+                    .get(row)
+                    .copied()
+                    .unwrap_or(column)
+                    .max(column)
+            } else {
+                column
+            };
             let y = y + row;
             if y >= text_rows {
                 return None;
+            }
+            if window_end && y + 1 == text_rows {
+                return Some((-(geometry.hscroll as i64), y));
             }
             // The start itself, after start_display walked to it from
             // its line's start: the walk produced the line's number
@@ -3879,12 +3932,19 @@ pub(crate) fn window_position_xy(
                 // The line-number glyphs not yet produced count once POS
                 // is at or past first_visible_x; the window's hscroll
                 // comes off the iterator's x.
-                let x = if column >= geometry.first_visible {
+                // ZV beginning its row, nothing produced on it: no
+                // line-number glyphs before it.
+                let x = if column >= geometry.first_visible && !(window_end && column == 0) {
                     column + geometry.lnum_cols
                 } else {
                     column
                 };
+                if window_end && x > last_visible_x {
+                    return Some((-(geometry.hscroll as i64), y + 1));
+                }
                 x.min(last_visible_x) as i64 - geometry.hscroll as i64
+            } else if window_end && column == 0 {
+                0
             } else {
                 (geometry.lnum_cols + column) as i64
             };
@@ -5080,6 +5140,7 @@ fn window_start_state(
         windows_or_buffers_changed,
         window_outdated,
         cursor_unmoved,
+        last_point: previous.last_point,
         matrix_current,
         // A window never displayed has its struct zeroed.
         cursor_y: previous.last_cursor_y.unwrap_or(0),
@@ -5432,6 +5493,36 @@ fn fontify_window_steps(
                         );
                     }
                 }
+                FetchStep::Continue { at } => fetches.continue_walk_at(at),
+                FetchStep::PosVisible { start, pos } => {
+                    let shown = window_position_xy(
+                        interpreter,
+                        info.window_id,
+                        start,
+                        pos,
+                        geometry,
+                        text_rows,
+                    );
+                    fetch_pos_visible(
+                        interpreter,
+                        info.window_id,
+                        &mut fetches,
+                        geometry,
+                        (start, Some(pos)),
+                        shown,
+                        text_rows,
+                    );
+                }
+                FetchStep::ByLines { from, dvpos } => {
+                    crate::lisp::primitives::move_it::move_it_by_lines(
+                        interpreter,
+                        env,
+                        info.window_id,
+                        from,
+                        dvpos,
+                        &mut fetches,
+                    );
+                }
                 FetchStep::SetStart { start } => {
                     // The walks so far fontify under the start they saw;
                     // the rest under this one.
@@ -5527,6 +5618,13 @@ pub(crate) fn fetch_move_vertically_backward(
         );
         it_y -= h;
         if dy == 0 {
+            // DY 0 moves to the start of the screen line: IT itself, back
+            // at the line start, then move_it_by_lines its rows down.
+            if h > 0 {
+                fetches.begin_walk();
+                IteratorWalk::at(interpreter, window_id, geometry, it)
+                    .walk_rows(fetches, it, h as usize);
+            }
             break;
         }
         // The y to reach; a line's height is one row, two thirds of it
@@ -5579,6 +5677,17 @@ pub(crate) struct Declined<'a> {
     before: &'a [usize],
 }
 
+/// A display iterator's stops as its walk's fetches were fontified: the
+/// positions where the functions ran and it left the text unfontified,
+/// how far it has walked, and the stop it heads for from there (none
+/// worked out yet for one an earlier walk left).
+#[derive(Clone, Debug, Default)]
+struct WalkStops {
+    declined: Vec<usize>,
+    end: usize,
+    next_stop: Option<usize>,
+}
+
 /// xdisp.c TEXT_PROP_DISTANCE_LIMIT: compute_stop_pos looks no further
 /// for a property change, so a stretch of unchanged text still stops the
 /// iterator this often.
@@ -5592,6 +5701,8 @@ const TEXT_PROP_DISTANCE_LIMIT: usize = 100;
 /// characters at most -- and runs them again there; a position they
 /// declined is not offered again while DECLINED remembers it (the same
 /// command's walks).  WINDOW_POINT centers a long line's narrowing.
+/// Answers whether the functions ran and the stop the iterator heads for
+/// at END.
 fn fontify_buffer_range(
     interpreter: &mut Interpreter,
     env: &mut Env,
@@ -5599,7 +5710,7 @@ fn fontify_buffer_range(
     end: usize,
     window_point: usize,
     declined: Declined<'_>,
-) -> bool {
+) -> (bool, usize) {
     let Declined {
         now: declined,
         before,
@@ -5685,7 +5796,7 @@ fn fontify_buffer_range(
             pos = next_stop(interpreter, pos);
         }
     }
-    ran
+    (ran, pos)
 }
 
 /// Where a display iterator that start_display puts at START in WINDOW,
@@ -5734,6 +5845,12 @@ pub(crate) struct IteratorFetches {
     walk: usize,
     /// The walks begun so far, each one's number.
     walks: usize,
+    /// Each copy's original (SAVE_IT): a copy starts past the stops its
+    /// original's iterator had passed.
+    originals: Vec<(usize, usize)>,
+    /// Where each walk's iterator stands this pass, as its fetches were
+    /// fontified so far.
+    walk_stops: std::collections::HashMap<usize, WalkStops>,
     /// Positions where the functions ran this pass and left the text
     /// unfontified, offered again only where a walk starts.
     declined: Vec<usize>,
@@ -5772,6 +5889,8 @@ impl IteratorFetches {
         self.zv = interpreter.buffer.borrow().point_max();
         self.z = interpreter.buffer.borrow().size_total() + 1;
         self.ranges.clear();
+        self.originals.clear();
+        self.walk_stops.clear();
         self.declined_before.append(&mut self.declined);
     }
 
@@ -5792,6 +5911,7 @@ impl IteratorFetches {
     pub(crate) fn copy_walk(&mut self) -> usize {
         let original = self.walk;
         self.begin_walk();
+        self.originals.push((self.walk, original));
         original
     }
 
@@ -5799,6 +5919,23 @@ impl IteratorFetches {
     /// itself but not what its copy did.
     pub(crate) fn resume_walk(&mut self, walk: usize) {
         self.walk = walk;
+    }
+
+    /// An iterator this record has not seen goes on from POS, where an
+    /// earlier walk left it: it stops next where its stops from POS
+    /// fall, not at POS.
+    pub(crate) fn continue_walk_at(&mut self, pos: usize) {
+        self.begin_walk();
+        if self.geometry.is_some() {
+            self.walk_stops.insert(
+                self.walk,
+                WalkStops {
+                    declined: Vec::new(),
+                    end: pos,
+                    next_stop: None,
+                },
+            );
+        }
     }
 
     /// The iterator fetches [FROM, TO) (nothing at or past ZV, where
@@ -5835,28 +5972,51 @@ impl IteratorFetches {
     ) -> bool {
         let before = LayoutStamp::of(interpreter);
         let mut ran = false;
-        // What each walk's iterator declined; each iterator computes its
-        // stops anew.
-        let mut walk_declined: std::collections::HashMap<usize, Vec<usize>> =
-            std::collections::HashMap::new();
-        for &(from, to, range_walk) in &self.ranges {
-            let declined = walk_declined.entry(range_walk).or_default();
-            ran |= fontify_iterated_text(
+        let ranges = std::mem::take(&mut self.ranges);
+        for &(from, to, range_walk) in &ranges {
+            // Each iterator computes its own stops.  A copy's stands
+            // where its original's stood when the copy was made, with
+            // what that one had declined and the stop it was heading
+            // for: the original's ranges recorded so far come first.
+            let mut stops = self.walk_stops.remove(&range_walk).unwrap_or_else(|| {
+                self.originals
+                    .iter()
+                    .find(|&&(copy, _)| copy == range_walk)
+                    .and_then(|&(_, original)| self.walk_stops.get(&original).cloned())
+                    .unwrap_or_default()
+            });
+            // Going on from where it stands, the iterator stops next
+            // where its stops fall; elsewhere (a walk's start, a reseat,
+            // past skipped text) it stops where the range begins.
+            let first = if stops.end > 0 && from <= stops.end && from + 1 >= stops.end {
+                stops
+                    .next_stop
+                    .unwrap_or_else(|| iterator_next_stop(interpreter, stops.end))
+                    .max(from)
+            } else {
+                from
+            };
+            let (any, next) = fontify_iterated_text(
                 interpreter,
                 env,
                 window_id,
-                (from, to),
+                (first, to),
                 Declined {
-                    now: declined,
+                    now: &mut stops.declined,
                     before: &self.declined_before,
                 },
             );
-            for &pos in declined.iter() {
+            ran |= any;
+            for &pos in &stops.declined {
                 if !self.declined.contains(&pos) {
                     self.declined.push(pos);
                 }
             }
+            stops.end = stops.end.max(to);
+            stops.next_stop = Some(next);
+            self.walk_stops.insert(range_walk, stops);
         }
+        self.ranges = ranges;
         // What the walks measured holds unless the functions changed what
         // the layout reads.
         ran && LayoutStamp::of(interpreter) != before
@@ -6028,6 +6188,21 @@ impl<'a> IteratorWalk<'a> {
             zv: interpreter.buffer.borrow().point_max(),
             layout,
         }
+    }
+
+    /// The rows from FROM's down to TO's, FROM on this walk's line and
+    /// TO no earlier, fetching nothing.
+    pub(crate) fn rows_to(&mut self, from: usize, to: usize) -> usize {
+        let mut from_row = self.layout.row_of(from);
+        let mut rows = 0;
+        while to > self.layout.line_end() {
+            rows += self.layout.row_starts.len().saturating_sub(from_row);
+            if !self.next_line() {
+                return rows;
+            }
+            from_row = 0;
+        }
+        rows + self.layout.row_of(to).saturating_sub(from_row)
     }
 
     fn next_line(&mut self) -> bool {
@@ -6219,6 +6394,15 @@ pub(crate) fn fetch_screen_line_start(
     fetches.begin_walk();
     IteratorWalk::at(interpreter, window_id, geometry, line_start)
         .walk_to(fetches, line_start, from);
+    // move_it_vertically_backward (it, 0): the iterator itself, back at
+    // the line start, then move_it_by_lines the rows down to FROM's.
+    let rows =
+        IteratorWalk::at(interpreter, window_id, geometry, line_start).rows_to(line_start, from);
+    if rows > 0 {
+        fetches.begin_walk();
+        IteratorWalk::at(interpreter, window_id, geometry, line_start)
+            .walk_rows(fetches, line_start, rows);
+    }
 }
 
 /// start_display at START in WINDOW: init_iterator's reseat fetches
@@ -6242,25 +6426,57 @@ pub(crate) fn fetch_start_display(
     }
 }
 
+/// pos_visible_p's walks in WINDOW, which shows the current buffer, for
+/// POS (none for t, the window's end) from START, SHOWN where it shows:
+/// start_display, then above the last row up to POS, its row as well
+/// when POS begins it bare (line_bottom_y); else every row to the last
+/// one's end -- move_it_to stops where the last row begins (MOVE_TO_Y),
+/// and the fallback's move_it_by_lines walks the row; so it does when
+/// POS does not show, or is t.
+pub(crate) fn fetch_pos_visible(
+    interpreter: &Interpreter,
+    window_id: u64,
+    fetches: &mut IteratorFetches,
+    geometry: WindowTextGeometry,
+    (start, pos): (usize, Option<usize>),
+    shown: Option<(i64, usize)>,
+    text_rows: usize,
+) {
+    fetch_start_display(interpreter, window_id, fetches, start);
+    let mut walk = IteratorWalk::from_window_start(interpreter, window_id, geometry, start);
+    match (pos, shown) {
+        (Some(pos), Some((_, row))) if row + 1 < text_rows => {
+            let landed = walk.walk_to(fetches, start, pos);
+            if walk.bare_row_start(landed) {
+                walk.walk_rows(fetches, landed, 1);
+            }
+        }
+        _ => {
+            walk.walk_rows(fetches, start, text_rows);
+        }
+    }
+}
+
 /// handle_fontified_prop for a display iterator walking [START, END) of
 /// the current buffer, shown in WINDOW: `fontification-functions' runs
 /// for each position there that is not yet `fontified' as the iterator
 /// reaches it, around the window's point for a buffer with long lines.
 /// Answers whether it ran, after which what the iterator measured may
-/// have changed.
+/// have changed, and the stop the iterator heads for at END (from START
+/// on, the first).
 fn fontify_iterated_text(
     interpreter: &mut Interpreter,
     env: &mut Env,
     window_id: u64,
     (start, end): (usize, usize),
     declined: Declined<'_>,
-) -> bool {
+) -> (bool, usize) {
     if start >= end
         || interpreter
             .lookup_var_key(cached_symbol!("fontification-functions"), env)
             .is_none_or(|value| value.is_nil())
     {
-        return false;
+        return (false, start);
     }
     let window_point = if window_id == interpreter.selected_window_id() {
         interpreter.buffer.borrow().point()
@@ -6955,7 +7171,10 @@ fn redraw_with_echo_policy(
             &previous_view,
             text_rows,
             tab_rows + header_rows,
-            windows_or_buffers_changed,
+            // redisplay_window reads it as each window comes: a buffer an
+            // earlier window's fontification changed sets it for the
+            // windows after (bset_redisplay).
+            windows_or_buffers_changed || interpreter.windows_or_buffers_changed != 0,
             cursor_movement_usable,
         );
         let mut hook_rounds = 0usize;
@@ -9621,6 +9840,7 @@ mod tests {
             windows_or_buffers_changed: false,
             window_outdated: true,
             cursor_unmoved: false,
+            last_point: None,
             matrix_current: false,
             cursor_y: 0,
             scroll_functions: false,
@@ -11484,6 +11704,7 @@ mod tests {
                 windows_or_buffers_changed: false,
                 window_outdated: true,
                 cursor_unmoved: false,
+                last_point: None,
                 matrix_current: false,
                 cursor_y: 0,
                 scroll_functions: false,

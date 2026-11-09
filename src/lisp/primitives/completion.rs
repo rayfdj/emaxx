@@ -1738,6 +1738,10 @@ pub(crate) fn activate_minibuffer_with_history(
                     None => crate::buffer::InsertedProperties::PLAIN,
                 };
                 let vars = interp.insertion_property_variables();
+                interp.adjust_suspend_auto_hscroll(
+                    initial_start,
+                    initial_start + initial_string.text.chars().count(),
+                );
                 interp
                     .buffer
                     .borrow_mut()
