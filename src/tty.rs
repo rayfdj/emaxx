@@ -2955,24 +2955,28 @@ struct VisualLine {
     /// run's ellipsis replaces.
     replaced: Vec<ReplacedRun>,
     /// The strings display glyphs come from (display and overlay
-    /// strings), and for each display index -- none at all when there
-    /// are no such glyphs -- which of them and the character's index in
-    /// it.
-    objects: Vec<Value>,
+    /// strings, each with whether a `display' property gave it), and for
+    /// each display index -- none at all when there are no such glyphs --
+    /// which of them and the character's index in it.
+    objects: Vec<(Value, bool)>,
     object_of: Vec<Option<(usize, usize)>>,
+    /// Whether a `display' string replaces the newline that ends the
+    /// line: the iterator pops the string past it, so no row shows it.
+    newline_replaced: bool,
 }
 
 /// Record that the display indexes from START show the characters of
-/// the string VALUE at INDEXES (none for the dots of an ellipsis).
+/// the string VALUE at INDEXES (none for the dots of an ellipsis), a
+/// `display' property's string when DISPLAY (string_from_display_prop_p).
 fn record_string_glyphs(
-    objects: &mut Vec<Value>,
+    objects: &mut Vec<(Value, bool)>,
     object_of: &mut Vec<Option<(usize, usize)>>,
     start: usize,
-    value: Value,
+    (value, display): (Value, bool),
     indexes: impl IntoIterator<Item = Option<usize>>,
 ) {
     let object = objects.len();
-    objects.push(value);
+    objects.push((value, display));
     object_of.resize(start, None);
     object_of.extend(
         indexes
@@ -2986,7 +2990,18 @@ impl VisualLine {
     /// of its character there (make_lispy_position's OBJECT).
     fn object_at(&self, index: usize) -> Option<(Value, usize)> {
         let (object, character) = (*self.object_of.get(index)?)?;
-        Some((self.objects[object], character))
+        Some((self.objects[object].0, character))
+    }
+
+    /// Whether the glyph at display INDEX comes from a `display'
+    /// property's string (string_from_display_prop_p), not an overlay's
+    /// before- or after-string.
+    fn object_from_display(&self, index: usize) -> bool {
+        self.object_of
+            .get(index)
+            .copied()
+            .flatten()
+            .is_some_and(|(object, _)| self.objects[object].1)
     }
 
     /// The display index a window's display starting at raw offset
@@ -3169,6 +3184,9 @@ fn visual_line_at(
                 *cell = map.len().saturating_sub(1);
             }
         }
+        let line_begin = buffer.display_line_start_of(first_line);
+        let newline_replaced =
+            newline_replaced_at(buffer, line_begin + map.len().saturating_sub(1));
         return VisualLine {
             text,
             map,
@@ -3185,6 +3203,7 @@ fn visual_line_at(
             replaced,
             objects,
             object_of,
+            newline_replaced,
         };
     }
     let line_begin = buffer.display_line_start_of(first_line);
@@ -3266,7 +3285,7 @@ fn visual_line_at(
     let mut string_run: Option<String> = None;
     let mut space_run: Option<Value> = None;
     let mut replaced: Vec<ReplacedRun> = Vec::new();
-    let mut objects: Vec<Value> = Vec::new();
+    let mut objects: Vec<(Value, bool)> = Vec::new();
     let mut object_of: Vec<Option<(usize, usize)>> = Vec::new();
     let mut pos = line_begin;
     while pos < end {
@@ -3282,7 +3301,13 @@ fn visual_line_at(
             }
             let (string, spans, indexes) = visible_overlay_string(value, spec);
             let start = display_chars;
-            record_string_glyphs(&mut objects, &mut object_of, start, *value, indexes);
+            record_string_glyphs(
+                &mut objects,
+                &mut object_of,
+                start,
+                (*value, false),
+                indexes,
+            );
             for character in string.chars() {
                 text.push(character);
                 raw_of_display.push(pos - line_begin);
@@ -3329,7 +3354,7 @@ fn visual_line_at(
                     &mut objects,
                     &mut object_of,
                     start,
-                    *value,
+                    (*value, true),
                     (0..replacement.chars().count()).map(Some),
                 );
                 for character in replacement.chars() {
@@ -3434,7 +3459,7 @@ fn visual_line_at(
                         &mut objects,
                         &mut object_of,
                         display_chars,
-                        value,
+                        (value, true),
                         (0..replacement.chars().count()).map(Some),
                     );
                 }
@@ -3488,7 +3513,13 @@ fn visual_line_at(
         }
         let (string, spans, indexes) = visible_overlay_string(value, spec);
         let start = display_chars;
-        record_string_glyphs(&mut objects, &mut object_of, start, *value, indexes);
+        record_string_glyphs(
+            &mut objects,
+            &mut object_of,
+            start,
+            (*value, false),
+            indexes,
+        );
         for character in string.chars() {
             text.push(character);
             raw_of_display.push(pos - line_begin);
@@ -3517,6 +3548,7 @@ fn visual_line_at(
     if !objects.is_empty() {
         object_of.resize(display_chars, None);
     }
+    let newline_replaced = newline_replaced_at(buffer, pos);
     VisualLine {
         text,
         map,
@@ -3533,7 +3565,25 @@ fn visual_line_at(
         replaced,
         objects,
         object_of,
+        newline_replaced,
     }
+}
+
+/// Whether the character at POS is a newline that a `display' text
+/// property's string replaces in the text area.
+fn newline_replaced_at(buffer: &crate::buffer::Buffer, pos: usize) -> bool {
+    if buffer.char_at(pos) != Some('\n') || !buffer.has_text_property_named("display") {
+        return false;
+    }
+    let display = buffer.text_property_at(pos, "display");
+    let display = match display.as_ref().and_then(margin_display_spec) {
+        Some((None, value)) => Some(value),
+        Some((Some(_), _)) => None,
+        None => display,
+    };
+    display
+        .as_ref()
+        .is_some_and(|value| crate::lisp::primitives::string_text(value).is_ok())
 }
 
 fn glyphless_visual_line_at(
@@ -3626,13 +3676,20 @@ pub(crate) struct ScreenLineLayout {
     ellipses: Vec<(usize, usize)>,
     /// The string each glyph comes from, and its character's index.
     glyph_objects: Vec<Option<(Value, usize)>>,
+    /// Whether that string is a `display' property's.
+    glyph_display: Vec<bool>,
     /// The `line-prefix' or `wrap-prefix' string each row begins with.
     row_prefix_objects: Vec<Option<Value>>,
     /// Whether `word-wrap' broke each row (at a word boundary, before the
     /// window's edge) rather than the edge or the line's end.
     row_word_wrapped: Vec<bool>,
+    /// Whether the line wraps at word boundaries (it->line_wrap ==
+    /// WORD_WRAP: `word-wrap' in a window that does not truncate).
+    word_wrap: bool,
     /// Whether the line ends at ZV rather than at a newline.
     ends_at_zv: bool,
+    /// Whether a `display' string replaces the newline ending the line.
+    newline_replaced: bool,
     /// Buffer positions the iterator passes without fetching: past the
     /// start of an invisible run or of text a display string replaces
     /// (handle_stop at the start skips to its end).
@@ -3650,6 +3707,12 @@ pub(crate) struct ScreenLineLayout {
 }
 
 impl ScreenLineLayout {
+    /// Whether the line wraps at word boundaries (it->line_wrap ==
+    /// WORD_WRAP).
+    pub(crate) fn word_wrap(&self) -> bool {
+        self.word_wrap
+    }
+
     /// Where the line ends: its newline, or ZV.
     pub(crate) fn line_end(&self) -> usize {
         self.bol + self.cells.len() - 1
@@ -3661,28 +3724,136 @@ impl ScreenLineLayout {
     /// begins a string, even one following another string at the same
     /// position, does not.
     pub(crate) fn row_begins_inside_string(&self, row: usize) -> bool {
-        self.glyphs
-            .iter()
-            .position(|&(glyph_row, ..)| glyph_row == row)
-            .and_then(|glyph| self.glyph_objects.get(glyph).copied().flatten())
+        self.row_first_string(row)
             .is_some_and(|(_, index)| index > 0)
     }
 
+    /// The string ROW's first glyph comes from, if any: whether it is a
+    /// `display' property's (string_from_display_prop_p), and the
+    /// glyph's character index in it.
+    pub(crate) fn row_first_string(&self, row: usize) -> Option<(bool, usize)> {
+        let glyph = self
+            .glyphs
+            .iter()
+            .position(|&(glyph_row, ..)| glyph_row == row)?;
+        let (_, index) = self.glyph_objects.get(glyph).copied().flatten()?;
+        Some((
+            self.glyph_display.get(glyph).copied().unwrap_or(false),
+            index,
+        ))
+    }
+
+    /// pos_visible_p's it3 for POS inside text that the `display' string
+    /// at raw offsets [RUN, END) replaces: from the start of the row the
+    /// string's display begins on (where the element after RUN - 1 is),
+    /// x 0, it delivers the row's elements -- its prefix's first, at the
+    /// row's position -- going on past the row's end without continuing
+    /// it, until the first whose IT_CHARPOS is at or past POS (a string's
+    /// glyphs have the position the iterator met it at) or a newline; one
+    /// in the string after it moved, short of POS, takes the x of the
+    /// last element not from the string (top_x_before_string).
+    fn it3_cell(&self, pos: usize, run: usize, end: usize) -> (usize, usize) {
+        let row = self
+            .glyphs
+            .iter()
+            .find(|&&(_, _, raw)| raw >= run)
+            .map_or_else(|| self.position_cell(self.bol + run).0, |&(row, ..)| row);
+        let from_string = |glyph: usize| {
+            let raw = self.glyphs[glyph].2;
+            self.glyph_display.get(glyph).copied().unwrap_or(false)
+                && raw >= run
+                && raw < end.max(run + 1)
+        };
+        let newline_glyph = |glyph: usize| {
+            self.glyph_objects
+                .get(glyph)
+                .copied()
+                .flatten()
+                .and_then(|(string, index)| {
+                    crate::lisp::primitives::string_text(&string)
+                        .ok()
+                        .map(|text| text.chars().nth(index) == Some('\n'))
+                })
+                .unwrap_or(self.bol + self.glyphs[glyph].2 >= self.line_end())
+        };
+        let newline_in_string = (0..self.glyphs.len())
+            .find(|&glyph| from_string(glyph))
+            .and_then(|glyph| self.glyph_objects.get(glyph).copied().flatten())
+            .and_then(|(string, _)| crate::lisp::primitives::string_text(&string).ok())
+            .is_some_and(|text| text.contains('\n'));
+        let mut x = 0usize;
+        let mut before_string = 0usize;
+        // The row's prefix glyphs, at the row's start position.
+        let row_start = self.row_starts.get(row).copied().unwrap_or(self.bol);
+        for _ in 0..self.row_prefixes.get(row).copied().unwrap_or(0) {
+            before_string = x;
+            if row_start >= pos {
+                return (row, x);
+            }
+            x += 1;
+        }
+        let first = self
+            .glyphs
+            .iter()
+            .position(|&(glyph_row, ..)| glyph_row == row)
+            .unwrap_or(self.glyphs.len());
+        let mut moved = x > 0;
+        let mut glyph = first;
+        while glyph < self.glyphs.len() {
+            let (glyph_row, column, raw) = self.glyphs[glyph];
+            // Characters drawn in one cell come as one element.
+            let mut next = glyph + 1;
+            while next < self.glyphs.len()
+                && self.glyphs[next].0 == glyph_row
+                && self.glyphs[next].1 == column
+            {
+                next += 1;
+            }
+            let string = from_string(glyph);
+            if !string {
+                before_string = x;
+            }
+            let at_eol = newline_glyph(glyph);
+            if self.bol + raw >= pos || at_eol {
+                if moved && at_eol && string && newline_in_string && self.bol + raw != pos {
+                    return (row, before_string);
+                }
+                return (row, x);
+            }
+            moved = true;
+            x += match self.glyphs.get(next) {
+                Some(&(next_row, next_column, _)) if next_row == glyph_row => next_column - column,
+                _ => self
+                    .row_ends
+                    .get(glyph_row)
+                    .copied()
+                    .unwrap_or(column)
+                    .saturating_sub(column)
+                    .max(1),
+            };
+            glyph = next;
+        }
+        (row, x)
+    }
+
     /// The row and column where pos_visible_p places POS in a display
-    /// starting at START: a position inside text that a display string
-    /// replaces where the string begins (the glyphs it3 finds from the
-    /// string); one past an invisible run's start, up to the text after
-    /// it, on its ellipsis's last dot, where move_it_to stops in a
-    /// display vector (the start itself, which the display begins with,
-    /// on its first); others where they are.
+    /// starting at START: a position in text that a display string
+    /// replaces where it3 finds it (it3_cell); one past an invisible
+    /// run's start, up to the text after it, on its ellipsis's last dot,
+    /// where move_it_to stops in a display vector (the start itself,
+    /// which the display begins with, on its first); others where they
+    /// are.
     pub(crate) fn shown_cell(&self, pos: usize, start: usize) -> (usize, usize) {
         let offset = pos.saturating_sub(self.bol);
-        if let Some(&(run, _)) = self
-            .strings
-            .iter()
-            .find(|(run, end)| *run < offset && offset < *end)
-        {
-            return self.position_cell(self.bol + run);
+        let line_end = self.line_end() - self.bol;
+        // The text a string replaces (its start too: move_it_to stops
+        // only after the string), the line's newline included when the
+        // string replaces that too.
+        if let Some(&(run, end)) = self.strings.iter().find(|(run, end)| {
+            *run <= offset
+                && (offset < *end || (self.newline_replaced && offset == *end && *end == line_end))
+        }) {
+            return self.it3_cell(pos, run, end);
         }
         if let Some(&(run, _)) = self
             .ellipses
@@ -3702,15 +3873,17 @@ impl ScreenLineLayout {
     /// move_it_in_display_line to x TO_X on ROW (buffer_posn_from_
     /// coords), each glyph at the x GLYPH_X gives its column: the
     /// iterator stops at the first glyph reaching past TO_X -- inside a
-    /// TAB's or a wide character's glyphs at the one under TO_X -- or
-    /// past the row's glyphs where the row ends: on a row `word-wrap'
-    /// broke, its last glyph; on a continued row, the next row's first
-    /// element, as many of whose glyphs as fit counted on this row; else
-    /// the line's end.
+    /// TAB's or a wide character's glyphs at the one under TO_X -- or, on
+    /// a truncated row, at the first element starting at or past
+    /// LAST_VISIBLE_X (MOVE_LINE_TRUNCATED), or past the row's glyphs
+    /// where the row ends: on a row `word-wrap' broke, its last glyph; on
+    /// a continued row, the next row's first element, as many of whose
+    /// glyphs as fit counted on this row; else the line's end.
     pub(crate) fn glyph_at_x(
         &self,
         row: usize,
         to_x: usize,
+        last_visible_x: usize,
         glyph_x: impl Fn(usize) -> usize,
     ) -> GlyphAt {
         let row_end = self.row_ends.get(row).copied().unwrap_or(0);
@@ -3751,6 +3924,8 @@ impl ScreenLineLayout {
                     x,
                     width: 1,
                     object,
+                    display: false,
+                    continued_at: None,
                 };
             }
         }
@@ -3761,12 +3936,14 @@ impl ScreenLineLayout {
         for (index, &(raw, column, glyph)) in cells.iter().enumerate() {
             let x = glyph_x(column);
             let width = width_at(index);
-            if x + width > to_x {
+            if x + width > to_x || (self.truncate && x >= last_visible_x) {
                 return GlyphAt {
                     position: self.bol + raw,
                     x: x.max(to_x),
                     width,
                     object: self.glyph_objects.get(glyph).copied().flatten(),
+                    display: self.glyph_display.get(glyph).copied().unwrap_or(false),
+                    continued_at: None,
                 };
             }
         }
@@ -3779,24 +3956,51 @@ impl ScreenLineLayout {
                 x: glyph_x(column),
                 width: width_at(cells.len() - 1),
                 object: self.glyph_objects.get(glyph).copied().flatten(),
+                display: self.glyph_display.get(glyph).copied().unwrap_or(false),
+                continued_at: None,
             };
         }
         match self.row_starts.get(row + 1) {
-            Some(next) if !self.truncate => GlyphAt {
-                position: *next,
-                x: glyph_x(row_end).max(to_x),
-                width: 1,
-                object: self
+            Some(next) if !self.truncate => {
+                let first = self
                     .glyphs
                     .iter()
-                    .position(|&(glyph_row, ..)| glyph_row == row + 1)
-                    .and_then(|glyph| self.glyph_objects.get(glyph).copied().flatten()),
-            },
+                    .position(|&(glyph_row, ..)| glyph_row == row + 1);
+                GlyphAt {
+                    position: *next,
+                    x: glyph_x(row_end).max(to_x),
+                    width: 1,
+                    object: first
+                        .and_then(|glyph| self.glyph_objects.get(glyph).copied().flatten()),
+                    display: first
+                        .and_then(|glyph| self.glyph_display.get(glyph).copied())
+                        .unwrap_or(false),
+                    // The element that does not fit reaches TO_X first
+                    // (MOVE_X_REACHED) when its glyphs would end past it.
+                    continued_at: {
+                        let width = first
+                            .and_then(|glyph| {
+                                let (_, column, _) = self.glyphs[glyph];
+                                self.glyphs[glyph + 1..]
+                                    .iter()
+                                    .find(|&&(glyph_row, next, _)| {
+                                        glyph_row != row + 1 || next > column
+                                    })
+                                    .filter(|&&(glyph_row, ..)| glyph_row == row + 1)
+                                    .map(|&(_, next, _)| next - column)
+                            })
+                            .unwrap_or(1);
+                        (glyph_x(row_end) + width <= to_x).then(|| glyph_x(row_end))
+                    },
+                }
+            }
             _ => GlyphAt {
                 position: self.line_end(),
                 x: glyph_x(row_end),
                 width: usize::from(self.ends_at_zv),
                 object: None,
+                display: false,
+                continued_at: None,
             },
         }
     }
@@ -3805,30 +4009,6 @@ impl ScreenLineLayout {
     pub(crate) fn position_cell(&self, pos: usize) -> (usize, usize) {
         let offset = pos.saturating_sub(self.bol).min(self.cells.len() - 1);
         self.cells[offset]
-    }
-
-    /// The first position on ROW drawn at or right of screen column
-    /// COLUMN (move_it_in_display_line to an X), else the row's last.
-    pub(crate) fn position_at_column(&self, row: usize, column: usize) -> usize {
-        let mut last = None;
-        for (offset, &(cell_row, cell_column)) in self.cells.iter().enumerate() {
-            if cell_row != row {
-                if cell_row > row && last.is_some() {
-                    break;
-                }
-                continue;
-            }
-            if cell_column >= column {
-                return self.bol + offset;
-            }
-            last = Some(offset);
-        }
-        self.bol
-            + last.unwrap_or_else(|| {
-                self.row_starts
-                    .get(row)
-                    .map_or(0, |start| start.saturating_sub(self.bol))
-            })
     }
 }
 
@@ -3841,6 +4021,14 @@ pub(crate) struct GlyphAt {
     pub(crate) x: usize,
     pub(crate) width: usize,
     pub(crate) object: Option<(Value, usize)>,
+    /// Whether that string is a `display' property's
+    /// (string_from_display_prop_p).
+    pub(crate) display: bool,
+    /// Where the row's glyphs end when the move went past them on a
+    /// continued row (MOVE_LINE_CONTINUED): the iterator's x there, at
+    /// the next row's first element, which did not fit and ends short of
+    /// TO_X.
+    pub(crate) continued_at: Option<usize>,
 }
 
 /// How WINDOW lays its text out: the `display-line-numbers' columns,
@@ -3861,6 +4049,15 @@ pub(crate) struct WindowTextGeometry {
 }
 
 impl WindowTextGeometry {
+    /// The iterator's x of a row's glyph at COLUMN of its line.
+    pub(crate) fn glyph_x(self, column: usize) -> usize {
+        if self.truncate {
+            self.truncated_x(column)
+        } else {
+            self.lnum_cols + column
+        }
+    }
+
     /// The iterator's x of a truncated row's glyph at COLUMN of its
     /// line: glyphs left of first_visible_x keep their columns; the
     /// line-number glyphs come once a glyph reaches past it
@@ -4162,6 +4359,8 @@ pub(crate) fn window_position_at(
                     x: glyph_x(geometry, column),
                     width: 1,
                     object: None,
+                    display: false,
+                    continued_at: None,
                 },
                 (x + geometry.first_visible, geometry.first_visible),
                 base + row,
@@ -4169,28 +4368,7 @@ pub(crate) fn window_position_at(
         }
         if y < base + rows {
             let row = y - base;
-            // Only the current line hscrolling: the row reaching PT from
-            // a start before it moves to X past the window's hscroll,
-            // the iterator pretending the window hscrolled.
-            let (to_x, first_visible) = match geometry.point_row_hscroll {
-                Some(extra) if layout.row_starts[row] < point && point <= layout.line_end() => (
-                    x + geometry.first_visible + extra,
-                    geometry.first_visible + geometry.hscroll,
-                ),
-                _ => (x + geometry.first_visible, geometry.first_visible),
-            };
-            // No line number is produced for a move to first_visible_x
-            // itself.
-            let geometry = WindowTextGeometry {
-                lnum_cols: if to_x == first_visible {
-                    0
-                } else {
-                    geometry.lnum_cols
-                },
-                first_visible,
-                ..geometry
-            };
-            let at = layout.glyph_at_x(row, to_x, |column| glyph_x(geometry, column));
+            let (at, to_x, first_visible) = row_x_stop(&layout, row, x as i64, geometry, point);
             return found(at, (to_x, first_visible), base + row);
         }
         base += rows;
@@ -4200,6 +4378,45 @@ pub(crate) fn window_position_at(
             geometry.truncate,
         );
     }
+}
+
+/// move_it_in_display_line (MOVE_TO_X) along ROW of LAYOUT, from the
+/// row's start to the text area's x X, as buffer_posn_from_coords and
+/// Fvertical_motion's goal column move: to X past first_visible_x, the
+/// line-number glyphs produced unless the move is to first_visible_x
+/// itself, and under `auto-hscroll-mode' `current-line' the row reaching
+/// POINT past the window's hscroll as well, the iterator pretending the
+/// window hscrolled.  The stop, with the x moved to and the
+/// first_visible_x it moved under.
+pub(crate) fn row_x_stop(
+    layout: &ScreenLineLayout,
+    row: usize,
+    x: i64,
+    geometry: WindowTextGeometry,
+    point: usize,
+) -> (GlyphAt, usize, usize) {
+    let (to_x, first_visible) = match geometry.point_row_hscroll {
+        Some(extra) if layout.row_starts[row] < point && point <= layout.line_end() => (
+            x + (geometry.first_visible + extra) as i64,
+            geometry.first_visible + geometry.hscroll,
+        ),
+        _ => (x + geometry.first_visible as i64, geometry.first_visible),
+    };
+    // A goal left of the row's first glyph stops on it.
+    let to_x = to_x.max(0) as usize;
+    let geometry = WindowTextGeometry {
+        lnum_cols: if to_x == first_visible {
+            0
+        } else {
+            geometry.lnum_cols
+        },
+        first_visible,
+        ..geometry
+    };
+    // last_visible_x: the text area less the truncation glyph's column.
+    let last_visible_x = first_visible + geometry.lnum_cols + geometry.text_width - 1;
+    let at = layout.glyph_at_x(row, to_x, last_visible_x, |column| geometry.glyph_x(column));
+    (at, to_x, first_visible)
 }
 
 /// The current buffer's display line starting at BOL, laid out as WINDOW
@@ -4420,10 +4637,14 @@ impl<'a> ScreenLineLayouter<'a> {
                     Some(origin) => raw.max(origin - line_start),
                     None => raw,
                 };
-                ((row, column, raw), visual.object_at(index))
+                (
+                    (row, column, raw),
+                    (visual.object_at(index), visual.object_from_display(index)),
+                )
             })
             .unzip::<_, _, Vec<_>, Vec<_>>();
-        let (glyphs, glyph_objects) = glyphs;
+        let (glyphs, glyph_strings) = glyphs;
+        let (glyph_objects, glyph_display) = glyph_strings.into_iter().unzip();
         let row_ends = laid
             .rows
             .iter()
@@ -4501,9 +4722,12 @@ impl<'a> ScreenLineLayouter<'a> {
             strings,
             ellipses,
             glyph_objects,
+            glyph_display,
             row_prefix_objects,
             row_word_wrapped,
+            word_wrap: !truncate && matches!(visual.line_wrap, layout::LineWrap::Word { .. }),
             ends_at_zv,
+            newline_replaced: visual.newline_replaced,
             skipped,
             row_walk_ends,
             wrap_points,
@@ -4650,7 +4874,7 @@ struct DisplayedLine {
     text: String,
     map: Option<Vec<usize>>,
     replaced: Vec<ReplacedRun>,
-    objects: Vec<Value>,
+    objects: Vec<(Value, bool)>,
     object_of: Vec<Option<(usize, usize)>>,
 }
 
@@ -4690,7 +4914,7 @@ fn displayed_line_with_runs(buffer: &crate::buffer::Buffer, line: usize) -> Disp
         };
     }
     let mut runs: Vec<ReplacedRun> = Vec::new();
-    let mut objects: Vec<Value> = Vec::new();
+    let mut objects: Vec<(Value, bool)> = Vec::new();
     let mut object_of: Vec<Option<(usize, usize)>> = Vec::new();
     let mut expanded = String::new();
     let mut expanded_chars = 0usize;
@@ -4739,7 +4963,7 @@ fn displayed_line_with_runs(buffer: &crate::buffer::Buffer, line: usize) -> Disp
                         &mut objects,
                         &mut object_of,
                         expanded_chars,
-                        value,
+                        (value, true),
                         (0..replacement.chars().count()).map(Some),
                     );
                 }
@@ -5089,14 +5313,20 @@ fn plan_window_text(
         .and_then(|last| rows.string_row_end(last, last_rows.0));
     let window_end = match (past_window, string_row_end) {
         (Some(_), Some(end)) => end,
-        // A row past the final buffer line means the window shows
-        // everything: window-end is ZV (a buffer without a trailing
-        // newline has no line beyond its last).
-        (Some((line, _, _)), None) if line > last_line => buffer.point_max(),
-        (Some((line, seg, origin)), None) => {
+        (Some((line, seg, origin)), None) if line <= last_line => {
             rows.row_start(redisplay_window::Row { line, seg, origin })
         }
-        (None, _) => invisible_tail_start.unwrap_or_else(|| buffer.point_max()),
+        // The window shows ZV (a row past the final buffer line, or none
+        // filling the window): its end is the last row displaying text's
+        // (the row at ZV displays none), ZV but for a `display' string's
+        // newline ending that row.
+        (_, _) => invisible_tail_start.unwrap_or_else(|| {
+            last_rows
+                .0
+                .filter(|_| last_rows.1.is_some_and(|last| rows.empty_row(last)))
+                .and_then(|prev| rows.string_row_end(prev, None))
+                .unwrap_or_else(|| buffer.point_max())
+        }),
     };
     PlanOutcome::Planned {
         plan: WindowPlan {
@@ -10251,6 +10481,7 @@ mod tests {
             replaced: Vec::new(),
             objects: Vec::new(),
             object_of: Vec::new(),
+            newline_replaced: false,
         }
     }
 

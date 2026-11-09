@@ -1276,13 +1276,7 @@ fn window_scroll_line_based(
     let goto = |interp: &mut Interpreter, at: usize| interp.buffer.borrow_mut().goto_char(at);
     if preserve.is_truthy() && margin == 0 && (whole || !matches!(preserve.kind(), Kind::T)) {
         goto(interp, pos);
-        visual_vertical_motion(
-            interp,
-            env,
-            window_id,
-            preserve_vpos,
-            Some(preserve_hpos.max(0) as usize),
-        )?;
+        visual_vertical_motion(interp, env, window_id, preserve_vpos, Some(preserve_hpos))?;
     } else if n > 0 {
         let top_margin = if margin > 0 {
             goto(interp, pos);
@@ -1302,13 +1296,7 @@ fn window_scroll_line_based(
                 preserve_vpos
             };
             goto(interp, pos);
-            visual_vertical_motion(
-                interp,
-                env,
-                window_id,
-                nlines,
-                Some(preserve_hpos.max(0) as usize),
-            )?;
+            visual_vertical_motion(interp, env, window_id, nlines, Some(preserve_hpos))?;
         } else {
             goto(interp, top_margin);
         }
@@ -1333,13 +1321,7 @@ fn window_scroll_line_based(
                 preserve_vpos
             };
             goto(interp, pos);
-            visual_vertical_motion(
-                interp,
-                env,
-                window_id,
-                nlines,
-                Some(preserve_hpos.max(0) as usize),
-            )?;
+            visual_vertical_motion(interp, env, window_id, nlines, Some(preserve_hpos))?;
         } else {
             visual_vertical_motion(interp, env, window_id, -1, None)?;
         }

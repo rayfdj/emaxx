@@ -357,6 +357,7 @@ fn lay_out_rows(
         // its wrap point.
         let mut overflow_index: Option<usize> = None;
         let mut hard_newline = false;
+        let mut string_newline = false;
         while let Some(current) = elements.get(element).copied() {
             if chars[current.start] == '\n' {
                 if !assigned[current.start] {
@@ -364,6 +365,7 @@ fn lay_out_rows(
                     assigned[current.start] = true;
                 }
                 hard_newline = true;
+                string_newline = visual.object_at(current.start).is_some();
                 element += 1;
                 break;
             }
@@ -505,7 +507,14 @@ fn lay_out_rows(
                 gnu_continuation += lnum + (width - continuation_width);
                 continuation_width = width;
             }
-            None if hard_newline && element < elements.len() => {
+            // A string's newline with nothing after it in the line: the
+            // iterator pops the string and display_line starts a row at
+            // the newline that ends the line, or at ZV -- unless a
+            // `display' string replaces that newline, popped past it to
+            // the next line.
+            None if hard_newline
+                && (element < elements.len() || (string_newline && !visual.newline_replaced)) =>
+            {
                 line_base = end_column;
                 continuation_width = 0;
                 gnu_continuation = 0;

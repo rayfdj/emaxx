@@ -18088,6 +18088,122 @@ setup_process_coding_systems's check now refuses). A 13-form
   display string at BEGV does not, and with display-line-numbers or
   show-trailing-whitespace (bs9) and `recenter' at a tall string (rc1)
   the windows differ: all recorded.
+- **Round 357: vertical-motion's goal column, and the rows at BEGV and
+  ZV after a string.**  dispatch/buffer_edit.rs's
+  visual_vertical_motion_from is Fvertical_motion's display-iterator
+  branch with its goal column: to_x is window_column_x (the column plus
+  0.5, an int, args-out-of-range outside one) plus the line numbers'
+  width, converted only when the motion is the display iterator's
+  (noninteractively vmotion moves by lines and converts neither COLS nor
+  CUR-COL), and the move is move_it_in_display_line to first_x + to_x
+  (first_x init_iterator's first_visible_x, the min_hscroll when
+  `auto-hscroll-mode' hscrolls only the current line) from where the
+  iterator is on its row, by tty::row_x_stop and
+  ScreenLineLayout::glyph_at_x, buffer_posn_from_coords' own move: the
+  stop is the element whose glyph reaches past the x (a TAB's, a wide
+  character's), a prefix's glyph, the next row's first element past a
+  continued row's end, on a truncated row the first element at or past
+  last_visible_x (MOVE_LINE_TRUNCATED); the first column's move goes
+  past invisible text at the row's start.  move_it_in_display_line's
+  word-wrap step is the caller's: a move that went past a continued
+  row's glyphs (GlyphAt.continued_at, set only when the next row's first
+  element ends short of the goal, else MOVE_X_REACHED) moves again to
+  one short of the x it reached, the row's last glyph
+  (end-of-visual-line on a word longer than the window).  CUR-COL
+  (window_column_x too, numberp checked) starts the goal move at point
+  with that x, and with no lines to move the iterator stays at point
+  when that x is at most to_x (-1 without a goal); its other effect, the
+  first row's wrapping counted from that x, is not modelled.  Where
+  position_at_column took the first position at or right of the column,
+  on the first row beginning at the landing position, C-n onto a
+  TAB-indented line, a wide character, an hscrolled or continued line
+  answered other positions than GNU's.  Moving down (nlines not
+  negative), while the stop is in an overlay string (GlyphAt.display,
+  string_from_display_prop_p, false) with a newline still ahead, it
+  moves a line down by move_it_by_lines_from from that row and to the
+  goal again, the lines counted.  move::screen_line_start_row is
+  move_it_vertically_backward with no distance: for a position inside
+  its line, or at BEGV, the walk from the line's start goes through the
+  strings at the position and a `display' string covering it
+  (text_reached) to the row showing its text; at a later line's start it
+  comes from the line before and stops before the strings there, on the
+  line's first row; a row beginning inside a `display' string leaves the
+  iterator after the string (move_it_to IT_CHARPOS + 1), and the row is
+  reported.  At a ZV part-way along a line under strings that begin rows
+  of their own (zv_strings_row, ScreenLineLayout::row_first_string), the
+  row before the first one beginning at ZV, before the strings, as
+  GNU's.  move_it_by_lines_back from BEGV's text row finds no line
+  start: reseat at the same position loads no overlay strings the move
+  ended (ignore_overlay_strings_at_pos_p) and the iterator stays on its
+  row, unless the row began inside a string, where the move on to its
+  text cleared the flag and reseat loads the strings again; it keeps the
+  row a backward move that comes forward again reached, and
+  vertical_motion answers it with nlines.  move_it::rows_between,
+  move_it_to's MOVE_TO_POS, goes past the rows of the overlay strings at
+  TO except where TO begins a line, where move_it_to's IT_CHARPOS test
+  comes before handle_stop loads them, or is such a ZV.
+  layout::lay_out_rows makes display_line's empty row after a string's
+  final newline, for the newline that ends the line or ZV, unless a
+  `display' string replaces that newline (VisualLine.newline_replaced,
+  newline_replaced_at), and window_end_pos comes from the last row that
+  displays text (Rows::empty_row, Rows::string_row_end of the row above,
+  a `display' string's position plus one), also when ZV's row is the
+  window's last.  A move_it_by_lines landing inside a `display' string
+  that replaced the line's newline counts the line's remaining rows to
+  the next line's first.  ScreenLineLayout::it3_cell is pos_visible_p's
+  it3 for a position in the text a string replaces, its start and its
+  newline included: from the start of the row the string's display
+  begins on, x 0, it delivers the row's elements, the prefix's first at
+  the row's position, going on past the row's end without continuing it,
+  to the first whose IT_CHARPOS is at or past the position (a string's
+  glyphs have the position the iterator met it at, the display's start
+  where that is inside the text) or to a newline, one in the string
+  after it moved taking the x of the last element not from the string
+  (top_x_before_string).  The round's reviews: layout::lay_out_rows
+  makes no row for a buffer newline a `display' string replaced
+  (VisualLine.newline_replaced), where a blank row was drawn and counted
+  below one, at ZV too; move_it_by_lines with no distance reports the
+  row it is on (Landing.row), where the goal move took the first row
+  beginning at the position and its loop moved and counted lines inside
+  the strings there (C-p signalled beginning-of-buffer); the goal under
+  a line-prefix stops in the prefix's glyphs (glyph_at_x);
+  zv_strings_row covers strings beginning their rows at a string's first
+  character as well as inside one (row_first_string); the word-wrap step
+  back (GlyphAt.continued_at); the column converted only for the display
+  iterator, where batch signalled args-out-of-range;
+  move_it_by_lines_back's stay at BEGV's text row, where a goal with no
+  lines at BEGV under a before-string counted the string's rows;
+  screen_line_start_row's row beginning inside a `display' string
+  (row_first_string, interactive) for a one-newline string; it3_cell for
+  a newline-free `display' string across a continued row's edge, which
+  shown_cell put on the next row; CUR-COL.  Recorded, unchanged by the
+  round: a `display' string nested in an overlay string is not drawn
+  (Emaxx shows the overlay string's own text, and the goal loop, which
+  GNU's string_from_display_prop_p stops, moves on); strings with
+  newlines in truncated lines (round 359); a `display' property spanning
+  lines (fold.el: a row for the second covered line), on a lone newline
+  (not drawn), an overlay `display' string covering a newline (a row too
+  many); pos-visible-in-window-p in a string on a partly visible last
+  row (round 358).  The grouped gate passed its 3,510 library
+  tests; the integration targets (cli, cli_parity with
+  vertical_motion_goal_columns_and_rows_at_zv_answer_as_gnu_does,
+  the_review_of_round_357_is_answered_as_gnu_answers,
+  the_second_review_of_round_357_is_answered_as_gnu_answers and
+  vertical_motion_in_batch_moves_by_lines_as_vmotion_does, ert_runner,
+  native_comp_identity, native_thread_continuations, package_lifecycle,
+  runtime_ownership) passed, and clippy is clean.  On the final build
+  the round's probes and both reviews' match GNU's (rv357b, rv357 and
+  the positions probe; bg, big, cn, cno, edge, eovl, lw, neg, ovs, sc,
+  spsp, td, ww and zvs; asb, back, cn, goal, mid, npp, rows, scrl, wend
+  and zvd) but for recorded cases: comp's posn-at-point inside
+  compositions and lnum's line-number-display-width, answered so before
+  the round; we.el's pos-visible-in-window-p in a string on a partly
+  visible last row (round 358); fin's and fold's display strings across
+  newlines, ovl's nested display strings and truncated lines, and zvt's
+  truncated lines.  Round 356's review probes answer as on its build or
+  better (cn, vm, vm2 and st.el's stage 13 now match GNU's), round 355's
+  (rv1 to rv5, hs3) and round 354's review probes as on round 356's
+  build.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -21152,6 +21268,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   (3.23 against 2.00) and package-tests (7.01 against 6.20).  The Rust
   gate (run 42601117108) passed.
 
+**On `25c6bb8`** (round 356): the frozen run (run 42635788491) matched
+  all 7,928 outcomes.  Setup 52.8 s against 46.2 s (1.143), test bodies
+  232.8 s against 217.3 s (1.071), in all 1.084, on a runner faster than
+  round 355's (setup median 82 ms against 72; at round 355 122 against
+  102).  The widest body gap is eglot-tests (29.2 s against 27.2 s),
+  then tramp-tests (15.6 against 14.0), comp-tests (11.7 against 10.2),
+  ert-tests (28.1 against 27.2), semantic-utest-ia (2.64 against 1.86),
+  mule-tests (1.75 against 1.07), process-tests (2.45 against 1.79) and
+  package-tests (5.98 against 5.52).  The Rust gate (run 42635782591)
+  passed.
+
 **Findings recorded, not fixed:**
 - **Redisplay paths not modelled (round 353 review).**  try_window_id,
   `redisplay-skip-fontification-on-input' and f->cursor_type_changed;
@@ -21185,41 +21312,49 @@ ert-tests as a whole 26,307 ms against 27,211.
   (vertical-motion 0) from BEGV answers the position after the string
   in GNU (move_it_vertically_backward 0's walk to START_POS steps
   through the string's rows while IT_POS_VALID_AFTER_MOVE_P fails) and
-  BEGV in Emaxx (vm2).
+  BEGV in Emaxx (vm2).  Round 357 answers it as GNU's: the walk from
+  BEGV goes through the strings to the text's row
+  (move::screen_line_start_row).
 - **Strings and the iterator, still apart (round 356 review).**  The
   round's review found these, all answered the same way before the
-  round (r355b):
-  - Fvertical_motion's goal column moves to the column on the row the
-    iterator is on and then, while it stopped inside an overlay string
-    (not a `display' string) with a newline still ahead, a line down and
-    to the column again, the lines counted in the value; it does so for
-    a column of 0 too.  Emaxx takes the column on the first row
-    beginning at the landing position and skips a column of 0: (cons 2
-    1) onto a line beginning with a three-line before-string answers
-    (4 48) in GNU and (1 46) in Emaxx, C-n onto it lands on 48 in GNU
-    and 46 in Emaxx (review vm.el bol-bs, mid-bs and cont with a goal
-    column; cn.el F2, F6 to F10).  The stop's glyph needs to say whether
-    its string came from a `display' property.
-  - vertical-motion back from a position where two before-strings sit
-    inside a continued line, and forward over a before-string at ZV
-    (whose rows GNU counts in the value), answer other lines than GNU's
-    (vm.el cont-at -1 and -2, zv 2 and 3).
+  round (r355b); round 357 answers its goal-column, cont-at and zv
+  cases (vertical-motion's goal column, the backward moves from two
+  before-strings in a continued line, a before-string at ZV) and
+  window-end of a `display' string taller than the window (tall.el
+  stages 3 and 9) as GNU's:
   - A `display' string taller than the window: set_cursor_from_row puts
-    the cursor on the row's first glyph (its `tem == pt_old' branch),
-    pos-visible-in-window-p answers the last row, and window-end on the
-    string's final-newline row is its position plus one (find_row_edges'
-    `row->end.pos > max_pos'); Emaxx answers otherwise (tall.el stages 2,
-    3, 6 and 9, pv.el disp).
+    the cursor on the row's first glyph (its `tem == pt_old' branch)
+    and pos-visible-in-window-p answers the last row, where move_it_to
+    stops at the last row whose IT_CHARPOS is the string's position;
+    Emaxx answers the first row (tall.el stages 2, 6 and 9, pv.el
+    disp).
   - With `truncate-lines' (or a horizontal scroll) a multi-line
     before-string at the window's start loses or garbles rows (st.el
     stages 5 and 6, pv.el trunc, trunc-hs and hscroll).
   - The force_start block's `alt_pt' when point is in invisible text
-    (st.el stage 2, st2.el stage 12), the cursor at a before-string at
-    ZV (st.el stage 13), and C-f from point inside a string taller than
-    the window to text that cannot show (seq.el F4 and F17, where GNU
-    leaves the cursor at row 0, column 3).  seq.el's stages 5, 6, 13 and
+    (st.el stage 2, st2.el stage 12), and C-f from point inside a
+    string taller than the window to text that cannot show (seq.el F4
+    and F17, where GNU leaves the cursor at row 0, column 3); the cursor
+    at a before-string at ZV (st.el stage 13) answers as GNU's since
+    round 357.  seq.el's stages 5, 6, 13 and
     14, where GNU's window goes back to BEGV after point stays at a tall
     before-string, are the move_it_to (PT) finding above.
+- **Display strings across newlines (round 357 reviews).**  Answered
+  the same way before round 357 (r356h):
+  - A `display' string nested in an overlay string is not drawn: Emaxx
+    shows the overlay string's own text (abX where GNU shows abD), and
+    Fvertical_motion's loop out of overlay strings, which GNU's
+    string_from_display_prop_p ends in the nested string, moves on
+    (review ovl.el nest and nest2: (2 . 1) answers (1 46) in GNU, (3 48)
+    in Emaxx).
+  - A `display' property covering more than one line, ending in a
+    newline (fold.el: "FOLD\n" over two lines), gets a row for the
+    second covered line: count-screen-lines 31 against 30,
+    (vertical-motion 2) 55 against 64.
+  - An overlay `display' string covering a line's newline (fin.el stage
+    1) makes a row too many (count-screen-lines 23 against 22,
+    window-end 172 against 181), and a `display' string on a lone
+    newline is not drawn (rows.el stage 3, zvd.el stage 6).
 - **Display lines laid out whole (round 353).**  Emaxx's planner, the
   walks redisplay fontifies by and its drawing each lay out a whole
   display line, and the walks again from a window start inside it,

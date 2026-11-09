@@ -660,24 +660,15 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 3)?;
                 // indent.c:Fvertical_motion: LINES may be (COLS . LINES),
                 // COLS checked by CHECK_NUMBER; LINES must be a fixnum.
-                let (goal_col, lines) = match args[0].cons_values() {
+                let (goal_cols, lines) = match args[0].cons_values() {
                     Some((cols, lines)) => {
-                        // COLS may be a float (line-move-visual divides
-                        // pixels by the frame char width); GNU truncates
-                        // it to a pixel count.
-                        let goal = match cols.kind() {
-                            Kind::Float(float) => float.max(0.0) as usize,
-                            Kind::Integer(cols) => cols.max(0) as usize,
-                            Kind::BigInteger(_) => {
-                                if integer_like_bigint(interp, &cols)? < BigInt::from(0) {
-                                    0
-                                } else {
-                                    usize::MAX
-                                }
-                            }
-                            _ => return Err(wrong_type_argument("numberp", cols)),
-                        };
-                        (Some(goal), lines)
+                        if !matches!(
+                            cols.kind(),
+                            Kind::Float(_) | Kind::Integer(_) | Kind::BigInteger(_)
+                        ) {
+                            return Err(wrong_type_argument("numberp", cols));
+                        }
+                        (Some(cols), lines)
                     }
                     None => (None, args[0]),
                 };
@@ -689,13 +680,38 @@ define_dispatch!(
                 let window = live_motion_window(interp, args.get(1).unwrap_or(&Value::Nil))?;
                 let window_id = window_record_id_from_value(interp, &window)
                     .unwrap_or_else(|| interp.selected_window_id());
+                // Noninteractively vmotion moves by lines alone; the
+                // display iterator's motion first converts CUR-COL
+                // (extract_float) and then COLS to x with window_column_x.
+                let (start_x, goal_col) = if interactive_motion(interp, env) {
+                    let window_arg = args.get(1).copied().unwrap_or(Value::Nil);
+                    let start_x = match args.get(2).copied().filter(|value| !value.is_nil()) {
+                        Some(cur_col) => {
+                            if !matches!(
+                                cur_col.kind(),
+                                Kind::Float(_) | Kind::Integer(_) | Kind::BigInteger(_)
+                            ) {
+                                return Err(wrong_type_argument("numberp", cur_col));
+                            }
+                            Some(window_column_x(interp, window_arg, cur_col)?)
+                        }
+                        None => None,
+                    };
+                    let goal_col = goal_cols
+                        .map(|cols| window_column_x(interp, window_arg, cols))
+                        .transpose()?;
+                    (start_x, goal_col)
+                } else {
+                    (None, None)
+                };
                 // Interactively the motion is start_display's, whose
                 // init_iterator frees the frame's realized faces after a
                 // face change.
                 if crate::lisp::primitives::interactive_window_metrics().is_some() {
                     interp.init_iterator_faces_window(window_id);
                 }
-                let moved = visual_vertical_motion(interp, env, window_id, n, goal_col)?;
+                let moved =
+                    visual_vertical_motion_from(interp, env, window_id, n, goal_col, start_x)?;
                 Ok(Value::Integer(moved))
             }
             "search-forward" | "search-backward" => search_named(interp, name, args, env),
@@ -2876,12 +2892,52 @@ fn line_number_display_width_value(
 }
 
 /// GNU `vertical-motion': move by screen lines, honoring continuation.
+/// indent.c window_column_x: COL * FRAME_COLUMN_WIDTH + 0.5 as an int
+/// pixel count (a terminal's column is one), out of range signaling
+/// against WINDOW and COLUMN.
+fn window_column_x(interp: &Interpreter, window: Value, column: Value) -> Result<i64, LispError> {
+    let col = match column.kind() {
+        Kind::Float(float) => *float,
+        Kind::Integer(column) => column as f64,
+        _ => integer_like_bigint(interp, &column)?
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(f64::INFINITY),
+    };
+    let x = col + 0.5;
+    if !(f64::from(i32::MIN) <= x && x <= f64::from(i32::MAX)) {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            window,
+            column,
+        ])));
+    }
+    Ok(x as i64)
+}
+
+/// Fvertical_motion by N lines in WINDOW to the goal x GOAL_COL (a
+/// window_column_x), the iterator at point's row start.
 pub(crate) fn visual_vertical_motion(
     interp: &mut Interpreter,
     env: &mut Env,
     window_id: u64,
     n: i64,
-    goal_col: Option<usize>,
+    goal_col: Option<i64>,
+) -> Result<i64, LispError> {
+    visual_vertical_motion_from(interp, env, window_id, n, goal_col, None)
+}
+
+/// visual_vertical_motion with Fvertical_motion's CUR-COL as START_X:
+/// the iterator then starts at point with that x rather than at its
+/// line's start, and with N 0 stays there when START_X is at most the
+/// goal's x (-1 without a goal), the goal move counting from it.
+pub(crate) fn visual_vertical_motion_from(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    n: i64,
+    goal_col: Option<i64>,
+    start_x: Option<i64>,
 ) -> Result<i64, LispError> {
     if interactive_motion(interp, env) {
         // The display iterator's walk, then move_it_in_display_line to
@@ -2893,26 +2949,127 @@ pub(crate) fn visual_vertical_motion(
         let mut fetches = crate::tty::IteratorFetches::off();
         loop {
             fetches.begin_pass(interp, env, window_id);
-            let (mut target, moved) = crate::lisp::primitives::move_it::vertical_motion(
-                interp,
-                env,
-                window_id,
-                n,
-                &mut fetches,
-            );
-            if let Some(goal) = goal_col.filter(|&goal| goal > 0) {
-                let (bol, eol) = visual_line_bounds(interp, target);
-                let starts = screen_row_starts(interp, env, window_id, bol, eol);
-                let index = row_index_of(&starts, target);
-                let row_start = target;
-                target = interactive_screen_line(interp, env, window_id, bol)
-                    .position_at_column(index, goal);
-                if let Some(geometry) = fetches.geometry() {
-                    crate::tty::IteratorWalk::at(interp, window_id, geometry, row_start).walk_to(
-                        &mut fetches,
+            // to_x: the goal's x plus the line numbers' width.
+            let to_x = goal_col.map(|goal| goal + motion_line_number_columns(interp, env) as i64);
+            // nlines 0 skips move_it_by_lines when the given start x is
+            // at most to_x (-1 without a goal).
+            let stays = n == 0 && start_x.is_some_and(|start| start <= to_x.unwrap_or(-1));
+            let (landing, nlines) = if stays {
+                let point = interp.buffer.borrow().point();
+                (
+                    crate::lisp::primitives::move_it::Landing {
+                        pos: point,
+                        moved: 0,
+                        row: None,
+                    },
+                    0,
+                )
+            } else {
+                crate::lisp::primitives::move_it::vertical_motion(
+                    interp,
+                    env,
+                    window_id,
+                    n,
+                    &mut fetches,
+                )
+            };
+            let (mut target, mut moved) = (landing.pos, landing.moved);
+            if let Some(goal) = to_x {
+                // move_it_in_display_line to first_x + to_x from where the
+                // iterator is on its row; then, moving down, while it
+                // stopped in an overlay string (not a `display' string)
+                // with a newline still ahead, a line down and to the goal
+                // again, the lines counted.
+                // init_iterator's first_visible_x, the min_hscroll when
+                // `auto-hscroll-mode' hscrolls only the current line,
+                // which display_line alone applies.
+                let geometry = crate::tty::WindowTextGeometry {
+                    lnum_cols: motion_line_number_columns(interp, env),
+                    point_row_hscroll: None,
+                    ..window_text_geometry(interp, env, window_id)
+                };
+                let point = interp.buffer.borrow().point();
+                let mut row = landing.row;
+                // An iterator left at point with CUR-COL's x moves the
+                // goal's distance from it.
+                let mut from_x = start_x.filter(|_| stays);
+                loop {
+                    let (bol, _) = visual_line_bounds(interp, target);
+                    let layout = interactive_screen_line(interp, env, window_id, bol);
+                    let index = row
+                        .filter(|&row| row < layout.row_starts.len())
+                        .unwrap_or_else(|| row_index_of(&layout.row_starts, target));
+                    let row_start = target;
+                    // From CUR-COL's x at point, the goal's distance from
+                    // there on point's row.
+                    let from_point = from_x.take();
+                    let goal_here = match from_point {
+                        Some(start) => {
+                            let (_, column) = layout.position_cell(target);
+                            geometry.glyph_x(column) as i64 - geometry.first_visible as i64 + goal
+                                - start
+                        }
+                        None => goal,
+                    };
+                    // An iterator part-way along the row (after a display
+                    // string there) already past the goal stays.
+                    let past = from_point.is_none()
+                        && layout.row_starts.get(index) != Some(&target)
+                        && match layout.position_cell(target) {
+                            (cell_row, column) if cell_row == index => {
+                                (geometry.lnum_cols + column) as i64
+                                    > goal + geometry.first_visible as i64
+                            }
+                            _ => false,
+                        };
+                    let stop = (!past).then(|| {
+                        let at =
+                            crate::tty::row_x_stop(&layout, index, goal_here, geometry, point).0;
+                        // move_it_in_display_line: under `word-wrap', a
+                        // move that went past a continued row's glyphs
+                        // (MOVE_LINE_CONTINUED) moves again to one short
+                        // of the x it reached there, the row's last glyph.
+                        match at.continued_at {
+                            Some(x) if layout.word_wrap() => {
+                                let prev_x =
+                                    x.saturating_sub(1) as i64 - geometry.first_visible as i64;
+                                crate::tty::row_x_stop(&layout, index, prev_x, geometry, point).0
+                            }
+                            _ => at,
+                        }
+                    });
+                    if let Some(stop) = stop {
+                        target = stop.position;
+                    }
+                    if let Some(geometry) = fetches.geometry() {
+                        crate::tty::IteratorWalk::at(interp, window_id, geometry, row_start)
+                            .walk_to(&mut fetches, row_start, target);
+                    }
+                    let in_string_before_newline = stop.is_some_and(|stop| {
+                        !stop.display
+                            && stop.object.is_some_and(|(string, index)| {
+                                crate::lisp::primitives::string_text(&string).is_ok_and(|text| {
+                                    text.chars().skip(index).any(|character| character == '\n')
+                                })
+                            })
+                    });
+                    if nlines < 0 || !in_string_before_newline {
+                        break;
+                    }
+                    let down = crate::lisp::primitives::move_it::move_it_by_lines_from(
+                        interp,
+                        env,
+                        window_id,
                         row_start,
-                        target,
+                        Some(index),
+                        1,
+                        &mut fetches,
                     );
+                    if down.moved == 0 {
+                        break;
+                    }
+                    moved += down.moved;
+                    (target, row) = (down.pos, down.row);
                 }
             }
             passes += 1;
@@ -2928,7 +3085,7 @@ pub(crate) fn visual_vertical_motion(
     // buffer shown in WINDOW meanwhile (Fvertical_motion's
     // restore_window_buffer leaves nothing else changed); a cons LINES's
     // goal column has no part in it.
-    let _ = goal_col;
+    let _ = (goal_col, start_x);
     let point = interp.buffer.borrow().point();
     let pos = crate::lisp::primitives::indent_motion::vmotion(
         interp,

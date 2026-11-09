@@ -403,24 +403,30 @@ impl<'a, 'c> Rows<'a, 'c> {
 
     /// find_row_edges' MATRIX_ROW_END_CHARPOS of ROW, the window's row
     /// below PREV (none for its first row), where it is not where the
-    /// next row starts: ROW ends in a newline of a string that goes on
-    /// past it, and PREV ended in a newline from a string too having
-    /// seen this string, so the row ends at eol_pos + 1, one past the
-    /// string's buffer position.
+    /// next row starts: one past the buffer position of the string whose
+    /// newline ends ROW.  Either the string ends there and a `display'
+    /// property gave it, so the iterator pops it to the end of the text
+    /// it replaces, past max_pos (an overlay string pops to its own
+    /// position, where the next row starts); or it goes on past the
+    /// newline and PREV ended in a newline from a string too having seen
+    /// this string, so the row ends at eol_pos + 1.
     pub(super) fn string_row_end(&self, row: Row, prev: Option<Row>) -> Option<usize> {
-        let prev = prev?;
         let (newline, object) = self.string_newline_ending(row)?;
         let visual = self.visual(row.line);
+        let raw = visual.raw_of_display.get(newline).copied()?;
+        let past = self.buffer.display_line_start_of(row.line) + raw + 1;
         // it->object past the newline: the same string still.
         if visual_object(&visual, newline + 1) != Some(object) {
-            return None;
+            return visual.object_from_display(newline).then_some(past);
         }
         let (string, _) = visual.object_at(newline)?;
-        if !self.seen_this_string(prev, string) {
-            return None;
-        }
-        let raw = visual.raw_of_display.get(newline).copied()?;
-        Some(self.buffer.display_line_start_of(row.line) + raw + 1)
+        self.seen_this_string(prev?, string).then_some(past)
+    }
+
+    /// Whether ROW shows no glyph at all: the row display_line starts at
+    /// ZV, which displays no text (displays_text_p false).
+    pub(super) fn empty_row(&self, row: Row) -> bool {
+        self.row_indexes(row).is_empty()
     }
 
     /// find_row_edges' seen_this_string for STRING: PREV ends in a
