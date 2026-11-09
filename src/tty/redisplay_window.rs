@@ -91,25 +91,28 @@ impl<'a, 'c> Rows<'a, 'c> {
         context.prefix_glyphs(&context.prefix_value_at(self.buffer, self.buffer.point_max(), false))
     }
 
-    /// The display line beginning at raw line LINE laid out continued at
-    /// the window's width from ORIGIN (0: from its start), made once.
+    /// The display line beginning at raw line LINE laid out at the
+    /// window's width from ORIGIN (0: from its start), continued or, in a
+    /// truncating window, broken only where a string's newline ends a
+    /// row; made once.
     pub(super) fn laid_at(&self, line: usize, origin: usize) -> Rc<layout::LineLayout> {
         if let Some(laid) = self.layouts.borrow().get(&(line, origin)) {
             return Rc::clone(laid);
         }
         let visual = self.visual(line);
+        let walk = !self.at_line_beg(origin) && !self.truncate;
         let laid = Rc::new(if origin == 0 {
-            layout::lay_out_visual_line(&visual, self.body_width, false)
+            layout::lay_out_visual_line(&visual, self.body_width, self.truncate)
         } else {
             layout::lay_out_visual_line_from(
                 &visual,
                 self.body_width,
-                false,
+                self.truncate,
                 visual.start_index(
                     origin.saturating_sub(self.buffer.display_line_start_of(line)),
-                    !self.at_line_beg(origin),
+                    walk,
                 ),
-                !self.at_line_beg(origin),
+                walk,
             )
         });
         self.layouts
@@ -202,11 +205,7 @@ impl<'a, 'c> Rows<'a, 'c> {
             && line_start < point_max
             && invisible_class_at(self.buffer, self.spec, line_start) != 0
             && visual.raw_of_display.last().copied() == Some(point_max.saturating_sub(line_start));
-        let segs = if self.truncate {
-            1
-        } else {
-            self.laid_at(line, origin).rows.len().max(1)
-        };
+        let segs = self.laid_at(line, origin).rows.len().max(1);
         let info = (segs, visual.lines_spanned.max(1), invisible_tail);
         self.lines.borrow_mut().insert((line, origin), info);
         info
@@ -279,6 +278,40 @@ impl<'a, 'c> Rows<'a, 'c> {
             })
     }
 
+    /// Whether display_line ends ROW with IT_CHARPOS past the row's start
+    /// position, the condition, with first_visible_x past 0, for the left
+    /// truncation glyph (insert_left_trunc_glyphs).  A row of a truncated
+    /// line ends at a string's newline -- the iterator then delivers the
+    /// row below's first element, at the string's position while more of
+    /// it follows or the position an overlay string returns to, at the
+    /// end of the text a `display' string covers -- or at the line's end,
+    /// past its newline: an empty line's row ends past its start, a row
+    /// at ZV with no newline does not.
+    pub(super) fn ends_past_start(&self, row: Row) -> bool {
+        let start = self.row_start(row);
+        let laid = self.laid_at(row.line, row.origin);
+        let end = if row.seg + 1 < laid.rows.len() {
+            self.row_start(Row {
+                seg: row.seg + 1,
+                ..row
+            })
+        } else {
+            let line_end = self.buffer.display_line_start_of(row.line)
+                + self
+                    .visual(row.line)
+                    .raw_of_display
+                    .last()
+                    .copied()
+                    .unwrap_or(0);
+            if line_end < self.buffer.point_max() {
+                line_end + 1
+            } else {
+                line_end
+            }
+        };
+        end != start
+    }
+
     /// MATRIX_ROW_START_CHARPOS of ROW.
     pub(super) fn start_pos(&self, row: Row) -> usize {
         self.row_start(row).max(self.buffer.point_min())
@@ -294,9 +327,6 @@ impl<'a, 'c> Rows<'a, 'c> {
             line,
             ..Row::default()
         };
-        if self.truncate {
-            return row;
-        }
         self.row_in_layout(row, pos)
     }
 
@@ -334,9 +364,11 @@ impl<'a, 'c> Rows<'a, 'c> {
             seg: 0,
             origin: start,
         };
+        // Truncating, start_display does not walk from the line's start:
+        // init_iterator at START shows the strings there first.
         if self.truncate {
-            return if self.row_start(row) == start {
-                row
+            return if start == self.buffer.display_line_start_of(row.line) {
+                Row { seg: 0, ..row }
             } else {
                 origin
             };
@@ -390,9 +422,6 @@ impl<'a, 'c> Rows<'a, 'c> {
     /// (ends_in_newline_from_string_p): its display index and the
     /// string (an index into the visual line's objects).
     fn string_newline_ending(&self, row: Row) -> Option<(usize, usize)> {
-        if self.truncate {
-            return None;
-        }
         let visual = self.visual(row.line);
         let last = self.row_indexes(row).end.checked_sub(1)?;
         (visual.text.chars().nth(last) == Some('\n'))
@@ -474,9 +503,6 @@ impl<'a, 'c> Rows<'a, 'c> {
     /// it on the row's first glyph, a line number's included (the FALSE
     /// answer: before the gutter).
     pub(super) fn string_row_cursor_x(&self, row: Row, point: usize) -> Option<(usize, bool)> {
-        if self.truncate {
-            return None;
-        }
         let visual = self.visual(row.line);
         let indexes = self.row_indexes(row);
         if indexes.is_empty()
@@ -538,9 +564,6 @@ impl<'a, 'c> Rows<'a, 'c> {
         let row = self.row_of(pos);
         if top.origin == 0 || row.line != top.line || pos < top.origin {
             return row;
-        }
-        if self.truncate {
-            return top;
         }
         self.row_in_layout(top, pos)
     }

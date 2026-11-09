@@ -18263,6 +18263,79 @@ setup_process_coding_systems's check now refuses). A 13-form
   match GNU's, as do the round 356 review's tall.el stages 2, 6 and 9
   and pv.el's disp, which had differed; the other probes answer as on
   round 357's build.
+- **Round 359: truncated lines whose strings hold newlines.**  layout.rs
+  lays a truncated line out as rows broken only where a newline in an
+  overlay or `display' string ends one, each row's x from 0 (RowState's
+  line_base); the planner (Rows::laid_at, row_starts, ends_past_start),
+  the frontend's fill, cursor and faces (truncated_row, HscrollLayout
+  from the row's own start column) and the walks (ScreenLineLayout:
+  cells, glyphs, row_ends relative to each row's start, glyph_at_x) take
+  a truncated line's rows from it, so each row is hscrolled from its own
+  start and under `current-line' only the cursor's row is.
+  WindowPlan::left_truncated is display_line's truncated_on_left_p
+  (`IT_CHARPOS (*it) != CHARPOS (row->start.pos)',
+  Rows::ends_past_start): truncated_row's `$', the gutter's `$' over the
+  line number and HscrollLayout's text start follow it.
+  window_render_geometry's hscroll_window_tree walk starts at the cursor
+  row's start display_pos as init_from_display_pos sets it up, the
+  overlay strings at a buffer position reloaded
+  (VisualLine::start_index), and stops at the first newline or at
+  point's text (BUFFER_POS_REACHED_P, buffer elements only), again at
+  point less one when it stopped in a string; ITERATOR_AT_END_OF_LINE_P
+  is the stop's newline.  cursor_on_string_row_start is
+  set_cursor_from_row's compute_x fallback for a truncated row at ZV
+  made only of string glyphs (row start and end both ZV, the row cut off
+  before ZV's glyph): the cursor on its first glyph, and
+  hscroll_window_tree's cursor x there.
+  ScreenLineLayout::truncated_before is move_it_to (MOVE_TO_POS) out of
+  a string on a truncated row: an element reaching last_visible_x
+  (first_visible_x plus the width less one) with TO's text, the row's
+  newline or the line's end not next stops the move;
+  forward_to_next_line_start scans the string on, so a later newline in
+  it ends the row and the walk goes on, one vpos more, while a newline
+  found past TO's text lands there (the next line's start, or a later
+  string's position); move_it_by_lines_from lands accordingly.  The ZV
+  row screen_line_layout adds for a truncated last line counts only when
+  an element before the last reaches last_visible_x with the window's
+  first_visible_x (dispatch::iterator_first_visible: the min_hscroll
+  under `current-line', else the hscroll).  glyph_at_x past a truncated
+  row's string newline gives the newline's x, buffer_posn_from_coords'
+  DX counting from it; row_x_stop adds the `current-line' hscroll only
+  when the row's walk reaches point (the next row's start or the line's
+  end at or past it).  pos_visible_p's x for a position it3 places
+  (ScreenLineLayout::shown_by_it3) counts the line numbers it3 has not
+  produced.  Face spans: a buffer face stops at a string's newline
+  ending the row (string_newline), a string face with `:extend' at that
+  newline paints to the window's edge (extend_jobs), and a `display'
+  property's string carries its own `face' spans on both visual-line
+  paths (string_glyph_face_spans on the fast one).  handle_face_prop's
+  base faces: an overlay before- or after-string starts from
+  face_for_overlay_string, the `face' text property at its position as
+  Fget_text_property reads it (overlay_string_base_face,
+  CharacterDisplayContext::text_properties holding the buffer's
+  `char-property-alias-alist' and `default-text-properties'), the
+  overlays' faces and the region not reaching it; an overlay `display'
+  string starts from underlying_face_id, the face of the text it covers
+  with its overlays', where Emaxx had painted the default face over it.
+  Recorded: D112's before-string with a `cursor' property (cur.el stages
+  1 and 2, pf.el stage 8), unchanged by the round, and a double-width
+  glyph across an hscrolled row's left edge, which the terminal draws
+  whole from the row's first column (pf.el stage 6, wc.el).  The grouped
+  gate passed its 3,513 library tests
+  (truncated_rows_split_at_a_strings_newline_hscroll_from_their_own_start,
+  the left `$' rule and
+  overlay_strings_take_the_text_property_face_at_their_position); the
+  integration targets (cli, cli_parity with
+  truncated_lines_whose_strings_hold_newlines_answer_as_gnu_does and
+  the_review_of_round_359_is_answered_as_gnu_answers, ert_runner,
+  native_comp_identity, native_thread_continuations, package_lifecycle,
+  runtime_ownership) passed, and clippy is clean.  On the final build
+  the round's probes (tr, rvl, hsc, df, fc, fc2, obf and obf2) and the
+  review's (ah, ah2, cur, hs, it3, ln, mv, nar, pf, pxy, sc, zv and zv2)
+  match GNU's but for the recorded stages (cur.el 1 and 2, pf.el 6 and
+  8); the earlier rounds' probes, run on the build before the
+  overlay-string faces, answer as on round 358's build, st.el's stages 5
+  and 6 now as GNU's.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -21349,6 +21422,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   2.04) and package-tests (7.08 against 6.19).  The Rust gate (run
   42687423972) passed.
 
+**On `d576413`** (round 358): the frozen run (run 42699376771) matched
+  all 7,928 outcomes.  Setup 58.5 s against 50.8 s (1.150), test bodies
+  240.1 s against 229.1 s (1.048), in all 1.066, on a runner faster than
+  round 357's (setup median 94 ms against 83; at round 357 125 against
+  105).  The widest body gap is comp-tests (13.6 s against 11.8 s), then
+  tramp-tests (15.0 against 13.9), ert-tests (29.1 against 28.3),
+  semantic-utest-ia (3.13 against 2.34), mule-tests (1.73 against 1.05),
+  package-tests (6.17 against 5.70), process-tests (2.26 against 1.81)
+  and edebug-tests (1.30 against 1.01).  The Rust gate (run 42699369877)
+  passed.
+
 **Findings recorded, not fixed:**
 - **Redisplay paths not modelled (round 353 review).**  try_window_id,
   `redisplay-skip-fontification-on-input' and f->cursor_type_changed;
@@ -21391,12 +21475,11 @@ ert-tests as a whole 26,307 ms against 27,211.
   cases (vertical-motion's goal column, the backward moves from two
   before-strings in a continued line, a before-string at ZV) and
   window-end of a `display' string taller than the window (tall.el
-  stages 3 and 9) as GNU's, and round 358 the cursor and
+  stages 3 and 9) as GNU's, round 358 the cursor and
   pos-visible-in-window-p at such a string (tall.el stages 2, 6 and 9,
-  pv.el disp):
-  - With `truncate-lines' (or a horizontal scroll) a multi-line
-    before-string at the window's start loses or garbles rows (st.el
-    stages 5 and 6, pv.el trunc, trunc-hs and hscroll).
+  pv.el disp), and round 359 a multi-line before-string at the window's
+  start with `truncate-lines' or a horizontal scroll (st.el stages 5
+  and 6, pv.el trunc, trunc-hs and hscroll):
   - The force_start block's `alt_pt' when point is in invisible text
     (st.el stage 2, st2.el stage 12), and C-f from point inside a
     string taller than the window to text that cannot show (seq.el F4
@@ -21409,7 +21492,10 @@ ert-tests as a whole 26,307 ms against 27,211.
   Answered the same way before round 358 (r357h):
   - A before-string "AB\nCD" with a `cursor' property on B: GNU's
     cursor is on row 5, column 1, Emaxx's on row 6, column 2 (um.el
-    stage 1).
+    stage 1); so with `cursor' on every character of a before-string
+    "B00\nB01\n" inside a line, where GNU's cursor is on the string's
+    first glyph and Emaxx's on the text after it (round 359 review
+    cur.el stages 1 and 2, pf.el stage 8).
   - The force_start block onto a before-string with line numbers: GNU
     puts the cursor at column 79, Emaxx at 0 (cur3.el stage 4).
   - Invisible text after a before-string at the window's start:
@@ -21420,6 +21506,16 @@ ert-tests as a whole 26,307 ms against 27,211.
   - A `display' string replacing a newline whose last line has no
     newline does not join the next line onto its row in Emaxx (pv2.el
     S7).
+- **A wide character across an hscrolled row's left edge (round 359
+  review).**  When first_visible_x falls inside a double-width glyph,
+  display_line's move_it_in_display_line_to (MOVE_TO_X) stops before
+  it, its new x past TO_X, the row's x is negative, and the terminal
+  draws the row's glyphs from its first column: the glyph shows whole,
+  or as two `$' where insert_left_trunc_glyphs overwrites it and its
+  padding glyph, and the rest of the row one column to the right of
+  where Emaxx draws it from first_visible_x (pf.el stage 6, wc.el
+  stages 1 to 4: `$$本語ab' against `$本語ab', the cursor a column
+  to the left).  posn-at-point and pos-visible-in-window-p agree.
 - **Display strings across newlines (round 357 reviews).**  Answered
   the same way before round 357 (r356h):
   - A `display' string nested in an overlay string is not drawn: Emaxx

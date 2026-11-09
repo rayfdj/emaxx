@@ -1567,6 +1567,9 @@ struct WindowPlan {
     /// with the buffer line, wrap segment, start position, and hscroll
     /// each row shows — the anchors face spans map through.
     rendered: Vec<(String, usize, usize, usize, usize)>,
+    /// Whether each rendered row shows the left truncation glyph
+    /// (row->truncated_on_left_p).
+    left_truncated: Vec<bool>,
     /// Buffer position where the window's display starts.
     top_pos: usize,
     /// Position just past the last displayed character (GNU window-end).
@@ -1624,6 +1627,42 @@ fn truncated_on_right(line_w: usize, hscroll: usize, w: usize) -> bool {
     let remaining = line_w.saturating_sub(hidden);
     let available = w.saturating_sub(usize::from(hscroll > 0)).max(1);
     remaining >= available
+}
+
+/// set_cursor_from_row's last resort (compute_x) for the truncated row
+/// SEG of LAID, the layout of VISUAL, the display line showing POINT: a
+/// row at a ZV no newline ends whose glyphs all come from the strings
+/// there --
+/// MATRIX_ROW_START_CHARPOS and MATRIX_ROW_END_CHARPOS both ZV, the
+/// glyph display_line adds for ZV cut off at the window's edge (the row
+/// truncated on the right from HSCROLL in a text area WIDTH cells wide)
+/// -- takes the cursor on its first glyph, x 0.
+fn cursor_on_string_row_start(
+    buffer: &crate::buffer::Buffer,
+    visual: &VisualLine,
+    laid: &layout::LineLayout,
+    seg: usize,
+    point: usize,
+    hscroll: usize,
+    width: usize,
+) -> bool {
+    let Some(row) = laid.rows.get(seg) else {
+        return false;
+    };
+    let zv = buffer.point_max();
+    let row_width = laid
+        .columns
+        .last()
+        .copied()
+        .unwrap_or(0)
+        .saturating_sub(row.start_column);
+    seg + 1 == laid.rows.len()
+        && point == zv
+        && (zv == buffer.point_min() || buffer.char_at(zv - 1) != Some('\n'))
+        && visual.object_at(row.start_index).is_some()
+        // The row begins at the line's end, ZV, inside its strings.
+        && visual.raw_of_display.get(row.start_index) == visual.raw_of_display.last()
+        && truncated_on_right(row_width, hscroll, width)
 }
 
 /// The window's line-display geometry for this redisplay: whether lines
@@ -1738,10 +1777,17 @@ fn window_render_geometry(
             .and_then(|value| value.integer_value())
             .unwrap_or(0);
         let fast_move = buffer.long_line_optimizations_p() && nchars as i64 > threshold;
-        let (point_dcol, line_w) = if fast_move {
+        // POINT_DCOL is point's x on the row showing it (w->cursor.x
+        // before the hscroll); WALK the x and ITERATOR_AT_END_OF_LINE_P
+        // where hscroll_window_tree's own walk to point stops.
+        let (point_dcol, line_w, walk) = if fast_move {
             let zv = buffer.point_max();
             let row_end = buffer.find_before_next_newline(point_pos, zv);
-            (nchars as i64, row_end.saturating_sub(row_start))
+            (
+                nchars as i64,
+                row_end.saturating_sub(row_start),
+                (nchars as i64, false),
+            )
         } else {
             // hscroll_window_tree measures the cursor's row with the
             // display iterator: the visual line's laid-out columns,
@@ -1774,9 +1820,111 @@ fn window_render_geometry(
                 None => layout::lay_out_visual_line(&visual, body_width, true),
             };
             let point_index = index_of(point_pos);
+            let column = laid.columns[point_index.min(laid.columns.len() - 1)];
+            // A string's newline starts another row of a truncated line:
+            // the iterator starts at x 0 on the cursor's own row, which
+            // ends at that newline or the line's end.
+            let (seg, _) = wrapped_position_of_column(
+                &laid.rows,
+                column,
+                visual
+                    .glyphless_spans
+                    .iter()
+                    .any(|(from, _)| *from == point_index),
+            );
+            let row = &laid.rows[seg];
+            let row_end = if seg + 1 < laid.rows.len() {
+                row.end_column.saturating_sub(1)
+            } else {
+                laid.columns.last().copied().unwrap_or(0)
+            };
+            // init_to_row_start: the iterator starts at the cursor row's
+            // start display_pos.  A row beginning with the buffer's text
+            // right after overlay strings there -- the last one's newline
+            // ended the row above -- records no overlay string, so
+            // init_iterator's handle_stop loads those strings again and
+            // the walk begins with them (init_from_display_pos).
+            let line_begin = buffer.display_line_start_of(point_line);
+            let walk_from = if visual.object_at(row.start_index).is_some() {
+                row.start_index
+            } else {
+                visual.start_index(
+                    visual
+                        .raw_of_display
+                        .get(row.start_index)
+                        .copied()
+                        .unwrap_or(0),
+                    false,
+                )
+            };
+            let reloaded = (walk_from < row.start_index).then(|| {
+                layout::lay_out_visual_line_from(&visual, body_width, true, walk_from, false)
+            });
+            let walk_x = |index: usize| match &reloaded {
+                Some(walked) => walked.columns[index.min(walked.columns.len() - 1)]
+                    .saturating_sub(walked.rows.first().map_or(0, |first| first.start_column)),
+                None => {
+                    laid.columns[index.min(laid.columns.len() - 1)].saturating_sub(row.start_column)
+                }
+            };
+            let chars: Vec<char> = visual.text.chars().collect();
+            // move_it_in_display_line_to (MOVE_TO_POS): the walk stops at
+            // the first newline (MOVE_NEWLINE_OR_CR, in a string or the
+            // line's end) or at the buffer's text at or past TO
+            // (BUFFER_POS_REACHED_P: only while delivering from the
+            // buffer, so strings, the display string over TO included,
+            // are walked through).  The stop's index, and whether it
+            // is in a string (it.method == GET_FROM_STRING).
+            let stop_for = |to: usize| {
+                let mut index = walk_from;
+                while index < chars.len() {
+                    if chars[index] == '\n' {
+                        break;
+                    }
+                    let from_buffer = visual.object_at(index).is_none()
+                        && !visual
+                            .ellipses
+                            .iter()
+                            .any(|&dots| dots <= index && index < dots + 3);
+                    if from_buffer && line_begin + visual.raw_of_display[index] >= to {
+                        break;
+                    }
+                    index += 1;
+                }
+                (index, visual.object_at(index).is_some())
+            };
+            let (mut stop, in_string) = stop_for(point_pos);
+            // The line ends in an overlay string with a newline: the
+            // walk goes to the position before point instead.
+            if in_string && point_pos > 1 {
+                stop = stop_for(point_pos - 1).0;
+            }
+            let at_newline = match chars.get(stop) {
+                Some(&ch) => ch == '\n',
+                None => {
+                    buffer.char_at(line_begin + visual.raw_of_display.last().copied().unwrap_or(0))
+                        == Some('\n')
+                }
+            };
+            // w->cursor.x: on the row's first glyph for a row of strings
+            // at ZV cut off at the edge (cursor_on_string_row_start).
+            let cursor_dcol = if cursor_on_string_row_start(
+                &buffer,
+                &visual,
+                &laid,
+                seg,
+                point_pos,
+                hscroll.max(0) as usize,
+                body_width.saturating_sub(lnum_cols),
+            ) {
+                hscroll - lnum_cols as i64
+            } else {
+                (column - row.start_column) as i64
+            };
             (
-                laid.columns[point_index.min(laid.columns.len() - 1)] as i64,
-                laid.columns.last().copied().unwrap_or(0),
+                cursor_dcol,
+                row_end.saturating_sub(row.start_column),
+                (walk_x(stop) as i64, at_newline),
             )
         };
         let w = body_width as i64;
@@ -1807,18 +1955,18 @@ fn window_render_geometry(
             || (row_truncated_right && cursor_x >= text_w - margin)
             || (current_line_only && hscroll != state.min_hscroll && hscroll > 0);
         if trigger {
-            // ITERATOR_AT_END_OF_LINE_P: the iterator sits on a newline
+            // ITERATOR_AT_END_OF_LINE_P: the walk stopped on a newline
             // (at ZV it does not, so the cursor centers).
             // fast_move_it_horizontally loads no display element, so the
             // iterator is never at the end of a line.
-            let at_eol = !fast_move && buffer.char_at(point_pos) == Some('\n');
+            let (walk_x, at_eol) = walk;
             // hscroll_window_tree's iterator produces the line-number
             // glyphs once a glyph reaches past first_visible_x (the
             // hscroll it runs under), so its current_x carries their
-            // columns only when point lies right of that;
+            // columns only when its walk ended right of that;
             // fast_move_it_horizontally produces none.
-            let numbers_produced = !fast_move && (hscroll == 0 || point_dcol > hscroll);
-            let current_x = point_dcol
+            let numbers_produced = !fast_move && (hscroll == 0 || walk_x > hscroll);
+            let current_x = walk_x
                 + if numbers_produced {
                     lnum_cols as i64
                 } else {
@@ -2051,6 +2199,9 @@ struct CharacterDisplayContext<'a> {
     /// Automatic composition is on for this terminal: a zero-width
     /// character composes with the cell before it.
     auto_composition: bool,
+    /// The variables Fget_text_property reads with the window's buffer
+    /// current, for an overlay string's base face.
+    text_properties: crate::intervals::PropertyVariables,
 }
 
 impl<'a> CharacterDisplayContext<'a> {
@@ -2154,6 +2305,11 @@ impl<'a> CharacterDisplayContext<'a> {
             nobreak_char_ascii_display: local("nobreak-char-ascii-display").is_truthy(),
             display_raw_bytes_as_hex: local("display-raw-bytes-as-hex").is_truthy(),
             auto_composition,
+            text_properties: crate::intervals::PropertyVariables {
+                default_nonsticky: local("text-property-default-nonsticky"),
+                aliases: local("char-property-alias-alist"),
+                defaults: local("default-text-properties"),
+            },
         }
     }
 
@@ -3142,10 +3298,83 @@ fn visible_overlay_string(
     (rendered, spans, indexes)
 }
 
+/// The `face' spans, in display indexes, of the strings glyphs come
+/// from: OBJECTS, and for each display index OBJECT_OF's string and the
+/// character's index in it.  A `display' property's string shows its
+/// own faces merged over the face of the text it covers
+/// (face_at_string_position from underlying_face_id).
+fn string_glyph_face_spans(
+    objects: &[(Value, bool)],
+    object_of: &[Option<(usize, usize)>],
+) -> Vec<(usize, usize, Value)> {
+    let faces: Vec<Vec<(usize, usize, Value)>> = objects
+        .iter()
+        .map(|(value, _)| crate::lisp::primitives::string_face_spans(value))
+        .collect();
+    let mut spans: Vec<(usize, usize, Value)> = Vec::new();
+    for (index, glyph) in object_of.iter().enumerate() {
+        let Some((object, character)) = *glyph else {
+            continue;
+        };
+        let Some(&(_, _, face)) = faces[object]
+            .iter()
+            .find(|(from, to, _)| *from <= character && character < *to)
+        else {
+            continue;
+        };
+        match spans.last_mut() {
+            Some((_, end, last)) if *end == index && crate::lisp::types::eq(*last, face) => {
+                *end = index + 1
+            }
+            _ => spans.push((index, index + 1, face)),
+        }
+    }
+    spans
+}
+
+/// visual_line_with of the buffer's line FIRST_LINE, its overlay strings'
+/// base faces read with no `char-property-alias-alist' or
+/// `default-text-properties'.
+#[cfg(test)]
 fn visual_line_at(
     buffer: &crate::buffer::Buffer,
     spec: &InvisibilitySpec,
     first_line: usize,
+) -> VisualLine {
+    visual_line_with(
+        buffer,
+        spec,
+        first_line,
+        &crate::intervals::PropertyVariables::NONE,
+    )
+}
+
+/// handle_face_prop's base face for an overlay string at POS:
+/// face_for_overlay_string, the `face' text property there as
+/// Fget_text_property reads it (PROPERTIES giving the buffer's
+/// `char-property-alias-alist' and `default-text-properties'), merged
+/// over the default face.  The buffer's overlays and the region do not
+/// reach it.
+fn overlay_string_base_face(
+    buffer: &crate::buffer::Buffer,
+    properties: &crate::intervals::PropertyVariables,
+    pos: usize,
+) -> Option<Value> {
+    let face = cached_symbol!("face").with(|symbol| Value::Symbol(*symbol));
+    properties
+        .textget(buffer.text_plist_at(pos), face)
+        .ok()
+        .filter(|face| !face.is_nil())
+}
+
+/// The display of the buffer's line FIRST_LINE: its text with the
+/// overlay and `display' strings it shows, PROPERTIES the variables
+/// Fget_text_property reads for an overlay string's base face.
+fn visual_line_with(
+    buffer: &crate::buffer::Buffer,
+    spec: &InvisibilitySpec,
+    first_line: usize,
+    properties: &crate::intervals::PropertyVariables,
 ) -> VisualLine {
     let has_overlay_display = buffer.overlays.iter().any(|overlay| {
         !overlay.is_dead()
@@ -3187,6 +3416,7 @@ fn visual_line_at(
         let line_begin = buffer.display_line_start_of(first_line);
         let newline_replaced =
             newline_replaced_at(buffer, line_begin + map.len().saturating_sub(1));
+        let display_face_spans = string_glyph_face_spans(&objects, &object_of);
         return VisualLine {
             text,
             map,
@@ -3194,7 +3424,7 @@ fn visual_line_at(
             lines_spanned: 1,
             ellipses: Vec::new(),
             glyphless_spans: Vec::new(),
-            display_face_spans: Vec::new(),
+            display_face_spans,
             prefixes: Vec::new(),
             line_wrap: layout::LineWrap::Window,
             wrap_categories: Vec::new(),
@@ -3318,11 +3548,14 @@ fn visual_line_at(
                     col += if character == '\t' { 8 - (col % 8) } else { 1 };
                 }
             }
-            // Before/after strings are independent display objects.  They
-            // do not inherit the buffer character's face merely because
-            // their insertion point lies inside that face's span.
+            // Before/after strings are independent display objects: the
+            // buffer's faces at their position do not reach them, only
+            // its `face' text property, their base face.
             if start < display_chars {
                 display_face_spans.push((start, display_chars, Value::Symbol("default".into())));
+                if let Some(face) = overlay_string_base_face(buffer, properties, pos) {
+                    display_face_spans.push((start, display_chars, face));
+                }
             }
             display_face_spans.extend(
                 spans
@@ -3367,13 +3600,10 @@ fn visual_line_at(
                         col += if character == '\t' { 8 - (col % 8) } else { 1 };
                     }
                 }
-                if start < display_chars {
-                    display_face_spans.push((
-                        start,
-                        display_chars,
-                        Value::Symbol("default".into()),
-                    ));
-                }
+                // A `display' string's base face is the face of the text
+                // it covers (underlying_face_id: from_overlay is nil for
+                // it, its overlay's face included), its own `face'
+                // properties merged over it.
                 display_face_spans.extend(
                     crate::lisp::primitives::string_face_spans(value)
                         .into_iter()
@@ -3454,6 +3684,7 @@ fn visual_line_at(
                 _ => replaced.push((offset, offset + 1, true)),
             }
             if !same_run {
+                let start = display_chars;
                 if let Some(value) = display {
                     record_string_glyphs(
                         &mut objects,
@@ -3468,6 +3699,16 @@ fn visual_line_at(
                     raw_of_display.push(offset);
                     display_chars += 1;
                     col += if character == '\t' { 8 - (col % 8) } else { 1 };
+                }
+                // A `display' property's string takes the face of the text
+                // it covers (underlying_face_id), its own `face' properties
+                // merged over it (face_at_string_position).
+                if let Some(value) = display {
+                    display_face_spans.extend(
+                        crate::lisp::primitives::string_face_spans(&value)
+                            .into_iter()
+                            .map(|(from, to, face)| (start + from, start + to, face)),
+                    );
                 }
             }
             string_run = Some(replacement);
@@ -3532,6 +3773,9 @@ fn visual_line_at(
         }
         if start < display_chars {
             display_face_spans.push((start, display_chars, Value::Symbol("default".into())));
+            if let Some(face) = overlay_string_base_face(buffer, properties, pos) {
+                display_face_spans.push((start, display_chars, face));
+            }
         }
         display_face_spans.extend(
             spans
@@ -3592,7 +3836,10 @@ fn glyphless_visual_line_at(
     first_line: usize,
     context: Option<&CharacterDisplayContext<'_>>,
 ) -> VisualLine {
-    let mut visual = visual_line_at(buffer, spec, first_line);
+    let properties = context.map_or(crate::intervals::PropertyVariables::NONE, |context| {
+        context.text_properties
+    });
+    let mut visual = visual_line_with(buffer, spec, first_line, &properties);
     let Some(context) = context else {
         return visual;
     };
@@ -3662,11 +3909,12 @@ pub(crate) struct ScreenLineLayout {
     /// included.
     cells: Vec<(usize, usize)>,
     /// Each glyph in display order: its row, its column there (a
-    /// truncated line's from the line's start), and the raw offset from
-    /// BOL it displays.
+    /// truncated row's past the window's edge too), and the raw offset
+    /// from BOL it displays.
     glyphs: Vec<(usize, usize, usize)>,
-    /// The column where each row's glyphs end: a continued row's edge,
-    /// the last row's newline.
+    /// The column, from the row's start, where each row's glyphs end: a
+    /// continued row's edge, a row a string's newline ends, the last
+    /// row's newline.
     row_ends: Vec<usize>,
     /// The cells each row's `line-prefix' or `wrap-prefix' takes.
     row_prefixes: Vec<usize>,
@@ -3704,9 +3952,78 @@ pub(crate) struct ScreenLineLayout {
     row_walk_ends: Vec<usize>,
     /// Buffer positions `word-wrap' may break a row before.
     wrap_points: Vec<usize>,
+    /// A truncated line's iterator last_visible_x, in columns from a
+    /// row's start: first_visible_x plus the text's width, less the
+    /// truncation glyph's column.
+    last_visible: Option<usize>,
 }
 
 impl ScreenLineLayout {
+    /// move_it_to (MOVE_TO_POS) TO from the start of ROW on a truncated
+    /// line: whether move_it_in_display_line_to stops for the window's
+    /// edge before TO's text, an element reaching last_visible_x with
+    /// neither TO's text, the row's newline nor the line's end next
+    /// (MOVE_LINE_TRUNCATED), and reseat_at_next_visible_line_start
+    /// finds the next newline in the buffer's text, past TO -- and the
+    /// rows the move passed on the way, a string's newline ending each
+    /// (one vpos each), and where the iterator lands: the next line's
+    /// start (None), or the position and row of a later string whose
+    /// newline the scan found first.  forward_to_next_line_start
+    /// scans a string to its end, so a newline further on in the string
+    /// ends the row as if the edge had not come first, and the move goes
+    /// on from the next row.
+    pub(crate) fn truncated_before(
+        &self,
+        row: usize,
+        to: usize,
+    ) -> Option<(usize, Option<(usize, usize)>)> {
+        let last_visible = self.last_visible?;
+        let first = self
+            .glyphs
+            .iter()
+            .position(|&(glyph_row, ..)| glyph_row == row)?;
+        let reached = |glyph: usize| {
+            self.glyph_objects.get(glyph).is_some_and(Option::is_none)
+                && self.bol + self.glyphs[glyph].2 >= to
+        };
+        let mut glyph = first;
+        while glyph < self.glyphs.len() {
+            if reached(glyph) {
+                return None;
+            }
+            let glyph_row = self.glyphs[glyph].0;
+            let &(next_row, next_column, _) = self.glyphs.get(glyph + 1)?;
+            // The element ended its row: a string's newline.
+            if next_row != glyph_row || next_column < last_visible {
+                glyph += 1;
+                continue;
+            }
+            // The next element is TO's text, or the newline ending the
+            // row (ITERATOR_AT_END_OF_LINE_P).
+            let next_ends_row = self
+                .glyphs
+                .get(glyph + 2)
+                .is_some_and(|&(after, ..)| after != glyph_row);
+            if reached(glyph + 1) || next_ends_row {
+                glyph += 1;
+                continue;
+            }
+            // Past the edge: a later row of this line begins after a
+            // newline in a string.  Short of TO's text that is where the
+            // move goes on; past it the scan lands there, past TO.
+            match (glyph + 1..self.glyphs.len()).find(|&later| self.glyphs[later].0 != glyph_row) {
+                Some(later) if !(glyph + 1..later).any(reached) => glyph = later,
+                Some(later) => {
+                    let later_row = self.glyphs[later].0;
+                    let landing = self.row_starts.get(later_row).map(|&at| (at, later_row));
+                    return Some((glyph_row - row, landing));
+                }
+                None => return Some((glyph_row - row, None)),
+            }
+        }
+        None
+    }
+
     /// Whether the line wraps at word boundaries (it->line_wrap ==
     /// WORD_WRAP).
     pub(crate) fn word_wrap(&self) -> bool {
@@ -3843,16 +4160,33 @@ impl ScreenLineLayout {
     /// where move_it_to stops in a display vector (the start itself,
     /// which the display begins with, on its first); others where they
     /// are.
-    pub(crate) fn shown_cell(&self, pos: usize, start: usize) -> (usize, usize) {
+    /// The raw offsets [RUN, END) of the text a `display' string
+    /// replaces that pos_visible_p finds POS in by it3 (its start too:
+    /// move_it_to stops only after the string), the line's newline
+    /// included when the string replaces that too.
+    fn it3_run(&self, pos: usize) -> Option<(usize, usize)> {
         let offset = pos.saturating_sub(self.bol);
         let line_end = self.line_end() - self.bol;
-        // The text a string replaces (its start too: move_it_to stops
-        // only after the string), the line's newline included when the
-        // string replaces that too.
-        if let Some(&(run, end)) = self.strings.iter().find(|(run, end)| {
-            *run <= offset
-                && (offset < *end || (self.newline_replaced && offset == *end && *end == line_end))
-        }) {
+        self.strings
+            .iter()
+            .find(|(run, end)| {
+                *run <= offset
+                    && (offset < *end
+                        || (self.newline_replaced && offset == *end && *end == line_end))
+            })
+            .copied()
+    }
+
+    /// Whether pos_visible_p places POS by it3 (it3_run): its x then
+    /// counts the line-number glyphs it3 has not produced on the row
+    /// ("Account for line-number display, if IT3 still didn't").
+    pub(crate) fn shown_by_it3(&self, pos: usize) -> bool {
+        self.it3_run(pos).is_some()
+    }
+
+    pub(crate) fn shown_cell(&self, pos: usize, start: usize) -> (usize, usize) {
+        let offset = pos.saturating_sub(self.bol);
+        if let Some((run, end)) = self.it3_run(pos) {
             return self.it3_cell(pos, run, end);
         }
         if let Some(&(run, _)) = self
@@ -4061,6 +4395,23 @@ impl ScreenLineLayout {
                 position: self.bol + raw,
                 x: glyph_x(column),
                 width: width_at(cells.len() - 1),
+                object: self.glyph_objects.get(glyph).copied().flatten(),
+                display: self.glyph_display.get(glyph).copied().unwrap_or(false),
+                continued_at: None,
+            };
+        }
+        // A truncated row ends only at a string's newline or the line's
+        // end: move_it_in_display_line_to stops at that newline
+        // (MOVE_NEWLINE_OR_CR), IT_CHARPOS the string's position, its x
+        // the newline's, which buffer_posn_from_coords' DX counts from.
+        if self.truncate
+            && self.row_starts.get(row + 1).is_some()
+            && let Some(&(raw, column, glyph)) = cells.last()
+        {
+            return GlyphAt {
+                position: self.bol + raw,
+                x: glyph_x(column),
+                width: 1,
                 object: self.glyph_objects.get(glyph).copied().flatten(),
                 display: self.glyph_display.get(glyph).copied().unwrap_or(false),
                 continued_at: None,
@@ -4435,7 +4786,11 @@ fn window_cell_xy(
                 // comes off the iterator's x.
                 // ZV beginning its row, nothing produced on it: no
                 // line-number glyphs before it.
-                let x = if column >= geometry.first_visible && !(window_end && column == 0) {
+                // it3 has produced no line-number glyphs on its row and
+                // counts them before POS's.
+                let x = if (column >= geometry.first_visible || layout.shown_by_it3(pos))
+                    && !(window_end && column == 0)
+                {
                     column + geometry.lnum_cols
                 } else {
                     column
@@ -4564,8 +4919,15 @@ pub(crate) fn row_x_stop(
     geometry: WindowTextGeometry,
     point: usize,
 ) -> (GlyphAt, usize, usize) {
+    // move_it_in_display_line to POINT from the row's start reaches it:
+    // a row a string's newline ends stops at the string's position.
+    let walk_end = layout
+        .row_starts
+        .get(row + 1)
+        .copied()
+        .unwrap_or_else(|| layout.line_end());
     let (to_x, first_visible) = match geometry.point_row_hscroll {
-        Some(extra) if layout.row_starts[row] < point && point <= layout.line_end() => (
+        Some(extra) if layout.row_starts[row] < point && point <= walk_end => (
             x + (geometry.first_visible + extra) as i64,
             geometry.first_visible + geometry.hscroll,
         ),
@@ -4618,9 +4980,9 @@ pub(crate) struct ScreenLineLayouter<'a> {
 
 /// A display line's layout key while redisplay records a window's walks:
 /// the window, its line-number columns, the line's start, the start a
-/// start_display anchors its first row at, the text width and whether
-/// lines truncate.
-type WalkLayoutKey = (u64, usize, usize, Option<usize>, usize, bool);
+/// start_display anchors its first row at, the text width, whether
+/// lines truncate and the iterator's first visible column.
+type WalkLayoutKey = (u64, usize, usize, Option<usize>, usize, bool, usize);
 
 thread_local! {
     /// The display lines the walks of one window's redisplay lay out,
@@ -4690,6 +5052,8 @@ impl<'a> ScreenLineLayouter<'a> {
         let line_start = buffer.display_line_start_of(first_line);
         // A start inside the line: rows from there (start_display).
         let origin = origin.filter(|origin| *origin != line_start);
+        let first_visible =
+            crate::lisp::primitives::iterator_first_visible(interpreter, self.window_id, truncate);
         let key = (
             self.window_id,
             self.lnum_cols,
@@ -4697,6 +5061,7 @@ impl<'a> ScreenLineLayouter<'a> {
             origin,
             text_width,
             truncate,
+            first_visible,
         );
         if let Some(layout) = WALK_LAYOUTS.with(|cache| {
             cache
@@ -4727,6 +5092,11 @@ impl<'a> ScreenLineLayouter<'a> {
         origin: Option<usize>,
     ) -> ScreenLineLayout {
         let (spec, context) = (&self.spec, &self.context);
+        let first_visible = crate::lisp::primitives::iterator_first_visible(
+            self.interpreter,
+            self.window_id,
+            truncate,
+        );
         let visual = glyphless_visual_line_at(buffer, spec, first_line, Some(context));
         let walk = origin.is_some_and(|origin| {
             !(origin <= buffer.point_min() || buffer.char_at(origin - 1) == Some('\n'))
@@ -4764,23 +5134,32 @@ impl<'a> ScreenLineLayouter<'a> {
             .collect();
         // move_it_by_lines past a truncated row reseats at the next line
         // start; for a last line ending at ZV that is ZV itself, one more
-        // screen line down (count-screen-lines sees it, the glass does not).
+        // screen line down (count-screen-lines sees it, the glass does not)
+        // when an element before the line's last reaches the iterator's
+        // last_visible_x, first_visible_x plus the width less the
+        // truncation glyph's column: move_it_in_display_line_to stops
+        // there (MOVE_LINE_TRUNCATED) unless the next element is ZV.
         let line_end = line_start + visual.raw_of_display.last().copied().unwrap_or(0);
+        let elements = laid.columns.len().saturating_sub(1);
         if truncate
             && line_end == buffer.point_max()
             && line_end > line_start
-            && laid.columns.last().copied().unwrap_or(0) >= text_width.max(1)
+            && elements > 0
+            && laid.rows.last().is_some_and(|row| {
+                laid.columns[elements - 1].saturating_sub(row.start_column) + 1
+                    >= first_visible + text_width.max(1)
+            })
         {
             row_starts.push(line_end);
         }
+        // A truncated line's rows break only where a string's newline
+        // ends one (display_line), each row's x from 0.
         let rows = RowOfColumn::new(&laid.rows);
         let cells = (0..visual.map.len())
             .map(|offset| {
                 let index = visual.map[offset];
                 let column = laid.columns[index.min(laid.columns.len() - 1)];
-                if truncate {
-                    (0, column)
-                } else if visual
+                if visual
                     .glyphless_spans
                     .iter()
                     .any(|(from, _)| *from == index)
@@ -4794,11 +5173,7 @@ impl<'a> ScreenLineLayouter<'a> {
         let glyphs = (0..visual.text.chars().count())
             .map(|index| {
                 let column = laid.columns[index.min(laid.columns.len() - 1)];
-                let (row, column) = if truncate {
-                    (0, column)
-                } else {
-                    rows.first(column)
-                };
+                let (row, column) = rows.first(column);
                 (index, row, column, raw_of(index))
             })
             // A display starting inside the line shows nothing before
@@ -4818,16 +5193,12 @@ impl<'a> ScreenLineLayouter<'a> {
             .unzip::<_, _, Vec<_>, Vec<_>>();
         let (glyphs, glyph_strings) = glyphs;
         let (glyph_objects, glyph_display) = glyph_strings.into_iter().unzip();
+        // Each row's x counts from its start, a truncated line's rows (broken
+        // at a string's newline) too.
         let row_ends = laid
             .rows
             .iter()
-            .map(|row| {
-                if truncate {
-                    row.end_column
-                } else {
-                    row.end_column - row.start_column
-                }
-            })
+            .map(|row| row.end_column - row.start_column)
             .collect();
         let row_prefixes = laid.rows.iter().map(|row| row.prefix_cols).collect();
         // handle_line_prefix's string: get_line_prefix_it_property at the
@@ -4904,6 +5275,7 @@ impl<'a> ScreenLineLayouter<'a> {
             skipped,
             row_walk_ends,
             wrap_points,
+            last_visible: truncate.then(|| first_visible + text_width.max(1) - 1),
         }
     }
 }
@@ -5301,54 +5673,66 @@ fn plan_window_text(
     let point_origin = anchor
         .filter(|anchor| anchor.line == point_line && point >= anchor.origin)
         .map(|anchor| anchor.origin);
-    let point_layout = match (truncate, point_origin) {
-        (true, Some(origin)) => std::rc::Rc::new(layout::lay_out_visual_line_from(
-            &point_visual,
-            body_width,
-            true,
-            point_visual.start_index(
-                origin.saturating_sub(buffer.display_line_start_of(point_line)),
-                false,
-            ),
-            false,
-        )),
-        (true, None) => {
-            std::rc::Rc::new(layout::lay_out_visual_line(&point_visual, body_width, true))
-        }
-        (false, origin) => rows.laid_at(point_line, origin.unwrap_or(0)),
-    };
+    let point_layout = rows.laid_at(point_line, point_origin.unwrap_or(0));
     let point_dcol = point_layout.columns[point_index.min(point_layout.columns.len() - 1)];
+    let (point_seg, point_seg_col) = wrapped_position_of_column(
+        &point_layout.rows,
+        point_dcol,
+        point_visual
+            .glyphless_spans
+            .iter()
+            .any(|(from, _)| *from == point_index),
+    );
+    let point_row_start = point_layout.rows[point_seg].start_column;
+    let point_left_trunc = truncate
+        && hscroll > 0
+        && rows.ends_past_start(redisplay_window::Row {
+            line: point_line,
+            seg: point_seg,
+            origin: point_origin.unwrap_or(0),
+        });
     let cursor_col = if truncate {
         // Without a line-number gutter, the left `$' occupies one screen
-        // cell before source column HSCROLL.  A point hidden farther left
-        // still clamps to the marker itself.
+        // cell before source column HSCROLL of the row.  A point hidden
+        // farther left still clamps to the marker itself.
         let on_screen = HscrollLayout::new(
             &point_visual,
             &point_layout.columns,
+            point_row_start,
             hscroll,
-            lnum_cols == 0,
+            lnum_cols == 0 && point_left_trunc,
         )
         .screen_column(point_dcol)
         .unwrap_or(0);
         on_screen.min(body_width.saturating_sub(1))
     } else {
-        wrapped_position_of_column(
-            &point_layout.rows,
-            point_dcol,
-            point_visual
-                .glyphless_spans
-                .iter()
-                .any(|(from, _)| *from == point_index),
-        )
-        .1
+        point_seg_col
     };
     let cursor_hidden_left = truncate
         && hscroll > 0
         && lnum_cols > 0
-        && HscrollLayout::new(&point_visual, &point_layout.columns, hscroll, false)
-            .screen_column(point_dcol)
-            .is_none();
-    let cursor_col = if lnum_cols == 0 {
+        && HscrollLayout::new(
+            &point_visual,
+            &point_layout.columns,
+            point_row_start,
+            hscroll,
+            false,
+        )
+        .screen_column(point_dcol)
+        .is_none();
+    let cursor_col = if truncate
+        && cursor_on_string_row_start(
+            buffer,
+            &point_visual,
+            &point_layout,
+            point_seg,
+            point,
+            hscroll,
+            body_width,
+        ) {
+        // The row's first glyph, a line number's when they show.
+        0
+    } else if lnum_cols == 0 {
         cursor_col
     } else if cursor_hidden_left {
         lnum_cols.saturating_sub(1)
@@ -5382,6 +5766,7 @@ fn plan_window_text(
     // row; every other visual line contributes at least one.
     let last_line = buffer.line_number_at_pos(buffer.point_max());
     let mut rendered: Vec<(String, usize, usize, usize, usize)> = Vec::with_capacity(text_rows);
+    let mut left_truncated: Vec<bool> = Vec::with_capacity(text_rows);
     // First row past the window, as (line, segment, origin): the
     // window's end.
     let mut past_window: Option<(usize, usize, usize)> = None;
@@ -5407,61 +5792,54 @@ fn plan_window_text(
             invisible_tail_start = Some(line_start);
             break;
         }
-        // `auto-hscroll-mode' `current-line': the row showing point
-        // hscrolls by the window's hscroll, every other row keeps the
-        // explicit minimum.
-        let row_hscroll = if !geometry.current_line_only || fill_line == point_line {
-            hscroll
-        } else {
-            geometry.min_hscroll
-        };
         // The display's first line shows from its start.
         let origin = anchor
             .filter(|anchor| first_fill && anchor.line == fill_line)
             .map_or(0, |anchor| anchor.origin);
-        let segments: Vec<String> = if truncate {
-            let from = (origin != 0).then(|| {
-                visual.start_index(
-                    origin.saturating_sub(buffer.display_line_start_of(fill_line)),
-                    false,
-                )
-            });
-            vec![if lnum_cols > 0 {
-                truncate_row_from(&visual, body_width, row_hscroll, from)
-            } else {
-                truncate_row_hscrolled(&visual, body_width, row_hscroll, from)
-            }]
-        } else {
-            rows.laid_at(fill_line, origin)
-                .rows
-                .iter()
-                .map(|segment| segment.text.clone())
-                .collect()
-        };
+        let laid = rows.laid_at(fill_line, origin);
         let from = if first_fill {
-            view.top_seg.min(segments.len() - 1)
+            view.top_seg.min(laid.rows.len() - 1)
         } else {
             0
         };
         first_fill = false;
         let next_line = fill_line + visual.lines_spanned;
-        for (seg_index, segment) in segments.iter().enumerate().skip(from) {
+        for seg_index in from..laid.rows.len() {
+            // `auto-hscroll-mode' `current-line': display_line hscrolls
+            // the glyph row showing the cursor by the window's hscroll,
+            // every other row by the explicit minimum.
+            let row_hscroll =
+                if !geometry.current_line_only || chosen.cursor_row == Some(rendered.len()) {
+                    hscroll
+                } else {
+                    geometry.min_hscroll
+                };
             let row = redisplay_window::Row {
                 line: fill_line,
                 seg: seg_index,
                 origin,
             };
+            // display_line's left truncation glyph: hscrolled, and the
+            // row ends past its start.
+            let left_trunc = truncate && row_hscroll > 0 && rows.ends_past_start(row);
+            let segment = if truncate {
+                truncated_row(
+                    &visual,
+                    &laid,
+                    seg_index,
+                    body_width,
+                    row_hscroll,
+                    lnum_cols == 0 && left_trunc,
+                )
+            } else {
+                laid.rows[seg_index].text.clone()
+            };
             let row_start = rows.row_start(row);
             last_rows = (last_rows.1, Some(row));
-            rendered.push((
-                segment.clone(),
-                fill_line,
-                seg_index,
-                row_start,
-                row_hscroll,
-            ));
+            rendered.push((segment, fill_line, seg_index, row_start, row_hscroll));
+            left_truncated.push(left_trunc);
             if rendered.len() == text_rows {
-                past_window = Some(if seg_index + 1 < segments.len() {
+                past_window = Some(if seg_index + 1 < laid.rows.len() {
                     (fill_line, seg_index + 1, origin)
                 } else {
                     (next_line, 0, 0)
@@ -5504,6 +5882,7 @@ fn plan_window_text(
     PlanOutcome::Planned {
         plan: WindowPlan {
             rendered,
+            left_truncated,
             top_pos,
             window_end,
             cursor: selected.then_some((point_row, cursor_col)),
@@ -7628,6 +8007,8 @@ fn redraw_with_echo_policy(
         start: usize,
         window_end: usize,
         rows: Vec<(usize, usize, usize, usize)>,
+        /// Whether each row shows the left `$' (WindowPlan's).
+        left_truncated: Vec<bool>,
         /// The display's first line, laid out from a start inside it.
         anchor: Option<Anchor>,
     }
@@ -7651,6 +8032,10 @@ fn redraw_with_echo_policy(
         window_end: usize,
         cursor_row: Option<usize>,
         rows: Vec<(usize, usize, usize, usize)>,
+        // Per row: display_line's truncated_on_left_p, whose `$'
+        // insert_left_trunc_glyphs writes over the row's first glyph,
+        // the line number's first cell when the gutter shows.
+        left_truncated: Vec<bool>,
         anchor: Option<Anchor>,
     }
     // A string whose `display' property targets a window margin (most
@@ -8139,6 +8524,7 @@ fn redraw_with_echo_policy(
                     .iter()
                     .map(|(_, line, seg, start, row_hscroll)| (*line, *seg, *start, *row_hscroll))
                     .collect(),
+                left_truncated: plan.left_truncated.clone(),
                 anchor: plan.anchor,
             });
         }
@@ -8163,6 +8549,7 @@ fn redraw_with_echo_policy(
                 .iter()
                 .map(|(_, line, seg, start, row_hscroll)| (*line, *seg, *start, *row_hscroll))
                 .collect(),
+            left_truncated: plan.left_truncated.clone(),
             anchor: plan.anchor,
         });
         if body_width < info.width {
@@ -8304,6 +8691,9 @@ fn redraw_with_echo_policy(
             &Value::symbol("glyphless-char"),
         );
         let mut display_face_jobs = Vec::new();
+        // A string's face at the newline ending its row, painted to the
+        // window's edge when it has `:extend'.
+        let mut extend_jobs: Vec<(usize, usize, usize, Value)> = Vec::new();
         let mut ellipsis_jobs = Vec::new();
         let buffer = if job.buffer_id == interpreter.current_buffer_id() {
             interpreter.buffer.borrow()
@@ -8360,18 +8750,60 @@ fn redraw_with_echo_policy(
                 continue;
             };
             let column_of = |index: usize| laid.columns[index.min(laid.columns.len() - 1)];
-            let line_width = laid.columns.last().copied().unwrap_or(0);
-            let wrapped = (!job.truncate).then_some(&laid.rows);
-            let segment = wrapped.and_then(|segments| segments.get(*seg));
+            // A truncated line's rows break only at a string's newline.
+            let segment = laid.rows.get(*seg);
             let segment_start = segment.map_or(0, |segment| segment.start_column);
             let segment_visible_end = segment.map_or(usize::MAX, |segment| {
-                segment
-                    .end_column
-                    .min(segment.start_column + cell_count(&segment.text))
+                if job.truncate {
+                    segment.end_column
+                } else {
+                    segment
+                        .end_column
+                        .min(segment.start_column + cell_count(&segment.text))
+                }
             });
-            let hscroll_layout =
-                HscrollLayout::new(visual, &laid.columns, *row_hscroll, job.lnum_cols == 0);
+            // The row's own width, from its start to the string's newline
+            // ending it or the line's end.
+            let row_width = if *seg + 1 < laid.rows.len() {
+                segment.map_or(0, |segment| segment.end_column.saturating_sub(1))
+            } else {
+                laid.columns.last().copied().unwrap_or(0)
+            }
+            .saturating_sub(segment_start);
+            let wrapped = (!job.truncate).then_some(&laid.rows);
+            let hscroll_layout = HscrollLayout::new(
+                visual,
+                &laid.columns,
+                segment_start,
+                *row_hscroll,
+                job.lnum_cols == 0 && job.left_truncated.get(index).copied().unwrap_or(false),
+            );
             let line_begin = buffer.display_line_start_of(*line);
+            // A row ended by a newline in an overlay or display string:
+            // the newline's display index and its cell.  Buffer text
+            // after the string shows on a later row, so the buffer's
+            // faces stop there; extend_face_to_end_of_line extends the
+            // string's own face from it (face_at_pos on the string).
+            let string_newline = laid
+                .rows
+                .get(*seg + 1)
+                .map(|next| next.start_index)
+                .filter(|&next| {
+                    next > 0
+                        && visual.text.chars().nth(next - 1) == Some('\n')
+                        && visual.object_at(next - 1).is_some()
+                })
+                .map(|next| {
+                    let column = column_of(next - 1);
+                    let cell = if *row_hscroll > 0 {
+                        hscroll_layout
+                            .screen_column(column)
+                            .unwrap_or(hscroll_layout.screen_start)
+                    } else {
+                        column.saturating_sub(segment_start)
+                    };
+                    (next - 1, cell)
+                });
             // The right-truncation `$' glyph keeps the default face
             // (produce_special_glyphs); spans stop one cell short of it.
             // A continued row's glyphs end at its own end column: a
@@ -8386,7 +8818,7 @@ fn redraw_with_echo_policy(
             } else {
                 job.body_width
             }) - usize::from(
-                job.truncate && truncated_on_right(line_width, *row_hscroll, job.body_width),
+                job.truncate && truncated_on_right(row_width, *row_hscroll, job.body_width),
             );
             for (span_begin, span_end, attrs) in &resolved {
                 let begin = (*span_begin).max(*row_start);
@@ -8412,7 +8844,8 @@ fn redraw_with_echo_policy(
                 // With a line-number column the left `$' replaces the
                 // column's first glyph, so text column HSCROLL itself is
                 // visible at text column zero; without one, the `$' owns
-                // column zero and text resumes from column one.
+                // column zero of a row truncated on the left and text
+                // resumes from column one.
                 let col_of = |pos: usize| {
                     let offset = display_index_of(pos);
                     let column = column_of(offset);
@@ -8430,6 +8863,9 @@ fn redraw_with_echo_policy(
                 // the window edge, GNU's whole-row highlight.
                 let line_chars = visual.map.len().saturating_sub(1);
                 let mut to_col = col_of(end);
+                if let Some((_, newline_cell)) = string_newline {
+                    to_col = to_col.min(newline_cell);
+                }
                 let covers_newline = end > begin && buffer.char_at(end - 1) == Some('\n');
                 // A word-wrapped row extends an `:extend' face that runs on
                 // into the next row (back_to_wrap's
@@ -8526,17 +8962,24 @@ fn redraw_with_echo_policy(
                         *face,
                     ));
                 }
+                if let Some((newline, newline_cell)) = string_newline
+                    && *span_begin <= newline
+                    && newline < *span_end
+                    && !crate::lisp::types::eq_symbol_named(*face, "default")
+                {
+                    extend_jobs.push((
+                        job.top + index,
+                        job.left + newline_cell.min(col_cap),
+                        job.left + job.body_width + job.right_margin,
+                        *face,
+                    ));
+                }
             }
             // The row's prefix cells (handle_line_prefix): a stretch
             // takes the face of the row's first position, a string shows
             // its own `face' properties over the default face.
-            let laid_row = if job.truncate {
-                laid.rows.first()
-            } else {
-                laid.rows.get(*seg)
-            };
             if *row_hscroll == 0
-                && let Some(row) = laid_row
+                && let Some(row) = segment
                 && row.prefix_cols > 0
             {
                 let prefix_end = row.prefix_cols.min(col_cap);
@@ -8594,6 +9037,12 @@ fn redraw_with_echo_policy(
                 row.replace_attrs(from, to, attrs);
             } else {
                 row.overlay(from, to, attrs);
+            }
+        }
+        for (row_index, from, to, face) in extend_jobs {
+            let attrs = realized_face(&mut state.face_cache, interpreter, env, &remapping, &face);
+            if attrs.extend && from < to {
+                frame[row_index].overlay(from, to, attrs);
             }
         }
         for (row_index, from, length) in ellipsis_jobs {
@@ -8792,7 +9241,7 @@ fn redraw_with_echo_policy(
             0
         };
         for row_index in 0..job.text_rows {
-            let (line, seg, row_start, row_hscroll) =
+            let (line, seg, row_start, _) =
                 job.rows
                     .get(row_index)
                     .copied()
@@ -8864,12 +9313,7 @@ fn redraw_with_echo_policy(
                 tick_attrs.unwrap_or(number_attrs)
             };
             frame[job.top + row_index].blit(job.left, &text, attrs);
-            if !beyond
-                && row_hscroll > 0
-                && !glyphless_visual_line_at(&buffer, &spec, line, Some(&glyphless))
-                    .text
-                    .is_empty()
-            {
+            if !beyond && job.left_truncated.get(row_index).copied().unwrap_or(false) {
                 frame[job.top + row_index].blit(job.left, "$", CellAttrs::default());
             }
         }
@@ -10123,24 +10567,49 @@ fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Resul
     Ok(())
 }
 
-/// An hscrolled row when a line-number column precedes the text: the
-/// left `$' replaces the column's own first glyph (produce_special_glyphs
-/// overwrites the row's first glyph, which is now a line-number cell),
-/// so the text area uses the gutter form of `HscrollLayout' and truncates
-/// on the right as usual.
-fn truncate_row_from(
+/// Glyph row INDEX of LAID, VISUAL's truncated layout (layout.rs), as a
+/// truncating window of WIDTH shows it hscrolled by HSCROLL, from the
+/// row's own start (HscrollLayout).  LEFT_MARKER is display_line's
+/// truncated_on_left_p for a window without a line-number gutter: the
+/// window is hscrolled and the row's iterator moved past its start
+/// (`IT_CHARPOS (*it) != CHARPOS (row->start.pos)'), so the left `$'
+/// takes the text area's first cell.  With a gutter the caller passes
+/// false: insert_left_trunc_glyphs overwrites the row's first glyph,
+/// then a line-number cell, so the text area keeps its width and
+/// truncates on the right as usual.
+fn truncated_row(
     visual: &VisualLine,
+    laid: &layout::LineLayout,
+    index: usize,
     width: usize,
     hscroll: usize,
-    from: Option<usize>,
+    left_marker: bool,
 ) -> String {
-    let (expanded, columns) = truncated_cells(visual, width, from);
+    let row = &laid.rows[index];
     if hscroll == 0 {
-        return clip_truncated(&expanded, width);
+        return clip_truncated(&row.text, width);
     }
-    let layout = HscrollLayout::new(visual, &columns, hscroll, false);
-    let visible = skip_cells(&expanded, layout.source_start);
-    clip_truncated(&visible, width)
+    if row.text.is_empty() {
+        return if left_marker {
+            "$".to_string()
+        } else {
+            String::new()
+        };
+    }
+    let layout = HscrollLayout::new(
+        visual,
+        &laid.columns,
+        row.start_column,
+        hscroll,
+        left_marker,
+    );
+    let visible = skip_cells(&row.text, layout.source_start - row.start_column);
+    if !left_marker {
+        return clip_truncated(&visible, width);
+    }
+    let mut shown = String::from("$");
+    shown.push_str(&clip_truncated(&visible, width.saturating_sub(1).max(1)));
+    shown
 }
 
 /// Display text TEXT without its first CELLS cells; a wide character
@@ -10161,23 +10630,6 @@ fn skip_cells(text: &str, cells: usize) -> String {
         rest.push(character);
     }
     rest
-}
-
-/// VISUAL laid out unwrapped (layout.rs): its cells -- `line-prefix'
-/// first, TABs expanded -- and the column of each display index; from
-/// display index FROM when a window's display starts there.
-fn truncated_cells(visual: &VisualLine, width: usize, from: Option<usize>) -> (String, Vec<usize>) {
-    let laid = match from {
-        Some(from) => layout::lay_out_visual_line_from(visual, width, true, from, false),
-        None => layout::lay_out_visual_line(visual, width, true),
-    };
-    let text = laid
-        .rows
-        .iter()
-        .map(|row| row.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (text, laid.columns)
 }
 
 /// Laid-out cells as a truncating window of WIDTH shows them: once they
@@ -10223,23 +10675,34 @@ struct HscrollLayout {
 }
 
 impl HscrollLayout {
-    /// COLUMNS are the truncated layout's (layout.rs) columns of VISUAL.
-    fn new(visual: &VisualLine, columns: &[usize], hscroll: usize, left_marker: bool) -> Self {
+    /// COLUMNS are the truncated layout's (layout.rs) columns of VISUAL;
+    /// ROW_START the column where the glyph row begins.  Each row of a
+    /// truncated line -- a string's newline starts another -- begins at
+    /// x 0 and display_line moves it to first_visible_x on its own, so
+    /// HSCROLL counts from the row's start.
+    fn new(
+        visual: &VisualLine,
+        columns: &[usize],
+        row_start: usize,
+        hscroll: usize,
+        left_marker: bool,
+    ) -> Self {
         if hscroll == 0 {
             return Self {
-                source_start: 0,
+                source_start: row_start,
                 screen_start: 0,
             };
         }
         let screen_start = usize::from(left_marker);
+        let target = row_start + hscroll;
         let column_of = |index: usize| columns[index.min(columns.len() - 1)];
         let glyphless_start = visual.glyphless_spans.iter().find_map(|(from, to)| {
             let from = column_of(*from);
             let to = column_of(*to);
-            (from <= hscroll && hscroll < to).then_some(from)
+            (from <= target && target < to).then_some(from)
         });
         let source_start = glyphless_start
-            .unwrap_or(hscroll)
+            .unwrap_or(target)
             .saturating_add(screen_start);
         Self {
             source_start,
@@ -10251,27 +10714,6 @@ impl HscrollLayout {
         (source_column >= self.source_start)
             .then(|| self.screen_start + source_column - self.source_start)
     }
-}
-
-fn truncate_row_hscrolled(
-    visual: &VisualLine,
-    width: usize,
-    hscroll: usize,
-    from: Option<usize>,
-) -> String {
-    let (expanded, columns) = truncated_cells(visual, width, from);
-    if hscroll == 0 {
-        return clip_truncated(&expanded, width);
-    }
-    if expanded.is_empty() {
-        return expanded;
-    }
-    let layout = HscrollLayout::new(visual, &columns, hscroll, true);
-    let remaining = skip_cells(&expanded, layout.source_start);
-    let available = width.saturating_sub(1).max(1);
-    let mut row = String::from("$");
-    row.push_str(&clip_truncated(&remaining, available));
-    row
 }
 
 /// One glyph row of a display line (layout.rs): its cells as drawn --
@@ -11189,6 +11631,60 @@ mod tests {
         );
     }
 
+    // handle_face_prop: an overlay string's base face is the `face' text
+    // property at its position (face_for_overlay_string, read as
+    // Fget_text_property reads it, aliases included), the overlays'
+    // faces not reaching it; an overlay `display' string's is the face of
+    // the text it covers (underlying_face_id), so no `default' replaces
+    // it.
+    #[test]
+    fn overlay_strings_take_the_text_property_face_at_their_position() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = crate::lisp::types::Env::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"abcdefghij\n\")
+               (set (make-local-variable 'char-property-alias-alist)
+                    '((face font-lock-face)))
+               (put-text-property 2 5 'face 'bold)
+               (put-text-property 6 8 'font-lock-face 'italic)
+               (overlay-put (make-overlay 1 11) 'face 'underline)
+               (overlay-put (make-overlay 3 3) 'before-string \"B\")
+               (overlay-put (make-overlay 6 6) 'before-string
+                            (propertize \"F\" 'face 'bold))
+               (overlay-put (make-overlay 9 10) 'display \"D\"))",
+        )
+        .read()
+        .expect("read overlay base face probe")
+        .expect("overlay base face form exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate overlay base face probe");
+        let context = CharacterDisplayContext::new(
+            &interp,
+            interp.current_buffer_id(),
+            interp.selected_window_id(),
+        );
+        let visual = glyphless_visual_line_at(
+            &interp.buffer.borrow(),
+            &InvisibilitySpec::default(),
+            1,
+            Some(&context),
+        );
+        assert_eq!(visual.text, "abBcdeFfghDj");
+        let symbol = |name: &str| Value::Symbol(name.into());
+        assert_eq!(
+            visual.display_face_spans,
+            vec![
+                (2, 3, symbol("default")),
+                (2, 3, symbol("bold")),
+                (6, 7, symbol("default")),
+                (6, 7, symbol("italic")),
+                (6, 7, symbol("bold")),
+            ]
+        );
+    }
+
     #[test]
     fn point_max_overlay_before_string_contributes_hard_display_rows() {
         let mut interp = Interpreter::new();
@@ -11812,26 +12308,38 @@ mod tests {
         );
     }
 
+    /// The first glyph row of VISUAL in a truncating window of WIDTH
+    /// hscrolled by HSCROLL.
+    fn truncated_test_row(
+        visual: &VisualLine,
+        width: usize,
+        hscroll: usize,
+        left_marker: bool,
+    ) -> String {
+        let laid = layout::lay_out_visual_line(visual, width, true);
+        truncated_row(visual, &laid, 0, width, hscroll, left_marker)
+    }
+
     #[test]
     fn hscroll_marker_precedes_the_requested_source_column() {
         let ordinary = test_visual_line("abcdef");
         let ordinary_columns = layout::lay_out_visual_line(&ordinary, 80, true).columns;
-        assert_eq!(truncate_row_hscrolled(&ordinary, 80, 3, None), "$ef");
-        assert_eq!(truncate_row_from(&ordinary, 80, 3, None), "def");
+        assert_eq!(truncated_test_row(&ordinary, 80, 3, true), "$ef");
+        assert_eq!(truncated_test_row(&ordinary, 80, 3, false), "def");
         assert_eq!(
-            HscrollLayout::new(&ordinary, &ordinary_columns, 0, true).source_start,
+            HscrollLayout::new(&ordinary, &ordinary_columns, 0, 0, true).source_start,
             0
         );
         assert_eq!(
-            HscrollLayout::new(&ordinary, &ordinary_columns, 3, true).source_start,
+            HscrollLayout::new(&ordinary, &ordinary_columns, 0, 3, true).source_start,
             4
         );
         assert_eq!(
-            HscrollLayout::new(&ordinary, &ordinary_columns, 3, true).screen_column(4),
+            HscrollLayout::new(&ordinary, &ordinary_columns, 0, 3, true).screen_column(4),
             Some(1)
         );
         assert_eq!(
-            HscrollLayout::new(&ordinary, &ordinary_columns, 3, false).screen_column(3),
+            HscrollLayout::new(&ordinary, &ordinary_columns, 0, 3, false).screen_column(3),
             Some(0)
         );
 
@@ -11839,23 +12347,23 @@ mod tests {
         glyphless.glyphless_spans.push((2, 8));
         for hscroll in 2..8 {
             assert_eq!(
-                truncate_row_hscrolled(&glyphless, 80, hscroll, None),
+                truncated_test_row(&glyphless, 80, hscroll, true),
                 "$u00F6CDEFG"
             );
             assert_eq!(
-                truncate_row_from(&glyphless, 80, hscroll, None),
+                truncated_test_row(&glyphless, 80, hscroll, false),
                 "\\u00F6CDEFG"
             );
         }
+        assert_eq!(truncated_test_row(&glyphless, 80, 1, true), "$\\u00F6CDEFG");
+        assert_eq!(truncated_test_row(&glyphless, 80, 8, true), "$DEFG");
         assert_eq!(
-            truncate_row_hscrolled(&glyphless, 80, 1, None),
-            "$\\u00F6CDEFG"
+            truncated_test_row(&glyphless, 80, 1, false),
+            "B\\u00F6CDEFG"
         );
-        assert_eq!(truncate_row_hscrolled(&glyphless, 80, 8, None), "$DEFG");
-        assert_eq!(truncate_row_from(&glyphless, 80, 1, None), "B\\u00F6CDEFG");
-        assert_eq!(truncate_row_from(&glyphless, 80, 8, None), "CDEFG");
+        assert_eq!(truncated_test_row(&glyphless, 80, 8, false), "CDEFG");
         let glyphless_columns = layout::lay_out_visual_line(&glyphless, 80, true).columns;
-        let inside = HscrollLayout::new(&glyphless, &glyphless_columns, 3, true);
+        let inside = HscrollLayout::new(&glyphless, &glyphless_columns, 0, 3, true);
         assert_eq!(inside.source_start, 3);
         assert_eq!(inside.screen_column(2), None);
         assert_eq!(inside.screen_column(3), Some(1));
@@ -12149,7 +12657,7 @@ mod tests {
     #[test]
     fn truncated_rows_carry_the_dollar_marker_in_the_last_column() {
         let truncate_row =
-            |line: &str, width: usize| truncate_row_from(&test_visual_line(line), width, 0, None);
+            |line: &str, width: usize| truncated_test_row(&test_visual_line(line), width, 0, false);
         assert_eq!(truncate_row("short", 39), "short");
         assert_eq!(truncate_row(&"W".repeat(38), 39), "W".repeat(38));
         // A line exactly the body width truncates, per the GNU tty.
@@ -12600,6 +13108,87 @@ mod tests {
         assert_eq!(view.top_line, 35);
         assert_eq!(plan.rendered[0].0, "line 35");
         assert_eq!(plan.cursor, Some((5, 0)));
+    }
+
+    /// A truncating window of 20 rows over 100 lines whose line 5 holds
+    /// a before-string "QQQQQ1\nQQQQQ2\n" after its third character,
+    /// point three characters after it, laid out under HSCROLL (only on
+    /// the cursor's row when CURRENT_LINE_ONLY).
+    fn truncated_rows_at_a_string_with_newlines(
+        hscroll: usize,
+        current_line_only: bool,
+    ) -> WindowPlan {
+        let mut interpreter = Interpreter::new();
+        let mut env: Env = crate::lisp::types::Env::new();
+        let text: String = (0..100).map(|i| format!("line {i:03}\\n")).collect();
+        let form = crate::lisp::reader::Reader::new(&format!(
+            "(progn
+               (insert \"{text}\")
+               (overlay-put (make-overlay 49 49) 'before-string \"QQQQQ1\\nQQQQQ2\\n\"))"
+        ))
+        .read()
+        .expect("read truncated string probe")
+        .expect("truncated string probe exists");
+        interpreter
+            .eval(&form, &mut env)
+            .expect("evaluate truncated string probe");
+        let spec = resolve_buffer_invisibility(
+            &interpreter,
+            &interpreter.buffer.borrow(),
+            interpreter.current_buffer_id(),
+        );
+        let mut view = WindowView::default();
+        plan_window_text(
+            &interpreter.buffer.borrow(),
+            &spec,
+            None,
+            &mut view,
+            1,
+            52,
+            20,
+            80,
+            true,
+            &RenderGeometry {
+                truncate: true,
+                hscroll,
+                current_line_only,
+                min_hscroll: 0,
+                lnum: None,
+                store: None,
+            },
+            true,
+        )
+    }
+
+    // Each glyph row of a truncated line begins at x 0, a string's
+    // newline starting the next (display_line); first_visible_x hides
+    // the start of every row on its own, and under `current-line' only
+    // the cursor's row hscrolls (hscroll_this_line).
+    #[test]
+    fn truncated_rows_split_at_a_strings_newline_hscroll_from_their_own_start() {
+        let shown = |plan: &WindowPlan| {
+            plan.rendered[4..9]
+                .iter()
+                .map(|row| row.0.clone())
+                .collect::<Vec<_>>()
+        };
+        let plain = truncated_rows_at_a_string_with_newlines(0, false);
+        assert_eq!(
+            shown(&plain),
+            ["line 004", "linQQQQQ1", "QQQQQ2", "e 005", "line 006"]
+        );
+        assert_eq!(plain.cursor, Some((7, 3)));
+        let all = truncated_rows_at_a_string_with_newlines(2, false);
+        // The row holding the string's second line ends where it began,
+        // the string's buffer position: display_line inserts no `$'.
+        assert_eq!(shown(&all), ["$e 004", "$QQQQQ1", "QQQ2", "$05", "$e 006"]);
+        assert_eq!(all.cursor, Some((7, 1)));
+        let current = truncated_rows_at_a_string_with_newlines(2, true);
+        assert_eq!(
+            shown(&current),
+            ["line 004", "linQQQQQ1", "QQQQQ2", "$05", "line 006"]
+        );
+        assert_eq!(current.cursor, Some((7, 1)));
     }
 
     #[test]
@@ -13103,7 +13692,7 @@ mod tests {
             ]
         );
         // A truncated row carries its line prefix.
-        let (cells, _) = truncated_cells(&tabbed, 80, None);
+        let cells = &layout::lay_out_visual_line(&tabbed, 80, true).rows[0].text;
         assert!(cells.starts_with("ab1     Lorem"));
     }
 

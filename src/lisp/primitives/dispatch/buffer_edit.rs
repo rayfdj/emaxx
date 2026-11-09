@@ -1895,10 +1895,7 @@ pub(crate) fn window_text_geometry(
     let state = crate::lisp::primitives::window_hscroll_state(interp, window_id);
     let hscroll = state.hscroll.max(0) as usize;
     let min_hscroll = state.min_hscroll.max(0) as usize;
-    let current_line = interp
-        .buffer_local_value(interp.current_buffer_id(), "auto-hscroll-mode")
-        .or_else(|| interp.default_value("auto-hscroll-mode"))
-        .is_some_and(|mode| crate::lisp::types::eq_symbol_named(mode, "current-line"));
+    let current_line = auto_hscrolls_current_line(interp);
     crate::tty::WindowTextGeometry {
         lnum_cols,
         text_width: crate::lisp::primitives::window_text_area_columns(interp, window_id)
@@ -1906,15 +1903,34 @@ pub(crate) fn window_text_geometry(
             .max(1),
         truncate,
         hscroll,
-        // init_iterator: hscrolling_current_line_p hscrolls only the row
-        // showing point, the others by the min_hscroll.
-        first_visible: if truncate && current_line && !state.suspended {
-            min_hscroll
-        } else {
-            hscroll
-        },
+        first_visible: iterator_first_visible(interp, window_id, truncate),
         // buffer_posn_from_coords tests `auto-hscroll-mode' alone.
         point_row_hscroll: (truncate && current_line).then(|| hscroll.saturating_sub(min_hscroll)),
+    }
+}
+
+/// Whether the current buffer's `auto-hscroll-mode' is `current-line'.
+fn auto_hscrolls_current_line(interp: &Interpreter) -> bool {
+    interp
+        .buffer_local_value(interp.current_buffer_id(), "auto-hscroll-mode")
+        .or_else(|| interp.default_value("auto-hscroll-mode"))
+        .is_some_and(|mode| crate::lisp::types::eq_symbol_named(mode, "current-line"))
+}
+
+/// init_iterator's first_visible_x for WINDOW, which shows the current
+/// buffer, in columns: the window's hscroll, but where
+/// hscrolling_current_line_p hscrolls only the row showing point, the
+/// min_hscroll the other rows take.
+pub(crate) fn iterator_first_visible(
+    interp: &Interpreter,
+    window_id: u64,
+    truncate: bool,
+) -> usize {
+    let state = crate::lisp::primitives::window_hscroll_state(interp, window_id);
+    if truncate && auto_hscrolls_current_line(interp) && !state.suspended {
+        state.min_hscroll.max(0) as usize
+    } else {
+        state.hscroll.max(0) as usize
     }
 }
 

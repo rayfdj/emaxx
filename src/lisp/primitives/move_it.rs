@@ -445,6 +445,11 @@ struct RowsDown {
     moved: i64,
     /// The line begins inside a string, past its first character.
     in_string: bool,
+    /// The move from there to the text after the string stops at the
+    /// truncated row's edge first (ScreenLineLayout::truncated_before):
+    /// the rows the string's newlines end on the way, and the landing
+    /// (None: the next line's start).
+    truncated_before_text: Option<(usize, Option<(usize, usize)>)>,
     /// The landing line among the rows of its display line, and those
     /// rows' starts.
     index: usize,
@@ -507,12 +512,21 @@ fn forward_rows(
         }
         moved += 1;
     }
+    let in_string = layout
+        .as_ref()
+        .is_some_and(|layout| layout.row_begins_inside_string(index));
+    // move_it_to the string's position, one past it for a display string.
+    let truncated_before_text = layout.as_ref().filter(|_| in_string).and_then(|layout| {
+        let display = layout
+            .row_first_string(index)
+            .is_some_and(|(display, _)| display);
+        layout.truncated_before(index, starts[index] + usize::from(display))
+    });
     RowsDown {
         start: starts[index],
         moved,
-        in_string: layout
-            .as_ref()
-            .is_some_and(|layout| layout.row_begins_inside_string(index)),
+        in_string,
+        truncated_before_text,
         index,
         starts,
     }
@@ -715,6 +729,18 @@ pub(crate) fn move_it_by_lines_from(
     // conceal the text -- goes on to the buffer text after it, the
     // rows it passes counted in its vpos.
     if down.in_string {
+        // The truncated row reaches the window's edge before that text:
+        // move_it_to reseats at the next line's start, past its target.
+        if let Some((passed, landing)) = down.truncated_before_text {
+            let (_, eol) = super::dispatch::visual_line_bounds(interp, pos);
+            let zv = interp.buffer.borrow().point_max();
+            let (pos, row) = landing.unwrap_or(((eol + 1).min(zv), 0));
+            return Landing {
+                pos,
+                moved: moved + passed as i64,
+                row: Some(row),
+            };
+        }
         let reached = if reseat_current(interp, pos).string.is_some() {
             pos_reached(interp, env, window_id, pos, pos + 1, fetches)
         } else {

@@ -51,7 +51,7 @@ mod completion;
 mod dispatch;
 pub(crate) use dispatch::current_column;
 pub(crate) use dispatch::restore_unicode_menu_case_table;
-pub(crate) use dispatch::{row_index_of, window_text_geometry};
+pub(crate) use dispatch::{iterator_first_visible, row_index_of, window_text_geometry};
 mod file_io;
 mod filelock;
 mod generated_builtin_arities;
