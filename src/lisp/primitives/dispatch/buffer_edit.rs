@@ -1944,6 +1944,40 @@ pub(crate) fn window_text_pixel_size(
         Kind::Integer(limit @ 0..=0x7fff_ffff) => limit as usize,
         _ => 0,
     };
+    // The iterator runs `fontification-functions' for the text it
+    // fetches (handle_fontified_prop) before what it measures is read:
+    // start_display at FROM, move_it_by_lines (0) back to FROM's screen
+    // line and forward to FROM again, the vertical offset's lines, then
+    // move_it_to TO, no further down than the row holding Y-LIMIT.
+    let mut fetches = crate::tty::IteratorFetches::new(interp, env, window_id);
+    if let Some(geometry) = fetches.geometry() {
+        crate::tty::fetch_start_display(interp, window_id, &mut fetches, start);
+        crate::tty::fetch_screen_line_start(interp, window_id, &mut fetches, start);
+        let from = if vertical_offset != 0 {
+            super::super::move_it::move_it_by_lines(
+                interp,
+                env,
+                window_id,
+                start,
+                vertical_offset,
+                &mut fetches,
+            )
+            .0
+            .clamp(begv, zv)
+        } else {
+            start
+        };
+        // The iterator move_it_by_lines left, which stops again where
+        // it stands.
+        fetches.begin_walk();
+        crate::tty::IteratorWalk::at(interp, window_id, geometry, from).walk_to_within(
+            &mut fetches,
+            from,
+            end,
+            max_y,
+        );
+        fetches.fontify(interp, env, window_id);
+    }
     let lnum = motion_line_number_columns(interp, env);
     let text_area = crate::lisp::primitives::window_text_area_columns(interp, window_id);
     // it.last_visible_x: the text area less the continuation column, which
@@ -1980,8 +2014,14 @@ pub(crate) fn window_text_pixel_size(
     };
     if vertical_offset != 0 {
         // move_it_by_lines (&it, 0), then up or down that many lines.
-        let (landed, _) =
-            super::super::move_it::move_it_by_lines(interp, env, window_id, start, vertical_offset);
+        let (landed, _) = super::super::move_it::move_it_by_lines(
+            interp,
+            env,
+            window_id,
+            start,
+            vertical_offset,
+            &mut crate::tty::IteratorFetches::off(),
+        );
         start = landed.clamp(begv, zv);
     }
     // One display context for every line the iterator walks.
@@ -2772,18 +2812,43 @@ pub(crate) fn visual_vertical_motion(
     if interactive_motion(interp, env) {
         // The display iterator's walk, then move_it_in_display_line to
         // the goal X on the screen line it reached (line-move-visual's
-        // temporary-goal-column contract).
-        let (mut target, moved) =
-            crate::lisp::primitives::move_it::vertical_motion(interp, env, window_id, n);
-        if let Some(goal) = goal_col.filter(|&goal| goal > 0) {
-            let (bol, eol) = visual_line_bounds(interp, target);
-            let starts = screen_row_starts(interp, env, window_id, bol, eol);
-            let index = row_index_of(&starts, target);
-            target = interactive_screen_line(interp, env, window_id, bol)
-                .position_at_column(index, goal);
+        // temporary-goal-column contract), made again while the
+        // `fontification-functions' run for what they fetched may have
+        // changed it.
+        let mut passes = 0;
+        let mut fetches = crate::tty::IteratorFetches::off();
+        loop {
+            fetches.begin_pass(interp, env, window_id);
+            let (mut target, moved) = crate::lisp::primitives::move_it::vertical_motion(
+                interp,
+                env,
+                window_id,
+                n,
+                &mut fetches,
+            );
+            if let Some(goal) = goal_col.filter(|&goal| goal > 0) {
+                let (bol, eol) = visual_line_bounds(interp, target);
+                let starts = screen_row_starts(interp, env, window_id, bol, eol);
+                let index = row_index_of(&starts, target);
+                let row_start = target;
+                target = interactive_screen_line(interp, env, window_id, bol)
+                    .position_at_column(index, goal);
+                if let Some(geometry) = fetches.geometry() {
+                    crate::tty::IteratorWalk::at(interp, window_id, geometry, row_start).walk_to(
+                        &mut fetches,
+                        row_start,
+                        target,
+                    );
+                }
+            }
+            passes += 1;
+            if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES
+                || !fetches.fontify(interp, env, window_id)
+            {
+                interp.buffer.borrow_mut().goto_char(target);
+                return Ok(moved);
+            }
         }
-        interp.buffer.borrow_mut().goto_char(target);
-        return Ok(moved);
     }
     // Noninteractively, indent.c vmotion from point, with the current
     // buffer shown in WINDOW meanwhile (Fvertical_motion's

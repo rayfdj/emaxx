@@ -150,6 +150,12 @@ pub(super) fn mark_window_display_accurate(interp: &mut Interpreter, window_id: 
         Some(overlay_modiff),
     );
     set_window_flag(interp, window_id, WINDOW_LAST_HAD_STAR_SLOT, modified);
+    set_window_flag(
+        interp,
+        window_id,
+        crate::lisp::primitives::WINDOW_END_VALID_SLOT,
+        true,
+    );
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
         buffer.set_clip_changed(false);
         buffer.set_prevent_redisplay_optimizations_p(false);

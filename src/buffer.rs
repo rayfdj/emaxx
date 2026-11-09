@@ -366,6 +366,12 @@ struct BufferText {
     /// (modify_overlay).
     overlay_modiff: ModCount,
 
+    /// Bumped by every change of a text property that can change how the
+    /// text is laid out (all but layout_neutral_property's): redisplay's
+    /// walks are made again after `fontification-functions' only when
+    /// the functions changed the text, its overlays or this.
+    layout_properties_modiff: ModCount,
+
     /// buffer.h's beg_unchanged, end_unchanged, unchanged_modified and
     /// overlay_unchanged_modified: the characters at the start and the
     /// end left unchanged since redisplay last took the counts
@@ -569,6 +575,7 @@ impl BufferText {
             compact: 1,
             redisplay: false,
             overlay_modiff: 1,
+            layout_properties_modiff: 1,
             beg_unchanged: 0,
             end_unchanged: 0,
             unchanged_modified: 1,
@@ -790,6 +797,11 @@ impl BufferText {
 
     /// The newlines in byte RANGE.
     fn newlines_in(&self, range: std::ops::Range<usize>) -> usize {
+        if let Some(offsets) = self.text.newline_offsets() {
+            let before = |byte: usize| offsets.partition_point(|&at| (at as usize) < byte);
+            return before(range.end) - before(range.start);
+        }
+        self.text.note_newline_scan(range.len());
         let (first, second) = self.text.range_halves(range);
         memchr::memchr_iter(b'\n', first.as_bytes()).count()
             + memchr::memchr_iter(b'\n', second.as_bytes()).count()
@@ -806,16 +818,23 @@ impl BufferText {
         if index == 0 {
             return 0;
         }
+        if let Some(offsets) = self.text.newline_offsets() {
+            return offsets
+                .get(index - 1)
+                .map_or(self.text.chars(), |&at| self.byte_to_char(at as usize + 1));
+        }
         let (before, after) = self.text.halves();
         let mut left = index;
         for (half, start) in [(before, 0), (after, before.len())] {
             for at in memchr::memchr_iter(b'\n', half.as_bytes()) {
                 left -= 1;
                 if left == 0 {
+                    self.text.note_newline_scan(start + at + 1);
                     return self.byte_to_char(start + at + 1);
                 }
             }
         }
+        self.text.note_newline_scan(self.text.len());
         self.text.chars()
     }
 
@@ -1236,6 +1255,43 @@ impl std::fmt::Display for BufferError {
 }
 
 impl std::error::Error for BufferError {}
+
+/// A text property no part of a window's layout reads: the faces and
+/// the records fontification keeps (`fontified', `face',
+/// `font-lock-face', `font-lock-multiline', `jit-lock-defer-multiline'),
+/// syntax, keymaps, mouse and pointer feedback, stickiness, motion and
+/// modification hooks.  Any other property (`invisible', `display',
+/// `composition', the prefixes, `category' and those not known) may
+/// change how text is laid out.
+pub(crate) fn layout_neutral_property(name: Value) -> bool {
+    const NEUTRAL: &[&str] = &[
+        "fontified",
+        "face",
+        "font-lock-face",
+        "font-lock-multiline",
+        "jit-lock-defer-multiline",
+        "syntax-table",
+        "syntax-multiline",
+        "mouse-face",
+        "help-echo",
+        "pointer",
+        "keymap",
+        "local-map",
+        "rear-nonsticky",
+        "front-sticky",
+        "read-only",
+        "field",
+        "point-entered",
+        "point-left",
+        "cursor-sensor-functions",
+        "modification-hooks",
+        "insert-in-front-hooks",
+        "insert-behind-hooks",
+    ];
+    NEUTRAL
+        .iter()
+        .any(|neutral| crate::lisp::types::eq_symbol_named(name, neutral))
+}
 
 impl Buffer {
     /// Create an empty buffer with the given name.
@@ -2519,7 +2575,8 @@ impl Buffer {
     }
 
     /// PROP in the plist of the character at POS (none outside the
-    /// accessible text), by the interval's own plist alone.
+    /// accessible text or at its very end), by the interval's own plist
+    /// alone.
     pub fn text_property_at(&self, pos: usize, prop: impl PropertyKey) -> Option<Value> {
         let mut tail = self.text_plist_at(pos);
         while let Some(cell) = tail.cons_ref() {
@@ -2535,10 +2592,16 @@ impl Buffer {
     }
 
     /// The plist of the interval holding the character at POS, the
-    /// interval's own list; nil outside the accessible text or without
-    /// intervals.
+    /// interval's own list (textprop.c Ftext_properties_at): nil outside
+    /// the accessible text, when it is empty (validate_interval_range's
+    /// NULL), at Z, where no character follows, or without intervals.  At
+    /// ZV short of Z it is the character's there.
     pub(crate) fn text_plist_at(&self, pos: usize) -> Value {
-        if pos < self.point_min() || pos >= self.point_max() {
+        if pos < self.point_min()
+            || pos > self.point_max()
+            || self.point_min() == self.point_max()
+            || pos > self.size_total()
+        {
             return Value::Nil;
         }
         match &self.text.borrow().intervals {
@@ -2754,6 +2817,7 @@ impl Buffer {
             return Ok(false);
         };
         self.begin_text_property_change(start, end);
+        self.note_layout_properties(properties, false);
         let disabled = self.undo_recording_disabled();
         let mut stored = self.text.borrow_mut();
         let intervals = stored.intervals.as_mut().expect("intervals for the change");
@@ -2801,6 +2865,16 @@ impl Buffer {
         if coherent {
             self.begin_text_property_change(start, end);
         }
+        // What goes and what comes.
+        let mut old = Vec::new();
+        let Ok(()) = self.try_for_each_interval(start, end, |_, _, plist| {
+            old.push(plist);
+            Ok::<(), std::convert::Infallible>(())
+        });
+        for plist in old {
+            self.note_layout_properties(plist, false);
+        }
+        self.note_layout_properties(properties, false);
         self.set_text_properties_1(start, end, properties)?;
         Ok(true)
     }
@@ -2856,6 +2930,11 @@ impl Buffer {
         }
         let (start, end) = (start.max(self.point_min()), end.min(self.point_max()));
         self.begin_text_property_change(start, end);
+        if list.is_nil() {
+            self.note_layout_properties(plist, false);
+        } else {
+            self.note_layout_properties(list, true);
+        }
         let disabled = self.undo_recording_disabled();
         let mut stored = self.text.borrow_mut();
         let intervals = stored
@@ -2991,6 +3070,19 @@ impl Buffer {
         if pos < self.begv || pos >= self.zv {
             return None;
         }
+        self.text_char_at(pos)
+    }
+
+    /// buffer.h FETCH_CHAR: the character at POS anywhere in the text,
+    /// the restriction aside (BEG <= POS < Z).
+    pub(crate) fn fetch_char(&self, pos: usize) -> Option<char> {
+        if pos < 1 || pos > self.size_total() {
+            return None;
+        }
+        self.text_char_at(pos)
+    }
+
+    fn text_char_at(&self, pos: usize) -> Option<char> {
         let index = pos - 1;
         let text = self.text.borrow();
         // An ASCII text's character is its byte, read in place as
@@ -4408,6 +4500,27 @@ impl Buffer {
         self.text.borrow().overlay_modiff
     }
 
+    /// The count of layout-affecting text property changes.
+    pub(crate) fn layout_properties_tick(&self) -> ModCount {
+        self.text.borrow().layout_properties_modiff
+    }
+
+    /// Count a property change when PLIST (a property list, or with NAMES
+    /// a list of names) holds a property that can change the layout.
+    fn note_layout_properties(&mut self, plist: Value, names: bool) {
+        let mut tail = plist;
+        while let Some(cell) = tail.cons_ref() {
+            if !layout_neutral_property(cell.car.get()) {
+                modiff_incr(&mut self.text.borrow_mut().layout_properties_modiff, 1);
+                return;
+            }
+            tail = cell.cdr.get();
+            if !names {
+                tail = tail.cons_ref().map_or(Value::Nil, |value| value.cdr.get());
+            }
+        }
+    }
+
     /// modify_overlay's `modiff_incr (&BUF_OVERLAY_MODIFF (buf), 1)'.
     pub(crate) fn bump_overlay_modified_tick(&mut self) {
         self.text.borrow_mut().overlay_modiff += 1;
@@ -5160,6 +5273,46 @@ mod tests {
             expected.replace_range(start..start + line.len(), "");
             check(&buf, &expected);
         }
+    }
+
+    #[test]
+    fn a_text_answers_its_lines_alike_scanned_and_from_its_recorded_newlines() {
+        // The first questions scan; once they have read the text's size
+        // the newlines are recorded and answer the rest, until a change
+        // drops the record.  Every answer is the scan's.
+        fn answers(buf: &Buffer) -> Vec<usize> {
+            let mut answers = vec![buf.text.borrow().len_lines()];
+            let end = buf.size_total() + 1;
+            for pos in (1..=end).step_by(7) {
+                answers.push(buf.line_number_at_pos(pos));
+                answers.push(buf.count_newlines(1, pos));
+            }
+            for line in 0..=answers[0] + 1 {
+                answers.push(buf.line_start_of(line));
+            }
+            answers.push(buf.after_newlines_from_end(2).unwrap_or(0));
+            answers
+        }
+        let text: String = (0..60)
+            .map(|line| format!("{}λ{line}\n", "x".repeat(line % 9)))
+            .collect();
+        let mut buf = Buffer::from_text("lines", &text);
+        let scanned = answers(&buf);
+        assert!(buf.text.borrow().text.newline_offsets().is_some());
+        assert_eq!(answers(&buf), scanned);
+        buf.goto_char(40);
+        buf.insert("ab\ncd\n");
+        assert!(buf.text.borrow().text.newline_offsets().is_none());
+        let reference = Buffer::from_text("reference", &buf.full_buffer_string());
+        let edited = answers(&reference);
+        assert_eq!(answers(&buf), edited);
+        assert_eq!(answers(&buf), edited);
+        assert!(buf.text.borrow().text.newline_offsets().is_some());
+        assert_eq!(buf.delete_region(40, 46).as_deref(), Ok("ab\ncd\n"));
+        assert_eq!(answers(&buf), {
+            let reference = Buffer::from_text("reference", &buf.full_buffer_string());
+            answers(&reference)
+        });
     }
 
     #[test]

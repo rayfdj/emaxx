@@ -45,6 +45,10 @@ pub(super) struct LineLayout {
     /// The column of each display index's first glyph (one past the end
     /// included), in the space the rows' columns are measured in.
     pub(super) columns: Vec<usize>,
+    /// The display indexes `word-wrap' may break a row before (a
+    /// character that can wrap before it, after one that can wrap after
+    /// it, on the same row), in order.
+    pub(super) wrap_indexes: Vec<usize>,
 }
 
 /// One display element: display indexes [START, END) produce their
@@ -296,6 +300,7 @@ fn lay_out_rows(
 
     let mut columns = vec![0usize; count + 1];
     let mut assigned = vec![false; count + 1];
+    let mut wrap_indexes: Vec<usize> = Vec::new();
     let mut rows = Vec::new();
     let mut states = Vec::new();
     let mut element = start.element;
@@ -342,6 +347,9 @@ fn lay_out_rows(
         let mut wrap_point: Option<(usize, usize, usize)> = None;
         let mut continued_to: Option<usize> = None;
         let mut continued_glyph = false;
+        // The element whose glyph did not fit when the row went back to
+        // its wrap point.
+        let mut overflow_index: Option<usize> = None;
         let mut hard_newline = false;
         while let Some(current) = elements.get(element).copied() {
             if chars[current.start] == '\n' {
@@ -357,6 +365,9 @@ fn lay_out_rows(
                 let next_may_wrap = can_wrap_after(&current);
                 if may_wrap && can_wrap_before(&current) {
                     wrap_point = Some((element, x, text.len()));
+                    if wrap_indexes.last().is_none_or(|&last| last < current.start) {
+                        wrap_indexes.push(current.start);
+                    }
                 }
                 may_wrap = next_may_wrap;
             }
@@ -438,6 +449,7 @@ fn lay_out_rows(
                         // back_to_wrap: the row ends before the wrap point,
                         // with no continuation glyph.
                         assigned[elements[wrap_element].start..count].fill(false);
+                        overflow_index = Some(current.start);
                         element = wrap_element;
                         text.truncate(wrap_text);
                         continued_to = Some(continuation_width + wrap_x);
@@ -480,6 +492,7 @@ fn lay_out_rows(
             prefix_cols,
             continuation: continuation_width > 0,
             continued_glyph,
+            overflow_index,
         });
         match continued_to {
             Some(width) => {
@@ -504,5 +517,12 @@ fn lay_out_rows(
             };
         }
     }
-    (LineLayout { rows, columns }, states)
+    (
+        LineLayout {
+            rows,
+            columns,
+            wrap_indexes,
+        },
+        states,
+    )
 }

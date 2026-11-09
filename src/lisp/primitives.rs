@@ -51,6 +51,7 @@ mod completion;
 mod dispatch;
 pub(crate) use dispatch::current_column;
 pub(crate) use dispatch::restore_unicode_menu_case_table;
+pub(crate) use dispatch::{row_index_of, window_text_geometry};
 mod file_io;
 mod filelock;
 mod generated_builtin_arities;
@@ -208,6 +209,7 @@ pub(crate) use color_lcms::*;
 pub(crate) use completion::*;
 pub(crate) use dispatch::display::log_message_text;
 pub(crate) use dispatch::display::prin1_to_string;
+pub(crate) use dispatch::display::redisplay_safe_call;
 pub(crate) use dispatch::pop_kbd_macro;
 pub(crate) use dispatch::realize_basic_faces;
 pub(crate) use dispatch::{

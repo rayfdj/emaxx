@@ -109,7 +109,16 @@ pub(crate) const WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT: usize = 50;
 pub(crate) const WINDOW_LAST_POINT_SLOT: usize = 51;
 pub(crate) const WINDOW_LAST_MODIFIED_SLOT: usize = 52;
 pub(crate) const WINDOW_LAST_OVERLAY_MODIFIED_SLOT: usize = 53;
-const WINDOW_SLOT_COUNT: usize = 54;
+/// window.h's window_end_valid: the window's last redisplay completed
+/// (mark_window_display_accurate_1) and nothing since asked for its
+/// display to be made anew; try_cursor_movement needs it.
+pub(crate) const WINDOW_END_VALID_SLOT: usize = 54;
+const WINDOW_SLOT_COUNT: usize = 55;
+
+/// `w->window_end_valid = false'.
+pub(crate) fn invalidate_window_end(interp: &mut Interpreter, window_id: u64) {
+    set_window_flag(interp, window_id, WINDOW_END_VALID_SLOT, false);
+}
 
 /// WINDOW_ID's character geometry as (total_cols, total_lines, left_col,
 /// top_line), in window_geometry's order.  A record from before these
@@ -668,6 +677,8 @@ pub(crate) fn set_window_start_value(
         window_buffer_id(interp, &interp.record_value(id)).unwrap_or(interp.current_buffer_id());
     set_window_marker_restricted_value(interp, id, WINDOW_START_SLOT, buffer_id, pos)?;
     set_window_flag(interp, id, WINDOW_START_AT_LINE_BEG_SLOT, false);
+    // Bug#15957.
+    invalidate_window_end(interp, id);
     if !noforce {
         set_window_flag(interp, id, WINDOW_FORCE_START_SLOT, true);
     }
@@ -770,32 +781,33 @@ pub(crate) fn recenter_selected_window(
     // structures may not be set up yet, nor for a buffer with very long
     // lines, which it slows down tremendously.
     let display_code = interactive && !interp.buffer.borrow().long_line_optimizations_p();
-    let start = if display_code && !center && iarg >= 0 {
-        // The display code: the start of point's screen line, then
-        // move_it_by_lines ARG lines back, which reseats at a line start.
-        let nlines = clip_to_bounds(margin, iarg, ht - margin - 1).max(0);
-        let row = super::move_it::move_it_by_lines(interp, env, window_id, point, 0).0;
-        if nlines > 0 {
-            super::move_it::move_it_by_lines(interp, env, window_id, row, -nlines).0
-        } else {
-            row
-        }
-    } else if display_code {
-        // move_it_vertically_backward: whole screen lines above point's
-        // row, no reseat.
-        let lines_back = if center {
-            ht / 2
-        } else {
-            let nlines = clip_to_bounds(margin + 1, -iarg, ht - margin);
-            // Point's row ends NLINES from the bottom, empty lines past
-            // the buffer's end counted in.
-            let h = ht - nlines;
-            if h <= 0 {
-                return Ok(());
+    let start = if display_code {
+        // The display code's iterator walks run `fontification-functions'
+        // over the text they fetch, and what they measure follows; made
+        // again while the functions run.
+        let mut passes = 0;
+        let mut fetches = crate::tty::IteratorFetches::off();
+        loop {
+            fetches.begin_pass(interp, env, window_id);
+            let start = recenter_display_start(
+                interp,
+                env,
+                window_id,
+                RecenterArg { center, iarg },
+                (ht, margin),
+                point,
+                &mut fetches,
+            );
+            passes += 1;
+            if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES
+                || !fetches.fontify(interp, env, window_id)
+            {
+                match start {
+                    Some(start) => break start,
+                    None => return Ok(()),
+                }
             }
-            h
-        };
-        move_screen_lines(interp, env, point, -(lines_back as isize)).0
+        }
     } else {
         // vmotion, the margins applied to every arg.
         let mut line = if center {
@@ -813,6 +825,7 @@ pub(crate) fn recenter_selected_window(
         super::indent_motion::vmotion(interp, env, point, -line, win).bufpos
     };
     interp.set_selected_window_start(start);
+    invalidate_window_end(interp, window_id);
     set_window_flag(interp, window_id, WINDOW_OPTIONAL_NEW_START_SLOT, true);
     let at_line_beg = {
         let buffer = interp.buffer.borrow();
@@ -826,6 +839,71 @@ pub(crate) fn recenter_selected_window(
     );
     interp.wset_redisplay(window_id);
     Ok(())
+}
+
+/// Frecenter's ARG: no number (center) or IARG.
+#[derive(Clone, Copy)]
+struct RecenterArg {
+    center: bool,
+    iarg: i64,
+}
+
+/// Frecenter's display code in WINDOW, whose text area is HT rows with
+/// MARGIN scroll margin lines: the new start for point at POINT, or none
+/// when point's row and the ARG lines below it fill the window; FETCHES
+/// recording what its iterators fetch.  Centered, start_display at point
+/// and move_it_vertically_backward half the window; a negative ARG,
+/// start_display at point, move_it_by_lines 0 and then -ARG lines down
+/// to measure what point's row and the lines below it take, and again
+/// start_display at point and move_it_vertically_backward what remains
+/// above them; otherwise start_display at point, move_it_by_lines 0 and
+/// then ARG lines back, which reseats at a line start.
+fn recenter_display_start(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    RecenterArg { center, iarg }: RecenterArg,
+    (ht, margin): (i64, i64),
+    point: usize,
+    fetches: &mut crate::tty::IteratorFetches,
+) -> Option<usize> {
+    if !center && iarg >= 0 {
+        let nlines = clip_to_bounds(margin, iarg, ht - margin - 1).max(0);
+        crate::tty::fetch_start_display(interp, window_id, fetches, point);
+        let row = super::move_it::move_it_by_lines(interp, env, window_id, point, 0, fetches).0;
+        return Some(if nlines > 0 {
+            super::move_it::move_it_by_lines(interp, env, window_id, row, -nlines, fetches).0
+        } else {
+            row
+        });
+    }
+    let lines_back = if center {
+        ht / 2
+    } else {
+        let nlines = clip_to_bounds(margin + 1, -iarg, ht - margin);
+        crate::tty::fetch_start_display(interp, window_id, fetches, point);
+        let row = super::move_it::move_it_by_lines(interp, env, window_id, point, 0, fetches).0;
+        super::move_it::move_it_by_lines(interp, env, window_id, row, nlines, fetches);
+        // Point's row ends NLINES from the bottom, empty lines past the
+        // buffer's end counted in.
+        let h = ht - nlines;
+        if h <= 0 {
+            return None;
+        }
+        h
+    };
+    // move_it_vertically_backward: whole screen lines above point's row,
+    // no reseat.
+    crate::tty::fetch_start_display(interp, window_id, fetches, point);
+    crate::tty::fetch_move_vertically_backward(
+        interp,
+        env,
+        window_id,
+        fetches,
+        point,
+        lines_back as usize,
+    );
+    Some(move_screen_lines(interp, env, point, -(lines_back as isize)).0)
 }
 
 /// Step COUNT screen lines from FROM (GNU's vmotion): continuation rows of

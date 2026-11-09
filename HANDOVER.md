@@ -17921,6 +17921,96 @@ setup_process_coding_systems's check now refuses). A 13-form
   round's 35, run again on the release build, match GNU's but for the
   two recorded differences and GNU's startup message, which two screens
   catch.
+- **Round 352: redisplay's and the display iterator's Lisp, run with
+  GNU's state and over the text GNU's iterator fetches.**
+  redisplay_window displays a window other than the selected one with
+  its buffer's point at the window's (TEMP_SET_PT_BOTH from w->pointm,
+  the marker itself clamped into the accessible text) and puts the
+  buffer's point back when the window is done, for the selected window
+  too (restore_buffers: below BEGV to BEGV, past ZV to Z); tty.rs's
+  with_window_point does so around a window's `fontification-functions'
+  passes and its `window-scroll-functions', which saw the selected
+  window's point, (window-point W) unclamped, and kept a point they
+  moved in the selected window.  The display iterator runs
+  `fontification-functions' for what it fetches
+  (get_next_display_element, whose handle_stop runs
+  handle_fontified_prop), and the terminal layout now models what that
+  is: a row walked to its end fetches through its newline, a continued
+  row through the next row's first element, a row `word-wrap' broke
+  through the element that did not fit (layout.rs records it, and the
+  wrap points), a truncated row through its newline as
+  forward_to_next_line_start finds it, no more than MAX_NEWLINE_DISTANCE
+  elements past the edge; the rest of an invisible run or of text a
+  display string replaces is skipped after its start (ScreenLineLayout's
+  skipped runs); a walk to a position fetches it, lands past the hidden
+  run holding it, stops on an ellipsis's last dot inside or right after
+  a fold, and under `word-wrap' looks on to the next wrap point
+  (atpos_it).  IteratorFetches and IteratorWalk record the walks, each
+  new iterator or reseat a walk of its own: start_display fetches the
+  start before the walk from its line's start; pos_visible_p walks to
+  POS, then POS's row when nothing shows before it (line_bottom_y), or
+  every row through the last when POS is on the last row (move_it_to
+  stops at its start, the fallback's move_it_by_lines walks it), does
+  not show or is t; buffer_posn_from_coords walks each row above Y and
+  its own to the glyph at X; window_text_pixel_size fetches FROM, the
+  line before FROM's when FROM begins one (move_it_vertically_backward),
+  the vertical offset's lines and on to TO itself, no lower than
+  Y-LIMIT's row; Fvertical_motion's start_display, its walk from point's
+  line and move_it_by_lines' walks forward and back (move_it.rs threads
+  the recorder through pos_reached, rows_between, forward_rows and
+  screen_line_start), and the goal column; Fmove_to_window_line's
+  displayed_window_lines over the window.  Each primitive fontifies what
+  its walks fetched, in their order, and measures again while a function
+  ran (ITERATOR_FONTIFICATION_PASSES).  fontify_buffer_range runs the
+  functions as dsafe_call1 does (redisplay_safe_call:
+  `inhibit-redisplay' t, errors logged as "Error during redisplay"),
+  never at Z, and past a position they leave unfontified goes on to the
+  iterator's next stop as compute_stop_pos finds it (iterator_next_stop:
+  a handled property's change, TEXT_PROP_DISTANCE_LIMIT moved to the
+  next space under `auto-composition-mode', nowhere when no interval
+  follows), offering it again only where a later walk starts;
+  redisplay's two passes over a window share what was declined, and its
+  estimate pass starts no lower than BEGV.  pos-visible-in-window-p with
+  POS t answers where the last row begins when ZV does not show, and nil
+  when the window start lies outside the accessible text; posn-at-x-y
+  clips the start into it.  A review (one, adversarial, 45 probes on GNU
+  30.2 and Emaxx in a pseudo-terminal) found 1 P1, 3 P2 and 6 P3
+  differences in the round's first version, which fontified at the grain
+  of rows from its walk's line start, and 4 P3 next to it that are
+  older; the fetch model above replaced that version.  Fixed: the
+  iterator's functions fontified invisible text GNU skips (all of a
+  folded 500 KB org buffer for pos-visible-in-window-p of point-max,
+  2.09 s against 0.004 s); window-text-pixel-size fontified all of
+  FROM..TO under a Y-LIMIT (953 calls for fit-window-to-buffer's where
+  GNU makes 5); pos-visible-in-window-p t answered for a window start
+  outside the narrowing, a regression; the functions ran at ZV, and one
+  that declined ran eight times at its position and at none after it;
+  posn-at-x-y fontified the rest of its row, pos-visible-in-window-p
+  stopped at POS where GNU walks POS's row, the walks began at the line
+  start rather than the window start or FROM, and window-text-pixel-size
+  left out the line before FROM, TO itself and a vertical offset's
+  lines; `inhibit-redisplay' was nil and errors went unlogged in the
+  functions; a non-selected window's point marker was left unclamped in
+  its `window-scroll-functions', and the selected window kept a point
+  they moved; redisplay's first pass fontified below BEGV.  Recorded:
+  fontification behind the iterator (a change to text a walk passed
+  alters Emaxx's answer, not GNU's), and of the older ones, the moved
+  point seen by the rest of a window's redisplay and
+  pos-visible-in-window-p t at a fold reaching ZV.  The grouped gate
+  passed its 3,507 library tests; the integration targets (cli,
+  cli_parity with the round's two tests, ert_runner,
+  native_comp_identity, native_thread_continuations, package_lifecycle,
+  runtime_ownership) passed, and clippy is clean.  Rerun on the final
+  build, the review's probes match GNU's but for redisplay's own
+  fontification order and extent (d1, d1b, d2, d3, e1, e2, g2, q1, q2,
+  m2), fontification behind the iterator (k2), a moved point within a
+  window's redisplay (o1, o2, n1), POS t at a fold reaching ZV (s1) and
+  the folded buffer's timing (s1t), which the open findings record;
+  seven probes of the round's own, a function call at a time over
+  vertical-motion, move-to-window-line, the four position primitives,
+  truncated, invisible, display-string, word-wrapped and folded text,
+  declining functions and a window start at ZV, match GNU's.
+- **Round 353: redisplay's and recenter's fontification, as their iterator walks fetch the text.**  The frontend's estimate pass (fontify_window_ranges over the window's start through as many characters as it has cells, then the planned window end) is gone.  redisplay_window.rs's planner records each walk the display iterator makes on its way to a window's display (FetchStep): try_window's start_display and its rows each to its end (Display), TRY_WINDOW_CHECK_MARGINS' second start_display and partial_line_height, which walks the window's rows and the one below unless the cursor showed in the top margin (StartDisplay, Partial); the force_start block's try_window; the optional new start's start_display and move_it_to point no lower than the window's bottom (MoveTo); try_scrolling's start_display, partial_line_height and move_it_to point within the slack below the window, then move_it_vertically by the scroll, or the top margin's move_it_vertically, start_display at point, move_it_to the margin's position and move_it_vertically_backward from the start (Back); the recenter label's init_iterator at point (Init), the top margin's walk and move_it_vertically_backward (RecenterBack, none for very long truncated lines); compute_window_start_on_continuation_line's init_iterator, reseat and move_it_by_lines walks (ContinuationLine); and run_window_scroll_functions' store of the new start before try_window (SetStart), which the functions see as `window-start'.  tty.rs's fontify_window_steps fontifies what they fetch, in their order, before window-scroll-functions where the plan stops for them and after, and the window is planned again while functions ran.  try_cursor_movement is modeled: with the window's matrix current (StartState.matrix_current: not windows_or_buffers_changed or outdated, start, restriction and flags as its last display left them, and cursor_movement_usable's update_mode_lines, `show-trailing-whitespace', relative or visual line numbers, a distinct current line number face and the overlay arrow) point's row is served with no walk, or try_to_scroll follows directly.  fetch_move_vertically_backward goes further back from where its last try landed (move_further_back measures from start_pos).  Whether a window is outdated is redisplay_flags::window_outdated (window.c's window_outdated over the window's last_modified and last_overlay_modified slots, which mark_window_display_accurate sets once every window is done and the mode lines drawn), so the functions' own property changes do not make the next redisplay walk it again, and a later window's fontification of a shared buffer and an overlay moved count as GNU's.  A declined position is offered again by each walk that stops there (IteratorFetches::fontify keeps what a walk declined; Declined lost its reoffer), not again in a later pass over the same walks.  Frecenter (window.rs recenter_display_start) records its walks: start_display at point and move_it_vertically_backward half the window (fetch_move_vertically_backward), for a negative argument start_display, move_it_by_lines 0 and down, start_display and move_it_vertically_backward, otherwise start_display, move_it_by_lines 0 and back, and measures again while functions ran.  Buffer::text_plist_at reports the character at ZV short of Z as Ftext_properties_at does (redisplay ran the functions at a narrowed ZV whose character was fontified), and Buffer::fetch_char reads outside the restriction for the planner's line-beginning tests (FETCH_BYTE: a start at a line's beginning beyond a narrowing was walked as a continuation line's).  One review (no P1, 3 P2, 5 P3, 7 suspicions; probes in the scratchpad's r353/review): fixed the window's outdated test (above) and overlay changes in it; move_it_vertically_backward's nchars_per_row as the text area's columns less the continuation glyph's (move_it::iterator_row_chars); partial_line_height's SAVE_IT copy as its own walk (IteratorFetches::copy_walk/resume_walk) and try_window after window-scroll-functions as a new walk; the current matrix needing window_end_valid (WINDOW_END_VALID_SLOT, cleared by Fset_window_start, Frecenter, show_buffer_in_window, window_resize_apply's leaves, apply_window_adjustment and delete-other-windows-internal, set by mark_window_display_accurate), no prevent_redisplay_optimizations_p, auto-hscroll-mode not current-line and no composition break at point, the overlay arrow's variables read in the window's buffer; try_scrolling's upward start_display before the amount check; try_window's margin check from the cursor's last row (WindowView.last_cursor_y) when point is not shown; the window-scroll-functions start decided after the walks fontified (the hook arm plans again when functions ran); SetStart before try_window and after compute_window_start_on_continuation_line; text_plist_at nil when BEGV == ZV.  Recorded in Findings: S3, S4 and S7 (move_it_vertically's move_it_by_lines 0 at ZV, the recenter fallbacks, windows_or_buffers_changed from a fontification and the top-margin direction) with try_window_id, redisplay-skip-fontification-on-input and cursor_type_changed.  Performance: the walks of one window's redisplay share their line layouts while no Lisp runs (tty.rs WALK_LAYOUTS, share_walk_layouts), a pass whose functions changed nothing that lays text out is not planned again (LayoutStamp over chars_modified_tick, overlay_modified_tick, the new layout_properties_tick, which add/set/remove-text-properties bump for any property not in buffer::layout_neutral_property, and BEGV, ZV and point), and buffer/gap.rs records the text's newlines (NewlineIndex) once its scans since its last change have read the text's size, so line numbers and line starts are binary searches instead of scans from the start; walk layouts are shared as Rc<ScreenLineLayout>, and lay_out_line finds each glyph's row from the last one (RowOfColumn) before its binary search.  pf4 (3,000 short lines, a fontifying redisplay) 0.5 ms against round 352's 1.7; pf2 (20 lines of 30,000 characters) 14 to 22 ms against 5, recorded in Findings (the planner, the walks and the drawing each lay a display line out whole).  The grouped gate passed its 3,509 library tests; the integration targets (cli, cli_parity with the round's two tests, ert_runner, native_comp_identity, native_thread_continuations, package_lifecycle, runtime_ownership) passed, and clippy is clean.  Rerun on the final build, the round's probes (rd1, rc1, sc1, sc2, os1, ag1, tf, rf1, mx1, mx2, mx3, dw1, nz1) and the review's (dc1, dc2, hk1, ov1, rb1, sa1, sm1, sw1, tw1, tw2, tw3) match GNU's after startup; in the first seconds GNU redisplays again for its deferred native compilations (nz1 under TERM=xterm, dc2, ov1, sw1, tw2 and tw3), which the open findings record.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -20928,7 +21018,98 @@ ert-tests as a whole 26,307 ms against 27,211.
   against 1.89) and package-tests (6.78 against 5.93). The Rust gate
   (run 42498162138) passed.
 
+**On `6f80dba`** (round 351): the frozen run (run 42520879093) matched
+  all 7,928 outcomes.  Setup 61.7 s against 52.7 s (1.171), test bodies
+  258.6 s against 235.5 s (1.098), in all 1.111, on a runner faster than
+  round 350's (setup median 93 ms against 81; at round 350 109 against
+  86).  The widest body gap is again ert-tests (36.7 s against 32.7),
+  ert-test-run-tests-batch-expensive (35.9 s against 32.2) all but a
+  fraction of it.  Then tramp-tests (17.7 against 15.5), comp-tests (13.9
+  against 11.8), eglot-tests (30.8 against 29.7), process-tests (2.62
+  against 1.66), semantic-utest-ia (2.87 against 1.99), mule-tests (2.29
+  against 1.50) and package-tests (6.38 against 5.82).  The Rust gate
+  (run 42520876302) passed.
+
+**On `7baa8ce`** (round 352): the frozen run (run 42536669135) matched
+  all 7,928 outcomes.  Setup 82.5 s against 68.0 s (1.213), test bodies
+  303.6 s against 267.7 s (1.134), in all 1.150, on a runner slower than
+  round 351's (setup median 125 ms against 105; at round 351 93 against
+  81).  The widest body gap is again ert-tests (46.8 s against 37.9),
+  ert-test-run-tests-batch-expensive (45.7 s against 37.3) all but a
+  fraction of it.  Then tramp-tests (21.9 against 19.4), comp-tests (16.7
+  against 14.2), eglot-tests (34.3 against 32.7), semantic-utest-ia (4.33
+  against 2.92), mule-tests (3.20 against 2.02), process-tests (2.77
+  against 1.72) and package-tests (7.07 against 6.29).  The Rust gate
+  (run 42536666563) passed.
+
 **Findings recorded, not fixed:**
+- **Redisplays from deferred native compilation (round 353).**  After a
+  -l file loads, GNU defers the native compilation of each .elc it
+  loads that has no .eln in the user's cache (comp.c
+  maybe_defer_native_compilation from Fdefalias, native--compile-async):
+  with an empty cache it runs "Compiling:" subprocesses for gv.el,
+  text-property-search.el, compile.el, comint.el, subr-x.el, ansi-osc.el
+  and others, and the output and exit of each wake
+  wait_reading_process_output, which redisplays (redisplay_internal from
+  C, alternately for the selected window and for all of them): about 20
+  more calls of `pre-redisplay-function' in the first ten seconds, each
+  of which offers a declined position again, and with them a window
+  recentered at startup displayed again with try_window's margin check.
+  Emaxx says `native-comp-available-p' t but defers nothing, so it
+  redisplays 4 times.  More files load under TERM=xterm (term/xterm.el),
+  so more compilations run there.
+- **Redisplay walks not modelled (round 353 review).**  move_it_vertically
+  ends with move_it_by_lines (it, 0) when it stops at a ZV not preceded
+  by a newline (xdisp.c:11178), a walk Emaxx's try_scrolling amount and
+  margin checks and the recenter margin do not make.  The recenter
+  label's fallbacks are not walked: init_iterator again when it.current_y
+  <= 0, and the cursor.vpos < 0 retries with move_it_by_lines 1 or -1 and
+  try_window (xdisp.c:20711, 20771), reachable with
+  `scroll-down-aggressively' 1 or window-scroll-functions that move the
+  start.  Fontifying a buffer shown in another window, or not in the
+  selected one, sets windows_or_buffers_changed (bset_redisplay ->
+  redisplay_other_windows), which changes how later windows of the same
+  redisplay are handled; Emaxx reads the flag once before the loop.
+  try_cursor_movement checks the top margin only when point moved back;
+  Emaxx checks it both ways, which differs only with the last cursor in
+  the top margin and the start past BEGV.  try_window_id,
+  `redisplay-skip-fontification-on-input' and f->cursor_type_changed
+  were not modelled before this round either; try_window_id runs in GNU
+  wherever `bidi-paragraph-direction' is set, as in prog-mode buffers.
+- **Display lines laid out whole (round 353).**  Emaxx's planner, the
+  walks redisplay fontifies by and its drawing each lay out a whole
+  display line, and the walks again from a window start inside it,
+  where GNU's iterator stops at the window's end.  In a buffer of
+  30,000-character lines (below `long-line-threshold') a redisplay that
+  runs `fontification-functions' with point moving takes 14 to 22 ms,
+  against round 352's 5 ms and GNU's 0.2 ms; with short lines it takes
+  0.5 ms against round 352's 1.7 ms.
+- **Fontification behind the iterator (round 352).**  GNU fontifies as
+  it walks, so what a function changes in text the walk already passed
+  does not change that walk's answer: when the call at 101 makes 85..95
+  invisible, pos-visible-in-window-p of 130 answers (60 1) and
+  posn-at-x-y 50 1 answers 120.  Emaxx measures again once the functions
+  ran and answers as the next call would, (50 1) and 130.
+- **Point moved by Lisp while a window is redisplayed (round 352).**
+  redisplay_window puts PT back (opoint, and the selected window's
+  lpoint) only when the window's redisplay ends, so the rest of it sees
+  a point a fontification function or `window-scroll-functions' moved:
+  the mode line shows the moved point's line (L22 where the point goes
+  back to 300) and the window scrolls again, running
+  `window-scroll-functions' a second time.  Emaxx puts the point back
+  after each such pass, which leaves the same point afterwards but shows
+  L5 and scrolls once; after a function deletes the text before point,
+  GNU's window starts at 1 and Emaxx's at 1000.
+- **pos-visible-in-window-p t at a fold reaching ZV (round 352).**  In
+  an org buffer ending inside a folded subtree GNU answers (14 7) for
+  POS t, the position after the ellipsis; Emaxx answers (13 7), the
+  place of point-max.
+- **Display lines joining long invisible runs (round 352).**  Emaxx lays
+  such a line out a character at a time, the invisible text included:
+  pos-visible-in-window-p of point-max in a folded 500 KB org buffer
+  takes 0.29 s against GNU's 0.009 s, and org-cycle 0.033 s against
+  0.010 s.  GNU's iterator skips each run by its text property
+  intervals.
 - **A wide character the window's edge splits (round 351).**  On a
   terminal move_it_in_display_line_to lays out as many of a multi-glyph
   character's glyphs as fit on a continued row, though display_line
@@ -20959,17 +21140,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   against GNU's 1.2 ms (moving point on it 11 ms, where GNU's
   try_cursor_movement does almost nothing), for it lays the whole line
   out once a redisplay.
-- **Point while another window is displayed (round 350).**
-  redisplay_window displays a window other than the selected one with
-  its buffer's point set to the window's point (SET_PT from w->pointm,
-  put back after), so `fontification-functions' and the other Lisp
-  redisplay runs for that window see the window's point; Emaxx's
-  frontend leaves the buffer's point.
-- **Fontification for pos_visible_p (round 350).**  pos_visible_p lays
-  text out with the display iterator, whose handle_fontified_prop runs
-  `fontification-functions' for what it passes (from
-  `pos-visible-in-window-p' and the scroll commands that call it);
-  Emaxx's answer runs none.
 - **Point inside an automatic composition after a command (round
   350).**  adjust_point_for_property's composition_adjust_point moves
   point out of an automatic composition by the glyphs of its glyph

@@ -185,7 +185,7 @@ pub(crate) fn clear_message(
 /// xdisp.c:dsafe__call / dsafe_calln with inhibit_quit=false. The caller
 /// supplies any outer quit binding. Signals are logged without another
 /// echo message; nonlocal control flow propagates to its enclosing target.
-fn redisplay_safe_call(
+pub(crate) fn redisplay_safe_call(
     interp: &mut Interpreter,
     function: Value,
     args: &[Value],
@@ -1634,15 +1634,16 @@ fn position_at_coordinates(
         let mut object = Value::Nil;
         let (position, hpos, col, vpos) = if realized {
             // buffer_posn_from_coords: start_display at the window's
-            // start, move_it_to the row, then to the x, as the window
-            // lays its text out.
-            let geometry = super::buffer_edit::window_text_geometry(interp, env, window_id);
-            let at = crate::tty::window_position_at(
+            // start, clipped into the accessible text
+            // (CLIP_TEXT_POS_FROM_MARKER), move_it_to the row, then to
+            // the x, as the window lays its text out.
+            let begv = interp.buffer.borrow().point_min();
+            let at = posn_at_window_xy(
                 interp,
+                env,
                 window_id,
-                start,
+                start.clamp(begv, end),
                 (text_x.max(0) as usize, text_y.max(0) as usize),
-                geometry,
             );
             if let Some((string, index)) = at.object {
                 object = Value::cons(string, Value::Integer(index as i64));
@@ -1680,6 +1681,97 @@ fn position_at_coordinates(
     })();
     interp.with_lisp_stack_roots(&result, |interp| interp.set_current_buffer_id(old_buffer))?;
     result
+}
+
+/// pos_visible_p on the terminal layout of WINDOW, which shows the
+/// current buffer: start_display at START, then move_it_to POS within
+/// TEXT_ROWS rows.  The iterator fetches what it passes: up to POS and
+/// POS itself, then the whole of POS's row when nothing was produced on
+/// it before POS (line_bottom_y moves a line down for the row's
+/// height); when POS is on the last row or does not show, every row to
+/// its end (move_it_to MOVE_TO_Y scans each row it leaves, and stops at
+/// the last row's start, which move_it_by_lines then walks).  No POS (t, charpos -1) asks for
+/// the window's end: ZV's place when it shows, else where the last row
+/// begins (it2's x, the hscroll taken off).
+fn pos_visible_xy(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    start: usize,
+    pos: Option<usize>,
+    text_rows: usize,
+) -> Option<(i64, usize)> {
+    let mut passes = 0;
+    let mut fetches = crate::tty::IteratorFetches::off();
+    loop {
+        let geometry = super::buffer_edit::window_text_geometry(interp, env, window_id);
+        let target = pos.unwrap_or_else(|| interp.buffer.borrow().point_max());
+        let shown =
+            crate::tty::window_position_xy(interp, window_id, start, target, geometry, text_rows);
+        let xy = shown.or_else(|| {
+            pos.is_none()
+                .then(|| (-(geometry.hscroll as i64), text_rows.saturating_sub(1)))
+        });
+        passes += 1;
+        fetches.begin_pass(interp, env, window_id);
+        if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES || fetches.geometry().is_none() {
+            return xy;
+        }
+        crate::tty::fetch_start_display(interp, window_id, &mut fetches, start);
+        let mut walk =
+            crate::tty::IteratorWalk::from_window_start(interp, window_id, geometry, start);
+        match (pos, shown) {
+            // Above the last row: up to POS, its row as well when POS
+            // begins it bare.
+            (Some(pos), Some((_, row))) if row + 1 < text_rows => {
+                let landed = walk.walk_to(&mut fetches, start, pos);
+                if walk.bare_row_start(landed) {
+                    walk.walk_rows(&mut fetches, landed, 1);
+                }
+            }
+            // On the last row move_it_to stops where the row begins
+            // (MOVE_TO_Y), and the fallback's move_it_by_lines walks the
+            // row; so it does when POS does not show, or is t.
+            _ => {
+                walk.walk_rows(&mut fetches, start, text_rows);
+            }
+        }
+        if !fetches.fontify(interp, env, window_id) {
+            return xy;
+        }
+    }
+}
+
+/// buffer_posn_from_coords on the terminal layout of WINDOW, which shows
+/// the current buffer: start_display at START, move_it_to row Y, each row
+/// above walked to its end, then to X, fetching through the element
+/// there (the x reached, the row is known to hold Y).
+fn posn_at_window_xy(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    start: usize,
+    xy: (usize, usize),
+) -> crate::tty::WindowPositionAt {
+    let mut passes = 0;
+    let mut fetches = crate::tty::IteratorFetches::off();
+    loop {
+        let geometry = super::buffer_edit::window_text_geometry(interp, env, window_id);
+        let at = crate::tty::window_position_at(interp, window_id, start, xy, geometry);
+        passes += 1;
+        fetches.begin_pass(interp, env, window_id);
+        if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES || fetches.geometry().is_none() {
+            return at;
+        }
+        crate::tty::fetch_start_display(interp, window_id, &mut fetches, start);
+        let mut walk =
+            crate::tty::IteratorWalk::from_window_start(interp, window_id, geometry, start);
+        let row_start = walk.walk_rows(&mut fetches, start, xy.1);
+        walk.walk_to(&mut fetches, row_start.min(at.position), at.position);
+        if !fetches.fontify(interp, env, window_id) {
+            return at;
+        }
+    }
 }
 
 fn set_window_geometry(
@@ -2936,6 +3028,8 @@ fn window_resize_apply(interp: &mut Interpreter, id: u64, horflag: bool) -> Resu
         set_window_slot_value(interp, id, slot, new_normal)?;
     }
     let Some(horizontal) = window_combination(interp, id) else {
+        // Bug#15957.
+        crate::lisp::primitives::invalidate_window_end(interp, id);
         return Ok(());
     };
     let mut edge = if horflag { left } else { top };
@@ -3559,6 +3653,7 @@ fn set_window_margins(
 /// garbages the frame whenever a window shows margins
 /// (adjust_frame_glyphs_for_frame_redisplay's showing_window_margins_p).
 fn apply_window_adjustment(interp: &mut Interpreter, window_id: u64) {
+    crate::lisp::primitives::invalidate_window_end(interp, window_id);
     interp.wset_redisplay(window_id);
     let showing_margins = crate::lisp::primitives::frames_window_list(interp)
         .into_iter()
@@ -6338,20 +6433,22 @@ define_dispatch!(
                 .max(1) as usize;
                 // pos_visible_p: start_display at the window's start and
                 // move_it_to POS, in the window's buffer, as the window
-                // lays its text out.
-                let xy = if pos < first_visible || pos > point_max {
+                // lays its text out -- only for a start inside the
+                // accessible text and t or a POS from the start to ZV.
+                let xy = if !(point_min..=point_max).contains(&start)
+                    || (!pos_is_t && !(first_visible..=point_max).contains(&pos))
+                {
                     None
                 } else {
                     let saved_buffer = interp.current_buffer_id();
                     let switched = saved_buffer != buffer_id
                         && interp.set_current_buffer_id(buffer_id).is_ok();
-                    let geometry = super::buffer_edit::window_text_geometry(interp, env, window_id);
-                    let xy = crate::tty::window_position_xy(
+                    let xy = pos_visible_xy(
                         interp,
+                        env,
                         window_id,
                         first_visible,
-                        pos,
-                        geometry,
+                        (!pos_is_t).then_some(pos),
                         limit,
                     );
                     if switched {
@@ -6682,8 +6779,10 @@ define_dispatch!(
                     interp.buffer.borrow_mut().goto_char(start);
                 }
                 // displayed_window_lines: the window's rows, a window the
-                // text does not fill counting one row fewer.
+                // text does not fill counting one row fewer, its walk
+                // fontifying what it passes.
                 let from = interp.buffer.borrow().point();
+                crate::tty::fontify_window_rows(interp, env, window_id, from, height);
                 let (_, shortage) = crate::lisp::primitives::window::move_screen_lines_in(
                     interp,
                     env,
@@ -7884,8 +7983,10 @@ define_dispatch!(
                 let window = args.first().cloned().unwrap_or(Value::Nil);
                 let root = args.get(1).cloned().unwrap_or(Value::Nil);
                 let result = delete_other_windows_from_tree(interp, &window, &root, env)?;
-                // fset_redisplay: the tree was replaced.
+                // fset_redisplay: the tree was replaced; the window that
+                // stays is to be displayed anew.
                 if let Ok(window_id) = live_window_id_or_selected(interp, Some(&window)) {
+                    crate::lisp::primitives::invalidate_window_end(interp, window_id);
                     interp.fset_redisplay_window_frame(window_id);
                 }
                 Ok(result)
