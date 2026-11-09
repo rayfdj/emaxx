@@ -636,11 +636,20 @@ fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &
     // `cache-long-scans' nil in the log buffer on every message.
     cached_symbol!("cache-long-scans")
         .with(|symbol| interp.set_buffer_local_value_symbol(buffer_id, symbol, Value::Nil));
-    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-        buffer.set_undo_list(Value::T);
-        // FIXNATP: any other non-nil value keeps every line.
-        let max_lines = log_max.fixnum().and_then(|max| usize::try_from(max).ok());
-        message_dolog(&mut buffer, text, nlflag, max_lines);
+    // The log is the current buffer for its changes, whose marker
+    // adjustments make adjust_suspend_auto_hscroll's check.
+    let old_point = interp.suspended_old_point_in(buffer_id);
+    let touched = match interp.get_buffer_by_id_mut(buffer_id) {
+        Some(mut buffer) => {
+            buffer.set_undo_list(Value::T);
+            // FIXNATP: any other non-nil value keeps every line.
+            let max_lines = log_max.fixnum().and_then(|max| usize::try_from(max).ok());
+            message_dolog(&mut buffer, text, nlflag, max_lines, old_point)
+        }
+        None => false,
+    };
+    if touched {
+        interp.resume_auto_hscroll();
     }
     // The insertion prepared nothing, so nothing counted the change in a
     // window showing the log: windows_or_buffers_changed as it was, and
@@ -654,13 +663,17 @@ fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &
 /// after it, the line folded into an identical previous one (" [N times]")
 /// or replacing a previous "...", and at most MAX_LINES lines kept. Point,
 /// BEGV and ZV are restored as GNU's insertion-type-nil markers leave
-/// them, and point or ZV at the end stays at the end.
+/// them, and point or ZV at the end stays at the end.  Answers whether
+/// a change covered or touched OLD_POINT, the selected window's old point
+/// while it shows the log with its auto-hscroll suspended, as each change
+/// moves it (adjust_suspend_auto_hscroll).
 fn message_dolog(
     buffer: &mut crate::buffer::Buffer,
     text: &str,
     nlflag: bool,
     max_lines: Option<usize>,
-) {
+    mut old_point: Option<usize>,
+) -> bool {
     fn after_delete(position: &mut usize, from: usize, to: usize) {
         if *position > to {
             *position -= to - from;
@@ -668,6 +681,10 @@ fn message_dolog(
             *position = from;
         }
     }
+    let mut touched = false;
+    let mut changed = |old_point: &Option<usize>, from: usize, to: usize| {
+        touched |= old_point.is_some_and(|old| from <= old && old <= to);
+    };
     let end = buffer.size_total() + 1;
     let (begv, zv) = buffer.restriction();
     let point_at_end = buffer.point() == end;
@@ -677,16 +694,18 @@ fn message_dolog(
     buffer.widen();
     buffer.goto_char(end);
     if !nlflag {
+        changed(&old_point, end, end + text.chars().count());
         buffer.insert(text);
         let end = buffer.size_total() + 1;
         let [point, begv, zv] = saved;
         buffer.restore_restriction(begv, if zv_at_end { end } else { zv });
         buffer.goto_char(if point_at_end { end } else { point });
-        return;
+        return touched;
     }
     let mut line = String::with_capacity(text.len() + 1);
     line.push_str(text);
     line.push('\n');
+    changed(&old_point, end, end + line.chars().count());
     buffer.insert(&line);
     let end = buffer.size_total() + 1;
     let this_bol = buffer.line_start_at(end - 1);
@@ -701,8 +720,9 @@ fn message_dolog(
             .map_or(lines.len(), |(byte, _)| byte);
         let dups = message_log_check_duplicate(lines.as_bytes(), this_bol_byte);
         if dups > 0 {
+            changed(&old_point, prev_bol, this_bol);
             let _ = buffer.delete_region(prev_bol, this_bol);
-            for position in &mut saved {
+            for position in saved.iter_mut().chain(old_point.as_mut()) {
                 after_delete(position, prev_bol, this_bol);
             }
             if dups > 1 {
@@ -710,8 +730,9 @@ fn message_dolog(
                 let count = format!(" [{dups} times]");
                 let at = buffer.size_total();
                 buffer.goto_char(at);
+                changed(&old_point, at, at + count.len());
                 buffer.insert_before_markers(&count);
-                for position in &mut saved {
+                for position in saved.iter_mut().chain(old_point.as_mut()) {
                     if *position >= at {
                         *position += count.len();
                     }
@@ -722,6 +743,7 @@ fn message_dolog(
     if let Some(cut) =
         max_lines.and_then(|max| buffer.after_newlines_from_end(max.saturating_add(1)))
     {
+        changed(&old_point, 1, cut);
         let _ = buffer.delete_region(1, cut);
         for position in &mut saved {
             after_delete(position, 1, cut);
@@ -731,6 +753,7 @@ fn message_dolog(
     let [point, begv, zv] = saved;
     buffer.restore_restriction(begv, if zv_at_end { end } else { zv });
     buffer.goto_char(if point_at_end { end } else { point });
+    touched
 }
 
 /// xdisp.c message_log_check_duplicate. LINES runs from the previous line's

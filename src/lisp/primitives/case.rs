@@ -768,10 +768,14 @@ pub(crate) fn casify_buffer_region(
                     for (offset, &code) in new.iter().enumerate() {
                         push_character_code(&mut piece, &mut piece_extended, offset, code);
                     }
-                    let mut buffer = interp.buffer.borrow_mut();
                     if count == 1 && bytes(old) == bytes(new[0]) {
+                        let mut buffer = interp.buffer.borrow_mut();
                         buffer.replace_text_in_place(pos, pos + 1, &piece, &piece_extended);
                     } else {
+                        // replace_range_2 without MARKERS: adjust_markers_bytepos
+                        // over the characters it puts.
+                        interp.adjust_suspend_auto_hscroll(pos, pos + count);
+                        let mut buffer = interp.buffer.borrow_mut();
                         buffer.replace_char_unrecorded(pos, &piece, &piece_extended, &vars);
                         if opoint > pos {
                             opoint = opoint + count - 1;

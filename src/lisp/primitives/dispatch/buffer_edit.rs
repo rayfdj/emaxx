@@ -404,18 +404,29 @@ fn eight_bit_chars(text: &str, extended: &[(usize, u32)]) -> usize {
 /// internal sequence (multibyte_length without ALLOW_8BIT, so not a byte8
 /// head) as their
 /// character when FLAG is t, any other byte as its eight-bit character.
+/// What converting a unibyte buffer's text to multibyte makes of it.
+struct MultibyteText {
+    /// The new text.
+    text: String,
+    /// The new position of every old one, point-max's included.
+    positions: Vec<usize>,
+    /// The characters the text's view cannot carry, by position.
+    extended: Vec<(usize, u32)>,
+    /// The indices of the bytes made eight-bit characters.
+    eight_bit: Vec<usize>,
+}
+
 /// The text, the new position of every old one (point-max's included),
-/// and the characters the text's view cannot carry, by position.
-fn multibyte_buffer_text(
-    text: &str,
-    preserve_utf8_sequences: bool,
-) -> (String, Vec<usize>, Vec<(usize, u32)>) {
+/// the characters the text's view cannot carry, by position, and the
+/// indices of the bytes made eight-bit characters.
+fn multibyte_buffer_text(text: &str, preserve_utf8_sequences: bool) -> MultibyteText {
     let bytes = unibyte_text_bytes(text);
     let mut converted = String::new();
     let mut extended = Vec::new();
     let mut position_map = vec![1; bytes.len() + 1];
     let mut byte_index = 0;
     let mut new_position = 1;
+    let mut eight_bit = Vec::new();
 
     while byte_index < bytes.len() {
         position_map[byte_index] = new_position;
@@ -447,6 +458,7 @@ fn multibyte_buffer_text(
             }
             None => {
                 converted.push(raw_byte_regex_char(byte));
+                eight_bit.push(byte_index);
                 1
             }
         };
@@ -454,7 +466,12 @@ fn multibyte_buffer_text(
         position_map[byte_index + 1..=byte_index + consumed].fill(new_position);
         byte_index += consumed;
     }
-    (converted, position_map, extended)
+    MultibyteText {
+        text: converted,
+        positions: position_map,
+        extended,
+        eight_bit,
+    }
 }
 
 /// buffer.c:Fset_buffer_multibyte's conversion to unibyte: the bytes of
@@ -923,18 +940,75 @@ define_dispatch!(
                 // Each eight-bit character converted is one byte inserted
                 // (insert_1_both) or deleted (del_range_2) as the buffer's
                 // bytes change form, each a modification of the text.
+                // Those edits' marker adjustments, in the byte positions
+                // the markers then hold, check the selected window's old
+                // point as the edits before have moved it
+                // (adjust_suspend_auto_hscroll).
+                let old_point = interp.suspended_old_point_in(interp.current_buffer_id());
+                let mut touched = false;
                 let (converted, positions, extended, converted_bytes) = if enabled {
-                    let (converted, positions, extended) =
-                        multibyte_buffer_text(&original, preserve_utf8_sequences);
+                    let MultibyteText {
+                        text: converted,
+                        positions,
+                        extended,
+                        eight_bit: eight_bit_bytes,
+                    } = multibyte_buffer_text(&original, preserve_utf8_sequences);
+                    // insert_1_both of a byte after each one made eight-bit.
+                    if let Some(mut old) = old_point {
+                        for (inserted, &index) in eight_bit_bytes.iter().enumerate() {
+                            let at = index + 1 + inserted + 1;
+                            if at <= old && old <= at + 1 {
+                                touched = true;
+                                break;
+                            }
+                            if old > at {
+                                old += 1;
+                            }
+                        }
+                    }
                     let eight_bit = eight_bit_chars(&converted, &extended);
                     (converted, positions, extended, eight_bit)
                 } else {
                     let buffer = interp.buffer.borrow();
                     let original_extended = buffer.substring_extended_chars(1, usize::MAX);
+                    // del_range_2 of a byte of each eight-bit character.
+                    if let Some(old_point) = old_point {
+                        let mut old = buffer.marker_byte_position(old_point);
+                        let mut extended_codes = original_extended.iter().peekable();
+                        let mut deleted = 0;
+                        for (index, character) in original.chars().enumerate() {
+                            let code = match extended_codes.peek() {
+                                Some(&&(at, code)) if at == index => {
+                                    extended_codes.next();
+                                    Some(code)
+                                }
+                                _ => None,
+                            };
+                            if raw_byte_from_regex_char(character).is_none()
+                                && !code.is_some_and(|code| code >= 0x3F_FF80)
+                            {
+                                continue;
+                            }
+                            let at = buffer.marker_byte_position(index + 1) - deleted;
+                            if at <= old && old <= at + 1 {
+                                touched = true;
+                                break;
+                            }
+                            if old > at + 1 {
+                                old -= 1;
+                            } else if old > at {
+                                old = at;
+                            }
+                            deleted += 1;
+                        }
+                    }
                     let eight_bit = eight_bit_chars(&original, &original_extended);
                     let (converted, positions) = unibyte_buffer_text(&original, &original_extended);
                     (converted, positions, Vec::new(), eight_bit)
                 };
+                if touched {
+                    interp.resume_auto_hscroll();
+                }
                 {
                     let mut buffer = interp.buffer.borrow_mut();
                     buffer.set_multibyte_representation(enabled, converted, &positions, extended);

@@ -9196,6 +9196,141 @@ fn redisplay_scroll_margins_window_end_and_iterator_stops_as_xdisp_does() {
 
 #[cfg(unix)]
 #[test]
+fn text_changes_at_the_old_point_resume_auto_hscroll_as_insdel_c_does() {
+    // `set-window-hscroll' suspends auto-hscroll in the window; insdel.c's
+    // marker adjustments resume it when a change in the selected window's
+    // buffer covers or touches its old point, the markers not yet moved:
+    // an insertion there or reaching it from before, a deletion around or
+    // up to it, translate-region's and replace-match's replacements.
+    // Changes made in place (same-length case and translation changes,
+    // subst-char-in-region, transpose-regions without LEAVE_MARKERS), ones
+    // that stop short of it, in another buffer or with another window
+    // selected leave it suspended.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "autohscroll.el",
+        r#"(defvar hs-res nil)
+(defvar hs-i 0)
+(defvar hs-phase 0)
+(defvar hs-win nil)
+(defun hs-buf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "hs"))
+  (let ((inhibit-read-only t)) (erase-buffer))
+  (dotimes (i 30) (insert (format "%03d %s\n" i (make-string 200 ?a))))
+  (setq truncate-lines t)
+  (goto-char (+ 1 (* 205 5) 6))
+  (setq hs-win (selected-window)))
+(defconst hs-changes
+  '((insert-at-point (insert "x"))
+    (insert-3-after (save-excursion (goto-char (+ (point) 3)) (insert "y")))
+    (insert-2-before-4 (save-excursion (goto-char (- (point) 2)) (insert "abcd")))
+    (insert-3-before-1 (save-excursion (goto-char (- (point) 3)) (insert "q")))
+    (delete-around (save-excursion (delete-region (- (point) 1) (+ (point) 1))))
+    (delete-after-1 (save-excursion (delete-region (+ (point) 1) (+ (point) 3))))
+    (delete-up-to-point (save-excursion (delete-region (- (point) 3) (point))))
+    (translate-multibyte (translate-region (point) (+ (point) 3) (let ((tb (make-char-table 'translation-table))) (aset tb ?a ?é) tb)))
+    (translate-same (translate-region (point) (+ (point) 3) (let ((tb (make-char-table 'translation-table))) (aset tb ?a ?b) tb)))
+    (subst-same (subst-char-in-region (point) (+ (point) 3) ?a ?b))
+    (upcase-same (upcase-region (point) (+ (point) 3)))
+    (transpose (transpose-regions (- (point) 2) (point) (+ (point) 1) (+ (point) 4)))
+    (transpose-leave (transpose-regions (- (point) 2) (point) (+ (point) 1) (+ (point) 4) t))
+    (replace-match (save-excursion (re-search-forward "a+") (replace-match "R")))
+    (message-other (with-current-buffer "*Messages*" (let ((inhibit-read-only t)) (save-excursion (goto-char (point-max)) (insert "m")))))
+    (unselected (select-window (split-window))
+                (switch-to-buffer (get-buffer-create "other"))
+                (with-current-buffer "hs" (save-excursion (goto-char (window-point hs-win)) (insert "v"))))))
+(defun hs-f5 () (interactive)
+  (let ((change (nth hs-i hs-changes)))
+    (pcase hs-phase
+      (0 (hs-buf))
+      (1 (set-window-hscroll nil 30))
+      (2 (push (list (car change) 'before (window-hscroll hs-win)) hs-res)
+         (condition-case err (eval (cons 'progn (cdr change)) t)
+           (error (push (list (car change) 'error err) hs-res))))
+      (3 (push (list (car change) 'after (window-hscroll hs-win)) hs-res)
+         (setq hs-i (1+ hs-i))))
+    (setq hs-phase (% (1+ hs-phase) 4))))
+(global-set-key [f5] #'hs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "autohscroll.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse hs-res))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 63));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "autohscroll.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "autohscroll.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+    // replace-match on an empty match (replace_range's range ends where
+    // it starts), a case change that makes one character two
+    // (replace_range_2's adjust_markers_bytepos over what it puts) and
+    // set-buffer-multibyte's per-byte edits.
+    let probe = corpus.write(
+        "autohscroll2.el",
+        r#"(defvar hs-res nil)
+(defvar hs-i 0)
+(defvar hs-phase 0)
+(defvar hs-win nil)
+(defun hs-buf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "hs"))
+  (let ((inhibit-read-only t)) (erase-buffer))
+  (set-buffer-multibyte t)
+  (dotimes (i 30) (insert (format "%03d %s\n" i (make-string 200 ?a))))
+  (setq truncate-lines t)
+  (goto-char (+ 1 (* 205 5) 6))
+  (setq hs-win (selected-window)))
+(defconst hs-changes
+  '((rm-empty-1-before nil (save-excursion (goto-char (1- (point))) (looking-at "") (replace-match "R")))
+ (rm-empty-2-before-RR nil (save-excursion (goto-char (- (point) 2)) (looking-at "") (replace-match "RR")))
+ (rm-empty-at-point nil (save-excursion (looking-at "") (replace-match "R")))
+ (rm-empty-empty-at-point nil (save-excursion (looking-at "") (replace-match "")))
+ (upcase-sharp-s-2-before (save-excursion (goto-char (- (point) 2)) (delete-char 1) (insert "ß"))
+   (save-excursion (upcase-region (- (point) 2) (- (point) 1))))
+ (upcase-sharp-s-1-before (save-excursion (goto-char (- (point) 1)) (delete-char 1) (insert "ß"))
+   (save-excursion (upcase-region (- (point) 1) (point))))
+ (sbm-nil-raw-at-point (save-excursion (delete-char 1) (insert (unibyte-string 128)))
+   (set-buffer-multibyte nil))
+ (sbm-t-raw-before (progn (set-buffer-multibyte nil) (save-excursion (goto-char (1- (point))) (delete-char 1) (insert 128)))
+   (set-buffer-multibyte t))
+ (sbm-control-no-raw nil (set-buffer-multibyte nil))))
+(defun hs-f5 () (interactive)
+  (let ((change (nth hs-i hs-changes)))
+    (pcase hs-phase
+      (0 (hs-buf)
+         (condition-case err (eval (nth 1 change) t)
+           (error (push (list (car change) 'setup-error err) hs-res))))
+      (1 (set-window-hscroll nil 30))
+      (2 (push (list (car change) 'before (window-hscroll hs-win) (window-point hs-win) (window-old-point hs-win)) hs-res)
+         (condition-case err (eval (nth 2 change) t)
+           (error (push (list (car change) 'error err) hs-res))))
+      (3 (push (list (car change) 'after (window-hscroll hs-win) (window-point hs-win) (window-old-point hs-win)) hs-res)
+         (setq hs-i (1+ hs-i))))
+    (setq hs-phase (% (1+ hs-phase) 4))))
+(global-set-key [f5] #'hs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "autohscroll2.out" command-line-default-directory)
+      (dolist (r (reverse hs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 35));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "autohscroll2.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "autohscroll2.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
 fn long_lines_turn_on_the_long_line_optimizations_as_xdisp_c_does() {
     // redisplay_window finds a line longer than `long-line-threshold' in
     // the buffer it displays and sets its long_line_optimizations_p for

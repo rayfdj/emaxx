@@ -3093,8 +3093,50 @@ define_dispatch!(
                         let result = std::io::Read::read_to_end(&mut decoder, &mut output);
                         (result.is_ok(), decoder.get_ref().len())
                     };
+                    // inflate never reaches Z_STREAM_END without input.
+                    let complete = complete && !input.is_empty();
                     let old_length = end - start;
-                    if !complete && args.get(2).is_none_or(Value::is_nil) {
+                    let failed = !complete && args.get(2).is_none_or(Value::is_nil);
+                    // GNU's edits as their marker adjustments check the
+                    // selected window's old point (adjust_suspend_auto_hscroll):
+                    // insert_from_gap of each inflate call's output, 16 KiB at
+                    // most, at the region's end, then del_range_2 of the
+                    // region, or on failure unwind_decompress's of what was
+                    // inserted.
+                    // Emaxx deletes the region and inserts the output at its
+                    // start, so the suspension is left as this decides.
+                    let mut resumed = false;
+                    let suspended_before = interp.auto_hscroll_suspended();
+                    if let Some(mut old) = interp.suspended_old_point_in(interp.current_buffer_id())
+                    {
+                        let mut touched = false;
+                        let mut at = end;
+                        let chunks: Vec<usize> = if output.is_empty() {
+                            vec![0]
+                        } else {
+                            output.chunks(16 * 1024).map(<[u8]>::len).collect()
+                        };
+                        for chunk in chunks {
+                            if at <= old && old <= at + chunk {
+                                touched = true;
+                                break;
+                            }
+                            if old > at {
+                                old += chunk;
+                            }
+                            at += chunk;
+                        }
+                        let (from, to) = if failed {
+                            (end, end + output.len())
+                        } else {
+                            (start, end)
+                        };
+                        resumed = touched || (from <= old && old <= to);
+                    }
+                    if failed {
+                        if resumed {
+                            interp.resume_auto_hscroll();
+                        }
                         // unwind_decompress balances the before-change call,
                         // with update_compositions where the output went.
                         return Ok((
@@ -3117,6 +3159,11 @@ define_dispatch!(
                     interp.buffer.borrow_mut().goto_char(start);
                     let text = decode_raw_text_bytes(&output);
                     interp.insert_current_buffer(&text);
+                    if suspended_before && !resumed {
+                        interp.suspend_auto_hscroll_again();
+                    } else if resumed {
+                        interp.resume_auto_hscroll();
+                    }
                     {
                         let point = saved_point.min(interp.buffer.borrow().point_max());
                         interp.buffer.borrow_mut().goto_char(point);
