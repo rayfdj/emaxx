@@ -231,14 +231,20 @@ fn lay_out_from(
             ..RowState::default()
         }
     } else {
-        // The state at the start of the row the walk to FROM stops on.
+        // The state at the start of the row the walk stops on: past the
+        // strings FROM shows first, at the text after them.
+        let walk_to = visual.walk_stop_index(from);
+        let reached = elements
+            .iter()
+            .position(|element| walk_to < element.end)
+            .unwrap_or(elements.len());
         let (_, states) = lay_out_rows(visual, cols, false, motion, RowState::default());
         RowState {
             element: target,
             ..states
                 .iter()
                 .rev()
-                .find(|state| state.element <= target)
+                .find(|state| state.element <= reached)
                 .copied()
                 .unwrap_or_default()
         }
@@ -351,6 +357,7 @@ fn lay_out_rows(
         // its wrap point.
         let mut overflow_index: Option<usize> = None;
         let mut hard_newline = false;
+        let mut string_newline = false;
         while let Some(current) = elements.get(element).copied() {
             if chars[current.start] == '\n' {
                 if !assigned[current.start] {
@@ -358,6 +365,7 @@ fn lay_out_rows(
                     assigned[current.start] = true;
                 }
                 hard_newline = true;
+                string_newline = visual.object_at(current.start).is_some();
                 element += 1;
                 break;
             }
@@ -499,7 +507,14 @@ fn lay_out_rows(
                 gnu_continuation += lnum + (width - continuation_width);
                 continuation_width = width;
             }
-            None if hard_newline && element < elements.len() => {
+            // A string's newline with nothing after it in the line: the
+            // iterator pops the string and display_line starts a row at
+            // the newline that ends the line, or at ZV -- unless a
+            // `display' string replaces that newline, popped past it to
+            // the next line.
+            None if hard_newline
+                && (element < elements.len() || (string_newline && !visual.newline_replaced)) =>
+            {
                 line_base = end_column;
                 continuation_width = 0;
                 gnu_continuation = 0;

@@ -9416,3 +9416,815 @@ fn long_lines_turn_on_the_long_line_optimizations_as_xdisp_c_does() {
     assert!(expected.is_some(), "GNU's session wrote nothing");
     assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_window_start_at_a_before_string_answers_as_gnu_does() {
+    // start_display at a start after a newline shows the overlay strings
+    // there first; one inside a continued row restores the iterator to
+    // the string.  A string taller than the window: pos-visible-in-
+    // window-p stops at the last row's start, inside the string, at its
+    // position; find_row_edges ends a row in the middle of the string at
+    // its position plus one; the force_start block moves point to the
+    // start of the row half way down, and the cursor stays there while
+    // point does not move.  window-end's UPDATE walks only when the
+    // recorded end is not up to date, and vertical-motion from a string
+    // at BEGV steps through the string's rows.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "beforestring.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defun bs-buf ()
+  (switch-to-buffer (get-buffer-create "bs"))
+  (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil)
+  (dotimes (i 100) (insert (format "line %03d\n" i)))
+  (goto-char 1) (forward-line 5) (point))
+(defun bs-ov (pos prop str &optional end)
+  (let ((ov (make-overlay pos (or end pos)))) (overlay-put ov prop str) ov))
+(defun bs-long ()
+  (let ((p (bs-buf))) (delete-region p (line-end-position)) (insert (make-string 200 ?a)) p))
+(defun bs-tall (n)
+  (mapconcat (lambda (i) (format "T%02d\n" i)) (number-sequence 0 (1- n)) ""))
+(defun bs-q (tag)
+  (push (list tag (window-start) (point) (window-end) (window-end nil t)
+              (pos-visible-in-window-p (point) nil t)
+              (pos-visible-in-window-p (1+ (point)) nil t)
+              (let ((p (posn-at-point))) (and p (posn-col-row p)))
+              (count-screen-lines (window-start) (window-end)))
+        bs-res))
+(defconst bs-stages
+  '((let ((p (bs-buf))) (bs-ov p 'before-string "XX") (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (bs-ov p 'before-string "B00\nB01\nB02\n") (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (bs-ov p 'before-string "B00\nB01\nB02\n") (set-window-start nil p) (goto-char (+ p 25)))
+    (let ((p (bs-buf))) (bs-ov (- p 9) 'after-string "AFT\n" p) (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display "D1\nD2\n") (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-long))) (bs-ov (+ p 79) 'before-string "ZZ") (set-window-start nil (+ p 79)) (goto-char (+ p 79)))
+    (let ((p (bs-long))) (bs-ov (+ p 100) 'before-string "Y1\nY2") (set-window-start nil (+ p 100)) (goto-char (+ p 100)))
+    (let ((p (bs-long))) (bs-ov (+ p 79) 'before-string "W1\nW2\n") (set-window-start nil (+ p 79)) (goto-char (+ p 85)))
+    (let ((p (bs-buf))) (bs-ov p 'before-string "R1\nR2\n") (goto-char p) (recenter 0))
+    (let ((p (bs-buf))) (bs-ov p 'before-string (bs-tall 30)) (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (bs-ov p 'before-string (bs-tall 22)) (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (bs-ov p 'before-string (bs-tall 21)) (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (bs-ov p 'before-string (bs-tall 20)) (set-window-start nil p) (goto-char p))
+    (let* ((p (bs-long)) (s (+ p 100)))
+      (bs-ov s 'before-string "Y1\nY2") (set-window-start nil s) (goto-char s)
+      (save-restriction
+        (narrow-to-region s 408)
+        (dolist (n '(0 1 2 3 25))
+          (push (list 'narrowed n (save-excursion (goto-char s) (list (vertical-motion n) (point)))) bs-res))))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "beforestring.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 14));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "beforestring.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "beforestring.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn the_review_of_round_356_is_answered_as_gnu_answers() {
+    // window_scroll leaves the window's end invalid, so window-end's
+    // UPDATE walks again in the command that scrolled.  move_it_by_lines
+    // stops on a row that begins a string, even one following another
+    // string at the same position, and goes on from the row it reached.
+    // find_row_edges counts a previous row that showed only a string's
+    // newline as having seen the string only when that newline is the
+    // string's first character.  pos_visible_p adds the line numbers'
+    // width at the last row's stop.  start_display from inside a
+    // continued line keeps the continuation_lines_width its walk reached
+    // past the strings at the start.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "review356.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defun bs-buf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "bs"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil word-wrap nil line-prefix nil wrap-prefix nil display-line-numbers nil)
+  (dotimes (i 100) (insert (format "line %03d\n" i)))
+  (goto-char 1) (set-window-start nil 1) (sit-for 0) 46)
+(defun bs-ov (pos prop str &optional end)
+  (let ((ov (make-overlay pos (or end pos)))) (overlay-put ov prop str) ov))
+(defun bs-long ()
+  (let ((p (bs-buf))) (delete-region p (+ p 8)) (goto-char p) (insert (make-string 200 ?a)) p))
+(defun bs-tall (n)
+  (mapconcat (lambda (i) (format "T%02d\n" i)) (number-sequence 0 (1- n)) ""))
+(defun bs-vm (tag from ns)
+  (dolist (n ns)
+    (push (list tag n (save-excursion (goto-char from) (list (vertical-motion n) (point)))) bs-res)))
+(defun bs-q (tag)
+  (push (list tag (window-start) (point) (window-end) (window-end nil t)
+              (pos-visible-in-window-p (point) nil t)
+              (let ((p (posn-at-point))) (and p (posn-col-row p)))
+              (posn-string (posn-at-x-y 1 0))
+              (posn-point (posn-at-x-y 3 1)))
+        bs-res))
+(defconst bs-stages
+  '((progn (bs-buf) (scroll-up 5) (push (list 'scroll-up (window-start) (window-end nil t)) bs-res))
+    (progn (bs-buf) (scroll-up 10) (sit-for 0) (scroll-down 3)
+           (push (list 'scroll-down (window-start) (window-end nil t)) bs-res))
+    (let ((p (bs-buf)))
+      (bs-ov p 'before-string "X1\nX2\n") (bs-ov p 'before-string "Y1\n") (sit-for 0)
+      (bs-vm 'two (- p 9) '(1 2 3 4 5))
+      (remove-overlays)
+      (bs-ov (+ p 3) 'before-string "Q1\nQ2\n") (sit-for 0)
+      (bs-vm 'mid p '(1 2 3))
+      (push (list 'mid-csl (count-screen-lines p (+ p 9))) bs-res)
+      (remove-overlays)
+      (bs-ov (+ p 7) 'after-string "\nF1\nF2" (+ p 8)) (sit-for 0)
+      (bs-vm 'aft p '(1 2 3)))
+    (let ((p (bs-buf))) (bs-ov p 'before-string (concat "T00\n" (make-string 25 ?\n)))
+         (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (setq display-line-numbers t) (bs-ov p 'before-string (bs-tall 30))
+         (set-window-start nil p) (goto-char p)
+         (push (list 'lnum (pos-visible-in-window-p p nil t) (pos-visible-in-window-p (1+ p) nil t)
+                     (let ((pp (posn-at-point p))) (and pp (posn-col-row pp))))
+               bs-res)
+         (bs-buf))
+    (let ((p (bs-long))) (setq wrap-prefix ">>") (bs-ov (+ p 79) 'before-string "ZZ\n")
+         (set-window-start nil (+ p 79)) (goto-char (+ p 79)))
+    (let ((p (bs-long))) (setq wrap-prefix ">>") (bs-ov (+ p 77) 'before-string "SSSSSS")
+         (set-window-start nil (+ p 77)) (goto-char (+ p 77)))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "review356.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 7));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "review356.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "review356.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn vertical_motion_goal_columns_and_rows_at_zv_answer_as_gnu_does() {
+    // Fvertical_motion moves to the goal column on the row the iterator
+    // reached, column 0 included, and while the iterator is in an overlay
+    // string (not a display string) with a newline still ahead, moves a
+    // line further and to the column again.  A backward move that comes
+    // forward again keeps the row it reached.  display_line makes an empty
+    // row at ZV after a string's final newline, and window_end_pos comes
+    // from the last row that displays text, the display string's end.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "goal357.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defun vm-buf ()
+  (switch-to-buffer (get-buffer-create "vm"))
+  (erase-buffer) (remove-overlays) (setq truncate-lines nil word-wrap nil)
+  (dotimes (i 100) (insert (format "line %03d\n" i)))
+  (goto-char 1) (forward-line 5) (point))
+(defun vm-col (tag from col ns)
+  (dolist (n ns)
+    (push (list tag col n (save-excursion (goto-char from) (list (vertical-motion (cons col n)) (point)))) bs-res)))
+(defun vm-setup (fn) (let ((p (vm-buf))) (funcall fn p) (set-window-start nil 1) (goto-char 1) (sit-for 0) p))
+(defun vm-all ()
+  (let ((p (vm-setup (lambda (p) (overlay-put (make-overlay p p) 'before-string "B00\nB01\nB02\n")))))
+    (dolist (c '(0 1 2 3 5 9)) (vm-col 'bol-bs (- p 9) c '(1 2 3 4)))
+    (dolist (c '(0 2 5)) (vm-col 'bol-bs-up (+ p 18) c '(-1 -2 -3 -4)))
+    (dolist (c '(0 2)) (vm-col 'bol-bs-at p c '(0 1 2))))
+  (let ((p (vm-setup (lambda (p) (put-text-property p (+ p 4) 'display "D1\nD2\n")))))
+    (dolist (c '(0 1 4)) (vm-col 'bol-disp (- p 9) c '(1 2 3))))
+  (let ((p (vm-setup (lambda (p) (put-text-property (+ p 2) (+ p 4) 'display "E1\nE2\nE3\n")))))
+    (dolist (c '(0 1 3 6)) (vm-col 'mid-disp (- p 9) c '(1 2 3 4 5))))
+  (let ((p (vm-setup (lambda (p) (overlay-put (make-overlay (+ p 3) (+ p 3)) 'before-string "Q1\nQ2\n")))))
+    (dolist (c '(0 2 4 7)) (vm-col 'mid-bs (- p 9) c '(1 2 3 4))))
+  (let ((p (vm-setup (lambda (p) (overlay-put (make-overlay p p) 'before-string "R1\nR2\nR3")))))
+    (dolist (c '(0 1 2 4)) (vm-col 'bol-bs2 (- p 9) c '(1 2 3 4))))
+  (let ((p (vm-setup (lambda (p) (overlay-put (make-overlay (+ p 7) (+ p 8)) 'after-string "\nF1\nF2")))))
+    (dolist (c '(0 1 4 9)) (vm-col 'aft p c '(1 2 3 4))))
+  (let ((p (vm-setup (lambda (p) (delete-region p (+ p 8)) (insert (make-string 150 ?b))
+                       (overlay-put (make-overlay (+ p 100) (+ p 100)) 'before-string "X1\nX2\n")
+                       (overlay-put (make-overlay (+ p 100) (+ p 100)) 'before-string "Y1\n")))))
+    (dolist (c '(0 1 5 30)) (vm-col 'cont p c '(1 2 3 4)))))
+(defun bs-buf (&optional n)
+  (switch-to-buffer (get-buffer-create "bs"))
+  (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil display-line-numbers nil)
+  (dotimes (i (or n 20)) (insert (format "line %03d\n" i)))
+  (goto-char (point-max)) (point))
+(defun bs-ov (pos prop str &optional end)
+  (let ((ov (make-overlay pos (or end pos)))) (overlay-put ov prop str) ov))
+(defun bs-vm (tag from ns)
+  (dolist (n ns)
+    (push (list tag n (save-excursion (goto-char from) (list (vertical-motion n) (point)))) bs-res)))
+(defun bs-q (tag)
+  (push (list tag (window-start) (point) (window-end) (window-end nil t)
+              (pos-visible-in-window-p (point) nil t)
+              (let ((p (posn-at-point))) (and p (posn-col-row p)))
+              (count-screen-lines (window-start) (point-max) t))
+        bs-res)
+  (let ((z (point-max)))
+    (bs-vm (list tag 'from-above) (- z 9) '(1 2 3 4))
+    (bs-vm (list tag 'from-zv) z '(0 -1 -2 1))))
+(defconst bs-stages
+  '((vm-all)
+    (let ((z (bs-buf))) (bs-ov z 'before-string "Z1\nZ2\n") (set-window-start nil 1) (goto-char z))
+    (let ((z (bs-buf))) (bs-ov (1- z) 'after-string "A1\nA2\n" z) (set-window-start nil 1) (goto-char z))
+    (let ((z (bs-buf))) (delete-char -1) (setq z (point-max)) (put-text-property (- z 4) z 'display "D1\nD2\n")
+         (set-window-start nil 1) (goto-char z))
+    (let ((z (bs-buf 0))) (bs-ov z 'before-string "E1\nE2\n") (set-window-start nil 1) (goto-char z))
+    (let ((z (bs-buf))) (setq display-line-numbers t) (bs-ov z 'before-string "N1\nN2\n")
+         (set-window-start nil 1) (goto-char z))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 1) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "goal357.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 6));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "goal357.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "goal357.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn the_review_of_round_358_is_answered_as_gnu_answers() {
+    // A `display' string ends where pop_it's iterate_out_of_display_
+    // property leaves IT_CHARPOS, and the check at the top of
+    // move_it_in_display_line_to's loop stops a move there before
+    // handle_stop loads the next string: adjacent strings are not one.
+    // pos_visible_p at a window start inside replaced text reaches it
+    // at once; a string ending on the window's last row past its start
+    // answers the element after it there (the it2 branch), and one
+    // replacing the line's newline ends past the line.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "rv358.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defun bs-buf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "bs"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil display-line-numbers nil header-line-format nil)
+  (dotimes (i 100) (insert (format "line %03d\n" i)))
+  (goto-char 1) (set-window-start nil 1) (sit-for 0) 46)
+(defun bs-tall (n &optional pfx)
+  (mapconcat (lambda (i) (format "%s%02d\n" (or pfx "T") i)) (number-sequence 0 (1- n)) ""))
+(defun bs-at (q)
+  (list q (pos-visible-in-window-p q nil t) (pos-visible-in-window-p q)
+        (let ((pp (posn-at-point q))) (and pp (list (posn-col-row pp) (posn-point pp))))))
+(defun bs-q (tag)
+  (push (list tag (window-start) (point) (window-end) (window-end nil t)
+              (let ((pp (posn-at-point))) (and pp (list (posn-col-row pp) (posn-point pp))))
+              (mapcar #'bs-at '(46 47 48 49 50 51)))
+        bs-res))
+(defun bs-pv (tag qs)
+  (push (list tag (window-start) (mapcar #'bs-at qs)) bs-res))
+(defconst bs-stages
+  '((let ((p (bs-buf))) (put-text-property p (+ p 2) 'display "A") (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 30 "B")) (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (put-text-property p (+ p 2) 'display "A\n") (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 30 "B")) (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (put-text-property p (+ p 2) 'display (bs-tall 30 "A")) (put-text-property (+ p 2) (+ p 4) 'display "B") (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (put-text-property p (+ p 2) 'display (bs-tall 30 "A")) (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 3 "B")) (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (put-text-property p (+ p 2) 'display (bs-tall 10 "A")) (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 30 "B")) (set-window-start nil p) (goto-char p))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(defun bs-f6 () (interactive)
+  (let ((p (bs-buf))) (put-text-property 136 138 'display "A") (put-text-property 138 140 'display (bs-tall 10 "B")) (set-window-start nil 1) (bs-pv 'J1 '(136 137 138 139 140)))
+  (let ((p (bs-buf))) (setq display-line-numbers t) (put-text-property 136 138 'display "A") (put-text-property 138 140 'display (bs-tall 10 "B")) (set-window-start nil 1) (bs-pv 'J2 '(136 137 138 139 140)))
+  (let ((p (bs-buf)) (o nil)) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (setq o (make-overlay (+ p 4) (+ p 4))) (overlay-put o 'before-string "BEF") (set-window-start nil p) (bs-pv 'J3 '(46 47 49 50)))
+  (let ((p (bs-buf))) (put-text-property 228 229 'display "S") (put-text-property 229 230 'display (bs-tall 5 "T")) (set-window-start nil p) (bs-pv 'J4 '(227 228 229 230)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 2) 'display (bs-tall 3 "A")) (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 30 "B")) (set-window-start nil p) (bs-pv 'J5 '(46 47 48 49 50)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (concat (bs-tall 20 "D") "E")) (set-window-start nil p) (bs-pv 'A '(46 47 49 50 51)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 8) 'display (concat (bs-tall 20 "D") "E")) (set-window-start nil p) (bs-pv 'B '(46 47 53 54 55)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 8) 'display (bs-tall 21 "D")) (set-window-start nil p) (bs-pv 'B2 '(46 47 53 54 55)))
+  (let ((p (bs-buf))) (setq display-line-numbers t) (put-text-property p (+ p 4) 'display (concat (bs-tall 20 "D") "E")) (set-window-start nil p) (bs-pv 'B3 '(46 47 49 50 51)))
+  (let ((p (bs-buf))) (put-text-property 226 230 'display (bs-tall 5 "S")) (set-window-start nil p) (bs-pv 'C '(225 226 227 229 230 231)))
+  (let ((p (bs-buf))) (put-text-property 228 230 'display (bs-tall 5 "S")) (set-window-start nil p) (bs-pv 'C2 '(226 227 228 229 230 231)))
+  (let ((p (bs-buf))) (put-text-property 228 230 'display "SS") (set-window-start nil p) (bs-pv 'C3 '(226 227 228 229 230 231)))
+  (let ((p (bs-buf))) (setq display-line-numbers t) (put-text-property 228 230 'display (bs-tall 5 "S")) (set-window-start nil p) (bs-pv 'C4 '(226 227 228 229 230 231)))
+  (let ((p (bs-buf))) (setq header-line-format "H") (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil p) (bs-pv 'D '(46 47 49 50)))
+  (let ((p (bs-buf))) (setq header-line-format "H" display-line-numbers t) (put-text-property p (+ p 4) 'display (concat (bs-tall 25 "D") "XYZ")) (set-window-start nil p) (bs-pv 'D2 '(46 47 49 50)))
+  (let ((p (bs-buf))) (goto-char p) (insert (make-string 200 ?x)) (put-text-property (+ p 100) (+ p 104) 'display (bs-tall 30 "D")) (set-window-start nil p) (bs-pv 'E (list (+ p 99) (+ p 100) (+ p 101) (+ p 104) (+ p 105))))
+  (let ((p (bs-buf))) (goto-char p) (insert (make-string 200 ?x)) (put-text-property (+ p 100) (+ p 104) 'display (concat (bs-tall 25 "D") "XYZ")) (set-window-start nil p) (bs-pv 'E2 (list (+ p 99) (+ p 100) (+ p 101) (+ p 104) (+ p 105))))
+  (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (concat (bs-tall 10 "D") "E")) (set-window-start nil 1) (bs-pv 'G '(46 47 49 50 51)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil (+ p 1)) (bs-pv 'S1 '(46 47 48 49 50)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil (+ p 2)) (bs-pv 'S2 '(47 48 49 50)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (concat (bs-tall 21 "D") "E")) (set-window-start nil p) (bs-pv 'S4 '(46 47 49 50 51)))
+  (let ((p (bs-buf)) (o nil)) (setq o (make-overlay p (+ p 4))) (overlay-put o 'display (bs-tall 30 "D")) (set-window-start nil p) (bs-pv 'S5 '(46 47 49 50)))
+  (let ((p (bs-buf))) (put-text-property p (+ p 9) 'display (bs-tall 30 "D")) (set-window-start nil p) (bs-pv 'S6 '(46 47 54 55 56))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f6] #'bs-f6)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "rv358.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 5));
+    input.push((1.5, b"\x1b[17~"));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "rv358.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "rv358.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn a_display_string_taller_than_the_window_answers_as_gnu_does() {
+    // move_it_to does not stop inside a `display' string: pos_visible_p
+    // of the string's position stops at the last row, IT_CHARPOS there,
+    // and of the text it replaces finds the last row partly visible and
+    // answers where the element after the string falls below the window.
+    // The force_start block puts point at the string's position on the
+    // row half way down, where set_cursor_from_row puts the cursor on
+    // the string's first glyph (or one with a `cursor' property), and
+    // try_cursor_movement keeps it there while point does not move.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "tall358.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defun bs-buf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "bs"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil display-line-numbers nil)
+  (dotimes (i 100) (insert (format "line %03d\n" i)))
+  (goto-char 1) (set-window-start nil 1) (sit-for 0) 46)
+(defun bs-tall (n &optional pfx)
+  (mapconcat (lambda (i) (format "%s%02d\n" (or pfx "T") i)) (number-sequence 0 (1- n)) ""))
+(defun bs-q (tag)
+  (let ((p 46))
+    (push (list tag (window-start) (point) (window-end) (window-end nil t)
+                (pos-visible-in-window-p (point) nil t)
+                (let ((pp (posn-at-point))) (and pp (posn-col-row pp)))
+                (mapcar (lambda (q) (list q (pos-visible-in-window-p q nil t) (pos-visible-in-window-p q)))
+                        (list p (+ p 1) (+ p 3) (+ p 4) (+ p 9) (+ p 10))))
+          bs-res)))
+(defconst bs-stages
+  '((let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (setq display-line-numbers t) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (concat (bs-tall 25 "D") "XYZ")) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (setq display-line-numbers t) (put-text-property p (+ p 4) 'display (concat (bs-tall 25 "D") "XYZ")) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 9) 'display (bs-tall 30 "D")) (set-window-start nil p) (goto-char (+ p 12)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (concat (bs-tall 3 "D") (propertize "CUR" 'cursor t) "\n" (bs-tall 25 "E"))) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (put-text-property (+ p 2) (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil p) (goto-char (+ p 6)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (bs-tall 30 "D")) (set-window-start nil (- p 18)) (goto-char (- p 18)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display (bs-tall 21 "D")) (set-window-start nil p) (goto-char p))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "tall358.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 9));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "tall358.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "tall358.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn the_review_of_round_357_is_answered_as_gnu_answers() {
+    // Fvertical_motion's goal: move_it_in_display_line to first_x + to_x
+    // stops at the element whose glyph reaches past it (a TAB's, a wide
+    // character's), at a truncated row's edge, at a continued row's next
+    // element past its end, after invisible text at a row's start, with
+    // the window's hscroll and the line numbers counted and the column
+    // rounded; move_it_by_lines 0 leaves the iterator on the row of its
+    // position's text (past strings there part-way along a line, before
+    // them at ZV).  A display string replacing a line's newline makes no
+    // row for it, and pos_visible_p places positions in the text a string
+    // replaces where it3 stops: past the string, or at the glyph before it
+    // when the string holds a newline.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "rv357.el",
+        r#"(defvar vm-res nil)
+(defvar vm-stage 0)
+(defun vm-buf (&optional line)
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "vm"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil word-wrap nil display-line-numbers nil line-prefix nil wrap-prefix nil)
+  (set-window-hscroll nil 0)
+  (dotimes (i 30) (insert (format "line %03d\n" i)))
+  (goto-char 1) (forward-line 5)
+  (when line (let ((p (point))) (delete-region p (line-end-position)) (insert line)))
+  (goto-char 1) (forward-line 5) (point))
+(defun vm-ov (pos prop str &optional end)
+  (let ((ov (make-overlay pos (or end pos)))) (overlay-put ov prop str) ov))
+(defun vm-col (tag from cols ns)
+  (dolist (col cols)
+    (dolist (n ns)
+      (push (list tag col n (save-excursion (goto-char from)
+                                            (list (vertical-motion (if col (cons col n) n)) (point))))
+            vm-res))))
+(defun vm-fin () (set-window-start nil 1) (goto-char 1) (sit-for 0))
+(defun vm-pv (tag ps)
+  (push (list tag (count-screen-lines (point-min) (point-max) t) (window-end nil t)
+              (mapcar (lambda (q) (list q (pos-visible-in-window-p q nil t))) ps))
+        vm-res))
+(defconst vm-stages
+  '((let ((p (vm-buf "\tabc\tdef"))) (vm-fin) (vm-col 'tab (- p 9) '(0 1 3 7 8 9 12 15 16 30) '(1)))
+    (let ((p (vm-buf "日本語abc"))) (vm-fin) (vm-col 'wide (- p 9) '(0 1 2 3 4 5 6 7 20) '(1)))
+    (let ((p (vm-buf))) (vm-fin) (vm-col 'float (- p 9) '(2.0 2.4 2.5 2.6 3.49 -0.4 -0.6 -1.6) '(1 0)))
+    (let ((p (vm-buf (concat (make-string 30 ?x) "abcdefghij"))))
+      (setq truncate-lines t) (set-window-hscroll nil 25) (vm-fin)
+      (vm-col 'hscroll (- p 9) '(0 1 3 7 20 60) '(1 0)))
+    (let ((p (vm-buf (make-string 150 ?y))))
+      (setq line-prefix "> " wrap-prefix ">> ") (vm-fin)
+      (vm-col 'pfx (- p 9) '(0 1 2 3 5 79) '(1 2 3)))
+    (let ((p (vm-buf)))
+      (put-text-property p (+ p 3) 'invisible t) (vm-fin)
+      (vm-col 'invis (- p 9) '(0 1 2 5 9) '(1 2)))
+    (let ((p (vm-buf (make-string 70 ?z))))
+      (let ((w (split-window-right 30))) (set-window-buffer w (current-buffer)) (vm-fin)
+           (vm-col 'win (- p 9) '(0 5 20 28 40 60) '(1 2 3))))
+    (let ((p (vm-buf)))
+      (vm-ov (- p 5) 'before-string "Z1\nZ2\n") (put-text-property p (+ p 4) 'display "D") (vm-fin)
+      (vm-col 'npp p '(nil 0 1 2 3) '(-1 -2 0))
+      (vm-col 'mid (- p 5) '(nil 0 1 2) '(0 1)))
+    (let ((p (vm-buf (make-string 150 ?a))))
+      (vm-ov (+ p 79) 'before-string "X1\nX2\n") (vm-fin)
+      (vm-col 'cont (+ p 79) '(nil 0 5) '(0 1)))
+    (let ((p (vm-buf)))
+      (put-text-property (+ p 5) (+ p 9) 'display "Y1\nY2\n") (vm-fin)
+      (vm-pv 'nlrep (list (- p 9) p (+ p 5) (+ p 7) (+ p 8) (+ p 9) (+ p 18)))
+      (vm-col 'nlrep (- p 9) '(nil) '(1 2 3 4))
+      (vm-col 'nlrep-up (+ p 18) '(nil) '(-1 -2 -3 -4))
+      (vm-col 'nlrep-at (+ p 8) '(nil) '(0 1 -1)))
+    (let ((p (vm-buf)))
+      (put-text-property p (+ p 4) 'display "DD") (vm-fin)
+      (vm-pv 'nonl (list p (+ p 1) (+ p 3) (+ p 4)))
+      (put-text-property p (+ p 4) 'display "D1\nD2")
+      (put-text-property (+ p 11) (+ p 14) 'display "E1\nE2")
+      (sit-for 0)
+      (vm-pv 'nl (list p (+ p 1) (+ p 3) (+ p 4) (+ p 11) (+ p 12) (+ p 13) (+ p 14))))
+    (let ((p (vm-buf)) (z (progn (goto-char (point-max)) (delete-char -1) (point-max))))
+      (vm-ov z 'before-string "Z1\nZ2\n") (set-window-start nil (- z 100)) (goto-char (- z 50)) (sit-for 0)
+      (vm-col 'zv z '(nil 0 1) '(0 -1 -2)))))
+(defun vm-f5 () (interactive)
+  (let ((stage (nth vm-stage vm-stages)))
+    (setq vm-stage (1+ vm-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'vm-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "rv357.out" command-line-default-directory)
+      (dolist (r (reverse vm-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 11));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "rv357.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "rv357.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_second_review_of_round_357_is_answered_as_gnu_answers() {
+    // move_it_in_display_line under `word-wrap': a goal past a continued
+    // row's glyphs that the element after them does not reach moves
+    // again to one short of the x reached, the row's last glyph
+    // (end-of-visual-line on a word longer than the window).
+    // move_it_vertically_backward 0 at BEGV walks through the strings
+    // there to its text's row, and a move back from that row has no line
+    // start to go back to; at ZV the iterator stays before strings that
+    // begin rows of their own; a row beginning inside a `display' string
+    // leaves the iterator after it.  pos_visible_p's it3 walks the
+    // string's row from its start, prefix first, to the first element at
+    // or past the position, or to the string's newline.  CUR-COL starts
+    // the goal move at point.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "rv357b.el",
+        r#"(defvar vm-res nil)
+(defvar vm-stage 0)
+(defun vm-buf (&optional line)
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "vm"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil word-wrap nil display-line-numbers nil line-prefix nil wrap-prefix nil)
+  (visual-line-mode -1)
+  (set-window-hscroll nil 0)
+  (dotimes (i 30) (insert (format "line %03d\n" i)))
+  (goto-char 1) (forward-line 5)
+  (when line (let ((p (point))) (delete-region p (line-end-position)) (insert line)))
+  (goto-char 1) (forward-line 5) (point))
+(defun zv-buf (&optional last)
+  (vm-buf)
+  (erase-buffer)
+  (dotimes (i 12) (insert (format "line %03d\n" i)))
+  (insert (or last "tail"))
+  (point-max))
+(defun vm-ov (pos prop str &optional end pri)
+  (let ((ov (make-overlay pos (or end pos))))
+    (overlay-put ov prop str) (when pri (overlay-put ov 'priority pri)) ov))
+(defun vm-fin () (set-window-start nil 1) (goto-char 1) (sit-for 0))
+(defun vm-col (tag from cols ns)
+  (dolist (col cols)
+    (dolist (n ns)
+      (push (list tag col n (save-excursion (goto-char from)
+                                            (condition-case e (list (vertical-motion (if col (cons col n) n)) (point))
+                                              (error (list 'err e)))))
+            vm-res))))
+(defun vm-cmd (tag start cmd)
+  (goto-char start) (sit-for 0)
+  (setq this-command cmd) (call-interactively cmd) (setq last-command cmd) (sit-for 0)
+  (push (list tag start (point) (let ((x (posn-at-point))) (and x (posn-col-row x)))) vm-res))
+(defun vm-pv (tag ps)
+  (push (list tag (window-end nil t)
+              (mapcar (lambda (q) (list q (pos-visible-in-window-p q nil t)
+                                        (let ((x (posn-at-point q))) (and x (posn-col-row x)))))
+                      ps))
+        vm-res))
+(defun zv-q (tag)
+  (let ((z (point-max)))
+    (set-window-start nil 1) (goto-char z) (sit-for 0)
+    (push (list tag (window-end nil t) (pos-visible-in-window-p z nil t)
+                (count-screen-lines 1 z t))
+          vm-res)
+    (vm-col tag z '(nil 0 1) '(0 -1 -2))
+    (vm-col (list tag 'up) (- z 13) '(nil 0 1) '(1 2 3))))
+(defconst vm-stages
+  '((let ((p (vm-buf (concat "see https://example.com/" (make-string 120 ?u) " and more text"))))
+      (visual-line-mode 1) (set-window-start nil 1) (sit-for 0)
+      (dolist (d '(0 30 100 150)) (vm-cmd 'url (+ p d) #'end-of-visual-line)))
+    (let ((p (vm-buf (make-string 200 ?a))))
+      (visual-line-mode 1) (set-window-start nil 1) (sit-for 0)
+      (dolist (d '(3 90 170)) (vm-cmd 'long (+ p d) #'end-of-visual-line))
+      (setq display-line-numbers t) (sit-for 0)
+      (dolist (d '(3 90)) (vm-cmd 'lnum (+ p d) #'end-of-visual-line)))
+    (let ((p (vm-buf (concat (make-string 150 ?w) " tail"))))
+      (setq word-wrap t) (vm-fin)
+      (vm-col 'wwlong p '(0 70 77 78 79 80 85 200) '(1 2))
+      (setq display-line-numbers t) (sit-for 0)
+      (vm-col 'wwln p '(74 75 76 77 80) '(1 2)))
+    (let ((p (vm-buf))) (vm-ov 1 'before-string "A\nB\n") (vm-fin)
+      (vm-col 'begv 1 '(nil 0 1 3) '(0 1 2 -1))
+      (vm-col 'begv3 4 '(nil 0 1 3) '(0 -1 -2))
+      (vm-col 'begv10 10 '(nil 0 1 3) '(-1 -2 -3)))
+    (let ((p (vm-buf))) (put-text-property 1 4 'display "D1\nD2\n") (vm-fin)
+      (vm-col 'begvd 1 '(nil 0 1 3) '(0 1 -1))
+      (vm-col 'begvd5 5 '(nil 0 1 3) '(0 -1))
+      (vm-buf) (vm-ov 1 'before-string "A\nB") (vm-fin)
+      (vm-col 'begvb 1 '(nil 0 1 3) '(0 1 -1))
+      (vm-col 'begvb3 4 '(nil 0 1 3) '(0 -1)))
+    (let ((z (zv-buf))) (vm-ov z 'before-string "A\n" nil 2) (vm-ov z 'before-string "B\n" nil 1) (zv-q 'two))
+    (let ((z (zv-buf (make-string 79 ?t)))) (vm-ov z 'before-string "Z1\nZ2\n") (zv-q 'edge))
+    (let ((p (vm-buf)))
+      (put-text-property (+ p 3) (+ p 5) 'display "DD\nEE") (vm-fin)
+      (dolist (q (list (+ p 5) (+ p 6) (+ p 8)))
+        (vm-col (list 'td q) q '(nil 0 1 2) '(0 1 -1))))
+    (let ((p (vm-buf)))
+      (setq line-prefix "> ")
+      (put-text-property p (+ p 4) 'display "D1\nD2") (vm-fin)
+      (vm-pv 'pfx (list p (+ p 1) (+ p 3) (+ p 4) (+ p 5)))
+      (setq line-prefix nil)
+      (put-text-property p (+ p 4) 'display nil)
+      (vm-ov (+ p 2) 'before-string "BS")
+      (put-text-property (+ p 2) (+ p 5) 'display "E1\nE2") (sit-for 0)
+      (vm-pv 'bs (list (+ p 2) (+ p 3) (+ p 4) (+ p 5) (+ p 6))))
+    (let ((p (vm-buf (make-string 120 ?c))))
+      (put-text-property (+ p 75) (+ p 80) 'display "HHHHHHH") (vm-fin)
+      (vm-pv 'edge (list (+ p 75) (+ p 76) (+ p 79) (+ p 80) (+ p 81)))
+      (goto-char (+ p 2))
+      (push (list 'cc (condition-case e (vertical-motion 1 nil 1e10) (error e))
+                  (condition-case e (vertical-motion 1 nil 'a) (error e))
+                  (save-excursion (list (vertical-motion '(5 . 0) nil 2) (point)))
+                  (save-excursion (list (vertical-motion '(1 . 0) nil 2) (point)))
+                  (save-excursion (list (vertical-motion '(1 . 0) nil 0) (point)))
+                  (save-excursion (list (vertical-motion 0 nil -5) (point))))
+            vm-res))))
+(defun vm-f5 () (interactive)
+  (let ((stage (nth vm-stage vm-stages)))
+    (setq vm-stage (1+ vm-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'vm-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "rv357b.out" command-line-default-directory)
+      (dolist (r (reverse vm-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 9));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "rv357b.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "rv357b.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn vertical_motion_in_batch_moves_by_lines_as_vmotion_does() {
+    // Noninteractively Fvertical_motion runs vmotion: neither COLS nor
+    // CUR-COL is converted, so no range or type error.
+    let corpus = Corpus::new();
+    let form = r#"(progn (insert "abc\ndef\nghi\n") (goto-char 1)
+  (princ (list (vertical-motion (cons 1e10 1)) (point)
+               (vertical-motion (cons (expt 2 70) 1)) (point)
+               (vertical-motion (cons 0.0e+NaN -1)) (point)
+               (vertical-motion 1 nil 1e10) (point)
+               (vertical-motion 1 nil 'a) (point))))"#;
+    let args = ["-Q", "--batch", "--eval", form];
+    let expected = corpus.run(&oracle(), &args);
+    let actual = corpus.run(emaxx(), &args);
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn truncated_lines_whose_strings_hold_newlines_answer_as_gnu_does() {
+    // display_line ends a truncated line's row at a newline in an overlay
+    // or `display' string and begins the next at x 0, each row hscrolled
+    // from its own start: window-start, point, window-end with and
+    // without UPDATE, pos-visible-in-window-p, posn-at-point,
+    // vertical-motion and count-screen-lines over before-strings,
+    // after-strings and display strings with newlines, hscrolled, with
+    // line numbers and from window starts at the strings.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "rv359.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defun bs-buf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "bs"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines t display-line-numbers nil line-prefix nil)
+  (set-window-hscroll nil 0)
+  (dotimes (i 100) (insert (format "line %03d\n" i)))
+  (goto-char 1) (set-window-start nil 1) (sit-for 0) 46)
+(defun bs-ov (pos prop str &optional end)
+  (let ((ov (make-overlay pos (or end pos)))) (overlay-put ov prop str) ov))
+(defun bs-long (p) (delete-region p (+ p 8)) (goto-char p) (insert (make-string 200 ?a)) p)
+(defun bs-q (tag)
+  (let ((p 46))
+    (push (list tag (window-start) (point) (window-end) (window-end nil t)
+                (pos-visible-in-window-p (point) nil t)
+                (let ((pp (posn-at-point))) (and pp (posn-col-row pp)))
+                (mapcar (lambda (q) (list q (pos-visible-in-window-p q nil t))) (list (- p 9) p (+ p 3) (+ p 8) (+ p 9)))
+                (mapcar (lambda (n) (save-excursion (goto-char (- p 9)) (list n (vertical-motion n) (point)))) '(1 2 3 4 5))
+                (mapcar (lambda (n) (save-excursion (goto-char (+ p 9)) (list n (vertical-motion n) (point)))) '(-1 -2 -3 -4))
+                (count-screen-lines (window-start) (+ p 20)))
+          bs-res)))
+(defconst bs-stages
+  '((let ((p (bs-buf))) (bs-ov p 'before-string "B00\nB01\nB02\n") (goto-char p))
+    (let ((p (bs-buf))) (set-window-hscroll nil 2) (bs-ov p 'before-string "B00\nB01\nB02\n") (goto-char p))
+    (let ((p (bs-buf))) (bs-ov (+ p 7) 'after-string "\nA1\nA2" (+ p 8)) (goto-char (+ p 3)))
+    (let ((p (bs-buf))) (put-text-property p (+ p 4) 'display "D1\nD2\n") (goto-char (+ p 5)))
+    (let ((p (bs-buf))) (bs-ov (+ p 3) 'before-string "Q1\nQ2\n") (goto-char (+ p 3)))
+    (let ((p (bs-buf))) (bs-long p) (bs-ov (+ p 100) 'before-string "X1\nX2\n") (goto-char (+ p 3)))
+    (let ((p (bs-buf))) (bs-long p) (bs-ov (+ p 50) 'before-string "Y1\nY2\n") (goto-char (+ p 3)))
+    (let ((p (bs-buf))) (setq display-line-numbers t) (bs-ov p 'before-string "N00\nN01\n") (goto-char p))
+    (let ((p (bs-buf))) (bs-ov p 'before-string "B00\nB01\nB02\n") (set-window-start nil p) (goto-char p))
+    (let ((p (bs-buf))) (bs-ov (+ p 3) 'before-string "Q1\nQ2\n") (set-window-start nil (+ p 3)) (goto-char (+ p 3)))
+    (let ((p (bs-buf))) (set-window-hscroll nil 3) (bs-ov (+ p 3) 'before-string "QQQQQ1\nQQQQQ2\n") (goto-char (+ p 6)))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "rv359.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 11));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "rv359.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "rv359.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn the_review_of_round_359_is_answered_as_gnu_answers() {
+    // hscroll_window_tree walks from the cursor row's start display_pos,
+    // where init_iterator loads the overlay strings at the position
+    // again, to point or the first newline; the cursor on a truncated
+    // row of strings at ZV is on its first glyph; a truncated row's walk
+    // out of a string reseats at the next newline past the edge
+    // (forward_to_next_line_start); move_it_by_lines at ZV counts the
+    // row past last_visible_x, first_visible_x included; posn-at-x-y
+    // past a string's newline counts DX from it, and under
+    // `current-line' adds the hscroll only on the row reaching point;
+    // it3 counts the line numbers it has not produced.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "rv359r.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defvar bs-qs nil)
+(defvar bs-vm nil)
+(setq-default auto-hscroll-mode t)
+(defun bs-buf (&optional n)
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "bs"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines t display-line-numbers nil line-prefix nil)
+  (kill-local-variable 'auto-hscroll-mode)
+  (set-window-hscroll nil 0)
+  (dotimes (i (or n 100)) (insert (format "line %03d\n" i)))
+  (goto-char 1) (set-window-start nil 1) (sit-for 0) 46)
+(defun bs-ov (pos prop str &optional end)
+  (let ((ov (make-overlay pos (or end pos)))) (overlay-put ov prop str) ov))
+(defun bs-long (p n) (delete-region p (+ p 8)) (goto-char p) (insert (make-string n ?a)) p)
+(defun bs-hs (h) (setq-local auto-hscroll-mode nil) (set-window-hscroll nil h))
+(defun bs-q (tag)
+  (push (list tag (window-hscroll) (window-start) (point)
+              (pos-visible-in-window-p (point) nil t)
+              (let ((pp (posn-at-point))) (and pp (list (posn-col-row pp) (posn-point pp))))
+              (mapcar (lambda (q) (list q (pos-visible-in-window-p q nil t))) bs-qs)
+              (mapcar (lambda (m) (save-excursion (goto-char (car m)) (list (vertical-motion (cdr m)) (point)))) bs-vm)
+              (count-screen-lines (window-start) (point))
+              (mapcar (lambda (x) (let ((pp (posn-at-x-y x 5))) (and pp (list (posn-point pp) (car (posn-object-x-y pp))))))
+                      '(0 3 6 7 20)))
+        bs-res))
+(defconst bs-stages
+  '((let ((p (bs-buf))) (setq bs-qs '(100 146 236) bs-vm '((37 . 2) (37 . 4) (256 . -2))) (bs-long p 200) (bs-ov (+ p 100) 'before-string "X1\nX2\n") (goto-char (+ p 190)))
+    (let ((p (bs-buf))) (setq-local auto-hscroll-mode 'current-line) (bs-long p 200) (bs-ov (+ p 100) 'before-string "X1\nX2\n") (goto-char (+ p 190)))
+    (let ((p (bs-buf))) (setq-local auto-hscroll-mode 'current-line) (setq display-line-numbers t) (bs-long p 200) (bs-ov (+ p 100) 'before-string "X1\nX2\n") (goto-char (+ p 190)))
+    (let ((p (bs-buf))) (bs-long p 200) (bs-ov 145 'after-string "X1\nX2\n" 146) (goto-char 236))
+    (let ((p (bs-buf))) (setq bs-qs '(46 49 52) bs-vm '((37 . 2) (37 . 3))) (bs-ov 49 'before-string (concat "B00\n" (make-string 100 ?Y))) (goto-char 52))
+    (let ((p (bs-buf))) (setq-local auto-hscroll-mode 'current-line) (bs-ov 49 'before-string (concat "B00\n" (make-string 100 ?Y))) (goto-char 52))
+    (let ((p (bs-buf 10))) (setq bs-qs '(81 90) bs-vm '((73 . 2) (73 . 3))) (goto-char (point-max)) (delete-char -1) (bs-ov (1- (point-max)) 'after-string (concat "\nZ1\n" (make-string 100 ?z)) (point-max)) (goto-char (point-max)))
+    (let ((p (bs-buf))) (setq bs-qs '(46 100 136) bs-vm '((1 . 5) (1 . 6) (37 . 2))) (bs-long p 200) (bs-hs 50) (goto-char 136))
+    (let ((p (bs-buf))) (bs-long p 90) (bs-hs 50) (goto-char 20))
+    (let ((p (bs-buf))) (setq bs-qs '(46 49 52) bs-vm '((37 . 2))) (bs-ov 49 'before-string "B00\nB01\n") (goto-char 1))
+    (let ((p (bs-buf))) (bs-hs 2) (setq display-line-numbers t) (put-text-property p (+ p 4) 'display "D1\nD2\n") (goto-char (+ p 5)))
+    (let ((p (bs-buf))) (bs-hs 1) (bs-ov 49 'before-string (concat "B00\n" (propertize "B01" 'face 'region) "\n")) (goto-char 10))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "rv359r.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 12));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "rv359r.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "rv359r.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}

@@ -13,6 +13,7 @@ use super::{
 };
 use crate::buffer::Buffer;
 use crate::lisp::primitives::{InvisibilitySpec, invisible_class_at, visual_line_first_line};
+use crate::lisp::types::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -90,25 +91,28 @@ impl<'a, 'c> Rows<'a, 'c> {
         context.prefix_glyphs(&context.prefix_value_at(self.buffer, self.buffer.point_max(), false))
     }
 
-    /// The display line beginning at raw line LINE laid out continued at
-    /// the window's width from ORIGIN (0: from its start), made once.
+    /// The display line beginning at raw line LINE laid out at the
+    /// window's width from ORIGIN (0: from its start), continued or, in a
+    /// truncating window, broken only where a string's newline ends a
+    /// row; made once.
     pub(super) fn laid_at(&self, line: usize, origin: usize) -> Rc<layout::LineLayout> {
         if let Some(laid) = self.layouts.borrow().get(&(line, origin)) {
             return Rc::clone(laid);
         }
         let visual = self.visual(line);
+        let walk = !self.at_line_beg(origin) && !self.truncate;
         let laid = Rc::new(if origin == 0 {
-            layout::lay_out_visual_line(&visual, self.body_width, false)
+            layout::lay_out_visual_line(&visual, self.body_width, self.truncate)
         } else {
             layout::lay_out_visual_line_from(
                 &visual,
                 self.body_width,
-                false,
+                self.truncate,
                 visual.start_index(
                     origin.saturating_sub(self.buffer.display_line_start_of(line)),
-                    !self.at_line_beg(origin),
+                    walk,
                 ),
-                !self.at_line_beg(origin),
+                walk,
             )
         });
         self.layouts
@@ -201,11 +205,7 @@ impl<'a, 'c> Rows<'a, 'c> {
             && line_start < point_max
             && invisible_class_at(self.buffer, self.spec, line_start) != 0
             && visual.raw_of_display.last().copied() == Some(point_max.saturating_sub(line_start));
-        let segs = if self.truncate {
-            1
-        } else {
-            self.laid_at(line, origin).rows.len().max(1)
-        };
+        let segs = self.laid_at(line, origin).rows.len().max(1);
         let info = (segs, visual.lines_spanned.max(1), invisible_tail);
         self.lines.borrow_mut().insert((line, origin), info);
         info
@@ -278,6 +278,40 @@ impl<'a, 'c> Rows<'a, 'c> {
             })
     }
 
+    /// Whether display_line ends ROW with IT_CHARPOS past the row's start
+    /// position, the condition, with first_visible_x past 0, for the left
+    /// truncation glyph (insert_left_trunc_glyphs).  A row of a truncated
+    /// line ends at a string's newline -- the iterator then delivers the
+    /// row below's first element, at the string's position while more of
+    /// it follows or the position an overlay string returns to, at the
+    /// end of the text a `display' string covers -- or at the line's end,
+    /// past its newline: an empty line's row ends past its start, a row
+    /// at ZV with no newline does not.
+    pub(super) fn ends_past_start(&self, row: Row) -> bool {
+        let start = self.row_start(row);
+        let laid = self.laid_at(row.line, row.origin);
+        let end = if row.seg + 1 < laid.rows.len() {
+            self.row_start(Row {
+                seg: row.seg + 1,
+                ..row
+            })
+        } else {
+            let line_end = self.buffer.display_line_start_of(row.line)
+                + self
+                    .visual(row.line)
+                    .raw_of_display
+                    .last()
+                    .copied()
+                    .unwrap_or(0);
+            if line_end < self.buffer.point_max() {
+                line_end + 1
+            } else {
+                line_end
+            }
+        };
+        end != start
+    }
+
     /// MATRIX_ROW_START_CHARPOS of ROW.
     pub(super) fn start_pos(&self, row: Row) -> usize {
         self.row_start(row).max(self.buffer.point_min())
@@ -293,9 +327,6 @@ impl<'a, 'c> Rows<'a, 'c> {
             line,
             ..Row::default()
         };
-        if self.truncate {
-            return row;
-        }
         self.row_in_layout(row, pos)
     }
 
@@ -318,18 +349,213 @@ impl<'a, 'c> Rows<'a, 'c> {
     }
 
     /// start_display: the first row of a display starting at START,
-    /// which begins at START wherever it falls in its line.  A start a
-    /// row of the line's own layout begins at is that row.
+    /// which begins at START wherever it falls in its line, with what
+    /// init_iterator's handle_stop shows there first (the overlay
+    /// strings at START before its text, a display string or ellipsis
+    /// covering it from its beginning).  A row of the line's own layout
+    /// beginning with that display element is that row, when the walk
+    /// to START's text stops on it too (it takes that row's
+    /// continuation_lines_width).
     pub(super) fn top_row(&self, start: usize) -> Row {
         let start = start.clamp(self.buffer.point_min(), self.buffer.point_max());
         let row = self.row_of(start);
-        if self.row_start(row) == start {
-            return row;
-        }
-        Row {
+        let origin = Row {
             line: row.line,
             seg: 0,
             origin: start,
+        };
+        // Truncating, start_display does not walk from the line's start:
+        // init_iterator at START shows the strings there first.
+        if self.truncate {
+            return if start == self.buffer.display_line_start_of(row.line) {
+                Row { seg: 0, ..row }
+            } else {
+                origin
+            };
+        }
+        let line_start = self.buffer.display_line_start_of(row.line);
+        let visual = self.visual(row.line);
+        let walked = !self.at_line_beg(start);
+        let first = visual.start_index(start.saturating_sub(line_start), walked);
+        // No walk from a line's beginning: its first row is the line's.
+        let walk_to = if walked {
+            visual.walk_stop_index(first)
+        } else {
+            first
+        };
+        let laid = self.laid_at(row.line, 0);
+        match laid
+            .rows
+            .iter()
+            .position(|segment| segment.start_index == first)
+        {
+            Some(seg)
+                if laid
+                    .rows
+                    .iter()
+                    .rposition(|segment| segment.start_index <= walk_to)
+                    == Some(seg) =>
+            {
+                Row { seg, ..row }
+            }
+            _ => origin,
+        }
+    }
+
+    /// The display indexes ROW shows: from its first through the one
+    /// before the next row's, a newline ending it included.
+    fn row_indexes(&self, row: Row) -> std::ops::Range<usize> {
+        let laid = self.laid_at(row.line, row.origin);
+        let count = self.visual(row.line).text.chars().count();
+        let start = laid
+            .rows
+            .get(row.seg)
+            .map_or(count, |segment| segment.start_index);
+        let end = laid
+            .rows
+            .get(row.seg + 1)
+            .map_or(count, |segment| segment.start_index);
+        start..end.max(start)
+    }
+
+    /// The newline ending ROW, when a string produced it
+    /// (ends_in_newline_from_string_p): its display index and the
+    /// string (an index into the visual line's objects).
+    fn string_newline_ending(&self, row: Row) -> Option<(usize, usize)> {
+        let visual = self.visual(row.line);
+        let last = self.row_indexes(row).end.checked_sub(1)?;
+        (visual.text.chars().nth(last) == Some('\n'))
+            .then(|| visual_object(&visual, last))
+            .flatten()
+            .map(|object| (last, object))
+    }
+
+    /// find_row_edges' MATRIX_ROW_END_CHARPOS of ROW, the window's row
+    /// below PREV (none for its first row), where it is not where the
+    /// next row starts: one past the buffer position of the string whose
+    /// newline ends ROW.  Either the string ends there and a `display'
+    /// property gave it, so the iterator pops it to the end of the text
+    /// it replaces, past max_pos (an overlay string pops to its own
+    /// position, where the next row starts); or it goes on past the
+    /// newline and PREV ended in a newline from a string too having seen
+    /// this string, so the row ends at eol_pos + 1.
+    pub(super) fn string_row_end(&self, row: Row, prev: Option<Row>) -> Option<usize> {
+        let (newline, object) = self.string_newline_ending(row)?;
+        let visual = self.visual(row.line);
+        let raw = visual.raw_of_display.get(newline).copied()?;
+        let past = self.buffer.display_line_start_of(row.line) + raw + 1;
+        // it->object past the newline: the same string still.
+        if visual_object(&visual, newline + 1) != Some(object) {
+            return visual.object_from_display(newline).then_some(past);
+        }
+        let (string, _) = visual.object_at(newline)?;
+        self.seen_this_string(prev?, string).then_some(past)
+    }
+
+    /// Whether ROW shows no glyph at all: the row display_line starts at
+    /// ZV, which displays no text (displays_text_p false).
+    pub(super) fn empty_row(&self, row: Row) -> bool {
+        self.row_indexes(row).is_empty()
+    }
+
+    /// find_row_edges' seen_this_string for STRING: PREV ends in a
+    /// newline from a string, and the last of its glyphs that came from
+    /// buffer or string -- past the trailing ones redisplay inserted,
+    /// whose object is nil and charpos not positive -- came from STRING;
+    /// or no glyph did.  The newline's own glyph is such a one unless it
+    /// is the row's first (used_before == 0), which takes the newline's
+    /// string index as its charpos; line-number glyphs before it always
+    /// are, a prefix's glyphs never (their object is the prefix).
+    fn seen_this_string(&self, prev: Row, string: Value) -> bool {
+        let Some((newline, _)) = self.string_newline_ending(prev) else {
+            return false;
+        };
+        let visual = self.visual(prev.line);
+        if newline > self.row_indexes(prev).start {
+            return visual
+                .object_at(newline - 1)
+                .is_some_and(|(object, _)| crate::lisp::types::eq(object, string));
+        }
+        let prefix_cols = self
+            .laid_at(prev.line, prev.origin)
+            .rows
+            .get(prev.seg)
+            .map_or(0, |segment| segment.prefix_cols);
+        if prefix_cols > 0 {
+            return false;
+        }
+        visual.lnum_cols > 0
+            || visual
+                .object_at(newline)
+                .is_some_and(|(_, index)| index == 0)
+    }
+
+    /// set_cursor_from_row's x on ROW, every glyph of which comes from a
+    /// string, for POINT, whose glyph it does not show (the row the
+    /// force_start block moves point to): step 2 finds no glyph for
+    /// point and looks through the row's strings in turn.  A `display'
+    /// string at point or after it (string_buffer_position_lim's TEM)
+    /// puts the cursor on its first glyph whose character has a non-nil
+    /// `cursor' property, else on its first glyph, and the search ends;
+    /// an overlay string's (TEM 0) `cursor' glyph is a candidate, the
+    /// last one found taken.  With none the cursor goes past the row's
+    /// glyphs onto its newline's.  A row the string continues past puts
+    /// it on the row's first glyph, a line number's included (the FALSE
+    /// answer: before the gutter).
+    pub(super) fn string_row_cursor_x(&self, row: Row, point: usize) -> Option<(usize, bool)> {
+        let visual = self.visual(row.line);
+        let indexes = self.row_indexes(row);
+        if indexes.is_empty()
+            || indexes
+                .clone()
+                .any(|index| visual_object(&visual, index).is_none())
+        {
+            return None;
+        }
+        let laid = self.laid_at(row.line, row.origin);
+        let column = |index: usize| {
+            let start = laid
+                .rows
+                .get(row.seg)
+                .map_or(0, |segment| segment.start_column);
+            laid.columns
+                .get(index)
+                .copied()
+                .unwrap_or(start)
+                .saturating_sub(start)
+        };
+        let has_cursor = |index: usize| {
+            visual.object_at(index).is_some_and(|(value, character)| {
+                crate::lisp::primitives::string_property_at(&value, character, "cursor")
+                    .is_some_and(|cursor| cursor.is_truthy())
+            })
+        };
+        let line_start = self.buffer.display_line_start_of(row.line);
+        let mut cursor = None;
+        let mut index = indexes.start;
+        while index < indexes.end {
+            let object = visual_object(&visual, index);
+            let run_end = (index..indexes.end)
+                .find(|&next| visual_object(&visual, next) != object)
+                .unwrap_or(indexes.end);
+            let found = (index..run_end).find(|&glyph| has_cursor(glyph));
+            if visual.object_from_display(index) {
+                let tem = visual
+                    .raw_of_display
+                    .get(index)
+                    .map(|&raw| line_start + raw);
+                if tem.is_some_and(|tem| tem >= point) {
+                    cursor = Some(found.unwrap_or(index));
+                    break;
+                }
+            } else if found.is_some() {
+                cursor = found;
+            }
+            index = run_end;
+        }
+        match (cursor, self.string_newline_ending(row)) {
+            (Some(index), _) | (None, Some((index, _))) => Some((column(index), true)),
+            (None, None) => Some((0, false)),
         }
     }
 
@@ -338,9 +564,6 @@ impl<'a, 'c> Rows<'a, 'c> {
         let row = self.row_of(pos);
         if top.origin == 0 || row.line != top.line || pos < top.origin {
             return row;
-        }
-        if self.truncate {
-            return top;
         }
         self.row_in_layout(top, pos)
     }
@@ -688,6 +911,31 @@ impl Planner<'_, '_, '_> {
             .filter(|row| *row < self.height)
     }
 
+    /// try_cursor_movement with point where the window's last display
+    /// left it: the row the cursor was on then (w->last_cursor_vpos),
+    /// which an unmoved point does not leave, while point is within that
+    /// row's start and end positions -- a row of a string before point's
+    /// glyph or of a `display' string taller than the window, where the
+    /// force_start block put the cursor, rather than point's glyph's.
+    fn unmoved_cursor_row(&self, start: usize) -> Option<usize> {
+        let vpos = self.state.cursor_y;
+        if self.point < start || !self.in_range(start) || vpos >= self.height {
+            return None;
+        }
+        let top = self.rows.top_row(start);
+        let (row, moved) = self.rows.forward(top, vpos);
+        if moved != vpos {
+            return None;
+        }
+        let prev = (vpos > 0).then(|| self.rows.forward(top, vpos - 1).0);
+        let row_end = self
+            .rows
+            .string_row_end(row, prev)
+            .or_else(|| self.rows.next(row).map(|next| self.rows.start_pos(next)))
+            .unwrap_or(self.zv);
+        (self.rows.start_pos(row) <= self.point && self.point <= row_end).then_some(vpos)
+    }
+
     /// The iterator walks STEP.
     fn walk(&self, step: FetchStep) {
         self.steps.borrow_mut().push(step);
@@ -779,7 +1027,9 @@ impl Planner<'_, '_, '_> {
         let state = self.state;
         if state.cursor_unmoved
             && self.point >= start
-            && let Some(row) = self.visible_row(start)
+            && let Some(row) = self
+                .unmoved_cursor_row(start)
+                .or_else(|| self.visible_row(start))
         {
             // try_cursor_movement: the current matrix, no iterator.
             return self.done(start, Some(row), None);
@@ -1293,4 +1543,15 @@ impl Planner<'_, '_, '_> {
         self.walk(FetchStep::SetStart { start: new_start });
         Some(new_start)
     }
+}
+
+/// The string display INDEX of VISUAL comes from, as an index into its
+/// objects.
+fn visual_object(visual: &VisualLine, index: usize) -> Option<usize> {
+    visual
+        .object_of
+        .get(index)
+        .copied()
+        .flatten()
+        .map(|(object, _)| object)
 }

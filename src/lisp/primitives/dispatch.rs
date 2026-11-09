@@ -32,7 +32,8 @@ mod misc_keymaps;
 mod numeric;
 
 pub(crate) use buffer_edit::{
-    row_index_of, screen_row_starts, visual_line_bounds, visual_vertical_motion,
+    interactive_motion, interactive_screen_line, iterator_first_visible, row_index_of,
+    screen_row_starts, visual_line_bounds, visual_segment_starts, visual_vertical_motion,
     window_text_geometry,
 };
 #[cfg(test)]
