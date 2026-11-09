@@ -231,14 +231,20 @@ fn lay_out_from(
             ..RowState::default()
         }
     } else {
-        // The state at the start of the row the walk to FROM stops on.
+        // The state at the start of the row the walk stops on: past the
+        // strings FROM shows first, at the text after them.
+        let walk_to = visual.walk_stop_index(from);
+        let reached = elements
+            .iter()
+            .position(|element| walk_to < element.end)
+            .unwrap_or(elements.len());
         let (_, states) = lay_out_rows(visual, cols, false, motion, RowState::default());
         RowState {
             element: target,
             ..states
                 .iter()
                 .rev()
-                .find(|state| state.element <= target)
+                .find(|state| state.element <= reached)
                 .copied()
                 .unwrap_or_default()
         }

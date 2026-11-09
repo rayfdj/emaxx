@@ -360,19 +360,38 @@ pub(crate) fn rows_between(
     rows
 }
 
-/// move_it_to (MOVE_TO_VPOS) COUNT screen lines down from FROM: the
-/// landing line's start, the lines moved, and whether the line begins
-/// inside a string that began a line above (its start repeats the one
-/// before).
+/// Where move_it_to (MOVE_TO_VPOS) COUNT screen lines down from FROM
+/// lands.
+struct RowsDown {
+    /// The landing line's start.
+    start: usize,
+    /// The lines moved.
+    moved: i64,
+    /// The line begins inside a string, past its first character.
+    in_string: bool,
+    /// The landing line among the rows of its display line, and those
+    /// rows' starts.
+    index: usize,
+    starts: Vec<usize>,
+}
+
+/// move_it_to (MOVE_TO_VPOS) COUNT screen lines down from FROM, on the
+/// row FROM_ROW of FROM's display line when the iterator is known to be
+/// there (a string's rows share their position), else the first row
+/// showing FROM.
 fn forward_rows(
     interp: &mut Interpreter,
     env: &mut Env,
     window_id: u64,
     from: usize,
+    from_row: Option<usize>,
     count: i64,
     fetches: &mut IteratorFetches,
-) -> (usize, i64, bool) {
-    use super::dispatch::{row_index_of, screen_row_starts, visual_line_bounds};
+) -> RowsDown {
+    use super::dispatch::{
+        interactive_motion, interactive_screen_line, row_index_of, visual_line_bounds,
+        visual_segment_starts,
+    };
     if let Some(geometry) = fetches.geometry()
         && count > 0
     {
@@ -383,24 +402,44 @@ fn forward_rows(
         );
     }
     let zv = interp.buffer.borrow().point_max();
+    // screen_row_starts, keeping a terminal's layout of the line, whose
+    // glyphs say what each row begins with.
+    let interactive = interactive_motion(interp, env);
+    let lay_out = |interp: &mut Interpreter, env: &mut Env, bol: usize, eol: usize| {
+        if interactive {
+            let layout = interactive_screen_line(interp, env, window_id, bol);
+            (layout.row_starts.clone(), Some(layout))
+        } else {
+            (visual_segment_starts(interp, env, bol, eol), None)
+        }
+    };
     let (mut bol, mut eol) = visual_line_bounds(interp, from);
-    let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
-    let mut index = row_index_of(&starts, from);
+    let (mut starts, mut layout) = lay_out(interp, env, bol, eol);
+    let mut index = from_row
+        .filter(|&row| starts.get(row).is_some_and(|&start| start <= from))
+        .unwrap_or_else(|| row_index_of(&starts, from));
     let mut moved = 0;
     while moved < count {
         if index + 1 < starts.len() {
             index += 1;
         } else if eol < zv {
             (bol, eol) = visual_line_bounds(interp, eol + 1);
-            starts = screen_row_starts(interp, env, window_id, bol, eol);
+            (starts, layout) = lay_out(interp, env, bol, eol);
             index = 0;
         } else {
             break;
         }
         moved += 1;
     }
-    let in_string = index > 0 && starts[index] == starts[index - 1];
-    (starts[index], moved, in_string)
+    RowsDown {
+        start: starts[index],
+        moved,
+        in_string: layout
+            .as_ref()
+            .is_some_and(|layout| layout.row_begins_inside_string(index)),
+        index,
+        starts,
+    }
 }
 
 /// (it->last_visible_x - it->first_visible_x) / FRAME_COLUMN_WIDTH, the
@@ -428,20 +467,8 @@ pub(crate) fn move_it_by_lines(
         return (screen_line_start(interp, env, window_id, from, fetches), 0);
     }
     if dvpos > 0 {
-        let (pos, moved, in_string) = forward_rows(interp, env, window_id, from, dvpos, fetches);
-        if moved < dvpos {
-            // move_it_to runs out at ZV.
-            return (interp.buffer.borrow().point_max(), moved);
-        }
-        // !IT_POS_VALID_AFTER_MOVE_P: inside a display string, on to the
-        // buffer text after it (an overlay string keeps its position).
-        if in_string && reseat_current(interp, pos).string.is_some() {
-            return (
-                pos_reached(interp, env, window_id, pos, pos + 1, fetches),
-                moved,
-            );
-        }
-        return (pos, moved);
+        let landing = move_it_by_lines_from(interp, env, window_id, from, None, dvpos, fetches);
+        return (landing.pos, landing.moved);
     }
     let begv = interp.buffer.borrow().point_min();
     let orig_charpos = from;
@@ -473,7 +500,8 @@ pub(crate) fn move_it_by_lines(
         let delta = it2_vpos + dvpos;
         // IT itself, which stops again at the line start.
         fetches.begin_walk();
-        let (forward, moved, _) = forward_rows(interp, env, window_id, it, delta, fetches);
+        let down = forward_rows(interp, env, window_id, it, None, delta, fetches);
+        let (forward, moved) = (down.start, down.moved);
         // Back again if it did not move at all.
         if forward == orig_charpos {
             (it, vpos)
@@ -492,6 +520,73 @@ pub(crate) fn move_it_by_lines(
         (it, vpos)
     } else {
         (it, vpos)
+    }
+}
+
+/// Where move_it_by_lines leaves the iterator: its position, the lines
+/// moved and, after a move down, the row it is on among its display
+/// line's rows, which a further move goes on from.
+pub(crate) struct Landing {
+    pub(crate) pos: usize,
+    pub(crate) moved: i64,
+    pub(crate) row: Option<usize>,
+}
+
+/// move_it_by_lines from an iterator at FROM on row FROM_ROW of FROM's
+/// display line (see forward_rows).
+pub(crate) fn move_it_by_lines_from(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    from: usize,
+    from_row: Option<usize>,
+    dvpos: i64,
+    fetches: &mut IteratorFetches,
+) -> Landing {
+    if dvpos <= 0 {
+        let (pos, moved) = move_it_by_lines(interp, env, window_id, from, dvpos, fetches);
+        return Landing {
+            pos,
+            moved,
+            row: None,
+        };
+    }
+    let down = forward_rows(interp, env, window_id, from, from_row, dvpos, fetches);
+    let (pos, moved) = (down.start, down.moved);
+    if moved < dvpos {
+        // move_it_to runs out at ZV.
+        return Landing {
+            pos: interp.buffer.borrow().point_max(),
+            moved,
+            row: Some(down.index),
+        };
+    }
+    // !IT_POS_VALID_AFTER_MOVE_P: inside a string, move_it_to its
+    // position -- one past it for a display string, whose glyphs
+    // conceal the text -- goes on to the buffer text after it, the
+    // rows it passes counted in its vpos.
+    if down.in_string {
+        let reached = if reseat_current(interp, pos).string.is_some() {
+            pos_reached(interp, env, window_id, pos, pos + 1, fetches)
+        } else {
+            pos
+        };
+        let last = down
+            .starts
+            .iter()
+            .rposition(|&start| start <= reached)
+            .unwrap_or(down.index)
+            .max(down.index);
+        return Landing {
+            pos: reached,
+            moved: moved + (last - down.index) as i64,
+            row: Some(last),
+        };
+    }
+    Landing {
+        pos,
+        moved,
+        row: Some(down.index),
     }
 }
 
@@ -578,21 +673,30 @@ pub(crate) fn vertical_motion(
     if it_start < zv {
         // From the last screen line PT occupies.
         let mut vpos = 0;
+        let mut row = None;
         if it < it_start {
-            (it, vpos) = move_it_by_lines(interp, env, window_id, it, 1, fetches);
+            let landing = move_it_by_lines_from(interp, env, window_id, it, None, 1, fetches);
+            (it, vpos, row) = (landing.pos, landing.moved, landing.row);
         }
+        // A line at a time, it.vpos 0 before each, while the iterator
+        // is at IT_START: the rows of a string there all begin at it, so
+        // each move goes on from the row the last one reached, and the
+        // value is the last move's (a move out of a string can pass
+        // more than one row).
         while it == it_start {
-            let (landed, moved) = move_it_by_lines(interp, env, window_id, it, 1, fetches);
-            vpos = moved;
-            if landed == it {
+            let landing = move_it_by_lines_from(interp, env, window_id, it, row, 1, fetches);
+            vpos = landing.moved;
+            let stuck = landing.moved == 0 || (landing.pos == it && landing.row == row);
+            (it, row) = (landing.pos, landing.row);
+            if stuck {
                 break;
             }
-            it = landed;
         }
         if nlines > 1 {
-            let (landed, moved) = move_it_by_lines(interp, env, window_id, it, nlines - 1, fetches);
-            it = landed;
-            vpos += moved;
+            let landing =
+                move_it_by_lines_from(interp, env, window_id, it, row, nlines - 1, fetches);
+            it = landing.pos;
+            vpos += landing.moved;
         }
         return (it, vpos);
     }

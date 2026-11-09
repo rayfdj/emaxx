@@ -32,8 +32,8 @@ mod misc_keymaps;
 mod numeric;
 
 pub(crate) use buffer_edit::{
-    row_index_of, screen_row_starts, visual_line_bounds, visual_vertical_motion,
-    window_text_geometry,
+    interactive_motion, interactive_screen_line, row_index_of, screen_row_starts,
+    visual_line_bounds, visual_segment_starts, visual_vertical_motion, window_text_geometry,
 };
 #[cfg(test)]
 pub(crate) use display::echo_area_message_with_spans;

@@ -18013,6 +18013,81 @@ setup_process_coding_systems's check now refuses). A 13-form
 - **Round 353: redisplay's and recenter's fontification, as their iterator walks fetch the text.**  The frontend's estimate pass (fontify_window_ranges over the window's start through as many characters as it has cells, then the planned window end) is gone.  redisplay_window.rs's planner records each walk the display iterator makes on its way to a window's display (FetchStep): try_window's start_display and its rows each to its end (Display), TRY_WINDOW_CHECK_MARGINS' second start_display and partial_line_height, which walks the window's rows and the one below unless the cursor showed in the top margin (StartDisplay, Partial); the force_start block's try_window; the optional new start's start_display and move_it_to point no lower than the window's bottom (MoveTo); try_scrolling's start_display, partial_line_height and move_it_to point within the slack below the window, then move_it_vertically by the scroll, or the top margin's move_it_vertically, start_display at point, move_it_to the margin's position and move_it_vertically_backward from the start (Back); the recenter label's init_iterator at point (Init), the top margin's walk and move_it_vertically_backward (RecenterBack, none for very long truncated lines); compute_window_start_on_continuation_line's init_iterator, reseat and move_it_by_lines walks (ContinuationLine); and run_window_scroll_functions' store of the new start before try_window (SetStart), which the functions see as `window-start'.  tty.rs's fontify_window_steps fontifies what they fetch, in their order, before window-scroll-functions where the plan stops for them and after, and the window is planned again while functions ran.  try_cursor_movement is modeled: with the window's matrix current (StartState.matrix_current: not windows_or_buffers_changed or outdated, start, restriction and flags as its last display left them, and cursor_movement_usable's update_mode_lines, `show-trailing-whitespace', relative or visual line numbers, a distinct current line number face and the overlay arrow) point's row is served with no walk, or try_to_scroll follows directly.  fetch_move_vertically_backward goes further back from where its last try landed (move_further_back measures from start_pos).  Whether a window is outdated is redisplay_flags::window_outdated (window.c's window_outdated over the window's last_modified and last_overlay_modified slots, which mark_window_display_accurate sets once every window is done and the mode lines drawn), so the functions' own property changes do not make the next redisplay walk it again, and a later window's fontification of a shared buffer and an overlay moved count as GNU's.  A declined position is offered again by each walk that stops there (IteratorFetches::fontify keeps what a walk declined; Declined lost its reoffer), not again in a later pass over the same walks.  Frecenter (window.rs recenter_display_start) records its walks: start_display at point and move_it_vertically_backward half the window (fetch_move_vertically_backward), for a negative argument start_display, move_it_by_lines 0 and down, start_display and move_it_vertically_backward, otherwise start_display, move_it_by_lines 0 and back, and measures again while functions ran.  Buffer::text_plist_at reports the character at ZV short of Z as Ftext_properties_at does (redisplay ran the functions at a narrowed ZV whose character was fontified), and Buffer::fetch_char reads outside the restriction for the planner's line-beginning tests (FETCH_BYTE: a start at a line's beginning beyond a narrowing was walked as a continuation line's).  One review (no P1, 3 P2, 5 P3, 7 suspicions; probes in the scratchpad's r353/review): fixed the window's outdated test (above) and overlay changes in it; move_it_vertically_backward's nchars_per_row as the text area's columns less the continuation glyph's (move_it::iterator_row_chars); partial_line_height's SAVE_IT copy as its own walk (IteratorFetches::copy_walk/resume_walk) and try_window after window-scroll-functions as a new walk; the current matrix needing window_end_valid (WINDOW_END_VALID_SLOT, cleared by Fset_window_start, Frecenter, show_buffer_in_window, window_resize_apply's leaves, apply_window_adjustment and delete-other-windows-internal, set by mark_window_display_accurate), no prevent_redisplay_optimizations_p, auto-hscroll-mode not current-line and no composition break at point, the overlay arrow's variables read in the window's buffer; try_scrolling's upward start_display before the amount check; try_window's margin check from the cursor's last row (WindowView.last_cursor_y) when point is not shown; the window-scroll-functions start decided after the walks fontified (the hook arm plans again when functions ran); SetStart before try_window and after compute_window_start_on_continuation_line; text_plist_at nil when BEGV == ZV.  Recorded in Findings: S3, S4 and S7 (move_it_vertically's move_it_by_lines 0 at ZV, the recenter fallbacks, windows_or_buffers_changed from a fontification and the top-margin direction) with try_window_id, redisplay-skip-fontification-on-input and cursor_type_changed.  Performance: the walks of one window's redisplay share their line layouts while no Lisp runs (tty.rs WALK_LAYOUTS, share_walk_layouts), a pass whose functions changed nothing that lays text out is not planned again (LayoutStamp over chars_modified_tick, overlay_modified_tick, the new layout_properties_tick, which add/set/remove-text-properties bump for any property not in buffer::layout_neutral_property, and BEGV, ZV and point), and buffer/gap.rs records the text's newlines (NewlineIndex) once its scans since its last change have read the text's size, so line numbers and line starts are binary searches instead of scans from the start; walk layouts are shared as Rc<ScreenLineLayout>, and lay_out_line finds each glyph's row from the last one (RowOfColumn) before its binary search.  pf4 (3,000 short lines, a fontifying redisplay) 0.5 ms against round 352's 1.7; pf2 (20 lines of 30,000 characters) 14 to 22 ms against 5, recorded in Findings (the planner, the walks and the drawing each lay a display line out whole).  The grouped gate passed its 3,509 library tests; the integration targets (cli, cli_parity with the round's two tests, ert_runner, native_comp_identity, native_thread_continuations, package_lifecycle, runtime_ownership) passed, and clippy is clean.  Rerun on the final build, the round's probes (rd1, rc1, sc1, sc2, os1, ag1, tf, rf1, mx1, mx2, mx3, dw1, nz1) and the review's (dc1, dc2, hk1, ov1, rb1, sa1, sm1, sw1, tw1, tw2, tw3) match GNU's after startup; in the first seconds GNU redisplays again for its deferred native compilations (nz1 under TERM=xterm, dc2, ov1, sw1, tw2 and tw3), which the open findings record.
 - **Round 354: the redisplay walks round 353's review left unmodelled, and the window end of pos-visible-in-window-p.**  redisplay_window.rs's Planner::move_vertically is move_it_vertically from a start_display: the MoveTo walk to ZV no lower than its rows, and, when it runs out at a ZV no newline comes before, move_it_by_lines 0 there (FetchStep::ByLines { dvpos: 0 }, which the frontend walks with move_it::move_it_by_lines), the iterator landing at ZV's screen line start; the recenter label's margin walk and try_scrolling's top margin and scroll-down walks use it, and the top margin's y_offset counts only when the walk stops at ZV itself.  move_it_vertically_backward with DY 0 (fetch_move_vertically_backward) and move_it_by_lines 0 or negative (fetch_screen_line_start) walk again from the line's start down to the screen line's rows (IteratorWalk::rows_to), the RESTORE_IT and move_it_by_lines of GNU's DY 0 branch.  The recenter label goes back from point counting the rows it moves; past the window's height (it.current_y <= 0) it walks Init and Back { rows: 0 } at point and starts at point's screen line, except for very long truncated lines (long_line_optimizations_p), whose back-up by lines leaves the iterator's y alone.  Stage::Recentered carries the recenter iterator's position; recentered() retries when point does not show after try_window: the recenter iterator going on from where it set the start (FetchStep::Continue, IteratorFetches::continue_walk_at), ByLines -1 from it when point is above it, or under scroll-conservatively past SCROLL_LIMIT ByLines past the iterator's position when a string or an overlay stands there (move_it::reseat, Rows::overlay_touches), then try_window without the margin check.  window_start_state takes windows_or_buffers_changed as each window comes (the frontend's value or interpreter.windows_or_buffers_changed set since, by bset_redisplay from an earlier window's fontification).  try_cursor_movement's margins follow the direction point moved from StartState::last_point (WindowView.last_point): the bottom margin when forward, both when back (the top one not from BEGV), none when unmoved.  compute_window_start_on_continuation_line's start is tried with pos_visible_p of PT (FetchStep::PosVisible, walked by tty::fetch_pos_visible, which pos_visible_xy shares), whether or not PT then shows.  IteratorFetches keeps each walk's stops (WalkStops: what it declined, how far it walked, the stop it heads for): copy_walk records the copy's original, whose state the copy starts from, and a range that goes on from where its walk stands (a copy's first, the resumed original's) stops first where the walk's stops fall, not where it begins; fontify_buffer_range answers the stop it ends heading for.  So partial_line_height's copy, from a start at or inside a line, starts past the stops the original passed.  pos-visible-in-window-p of t (pos_visible_xy) answers tty::window_end_xy: past the glyphs of ZV's row (ScreenLineLayout::row_ends), an ellipsis or an after-string included, where window_position_xy places ZV itself, when ZV's row is above the last and not truncated past its edge, without the line-number glyphs when ZV begins its row; (-hscroll, last row) on the last row or past it; (-hscroll, ZV's row + 1) for a truncated row reaching its edge before ZV.  The grouped gate passed its 3,509 library tests; the integration targets (cli, cli_parity with the round's two tests, ert_runner, native_comp_identity, native_thread_continuations, package_lifecycle, runtime_ownership) passed, and clippy is clean.  On the final build the round's probes (zm1, zm2, ag2, tm1, wc1, qe1) and its tests' scripts match GNU's after startup, round 353's probes all match, and of the round 352 review's 54 probes 47 match, q2 and q2old (a signalling function called once more) now among them; the rest are fontification behind the iterator (k2), a point moved within a window's redisplay (n1, o1, o1old, o2, o2old) and the folded buffer's timing (s1t), which the open findings record.  The round's adversarial review, against GNU's source and 26 probes on both in a pseudo-terminal, found no cheating, no forwarding to GNU and nothing moved across the C/Lisp boundary, and no P1, three P2s, three P3s and three suspicions; six are fixed: a point moved back into the bottom scroll margin was not scrolled; try_scrolling added the top margin's y_offset after move_it_by_lines 0 had taken the iterator back from ZV; POS t answered past ZV's glyphs on the last row and for a truncated row past its edge; the recenter label's re-init ran under the long-line optimizations; a copy of start_display's iterator from a start inside a line, and the resumed original, stopped at the start again; the recenter iterator's retries went on with try_window's walk.  A before-string at the window start, which keeps the third retry from running, is pre-existing and recorded with the two suspicions about that retry.  Probing the fixes found three more: compute_window_start_on_continuation_line's pos_visible_p walk and the line number at a ZV beginning its row (both fixed), and insdel.c's adjust_suspend_auto_hscroll (recorded).  On the final build the review's probes match GNU's (tcm3, tcm4, ym1, ym2, rec1, rec2, pv1 to pv6, ll0, ll1, cw1, win3, agg1 to agg3, err1, dec1) but pv7, the recorded auto-hscroll.
 - **Round 355: auto-hscroll resumed by a change at the old point.**  Interpreter::adjust_suspend_auto_hscroll (eval/buffers.rs) is insdel.c's adjust_suspend_auto_hscroll: with the selected window's WINDOW_SUSPEND_AUTO_HSCROLL_SLOT set and its buffer the current one (suspended_old_point_in), a change from FROM to TO, checked before the Buffer moves the markers, that covers or touches the window's old point clears the slot (resume_auto_hscroll).  insert_current_buffer_with and insert_current_buffer_raw_bytes check (PT, PT + nchars), replace_range_current_buffer (FROM, TO) or with nothing deleted (FROM, FROM + inschars), delete_region_current_buffer_1 (FROM, TO), and delete_chars_each_current_buffer each deletion against the old point as the earlier ones move it; the minibuffer's initial insertion, case.rs's replace_char_unrecorded (a length-changing case conversion, replace_range_2), transpose-regions with LEAVE_MARKERS (adjust_markers_bytepos over START1..END2) and message_dolog's edits of the log (which answers whether one reached the old point it is handed) do the same; replace_range_current_buffer checks (FROM, TO) unless nothing is deleted or inserted, and a length-changing case conversion (POS, POS + the characters it puts).  set-buffer-multibyte steps through the bytes its conversion edits (MultibyteText.eight_bit, or the eight-bit characters going to unibyte) in byte positions, the old point moved by each edit before; zlib-decompress-region checks GNU's order of edits, 16 KiB insertions at the region's end then the region's deletion or the failure's deletion of the output, and keeps the suspension as that decides around its own delete-and-insert (auto_hscroll_suspended, suspend_auto_hscroll_again).  An empty region no longer decompresses, and the load path in lisp/mod.rs gives its unescaped-literal warning through `message' (message_loading_warning) instead of appending to *Messages*.  In-place changes (replace_text_in_place: same-length case and translation changes, subst-char-in-region, decode_eol's CR to LF) make no check, as GNU's make no marker adjustment.  The grouped gate passed its 3,509 library tests; the integration targets (cli, cli_parity with the round's test (two probes), ert_runner, native_comp_identity, native_thread_continuations, package_lifecycle, runtime_ownership) passed, cli_parity's the_echo_area_is_wiped_as_read_char_wipes_it and while_no_input_takes_the_key_that_ends_it after failing once under a concurrent release build (3/3 each alone), and clippy is clean.  On the final build the round's probe of sixteen changes (hs3) and the review's forty-four (rv1 to rv5) match GNU's, as does the round 354 review's pv7, which had differed.  The round's review found no cheating, no forwarding to GNU and nothing moved across the C/Lisp boundary, and two P2s and three P3s, all fixed: replace_range's range for an empty match (which this round had broken), the range of a case change that makes one character several, set-buffer-multibyte's per-byte edits, zlib-decompress-region's order of edits (with the empty region's answer), and the load warning that bypassed message_dolog.  The window-start probes made for the recorded before-string finding (bs2 compared only what Lisp asks; bs5's screens) show it wider than recorded: Emaxx draws no before-string at a window start after a newline, whatever its height; the finding now says so.
+- **Round 356: the window's display from a start at an overlay string.**
+  Rows::top_row (redisplay_window.rs) is start_display's first row: the
+  row of the line's own layout that begins with VisualLine::start_index
+  of the start (the overlay strings at it before its text, a display
+  string or ellipsis covering it), walked when the start is not after a
+  newline, else a layout from the start; the row holding the start's own
+  glyph had been taken, so a window start at a before-string drew the
+  text after it.  Rows::string_row_end is find_row_edges' end of the
+  window's last row for a row ending in a newline of a string that goes
+  on past it below a row that ended in that string's newline
+  (seen_this_string): eol_pos + 1, which plan_window_text's window_end
+  takes.  Rows::string_row_cursor_x is set_cursor_from_row on a row all
+  of whose glyphs come from a string and which does not show point's
+  glyph: a `cursor' character, else the newline's glyph past the others,
+  else the first glyph of a continued row (the gutter's); the frontend
+  uses it for the cursor row the force_start block chose and for
+  Planner::unmoved_cursor_row, try_cursor_movement's row with point
+  unmoved (StartState::cursor_y, last_cursor_vpos), while PT is within
+  that row's start and end.  tty::window_cell_xy answers pos_visible_p's
+  stop at the last row's start when that row begins at POS (a row inside
+  a string at POS, IT_CHARPOS >= charpos).  window-end with UPDATE asks
+  tty::window_end_outdated (windows_or_buffers_changed,
+  WINDOW_END_VALID_SLOT, clip_changed,
+  prevent_redisplay_optimizations_p, window_outdated) and walks
+  tty::window_end_walk (start_display, move_it_vertically down the
+  body's rows: the row below's start or ZV) with tty::fetch_window_end's
+  fetches, where it always walked vertical-motion's rows.
+  move_it::move_it_by_lines forward, landing inside a string
+  (RowsDown.in_string), goes on to the text after it, one past the
+  position for a display string, and counts the rows that crosses in the
+  vpos (!IT_POS_VALID_AFTER_MOVE_P), for overlay strings too;
+  move_it::vertical_motion's loop at IT_START moves a line at a time
+  from the row the last move reached, its value the last move's.  The
+  round's review: window_scroll and window_scroll_line_based end by
+  invalidate_window_end (Bug#15957), where window-end with UPDATE
+  answered the end before the scroll; RowsDown.in_string is
+  ScreenLineLayout::row_begins_inside_string, the row's first glyph a
+  string's past its first character (IT_POS_VALID_AFTER_MOVE_P), where a
+  repeated row start had stood (a row beginning a second string at the
+  same position went on to the text, a row inside a string begun
+  part-way along the row above did not); move_it::move_it_by_lines_from
+  moves from a given row of the start's display line and its Landing
+  says the row reached, which vertical_motion carries from move to move
+  (a move from where a string's rows end restarted from the string's
+  first row); Rows::seen_this_string is find_row_edges' test, a row
+  showing only a string's newline seeing it only when the newline is the
+  string's first character or line numbers precede it;
+  tty::window_cell_xy's stop at the last row and its start at the start
+  of a walked row add the line numbers' width (pos_visible_p,
+  line_number_produced_p reset by the walk's row end); start_display's
+  walk stops past the strings at the start
+  (VisualLine::walk_stop_index), in layout::lay_out_from and
+  Rows::top_row, keeping only the continuation_lines_width it reached
+  there, and Anchor.numbered shows the line's number on the first row
+  that RESTORE_IT took it back for (VisualLine::starts_off_buffer).  The
+  review's other findings answer as before the round and are recorded
+  (Strings and the iterator, still apart).  The grouped gate passed its
+  3,510 library tests
+  (a_window_start_at_a_before_string_shows_the_string_first new); the
+  integration targets (cli, cli_parity with
+  a_window_start_at_a_before_string_answers_as_gnu_does and
+  the_review_of_round_356_is_answered_as_gnu_answers, ert_runner,
+  native_comp_identity, native_thread_continuations, package_lifecycle,
+  runtime_ownership) passed, and clippy is clean.  On the final build
+  the round's probes match GNU's screens and answers (bs5, bs6, bs7,
+  bst, vm1, vm3), as do the review's for the cases it fixed (wend,
+  wend2, two, walk, st3, rv356, and tall, pv, st, st2, vm and cn but for
+  the recorded cases) and round 355's (hs3, rv1 to rv5) and round 354's
+  review probes after startup, br3a now among them (its window start had
+  differed), but for br3b, whose start now matches GNU's and which lacks
+  GNU's second fontification pass over the before-string's line (the
+  recenter label's retry, recorded); vm2's (vertical-motion 0) at a
+  display string at BEGV does not, and with display-line-numbers or
+  show-trailing-whitespace (bs9) and `recenter' at a tall string (rc1)
+  the windows differ: all recorded.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -21066,34 +21141,85 @@ ert-tests as a whole 26,307 ms against 27,211.
   and package-tests (6.73 against 6.00).  The Rust gate (run
   42585664753) passed.
 
+**On `2d04ff9`** (round 355): the frozen run (run 42601120531) matched
+  all 7,928 outcomes.  Setup 80.6 s against 65.6 s (1.229), test bodies
+  303.4 s against 266.4 s (1.139), in all 1.157, on a runner slower than
+  round 354's (setup median 122 ms against 102; at round 354 107
+  against 93).  The widest body gap is ert-tests (47.3 s against
+  37.9 s), then tramp-tests (21.9 against 19.0), comp-tests (17.3
+  against 15.2), eglot-tests (33.9 against 32.2), semantic-utest-ia
+  (3.99 against 2.68), process-tests (3.17 against 1.90), mule-tests
+  (3.23 against 2.00) and package-tests (7.01 against 6.20).  The Rust
+  gate (run 42601117108) passed.
+
 **Findings recorded, not fixed:**
 - **Redisplay paths not modelled (round 353 review).**  try_window_id,
   `redisplay-skip-fontification-on-input' and f->cursor_type_changed;
   try_window_id runs in GNU wherever `bidi-paragraph-direction' is set,
   as in prog-mode buffers.
-- **A before-string at the window start (round 354 review; round 355
-  probes).**  A window start after a newline at an overlay with a
-  before-string draws the string first in GNU (init_iterator's
-  handle_stop at the start); Emaxx's tty drawing starts with the text
-  after it, whatever the string's height, because Rows::top_row takes
-  the row holding the start's own glyph.  The queries (pos-visible,
-  posn-at-point, window-end) already lay the string out.  With a
-  string taller than the window GNU also answers from rows inside it:
-  pos-visible-in-window-p of point (at the overlay) is (0 20), the last
-  row's start, where move_it_to stops at the overlay's position;
-  window-end is the position plus one (find_row_edges' eol_pos + 1 for
-  a row ending in a newline of a string that goes on); the force_start
-  block puts the cursor on the newline of the string's row half way
-  down.  Emaxx answers nil and the position, and puts the cursor on the
-  first row.  So the recenter label's third retry (`scroll-conservatively'
-  past 100, the iterator inside a string or at an overlay) never finds
-  point missing: GNU retries to the next line showing buffer text (2620
-  in the round 354 probe), Emaxx keeps 2611.  Two more of that label's
-  details stay unconfirmed: its test of the iterator's string is
-  Emaxx's reseat (a display string as well as an overlay string), where
-  GNU's iterator is GET_FROM_STRING only when move_it left it in one;
-  and its second retry (PT before the iterator) is unreachable while
-  the planner's point is not the point the scroll functions leave.
+- **Where move_it_to (PT) stops at a string at a line start (round 356
+  probes).**  move_it_to checks each line it starts before handle_stop
+  runs there, so a walk from an earlier line to a PT at a line start
+  with a before-string (or a display string) stops before the string,
+  on its first row; a walk that starts at PT (start_display there) goes
+  through the string to PT's glyph.  The planner measures from PT's
+  glyph row throughout (Planner::point_row, visible_row).  So with a
+  string taller than half the window at point: `recenter' (rc1 stage 2)
+  and the recenter label move back from the glyph row and keep the
+  overlay's position as the start where GNU goes back from the
+  string's first row to BEGV; the optional_new_start test finds point
+  not visible where GNU's move_it_to stops on the row before the
+  string; and, when no row is a cursor row (row_for_charpos_p is false
+  for rows ending inside a string), GNU's last fallback is
+  row_containing_pos, the first row whose start and end positions hold
+  PT (the string's second row), where Emaxx puts the cursor on the
+  first row.  The same window redisplayed again after the force_start
+  pass, as display-line-numbers' width or show-trailing-whitespace make
+  happen with try_cursor_movement unusable (bs9), recenters in GNU to
+  BEGV and keeps the start in Emaxx.  The recenter label's third retry
+  (`scroll-conservatively' past 100, the iterator inside a string or at
+  an overlay) and its second (PT before the iterator) stay unconfirmed
+  for the same reason.
+- **vertical-motion 0 at a display string at BEGV (round 356 probes).**
+  In a buffer narrowed to start at a `display' string with newlines,
+  (vertical-motion 0) from BEGV answers the position after the string
+  in GNU (move_it_vertically_backward 0's walk to START_POS steps
+  through the string's rows while IT_POS_VALID_AFTER_MOVE_P fails) and
+  BEGV in Emaxx (vm2).
+- **Strings and the iterator, still apart (round 356 review).**  The
+  round's review found these, all answered the same way before the
+  round (r355b):
+  - Fvertical_motion's goal column moves to the column on the row the
+    iterator is on and then, while it stopped inside an overlay string
+    (not a `display' string) with a newline still ahead, a line down and
+    to the column again, the lines counted in the value; it does so for
+    a column of 0 too.  Emaxx takes the column on the first row
+    beginning at the landing position and skips a column of 0: (cons 2
+    1) onto a line beginning with a three-line before-string answers
+    (4 48) in GNU and (1 46) in Emaxx, C-n onto it lands on 48 in GNU
+    and 46 in Emaxx (review vm.el bol-bs, mid-bs and cont with a goal
+    column; cn.el F2, F6 to F10).  The stop's glyph needs to say whether
+    its string came from a `display' property.
+  - vertical-motion back from a position where two before-strings sit
+    inside a continued line, and forward over a before-string at ZV
+    (whose rows GNU counts in the value), answer other lines than GNU's
+    (vm.el cont-at -1 and -2, zv 2 and 3).
+  - A `display' string taller than the window: set_cursor_from_row puts
+    the cursor on the row's first glyph (its `tem == pt_old' branch),
+    pos-visible-in-window-p answers the last row, and window-end on the
+    string's final-newline row is its position plus one (find_row_edges'
+    `row->end.pos > max_pos'); Emaxx answers otherwise (tall.el stages 2,
+    3, 6 and 9, pv.el disp).
+  - With `truncate-lines' (or a horizontal scroll) a multi-line
+    before-string at the window's start loses or garbles rows (st.el
+    stages 5 and 6, pv.el trunc, trunc-hs and hscroll).
+  - The force_start block's `alt_pt' when point is in invisible text
+    (st.el stage 2, st2.el stage 12), the cursor at a before-string at
+    ZV (st.el stage 13), and C-f from point inside a string taller than
+    the window to text that cannot show (seq.el F4 and F17, where GNU
+    leaves the cursor at row 0, column 3).  seq.el's stages 5, 6, 13 and
+    14, where GNU's window goes back to BEGV after point stays at a tall
+    before-string, are the move_it_to (PT) finding above.
 - **Display lines laid out whole (round 353).**  Emaxx's planner, the
   walks redisplay fontifies by and its drawing each lay out a whole
   display line, and the walks again from a window start inside it,

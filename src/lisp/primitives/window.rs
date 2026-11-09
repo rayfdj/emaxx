@@ -1073,7 +1073,11 @@ pub(crate) fn window_scroll(
         )
     };
     let unbind = interp.unbind_to(count, env);
-    result.and(unbind)
+    result.and(unbind)?;
+    // Bug#15957: a window-end asked for before the next redisplay must
+    // be computed anew.
+    invalidate_window_end(interp, window_id);
+    Ok(())
 }
 
 /// window.c window_scroll_for_long_lines: a whole-window scroll of

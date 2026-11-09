@@ -1760,6 +1760,34 @@ fn pos_visible_xy(
     }
 }
 
+/// Fwindow_end's walk on the terminal layout of WINDOW, which shows the
+/// current buffer: start_display at START, move_it_vertically down its
+/// TEXT_ROWS and past the end of the line where the text ends above the
+/// row below the window, the iterator fetching what it passes.
+fn window_end_walk(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    start: usize,
+    text_rows: usize,
+) -> usize {
+    let mut passes = 0;
+    let mut fetches = crate::tty::IteratorFetches::off();
+    loop {
+        let geometry = super::buffer_edit::window_text_geometry(interp, env, window_id);
+        let end = crate::tty::window_end_walk(interp, window_id, start, geometry, text_rows);
+        passes += 1;
+        fetches.begin_pass(interp, env, window_id);
+        if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES || fetches.geometry().is_none() {
+            return end;
+        }
+        crate::tty::fetch_window_end(interp, window_id, &mut fetches, geometry, start, text_rows);
+        if !fetches.fontify(interp, env, window_id) {
+            return end;
+        }
+    }
+}
+
 /// buffer_posn_from_coords on the terminal layout of WINDOW, which shows
 /// the current buffer: start_display at START, move_it_to row Y, each row
 /// above walked to its end, then to X, fetching through the element
@@ -6133,11 +6161,13 @@ define_dispatch!(
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?
                     .ok_or_else(|| wrong_type_argument("bufferp", Value::Nil))?;
                 let z = buffer_z(interp, buffer_id);
-                // xdisp.c Fwindow_end: UPDATE on a real frame displays the
+                // window.c Fwindow_end: UPDATE on a real frame, with the
+                // window's recorded end not up to date, displays the
                 // window's body from its start; otherwise the answer is Z
                 // less the end the last redisplay recorded (none before
                 // one, so a batch session answers Z).
                 if args.get(1).is_some_and(Value::is_truthy)
+                    && crate::tty::window_end_outdated(interp, window_id, buffer_id)
                     && interactive_window_metrics().is_some()
                     && !interp
                         .lookup_var_key(cached_symbol!("noninteractive"), env)
@@ -6148,16 +6178,11 @@ define_dispatch!(
                         .clamp(point_min, point_max);
                     let height = (window_geometry(interp, window_id).1
                         - window_non_body_height(interp, window_id, Some(buffer_id), env))
-                    .max(1) as isize;
+                    .max(1) as usize;
                     let saved = interp.current_buffer_id();
                     interp.set_current_buffer_id(buffer_id)?;
-                    let (row, shortage) = crate::lisp::primitives::window::move_screen_lines_in(
-                        interp, env, window_id, start, height,
-                    );
+                    let end = window_end_walk(interp, env, window_id, start, height);
                     interp.set_current_buffer_id(saved)?;
-                    // Fewer rows than the window holds: move_it_past_eol
-                    // takes the end past the last line, to ZV.
-                    let end = if shortage > 0 { point_max } else { row };
                     return Ok(Value::Integer(end as i64));
                 }
                 let end_pos = window_slot_value(interp, window_id, WINDOW_END_POS_SLOT)
