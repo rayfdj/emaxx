@@ -8998,6 +8998,204 @@ fn redisplay_offers_a_declined_position_once_a_walk_and_none_from_the_current_ma
 
 #[cfg(unix)]
 #[test]
+fn redisplay_walks_move_it_vertically_and_the_recenter_fallbacks_as_xdisp_does() {
+    // A buffer ending without a newline, its last line's start left
+    // unfontified: the recenter label's scroll-margin walk from a start
+    // on that line reaches ZV, where move_it_vertically goes back to the
+    // line's start with move_it_by_lines 0, two more walks that offer it;
+    // so does try_scrolling's under `scroll-step'.  Under
+    // `scroll-down-aggressively' 1 the recenter label moves back over the
+    // whole window and displays from point's line instead.  With the
+    // buffer's end folded, `pos-visible-in-window-p' of t answers the
+    // place past the ellipsis, point-max the place of point-max.  A
+    // function that signals is called at the window's start once by
+    // try_window's walk and once by its margin check's start_display, not
+    // again by partial_line_height's copy of that iterator.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "zvwalks.el",
+        r#"(defvar zw-log nil)
+(defvar zw-res nil)
+(defvar zw-decline nil)
+(defvar zw-stage 0)
+(defun zw-fontify (pos)
+  (push pos zw-log)
+  (unless (memq pos zw-decline)
+    (put-text-property pos (1+ pos) 'fontified t)))
+(defun zw-err (pos) (push pos zw-log) (error "zw %d" pos))
+(switch-to-buffer (get-buffer-create "zw"))
+(dotimes (i 120) (insert (format "line %03d\n" i)))
+(insert "last line")
+(defvar zw-last (line-beginning-position))
+(setq-local fontification-functions '(zw-fontify))
+(defun zw-ranges (l)
+  (let (out beg prev)
+    (dolist (p l)
+      (cond ((and prev (= p (1+ prev))) (setq prev p))
+            (t (when beg (push (if (= beg prev) beg (cons beg prev)) out))
+               (setq beg p prev p))))
+    (when beg (push (if (= beg prev) beg (cons beg prev)) out))
+    (nreverse out)))
+(defconst zw-stages
+  '((initial (setq-local scroll-margin 3) (goto-char (point-max)))
+    (end (setq zw-decline (list zw-last))
+         (set-window-start nil zw-last t) (goto-char 1))
+    (zv-margin (setq zw-decline nil) (setq-local scroll-step 1)
+               (goto-char (point-max)))
+    (end-again (setq zw-decline (list zw-last))
+               (set-window-start nil zw-last t) (goto-char 1))
+    (zv-scroll-margin (setq zw-decline nil)
+                      (kill-local-variable 'scroll-step)
+                      (kill-local-variable 'scroll-margin)
+                      (setq-local scroll-down-aggressively 1.0)
+                      (goto-char 1) (forward-line 80) (recenter 0))
+    (top-80 (forward-line -40))
+    (aggressive (kill-local-variable 'scroll-down-aggressively)
+                (setq buffer-invisibility-spec '((zw . t)))
+                (put-text-property (+ zw-last 4) (point-max) 'invisible 'zw)
+                (goto-char (point-max)))
+    (folded (push (list 'pos-t (pos-visible-in-window-p t nil t)
+                        (pos-visible-in-window-p (point-max) nil t))
+                  zw-res)
+            (setq-local fontification-functions '(zw-err))
+            (goto-char 1))
+    (erroring (setq-local fontification-functions '(zw-fontify)))))
+(defun zw-f5 () (interactive)
+  (let ((stage (nth zw-stage zw-stages)))
+    (push (list (car stage) (point) (window-start) (zw-ranges (reverse zw-log))) zw-res)
+    (setq zw-log nil)
+    (setq zw-stage (1+ zw-stage))
+    (with-silent-modifications
+      (put-text-property (point-min) (point-max) 'fontified nil))
+    (eval (cons 'progn (cdr stage)) t)))
+(global-set-key [f5] #'zw-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "zvwalks.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse zw-res))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 8));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "zvwalks.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "zvwalks.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn redisplay_scroll_margins_window_end_and_iterator_stops_as_xdisp_does() {
+    // try_cursor_movement scrolls a point moved back into the bottom
+    // margin; try_scrolling's top margin adds the rows short of ZV only
+    // when move_it_vertically stops at ZV itself, not at the line start
+    // move_it_by_lines 0 takes it back to.  `pos-visible-in-window-p' of
+    // t stops at x 0 on the last row, a truncated row reaching its edge
+    // before ZV goes on to the next line, and ZV beginning its row stops
+    // the iterator before that row's line number.  A window start inside a
+    // line: compute_window_start_on_continuation_line's pos_visible_p
+    // walks from the start it set, and partial_line_height's copy of the
+    // iterator start_display walked to the start does not stop there
+    // again.  Under the long-line optimizations the recenter label goes
+    // back by lines and keeps its centering.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "marginwalks.el",
+        r#"(defvar mw-log nil)
+(defvar mw-res nil)
+(defvar mw-stage 0)
+(defun mw-decline (pos) (push pos mw-log))
+(defun mw-ranges (l)
+  (let (out beg prev)
+    (dolist (p l)
+      (cond ((and prev (= p (1+ prev))) (setq prev p))
+            (t (when beg (push (if (= beg prev) beg (cons beg prev)) out))
+               (setq beg p prev p))))
+    (when beg (push (if (= beg prev) beg (cons beg prev)) out))
+    (nreverse out)))
+(defun mw-lines (name n last)
+  (switch-to-buffer (get-buffer-create name))
+  (dotimes (i n) (insert (format "line %03d\n" i)))
+  (insert last)
+  (goto-char 1))
+(defun mw-pos-t ()
+  (push (list 'pos-t (pos-visible-in-window-p t nil t)
+              (pos-visible-in-window-p (point-max) nil t))
+        mw-res))
+(mw-lines "tc" 200 "")
+(setq-local scroll-conservatively 101)
+(defun mw-midline (name lines-first)
+  (mw-lines name 40 (concat (make-string 2000 ?q) "\n"))
+  (unless lines-first (goto-char (point-max)))
+  (dotimes (i 40) (insert (format "line %03d\n" i)))
+  (setq-local scroll-margin 2)
+  (setq-local fontification-functions '(mw-decline))
+  (set-window-start nil (+ 361 79) t)
+  (goto-char (+ 361 (* 79 6) 3)))
+(defconst mw-stages
+  '((initial (forward-line 21))
+    (down21 (setq-local scroll-margin 3))
+    (margin3 (forward-line -1))
+    (back1 (mw-lines "zw" 120 "last line")
+           (setq-local scroll-margin 3)
+           (setq-local scroll-conservatively 10)
+           (set-window-start nil (save-excursion (goto-char (point-max))
+                                                 (line-beginning-position)))
+           (goto-char (point-max)))
+    (atend (forward-line -5))
+    (up5 (mw-lines "pv" 20 "last line"))
+    (last-row (mw-pos-t) (forward-line 1) (recenter 0))
+    (above-last-row (mw-pos-t)
+                    (setq-local truncate-lines t)
+                    (save-excursion (goto-char (point-max))
+                                    (insert (make-string 100 ?z))))
+    (past-edge (mw-pos-t) (set-window-start nil 1))
+    (past-edge-last-row (mw-pos-t)
+                        (mw-lines "pv2" 5 (make-string 200 ?x))
+                        (setq truncate-lines t))
+    (past-edge-above (mw-pos-t) (set-window-hscroll nil 10))
+    (hscrolled (mw-pos-t)
+               (set-window-hscroll nil 0)
+               (mw-lines "pv3" 5 "last line\n")
+               (setq-local display-line-numbers t))
+    (empty-zv-line-numbered (mw-pos-t) (mw-midline "cw" t))
+    (short-line-start (forward-char 1))
+    (short-moved (force-mode-line-update t))
+    (short-forced (mw-midline "cw2" nil))
+    (long-line-start (forward-char 1))
+    (long-moved (force-mode-line-update t))
+    (long-forced (mw-lines "ll" 0 (make-string 60000 ?x))
+                 (insert "\n")
+                 (dotimes (i 200) (insert (format "line %03d\n" i)))
+                 (setq-local truncate-lines t)
+                 (goto-char 1) (forward-line 150) (recenter 0))
+    (at150 (setq-local scroll-down-aggressively 1.0) (forward-line -40))
+    (up40)))
+(defun mw-f5 () (interactive)
+  (let ((stage (nth mw-stage mw-stages)))
+    (push (list (car stage) (point) (window-start) (mw-ranges (reverse mw-log))) mw-res)
+    (setq mw-log nil)
+    (setq mw-stage (1+ mw-stage))
+    (eval (cons 'progn (cdr stage)) t)))
+(global-set-key [f5] #'mw-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "marginwalks.out" command-line-default-directory)
+      (insert (format "%S\n" (reverse mw-res))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((2.0, &b"\x1b[15~"[..]), 20));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "marginwalks.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "marginwalks.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
 fn long_lines_turn_on_the_long_line_optimizations_as_xdisp_c_does() {
     // redisplay_window finds a line longer than `long-line-threshold' in
     // the buffer it displays and sets its long_line_optimizations_p for

@@ -1690,9 +1690,11 @@ fn position_at_coordinates(
 /// it before POS (line_bottom_y moves a line down for the row's
 /// height); when POS is on the last row or does not show, every row to
 /// its end (move_it_to MOVE_TO_Y scans each row it leaves, and stops at
-/// the last row's start, which move_it_by_lines then walks).  No POS (t, charpos -1) asks for
-/// the window's end: ZV's place when it shows, else where the last row
-/// begins (it2's x, the hscroll taken off).
+/// the last row's start, which move_it_by_lines then walks).  No POS (t,
+/// charpos -1) asks for the window's end: past the glyphs of ZV's row
+/// when ZV shows above the last row (the next row's start when a
+/// truncated row reaches its edge first), else where the last row begins
+/// (it2's x, the hscroll taken off).
 fn pos_visible_xy(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1705,9 +1707,12 @@ fn pos_visible_xy(
     let mut fetches = crate::tty::IteratorFetches::off();
     loop {
         let geometry = super::buffer_edit::window_text_geometry(interp, env, window_id);
-        let target = pos.unwrap_or_else(|| interp.buffer.borrow().point_max());
-        let shown =
-            crate::tty::window_position_xy(interp, window_id, start, target, geometry, text_rows);
+        let shown = match pos {
+            Some(target) => crate::tty::window_position_xy(
+                interp, window_id, start, target, geometry, text_rows,
+            ),
+            None => crate::tty::window_end_xy(interp, window_id, start, geometry, text_rows),
+        };
         let xy = shown.or_else(|| {
             pos.is_none()
                 .then(|| (-(geometry.hscroll as i64), text_rows.saturating_sub(1)))
@@ -1717,25 +1722,15 @@ fn pos_visible_xy(
         if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES || fetches.geometry().is_none() {
             return xy;
         }
-        crate::tty::fetch_start_display(interp, window_id, &mut fetches, start);
-        let mut walk =
-            crate::tty::IteratorWalk::from_window_start(interp, window_id, geometry, start);
-        match (pos, shown) {
-            // Above the last row: up to POS, its row as well when POS
-            // begins it bare.
-            (Some(pos), Some((_, row))) if row + 1 < text_rows => {
-                let landed = walk.walk_to(&mut fetches, start, pos);
-                if walk.bare_row_start(landed) {
-                    walk.walk_rows(&mut fetches, landed, 1);
-                }
-            }
-            // On the last row move_it_to stops where the row begins
-            // (MOVE_TO_Y), and the fallback's move_it_by_lines walks the
-            // row; so it does when POS does not show, or is t.
-            _ => {
-                walk.walk_rows(&mut fetches, start, text_rows);
-            }
-        }
+        crate::tty::fetch_pos_visible(
+            interp,
+            window_id,
+            &mut fetches,
+            geometry,
+            (start, pos),
+            shown,
+            text_rows,
+        );
         if !fetches.fontify(interp, env, window_id) {
             return xy;
         }
