@@ -509,12 +509,10 @@ fn lay_out_rows(
             }
             // A string's newline with nothing after it in the line: the
             // iterator pops the string and display_line starts a row at
-            // the newline that ends the line, or at ZV -- unless a
-            // `display' string replaces that newline, popped past it to
-            // the next line.
-            None if hard_newline
-                && (element < elements.len() || (string_newline && !visual.newline_replaced)) =>
-            {
+            // the newline that ends the line, or at ZV.  (A newline a
+            // `display' string replaces does not end the line: the line
+            // goes on after the string.)
+            None if hard_newline && (element < elements.len() || string_newline) => {
                 line_base = end_column;
                 continuation_width = 0;
                 gnu_continuation = 0;

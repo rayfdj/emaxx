@@ -10228,3 +10228,119 @@ fn the_review_of_round_359_is_answered_as_gnu_answers() {
     assert!(expected.is_some(), "GNU's session wrote nothing");
     assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }
+
+#[test]
+fn display_strings_across_newlines_answer_as_gnu_does() {
+    // A `display' string that replaces a newline does not end the
+    // display line: pop_it's iterate_out_of_display_property leaves the
+    // iterator at the text after it, in the next line, whose characters
+    // join the string's last row, and a final newline it replaces leaves
+    // no empty row at ZV.  A row after a string's newline starting a
+    // later line has that line's number.  A `display' string nested in
+    // an overlay string replaces its characters (string_from_display_
+    // prop_p), and move_it_by_lines landing inside it goes one past the
+    // overlay's position.  From inside text a string replaces past a
+    // newline it covers, vertical-motion starts at the raw line start
+    // before point, where the iterator delivers the string from its
+    // start.  A row after an overlay string's newline starts where the
+    // strings were loaded, past invisible text or an empty display string
+    // at their position.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "rv360.el",
+        r#"(defvar st-stage 0)
+(defvar st-res nil)
+(defvar st-p nil)
+(defun st-buf (&optional n)
+  (switch-to-buffer (get-buffer-create "st"))
+  (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil display-line-numbers nil word-wrap nil line-prefix nil wrap-prefix nil)
+  (dotimes (i (or n 20)) (insert (format "line %03d\n" i)))
+  (goto-char 1) (forward-line 5) (setq st-p (point)))
+(defun st-ov (pos prop str &optional end)
+  (let ((ov (make-overlay pos (or end pos)))) (overlay-put ov prop str) ov))
+(defun st-vm (tag from ns)
+  (dolist (n ns)
+    (push (list tag from n (save-excursion (goto-char from) (list (vertical-motion n) (point)))) st-res)))
+(defun st-lm (tag from ns)
+  (dolist (n ns)
+    (push (list tag 'lm from n (save-excursion (goto-char from)
+                                               (condition-case e (progn (line-move n t) (point)) (error (car e)))))
+          st-res)))
+(defun st-q (tag)
+  (let ((p st-p))
+    (push (list tag 'csl (count-screen-lines (point-min) (point-max) t)
+                'we (window-end) (window-end nil t) 'pt (point)
+                'cur (let ((x (posn-at-point))) (and x (posn-col-row x))))
+          st-res)
+    (dolist (q (list (- p 9) p (+ p 5) (+ p 7) (+ p 8) (+ p 9) (+ p 12) (+ p 17) (+ p 18) (+ p 27)
+                     (- (point-max) 5) (- (point-max) 1) (point-max)))
+      (push (list tag 'posn q (let ((x (posn-at-point q))) (and x (posn-col-row x)))
+                  (pos-visible-in-window-p q nil t))
+            st-res))
+    (st-vm (list tag 'a) (- p 9) '(1 2 3 4))
+    (st-vm (list tag 'b) (+ p 27) '(-1 -2 -3 -4))
+    (st-vm (list tag 'c) (+ p 12) '(0 1 -1))
+    (st-vm (list tag 'd) (+ p 5) '(0 1 -1 (3 . 1)))
+    (st-vm (list tag 'z) (point-max) '(0 -1 -2))
+    (st-lm (list tag 'e) (- p 9) '(1 2 3))
+    (st-lm (list tag 'f) (+ p 27) '(-1 -2 -3))))
+(defconst st-stages
+  '(;; 1 display string ending in newline over two lines
+    (progn (st-buf) (put-text-property st-p (+ st-p 18) 'display "FOLD\n") (set-window-start nil 1) (goto-char 1))
+    ;; 2 display string over a line's newline and the whole next line
+    (progn (st-buf) (put-text-property (+ st-p 8) (+ st-p 18) 'display " [+]\n") (set-window-start nil 1) (goto-char 1))
+    ;; 3 display string without newline over "005\n": the next line joins its row
+    (progn (st-buf) (put-text-property (+ st-p 5) (+ st-p 9) 'display "Y1Y2") (set-window-start nil 1) (goto-char 1))
+    ;; 4 overlay display ending in newline over "005\n"
+    (progn (st-buf) (st-ov (+ st-p 5) 'display "Y1\nY2\n" (+ st-p 9)) (set-window-start nil 1) (goto-char 1))
+    ;; 5 overlay display without newline over the lone newline
+    (progn (st-buf) (st-ov (+ st-p 8) 'display "Z" (+ st-p 9)) (set-window-start nil 1) (goto-char 1))
+    ;; 6 display "X\n" over the lone newline
+    (progn (st-buf) (put-text-property (+ st-p 8) (+ st-p 9) 'display "X\n") (set-window-start nil 1) (goto-char 1))
+    ;; 7 display "X" over the lone newline
+    (progn (st-buf) (put-text-property (+ st-p 8) (+ st-p 9) 'display "X") (set-window-start nil 1) (goto-char 1))
+    ;; 8 display without newline over two lines
+    (progn (st-buf) (put-text-property st-p (+ st-p 18) 'display "FOLD") (set-window-start nil 1) (goto-char 1))
+    ;; 9 display without newline over the final "019\n"
+    (progn (st-buf) (let ((z (point-max))) (put-text-property (- z 4) z 'display "Y1Y2")) (set-window-start nil 1) (goto-char 1))
+    ;; 10 display ending in newline over the final "019\n", point at ZV
+    (progn (st-buf) (let ((z (point-max))) (put-text-property (- z 4) z 'display "Y1\nY2\n")) (set-window-start nil 1) (goto-char (point-max)))
+    ;; 11 fold over two lines with line numbers, point inside the second covered line
+    (progn (st-buf) (setq display-line-numbers t) (put-text-property st-p (+ st-p 18) 'display "FOLD\n") (set-window-start nil 1) (goto-char (+ st-p 12)))
+    ;; 12 display over two lines, a long first part continued, point in the covered text
+    (progn (st-buf) (put-text-property (+ st-p 4) (+ st-p 18) 'display (concat (make-string 100 ?w) "\n")) (set-window-start nil 1) (goto-char (+ st-p 12)))
+    ;; 13 display string nested in a before-string
+    (progn (st-buf) (st-ov st-p 'before-string (concat "ab" (propertize "X" 'display "D") "\ncd\n")) (set-window-start nil 1) (goto-char 1) (sit-for 0)
+      (dolist (c '(0 1 2 3 5)) (st-vm (list 'nest c) (- st-p 9) (list (cons c 1) (cons c 2) (cons c 3)))))
+    ;; 14 display string with newlines nested in a before-string
+    (progn (st-buf) (st-ov st-p 'before-string (concat "ab" (propertize "X" 'display "P1\nP2") "cd\nef\n")) (set-window-start nil 1) (goto-char 1) (sit-for 0)
+      (dolist (c '(0 1 2 3 5)) (st-vm (list 'nest2 c) (- st-p 9) (list (cons c 1) (cons c 2) (cons c 3) (cons c 4)))))
+    ;; 15 line numbers, "A\nB" over a line's newline and the two lines after
+    (progn (st-buf) (setq display-line-numbers t) (put-text-property (+ st-p 8) (+ st-p 27) 'display "A\nB") (set-window-start nil 1) (goto-char (+ st-p 30)))
+    ;; 16 after-string "A\n" ending at a line's newline, the newline invisible
+    (progn (st-buf) (st-ov (+ st-p 7) 'after-string "A\n" (+ st-p 8)) (put-text-property (+ st-p 8) (+ st-p 9) 'invisible t) (set-window-start nil 1) (goto-char 1))
+    ;; 17 after-string "A\n" ending at a line's newline, an empty display string over it
+    (progn (st-buf) (st-ov (+ st-p 7) 'after-string "A\n" (+ st-p 8)) (put-text-property (+ st-p 8) (+ st-p 9) 'display "") (set-window-start nil 1) (goto-char 1))
+    ))
+(defun st-f5 () (interactive)
+  (when (> st-stage 0) (st-q st-stage))
+  (let ((stage (nth st-stage st-stages)))
+    (setq st-stage (1+ st-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'st-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "rv360.out" command-line-default-directory)
+      (dolist (r (reverse st-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 17));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "rv360.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "rv360.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}

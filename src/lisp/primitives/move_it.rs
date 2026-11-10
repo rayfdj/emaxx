@@ -226,7 +226,9 @@ pub(crate) fn reseat_current(interp: &Interpreter, pos: usize) -> Reseated {
 /// Where move_it_to (MOVE_TO_POS) from FROM stops for TARGET: at FROM
 /// when that is already past it; at TARGET when a screen line begins
 /// there in the buffer (move_it_to checks each line it starts before
-/// handle_stop runs there); else at the first position at or after
+/// handle_stop runs there, IT_CHARPOS of an iterator delivering buffer
+/// text -- not on a row whose first glyph a string gives, the string
+/// then the iterator's object); else at the first position at or after
 /// TARGET that the iterator delivers from the buffer -- after any
 /// `display' replacement covering TARGET or starting there, and after
 /// invisible text (BUFFER_POS_REACHED_P wants GET_FROM_BUFFER).  What
@@ -253,7 +255,9 @@ fn pos_reached_by(
     from: usize,
     target: usize,
 ) -> usize {
-    use super::dispatch::{screen_row_starts, visual_line_bounds};
+    use super::dispatch::{
+        interactive_motion, interactive_screen_line, visual_line_bounds, visual_segment_starts,
+    };
     if from >= target {
         return from;
     }
@@ -261,11 +265,32 @@ fn pos_reached_by(
     if bol == target {
         return target;
     }
-    let starts = screen_row_starts(interp, env, window_id, bol, eol);
-    if starts.contains(&target) {
+    let reached = text_reached(interp, target);
+    if interactive_motion(interp, env) {
+        // move_it_to's check at each line it begins: IT_CHARPOS at or
+        // past TARGET with the iterator in the buffer -- after a buffer
+        // newline, or a string's newline that ended its string, before
+        // handle_stop loads a string or skips invisible text there; not
+        // on a row that begins inside a string, the string's object.
+        let layout = interactive_screen_line(interp, env, window_id, bol);
+        if let Some(start) = layout
+            .row_starts
+            .iter()
+            .enumerate()
+            .filter(|&(row, &start)| {
+                start >= target
+                    && start < reached.max(target + 1)
+                    && !layout.row_begins_inside_string(row)
+            })
+            .map(|(_, &start)| start)
+            .min()
+        {
+            return start;
+        }
+    } else if visual_segment_starts(interp, env, bol, eol).contains(&target) {
         return target;
     }
-    text_reached(interp, target)
+    reached
 }
 
 /// move_it_vertically_backward (IT, 0): where the iterator at FROM goes
@@ -356,6 +381,29 @@ fn text_reached(interp: &Interpreter, from: usize) -> usize {
     pos
 }
 
+/// back_to_previous_visible_line_start for an iterator that delivers a
+/// string: the copy whose newline test runs handle_display_prop is still
+/// in the string (only its sp and display-property flags are reset), so
+/// that looks at the string's own `display' property, finds none, and a
+/// `display' replacing the newline takes it no further back; an
+/// invisible newline still does.  The start of the line holding POS - 1
+/// (back_to_previous_line_start), earlier while the newline before it is
+/// invisible.
+fn back_to_previous_line_start_in_string(interp: &Interpreter, pos: usize) -> usize {
+    let buffer = interp.buffer.borrow();
+    let begv = buffer.point_min();
+    let spec = resolve_buffer_invisibility(interp, &buffer, interp.current_buffer_id());
+    let mut pos = pos;
+    while pos > begv {
+        pos = buffer.line_start_within(pos - 1, begv).unwrap_or(begv);
+        if pos <= begv || !(spec.active && super::invisible_class_at(&buffer, &spec, pos - 1) != 0)
+        {
+            break;
+        }
+    }
+    pos.max(begv)
+}
+
 /// back_to_previous_visible_line_start: the start of the line holding
 /// POS - 1, earlier while the newline before it is invisible.
 pub(crate) fn back_to_previous_visible_line_start(interp: &Interpreter, pos: usize) -> usize {
@@ -404,7 +452,10 @@ pub(crate) fn rows_between(
     to: usize,
     fetches: &mut IteratorFetches,
 ) -> i64 {
-    use super::dispatch::{row_index_of, screen_row_starts, visual_line_bounds};
+    use super::dispatch::{
+        interactive_motion, interactive_screen_line, row_index_of, screen_row_starts,
+        visual_line_bounds,
+    };
     if to <= from {
         return 0;
     }
@@ -413,7 +464,12 @@ pub(crate) fn rows_between(
     let zv_row = zv_strings_row(interp, env, window_id, visual_line_bounds(interp, to).0, to);
     let (mut bol, mut eol) = visual_line_bounds(interp, from);
     let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
-    let mut index = row_index_of(&starts, from);
+    // The iterator reseated at FROM: inside text a `display' string
+    // replaces it delivers the string from its start.
+    let mut index = interactive_motion(interp, env)
+        .then(|| interactive_screen_line(interp, env, window_id, bol).reseated_string_row(from))
+        .flatten()
+        .unwrap_or_else(|| row_index_of(&starts, from));
     let mut rows = 0;
     loop {
         if index + 1 < starts.len() {
@@ -445,6 +501,9 @@ struct RowsDown {
     moved: i64,
     /// The line begins inside a string, past its first character.
     in_string: bool,
+    /// That string is a `display' property's (string_from_display_prop_p),
+    /// one nested in an overlay string included.
+    display_string: bool,
     /// The move from there to the text after the string stops at the
     /// truncated row's edge first (ScreenLineLayout::truncated_before):
     /// the rows the string's newlines end on the way, and the landing
@@ -498,6 +557,11 @@ fn forward_rows(
     let (mut starts, mut layout) = lay_out(interp, env, bol, eol);
     let mut index = from_row
         .filter(|&row| starts.get(row).is_some_and(|&start| start <= from))
+        .or_else(|| {
+            layout
+                .as_ref()
+                .and_then(|layout| layout.reseated_string_row(from))
+        })
         .unwrap_or_else(|| row_index_of(&starts, from));
     let mut moved = 0;
     while moved < count {
@@ -515,17 +579,20 @@ fn forward_rows(
     let in_string = layout
         .as_ref()
         .is_some_and(|layout| layout.row_begins_inside_string(index));
+    let display_string = layout.as_ref().is_some_and(|layout| {
+        layout
+            .row_first_string(index)
+            .is_some_and(|(display, _)| display)
+    });
     // move_it_to the string's position, one past it for a display string.
     let truncated_before_text = layout.as_ref().filter(|_| in_string).and_then(|layout| {
-        let display = layout
-            .row_first_string(index)
-            .is_some_and(|(display, _)| display);
-        layout.truncated_before(index, starts[index] + usize::from(display))
+        layout.truncated_before(index, starts[index] + usize::from(display_string))
     });
     RowsDown {
         start: starts[index],
         moved,
         in_string,
+        display_string,
         truncated_before_text,
         index,
         starts,
@@ -725,9 +792,10 @@ pub(crate) fn move_it_by_lines_from(
         };
     }
     // !IT_POS_VALID_AFTER_MOVE_P: inside a string, move_it_to its
-    // position -- one past it for a display string, whose glyphs
-    // conceal the text -- goes on to the buffer text after it, the
-    // rows it passes counted in its vpos.
+    // position -- one past it for a display string
+    // (string_from_display_prop_p), a `display' string nested in an
+    // overlay string too, at the overlay's position -- goes on to the
+    // buffer text after it, the rows it passes counted in its vpos.
     if down.in_string {
         // The truncated row reaches the window's edge before that text:
         // move_it_to reseats at the next line's start, past its target.
@@ -741,7 +809,7 @@ pub(crate) fn move_it_by_lines_from(
                 row: Some(row),
             };
         }
-        let reached = if reseat_current(interp, pos).string.is_some() {
+        let reached = if down.display_string || reseat_current(interp, pos).string.is_some() {
             pos_reached(interp, env, window_id, pos, pos + 1, fetches)
         } else {
             pos
@@ -809,8 +877,13 @@ pub(crate) fn vertical_motion(
         None => 1,
     };
     // Scan from the start of the line containing PT
-    // (reseat_at_previous_visible_line_start).
-    let previous_line_start = back_to_previous_visible_line_start(interp, it_start);
+    // (reseat_at_previous_visible_line_start); from within a string the
+    // newline test sees the string's properties, not the buffer's.
+    let previous_line_start = if started.string.is_some() {
+        back_to_previous_line_start_in_string(interp, it_start)
+    } else {
+        back_to_previous_visible_line_start(interp, it_start)
+    };
     fetches.begin_walk();
     fetches.push(previous_line_start, previous_line_start + 1);
     let line_start = reseat_current(interp, previous_line_start).pos;

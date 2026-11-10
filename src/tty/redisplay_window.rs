@@ -156,13 +156,6 @@ impl<'a, 'c> Rows<'a, 'c> {
         }
         let start = self.buffer.display_line_start_of(line);
         let visual = self.visual(line);
-        let raw_at = |index: usize| {
-            visual
-                .raw_of_display
-                .get(index)
-                .copied()
-                .unwrap_or_else(|| visual.raw_of_display.last().copied().unwrap_or(0))
-        };
         let usable = self.body_width.saturating_sub(1).max(1);
         // At any width but one column that is the plan's own layout.
         let laid =
@@ -183,7 +176,7 @@ impl<'a, 'c> Rows<'a, 'c> {
                 if seg == 0 {
                     first
                 } else {
-                    start + raw_at(segment.start_index)
+                    start + visual.row_start_offset(segment.start_index)
                 }
             })
             .collect();

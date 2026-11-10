@@ -18336,6 +18336,74 @@ setup_process_coding_systems's check now refuses). A 13-form
   8); the earlier rounds' probes, run on the build before the
   overlay-string faces, answer as on round 358's build, st.el's stages 5
   and 6 now as GNU's.
+- **Round 360: display strings across newlines.**  A newline a `display'
+  property or an overlay `display' string replaces does not end the
+  display line: pop_it's iterate_out_of_display_property leaves the
+  iterator at the end of the text the string covers, and display_line
+  goes on there.  tty.rs's newline_displayed_away (the text property
+  through text_display_replaces_at -- a string, a margin spec or a
+  `space' stretch, handle_single_display_spec's HANDLED_RETURN -- or an
+  overlay string by overlays.intersecting) keeps a visual line going
+  past such a newline as past an invisible one, so the line's map, rows
+  and replaced runs run on into the next raw line;
+  visual_line_first_line and vertical-motion's visual_line_bounds step
+  over it too.  display_prop_end's run is the text whose `display' value
+  is EQ to the first (string_run a Value in both visual-line paths), and
+  handle_display_prop runs before handle_invisible_prop: the invisible
+  run is not taken where a replacing `display' starts at the same
+  position.  visible_overlay_string delivers a `display' string on an
+  overlay string's characters in their place
+  (string_from_display_prop_p; record_glyph_sources keeps both strings'
+  sources), so Fvertical_motion's loop out of overlay strings ends in
+  the nested string.  VisualLine::row_start_offset is a row's start
+  after a newline that ended a `display' property's string: the end of
+  the text it replaces, before handle_stop skips invisible text or an
+  empty string there; after an overlay string's newline the next glyph's
+  position, where the strings were loaded (handle_invisible_prop and
+  handle_display_prop run before get_overlay_strings);
+  ScreenLineLayout's row_starts, the row walks' next start and
+  redisplay_window's row starts take it.  move_it.rs's pos_reached_by is
+  move_it_to's check at each line it begins: the first row start at or
+  past TARGET, short of where the iterator next reaches text, on a row
+  that does not begin inside a string (row_begins_inside_string);
+  vertical-motion from inside a display string backs up by
+  back_to_previous_line_start_in_string, the raw line start before
+  point, as back_to_previous_visible_line_start's replaced-newline test
+  finds no `display' on the string's own properties; the iterator
+  reseated there delivers the string from its start, so rows_between and
+  move_it_by_lines' rows count from the row its display begins on
+  (ScreenLineLayout::reseated_string_row), not from a later row of the
+  string beginning at the same position.  window_cell_xy's last-row
+  branch takes a stop at the last row's start past text a string ending
+  in a newline replaces as overshooting, it3 placing the position where
+  the string begins, and pos_visible_p's it3 running out of elements at
+  ZV gives the last one's x.  maybe_produce_line_number gives a row
+  after a string's newline that starts a later line that line's number,
+  and the first row of a window starting after a fold, or after an
+  invisible run joining its line to the ones before, the line of the
+  window's start (WindowPlan::window_start, w->start where the plan's
+  first row begins before it); continuation rows and rows on a line
+  already numbered stay blank.  The grouped gate passed its 3,513
+  library tests; the integration targets (cli, cli_parity with
+  display_strings_across_newlines_answer_as_gnu_does beside round 359's
+  two, ert_runner, native_comp_identity, native_thread_continuations,
+  package_lifecycle, runtime_ownership) passed but for two of
+  cli_parity's tests that time keys against GNU's answers, which vary
+  from run to run:
+  a_help_character_after_a_prefix_runs_prefix_help_command (GNU's echo
+  at F1 there or not, as its load allows; three of three alone) and
+  while_no_input_takes_the_key_that_ends_it, where GNU answers (buffer
+  "e") in some runs and (buffer "") in others (one of five replays of
+  its input, two of four runs alone) and Emaxx (buffer "") in every run,
+  round 359's build as this round's; and clippy is clean.  On the final
+  build the round's probes (dsp, inv, rv360 and rx) and the review's (r1
+  to r10 and rv359) match GNU's but for the recorded stages (r1.el 6 and
+  12, r2.el 1, r5.el 7, r7.el 4, r8.el 6, r9.el 6, r10.el 1 and 4, rx.el
+  1 to 4, each answered so on round 359's build or by its subject's
+  recording); the earlier rounds' probes answer as on the round's first
+  build, round 357's we.el now as GNU's; rows.el's stages 5 and 7 (an
+  after-string's newline before invisible text), which the review's
+  first fix had moved, answer as GNU's again.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -21433,6 +21501,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   and edebug-tests (1.30 against 1.01).  The Rust gate (run 42699369877)
   passed.
 
+**On `db159f0`** (round 359): the frozen run (run 42712359630) matched
+  all 7,928 outcomes.  Setup 80.9 s against 65.8 s (1.230), test bodies
+  305.0 s against 267.2 s (1.142), in all 1.139, on a runner slower than
+  round 358's (setup median 125 ms against 103; at round 358 94 against
+  83).  The widest body gap is ert-tests (48.1 s against 38.8 s), then
+  tramp-tests (22.2 against 19.0), comp-tests (17.6 against 15.1),
+  eglot-tests (34.0 against 32.0), semantic-utest-ia (4.06 against
+  2.65), mule-tests (3.19 against 2.03), package-tests (7.14 against
+  6.20) and process-tests (2.60 against 1.87).  The Rust gate (run
+  42712355559) passed.
+
 **Findings recorded, not fixed:**
 - **Redisplay paths not modelled (round 353 review).**  try_window_id,
   `redisplay-skip-fontification-on-input' and f->cursor_type_changed;
@@ -21503,9 +21582,6 @@ ert-tests as a whole 26,307 ms against 27,211.
     invisible run, so their rows begin there and the force_start block
     moves point to 48, and the bidi ppos_it rule answers (0 0) for 46;
     Emaxx answers 46 and (2 9) (cur2.el stage 1).
-  - A `display' string replacing a newline whose last line has no
-    newline does not join the next line onto its row in Emaxx (pv2.el
-    S7).
 - **A wide character across an hscrolled row's left edge (round 359
   review).**  When first_visible_x falls inside a double-width glyph,
   display_line's move_it_in_display_line_to (MOVE_TO_X) stops before
@@ -21516,22 +21592,43 @@ ert-tests as a whole 26,307 ms against 27,211.
   where Emaxx draws it from first_visible_x (pf.el stage 6, wc.el
   stages 1 to 4: `$$本語ab' against `$本語ab', the cursor a column
   to the left).  posn-at-point and pos-visible-in-window-p agree.
-- **Display strings across newlines (round 357 reviews).**  Answered
-  the same way before round 357 (r356h):
-  - A `display' string nested in an overlay string is not drawn: Emaxx
-    shows the overlay string's own text (abX where GNU shows abD), and
-    Fvertical_motion's loop out of overlay strings, which GNU's
-    string_from_display_prop_p ends in the nested string, moves on
-    (review ovl.el nest and nest2: (2 . 1) answers (1 46) in GNU, (3 48)
-    in Emaxx).
-  - A `display' property covering more than one line, ending in a
-    newline (fold.el: "FOLD\n" over two lines), gets a row for the
-    second covered line: count-screen-lines 31 against 30,
-    (vertical-motion 2) 55 against 64.
-  - An overlay `display' string covering a line's newline (fin.el stage
-    1) makes a row too many (count-screen-lines 23 against 22,
-    window-end 172 against 181), and a `display' string on a lone
-    newline is not drawn (rows.el stage 3, zvd.el stage 6).
+- **Display strings and the text they cover (round 360 review).**
+  - An overlay's after-string at the end of text a `display' string
+    replaces: posn-at-point and pos-visible-in-window-p of the position
+    after the text give GNU's x before the after-string (9), Emaxx's
+    after it (11), the newline covered or not (r1.el stage 6, r2.el
+    stage 1; so before round 360).
+  - `word-wrap' in a `display' string whose buffer position holds a
+    space: IT_DISPLAYING_WHITESPACE also reads the buffer's character at
+    IT_BYTEPOS, so every character of the string counts as whitespace
+    and none may begin a row; GNU breaks the row at the window's edge
+    inside a word (`word1\' then `1 word12'), where Emaxx wraps at the
+    string's space (r1.el stage 12).
+  - With line numbers, posn-at-point and pos-visible-in-window-p of a
+    position in invisible text, or in text a string replaces, where a
+    row begins: GNU's x is 0, the row's line number not produced yet,
+    Emaxx's counts the number's four columns (r5.el stage 7, r7.el stage
+    4, r8.el stage 6, r9.el stage 6; so before round 360).
+  - posn-at-point of a newline a margin display spec covers: GNU gives
+    the glyph before it (x 7, position 53), Emaxx the text after it (x
+    8, position 55) (r10.el stage 1).
+  - `(when CONDITION . SPEC)' display specs: GNU's handle_display_spec
+    evaluates the condition and the spec replaces the text, Emaxx draws
+    the text (r10.el stage 4, a newline under `(when t . "X")').
+  - An overlay's after-string at the start of text another overlay's
+    `invisible' hides is not shown in GNU, handle_invisible_prop
+    loading the overlay strings there only for a text property, and
+    shown in Emaxx (rx.el stage 4: an after-string "A\n" before an
+    invisible newline).
+  - A before-string "B\n" at a line's start whose first word is
+    invisible: posn-at-point of the invisible text gives GNU's row 6,
+    the row after the string's newline, and Emaxx's row 7, and line-move
+    -3 from 73 lands at 59 in GNU, at 55 in Emaxx; with an empty
+    `display' string there instead, vertical-motion -1 from 58 answers
+    (-1 55) in GNU, (0 59) in Emaxx; and C-e from a line ending in an
+    after-string "A\n" over an empty `display' string on its newline
+    goes to 54 in GNU, to 63 in Emaxx (rx.el stages 1 to 3; so before
+    round 360).
 - **Display lines laid out whole (round 353).**  Emaxx's planner, the
   walks redisplay fontifies by and its drawing each lay out a whole
   display line, and the walks again from a window start inside it,
