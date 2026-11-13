@@ -2408,27 +2408,34 @@ pub(crate) fn visual_line_bounds(interp: &Interpreter, pos: usize) -> (usize, us
     // GNU's vertical-motion walks display lines through the iterator:
     // a newline hidden by the `invisible' property does not end the
     // line, so a display line spans every raw line an invisible run
-    // joins (org's folded subtrees collapse onto their headline).
+    // joins (org's folded subtrees collapse onto their headline), and
+    // nor does one a `display' string replaces, the iterator coming out
+    // of the string in the next line.
     let spec = crate::lisp::primitives::resolve_buffer_invisibility(
         interp,
         &interp.buffer.borrow(),
         interp.current_buffer_id(),
     );
-    if spec.active {
-        while bol > point_min
-            && crate::lisp::primitives::invisible_class_at(&interp.buffer.borrow(), &spec, bol - 1)
-                != 0
-        {
-            bol = raw_bol(bol - 1);
-        }
-        while eol < point_max {
-            let Some((run_end, _)) =
-                crate::lisp::primitives::invisible_run_at(&interp.buffer.borrow(), &spec, eol)
-            else {
-                break;
-            };
-            eol = raw_eol(run_end);
-        }
+    let hidden = |pos: usize| {
+        let buffer = interp.buffer.borrow();
+        (spec.active && crate::lisp::primitives::invisible_class_at(&buffer, &spec, pos) != 0)
+            || crate::tty::newline_displayed_away(&buffer, pos)
+    };
+    while bol > point_min && hidden(bol - 1) {
+        bol = raw_bol(bol - 1);
+    }
+    while eol < point_max {
+        let run = spec
+            .active
+            .then(|| crate::lisp::primitives::invisible_run_at(&interp.buffer.borrow(), &spec, eol))
+            .flatten();
+        eol = match run {
+            Some((run_end, _)) => raw_eol(run_end),
+            None if crate::tty::newline_displayed_away(&interp.buffer.borrow(), eol) => {
+                raw_eol(eol + 1)
+            }
+            None => break,
+        };
     }
     (bol, eol)
 }

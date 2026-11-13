@@ -94,10 +94,10 @@ impl Corpus {
 
 impl Corpus {
     /// Run BINARY with `-nw -Q -l PROBE' on the slave of a fresh 80x24
-    /// pseudo-terminal (its controlling terminal, TERM=xterm), feeding the
-    /// master the INPUT steps (a pause, then bytes) once the session has
-    /// had a second and a half to start, then waiting up to ten seconds for
-    /// it to exit; the contents of OUT, which the probe writes, or None.
+    /// pseudo-terminal (its controlling terminal, TERM=xterm), typing the
+    /// INPUT steps (PtySession::steps) once the session has settled, then
+    /// waiting for it to exit; the contents of OUT, which the probe
+    /// writes, or None.
     #[cfg(unix)]
     fn run_tty(
         &self,
@@ -107,74 +107,19 @@ impl Corpus {
         locale: &str,
         input: &[(f64, &[u8])],
     ) -> Option<String> {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::process::CommandExt;
         let out = self.directory.join(out);
         let _ = std::fs::remove_file(&out);
-        let (master, slave) = open_pty(24, 80);
-        let slave_fd = slave.as_raw_fd();
+        self.share_eln_cache();
         let mut command = Command::new(binary);
         command
             .args(["-nw", "-Q", "-l", probe])
             .current_dir(&self.directory)
             .env("HOME", &self.directory)
             .env("LC_ALL", locale)
-            .env("TERM", "xterm")
-            .stdin(std::process::Stdio::from(slave.try_clone().unwrap()))
-            .stdout(std::process::Stdio::from(slave.try_clone().unwrap()))
-            .stderr(std::process::Stdio::from(slave));
-        // SAFETY: setsid and the TIOCSCTTY ioctl are async-signal-safe.
-        unsafe {
-            command.pre_exec(move || {
-                libc::setsid();
-                libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0);
-                Ok(())
-            });
-        }
-        let mut child = command.spawn().unwrap();
-        let master_fd = master.as_raw_fd();
-        // The master's output is read and dropped so the session never
-        // blocks on a full terminal.
-        let drain = |seconds: f64| {
-            let end = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
-            let mut buffer = [0u8; 65536];
-            loop {
-                let left = end.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
-                    return;
-                }
-                let mut fds = libc::pollfd {
-                    fd: master_fd,
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                // SAFETY: FDS is one valid pollfd.
-                let ready = unsafe { libc::poll(&mut fds, 1, left.as_millis() as i32) };
-                if ready > 0 {
-                    // SAFETY: BUFFER is writable for its length.
-                    let n =
-                        unsafe { libc::read(master_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-                    if n <= 0 {
-                        std::thread::sleep(left.min(std::time::Duration::from_millis(20)));
-                    }
-                }
-            }
-        };
-        drain(1.5);
-        for (pause, bytes) in input {
-            drain(*pause);
-            // SAFETY: BYTES is readable for its length.
-            unsafe { libc::write(master_fd, bytes.as_ptr().cast(), bytes.len()) };
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while child.try_wait().unwrap().is_none() {
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                break;
-            }
-            drain(0.2);
-        }
+            .env("TERM", "xterm");
+        let mut session = PtySession::spawn(command, 24, 80, false);
+        session.steps(input);
+        session.finish();
         std::fs::read_to_string(&out).ok()
     }
 }
@@ -183,7 +128,7 @@ impl Corpus {
     /// Run BINARY with ARGS on the slave of a fresh ROWS x COLS
     /// pseudo-terminal (its controlling terminal) with TERM set to TERM
     /// or unset, typing nothing; what the session wrote to the terminal
-    /// (CR LF read as LF) and its exit status, waiting up to ten seconds.
+    /// (CR LF read as LF) and its exit status.
     #[cfg(unix)]
     fn run_pty(
         &self,
@@ -196,8 +141,8 @@ impl Corpus {
         self.run_pty_typing(binary, args, term, rows, cols, &[])
     }
 
-    /// run_pty, typing INPUT's steps (a pause, then bytes) once the
-    /// session has had a second and a half to start.
+    /// run_pty, typing INPUT's steps (PtySession::steps) once the session
+    /// has settled.
     #[cfg(unix)]
     fn run_pty_typing(
         &self,
@@ -208,10 +153,7 @@ impl Corpus {
         cols: u16,
         input: &[(f64, &[u8])],
     ) -> (String, Option<i32>) {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::process::CommandExt;
-        let (master, slave) = open_pty(rows, cols);
-        let slave_fd = slave.as_raw_fd();
+        self.share_eln_cache();
         let mut command = Command::new(binary);
         command
             .args(args)
@@ -222,79 +164,44 @@ impl Corpus {
             Some(term) => command.env("TERM", term),
             None => command.env_remove("TERM"),
         };
-        command
-            .stdin(std::process::Stdio::from(slave.try_clone().unwrap()))
-            .stdout(std::process::Stdio::from(slave.try_clone().unwrap()))
-            .stderr(std::process::Stdio::from(slave));
-        // SAFETY: setsid and the TIOCSCTTY ioctl are async-signal-safe.
-        unsafe {
-            command.pre_exec(move || {
-                libc::setsid();
-                libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0);
-                Ok(())
-            });
-        }
-        let mut child = command.spawn().unwrap();
-        let master_fd = master.as_raw_fd();
-        let mut output = Vec::new();
-        let read_for = |seconds: f64, output: &mut Vec<u8>| {
-            let end = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
-            while std::time::Instant::now() < end {
-                let mut fds = libc::pollfd {
-                    fd: master_fd,
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                // SAFETY: FDS is one valid pollfd.
-                if unsafe { libc::poll(&mut fds, 1, 20) } > 0 {
-                    let mut buffer = [0u8; 65536];
-                    // SAFETY: BUFFER is writable for its length.
-                    let n =
-                        unsafe { libc::read(master_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-                    if n > 0 {
-                        output.extend_from_slice(&buffer[..n as usize]);
-                    }
-                }
-            }
-        };
-        if !input.is_empty() {
-            read_for(1.5, &mut output);
-        }
-        for (pause, bytes) in input {
-            read_for(*pause, &mut output);
-            // SAFETY: BYTES is readable for its length.
-            unsafe { libc::write(master_fd, bytes.as_ptr().cast(), bytes.len()) };
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let status = loop {
-            let mut fds = libc::pollfd {
-                fd: master_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: FDS is one valid pollfd.
-            if unsafe { libc::poll(&mut fds, 1, 50) } > 0 {
-                let mut buffer = [0u8; 65536];
-                // SAFETY: BUFFER is writable for its length.
-                let n = unsafe { libc::read(master_fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-                if n > 0 {
-                    output.extend_from_slice(&buffer[..n as usize]);
-                    continue;
-                }
-            }
-            if let Some(status) = child.try_wait().unwrap() {
-                break status.code();
-            }
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-        };
+        let mut session = PtySession::spawn(command, rows, cols, true);
+        session.steps(input);
+        let (output, status) = session.finish();
         (
             String::from_utf8_lossy(&output).replace("\r\n", "\n"),
             status,
         )
+    }
+}
+
+impl Corpus {
+    /// Give the corpus directory, a terminal session's HOME, the eln-cache
+    /// that the sessions of every run share (gnu-eln-cache in Cargo's
+    /// directory for the tests' files).
+    ///
+    /// An interactive GNU queues each byte-compiled file it loads without
+    /// native code for compilation in the background (comp.c's
+    /// maybe_defer_native_compilation; a batch session does not).  On a
+    /// terminal called xterm that is term/xterm.elc, and then comp-run's
+    /// and compile.el's libraries, some ten files: in a HOME of its own
+    /// every session compiles them again, six processor seconds of `emacs
+    /// --batch' children that outlive a session which exits first, and
+    /// until the last of their sentinels has run GNU does not answer the
+    /// keyboard as it does at rest -- a prefix key typed five seconds into
+    /// the compilations was not echoed.  With the cache shared a session
+    /// finds the native code the sessions before it left, as a user's
+    /// does on any day but the first, and compiles only what its probe
+    /// loads beyond that.
+    #[cfg(unix)]
+    fn share_eln_cache(&self) {
+        let shared = Path::new(env!("CARGO_TARGET_TMPDIR")).join("gnu-eln-cache");
+        let home = self.directory.join(".emacs.d");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let link = home.join("eln-cache");
+        if std::fs::symlink_metadata(&link).is_err() {
+            std::os::unix::fs::symlink(&shared, &link).unwrap();
+        }
     }
 }
 
@@ -356,6 +263,384 @@ fn open_pty(rows: u16, cols: u16) -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd
         "TIOCSWINSZ"
     );
     (master, slave)
+}
+
+/// A step's pause for a session that is not waiting for input: SECONDS
+/// of wall-clock time after the session read the step before, whatever it
+/// is doing -- a C-g for a command that loops, a key for one that
+/// computes (PtySession::steps).
+#[cfg(unix)]
+fn busy(seconds: f64) -> f64 {
+    -seconds
+}
+
+/// A program on the slave of a pseudo-terminal, typed at from the master.
+///
+/// The steps typed are timed by the session, not by the clock on the
+/// wall: a pause counts only the time the session is idle -- every thread
+/// of its program and of the processes descended from it asleep, and
+/// nothing typed left unread -- and a step is typed only at an idle
+/// session.  A session slow to start (its files not yet in the page
+/// cache), or kept from the processor by the tests beside it or by a
+/// loaded machine, is so typed at as it is on an idle machine: each key
+/// reaches it when it has finished with the keys before and waited as
+/// long as the step says, where a schedule kept by the wall clock gives a
+/// late session its keys all at once.
+///
+/// The processes a session started count because GNU compiles in the
+/// background what the shared eln-cache does not hold yet
+/// (Corpus::share_eln_cache): a step is typed when those jobs are over
+/// and their sentinels have run.
+#[cfg(unix)]
+struct PtySession {
+    child: std::process::Child,
+    status: Option<std::process::ExitStatus>,
+    master: std::os::fd::OwnedFd,
+    /// The slave, kept open here to ask what the session has not read of
+    /// what was typed.
+    slave: std::os::fd::OwnedFd,
+    /// What the session wrote to the terminal, when kept.
+    output: Option<Vec<u8>>,
+}
+
+#[cfg(unix)]
+impl PtySession {
+    /// How long a session is left idle before its first step, past
+    /// the step's own pause: xterm.el's terminal-init-xterm asks the
+    /// terminal what it is and waits `xterm-query-timeout', two seconds,
+    /// for an answer this one never gives -- asleep, so idle -- and a key
+    /// typed meanwhile is read as the answer's start and put back.
+    const SETTLE: f64 = 2.5;
+    /// The same where the session's threads cannot be seen (no /proc, as
+    /// on macOS), every process counts as asleep and the clock stops only
+    /// for unread bytes: as long as these tests came to wait by the wall
+    /// clock for GNU's compilations.
+    const BLIND_SETTLE: f64 = 25.0;
+    /// How long past a pause a session may stay busy before the test
+    /// fails: a step meant for a busy session says so (`busy').
+    const BUSY_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+    /// How long a session has to exit once its steps are typed.
+    const EXIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// COMMAND started on the slave of a fresh ROWS x COLS
+    /// pseudo-terminal, its controlling terminal; KEEP its output.
+    fn spawn(mut command: Command, rows: u16, cols: u16, keep: bool) -> Self {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let (master, slave) = open_pty(rows, cols);
+        let slave_fd = slave.as_raw_fd();
+        command
+            .stdin(std::process::Stdio::from(slave.try_clone().unwrap()))
+            .stdout(std::process::Stdio::from(slave.try_clone().unwrap()))
+            .stderr(std::process::Stdio::from(slave.try_clone().unwrap()));
+        // SAFETY: setsid and the TIOCSCTTY ioctl are async-signal-safe.
+        unsafe {
+            command.pre_exec(move || {
+                libc::setsid();
+                libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0);
+                Ok(())
+            });
+        }
+        let child = command.spawn().unwrap();
+        Self {
+            child,
+            status: None,
+            master,
+            slave,
+            output: keep.then(Vec::new),
+        }
+    }
+
+    /// Wait up to MILLISECONDS for the session to write to the terminal
+    /// and read what it wrote, so that it never blocks on a full one.
+    fn pump(&mut self, milliseconds: u8) {
+        use std::os::fd::AsRawFd;
+        let master = self.master.as_raw_fd();
+        let mut fds = libc::pollfd {
+            fd: master,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: FDS is one valid pollfd.
+        if unsafe { libc::poll(&mut fds, 1, milliseconds.into()) } <= 0 {
+            return;
+        }
+        let mut buffer = [0u8; 65536];
+        // SAFETY: BUFFER is writable for its length.
+        let n = unsafe { libc::read(master, buffer.as_mut_ptr().cast(), buffer.len()) };
+        match usize::try_from(n) {
+            Ok(n) if n > 0 => {
+                if let Some(output) = &mut self.output {
+                    output.extend_from_slice(&buffer[..n]);
+                }
+            }
+            // Readable with nothing to read: do not spin.
+            _ => std::thread::sleep(std::time::Duration::from_millis(milliseconds.into())),
+        }
+    }
+
+    /// Whether the session's program has exited.
+    fn exited(&mut self) -> bool {
+        if self.status.is_none() {
+            self.status = self.child.try_wait().unwrap();
+        }
+        self.status.is_some()
+    }
+
+    /// Whether every thread of the session's program and of the processes
+    /// descended from it is asleep (in a wait it can be woken from, or
+    /// stopped); None when no such thread is left.
+    fn asleep(&self) -> Option<bool> {
+        let root = self.child.id();
+        let mut asleep = None;
+        if !walk_tasks(root, &mut asleep) {
+            // A kernel that does not list a task's children: every
+            // process's parent.
+            asleep = None;
+            let mut parents = std::collections::HashMap::new();
+            for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+                if let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse().ok())
+                    && let Some(parent) = parent_of(pid)
+                {
+                    parents.insert(pid, parent);
+                }
+            }
+            for &pid in parents.keys() {
+                let mut ancestor = pid;
+                while ancestor != root && ancestor > 1 {
+                    ancestor = parents.get(&ancestor).copied().unwrap_or(0);
+                }
+                if ancestor == root {
+                    note_tasks(pid, &mut asleep);
+                }
+            }
+        }
+        asleep
+    }
+
+    /// How many typed bytes the session has not read.  What is written to
+    /// the master reaches the slave's line discipline from a kernel work
+    /// queue, some time after write returns; poll on the slave waits for
+    /// that work (n_tty_poll's tty_buffer_flush_work), so by the time it
+    /// answers every byte typed is either counted here or was read -- or
+    /// was the interrupt character, whose signal has then been sent, and
+    /// the session's waits woken.
+    fn unread(&self) -> usize {
+        use std::os::fd::AsRawFd;
+        let slave = self.slave.as_raw_fd();
+        let mut fds = libc::pollfd {
+            fd: slave,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let mut count: libc::c_int = 0;
+        // SAFETY: FDS is one valid pollfd, COUNT a valid int for
+        // FIONREAD's answer.
+        unsafe {
+            libc::poll(&mut fds, 1, 0);
+            libc::ioctl(slave, libc::FIONREAD, &mut count);
+        }
+        usize::try_from(count).unwrap_or(0)
+    }
+
+    /// Whether the session is idle: nothing typed is unread and its
+    /// processes all sleep (or are gone).
+    fn idle(&self) -> bool {
+        self.unread() == 0 && self.asleep().unwrap_or(true)
+    }
+
+    /// The processor time the terminal's foreground process group's
+    /// leader has used, in clock ticks, if that can be told.
+    fn ticks_used(&self) -> Option<u64> {
+        use std::os::fd::AsRawFd;
+        // SAFETY: MASTER is an open terminal.
+        let group = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        let stat = std::fs::read_to_string(format!("/proc/{group}/stat")).ok()?;
+        let mut fields = stat[stat.rfind(')')? + 1..].split_whitespace();
+        let user = fields.nth(11)?.parse::<u64>().ok()?;
+        let system = fields.next()?.parse::<u64>().ok()?;
+        Some(user + system)
+    }
+
+    /// Let the session be idle for SECONDS: the time it is busy, or has
+    /// typed bytes left to read, does not count.
+    fn pause(&mut self, seconds: f64) {
+        let need = std::time::Duration::from_secs_f64(seconds);
+        let start = std::time::Instant::now();
+        let mut idle = std::time::Duration::ZERO;
+        let (mut last, mut was) = (start, self.idle());
+        while !((was && idle >= need) || self.exited()) {
+            self.pump(5);
+            let now = std::time::Instant::now();
+            let is = self.idle();
+            if is && was {
+                idle += now - last;
+            }
+            (last, was) = (now, is);
+            assert!(
+                now - start < need + Self::BUSY_LIMIT,
+                "the session was not idle {seconds} s within {:?}: \
+                 a step typed at a session that works is `busy'",
+                need + Self::BUSY_LIMIT
+            );
+        }
+    }
+
+    /// Let SECONDS of wall-clock time pass from when the session has read
+    /// the step before, and until it has run two clock ticks since or
+    /// sleeps: the command that step began is under way.
+    fn pause_busy(&mut self, seconds: f64) {
+        let before = self.ticks_used();
+        let limit = std::time::Instant::now() + Self::BUSY_LIMIT;
+        while self.unread() > 0 && !self.exited() && std::time::Instant::now() < limit {
+            self.pump(2);
+        }
+        let end = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
+        loop {
+            let now = std::time::Instant::now();
+            if self.exited() || now >= limit {
+                return;
+            }
+            let under_way = match (before, self.ticks_used()) {
+                (Some(before), Some(used)) => used >= before + 2,
+                _ => true,
+            };
+            if now >= end && (under_way || self.idle()) {
+                return;
+            }
+            self.pump(5);
+        }
+    }
+
+    /// Type BYTES.
+    fn type_bytes(&mut self, bytes: &[u8]) {
+        use std::os::fd::AsRawFd;
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            // SAFETY: REST is readable for its length.
+            let n =
+                unsafe { libc::write(self.master.as_raw_fd(), rest.as_ptr().cast(), rest.len()) };
+            let Ok(n) = usize::try_from(n) else {
+                return;
+            };
+            rest = &rest[n..];
+            if !rest.is_empty() {
+                self.pump(1);
+            }
+        }
+    }
+
+    /// Type INPUT's steps, each a pause and then bytes, the first after
+    /// SETTLE (or BLIND_SETTLE) seconds more.  A pause is that many seconds of the session
+    /// being idle (`pause'); a `busy' one, that many seconds of the wall
+    /// clock after the session read the step before (`pause_busy'), for
+    /// bytes meant to arrive while a command runs.
+    fn steps(&mut self, input: &[(f64, &[u8])]) {
+        if input.is_empty() {
+            return;
+        }
+        self.pause(if Path::new("/proc/self/task").is_dir() {
+            Self::SETTLE
+        } else {
+            Self::BLIND_SETTLE
+        });
+        for &(pause, bytes) in input {
+            if pause.is_sign_negative() {
+                self.pause_busy(-pause);
+            } else {
+                self.pause(pause);
+            }
+            if self.exited() {
+                return;
+            }
+            self.type_bytes(bytes);
+        }
+    }
+
+    /// Wait for the session's program to exit, killing it after
+    /// EXIT_LIMIT; what it wrote to the terminal, if kept, and its exit
+    /// status (None when killed, by a signal of its own or this one).
+    fn finish(mut self) -> (Vec<u8>, Option<i32>) {
+        let deadline = std::time::Instant::now() + Self::EXIT_LIMIT;
+        while !self.exited() {
+            if std::time::Instant::now() >= deadline {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                break;
+            }
+            self.pump(20);
+        }
+        // What it wrote before it went.
+        loop {
+            let before = self.output.as_ref().map_or(0, Vec::len);
+            self.pump(20);
+            if self.output.as_ref().map_or(0, Vec::len) == before {
+                break;
+            }
+        }
+        let code = self.status.and_then(|status| status.code());
+        (self.output.take().unwrap_or_default(), code)
+    }
+}
+
+/// Note in ASLEEP whether the threads of process PID all sleep -- a
+/// zombie has none left to run -- and return its task directories.
+#[cfg(unix)]
+fn note_tasks(pid: u32, asleep: &mut Option<bool>) -> Vec<std::path::PathBuf> {
+    let mut tasks = Vec::new();
+    for task in std::fs::read_dir(format!("/proc/{pid}/task"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = task.path();
+        // The state follows the command's name.
+        if let Ok(stat) = std::fs::read_to_string(path.join("stat"))
+            && let Some(close) = stat.rfind(')')
+            && let Some(state) = stat[close + 1..].trim_start().chars().next()
+            && !matches!(state, 'Z' | 'X' | 'x')
+        {
+            let sleeping = matches!(state, 'S' | 'I' | 'T' | 't');
+            *asleep = Some(asleep.unwrap_or(true) && sleeping);
+        }
+        tasks.push(path);
+    }
+    tasks
+}
+
+/// note_tasks for PID and its descendants; false if the kernel does not
+/// say which they are.
+#[cfg(unix)]
+fn walk_tasks(pid: u32, asleep: &mut Option<bool>) -> bool {
+    for task in note_tasks(pid, asleep) {
+        match std::fs::read_to_string(task.join("children")) {
+            Ok(children) => {
+                for child in children.split_whitespace() {
+                    if let Ok(child) = child.parse()
+                        && !walk_tasks(child, asleep)
+                    {
+                        return false;
+                    }
+                }
+            }
+            // The task gone meanwhile, or a kernel without the file.
+            Err(_) if task.exists() => return false,
+            Err(_) => {}
+        }
+    }
+    true
+}
+
+/// Process PID's parent.
+#[cfg(unix)]
+fn parent_of(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // After the command's name: state, parent.
+    stat[stat.rfind(')')? + 1..]
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 
 fn without_primitive_frames(texts: &mut [String]) {
@@ -6358,7 +6643,7 @@ fn an_input_method_translates_what_read_char_reads() {
 (set-input-method "latin-1-prefix")"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (2.5, b"'"),
+        (0.5, b"'"),
         (0.3, b"e"),
         (0.3, b"a"),
         (0.3, b"'"),
@@ -6387,7 +6672,7 @@ fn keystrokes_echo_as_keyboard_c_echoes_them() {
     // (quoted-insert's) echoes the command's keys and then the key it
     // read, and an error message wiped at the next key lets echoing start
     // again.  An idle timer notes the echo area each time the session goes
-    // idle; the session waits out GNU's terminal query first.
+    // idle.
     let corpus = Corpus::new();
     let probe = corpus.write(
         "echo.el",
@@ -6402,7 +6687,7 @@ fn keystrokes_echo_as_keyboard_c_echoes_them() {
       (kill-emacs 0))))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (6.5, b"\x18"),
+        (0.5, b"\x18"),
         (2.4, b"\x07"),
         (2.4, b"\x15"),
         (2.4, b"8"),
@@ -6446,7 +6731,7 @@ fn the_echo_area_is_wiped_as_read_char_wipes_it() {
 (global-set-key [f6] #'wipe-done)"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (6.5, b"\x15"),
+        (0.5, b"\x15"),
         (2.4, b"8"),
         (0.3, b"x"),
         (0.5, b"\x1b[15~"),
@@ -6485,9 +6770,8 @@ fn a_message_ends_echoing_and_times_out_over_the_minibuffer() {
     (insert (format "%S\n" (reverse msg-log))))
   (kill-emacs 0)))"#,
     );
-    // GNU echoes nothing typed in its first seconds.
     let input: Vec<(f64, &[u8])> = vec![
-        (9.0, b"\x03"),
+        (0.5, b"\x03"),
         (1.5, b"M"),
         (2.2, b"a"),
         (0.5, b"\x1bx"),
@@ -6522,10 +6806,10 @@ fn a_help_character_after_a_prefix_runs_prefix_help_command() {
     (insert (format "%S\n" (reverse ph-log))))
   (kill-emacs 0)))"#,
     );
-    // The pause after C-x 4 is well past `echo-keystrokes' (1 s), so the
-    // prefix echoes before F1 arrives even under load.
+    // The pause after C-x 4 is well past `echo-keystrokes' (1 s): the
+    // prefix is echoed when F1 arrives.
     let input: Vec<(f64, &[u8])> = vec![
-        (6.5, b"\x18\x08"),
+        (0.5, b"\x18\x08"),
         (0.5, b"\x184"),
         (3.0, b"\x1bOP"),
         (0.5, b"\x03\x08"),
@@ -6565,7 +6849,7 @@ fn a_minibuffer_read_and_a_macro_keep_what_the_command_loop_keeps() {
 (set-input-method "german-postfix")"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (2.5, b"\x15"),
+        (0.5, b"\x15"),
         (0.3, b"\x1b[15~"),
         (0.3, b"ab"),
         (0.3, b"\r"),
@@ -6635,7 +6919,7 @@ fn while_no_input_takes_the_key_that_ends_it() {
 (switch-to-buffer "w")"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (2.5, b"\x1b[15~"),
+        (0.5, b"\x1b[15~"),
         (0.5, b"d"),
         (1.0, b"\x1b[17~"),
         (0.5, b"e"),
@@ -6919,22 +7203,24 @@ fn the_terminal_is_read_as_keyboard_c_reads_it() {
     let corpus = Corpus::new();
     let probe = corpus.write("tty.el", PROBE);
     let f = |n: u8| -> Vec<u8> { format!("\x1b[{n}~").into_bytes() };
+    // The steps typed while a command runs are `busy': k-loop's C-g,
+    // k-wni's and k-pending's key, k-typeahead's keys.
     let input: Vec<(f64, Vec<u8>)> = vec![
         (0.0, f(15)),
-        (0.5, b"\x07".to_vec()),
+        (busy(0.5), b"\x07".to_vec()),
         (0.5, f(17)),
-        (0.5, b"x".to_vec()),
+        (busy(0.5), b"x".to_vec()),
         (3.0, f(18)),
         (0.3, b"a".to_vec()),
         (0.5, f(19)),
         (0.5, b"b".to_vec()),
         (0.6, b"\x07".to_vec()),
         (0.5, f(20)),
-        (0.2, b"c".to_vec()),
+        (busy(0.2), b"c".to_vec()),
         (1.0, f(21)),
         (1.0, f(23)),
-        (0.5, b"xy".to_vec()),
-        (0.5, b"\x07ab".to_vec()),
+        (busy(0.5), b"xy".to_vec()),
+        (busy(0.5), b"\x07ab".to_vec()),
         (4.0, f(24)),
         (0.5, f(15)),
         (1.0, b"Q".to_vec()),
@@ -6959,7 +7245,7 @@ fn the_terminal_bytes_are_decoded_as_keyboard_c_decodes_them() {
     let probe = corpus.write("utf8.el", UTF8_PROBE);
     let e_acute: &[u8] = b"\xc3\xa9";
     let input: Vec<(f64, &[u8])> = vec![
-        (2.5, e_acute),
+        (0.5, e_acute),
         (0.3, b"a"),
         (0.3, b"\x1b[15~"),
         (0.5, e_acute),
@@ -7003,7 +7289,7 @@ const PROBE: &str = r##"(defvar k-log nil)
   (push (list 'read-timed (read-event nil nil 2)) k-log)
   (push (list 'read-quit (condition-case nil (progn (read-event) 'after) (quit 'quit))) k-log))
 (defun k-pending () (interactive)
-  (k-busy 0.6)
+  (k-busy 1.5)
   (push (list 'pending-after-busy (input-pending-p)) k-log))
 (defun k-proc () (interactive)
   (make-process :name "kp" :command '("sh" "-c" "sleep 0.3; echo out") :noquery t :connection-type 'pipe
@@ -7184,7 +7470,7 @@ fn c_stack_overflow_in_a_terminal_command_returns_to_its_command_loop() {
       (insert (format "%S\n" so-log)))
     (kill-emacs 0)))"#,
     );
-    let input: Vec<(f64, &[u8])> = vec![(6.5, b"\x1b[15~"), (4.0, b"\x1b[17~")];
+    let input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~"), (4.0, b"\x1b[17~")];
     let expected = corpus.run_tty(&oracle(), &probe, "so.out", "C", &input);
     let actual = corpus.run_tty(emaxx(), &probe, "so.out", "C", &input);
     assert!(expected.is_some(), "GNU's session wrote nothing");
@@ -7296,7 +7582,7 @@ fn c_stack_overflow_in_minibuffer_setup_leaves_the_minibuffer_active() {
                                    (minibuffer-window-active-p (minibuffer-window))))))
     (kill-emacs 0)))"#,
     );
-    let input: Vec<(f64, &[u8])> = vec![(6.5, b"\x1b[15~"), (6.0, b"\x1b[17~")];
+    let input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~"), (6.0, b"\x1b[17~")];
     let expected = corpus.run_tty(&oracle(), &probe, "so.out", "C", &input);
     let actual = corpus.run_tty(emaxx(), &probe, "so.out", "C", &input);
     assert!(expected.is_some(), "GNU's session wrote nothing");
@@ -7481,7 +7767,7 @@ fn a_throw_to_top_level_runs_the_startup_form_again() {
     (insert (format "%S\n" (cdr (reverse tl-log)))))
   (kill-emacs 0)))"#,
     );
-    let input: Vec<(f64, &[u8])> = vec![(6.5, b"\x1b[17~"), (1.0, b"\x1b[18~")];
+    let input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[17~"), (1.0, b"\x1b[18~")];
     let expected = corpus.run_tty(&oracle(), &probe, "tl.out", "C", &input);
     let actual = corpus.run_tty(emaxx(), &probe, "tl.out", "C", &input);
     assert!(expected.is_some(), "GNU's session wrote nothing");
@@ -7513,7 +7799,7 @@ fn recursive_edit_runs_a_command_loop_on_the_terminal() {
   (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (6.5, b"\x1b[15~"),
+        (0.5, b"\x1b[15~"),
         (0.5, b"\x1b[17~"),
         (0.5, b"\x1b\x03\x03"),
         (0.5, b"\x1b[15~"),
@@ -7551,7 +7837,7 @@ fn an_error_escaping_cmd_error_throws_to_top_level() {
   (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (6.5, b"\x1b[17~"),
+        (0.5, b"\x1b[17~"),
         (0.5, b"\x02"),
         (1.0, b"a"),
         (0.5, b"\x1b[18~"),
@@ -7583,7 +7869,7 @@ fn point_leaves_invisible_text_after_a_command() {
   (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (6.5, b"\x06"),
+        (0.5, b"\x06"),
         (0.3, b"\x06"),
         (0.3, b"\x02"),
         (0.3, b"\x02"),
@@ -7614,7 +7900,7 @@ fn a_macro_takes_a_command_s_keys_once_no_prefix_argument_is_pending() {
   (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (6.5, b"\x18("),
+        (0.5, b"\x18("),
         (0.3, b"a"),
         (0.3, b"\x15"),
         (0.3, b"\x18)"),
@@ -8067,7 +8353,7 @@ fn a_mouse_command_gets_its_event_as_callint_c_gives_it() {
     (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (2.5, b"\x1b[<0;5;3M"),
+        (0.5, b"\x1b[<0;5;3M"),
         (0.1, b"\x1b[<0;5;3m"),
         (1.0, b"\x1b[<0;2;1M"),
         (0.1, b"\x1b[<0;2;1m"),
@@ -8116,7 +8402,7 @@ fn a_click_on_a_prompting_keymap_menus_as_read_char_x_menu_prompt_does() {
     (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (2.5, b"\x1b[<2;5;3M"),
+        (0.5, b"\x1b[<2;5;3M"),
         (0.1, b"\x1b[<2;5;3m"),
         (1.5, b"\x07"),
         (1.0, b"\x1b[<2;5;3M"),
@@ -8201,7 +8487,7 @@ fn a_tty_menu_tracks_the_mouse_and_holds_off_collection_as_term_c_does() {
     (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (2.5, b"\x1b[<2;5;3M"),
+        (0.5, b"\x1b[<2;5;3M"),
         (0.1, b"\x1b[<2;5;3m"),
         (1.5, b"\x1b[<35;6;5M"),
         (0.5, b"\r"),
@@ -8225,8 +8511,6 @@ fn read_char_auto_saves_and_redisplays_as_keyboard_c_does() {
     // `auto-save-timeout' seconds (a quarter of it times the buffer's
     // delay level, four for a small one) pass without input; Fredisplay
     // with input pending and `redisplay-dont-pause' nil does nothing.
-    // GNU's first seconds compile what it loaded, whose output would cut
-    // the idle wait short, so the keys come after them.
     let corpus = Corpus::new();
     let probe = corpus.write(
         "autosave.el",
@@ -8247,7 +8531,7 @@ fn read_char_auto_saves_and_redisplays_as_keyboard_c_does() {
     (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (9.0, b"aaaaaaaaaaaaaaaaaaaaaaaaa"),
+        (0.5, b"aaaaaaaaaaaaaaaaaaaaaaaaa"),
         (1.0, b"\x1b[15~"),
         (0.5, b"\x1b[18~"),
         (0.5, b"bbb"),
@@ -8292,7 +8576,7 @@ fn special_event_leaving_another_buffer_current_replays_the_key_sequence() {
     (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (9.0, b"\x1b[15~"),
+        (0.5, b"\x1b[15~"),
         (0.2, b"\x18"),
         (2.0, b"b"),
         (1.0, b"\x1b[17~"),
@@ -8379,10 +8663,7 @@ fn redisplay_considers_the_windows_marked_as_xdisp_c_does() {
         (cons 'redraw (lambda () (redraw-display)))))"#
         ),
     );
-    // The first key comes once the oracle has natively compiled what its
-    // startup loaded (comp.c's deferred compilation, which Emaxx does not
-    // do), whose subprocesses' output asks for redisplays of its own.
-    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 9));
     input.push((1.0, b"abc"));
     input.push((1.0, b"\x1b[15~"));
@@ -8421,10 +8702,7 @@ fn indirect_buffers_the_log_and_margins_mark_windows_as_gnu_does() {
         (cons 'typed #'ignore)))"#
         ),
     );
-    // The first key comes once the oracle has natively compiled what its
-    // startup loaded (comp.c's deferred compilation, which Emaxx does not
-    // do), whose subprocesses' output asks for redisplays of its own.
-    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 7));
     input.push((1.0, b"a"));
     input.push((0.5, b"b"));
@@ -8461,10 +8739,7 @@ fn messages_resize_the_mini_window_as_xdisp_c_does() {
                       (message "%s" (make-string 130 ?m))))))"#
         ),
     );
-    // The first key comes once the oracle has natively compiled what its
-    // startup loaded (comp.c's deferred compilation, which Emaxx does not
-    // do), whose subprocesses' output asks for redisplays of its own.
-    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 6));
     input.push((1.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "redisplay.out", "C", &input);
@@ -8502,10 +8777,7 @@ fn face_changes_free_realized_faces_as_xfaces_c_does() {
                              (list (format-mode-line "x") inhibit-free-realized-faces)))))"#
         ),
     );
-    // The first key comes once the oracle has natively compiled what its
-    // startup loaded (comp.c's deferred compilation, which Emaxx does not
-    // do), whose subprocesses' output asks for redisplays of its own.
-    let mut input: Vec<(f64, &[u8])> = vec![(25.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.0, b"\x1b[15~" as &[u8]), 7));
     input.push((1.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "redisplay.out", "C", &input);
@@ -8566,7 +8838,7 @@ fn windows_display_from_a_start_inside_a_line_as_start_display_does() {
     (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (15.0, b"\x1b[15~"),
+        (0.5, b"\x1b[15~"),
         (3.0, b"\x1b[17~"),
         (3.0, b"\x1b[18~"),
         (3.0, b"\x1b[20~"),
@@ -8636,7 +8908,7 @@ fn positions_in_a_window_measure_its_display_as_the_iterator_does() {
     (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (15.0, b"\x1b[15~"),
+        (0.5, b"\x1b[15~"),
         (3.0, b"\x1b[17~"),
         (3.0, b"\x1b[18~"),
         (3.0, b"\x1b[20~"),
@@ -8711,7 +8983,7 @@ fn redisplay_and_the_display_iterator_run_lisp_as_xdisp_c_does() {
     (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (15.0, b"\x1b[15~"),
+        (0.5, b"\x1b[15~"),
         (3.0, b"\x1b[17~"),
         (3.0, b"\x1b[18~"),
         (3.0, b"\x1b[19~"),
@@ -8829,7 +9101,7 @@ fn the_display_iterator_fetches_text_where_xdisp_c_fetches_it() {
       (insert (format "%S\n" (reverse ft-res))))
     (kill-emacs 0)))"#,
     );
-    let input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~"), (5.0, b"\x1b[19~")];
+    let input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~"), (5.0, b"\x1b[19~")];
     let expected = corpus.run_tty(&oracle(), &probe, "iterfetch.out", "C.UTF-8", &input);
     let actual = corpus.run_tty(emaxx(), &probe, "iterfetch.out", "C.UTF-8", &input);
     assert!(expected.is_some(), "GNU's session wrote nothing");
@@ -8921,7 +9193,7 @@ fn redisplay_fontifies_the_text_its_walks_fetch_as_redisplay_window_does() {
       (insert (format "%S\n" (reverse rf-res))))
     (kill-emacs 0)))"#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 20));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "redisplayfetch.out", "C.UTF-8", &input);
@@ -8987,7 +9259,7 @@ fn redisplay_offers_a_declined_position_once_a_walk_and_none_from_the_current_ma
       (insert (format "%S\n" (reverse dw-res))))
     (kill-emacs 0)))"#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 5));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "declinedwalks.out", "C.UTF-8", &input);
@@ -9075,7 +9347,7 @@ fn redisplay_walks_move_it_vertically_and_the_recenter_fallbacks_as_xdisp_does()
       (insert (format "%S\n" (reverse zw-res))))
     (kill-emacs 0)))"#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 8));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "zvwalks.out", "C.UTF-8", &input);
@@ -9185,7 +9457,7 @@ fn redisplay_scroll_margins_window_end_and_iterator_stops_as_xdisp_does() {
       (insert (format "%S\n" (reverse mw-res))))
     (kill-emacs 0)))"#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((2.0, &b"\x1b[15~"[..]), 20));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "marginwalks.out", "C.UTF-8", &input);
@@ -9259,7 +9531,7 @@ fn text_changes_at_the_old_point_resume_auto_hscroll_as_insdel_c_does() {
     (kill-emacs 0)))
 "#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 63));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "autohscroll.out", "C.UTF-8", &input);
@@ -9320,7 +9592,7 @@ fn text_changes_at_the_old_point_resume_auto_hscroll_as_insdel_c_does() {
     (kill-emacs 0)))
 "#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 35));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "autohscroll2.out", "C.UTF-8", &input);
@@ -9402,7 +9674,7 @@ fn long_lines_turn_on_the_long_line_optimizations_as_xdisp_c_does() {
     (kill-emacs 0)))"#,
     );
     let input: Vec<(f64, &[u8])> = vec![
-        (15.0, b"\x1b[15~"),
+        (0.5, b"\x1b[15~"),
         (3.0, b"\x1b[17~"),
         (3.0, b"\x1b[18~"),
         (3.0, b"\x1b[20~"),
@@ -9487,7 +9759,7 @@ fn a_window_start_at_a_before_string_answers_as_gnu_does() {
     (kill-emacs 0)))
 "#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.0, &b"\x1b[15~"[..]), 14));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "beforestring.out", "C.UTF-8", &input);
@@ -9575,7 +9847,7 @@ fn the_review_of_round_356_is_answered_as_gnu_answers() {
     (kill-emacs 0)))
 "#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 7));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "review356.out", "C.UTF-8", &input);
@@ -9668,7 +9940,7 @@ fn vertical_motion_goal_columns_and_rows_at_zv_answer_as_gnu_does() {
     (kill-emacs 0)))
 "#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 6));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "goal357.out", "C.UTF-8", &input);
@@ -9755,7 +10027,7 @@ fn the_review_of_round_358_is_answered_as_gnu_answers() {
     (kill-emacs 0)))
 "#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 5));
     input.push((1.5, b"\x1b[17~"));
     input.push((5.0, b"\x1b[19~"));
@@ -9820,7 +10092,7 @@ fn a_display_string_taller_than_the_window_answers_as_gnu_does() {
     (kill-emacs 0)))
 "#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 9));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "tall358.out", "C.UTF-8", &input);
@@ -9921,7 +10193,7 @@ fn the_review_of_round_357_is_answered_as_gnu_answers() {
     (kill-emacs 0)))
 "#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 11));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "rv357.out", "C.UTF-8", &input);
@@ -10058,7 +10330,7 @@ fn the_second_review_of_round_357_is_answered_as_gnu_answers() {
     (kill-emacs 0)))
 "#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 9));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "rv357b.out", "C.UTF-8", &input);
@@ -10143,7 +10415,7 @@ fn truncated_lines_whose_strings_hold_newlines_answer_as_gnu_does() {
       (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
     (kill-emacs 0)))"#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 11));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "rv359.out", "C.UTF-8", &input);
@@ -10220,11 +10492,127 @@ fn the_review_of_round_359_is_answered_as_gnu_answers() {
       (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
     (kill-emacs 0)))"#,
     );
-    let mut input: Vec<(f64, &[u8])> = vec![(15.0, b"\x1b[15~")];
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
     input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 12));
     input.push((5.0, b"\x1b[19~"));
     let expected = corpus.run_tty(&oracle(), &probe, "rv359r.out", "C.UTF-8", &input);
     let actual = corpus.run_tty(emaxx(), &probe, "rv359r.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn display_strings_across_newlines_answer_as_gnu_does() {
+    // A `display' string that replaces a newline does not end the
+    // display line: pop_it's iterate_out_of_display_property leaves the
+    // iterator at the text after it, in the next line, whose characters
+    // join the string's last row, and a final newline it replaces leaves
+    // no empty row at ZV.  A row after a string's newline starting a
+    // later line has that line's number.  A `display' string nested in
+    // an overlay string replaces its characters (string_from_display_
+    // prop_p), and move_it_by_lines landing inside it goes one past the
+    // overlay's position.  From inside text a string replaces past a
+    // newline it covers, vertical-motion starts at the raw line start
+    // before point, where the iterator delivers the string from its
+    // start.  A row after an overlay string's newline starts where the
+    // strings were loaded, past invisible text or an empty display string
+    // at their position.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "rv360.el",
+        r#"(defvar st-stage 0)
+(defvar st-res nil)
+(defvar st-p nil)
+(defun st-buf (&optional n)
+  (switch-to-buffer (get-buffer-create "st"))
+  (erase-buffer) (remove-overlays)
+  (setq truncate-lines nil display-line-numbers nil word-wrap nil line-prefix nil wrap-prefix nil)
+  (dotimes (i (or n 20)) (insert (format "line %03d\n" i)))
+  (goto-char 1) (forward-line 5) (setq st-p (point)))
+(defun st-ov (pos prop str &optional end)
+  (let ((ov (make-overlay pos (or end pos)))) (overlay-put ov prop str) ov))
+(defun st-vm (tag from ns)
+  (dolist (n ns)
+    (push (list tag from n (save-excursion (goto-char from) (list (vertical-motion n) (point)))) st-res)))
+(defun st-lm (tag from ns)
+  (dolist (n ns)
+    (push (list tag 'lm from n (save-excursion (goto-char from)
+                                               (condition-case e (progn (line-move n t) (point)) (error (car e)))))
+          st-res)))
+(defun st-q (tag)
+  (let ((p st-p))
+    (push (list tag 'csl (count-screen-lines (point-min) (point-max) t)
+                'we (window-end) (window-end nil t) 'pt (point)
+                'cur (let ((x (posn-at-point))) (and x (posn-col-row x))))
+          st-res)
+    (dolist (q (list (- p 9) p (+ p 5) (+ p 7) (+ p 8) (+ p 9) (+ p 12) (+ p 17) (+ p 18) (+ p 27)
+                     (- (point-max) 5) (- (point-max) 1) (point-max)))
+      (push (list tag 'posn q (let ((x (posn-at-point q))) (and x (posn-col-row x)))
+                  (pos-visible-in-window-p q nil t))
+            st-res))
+    (st-vm (list tag 'a) (- p 9) '(1 2 3 4))
+    (st-vm (list tag 'b) (+ p 27) '(-1 -2 -3 -4))
+    (st-vm (list tag 'c) (+ p 12) '(0 1 -1))
+    (st-vm (list tag 'd) (+ p 5) '(0 1 -1 (3 . 1)))
+    (st-vm (list tag 'z) (point-max) '(0 -1 -2))
+    (st-lm (list tag 'e) (- p 9) '(1 2 3))
+    (st-lm (list tag 'f) (+ p 27) '(-1 -2 -3))))
+(defconst st-stages
+  '(;; 1 display string ending in newline over two lines
+    (progn (st-buf) (put-text-property st-p (+ st-p 18) 'display "FOLD\n") (set-window-start nil 1) (goto-char 1))
+    ;; 2 display string over a line's newline and the whole next line
+    (progn (st-buf) (put-text-property (+ st-p 8) (+ st-p 18) 'display " [+]\n") (set-window-start nil 1) (goto-char 1))
+    ;; 3 display string without newline over "005\n": the next line joins its row
+    (progn (st-buf) (put-text-property (+ st-p 5) (+ st-p 9) 'display "Y1Y2") (set-window-start nil 1) (goto-char 1))
+    ;; 4 overlay display ending in newline over "005\n"
+    (progn (st-buf) (st-ov (+ st-p 5) 'display "Y1\nY2\n" (+ st-p 9)) (set-window-start nil 1) (goto-char 1))
+    ;; 5 overlay display without newline over the lone newline
+    (progn (st-buf) (st-ov (+ st-p 8) 'display "Z" (+ st-p 9)) (set-window-start nil 1) (goto-char 1))
+    ;; 6 display "X\n" over the lone newline
+    (progn (st-buf) (put-text-property (+ st-p 8) (+ st-p 9) 'display "X\n") (set-window-start nil 1) (goto-char 1))
+    ;; 7 display "X" over the lone newline
+    (progn (st-buf) (put-text-property (+ st-p 8) (+ st-p 9) 'display "X") (set-window-start nil 1) (goto-char 1))
+    ;; 8 display without newline over two lines
+    (progn (st-buf) (put-text-property st-p (+ st-p 18) 'display "FOLD") (set-window-start nil 1) (goto-char 1))
+    ;; 9 display without newline over the final "019\n"
+    (progn (st-buf) (let ((z (point-max))) (put-text-property (- z 4) z 'display "Y1Y2")) (set-window-start nil 1) (goto-char 1))
+    ;; 10 display ending in newline over the final "019\n", point at ZV
+    (progn (st-buf) (let ((z (point-max))) (put-text-property (- z 4) z 'display "Y1\nY2\n")) (set-window-start nil 1) (goto-char (point-max)))
+    ;; 11 fold over two lines with line numbers, point inside the second covered line
+    (progn (st-buf) (setq display-line-numbers t) (put-text-property st-p (+ st-p 18) 'display "FOLD\n") (set-window-start nil 1) (goto-char (+ st-p 12)))
+    ;; 12 display over two lines, a long first part continued, point in the covered text
+    (progn (st-buf) (put-text-property (+ st-p 4) (+ st-p 18) 'display (concat (make-string 100 ?w) "\n")) (set-window-start nil 1) (goto-char (+ st-p 12)))
+    ;; 13 display string nested in a before-string
+    (progn (st-buf) (st-ov st-p 'before-string (concat "ab" (propertize "X" 'display "D") "\ncd\n")) (set-window-start nil 1) (goto-char 1) (sit-for 0)
+      (dolist (c '(0 1 2 3 5)) (st-vm (list 'nest c) (- st-p 9) (list (cons c 1) (cons c 2) (cons c 3)))))
+    ;; 14 display string with newlines nested in a before-string
+    (progn (st-buf) (st-ov st-p 'before-string (concat "ab" (propertize "X" 'display "P1\nP2") "cd\nef\n")) (set-window-start nil 1) (goto-char 1) (sit-for 0)
+      (dolist (c '(0 1 2 3 5)) (st-vm (list 'nest2 c) (- st-p 9) (list (cons c 1) (cons c 2) (cons c 3) (cons c 4)))))
+    ;; 15 line numbers, "A\nB" over a line's newline and the two lines after
+    (progn (st-buf) (setq display-line-numbers t) (put-text-property (+ st-p 8) (+ st-p 27) 'display "A\nB") (set-window-start nil 1) (goto-char (+ st-p 30)))
+    ;; 16 after-string "A\n" ending at a line's newline, the newline invisible
+    (progn (st-buf) (st-ov (+ st-p 7) 'after-string "A\n" (+ st-p 8)) (put-text-property (+ st-p 8) (+ st-p 9) 'invisible t) (set-window-start nil 1) (goto-char 1))
+    ;; 17 after-string "A\n" ending at a line's newline, an empty display string over it
+    (progn (st-buf) (st-ov (+ st-p 7) 'after-string "A\n" (+ st-p 8)) (put-text-property (+ st-p 8) (+ st-p 9) 'display "") (set-window-start nil 1) (goto-char 1))
+    ))
+(defun st-f5 () (interactive)
+  (when (> st-stage 0) (st-q st-stage))
+  (let ((stage (nth st-stage st-stages)))
+    (setq st-stage (1+ st-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'st-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "rv360.out" command-line-default-directory)
+      (dolist (r (reverse st-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))
+"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 17));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "rv360.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "rv360.out", "C.UTF-8", &input);
     assert!(expected.is_some(), "GNU's session wrote nothing");
     assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }

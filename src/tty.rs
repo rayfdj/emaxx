@@ -1570,8 +1570,15 @@ struct WindowPlan {
     /// Whether each rendered row shows the left truncation glyph
     /// (row->truncated_on_left_p).
     left_truncated: Vec<bool>,
+    /// Whether each rendered row continues the one above it
+    /// (it->continuation_lines_width > 0), rather than starting after a
+    /// newline, a string's included.
+    continued: Vec<bool>,
     /// Buffer position where the window's display starts.
     top_pos: usize,
+    /// The window's start (w->start): the display's first row begins
+    /// before it where only text that shows nothing lies between.
+    window_start: usize,
     /// Position just past the last displayed character (GNU window-end).
     window_end: usize,
     /// Cursor cell within the window body (including any line-number gutter),
@@ -3116,9 +3123,6 @@ struct VisualLine {
     /// which of them and the character's index in it.
     objects: Vec<(Value, bool)>,
     object_of: Vec<Option<(usize, usize)>>,
-    /// Whether a `display' string replaces the newline that ends the
-    /// line: the iterator pops the string past it, so no row shows it.
-    newline_replaced: bool,
 }
 
 /// Record that the display indexes from START show the characters of
@@ -3141,12 +3145,84 @@ fn record_string_glyphs(
     );
 }
 
+/// The string a glyph comes from, whether a `display' property gave it,
+/// and the index of its character there.
+type GlyphSource = (Value, bool, usize);
+
+/// Record that the display indexes from START show the characters
+/// SOURCES name (none for the dots of an ellipsis): an overlay string's
+/// own and those of `display' strings nested in it.
+fn record_glyph_sources(
+    objects: &mut Vec<(Value, bool)>,
+    object_of: &mut Vec<Option<(usize, usize)>>,
+    start: usize,
+    sources: impl IntoIterator<Item = Option<GlyphSource>>,
+) {
+    let first = objects.len();
+    object_of.resize(start, None);
+    for source in sources {
+        object_of.push(source.map(|(value, display, index)| {
+            let object = (first..objects.len())
+                .find(|&object| objects[object] == (value, display))
+                .unwrap_or_else(|| {
+                    objects.push((value, display));
+                    objects.len() - 1
+                });
+            (object, index)
+        }));
+    }
+}
+
 impl VisualLine {
     /// The string the glyph at display INDEX comes from, and the index
     /// of its character there (make_lispy_position's OBJECT).
     fn object_at(&self, index: usize) -> Option<(Value, usize)> {
         let (object, character) = (*self.object_of.get(index)?)?;
         Some((self.objects[object].0, character))
+    }
+
+    /// Where display_line begins the row whose first glyph is display
+    /// INDEX, as a raw offset: IT_CHARPOS at the row's start.  After a
+    /// newline that was the last character of a `display' property's
+    /// string the iterator has come out of the string -- pop_it's
+    /// iterate_out_of_display_property leaves it at the end of the text
+    /// the string replaces -- and the row starts there, before
+    /// handle_stop skips invisible text or an empty string after it.
+    /// Otherwise where INDEX's glyph comes from: after an overlay
+    /// string's newline that is the position the strings were loaded at,
+    /// past invisible text or an empty `display' string there
+    /// (handle_invisible_prop and handle_display_prop run before
+    /// get_overlay_strings).
+    fn row_start_offset(&self, index: usize) -> usize {
+        let raw_at = |index: usize| {
+            self.raw_of_display
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| self.raw_of_display.last().copied().unwrap_or(0))
+        };
+        let string_of = |index: usize| {
+            self.object_of
+                .get(index)
+                .copied()
+                .flatten()
+                .map(|(object, _)| object)
+        };
+        if let Some(newline) = index.checked_sub(1)
+            && let Some(object) = string_of(newline)
+            && string_of(index) != Some(object)
+            && self.text.chars().nth(newline) == Some('\n')
+        {
+            let raw = raw_at(newline);
+            if self.objects[object].1
+                && let Some(&(_, end, _)) = self
+                    .replaced
+                    .iter()
+                    .find(|&&(start, end, string)| string && start <= raw && raw < end)
+            {
+                return end;
+            }
+        }
+        raw_at(index)
     }
 
     /// Whether the glyph at display INDEX comes from a `display'
@@ -3237,12 +3313,13 @@ impl VisualLine {
 fn visible_overlay_string(
     value: &Value,
     spec: &InvisibilitySpec,
-) -> (String, Vec<FaceSpan>, Vec<Option<usize>>) {
+) -> (String, Vec<FaceSpan>, Vec<Option<GlyphSource>>) {
     let raw = crate::lisp::primitives::string_text(value).unwrap_or_default();
     let characters: Vec<char> = raw.chars().collect();
     let mut rendered = String::new();
     let mut map = Vec::with_capacity(characters.len() + 1);
     let mut indexes = Vec::with_capacity(characters.len());
+    let mut nested_spans = Vec::new();
     let mut display_chars = 0usize;
     let class_at = |position: usize| {
         crate::lisp::primitives::string_property_at(value, position, "invisible")
@@ -3252,11 +3329,41 @@ fn visible_overlay_string(
     let mut position = 0usize;
     while position < characters.len() {
         let class = class_at(position);
-        if class == 0 {
+        // handle_display_prop in an overlay string: a `display' string
+        // on its characters replaces them up to where the property
+        // changes, delivered as a display string
+        // (string_from_display_prop_p); one in a display string itself
+        // is not looked at (no recursive `display' properties).  It runs
+        // before handle_invisible_prop, so it shows even where an
+        // `invisible' property starts with it.
+        let nested = crate::lisp::primitives::string_property_at(value, position, "display")
+            .filter(|display| crate::lisp::primitives::string_text(display).is_ok());
+        if let Some(display) = nested {
+            let start = position;
+            while position < characters.len()
+                && crate::lisp::primitives::string_property_at(value, position, "display")
+                    == Some(display)
+            {
+                position += 1;
+            }
+            let replacement = crate::lisp::primitives::string_text(&display).unwrap_or_default();
+            let first = display_chars;
+            for (index, character) in replacement.chars().enumerate() {
+                rendered.push(character);
+                indexes.push(Some((display, true, index)));
+                display_chars += 1;
+            }
+            nested_spans.extend(
+                crate::lisp::primitives::string_face_spans(&display)
+                    .into_iter()
+                    .map(|(from, to, face)| (first + from, first + to, face)),
+            );
+            map.extend(std::iter::repeat_n(first, position - start));
+        } else if class == 0 {
             map.push(display_chars);
             if !tty_fringe_display(value, position) {
                 rendered.push(characters[position]);
-                indexes.push(Some(position));
+                indexes.push(Some((*value, false, position)));
                 display_chars += 1;
             }
             position += 1;
@@ -3294,6 +3401,7 @@ fn visible_overlay_string(
             let to = map.get(to).copied().unwrap_or(display_chars);
             (from < to).then_some((from, to, face))
         })
+        .chain(nested_spans)
         .collect();
     (rendered, spans, indexes)
 }
@@ -3414,27 +3522,27 @@ fn visual_line_with(
             }
         }
         let line_begin = buffer.display_line_start_of(first_line);
-        let newline_replaced =
-            newline_replaced_at(buffer, line_begin + map.len().saturating_sub(1));
-        let display_face_spans = string_glyph_face_spans(&objects, &object_of);
-        return VisualLine {
-            text,
-            map,
-            raw_of_display,
-            lines_spanned: 1,
-            ellipses: Vec::new(),
-            glyphless_spans: Vec::new(),
-            display_face_spans,
-            prefixes: Vec::new(),
-            line_wrap: layout::LineWrap::Window,
-            wrap_categories: Vec::new(),
-            tab_width: 8,
-            lnum_cols: 0,
-            replaced,
-            objects,
-            object_of,
-            newline_replaced,
-        };
+        // A `display' string replacing the line's newline goes on into
+        // the next line: the general walk below follows it there.
+        if !newline_displayed_away(buffer, line_begin + map.len().saturating_sub(1)) {
+            return VisualLine {
+                text,
+                map,
+                raw_of_display,
+                lines_spanned: 1,
+                ellipses: Vec::new(),
+                glyphless_spans: Vec::new(),
+                display_face_spans: string_glyph_face_spans(&objects, &object_of),
+                prefixes: Vec::new(),
+                line_wrap: layout::LineWrap::Window,
+                wrap_categories: Vec::new(),
+                tab_width: 8,
+                lnum_cols: 0,
+                replaced,
+                objects,
+                object_of,
+            };
+        }
     }
     let line_begin = buffer.display_line_start_of(first_line);
     let end = buffer.point_max();
@@ -3512,7 +3620,7 @@ fn visual_line_with(
         (*position, *group, *rank, *id, *after)
     });
     let mut overlay_string_index = 0usize;
-    let mut string_run: Option<String> = None;
+    let mut string_run: Option<Value> = None;
     let mut space_run: Option<Value> = None;
     let mut replaced: Vec<ReplacedRun> = Vec::new();
     let mut objects: Vec<(Value, bool)> = Vec::new();
@@ -3531,13 +3639,7 @@ fn visual_line_with(
             }
             let (string, spans, indexes) = visible_overlay_string(value, spec);
             let start = display_chars;
-            record_string_glyphs(
-                &mut objects,
-                &mut object_of,
-                start,
-                (*value, false),
-                indexes,
-            );
+            record_glyph_sources(&mut objects, &mut object_of, start, indexes);
             for character in string.chars() {
                 text.push(character);
                 raw_of_display.push(pos - line_begin);
@@ -3610,12 +3712,22 @@ fn visual_line_with(
                         .map(|(from, to, face)| (start + from, start + to, face)),
                 );
             }
+            // A newline the string replaces does not end the display
+            // line: the iterator comes out of the string past it, in the
+            // next line (pop_it, iterate_out_of_display_property).
+            if buffer.char_at(pos) == Some('\n') {
+                lines_spanned += 1;
+            }
             string_run = None;
             space_run = None;
             pos += 1;
             continue;
         }
-        if let Some((run_end, ellipsis)) = invisible_run_at(buffer, spec, pos) {
+        if let Some((run_end, ellipsis)) = (!(has_display_prop
+            && text_display_replaces_at(buffer, pos)))
+        .then(|| invisible_run_at(buffer, spec, pos))
+        .flatten()
+        {
             string_run = None;
             space_run = None;
             lines_spanned += buffer
@@ -3652,7 +3764,11 @@ fn visual_line_with(
             break;
         };
         if ch == '\n' {
-            break;
+            if !newline_replaced_at(buffer, pos) {
+                break;
+            }
+            // Replaced by a `display' string: the line goes on past it.
+            lines_spanned += 1;
         }
         let offset = pos - line_begin;
         let display = has_display_prop
@@ -3676,9 +3792,11 @@ fn visual_line_with(
             .and_then(|value| crate::lisp::primitives::string_text(value).ok());
         if let Some(replacement) = replacement {
             map.push(display_chars);
+            // display_prop_end: the run of text whose `display' value is
+            // EQ to this one.
             let same_run = string_run
-                .as_deref()
-                .is_some_and(|previous| previous == replacement);
+                .zip(display)
+                .is_some_and(|(previous, value)| crate::lisp::types::eq(previous, value));
             match replaced.last_mut() {
                 Some((_, end, true)) if same_run && *end == offset => *end = offset + 1,
                 _ => replaced.push((offset, offset + 1, true)),
@@ -3711,7 +3829,7 @@ fn visual_line_with(
                     );
                 }
             }
-            string_run = Some(replacement);
+            string_run = display;
             space_run = None;
             pos += 1;
             continue;
@@ -3754,13 +3872,7 @@ fn visual_line_with(
         }
         let (string, spans, indexes) = visible_overlay_string(value, spec);
         let start = display_chars;
-        record_string_glyphs(
-            &mut objects,
-            &mut object_of,
-            start,
-            (*value, false),
-            indexes,
-        );
+        record_glyph_sources(&mut objects, &mut object_of, start, indexes);
         for character in string.chars() {
             text.push(character);
             raw_of_display.push(pos - line_begin);
@@ -3792,7 +3904,6 @@ fn visual_line_with(
     if !objects.is_empty() {
         object_of.resize(display_chars, None);
     }
-    let newline_replaced = newline_replaced_at(buffer, pos);
     VisualLine {
         text,
         map,
@@ -3809,7 +3920,6 @@ fn visual_line_with(
         replaced,
         objects,
         object_of,
-        newline_replaced,
     }
 }
 
@@ -3819,15 +3929,50 @@ fn newline_replaced_at(buffer: &crate::buffer::Buffer, pos: usize) -> bool {
     if buffer.char_at(pos) != Some('\n') || !buffer.has_text_property_named("display") {
         return false;
     }
-    let display = buffer.text_property_at(pos, "display");
-    let display = match display.as_ref().and_then(margin_display_spec) {
-        Some((None, value)) => Some(value),
-        Some((Some(_), _)) => None,
-        None => display,
-    };
-    display
-        .as_ref()
-        .is_some_and(|value| crate::lisp::primitives::string_text(value).is_ok())
+    text_display_replaces_at(buffer, pos)
+}
+
+/// Whether the `display' text property at POS replaces the text there
+/// (handle_single_display_spec's HANDLED_RETURN) in a way the terminal
+/// shows: a string, in the text area or a margin, any other margin spec,
+/// which takes the text out of the text area, or a `space' stretch.
+/// handle_display_prop runs before handle_invisible_prop, so such a
+/// property hides an `invisible' one starting at the same position.
+fn text_display_replaces_at(buffer: &crate::buffer::Buffer, pos: usize) -> bool {
+    buffer
+        .text_property_at(pos, "display")
+        .is_some_and(|display| match margin_display_spec(&display) {
+            Some(_) => true,
+            None => {
+                crate::lisp::primitives::string_text(&display).is_ok()
+                    || specified_space(&display).is_some()
+            }
+        })
+}
+
+/// Whether the newline at POS does not end its display line: a
+/// `display' string, of a text property or an overlay, replaces it, and
+/// the iterator coming out of the string goes on in the next line.
+pub(crate) fn newline_displayed_away(buffer: &crate::buffer::Buffer, pos: usize) -> bool {
+    if buffer.char_at(pos) != Some('\n') {
+        return false;
+    }
+    newline_replaced_at(buffer, pos)
+        || buffer
+            .overlays
+            .intersecting(
+                pos as isize,
+                pos as isize + 1,
+                crate::overlay::Traversal::Ascending,
+            )
+            .any(|overlay| {
+                !overlay.is_dead()
+                    && overlay.beg() <= pos
+                    && pos < overlay.end()
+                    && overlay
+                        .get_prop(&Value::Symbol("display".into()))
+                        .is_some_and(|value| crate::lisp::primitives::string_text(&value).is_ok())
+            })
 }
 
 fn glyphless_visual_line_at(
@@ -3936,8 +4081,6 @@ pub(crate) struct ScreenLineLayout {
     word_wrap: bool,
     /// Whether the line ends at ZV rather than at a newline.
     ends_at_zv: bool,
-    /// Whether a `display' string replaces the newline ending the line.
-    newline_replaced: bool,
     /// Buffer positions the iterator passes without fetching: past the
     /// start of an invisible run or of text a display string replaces
     /// (handle_stop at the start skips to its end).
@@ -4060,6 +4203,22 @@ impl ScreenLineLayout {
         ))
     }
 
+    /// The row an iterator reseated at POS inside text a `display' string
+    /// replaces is on: handle_display_prop there delivers the string from
+    /// its first character, on the row its display begins on -- the
+    /// string's later rows begin at the same buffer position.  None
+    /// outside such text.
+    pub(crate) fn reseated_string_row(&self, pos: usize) -> Option<usize> {
+        let (run, _) = self.covering_run(pos.checked_sub(self.bol)?)?;
+        (0..self.glyphs.len())
+            .find(|&glyph| {
+                self.glyphs[glyph].2 == run
+                    && self.glyph_display.get(glyph).copied().unwrap_or(false)
+                    && self.glyph_objects.get(glyph).copied().flatten().is_some()
+            })
+            .map(|glyph| self.glyphs[glyph].0)
+    }
+
     /// pos_visible_p's it3 for POS inside text that the `display' string
     /// at raw offsets [RUN, END) replaces: from the start of the row the
     /// string's display begins on (where the element after RUN - 1 is),
@@ -4068,7 +4227,9 @@ impl ScreenLineLayout {
     /// it, until the first whose IT_CHARPOS is at or past POS (a string's
     /// glyphs have the position the iterator met it at) or a newline; one
     /// in the string after it moved, short of POS, takes the x of the
-    /// last element not from the string (top_x_before_string).
+    /// last element not from the string (top_x_before_string).  Where
+    /// the elements run out (ZV) the x is the last one's
+    /// (it3.current_x less its pixel_width).
     fn it3_cell(&self, pos: usize, run: usize, end: usize) -> (usize, usize) {
         let row = self
             .glyphs
@@ -4115,6 +4276,9 @@ impl ScreenLineLayout {
             .position(|&(glyph_row, ..)| glyph_row == row)
             .unwrap_or(self.glyphs.len());
         let mut moved = x > 0;
+        // The x of the last element delivered: it3.current_x less its
+        // pixel_width, where the walk ends when the elements run out.
+        let mut last_x = None;
         let mut glyph = first;
         while glyph < self.glyphs.len() {
             let (glyph_row, column, raw) = self.glyphs[glyph];
@@ -4138,6 +4302,7 @@ impl ScreenLineLayout {
                 return (row, x);
             }
             moved = true;
+            last_x = Some(x);
             x += match self.glyphs.get(next) {
                 Some(&(next_row, next_column, _)) if next_row == glyph_row => next_column - column,
                 _ => self
@@ -4150,7 +4315,7 @@ impl ScreenLineLayout {
             };
             glyph = next;
         }
-        (row, x)
+        (row, last_x.unwrap_or(x))
     }
 
     /// The row and column where pos_visible_p places POS in a display
@@ -4160,33 +4325,19 @@ impl ScreenLineLayout {
     /// where move_it_to stops in a display vector (the start itself,
     /// which the display begins with, on its first); others where they
     /// are.
-    /// The raw offsets [RUN, END) of the text a `display' string
-    /// replaces that pos_visible_p finds POS in by it3 (its start too:
-    /// move_it_to stops only after the string), the line's newline
-    /// included when the string replaces that too.
-    fn it3_run(&self, pos: usize) -> Option<(usize, usize)> {
-        let offset = pos.saturating_sub(self.bol);
-        let line_end = self.line_end() - self.bol;
-        self.strings
-            .iter()
-            .find(|(run, end)| {
-                *run <= offset
-                    && (offset < *end
-                        || (self.newline_replaced && offset == *end && *end == line_end))
-            })
-            .copied()
-    }
-
-    /// Whether pos_visible_p places POS by it3 (it3_run): its x then
-    /// counts the line-number glyphs it3 has not produced on the row
-    /// ("Account for line-number display, if IT3 still didn't").
+    /// Whether pos_visible_p places POS by it3 (in the text a string
+    /// replaces, covering_run): its x then counts the line-number glyphs
+    /// it3 has not produced on the row ("Account for line-number
+    /// display, if IT3 still didn't").
     pub(crate) fn shown_by_it3(&self, pos: usize) -> bool {
-        self.it3_run(pos).is_some()
+        self.covering_run(pos.saturating_sub(self.bol)).is_some()
     }
 
     pub(crate) fn shown_cell(&self, pos: usize, start: usize) -> (usize, usize) {
         let offset = pos.saturating_sub(self.bol);
-        if let Some((run, end)) = self.it3_run(pos) {
+        // The text a string replaces (its start too: move_it_to stops
+        // only after the string), newlines it replaces included.
+        if let Some((run, end)) = self.covering_run(offset) {
             return self.it3_cell(pos, run, end);
         }
         if let Some(&(run, _)) = self
@@ -4208,26 +4359,19 @@ impl ScreenLineLayout {
     /// stops when a `display' string replaces POS's text: the iterator's
     /// object is the string while it delivers its glyphs, so it stops
     /// only where the string ends (replaced_end), at the first element
-    /// there (stop_cell), or at the next line's first row, column 0,
-    /// when the string replaces the line's newline -- the number of the
-    /// line's rows.  None when no string replaces POS's text.
+    /// there (stop_cell): later in the display line when the string
+    /// replaces a newline, which does not end the line.  None when no
+    /// string replaces POS's text.
     pub(crate) fn replaced_stop(&self, pos: usize) -> Option<(usize, usize)> {
         let end = self.replaced_end(pos);
-        (end > pos).then(|| {
-            if end > self.line_end() {
-                (self.row_starts.len(), 0)
-            } else {
-                self.stop_cell(end)
-            }
-        })
+        (end > pos).then(|| self.stop_cell(end))
     }
 
     /// Where move_it_to POS stops for a `display' string replacing POS's
     /// text: where the string ends -- pop_it's iterate_out_of_display_
     /// property leaves IT_CHARPOS there, and the check at the top of
     /// move_it_in_display_line_to's loop stops the move before handle_stop
-    /// loads whatever comes next, another string included -- past the
-    /// line's end when the string replaces its newline.  At a string's
+    /// loads whatever comes next, another string included.  At a string's
     /// own start right after another string that ends part-way along a
     /// row, the iterator coming out of that one stops there already (its
     /// prev_method GET_FROM_STRING, IT_CHARPOS at POS); one ending in a
@@ -4252,32 +4396,25 @@ impl ScreenLineLayout {
         }
     }
 
-    /// Where the `display' string replacing POS's text ends, past the
-    /// line's end when it replaces the newline: where an iterator
-    /// delivering it comes out of it.  POS when none replaces its text.
+    /// Where the `display' string replacing POS's text ends: where an
+    /// iterator delivering it comes out of it, in a later line when it
+    /// replaces a newline.  POS when none replaces its text.
     pub(crate) fn string_end(&self, pos: usize) -> usize {
         let Some(offset) = pos.checked_sub(self.bol) else {
             return pos;
         };
-        let line_end = self.line_end() - self.bol;
         match self.covering_run(offset) {
-            Some((_, end)) if self.newline_replaced && end == line_end => self.line_end() + 1,
             Some((_, end)) => self.bol + end,
             None => pos,
         }
     }
 
     /// The raw offsets [RUN, END) of the `display' string replacing the
-    /// text at raw OFFSET, the line's newline included when a string
-    /// replaces that.
+    /// text at raw OFFSET, newlines included.
     fn covering_run(&self, offset: usize) -> Option<(usize, usize)> {
-        let line_end = self.line_end() - self.bol;
         self.strings
             .iter()
-            .find(|&&(run, end)| {
-                run <= offset
-                    && (offset < end || (self.newline_replaced && offset == end && end == line_end))
-            })
+            .find(|&&(run, end)| run <= offset && offset < end)
             .copied()
     }
 
@@ -4699,7 +4836,9 @@ fn window_cell_xy(
             // row comes before POS is reached: below the window, or on the
             // last row past its start, the element after the string.
             if stop_y >= text_rows
-                || (!window_end && replaced_stop.is_some() && stop_y + 1 == text_rows)
+                || (!window_end
+                    && replaced_stop.is_some_and(|(_, column)| column > 0)
+                    && stop_y + 1 == text_rows)
             {
                 // Still short of POS's glyph or the element after the
                 // string covering it: a row of a string at POS has its
@@ -5127,7 +5266,8 @@ impl<'a> ScreenLineLayouter<'a> {
                     // A display starting inside text a string replaces
                     // delivers the string at the start: IT_CHARPOS there.
                     line_start
-                        + raw_of(segment.start_index)
+                        + visual
+                            .row_start_offset(segment.start_index)
                             .max(origin.map_or(0, |origin| origin - line_start))
                 }
             })
@@ -5238,7 +5378,7 @@ impl<'a> ScreenLineLayouter<'a> {
             .enumerate()
             .map(|(index, row)| match laid.rows.get(index + 1) {
                 Some(next) if !truncate => {
-                    let next_start = line_start + raw_of(next.start_index);
+                    let next_start = line_start + visual.row_start_offset(next.start_index);
                     match row.overflow_index {
                         Some(overflow) => (line_start + raw_of(overflow)).max(next_start) + 1,
                         // The element that did not fit, the next row's first.
@@ -5271,7 +5411,6 @@ impl<'a> ScreenLineLayouter<'a> {
             row_word_wrapped,
             word_wrap: !truncate && matches!(visual.line_wrap, layout::LineWrap::Word { .. }),
             ends_at_zv,
-            newline_replaced: visual.newline_replaced,
             skipped,
             row_walk_ends,
             wrap_points,
@@ -5470,7 +5609,7 @@ fn displayed_line_with_runs(buffer: &crate::buffer::Buffer, line: usize) -> Disp
     // whole run carrying the same value, in place of the covered text
     // (handle_single_display_spec; grep's --null separator renders as
     // ":" this way).
-    let mut string_run: Option<String> = None;
+    let mut string_run: Option<Value> = None;
     let mut space_run: Option<Value> = None;
     for (offset, ch) in raw.chars().enumerate() {
         map.push(expanded_chars);
@@ -5495,9 +5634,11 @@ fn displayed_line_with_runs(buffer: &crate::buffer::Buffer, line: usize) -> Disp
             .and_then(|value| crate::lisp::primitives::string_text(value).ok());
         if let Some(replacement) = replacement {
             changed = true;
+            // display_prop_end: the run of text whose `display' value is
+            // EQ to this one.
             let same_run = string_run
-                .as_deref()
-                .is_some_and(|previous| previous == replacement);
+                .zip(display)
+                .is_some_and(|(previous, value)| crate::lisp::types::eq(previous, value));
             match runs.last_mut() {
                 Some((_, end, true)) if same_run && *end == offset => *end = offset + 1,
                 _ => runs.push((offset, offset + 1, true)),
@@ -5518,7 +5659,7 @@ fn displayed_line_with_runs(buffer: &crate::buffer::Buffer, line: usize) -> Disp
                     col += 1;
                 }
             }
-            string_run = Some(replacement);
+            string_run = display;
             space_run = None;
             continue;
         }
@@ -5587,7 +5728,7 @@ enum PlanOutcome {
         steps: Vec<redisplay_window::FetchStep>,
     },
     Planned {
-        plan: WindowPlan,
+        plan: Box<WindowPlan>,
         chosen: redisplay_window::Chosen,
         consumed: redisplay_window::Consumed,
         steps: Vec<redisplay_window::FetchStep>,
@@ -5766,6 +5907,7 @@ fn plan_window_text(
     // row; every other visual line contributes at least one.
     let last_line = buffer.line_number_at_pos(buffer.point_max());
     let mut rendered: Vec<(String, usize, usize, usize, usize)> = Vec::with_capacity(text_rows);
+    let mut continued: Vec<bool> = Vec::with_capacity(text_rows);
     let mut left_truncated: Vec<bool> = Vec::with_capacity(text_rows);
     // First row past the window, as (line, segment, origin): the
     // window's end.
@@ -5837,6 +5979,7 @@ fn plan_window_text(
             let row_start = rows.row_start(row);
             last_rows = (last_rows.1, Some(row));
             rendered.push((segment, fill_line, seg_index, row_start, row_hscroll));
+            continued.push(laid.rows[seg_index].continuation);
             left_truncated.push(left_trunc);
             if rendered.len() == text_rows {
                 past_window = Some(if seg_index + 1 < laid.rows.len() {
@@ -5880,16 +6023,18 @@ fn plan_window_text(
         }),
     };
     PlanOutcome::Planned {
-        plan: WindowPlan {
+        plan: Box::new(WindowPlan {
             rendered,
             left_truncated,
+            continued,
             top_pos,
+            window_start: chosen.start,
             window_end,
             cursor: selected.then_some((point_row, cursor_col)),
             point_cursor: chosen.cursor_row.map(|_| (point_row, cursor_col)),
             anchor,
             cursor_origin: point_origin.filter(|_| truncate && chosen.cursor_row.is_some()),
-        },
+        }),
         chosen,
         consumed,
         steps,
@@ -8030,8 +8175,12 @@ fn redraw_with_echo_policy(
         text_width: usize,
         point: usize,
         window_end: usize,
+        /// The window's start.
+        start: usize,
         cursor_row: Option<usize>,
         rows: Vec<(usize, usize, usize, usize)>,
+        /// Whether each row continues the one above (WindowPlan's).
+        continued: Vec<bool>,
         // Per row: display_line's truncated_on_left_p, whose `$'
         // insert_left_trunc_glyphs writes over the row's first glyph,
         // the line number's first cell when the gutter shows.
@@ -8514,6 +8663,7 @@ fn redraw_with_echo_policy(
                 text_width: text_body_width.saturating_sub(lnum_cols).max(1),
                 point: info.point,
                 window_end: plan.window_end,
+                start: plan.window_start,
                 cursor_row: if info.selected {
                     plan.cursor.map(|(row, _)| row)
                 } else {
@@ -8524,6 +8674,7 @@ fn redraw_with_echo_policy(
                     .iter()
                     .map(|(_, line, seg, start, row_hscroll)| (*line, *seg, *start, *row_hscroll))
                     .collect(),
+                continued: plan.continued.clone(),
                 left_truncated: plan.left_truncated.clone(),
                 anchor: plan.anchor,
             });
@@ -9250,10 +9401,33 @@ fn redraw_with_echo_policy(
             // A display started right after a newline (an invisible one
             // joining its line to the one before) is not walked to:
             // maybe_produce_line_number counts the lines up to the start.
+            // maybe_produce_line_number counts the lines to the row's
+            // start: a row after a string's newline in a display line that
+            // spans several (a `display' string replacing newlines) starts
+            // on a later line.
+            let row_line = |start: usize| {
+                if start == usize::MAX {
+                    line
+                } else {
+                    buffer.line_number_at_pos(start)
+                }
+            };
             let number_line = match job.anchor {
                 Some(anchor) if !anchor.walked && anchor.line == line && seg == 0 => {
                     buffer.line_number_at_pos(anchor.origin)
                 }
+                // The window's first row, its start past text before it on
+                // the display line that shows nothing (an invisible run
+                // joining its line to the ones before): maybe_produce_line_number
+                // counts the lines to IT_CHARPOS there, the window's start.
+                None if row_index == 0
+                    && seg == 0
+                    && row_start != usize::MAX
+                    && job.start > row_start =>
+                {
+                    buffer.line_number_at_pos(job.start)
+                }
+                _ if seg > 0 => row_line(row_start),
                 _ => line,
             };
             let value: i64 = if beyond {
@@ -9286,7 +9460,17 @@ fn redraw_with_echo_policy(
             let walked = job.anchor.is_some_and(|anchor| {
                 anchor.walked && anchor.line == line && !(seg == 0 && anchor.numbered)
             });
-            let blank = beyond || (layout.mode != LnMode::Visual && (seg > 0 || walked));
+            // Blank for a continuation row, and for one starting on the
+            // line the row above numbered (this_line == last_line).
+            let repeated = seg > 0
+                && (job.continued.get(row_index).copied().unwrap_or(true)
+                    || row_index
+                        .checked_sub(1)
+                        .and_then(|above| job.rows.get(above))
+                        .is_some_and(|&(_, _, above_start, _)| {
+                            row_line(above_start) == number_line
+                        }));
+            let blank = beyond || (layout.mode != LnMode::Visual && (repeated || walked));
             let text = if blank {
                 " ".repeat(layout.cols)
             } else {
@@ -10882,7 +11066,7 @@ mod tests {
             buffer, spec, glyphless, view, &state, text_rows, body_width, truncate, geometry,
             selected,
         ) {
-            PlanOutcome::Planned { plan, .. } => plan,
+            PlanOutcome::Planned { plan, .. } => *plan,
             PlanOutcome::Hook { .. } => unreachable!("no window-scroll-functions"),
         }
     }
@@ -11097,7 +11281,6 @@ mod tests {
             replaced: Vec::new(),
             objects: Vec::new(),
             object_of: Vec::new(),
-            newline_replaced: false,
         }
     }
 
@@ -12742,7 +12925,7 @@ mod tests {
             &geometry,
             true,
         ) {
-            PlanOutcome::Planned { plan, .. } => plan,
+            PlanOutcome::Planned { plan, .. } => *plan,
             PlanOutcome::Hook { .. } => unreachable!("no window-scroll-functions"),
         };
         (plan, start)
@@ -12824,7 +13007,7 @@ mod tests {
             &geometry,
             true,
         ) {
-            PlanOutcome::Planned { plan, .. } => plan,
+            PlanOutcome::Planned { plan, .. } => *plan,
             PlanOutcome::Hook { .. } => unreachable!("no window-scroll-functions"),
         };
         assert_eq!(start, 46);

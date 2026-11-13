@@ -298,19 +298,19 @@ pub(crate) fn invisible_run_at(
 }
 
 /// The first raw line of the display line containing LINE: while the
-/// newline ending the previous raw line is inside an invisible run, the
-/// display line began earlier.
+/// newline ending the previous raw line is inside an invisible run or
+/// replaced by a `display' string, the display line began earlier.
 pub(crate) fn visual_line_first_line(
     buffer: &Buffer,
     spec: &InvisibilitySpec,
     mut line: usize,
 ) -> usize {
-    if !spec.active {
-        return line;
-    }
     while line > 1 {
         let newline_pos = buffer.line_start_of(line).saturating_sub(1);
-        if newline_pos == 0 || invisible_class_at(buffer, spec, newline_pos) == 0 {
+        if newline_pos == 0
+            || !((spec.active && invisible_class_at(buffer, spec, newline_pos) != 0)
+                || crate::tty::newline_displayed_away(buffer, newline_pos))
+        {
             break;
         }
         line = buffer.line_number_at_pos(newline_pos);
