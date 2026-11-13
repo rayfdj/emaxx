@@ -18475,6 +18475,71 @@ setup_process_coding_systems's check now refuses). A 13-form
   leaves a numbered dump image (emacs-30.2.N.pdmp, 20 MB) beside the
   gate profile's executable, 123 of them by this round, removed by hand
   here.
+- **Round 362: wide characters and stretches at a horizontally scrolled
+  row's edges.**  On a truncated, hscrolled row display_line's
+  move_it_in_display_line_to (MOVE_TO_X first_visible_x) stops at the
+  glyph that would cross first_visible_x with the iterator still on its
+  element, and the element is produced again from there: one whose width
+  does not depend on its start (a wide character, a glyphless escape, a
+  `(space :width N)' stretch) whole from the row's first column, a TAB
+  or an `:align-to' space for the columns left to its end;
+  insert_left_trunc_glyphs overwrites the first glyph and the padding
+  glyphs after it.  tty.rs's HscrollLayout::new (now given the line's
+  layout and the row) takes the element first_visible_x falls in among
+  the row's own display indexes: a glyphless span or a stretch span
+  (VisualLine::stretch_spans, the display indexes of each `(space :width
+  N)', recorded by both visual-line paths and carried through the
+  character display's remapping) with one truncation cell, a wide
+  character -- found by the PADDING_GLYPH characters after it in the
+  display text, each a display index of one column -- with as many cells
+  as it has; otherwise first_visible_x itself.  From an element produced
+  again whole the row's x is the line's plus the cells of it left of
+  first_visible_x, and a TAB stops where that x says (term.c
+  produce_glyphs): HscrollLayout::tabs holds the TABs whose width that
+  changes, retab draws them and screen_column moves the columns after
+  them.  truncated_row draws as many `$' as the truncation takes cells.
+  HscrolledRow::cursor_x is w->cursor.x for the hscrolled row, used for
+  the cursor and by hscroll_window_tree's trigger
+  (window_render_geometry, which took the line's column less the
+  hscroll): point's first glyph the row shows, past the truncation
+  glyphs when they overwrite its element's first cell only
+  (HscrollLayout::cursor_column); and for a point before every buffer
+  position with a glyph on the row (point_before_shown_text:
+  set_cursor_from_row's `row->truncated_on_left_p && pt_old < bpos_min',
+  bpos_min starting from MATRIX_ROW_END_CHARPOS, Rows::end_pos or
+  truncated_row_end_pos, so on a row showing no buffer text any point
+  short of its end, the line's end when a newline follows it) the last
+  glyph before the text, the last truncation glyph or the line-number
+  gutter's last cell (-1).  hscroll_window_tree's left trigger so sees
+  column 0 or 1 for a hidden point: with `hscroll-margin' 0 no scroll,
+  with 1 none when two truncation glyphs cover a wide character.
+  ScreenLineLayout::element_starts marks the glyphs that begin a display
+  element (not a padding glyph, a character composed into the cell
+  before, or a later glyph of a glyphless escape or a stretch), and
+  edge_stop is where move_it_in_display_line_to stops on a truncated row
+  for a position past the edge: it->current_x once the element just
+  consumed reaches last_visible_x, the next element's column or the
+  row's end; pos_visible_p's truncated branch takes it where it clamped
+  to last_visible_x.  The parked draft the round began from tested a
+  wide character by the width of its display index, which is always one:
+  it changed nothing and its unit test, never run, failed.  One review
+  (68 stages of its own, six probes): the TAB after an element produced
+  again, the cursor on a row left with no buffer text (the round's first
+  build put it after the glyphs) and hscroll_window_tree's cursor column
+  are fixed as above; the `:align-to' space and five nearby answers that
+  were so before the round are in Findings.  The grouped gate passed its
+  3,514 library tests; the integration targets (cli, cli_parity
+  with wide_characters_at_a_truncated_rows_edges_answer_as_gnu_does, 29
+  stages, ert_runner, native_comp_identity, native_thread_continuations,
+  package_lifecycle, runtime_ownership) passed, and clippy is clean.  On
+  the final build the round's probes (wc2.el, wc3.el, wc4.el, wc5.el,
+  gl.el and hm.el in the scratchpad's r361/p, 56 stages) match GNU's
+  answers, screens and cursor in a pseudo-terminal, and the review's
+  (rvA.el to rvF.el, 68 stages) match but for the eleven recorded stages
+  (rvA.el 4, rvB.el 2 and 4, rvC.el 7, 8, 9 and 11, rvD.el 9 and 12,
+  rvE.el 6 and 7); the earlier rounds' battery (159 lines over the
+  probes of rounds 354 to 360) answers line for line as on round 360's
+  final build.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -21597,6 +21662,19 @@ ert-tests as a whole 26,307 ms against 27,211.
   prefix key where Emaxx's echoed it, the keys arriving while GNU still
   compiled what its startup had loaded (round 361).
 
+**On `dc64efb`** (round 361): the frozen run (run 43348538650) matched
+  all 7,928 outcomes.  Setup 92.4 s against 67.6 s (1.367), test bodies
+  310.8 s against 268.3 s (1.159), in all 1.189, with no source file
+  changed since round 360's 1.192, 1.130 and 1.127: the difference is
+  the runner's (setup median 143 ms against 103, where round 360's was
+  123 against 105), and Emaxx's setup is what a slower runner costs
+  most.  The widest body gap is ert-tests (47.6 s against 38.4 s), then
+  comp-tests (18.9 against 14.8), tramp-tests (22.4 against 19.0),
+  eglot-tests (34.4 against 33.0), semantic-utest-ia (4.13 against
+  2.83), mule-tests (3.18 against 2.00), process-tests (2.88 against
+  1.78) and simple-tests (5.12 against 4.09).  The Rust gate (run
+  43348535480) passed.
+
 **Findings recorded, not fixed:**
 - **The terminal tests' clock outside Linux (round 361).**
   tests/cli_parity.rs's PtySession reads thread states from /proc.
@@ -21675,16 +21753,32 @@ ert-tests as a whole 26,307 ms against 27,211.
     invisible run, so their rows begin there and the force_start block
     moves point to 48, and the bidi ppos_it rule answers (0 0) for 46;
     Emaxx answers 46 and (2 9) (cur2.el stage 1).
-- **A wide character across an hscrolled row's left edge (round 359
-  review).**  When first_visible_x falls inside a double-width glyph,
-  display_line's move_it_in_display_line_to (MOVE_TO_X) stops before
-  it, its new x past TO_X, the row's x is negative, and the terminal
-  draws the row's glyphs from its first column: the glyph shows whole,
-  or as two `$' where insert_left_trunc_glyphs overwrites it and its
-  padding glyph, and the rest of the row one column to the right of
-  where Emaxx draws it from first_visible_x (pf.el stage 6, wc.el
-  stages 1 to 4: `$$本語ab' against `$本語ab', the cursor a column
-  to the left).  posn-at-point and pos-visible-in-window-p agree.
+- **Stretches and positions at an hscrolled row's edges (round 362
+  review).**  Answered so before the round (probes rvA.el to rvF.el in
+  the scratchpad's r361/p):
+  - An `:align-to' space takes its width when the display line is
+    built, from a column that counts one per character and eight per
+    TAB.  After wide characters it ends late (rvC.el 7: `(space
+    :align-to 20)' after `日本語a' ends at column 23), and after an
+    element display_line produces again whole under an hscroll it does
+    not move with the row's x as a TAB now does (rvA.el 4: 16 spaces
+    where GNU's produce_stretch_glyph makes 12).  To be given its width
+    in the layout, as a TAB.
+  - A zero-width stretch, `(space :width 0)': posn-at-point and
+    posn-at-x-y there give the position after it (49) where GNU gives
+    its own (48) (rvB.el 2 and 4, rvC.el 8).
+  - pos-visible-in-window-p of positions inside text a display string
+    replaces, the string ending its line in a wide character: GNU
+    answers the string's end x, Emaxx a column less (rvC.el 9, rvE.el
+    6 and 7).
+  - A last line with no newline scrolled wholly out by the hscroll:
+    GNU's window-end is the line's start (46) and its mode line says
+    Top, Emaxx's 51 and All (rvC.el 11).
+  - `truncate-lines' nil in a window truncating for its hscroll:
+    count-screen-lines over a line with wide characters at the edge is
+    6 in GNU, 7 in Emaxx (rvD.el 12).
+  - posn-at-x-y on the vertical border's column between two windows
+    side by side: posn-point 46 in GNU, 63 in Emaxx (rvD.el 9).
 - **Display strings and the text they cover (round 360 review).**
   - An overlay's after-string at the end of text a `display' string
     replaces: posn-at-point and pos-visible-in-window-p of the position

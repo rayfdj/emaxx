@@ -10616,3 +10616,105 @@ fn display_strings_across_newlines_answer_as_gnu_does() {
     assert!(expected.is_some(), "GNU's session wrote nothing");
     assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }
+
+#[test]
+fn wide_characters_at_a_truncated_rows_edges_answer_as_gnu_does() {
+    // display_line moves to first_visible_x and produces again the
+    // element that x falls in: a wide character, a glyphless escape or a
+    // `(space :width N)' stretch whole, from the row's first column, a
+    // TAB or an `:align-to' space for the columns left to its end; and
+    // move_it_in_display_line_to stops for a truncated row's edge once
+    // the element just consumed has brought x to last_visible_x or past
+    // it, so pos-visible-in-window-p and posn-at-point of a position
+    // past the edge give the end of a wide character crossing it.
+    // window-start, point, window-end, pos-visible-in-window-p,
+    // posn-at-point and posn-at-x-y over wide characters, stretches and
+    // TABs at a horizontally scrolled row's left edge, in buffer text, an
+    // overlay string and a display string, with line numbers, and over
+    // wide characters crossing the right edge.  hscroll_window_tree
+    // reads w->cursor.x, the cursor's column on the row as drawn: a
+    // column more after a wide character produced again, the last
+    // truncation glyph for a point they hide -- so with `hscroll-margin'
+    // 0 a hidden point leaves the window's hscroll alone, and with 1 it
+    // does when two truncation glyphs cover a wide character.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "wide.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(setq-default auto-hscroll-mode t)
+(defun bs-buf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "bs"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines t display-line-numbers nil line-prefix nil hscroll-margin 5)
+  (kill-local-variable 'auto-hscroll-mode)
+  (set-window-hscroll nil 0)
+  (dotimes (i 100) (insert (format "line %03d\n" i)))
+  (goto-char 1) (set-window-start nil 1) (sit-for 0) 46)
+(defun bs-ov (pos prop str &optional end)
+  (let ((ov (make-overlay pos (or end pos)))) (overlay-put ov prop str) ov))
+(defun bs-q (tag)
+  (push (list tag (window-hscroll) (window-start) (point) (window-end) (window-end nil t)
+              (pos-visible-in-window-p (point) nil t)
+              (let ((pp (posn-at-point))) (and pp (list (posn-col-row pp) (posn-point pp))))
+              (mapcar (lambda (q) (list q (pos-visible-in-window-p q nil t)
+                                         (let ((pp (posn-at-point q))) (and pp (posn-col-row pp)))))
+                      '(46 47 48 49 50 51 120 124 125 126 127))
+              (mapcar (lambda (x) (let ((pp (posn-at-x-y x 5))) (list x (posn-point pp) (posn-col-row pp))))
+                      '(0 1 2 3 4 78 79))
+              (current-column)
+              (save-excursion (move-to-column 3) (point))
+              (save-excursion (goto-char 46) (list (vertical-motion 1) (point))))
+        bs-res))
+(defmacro wc-st (&rest body) `(let ((p (bs-buf))) (setq-local auto-hscroll-mode nil) ,@body))
+(defconst bs-stages
+  '((wc-st (goto-char 46) (insert "a日本ab") (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert "日本語ab") (set-window-hscroll nil 1) (goto-char 47))
+    (wc-st (goto-char 46) (insert "日本語ab") (set-window-hscroll nil 2) (goto-char 48))
+    (wc-st (goto-char 46) (insert "日本語ab") (set-window-hscroll nil 3) (goto-char 49))
+    (wc-st (goto-char 46) (insert "日本語ab") (set-window-hscroll nil 3) (goto-char 46))
+    (wc-st (bs-ov 46 'before-string "日本") (set-window-hscroll nil 1) (goto-char 47))
+    (wc-st (goto-char 46) (insert "Xbcdef") (put-text-property 46 47 'display "日本") (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert "ab") (bs-ov 48 'after-string "日本語") (set-window-hscroll nil 3) (goto-char 48))
+    (wc-st (goto-char 46) (insert "Xbcdef") (put-text-property 46 47 'display '(space :width 3)) (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert "Xbcdef") (put-text-property 46 47 'display '(space :width 5)) (set-window-hscroll nil 3) (goto-char 46))
+    (wc-st (goto-char 46) (insert "Xbcdef") (put-text-property 46 47 'display '(space :align-to 3)) (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert "日\tcd") (set-window-hscroll nil 3) (goto-char 49))
+    (wc-st (goto-char 46) (insert "a日本ab") (setq display-line-numbers t) (set-window-hscroll nil 2) (goto-char 49))
+    (wc-st (goto-char 46) (insert "日" (make-string 120 ?x)) (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert (make-string 77 ?y) "日日" (make-string 40 ?x)) (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert (make-string 79 ?y) "日日zz") (goto-char 47))
+    (wc-st (goto-char 46) (insert (make-string 76 ?y) "\tzz") (goto-char 47))
+    (let ((p (bs-buf))) (goto-char 46) (insert (make-string 79 ?y) "日日zz") (goto-char 127))
+    (let ((p (bs-buf))) (goto-char 46) (insert "日" (make-string 120 ?x)) (set-window-hscroll nil 1) (goto-char 125))
+    (let ((p (bs-buf))) (goto-char 46) (insert "日本語abcdefghij" (make-string 100 ?x)) (set-window-hscroll nil 3) (goto-char 50))
+    (let ((p (bs-buf))) (goto-char 46) (insert "日本語abcdefghij" (make-string 100 ?x)) (set-window-hscroll nil 3) (goto-char 49))
+    (let ((p (bs-buf))) (goto-char 46) (insert "日本語" (make-string 100 ?x)) (set-window-hscroll nil 3) (goto-char 120))
+    (let ((p (bs-buf))) (goto-char 46) (insert "日本語" (make-string 100 ?x)) (set-window-hscroll nil 3) (goto-char 119))
+    (let ((p (bs-buf))) (setq hscroll-margin 0) (goto-char 46) (insert (make-string 60 ?a)) (set-window-hscroll nil 5) (goto-char 48))
+    (let ((p (bs-buf))) (setq hscroll-margin 0) (goto-char 46) (insert "aaaa日" (make-string 50 ?a)) (set-window-hscroll nil 5) (goto-char 48))
+    (let ((p (bs-buf))) (setq hscroll-margin 1) (goto-char 46) (insert "aaaa日" (make-string 50 ?a)) (set-window-hscroll nil 5) (goto-char 48))
+    (let ((p (bs-buf))) (setq hscroll-margin 1) (goto-char 46) (insert (make-string 60 ?a)) (set-window-hscroll nil 5) (goto-char 48))
+    (wc-st (goto-char 46) (insert "日本語a\tb") (set-window-hscroll nil 3) (goto-char 50))
+    (wc-st (goto-char 46) (delete-region 46 (line-end-position)) (insert "日本") (set-window-hscroll nil 3) (goto-char 48))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "wide.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 29));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "wide.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "wide.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
