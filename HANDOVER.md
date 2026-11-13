@@ -18404,6 +18404,77 @@ setup_process_coding_systems's check now refuses). A 13-form
   build, round 357's we.el now as GNU's; rows.el's stages 5 and 7 (an
   after-string's newline before invisible text), which the review's
   first fix had moved, answer as GNU's again.
+- **Round 361: the terminal tests typed by the session's clock.**  No
+  source file changed; tests/cli_parity.rs only.  The pseudo-terminal
+  sessions were typed at on a schedule kept by the wall clock from spawn
+  (a second and a half, then each step's pause), and GNU's answers
+  changed with load: round 360's Rust gate failed on CI in
+  keystrokes_echo_as_keyboard_c_echoes_them and
+  the_echo_area_is_wiped_as_read_char_wipes_it (GNU's session echoing no
+  prefix key), and
+  a_help_character_after_a_prefix_runs_prefix_help_command and
+  while_no_input_takes_the_key_that_ends_it had failed here among the
+  parallel targets; first pauses had grown from 2.5 seconds to 6.5, 9,
+  15 and 25.  The cause is the deferred native compilation the Findings
+  record since round 348: under TERM=xterm an interactive GNU loads
+  term/xterm.elc, queues it and comp-run's and compile.el's libraries (a
+  dozen `emacs --batch' children in every session, each test's HOME
+  being its own; about six seconds on an idle machine, as long as it
+  takes beside other tests, and outliving a session that exits first),
+  and until their sentinels have run it does not answer the keyboard as
+  at rest: C-x typed 5 and 6.5 seconds after the session began, jobs
+  running, was not echoed a second later; at 9 and 12 seconds, the jobs
+  over, it was.  PtySession (spawn, pump, steps, finish; run_tty,
+  run_pty and run_pty_typing are built on it) types by the session's
+  clock: a pause counts only the time the session is idle, which is
+  every thread of its program and of the processes descended from it
+  asleep (state S, I, T or t in /proc/PID/task/TID/stat, zombies having
+  none; descendants by the tasks' `children' files, or by every
+  process's parent where a kernel has none) and no typed byte unread
+  (FIONREAD on the slave, kept open in the harness).  What is written to
+  the master reaches the slave's line discipline from a kernel work
+  queue after write returns (FIONREAD right after a write found nothing
+  in 19,844 of 20,000 tries), so `unread' polls the slave first, which
+  waits for that work (n_tty_poll's tty_buffer_flush_work; nothing
+  missing in 20,000): the bytes are counted, or their reader is woken,
+  or the interrupt character's signal is sent, before the session's
+  state is read.  A step for a session at work is `busy(SECONDS)' (a
+  negative pause): wall-clock seconds from when the session read the
+  step before, and until it has run two clock ticks since or sleeps;
+  the_terminal_is_read_as_keyboard_c_reads_it marks five (k-loop's C-g,
+  k-wni's and k-pending's key, k-typeahead's two), and k-pending
+  computes 1.5 seconds for 0.6.  SETTLE, 2.5 seconds of idle time before
+  the first step's own pause, passes xterm.el's terminal query
+  (terminal-init-xterm waits `xterm-query-timeout', two seconds, asleep,
+  for an answer this terminal never gives; a key typed meanwhile is read
+  as the answer's start and put back).  The 45 first pauses of 2.5 to 25
+  seconds are 0.5.  BUSY_LIMIT: a session not idle within 120 seconds of
+  a pause fails its test with a message naming `busy'.  EXIT_LIMIT is 60
+  seconds (was 10).  Corpus::share_eln_cache links HOME's
+  .emacs.d/eln-cache to gnu-eln-cache under CARGO_TARGET_TMPDIR, so a
+  GNU session finds the native code the sessions before it compiled, in
+  this run or an earlier one, and compiles only what its probe loads
+  beyond that (24 files after one run of the target; the clock waits for
+  those jobs as for any descendant).  Evidence: cli_parity passed its
+  149 tests in 594 s with every session compiling (the clock alone), in
+  512 s filling the shared cache and in 499 s with it filled, against
+  some 700 s; beside eight busy loops with the tests niced to 19, of
+  twelve terminal tests round 360's harness failed three (the
+  prefix-help, message and keyboard tests) and the new one passed
+  twelve, with the cache filled and again from an empty one; the
+  integration targets (cli, cli_parity, ert_runner,
+  native_comp_identity, native_thread_continuations, package_lifecycle,
+  runtime_ownership) passed and clippy is clean.  Limits: the clock
+  reads /proc, so it is Linux's; without /proc every process counts as
+  asleep, only unread bytes stop the clock and the first step waits
+  BLIND_SETTLE, 25 seconds by the wall clock, which is untested
+  (Findings).  The pauses between steps are as they were, though those
+  sized to outlast a computation now follow it; only a pause that
+  outlasts a wait the session sleeps through (sit-for, a timed
+  read-event, an idle timer) is still needed.  Each run of a test binary
+  leaves a numbered dump image (emacs-30.2.N.pdmp, 20 MB) beside the
+  gate profile's executable, 123 of them by this round, removed by hand
+  here.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -21512,7 +21583,29 @@ ert-tests as a whole 26,307 ms against 27,211.
   6.20) and process-tests (2.60 against 1.87).  The Rust gate (run
   42712355559) passed.
 
+**On `a757ebe`** (round 360): the frozen run (run 42745187325) matched
+  all 7,928 outcomes.  Setup 81.4 s against 68.3 s (1.192), test bodies
+  305.1 s against 270.0 s (1.130), in all 1.127, on a runner like round
+  359's (setup median 123 ms against 105).  The widest body gap is
+  ert-tests (48.2 s against 40.8 s), then tramp-tests (21.9 against
+  19.1), comp-tests (17.8 against 15.4), eglot-tests (34.3 against
+  32.1), process-tests (3.21 against 1.62), semantic-utest-ia (3.79
+  against 2.66), mule-tests (2.97 against 1.96) and package-tests (7.08
+  against 6.22).  The Rust gate (run 42745184240) failed in cli_parity's
+  keystrokes_echo_as_keyboard_c_echoes_them and
+  the_echo_area_is_wiped_as_read_char_wipes_it: GNU's session echoed no
+  prefix key where Emaxx's echoed it, the keys arriving while GNU still
+  compiled what its startup had loaded (round 361).
+
 **Findings recorded, not fixed:**
+- **The terminal tests' clock outside Linux (round 361).**
+  tests/cli_parity.rs's PtySession reads thread states from /proc.
+  Where there is none (macOS) every process counts as asleep, so the
+  clock stops only for typed bytes left unread and a schedule is the
+  wall clock's again, with a first wait of 25 seconds (BLIND_SETTLE)
+  for GNU's background compilations; none of that has run on macOS.
+  To be made with libproc (proc_listchildpids, proc_pidinfo's thread
+  run states) when the macOS validation runs.
 - **Redisplay paths not modelled (round 353 review).**  try_window_id,
   `redisplay-skip-fontification-on-input' and f->cursor_type_changed;
   try_window_id runs in GNU wherever `bidi-paragraph-direction' is set,
@@ -21752,7 +21845,10 @@ ert-tests as a whole 26,307 ms against 27,211.
   times in its first ten seconds where Emaxx redisplays three; each
   offers a declined position again, and with them a window recentered
   at startup is displayed again with try_window's margin check (round
-  353's probes).
+  353's probes).  A key sequence in progress is not always echoed while
+  the jobs run (round 361).  The terminal tests wait the jobs out and
+  share one eln-cache since round 361, so they compare the two with
+  GNU at rest; what GNU does while it compiles is not compared.
 - **callint's `e' code after a key read in the middle of a command
   (round 347).** GNU's this_command_keys is one vector that a key
   sequence read while a command reads its arguments (a `k' argument, the
