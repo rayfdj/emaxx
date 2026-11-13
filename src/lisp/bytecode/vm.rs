@@ -675,7 +675,9 @@ fn bytecode_call(
             if matches!(error.kind(), LispErrorKind::WrongNumberOfArgs(_, _))
                 && let Some(func) = trace_call
             {
-                eprintln!("bytecode call {func} failed at byte offset {offset}: {error:?}");
+                crate::errprintln!(
+                    "bytecode call {func} failed at byte offset {offset}: {error:?}"
+                );
             }
             return Err(error);
         }
@@ -5033,7 +5035,7 @@ fn run_loop(
                         && !interp.some_active_handler_matches(&error)
                         && let Some(instr) = last_instruction
                     {
-                        eprintln!(
+                        crate::errprintln!(
                             "bytecode operation {:?} failed at byte offset {}: {}",
                             instr.op,
                             instr.offset,

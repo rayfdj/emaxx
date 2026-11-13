@@ -323,8 +323,8 @@ pub(crate) fn validate_header(bytes: &[u8]) -> Result<DumpHeader, LoadError> {
     let desired = executable_fingerprint();
     if header.fingerprint != *desired {
         if !super::dump_messages_suppressed() {
-            eprintln!("desired fingerprint: {}", hex(desired));
-            eprintln!("found fingerprint: {}", hex(&header.fingerprint));
+            crate::errprintln!("desired fingerprint: {}", hex(desired));
+            crate::errprintln!("found fingerprint: {}", hex(&header.fingerprint));
         }
         return Err(LoadError::VersionMismatch);
     }

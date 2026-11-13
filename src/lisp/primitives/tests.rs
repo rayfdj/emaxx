@@ -36283,6 +36283,302 @@ fn window_motion_counts_the_window_body_as_window_c() {
 }
 
 #[test]
+fn buffers_count_the_windows_showing_them() {
+    // window.c:adjust_window_count keeps b->window_count, on the base
+    // buffer of an indirect one, at each wset_buffer: set_window_buffer,
+    // a split's new window and its parent's copied slot, a deleted
+    // window, Fset_window_configuration and a killed buffer's
+    // replacement.  buffer.h's buffer_window_count reads it, and
+    // Fbuffer_swap_text leaves it with its buffer.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"));
+        // The counts against the windows themselves.
+        interp.check_window_counts();
+    };
+    let count = |interp: &Interpreter, name: &str| {
+        let id = interp
+            .find_buffer_id(name)
+            .unwrap_or_else(|| panic!("no buffer {name}"));
+        interp.buffer_window_count(id)
+    };
+    run(
+        &mut interp,
+        r#"(progn (get-buffer-create "wc-a") (get-buffer-create "wc-b") nil)"#,
+    );
+    assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (0, 0));
+    assert_eq!(count(&interp, " *Minibuf-0*"), 1);
+    run(&mut interp, r#"(set-window-buffer nil "wc-a")"#);
+    assert_eq!(count(&interp, "wc-a"), 1);
+    // The new window shows the old one's buffer.
+    run(&mut interp, "(setq wc-w (split-window))");
+    assert_eq!(count(&interp, "wc-a"), 2);
+    run(&mut interp, r#"(set-window-buffer wc-w "wc-b")"#);
+    assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (1, 1));
+    run(&mut interp, "(setq wc-c (current-window-configuration))");
+    run(&mut interp, "(delete-window wc-w)");
+    assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (1, 0));
+    // The configuration's deleted window shows its buffer again.
+    run(&mut interp, "(set-window-configuration wc-c)");
+    assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (1, 1));
+    // An indirect buffer's windows count on its base.
+    run(
+        &mut interp,
+        r#"(progn (make-indirect-buffer "wc-b" "wc-i") (set-window-buffer nil "wc-i"))"#,
+    );
+    assert_eq!(
+        (
+            count(&interp, "wc-a"),
+            count(&interp, "wc-b"),
+            count(&interp, "wc-i")
+        ),
+        (0, 2, 2)
+    );
+    // Its window takes another buffer when it is killed.
+    run(&mut interp, r#"(kill-buffer "wc-i")"#);
+    assert_eq!(count(&interp, "wc-b"), 1);
+    // Swapped text leaves each buffer its windows: two for the one, none
+    // for the other, whichever text each now holds.
+    run(
+        &mut interp,
+        r#"(progn (set-window-buffer nil "wc-a") (set-window-buffer wc-w "wc-a"))"#,
+    );
+    assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (2, 0));
+    run(
+        &mut interp,
+        r#"(with-current-buffer "wc-a" (insert "a") (buffer-swap-text (get-buffer "wc-b")))"#,
+    );
+    assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (2, 0));
+    run(&mut interp, r#"(set-window-buffer wc-w "wc-b")"#);
+    assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (1, 1));
+    run(&mut interp, r#"(set-window-buffer wc-w "wc-a")"#);
+    assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (2, 0));
+    // A copy of the image counts its own windows.
+    let copy = interp.deep_clone_image();
+    copy.check_window_counts();
+    assert_eq!((count(&copy, "wc-a"), count(&copy, "wc-b")), (2, 0));
+    drop(copy);
+    interp.select_symbol_owner();
+    // Fvertical_motion in a buffer its window does not show: the window
+    // shows that buffer for as long as the motion takes, and
+    // adjust_window_count, there and back, leaves the window's end and
+    // base line to be found again.
+    let selected = interp.selected_window_id();
+    for slot in [
+        crate::lisp::primitives::WINDOW_END_VALID_SLOT,
+        crate::lisp::primitives::WINDOW_BASE_LINE_SLOT,
+    ] {
+        interp
+            .find_record_mut(selected)
+            .expect("the selected window's record")
+            .slots[slot] = Value::T;
+    }
+    run(
+        &mut interp,
+        r#"(with-current-buffer "wc-a" (vertical-motion 0))"#,
+    );
+    let slot = |interp: &Interpreter, slot: usize| {
+        interp
+            .find_record(selected)
+            .expect("the selected window's record")
+            .slots[slot]
+    };
+    assert!(slot(&interp, crate::lisp::primitives::WINDOW_END_VALID_SLOT).is_truthy());
+    run(
+        &mut interp,
+        r#"(setq wc-m (list (window-point)
+                            (with-current-buffer "wc-b" (erase-buffer) (insert "x\ny\n") (goto-char 1)
+                                                 (list (vertical-motion 1) (point)))
+                            (window-point)
+                            (buffer-name (window-buffer))))"#,
+    );
+    assert!(slot(&interp, crate::lisp::primitives::WINDOW_END_VALID_SLOT).is_nil());
+    assert!(slot(&interp, crate::lisp::primitives::WINDOW_BASE_LINE_SLOT).is_nil());
+    assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (2, 0));
+    run(
+        &mut interp,
+        r#"(or (equal wc-m (list (car wc-m) '(1 3) (car wc-m) "wc-a")) (error "vertical-motion: %S" wc-m))"#,
+    );
+    run(&mut interp, "(delete-other-windows)");
+    assert_eq!(count(&interp, "wc-a"), 1);
+    run(&mut interp, r#"(kill-buffer "wc-a")"#);
+    assert_eq!(count(&interp, "wc-b"), 0);
+}
+
+#[test]
+fn a_deleted_window_keeps_its_buffer_for_a_later_configuration() {
+    // window.c:delete_all_child_windows leaves a leaf's buffer in its
+    // combination limit, and any later Fset_window_configuration that
+    // revives the window puts it back before the saved buffer is looked
+    // at ("If we squirreled away the buffer, restore it now"): a window
+    // deleted with its parent, and one a restored configuration left
+    // out, show what they last showed when their saved buffers are dead.
+    // The slot then holds the saved combination limit again.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((names (lambda ()
+               (mapcar (lambda (w) (buffer-name (window-buffer w)))
+                       (window-list nil 'nomini (frame-first-window)))))
+      result)
+  (dolist (n '("sq-a" "sq-b" "sq-c" "sq-d" "sq-e")) (get-buffer-create n))
+  (set-window-buffer nil "sq-a")
+  (let* ((w2 (split-window nil nil t))
+         (w3 (progn (set-window-buffer w2 "sq-b") (split-window w2))))
+    (set-window-buffer w3 "sq-c")
+    (let ((cfg (current-window-configuration)))
+      (set-window-buffer w3 "sq-d")
+      (delete-window (window-parent w3))
+      (kill-buffer "sq-c")
+      (set-window-configuration cfg)
+      (push (funcall names) result)))
+  (delete-other-windows)
+  (set-window-buffer nil "sq-a")
+  (let* ((cfg1 (current-window-configuration))
+         (w4 (split-window)))
+    (set-window-buffer w4 "sq-b")
+    (let ((cfg2 (current-window-configuration)))
+      (set-window-buffer w4 "sq-e")
+      (set-window-configuration cfg1)
+      (kill-buffer "sq-b")
+      (set-window-configuration cfg2)
+      (push (funcall names) result)
+      (push (window-combination-limit (window-parent w4)) result)))
+  (delete-other-windows)
+  (mapc #'kill-buffer '("sq-a" "sq-d" "sq-e"))
+  (nreverse result))"#,
+        r#"(("sq-a" "sq-b" "sq-d") ("sq-a" "sq-e") nil)"#,
+        "a deleted window's squirreled buffer",
+    );
+}
+
+#[test]
+fn other_buffer_falls_back_on_get_scratch_buffer_create() {
+    // buffer.c:Fother_buffer, when no buffer will do: `safe_calln
+    // (Qget_scratch_buffer_create)', so *scratch* as it is, or made with
+    // `initial-scratch-message' in `initial-major-mode', or nil when the
+    // function signals.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((initial-scratch-message "made\n")
+       (initial-major-mode 'fundamental-mode)
+       (old (symbol-function 'get-scratch-buffer-create))
+       (other (lambda ()
+                (unwind-protect
+                    (progn (set-frame-parameter nil 'buffer-predicate #'ignore)
+                           (other-buffer))
+                  (set-frame-parameter nil 'buffer-predicate nil)))))
+  (list (buffer-name (funcall other))
+        (progn
+          (kill-buffer "*scratch*")
+          (with-current-buffer (funcall other)
+            (list (buffer-name) (buffer-string) (buffer-modified-p) major-mode)))
+        (unwind-protect
+            (progn (fset 'get-scratch-buffer-create (lambda () (error "no")))
+                   (funcall other))
+          (fset 'get-scratch-buffer-create old))))"#,
+        "(\"*scratch*\" (\"*scratch*\" \"made\n\" nil fundamental-mode) nil)",
+        "other-buffer's last resort",
+    );
+}
+
+#[test]
+fn swapped_text_leaves_window_markers_in_their_buffers() {
+    // buffer.c:Fbuffer_swap_text swaps the two texts' marker chains, the
+    // markers of windows showing either buffer with them, and then "we
+    // need to undo the effect of this swap for window markers": each such
+    // window's point and old point go to the start of its buffer's
+    // accessible portion, its start to the buffer's last_window_start.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (get-buffer-create "sw-a")
+  (get-buffer-create "sw-b")
+  (with-current-buffer "sw-a" (insert "one\ntwo\nthree\n"))
+  (with-current-buffer "sw-b"
+    (insert "hello\nworld\nagain\n")
+    (narrow-to-region 7 13))
+  (set-window-buffer nil "sw-a")
+  (let ((w2 (split-window)))
+    (set-window-buffer w2 "sw-b")
+    (set-window-point w2 9)
+    (set-window-start w2 7)
+    (set-window-start nil 5)
+    (with-current-buffer "sw-a"
+      (goto-char 3)
+      (buffer-swap-text (get-buffer "sw-b")))
+    (prog1 (list (window-point w2) (window-start w2) (window-old-point w2)
+                 (window-point) (window-start)
+                 (with-current-buffer "sw-a"
+                   (list (point) (point-min) (point-max) (buffer-size)))
+                 (with-current-buffer "sw-b"
+                   (list (point) (point-min) (point-max) (buffer-size))))
+      (delete-other-windows)
+      (kill-buffer "sw-a")
+      (kill-buffer "sw-b"))))"#,
+        "(1 1 1 13 1 (13 7 13 18) (3 1 15 14))",
+        "window markers after buffer-swap-text",
+    );
+    // The swap bumps each text's modiff, chars_modiff and overlay_modiff:
+    // both buffers are modified, so the next change records no first
+    // change and joins the insertion before it in the undo list.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((a (get-buffer-create "tk-a"))
+      (b (get-buffer-create "tk-b"))
+      (state (lambda (buffer)
+               (with-current-buffer buffer
+                 (list (buffer-string) (buffer-modified-p)
+                       (buffer-modified-tick) (buffer-chars-modified-tick))))))
+  (with-current-buffer a (insert "aaa") (set-buffer-modified-p nil))
+  (with-current-buffer b (insert "bb") (set-buffer-modified-p nil))
+  (let ((before (list (funcall state a) (funcall state b))))
+    (with-current-buffer a (buffer-swap-text b))
+    (prog1 (list before (funcall state a) (funcall state b)
+                 (with-current-buffer a
+                   (buffer-enable-undo)
+                   (insert "x")
+                   (list buffer-undo-list (buffer-modified-tick))))
+      (kill-buffer a)
+      (kill-buffer b))))"#,
+        r#"((("aaa" nil 3 3) ("bb" nil 3 3)) ("bb" t 4 4) ("aaa" t 4 4) (((1 . 4) (t . 0)) 5))"#,
+        "modification ticks after buffer-swap-text",
+    );
+    // A saved configuration's markers go with their text all the same,
+    // and are unchained when the buffer that now has it is killed.
+    // Fset_window_configuration then unchains the window's markers
+    // (set_marker_restricted from a marker pointing nowhere) and its
+    // select_window signals marker_position's error from
+    // set_point_from_marker, the window selected, its buffer current and
+    // the windows restored.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (get-buffer-create "sm-a")
+  (get-buffer-create "sm-b")
+  (set-window-buffer nil "sm-a")
+  (let ((w2 (split-window)))
+    (set-window-buffer w2 "sm-b")
+    (let ((cfg (current-window-configuration)))
+      (with-current-buffer "sm-a"
+        (insert "x")
+        (buffer-swap-text (get-buffer "sm-b")))
+      (kill-buffer "sm-b")
+      (list (condition-case e
+                (progn (set-window-configuration cfg) 'restored)
+              (error e))
+            (buffer-name)
+            (buffer-name (window-buffer))
+            (window-start)
+            (window-live-p w2)
+            (eq (selected-window) (frame-first-window))))))"#,
+        r#"((error "Marker does not point anywhere") "sm-a" "sm-a" nil t t)"#,
+        "a configuration whose point marker points nowhere",
+    );
+}
+
+#[test]
 fn window_configurations_hold_markers_as_window_c() {
     // window.c:save_window_save keeps each window's start, point and old
     // point as markers in its buffer and holds on to the buffer;

@@ -825,7 +825,7 @@ impl DumpContext {
                 .ok()
                 .and_then(|value| string_like(&value).map(|string| string.text))
                 .unwrap_or_default();
-                eprintln!("{}{printed}", " ".repeat(level));
+                crate::errprintln!("{}{printed}", " ".repeat(level));
                 walk(ctx, interp, env, referrer, level + 1, visited);
             }
         }

@@ -550,10 +550,37 @@ pub fn init_process_nofile_limit() {
     primitives::init_process_nofile_limit();
 }
 
-/// `fflush (stdout)' for the batch process: the stdio-style buffer behind
-/// `standard-output' (primitives::batch_stdout) reaches the descriptor.
-pub fn flush_batch_stdout() {
-    let _ = primitives::batch_stdout::flush();
+/// A write of C's stderr (fprintf, fputs, putc: the stream is
+/// unbuffered), a failure remembered for close_output_streams.
+pub fn stderr_write(bytes: &[u8]) {
+    primitives::batch_stdout::stderr_write(bytes);
+}
+
+/// sysdep.c:init_standard_fds's `buferr = emacs_fdopen (STDERR_FILENO,
+/// "w")', for the process's start: whether the line-buffered error
+/// stream exists is decided by what descriptor 2 is then.
+pub fn init_standard_fds() {
+    primitives::batch_stdout::init_buferr();
+}
+
+/// fwrite of BYTES to stdout, for what the process prints before it has
+/// an interpreter (`--version', `--help').
+pub fn write_standard_output(bytes: &[u8]) {
+    primitives::batch_stdout::write(bytes);
+}
+
+/// emacs.c:init_cmdargs's `initial_argv = argv', from where the process's
+/// own reports (sysdep.c's emacs_perror) name it by argv[0].
+pub fn set_initial_argv() {
+    primitives::batch_stdout::set_initial_argv();
+}
+
+/// sysdep.c:close_output_streams, which GNU's exit runs: stdout and the
+/// error streams flushed and closed, and the status the process is to
+/// exit with, STATUS unless a write of one of them failed.  For the
+/// process's own exit only: the descriptors are closed.
+pub fn close_output_streams(status: i32) -> i32 {
+    primitives::batch_stdout::close_output_streams(status)
 }
 
 pub(crate) fn trace_load_errors_enabled() -> bool {
@@ -1041,7 +1068,7 @@ fn read_lisp_file_bytes(
                 Ok(None) => break,
                 Err(error) => {
                     if trace_load_errors_enabled() {
-                        eprintln!(
+                        crate::errprintln!(
                             "read error in {} at byte offset {offset} (form {}): {error:?}",
                             path.display(),
                             form_index + 1
@@ -1074,7 +1101,7 @@ fn read_lisp_file_bytes(
                         .ok()
                         .and_then(|value| value.symbol_str().map(str::to_owned))
                         .unwrap_or_else(|| form.type_name());
-                    eprintln!(
+                    crate::errprintln!(
                         "load error in {} at form {} ({head}): {error:?}",
                         path.display(),
                         form_index + 1

@@ -1610,17 +1610,19 @@ pub(crate) fn printchar_to_stderr(
         .filter(|value| !value.is_nil())
         .or_else(|| interp.forwarded_c_value("locale-coding-system", env))
         .filter(|value| !value.is_nil());
-    let mut bytes = Vec::new();
+    // putc for an ASCII character and fwrite for any other, each its own
+    // write of the stream; print.c reads neither's result.
+    use crate::lisp::primitives::batch_stdout::stderr_write;
     for c in chars {
         if c < 0x80 {
-            bytes.push(c as u8);
+            stderr_write(&[c as u8]);
             continue;
         }
         // CHAR_STRING's multibyte form.
         let mut one = PrintOutput::default();
         one.push_code(c);
         let Some(coding) = &coding else {
-            bytes.extend_from_slice(one.bytes());
+            stderr_write(one.bytes());
             continue;
         };
         let string = one.into_value(interp, env)?;
@@ -1629,14 +1631,11 @@ pub(crate) fn printchar_to_stderr(
         let given = crate::lisp::primitives::coding::checked_coding_given(interp, coding)?;
         let encoded =
             encode_coding_value_recording(interp, &string, given.as_deref(), true, false, env)?;
-        bytes.extend(crate::lisp::primitives::text::internal_string_bytes(
+        stderr_write(&crate::lisp::primitives::text::internal_string_bytes(
             &string_like(&encoded).expect("an encoded string"),
         )?);
     }
-    std::io::stderr()
-        .lock()
-        .write_all(&bytes)
-        .map_err(|error| LispError::Signal(error.to_string()))
+    Ok(())
 }
 
 /// print.c Fredirect_debugging_output's stderr_dup: STDERR_FILENO until
@@ -1701,7 +1700,7 @@ pub(crate) fn redirect_debugging_output(
             return Err(report(interp, "Cannot open debugging output stream", file));
         }
     }
-    let _ = std::io::stderr().lock().flush();
+    // fflush (stderr) has nothing to write: the stream is unbuffered.
     // SAFETY: FD is open; dup2 replaces the stderr descriptor.
     if unsafe { libc::dup2(fd, libc::STDERR_FILENO) } < 0 {
         return Err(report(interp, "dup2", file));
@@ -1884,8 +1883,7 @@ fn write_prepared_printer_output(
                 .lookup_var_key(cached_symbol!("noninteractive"), env)
                 .is_some_and(|value| value.is_truthy())
             {
-                crate::lisp::primitives::batch_stdout::write(output.bytes())
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                crate::lisp::primitives::batch_stdout::write(output.bytes());
                 interp.batch_stdout_need_newline = true;
             } else {
                 crate::lisp::primitives::echo_area_print_logged(interp, &text, env);

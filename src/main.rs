@@ -4,7 +4,6 @@
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod linux_startup;
 
-use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -19,6 +18,22 @@ use emaxx::tty;
 /// emacs.c's `usage_message' for this configuration: HAVE_MODULES and
 /// HAVE_PDUMPER lines are present; the SECCOMP_USABLE line only on
 /// GNU/Linux.
+macro_rules! after_seccomp {
+    () => {
+        r#"--no-build-details          do not add build details such as time stamps
+--no-desktop                do not load a saved desktop
+--no-init-file, -q          load neither ~/.emacs nor default.el
+--no-loadup, -nl            do not load loadup.el into bare Emacs
+--no-site-file              do not load site-start.el
+--no-x-resources            do not load X resources
+--no-site-lisp, -nsl        do not add site-lisp directories to load-path
+--no-splash                 do not display a splash screen on startup
+--no-window-system, -nw     do not communicate with X, ignoring $DISPLAY
+--init-directory=DIR        use DIR when looking for the Emacs init files.
+"#
+    };
+}
+
 const USAGE_MESSAGE: &[&str] = &[
     r#"
 Run Emacs, the extensible, customizable, self-documenting real-time
@@ -43,20 +58,15 @@ Initialization options:
     r#"--dump-file FILE            read dumped state from FILE
 --fingerprint               output fingerprint and exit
 "#,
+    // The Seccomp line is one string with the options after it
+    // (emacs.c writes the two literals side by side).
     #[cfg(target_os = "linux")]
-    r#"--seccomp=FILE              read Seccomp BPF filter from FILE
-"#,
-    r#"--no-build-details          do not add build details such as time stamps
---no-desktop                do not load a saved desktop
---no-init-file, -q          load neither ~/.emacs nor default.el
---no-loadup, -nl            do not load loadup.el into bare Emacs
---no-site-file              do not load site-start.el
---no-x-resources            do not load X resources
---no-site-lisp, -nsl        do not add site-lisp directories to load-path
---no-splash                 do not display a splash screen on startup
---no-window-system, -nw     do not communicate with X, ignoring $DISPLAY
---init-directory=DIR        use DIR when looking for the Emacs init files.
-"#,
+    concat!(
+        "--seccomp=FILE              read Seccomp BPF filter from FILE\n",
+        after_seccomp!()
+    ),
+    #[cfg(not(target_os = "linux"))]
+    after_seccomp!(),
     r#"--quick, -Q                 equivalent to:
                               -q --no-site-file --no-site-lisp --no-splash
                               --no-x-resources
@@ -152,10 +162,11 @@ extern "C" fn main(_argc: libc::c_int, _argv: *const *const libc::c_char) -> ! {
 }
 
 fn main_status() -> u8 {
+    emaxx::lisp::init_standard_fds();
     match try_main() {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("{error}");
+            emaxx::errprintln!("{error}");
             2
         }
     }
@@ -163,18 +174,31 @@ fn main_status() -> u8 {
 
 /// term.c:fatal: "emacs: " and the message on stderr, exit status 1.
 fn fatal(message: &str) -> ! {
-    eprint!("emacs: {message}");
+    // fputs, vfprintf and putc: three writes of the unbuffered stream.
+    emaxx::errprint!("emacs: ");
+    emaxx::errprint!("{message}");
     if !message.ends_with('\n') {
-        eprintln!();
+        emaxx::errprintln!();
     }
     std::process::exit(1)
 }
 
-/// exit(): stdio flushes stdout before the process goes away; Rust's
-/// buffered stdout does not on `process::exit'.
+/// printf to stdout.  glibc's vfprintf gives a stream with no room before
+/// its write end -- a line-buffered one never has any -- its output
+/// through a stage of 128 bytes (__printf_buffer_to_file), each an fwrite
+/// of its own; and fills another stream's buffer as fwrite of such
+/// pieces would.
+fn printf_stdout(text: &str) {
+    for stage in text.as_bytes().chunks(128) {
+        emaxx::lisp::write_standard_output(stage);
+    }
+}
+
+/// exit(): sysdep.c's close_output_streams flushes and closes stdout and
+/// the error streams before the process goes away, and a write of them
+/// that failed is its status.
 fn exit_flushing(code: i32) -> ! {
-    let _ = std::io::stdout().flush();
-    std::process::exit(code)
+    std::process::exit(emaxx::lisp::close_output_streams(code))
 }
 
 /// strerror(errno) for an OS error: the text alone, as C prints it.
@@ -318,10 +342,12 @@ fn try_main() -> Result<u8, String> {
         && !only_version
     {
         if batch::startup_image_loads(dump_file.as_deref()) {
-            println!("{}", batch::executable_fingerprint_hex());
+            emaxx::lisp::write_standard_output(
+                format!("{}\n", batch::executable_fingerprint_hex()).as_bytes(),
+            );
             exit_flushing(0);
         }
-        eprintln!("Not initialized");
+        emaxx::errprintln!("Not initialized");
         std::process::exit(1);
     }
 
@@ -330,7 +356,7 @@ fn try_main() -> Result<u8, String> {
     {
         let directory = directory.unwrap_or_default();
         if let Err(error) = std::env::set_current_dir(&directory) {
-            eprintln!(
+            emaxx::errprintln!(
                 "{}: Can't chdir to {}: {}",
                 argv[0],
                 directory,
@@ -384,9 +410,9 @@ fn try_main() -> Result<u8, String> {
 
     // Handle the --help option, which gives a usage message.
     if argmatch(&argv, "-help", Some("--help"), 3, false, &mut skip).is_some() && !only_version {
-        println!("Usage: {} [OPTION-OR-FILENAME]...", argv[0]);
+        printf_stdout(&format!("Usage: {} [OPTION-OR-FILENAME]...\n", argv[0]));
         for chunk in USAGE_MESSAGE {
-            print!("{chunk}");
+            emaxx::lisp::write_standard_output(chunk.as_bytes());
         }
         exit_flushing(0);
     }
@@ -465,7 +491,7 @@ fn try_main() -> Result<u8, String> {
     )
     .is_some();
     if dump_mode.is_some() && module_assertions && !only_version {
-        eprintln!("Module assertions are not supported during dumping");
+        emaxx::errprintln!("Module assertions are not supported during dumping");
         std::process::exit(1);
     }
 
@@ -527,14 +553,25 @@ fn try_main() -> Result<u8, String> {
         argmatch(&argv, "-l", Some("--load"), 3, true, &mut peek).flatten()
     };
 
+    // init_cmdargs, which GNU runs after `--help' and `--fingerprint'
+    // have exited and before `--version' prints.
+    emaxx::lisp::set_initial_argv();
     if only_version {
         match batch::version_banner(dump_file.as_deref()) {
             Ok(report) => {
-                print!("{report}");
+                // emacs.c's printf calls: the version line, the
+                // development line when there is one, and the five lines
+                // of the last.
+                let lines: Vec<&str> = report.split_inclusive('\n').collect();
+                let last = lines.len().saturating_sub(5);
+                for line in &lines[..last] {
+                    printf_stdout(line);
+                }
+                printf_stdout(&lines[last..].concat());
                 exit_flushing(0);
             }
             Err(message) => {
-                eprintln!("{message}");
+                emaxx::errprintln!("{message}");
                 std::process::exit(1);
             }
         }
@@ -557,13 +594,14 @@ fn try_main() -> Result<u8, String> {
     emaxx::lisp::init_process_nofile_limit();
     if noninteractive {
         return batch::run_batch_process_with_large_stack(options, |outcome| match outcome {
-            BatchRunOutcome::Exit(code) => std::process::exit(code),
+            BatchRunOutcome::Exit(code) => exit_flushing(code),
             BatchRunOutcome::Restart => restart_current_process(),
         });
     }
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     linux_startup::ignore_broken_pipe();
-    tty::run(&command_line_args, &options).map(|code| code as u8)
+    // exit's close_output_streams, as for a batch run.
+    tty::run(&command_line_args, &options).map(|code| emaxx::lisp::close_output_streams(code) as u8)
 }
 
 /// emacs.c:main's extension of the stack space available: RLIMIT_STACK's
@@ -615,7 +653,7 @@ fn extend_stack_limit() {
 #[cfg(unix)]
 fn use_terminal_device(argv0: &str, term: &str) {
     let Ok(path) = std::ffi::CString::new(term) else {
-        eprintln!(
+        emaxx::errprintln!(
             "{argv0}: {term}: {}",
             strerror(&std::io::Error::from_raw_os_error(libc::ENOENT))
         );
@@ -638,7 +676,7 @@ fn use_terminal_device(argv0: &str, term: &str) {
         (opened, duplicated)
     };
     if opened != libc::STDIN_FILENO || duplicated != libc::STDOUT_FILENO {
-        eprintln!(
+        emaxx::errprintln!(
             "{argv0}: {term}: {}",
             strerror(&std::io::Error::last_os_error())
         );
@@ -646,16 +684,16 @@ fn use_terminal_device(argv0: &str, term: &str) {
     }
     // SAFETY: isatty only inspects the descriptor.
     if unsafe { libc::isatty(libc::STDIN_FILENO) } == 0 {
-        eprintln!("{argv0}: {term}: not a tty");
+        emaxx::errprintln!("{argv0}: {term}: not a tty");
         std::process::exit(1);
     }
-    eprintln!("Using {term}");
+    emaxx::errprintln!("Using {term}");
     tty::set_dev_tty(term);
 }
 
 #[cfg(not(unix))]
 fn use_terminal_device(argv0: &str, term: &str) {
-    eprintln!("{argv0}: {term}: not a tty");
+    emaxx::errprintln!("{argv0}: {term}: not a tty");
     std::process::exit(1);
 }
 
@@ -679,39 +717,39 @@ mod seccomp {
         let mut handle = match std::fs::File::open(file) {
             Ok(handle) => handle,
             Err(error) => {
-                eprintln!("emacs: open: {}", super::strerror(&error));
+                emaxx::errprintln!("emacs: open: {}", super::strerror(&error));
                 return false;
             }
         };
         let metadata = match handle.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
-                eprintln!("emacs: fstat: {}", super::strerror(&error));
+                emaxx::errprintln!("emacs: fstat: {}", super::strerror(&error));
                 return false;
             }
         };
         if !metadata.is_file() {
-            eprintln!("seccomp file {file} is not regular");
+            emaxx::errprintln!("seccomp file {file} is not regular");
             return false;
         }
         let size = metadata.len();
         if size == 0 || !size.is_multiple_of(FILTER_ENTRY_SIZE) {
-            eprintln!("seccomp filter {file} has invalid size {size}");
+            emaxx::errprintln!("seccomp filter {file} has invalid size {size}");
             return false;
         }
         let count = size / FILTER_ENTRY_SIZE;
         if count > u64::from(u16::MAX) {
-            eprintln!("seccomp filter {file} is too big");
+            emaxx::errprintln!("seccomp filter {file} is too big");
             return false;
         }
         // Try reading one more byte to detect file size changes.
         let mut buffer = Vec::with_capacity(size as usize + 1);
         if let Err(error) = handle.by_ref().take(size + 1).read_to_end(&mut buffer) {
-            eprintln!("emacs: read: {}", super::strerror(&error));
+            emaxx::errprintln!("emacs: read: {}", super::strerror(&error));
             return false;
         }
         if buffer.len() as u64 != size {
-            eprintln!("seccomp filter {file} changed size while reading");
+            emaxx::errprintln!("seccomp filter {file} changed size while reading");
             return false;
         }
         drop(handle);
@@ -737,7 +775,7 @@ mod seccomp {
             )
         };
         if result != 0 {
-            eprintln!(
+            emaxx::errprintln!(
                 "emacs: seccomp: {}",
                 super::strerror(&std::io::Error::last_os_error())
             );
@@ -886,7 +924,7 @@ fn sort_args(argv: &mut Vec<String>) -> Result<(), String> {
                         from += nargs;
                     }
                     (Some(_), Some(_)) => {
-                        eprintln!("Option '{arg}' matched multiple standard arguments");
+                        emaxx::errprintln!("Option '{arg}' matched multiple standard arguments");
                     }
                     (None, _) => {}
                 }

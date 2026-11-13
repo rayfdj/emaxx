@@ -934,14 +934,109 @@ impl Interpreter {
     /// buffers, so an indirect buffer and its base both count the windows
     /// showing either.
     pub(crate) fn buffer_window_count(&self, buffer_id: u64) -> usize {
-        let base = self.root_buffer_id(buffer_id);
-        primitives::frames_window_list(self)
-            .into_iter()
-            .filter(|window_id| {
-                self.window_record_buffer_id(*window_id)
-                    .is_some_and(|shown| self.root_buffer_id(shown) == base)
-            })
-            .count()
+        self.get_buffer_by_id(buffer_id)
+            .map_or(0, |buffer| buffer.window_count())
+    }
+
+    /// window.c adjust_window_count: the buffer WINDOW_ID's contents are
+    /// (its base buffer: the text an indirect family shares) is shown in
+    /// one window more (SHOWN) or one less, and the window's end and base
+    /// line are to be found again by redisplay.
+    pub(crate) fn adjust_window_count(&mut self, window_id: u64, shown: bool) {
+        let Some(buffer_id) = self.window_record_buffer_id(window_id) else {
+            return;
+        };
+        if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
+            buffer.adjust_window_count(shown);
+        }
+        if let Some(window) = self.find_record_mut(window_id) {
+            for (slot, value) in [
+                (primitives::WINDOW_END_VALID_SLOT, Value::Nil),
+                (primitives::WINDOW_BASE_LINE_SLOT, Value::Nil),
+            ] {
+                if let Some(slot) = window.slots.get_mut(slot) {
+                    *slot = value;
+                }
+            }
+        }
+    }
+
+    /// window.c wset_buffer: WINDOW_ID's contents become VALUE, the
+    /// windows showing the old buffer and the new one counted.
+    pub(crate) fn wset_buffer(&mut self, window_id: u64, value: Value) {
+        self.adjust_window_count(window_id, false);
+        if let Some(window) = self.find_record_mut(window_id) {
+            if window.slots.is_empty() {
+                window.slots.push(Value::Nil);
+            }
+            window.slots[primitives::WINDOW_BUFFER_SLOT] = value;
+        }
+        self.adjust_window_count(window_id, true);
+        self.check_window_counts();
+    }
+
+    /// Each buffer's window count taken anew from the windows: for the
+    /// windows a frame is made with, which show their buffers from the
+    /// start, and after an image's buffers took the places of those the
+    /// first frame's windows were made for (pdumper.c dumps a base
+    /// buffer's window_count as 0; GNU's first frame is made after the
+    /// load).
+    pub(crate) fn recount_buffer_windows(&mut self) {
+        let ids: Vec<u64> = std::iter::once(self.current_buffer_id)
+            .chain(self.inactive_buffers.iter().map(|(id, _)| *id))
+            .collect();
+        for id in ids {
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
+                buffer.set_window_count(0);
+            }
+        }
+        for window in self.record_ids_by_type("window") {
+            if let Some(buffer_id) = self.window_record_buffer_id(window)
+                && let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id)
+            {
+                buffer.adjust_window_count(true);
+            }
+        }
+    }
+
+    /// The counts adjust_window_count keeps against the windows
+    /// themselves, in builds with debug assertions: a write of a window's
+    /// contents that went around wset_buffer shows here.
+    pub(crate) fn check_window_counts(&self) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let mut shown: Vec<(usize, usize)> = Vec::new();
+        for window in self.record_ids_by_type("window") {
+            let Some(buffer) = self
+                .window_record_buffer_id(window)
+                .and_then(|id| self.get_buffer_by_id(id))
+            else {
+                continue;
+            };
+            let text = buffer.text_identity();
+            match shown.iter_mut().find(|(known, _)| *known == text) {
+                Some((_, count)) => *count += 1,
+                None => shown.push((text, 1)),
+            }
+        }
+        let ids = std::iter::once(self.current_buffer_id)
+            .chain(self.inactive_buffers.iter().map(|(id, _)| *id));
+        for id in ids {
+            let Some(buffer) = self.get_buffer_by_id(id) else {
+                continue;
+            };
+            let text = buffer.text_identity();
+            let counted = shown
+                .iter()
+                .find(|(known, _)| *known == text)
+                .map_or(0, |(_, count)| *count);
+            debug_assert_eq!(
+                buffer.window_count(),
+                counted,
+                "window count of buffer {id} against its windows"
+            );
+        }
     }
 
     /// xdisp.c wset_redisplay: marking a window other than the selected
@@ -1226,8 +1321,6 @@ impl Interpreter {
     /// point; KEEP (KEEP-MARGINS on the buffer the window already shows)
     /// leaves the start, point and hscroll alone.
     pub(crate) fn show_buffer_in_window(&mut self, window_id: u64, buffer_id: u64, keep: bool) {
-        // adjust_window_count's `w->window_end_valid = false'.
-        crate::lisp::primitives::invalidate_window_end(self, window_id);
         let (point_min, point_max, point) = if buffer_id == self.current_buffer_id {
             let buffer = self.buffer.borrow();
             (buffer.point_min(), buffer.point_max(), buffer.point())
@@ -1242,14 +1335,16 @@ impl Interpreter {
             .unwrap_or(1)
             .clamp(point_min, point_max);
         let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
+        if let Some(window) = self.find_record_mut(window_id)
+            && window.slots.len() <= primitives::WINDOW_START_AT_LINE_BEG_SLOT
+        {
+            window
+                .slots
+                .resize(primitives::WINDOW_START_AT_LINE_BEG_SLOT + 1, Value::Nil);
+        }
+        // wset_buffer: w->contents is the buffer object.
+        self.wset_buffer(window_id, buffer);
         if let Some(window) = self.find_record_mut(window_id) {
-            if window.slots.len() <= primitives::WINDOW_START_AT_LINE_BEG_SLOT {
-                window
-                    .slots
-                    .resize(primitives::WINDOW_START_AT_LINE_BEG_SLOT + 1, Value::Nil);
-            }
-            // wset_buffer: w->contents is the buffer object.
-            window.slots[primitives::WINDOW_BUFFER_SLOT] = buffer;
             window.slots[primitives::WINDOW_END_POS_SLOT] = Value::Integer(0);
             if !keep {
                 window.slots[primitives::WINDOW_HSCROLL_SLOT] = Value::Integer(0);
@@ -2048,10 +2143,9 @@ impl Interpreter {
         // of the frame's tree, the minibuffer window the root's `next'
         // (frame.c make_frame links them), is "deleted", a leaf's buffer
         // unshown and its markers unchained, the buffer squirreled away in
-        // case the saved one is dead.
-        let mut squirreled = Vec::new();
+        // the window's combination limit in case the saved one is dead.
         let root = snapshot.frame_id.borrow().root_window_id();
-        self.unshow_window_tree(Some(root).filter(|id| *id != 0), &mut squirreled)?;
+        self.unshow_window_tree(Some(root).filter(|id| *id != 0))?;
         // Each saved window revived: its links rebuilt from the saved
         // indices, the fields save_window_save saved written back (the
         // others, its previous and next buffers, cursor type, use time and
@@ -2112,13 +2206,16 @@ impl Interpreter {
                     self.set_window_slot(parent, primitives::WINDOW_FIRST_CHILD_SLOT, this);
                 }
             }
-            if let Some(buffer) = squirreled
-                .iter()
-                .find(|(id, _)| *id == window)
-                .map(|(_, buffer)| *buffer)
-            {
-                let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
-                self.set_window_slot(window, primitives::WINDOW_BUFFER_SLOT, object);
+            // "If we squirreled away the buffer, restore it now": whichever
+            // delete_all_child_windows left it there, this restore's or
+            // an earlier deletion's.
+            let squirreled = self
+                .find_record(window)
+                .and_then(|record| record.slots.get(primitives::WINDOW_COMBINATION_LIMIT_SLOT))
+                .copied()
+                .unwrap_or(Value::Nil);
+            if matches!(squirreled.kind(), Kind::Buffer(_)) {
+                self.wset_buffer(window, squirreled);
             }
             for (field, index) in [
                 (SW_PIXEL_LEFT, primitives::WINDOW_PIXEL_LEFT_SLOT),
@@ -2242,7 +2339,7 @@ impl Interpreter {
                 // set_marker_restricted to the saved ones (a saved marker
                 // that points nowhere unchains the window's).
                 let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
-                self.set_window_slot(*window, primitives::WINDOW_BUFFER_SLOT, object);
+                self.wset_buffer(*window, object);
                 self.set_window_slot(
                     *window,
                     primitives::WINDOW_START_AT_LINE_BEG_SLOT,
@@ -2278,18 +2375,14 @@ impl Interpreter {
                     let point = point.clamp(state.point_min(), state.point_max());
                     state.goto_char(point);
                 }
-            } else if let Some(buffer_id) = squirreled
-                .iter()
-                .find(|(id, _)| id == window)
-                .map(|(_, buffer)| *buffer)
+            } else if let Some(buffer_id) = self
+                .window_record_buffer_id(*window)
                 .filter(|id| self.has_buffer_id(*id))
             {
                 // The window keeps its old buffer; its markers, which
                 // point nowhere, go to the start of the accessible portion
                 // and to the buffer's point.
                 let point = self.buffer_point_by_id(buffer_id);
-                let object = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
-                self.set_window_slot(*window, primitives::WINDOW_BUFFER_SLOT, object);
                 for (slot, position) in [
                     (primitives::WINDOW_START_SLOT, 0),
                     (primitives::WINDOW_POINT_SLOT, point),
@@ -2315,7 +2408,7 @@ impl Interpreter {
                 // at the start of the accessible portion.
                 let buffer = self.other_buffer_safely(self.current_buffer_id())?;
                 let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
-                self.set_window_slot(*window, primitives::WINDOW_BUFFER_SLOT, object);
+                self.wset_buffer(*window, object);
                 for slot in primitives::WINDOW_MARKER_SLOTS {
                     primitives::set_window_marker_restricted(self, *window, slot, buffer, 0);
                 }
@@ -2361,11 +2454,17 @@ impl Interpreter {
             .filter(|id| self.has_buffer_id(*id))
         {
             self.set_current_buffer_id(buffer)?;
-            if let Some(point) = primitives::window_marker_position(
-                self,
-                current_window,
-                primitives::WINDOW_POINT_SLOT,
-            ) {
+            // select_window_1's set_point_from_marker (w->pointm):
+            // marker_position's error for a point marker that a saved
+            // one pointing nowhere unchained above, with the window
+            // selected and its buffer current and the rest of the
+            // restoring undone.
+            if let Some(marker) =
+                primitives::window_marker(self, current_window, primitives::WINDOW_POINT_SLOT)
+            {
+                let point = marker
+                    .position()
+                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
                 let mut state = self.buffer.borrow_mut();
                 let point = point.clamp(state.point_min(), state.point_max());
                 state.goto_char(point);
@@ -2456,6 +2555,7 @@ impl Interpreter {
     /// the windows made before an image's buffers were installed, which
     /// make_frame would have set in those buffers.
     pub(crate) fn rebind_window_markers(&mut self) {
+        self.recount_buffer_windows();
         for window in self.record_ids_by_type("window") {
             let Some(buffer_id) = self.window_record_buffer_id(window) else {
                 continue;
@@ -2476,12 +2576,10 @@ impl Interpreter {
     /// window.c:delete_all_child_windows over the tree from WINDOW, the
     /// siblings after it first and children before their parents: each
     /// leaf's buffer unshown and its markers unchained, its buffer kept in
-    /// SQUIRRELED (GNU's combination_limit) for Fset_window_configuration.
-    fn unshow_window_tree(
-        &mut self,
-        window: Option<u64>,
-        squirreled: &mut Vec<(u64, u64)>,
-    ) -> Result<(), LispError> {
+    /// its combination limit ("since combination limit makes sense for an
+    /// internal windows only, we use this slot to save the buffer for the
+    /// sake of possible resurrection in Fset_window_configuration").
+    fn unshow_window_tree(&mut self, window: Option<u64>) -> Result<(), LispError> {
         let Some(window) = window else {
             return Ok(());
         };
@@ -2494,22 +2592,28 @@ impl Interpreter {
             _ => None,
         };
         let next = link(self, primitives::WINDOW_NEXT_SIBLING_SLOT);
-        self.unshow_window_tree(next, squirreled)?;
+        self.unshow_window_tree(next)?;
         let internal = primitives::WindowKind::of_slot(
             self.find_record(window)
                 .and_then(|record| record.slots.get(primitives::WINDOW_KIND_SLOT)),
         )
         .is_internal();
         if let Some(child) = link(self, primitives::WINDOW_FIRST_CHILD_SLOT).filter(|_| internal) {
-            self.unshow_window_tree(Some(child), squirreled)?;
+            self.unshow_window_tree(Some(child))?;
             // wset_combination (w, false, Qnil): no contents.
             self.set_window_slot(window, primitives::WINDOW_FIRST_CHILD_SLOT, Value::Nil);
-        } else if let Some(buffer) = self.window_record_buffer_id(window) {
+        } else if self.window_record_buffer_id(window).is_some() {
             self.unshow_window_buffer(window)?;
             primitives::unchain_window_markers(self, window);
-            squirreled.push((window, buffer));
+            // wset_combination_limit (w, w->contents).
+            let contents = self
+                .find_record(window)
+                .and_then(|record| record.slots.get(primitives::WINDOW_BUFFER_SLOT))
+                .copied()
+                .unwrap_or(Value::Nil);
+            self.set_window_slot(window, primitives::WINDOW_COMBINATION_LIMIT_SLOT, contents);
             // wset_buffer (w, Qnil).
-            self.set_window_slot(window, primitives::WINDOW_BUFFER_SLOT, Value::Nil);
+            self.wset_buffer(window, Value::Nil);
         }
         // A window with no contents is no valid window.
         self.set_window_slot(
@@ -2530,6 +2634,11 @@ impl Interpreter {
     }
 
     fn set_window_slot(&mut self, window: u64, slot: usize, value: Value) {
+        debug_assert_ne!(
+            slot,
+            primitives::WINDOW_BUFFER_SLOT,
+            "a window's contents are set by wset_buffer"
+        );
         if let Some(record) = self.find_record_mut(window) {
             if record.slots.len() <= slot {
                 record.slots.resize(slot + 1, Value::Nil);
@@ -2622,13 +2731,18 @@ impl Interpreter {
         let tem = self
             .symbol_value_symbol(&inhibit_quit)
             .unwrap_or(Value::Nil);
-        self.set_symbol_value_cell_resolved(&inhibit_quit, Value::T);
+        // `Vinhibit_quit = Qt' and back: the C variable's own store.
+        if !self.assign_plain_global(&inhibit_quit, Value::T) {
+            self.set_symbol_value_cell_resolved(&inhibit_quit, Value::T);
+        }
         if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
             buffer.set_undo_list(Value::Nil);
         }
         self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
         primitives::replace_buffer_in_windows_safely(self, id)?;
-        self.set_symbol_value_cell_resolved(&inhibit_quit, tem);
+        if !self.assign_plain_global(&inhibit_quit, tem) {
+            self.set_symbol_value_cell_resolved(&inhibit_quit, tem);
+        }
         self.detach_markers_for_buffer(id);
         // An indirect buffer stops sharing its base's text (and chain).
         if let Some(object) = self.buffer_object(id) {

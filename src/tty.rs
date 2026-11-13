@@ -515,7 +515,7 @@ fn run_owned(
         fatal("standard input is not a tty");
     }
     let Some(terminal_type) = std::env::var_os("TERM") else {
-        eprintln!("Please set the environment variable TERM; see 'tset'.");
+        crate::errprintln!("Please set the environment variable TERM; see 'tset'.");
         std::process::exit(1);
     };
     let terminal_type = terminal_type.to_string_lossy().into_owned();
@@ -1514,9 +1514,11 @@ fn post_command_log(
 /// term.c:fatal (vfatal): "emacs: " and MESSAGE on stderr, a newline
 /// unless it ends in one, and exit status 1, nothing else run.
 fn fatal(message: &str) -> ! {
-    eprint!("emacs: {message}");
+    // fputs, vfprintf and putc: three writes of the unbuffered stream.
+    crate::errprint!("emacs: ");
+    crate::errprint!("{message}");
     if !message.ends_with('\n') {
-        eprintln!();
+        crate::errprintln!();
     }
     std::process::exit(1)
 }

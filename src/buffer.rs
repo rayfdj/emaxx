@@ -256,8 +256,12 @@ impl Clone for Buffer {
         Self {
             name: self.name,
             last_name: self.last_name,
-            // A snapshot's own text, apart from any family's.
-            text: Rc::new(RefCell::new(self.text.borrow().clone())),
+            // A snapshot's own text, apart from any family's, which no
+            // window shows.
+            text: Rc::new(RefCell::new(BufferText {
+                window_count: 0,
+                ..self.text.borrow().clone()
+            })),
             position_markers: None,
             positions_away: false,
             base_buffer: None,
@@ -361,6 +365,11 @@ struct BufferText {
     /// buffer.h's text->redisplay: a window showing this text (the
     /// buffer or one of its indirect family) must be redisplayed.
     redisplay: bool,
+
+    /// buffer.h's window_count: the windows showing the buffer or one of
+    /// its indirect buffers, which window.c's adjust_window_count keeps on
+    /// the base buffer; here on the text the family shares.
+    window_count: usize,
 
     /// buffer.h's overlay_modiff: bumped by every change of an overlay
     /// (modify_overlay).
@@ -574,6 +583,7 @@ impl BufferText {
             save_modiff: 1,
             compact: 1,
             redisplay: false,
+            window_count: 0,
             overlay_modiff: 1,
             layout_properties_modiff: 1,
             beg_unchanged: 0,
@@ -1984,6 +1994,12 @@ impl Buffer {
     /// The buffer's text, which an indirect family shares.
     pub(crate) fn shares_text_with(&self, other: &Buffer) -> bool {
         Rc::ptr_eq(&self.text, &other.text)
+    }
+
+    /// The text's address: one value for a base buffer and each of its
+    /// indirect buffers.
+    pub(crate) fn text_identity(&self) -> usize {
+        Rc::as_ptr(&self.text) as usize
     }
 
     /// Fmake_indirect_buffer's `b->text = b->base_buffer->text': this
@@ -4569,6 +4585,27 @@ impl Buffer {
         self.text.borrow_mut().redisplay = on;
     }
 
+    /// buffer.h buffer_window_count: the windows showing the buffer or a
+    /// buffer sharing its text.
+    pub(crate) fn window_count(&self) -> usize {
+        self.text.borrow().window_count
+    }
+
+    /// window.c adjust_window_count's `b->window_count += arg'.
+    pub(crate) fn adjust_window_count(&mut self, shown: bool) {
+        let mut text = self.text.borrow_mut();
+        text.window_count = if shown {
+            text.window_count + 1
+        } else {
+            text.window_count.saturating_sub(1)
+        };
+    }
+
+    /// The count set outright: the windows counted anew.
+    pub(crate) fn set_window_count(&mut self, count: usize) {
+        self.text.borrow_mut().window_count = count;
+    }
+
     /// BEGV and ZV.
     pub(crate) fn accessible_bounds(&self) -> (usize, usize) {
         (self.point_min(), self.point_max())
@@ -4630,6 +4667,19 @@ impl Buffer {
 
     pub fn swap_text_state(&mut self, other: &mut Buffer) {
         std::mem::swap(&mut self.text, &mut other.text);
+        // modiff_incr of each text's modiff, chars_modiff and
+        // overlay_modiff by one: both buffers are modified by the swap.
+        for text in [&self.text, &other.text] {
+            let mut text = text.borrow_mut();
+            modiff_incr(&mut text.modiff, 1);
+            modiff_incr(&mut text.chars_modiff, 1);
+            modiff_incr(&mut text.overlay_modiff, 1);
+        }
+        // buffer.c:Fbuffer_swap_text swaps neither buffer's window_count:
+        // each buffer's windows still show it.
+        let (count, other_count) = (self.window_count(), other.window_count());
+        self.set_window_count(other_count);
+        other.set_window_count(count);
         std::mem::swap(&mut self.pt, &mut other.pt);
         std::mem::swap(&mut self.mark_active, &mut other.mark_active);
         std::mem::swap(&mut self.begv, &mut other.begv);

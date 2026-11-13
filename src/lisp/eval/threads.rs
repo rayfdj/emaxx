@@ -3127,7 +3127,7 @@ impl Interpreter {
             Ok(0) if !input.is_empty() => Ok(None),
             Ok(written) => {
                 if std::env::var_os("EMAXX_DEBUG_PROCESS_IO").is_some() {
-                    eprintln!(
+                    crate::errprintln!(
                         "PROC-IO send#{record_id} wrote {written} of {}: {:?}",
                         input.len(),
                         String::from_utf8_lossy(&input[..written.min(120)])

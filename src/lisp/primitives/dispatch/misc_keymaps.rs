@@ -674,11 +674,10 @@ define_dispatch!(
                 // t whatever MODE asks.
                 let stream = check_symbol(interp, args[0])?;
                 if stream.is_key(cached_symbol!("stdout")) {
-                    use std::io::Write as _;
-                    let _ = std::io::stdout().flush();
+                    // fflush (stdout).
+                    crate::lisp::primitives::batch_stdout::flush();
                 } else if stream.is_key(cached_symbol!("stderr")) {
-                    use std::io::Write as _;
-                    let _ = std::io::stderr().flush();
+                    // fflush (stderr): the stream is unbuffered.
                 } else if !stream.is_key(cached_symbol!("stdin")) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("error"),

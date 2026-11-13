@@ -1433,7 +1433,7 @@ pub(super) fn load_dumped_unit(
     let library = match unsafe { Library::new(Path::new(&eln_fname)) } {
         Ok(library) => library,
         Err(error) => {
-            eprintln!("Error using execdir {execdir}:");
+            crate::errprintln!("Error using execdir {execdir}:");
             return Err(dump_load_error(error.to_string()));
         }
     };
