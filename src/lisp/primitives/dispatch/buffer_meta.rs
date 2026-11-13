@@ -625,6 +625,45 @@ define_dispatch!(
                     ));
                 }
                 interp.swap_buffer_text_state(current_id, other_id)?;
+                // "Some of the C code expects that both window markers of
+                // a live window points to that window's buffer.  So since
+                // we just swapped the markers between the two buffers, we
+                // need to undo the effect of this swap for window
+                // markers": every window showing either buffer has its
+                // point and old point at the start of its buffer's
+                // accessible portion and its start at the buffer's
+                // last_window_start (Fset_marker, so within the buffer).
+                for window in interp.record_ids_by_type("window") {
+                    let Some(buffer) = crate::lisp::primitives::window_slot_buffer_id(
+                        interp
+                            .find_record(window)
+                            .and_then(|record| record.slots.get(WINDOW_BUFFER_SLOT)),
+                    )
+                    .filter(|id| *id == current_id || *id == other_id) else {
+                        continue;
+                    };
+                    let Some((begv, start, size)) = interp.get_buffer_by_id(buffer).map(|state| {
+                        (
+                            state.point_min(),
+                            state.last_window_start(),
+                            state.buffer_size(),
+                        )
+                    }) else {
+                        continue;
+                    };
+                    for slot in [WINDOW_POINT_SLOT, WINDOW_OLD_POINT_SLOT] {
+                        crate::lisp::primitives::set_window_marker(
+                            interp, window, slot, buffer, begv,
+                        );
+                    }
+                    crate::lisp::primitives::set_window_marker(
+                        interp,
+                        window,
+                        WINDOW_START_SLOT,
+                        buffer,
+                        start.clamp(1, size + 1),
+                    );
+                }
                 // Both buffers' windows are redisplayed in full.
                 for buffer_id in [current_id, other_id] {
                     interp.set_clip_changed(buffer_id);
@@ -1797,8 +1836,8 @@ define_dispatch!(
 /// BUFFER (when BUFFER is a buffer), live and not hidden
 /// (candidate_buffer), that FRAME's buffer predicate accepts, among
 /// FRAME's buffers and then all of them; one no window shows unless
-/// VISIBLE_OK, else the first one shown; else *scratch*, made when there
-/// is none.
+/// VISIBLE_OK, else the first one shown; else what
+/// `get-scratch-buffer-create' returns.
 pub(crate) fn other_buffer(
     interp: &mut Interpreter,
     buffer: Value,
@@ -1806,8 +1845,9 @@ pub(crate) fn other_buffer(
     frame: crate::lisp::types::FrameRef,
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let predicate =
-        super::frames::frame_parameter_value(interp, frame, cached_symbol!("buffer-predicate"));
+    let predicate = super::frames::frame_buffer_predicate(frame);
+    // Qvisible, for each candidate's Fget_buffer_window.
+    let visible = Value::Symbol(cached_symbol!("visible").symbol());
     let excluded = match buffer.kind() {
         Kind::Buffer(buffer) => Some(buffer.id),
         _ => None,
@@ -1835,9 +1875,7 @@ pub(crate) fn other_buffer(
         {
             continue;
         }
-        if visible_ok
-            || super::display::buffer_window(interp, id, &Value::symbol("visible"))?.is_none()
-        {
+        if visible_ok || super::display::buffer_window(interp, id, &visible)?.is_none() {
             return Ok(candidate);
         }
         not_so_good.get_or_insert(candidate);
@@ -1845,17 +1883,10 @@ pub(crate) fn other_buffer(
     if let Some(candidate) = not_so_good {
         return Ok(candidate);
     }
-    if let Some(id) = interp.find_buffer_id("*scratch*") {
-        return Ok(interp.buffer_value(id).expect("live buffer object"));
-    }
-    let scratch = super::call(
-        interp,
-        "get-buffer-create",
-        &[Value::string("*scratch*"), Value::Nil],
-        env,
-    )?;
-    super::call(interp, "set-buffer-major-mode", &[scratch], env)?;
-    Ok(scratch)
+    // safe_calln (Qget_scratch_buffer_create): what the function returns,
+    // nil when it signals.
+    let create = Value::Symbol(cached_symbol!("get-scratch-buffer-create").symbol());
+    interp.safe_funcall(create, &[], env)
 }
 
 /// Fmake_local_variable's and Fmake_variable_buffer_local's refusal of a

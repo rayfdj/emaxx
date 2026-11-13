@@ -1220,7 +1220,7 @@ fn call_internal_macroexpand_for_load(
         } else {
             String::new()
         };
-        eprintln!("EAGER-EXPAND: ({head}{second} ...)");
+        crate::errprintln!("EAGER-EXPAND: ({head}{second} ...)");
     }
     interp.call_function_value(
         owner,

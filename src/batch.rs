@@ -88,7 +88,9 @@ pub fn run_batch_process_with_large_stack(
             let mut interpreter = initialize_batch_interpreter(&options)?;
             let outcome = run_initialized_batch(&mut interpreter, &options, &actions)?;
             interpreter.release_external_resources_for_exit();
-            crate::lisp::flush_batch_stdout();
+            // FINISH ends the process: an exit closes the output streams
+            // (close_output_streams), and a restart is Fkill_emacs's
+            // execvp, which leaves what stdio still buffers unwritten.
             finish(outcome)
         })
     })?
@@ -1317,15 +1319,15 @@ fn emit_human_log(report: &BatchReport) {
     if !verbose_mode() {
         return;
     }
-    eprintln!("runner: {}", report.runner);
-    eprintln!("file: {}", report.file);
-    eprintln!("selector: {}", report.selector);
-    eprintln!("file-status: {:?}", report.file_status);
+    crate::errprintln!("runner: {}", report.runner);
+    crate::errprintln!("file: {}", report.file);
+    crate::errprintln!("selector: {}", report.selector);
+    crate::errprintln!("file-status: {:?}", report.file_status);
     if let Some(error) = &report.file_error {
-        eprintln!("load-error: {error}");
+        crate::errprintln!("load-error: {error}");
     }
     for result in &report.results {
-        eprintln!(
+        crate::errprintln!(
             "{:?}: {}{}",
             result.status,
             result.name,
@@ -1336,7 +1338,7 @@ fn emit_human_log(report: &BatchReport) {
                 .unwrap_or_default()
         );
     }
-    eprintln!(
+    crate::errprintln!(
         "summary: total={} passed={} failed={} skipped={} unexpected={}",
         report.summary.total,
         report.summary.passed,

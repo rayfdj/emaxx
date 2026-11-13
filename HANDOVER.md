@@ -18475,6 +18475,206 @@ setup_process_coding_systems's check now refuses). A 13-form
   leaves a numbered dump image (emacs-30.2.N.pdmp, 20 MB) beside the
   gate profile's executable, 123 of them by this round, removed by hand
   here.
+- **Round 362: wide characters and stretches at a horizontally scrolled
+  row's edges.**  On a truncated, hscrolled row display_line's
+  move_it_in_display_line_to (MOVE_TO_X first_visible_x) stops at the
+  glyph that would cross first_visible_x with the iterator still on its
+  element, and the element is produced again from there: one whose width
+  does not depend on its start (a wide character, a glyphless escape, a
+  `(space :width N)' stretch) whole from the row's first column, a TAB
+  or an `:align-to' space for the columns left to its end;
+  insert_left_trunc_glyphs overwrites the first glyph and the padding
+  glyphs after it.  tty.rs's HscrollLayout::new (now given the line's
+  layout and the row) takes the element first_visible_x falls in among
+  the row's own display indexes: a glyphless span or a stretch span
+  (VisualLine::stretch_spans, the display indexes of each `(space :width
+  N)', recorded by both visual-line paths and carried through the
+  character display's remapping) with one truncation cell, a wide
+  character -- found by the PADDING_GLYPH characters after it in the
+  display text, each a display index of one column -- with as many cells
+  as it has; otherwise first_visible_x itself.  From an element produced
+  again whole the row's x is the line's plus the cells of it left of
+  first_visible_x, and a TAB stops where that x says (term.c
+  produce_glyphs): HscrollLayout::tabs holds the TABs whose width that
+  changes, retab draws them and screen_column moves the columns after
+  them.  truncated_row draws as many `$' as the truncation takes cells.
+  HscrolledRow::cursor_x is w->cursor.x for the hscrolled row, used for
+  the cursor and by hscroll_window_tree's trigger
+  (window_render_geometry, which took the line's column less the
+  hscroll): point's first glyph the row shows, past the truncation
+  glyphs when they overwrite its element's first cell only
+  (HscrollLayout::cursor_column); and for a point before every buffer
+  position with a glyph on the row (point_before_shown_text:
+  set_cursor_from_row's `row->truncated_on_left_p && pt_old < bpos_min',
+  bpos_min starting from MATRIX_ROW_END_CHARPOS, Rows::end_pos or
+  truncated_row_end_pos, so on a row showing no buffer text any point
+  short of its end, the line's end when a newline follows it) the last
+  glyph before the text, the last truncation glyph or the line-number
+  gutter's last cell (-1).  hscroll_window_tree's left trigger so sees
+  column 0 or 1 for a hidden point: with `hscroll-margin' 0 no scroll,
+  with 1 none when two truncation glyphs cover a wide character.
+  ScreenLineLayout::element_starts marks the glyphs that begin a display
+  element (not a padding glyph, a character composed into the cell
+  before, or a later glyph of a glyphless escape or a stretch), and
+  edge_stop is where move_it_in_display_line_to stops on a truncated row
+  for a position past the edge: it->current_x once the element just
+  consumed reaches last_visible_x, the next element's column or the
+  row's end; pos_visible_p's truncated branch takes it where it clamped
+  to last_visible_x.  The parked draft the round began from tested a
+  wide character by the width of its display index, which is always one:
+  it changed nothing and its unit test, never run, failed.  One review
+  (68 stages of its own, six probes): the TAB after an element produced
+  again, the cursor on a row left with no buffer text (the round's first
+  build put it after the glyphs) and hscroll_window_tree's cursor column
+  are fixed as above; the `:align-to' space and five nearby answers that
+  were so before the round are in Findings.  The grouped gate passed its
+  3,514 library tests; the integration targets (cli, cli_parity
+  with wide_characters_at_a_truncated_rows_edges_answer_as_gnu_does, 29
+  stages, ert_runner, native_comp_identity, native_thread_continuations,
+  package_lifecycle, runtime_ownership) passed, and clippy is clean.  On
+  the final build the round's probes (wc2.el, wc3.el, wc4.el, wc5.el,
+  gl.el and hm.el in the scratchpad's r361/p, 56 stages) match GNU's
+  answers, screens and cursor in a pseudo-terminal, and the review's
+  (rvA.el to rvF.el, 68 stages) match but for the eleven recorded stages
+  (rvA.el 4, rvB.el 2 and 4, rvC.el 7, 8, 9 and 11, rvD.el 9 and 12,
+  rvE.el 6 and 7); the earlier rounds' battery (159 lines over the
+  probes of rounds 354 to 360) answers line for line as on round 360's
+  final build.
+- **Round 363: buffers count their windows, the output streams are
+  stdio's, and where the undo workload's time goes.**  window.c's
+  adjust_window_count keeps b->window_count (the base buffer's for an
+  indirect one) at every wset_buffer, and buffer.h's buffer_window_count
+  reads it; xdisp.c's bset_redisplay asks it at each change of a
+  buffer's text.  Emaxx walked every frame's windows for it, 56 times an
+  iteration of the undo workload (35 thousand of 1.40 million
+  instructions).  The count is BufferText::window_count, on the text a
+  base buffer and its indirect buffers share; Interpreter::wset_buffer
+  (eval/runtime.rs) is the one store of a window record's contents slot,
+  with adjust_window_count before and after it, which also clears the
+  window's end-valid flag and base line as GNU's does
+  (`w->window_end_valid = false', `w->base_line_pos = 0');
+  show_buffer_in_window, set_window_combination and
+  clear_deleted_window, unshow_window_tree,
+  restore_window_configuration_with's stores and retire_frame use it;
+  make_parent_window's copied slot counts (adjust_window_count (p, 1))
+  until its wset_buffer (p, Qnil); a new frame's two windows and a
+  split's new window, created with their buffer in the slot, call
+  adjust_window_count once; swap_text_state leaves each buffer its count
+  (Fbuffer_swap_text does not swap it); recount_buffer_windows counts
+  anew when an interpreter is made, in rebind_window_markers after an
+  image's buffers replace those the first windows were made for
+  (pdumper.c dumps a base buffer's count as 0) and in the tests'
+  deep_clone_image.  With debug assertions check_window_counts compares
+  every buffer's count with the window records at each wset_buffer, and
+  set_window_slot and set_window_slot_value refuse the contents slot.
+  Three more of GNU's uses of a window's buffer came with it.
+  delete_all_child_windows (display.rs's and runtime.rs's
+  unshow_window_tree) keeps a leaf's buffer in its combination-limit
+  slot, and restore_window_configuration_with puts a buffer found there
+  back before it looks at the saved one ("If we squirreled away the
+  buffer, restore it now"), so a window deleted with its parent, or left
+  out by an earlier restore, comes back showing what it last showed when
+  its saved buffer is dead; the per-restore list is gone.
+  visual_vertical_motion_from, which every caller of Fvertical_motion
+  reaches, has the window show the current buffer and take its point for
+  as long as the motion takes when it shows another (indent.c's
+  restore_window_buffer after it, with its decode_live_window error), so
+  the two adjust_window_count calls leave the window's end and base line
+  to be found again as GNU's do.  Fbuffer_swap_text's arm sets the
+  point, old point and start markers of every window showing either
+  buffer back into that buffer (BEGV, BEGV, last_window_start), where
+  they went with the other text and were unchained when that buffer was
+  killed, and swap_text_state bumps both texts' modiff, chars_modiff and
+  overlay_modiff as buffer.c's modiff_incr calls do; and
+  restore_window_configuration_with's select_window signals
+  marker_position's "Marker does not point anywhere" for a point marker
+  a saved one pointing nowhere unchained, as select_window_1's
+  set_point_from_marker does.  primitives/batch_stdout.rs is the
+  process's three output streams as glibc has them: stdout, sysdep.c's
+  buferr ("a stream that is like stderr, except line buffered", which
+  errputc and errwrite write for xdisp.c's message_to_stderr, so a
+  message and its newline are one write where they were two: twelve
+  writes an iteration of the undo workload, GNU six) and the unbuffered
+  stderr (stderr_write); buferr is absent when descriptor 2 is not open
+  for writing at startup (init_buferr, from lisp::init_standard_fds in
+  main.rs: fdopen's refusal), errwrite and errputc then being stderr's.
+  Stream::xsputn is _IO_new_file_xsputn (the free space filled, the
+  buffer written, whole blocks direct in one write, the tail through
+  default_xsputn; a line-buffered stream written through the last
+  newline of bytes that fit; nothing filled before the stream's first
+  write), overflow is _IO_new_file_overflow with a character,
+  buffer_size is _IO_file_doallocate's (BUFSIZ, or a smaller
+  st_blksize).  No writer is told of a failed write: write, flush,
+  errwrite, errputc and stderr_write return nothing, the stream keeps
+  ferror's flag and drops its buffer, and lisp::close_output_streams
+  (sysdep.c's, which GNU's exit runs) turns it into the status where the
+  process exits (main.rs's exit_flushing, for the batch run's exit and
+  for `--version', `--help' and `--fingerprint', which print through
+  write_standard_output, printf's output in glibc's 128-byte stages by
+  printf_stdout; and tty::run's return for an interactive session):
+  "Write error to standard output" with fclose's errno and EXIT_FAILURE
+  for stdout, EXIT_FAILURE for buferr or stderr; emacs_perror's command
+  is "emacs" until main.rs calls lisp::set_initial_argv where GNU's
+  init_cmdargs runs, after `--help' and `--fingerprint' have exited.
+  run_batch_process_with_large_stack flushes nothing: its FINISH closes
+  the streams for an exit, and a restart is Fkill_emacs's execvp, which
+  loses what stdio buffered.  The editor's 51 eprint! and eprintln!
+  calls are the crate's errprint! and errprintln! (lib.rs: one
+  stderr_write, no panic on a failed write); src/bin's tools and the
+  tests keep std's.  Fset_binary_mode flushes this stdout, and
+  Fcommand_error_default_function's batch line goes through
+  printchar_to_stderr a character at a time, which writes a display
+  table's glyphs one by one.  other_buffer reads frames.rs's
+  frame_buffer_predicate, f->buffer_predicate as the `buffer-predicate'
+  entry of param_alist, and a cached `visible', and its last resort is
+  safe_funcall of `get-scratch-buffer-create'; kill_buffer_id's
+  `Vinhibit_quit = Qt' is assign_plain_global; force-window-update's
+  buffer case walks window_list_ids over window_list_frames' `visible'
+  frames from the selected window, as window_loop
+  (REDISPLAY_BUFFER_WINDOWS, object, false, Qvisible).  The grouped gate
+  passed its 3,524 library tests
+  (buffers_count_the_windows_showing_them,
+  a_deleted_window_keeps_its_buffer_for_a_later_configuration,
+  swapped_text_leaves_window_markers_in_their_buffers,
+  other_buffer_falls_back_on_get_scratch_buffer_create and six of the
+  streams are new); the integration targets (cli, cli_parity with
+  failed_writes_of_the_output_streams_are_the_exit_status,
+  vertical_motion_lends_its_window_the_current_buffer,
+  windows_of_every_frame_count_for_their_buffers,
+  an_interactive_exit_reports_a_failed_stderr and
+  a_restart_leaves_buffered_output_unwritten new, ert_runner,
+  native_comp_identity, native_thread_continuations, package_lifecycle,
+  runtime_ownership) passed, and clippy is clean.  Two independent
+  reviews.  The first ran a debug-assertion build through 1,200 random
+  window operations (three seeds of 400), terminal sessions with several
+  frames and a dump and its load without a count going wrong, and
+  compared some thirty probes with GNU; its seven findings (the
+  squirreled buffer, Fvertical_motion's window, Fother_buffer's last
+  resort, failed writes of stderr, the stream's first write and its
+  buffer's size, a test that could not fail) are fixed, and of what it
+  found outside the round the marker error after swapped text and
+  Fforce_window_update's other frames.  The second took those answers
+  apart: 90 random programs of princ, message, terpri, print, ding,
+  `external-debugging-output', `flush-standard-output' and
+  `send-string-to-terminal' compared write for write under strace on
+  separate pipes, files, a shared pipe and file, full and closed devices
+  and a terminal; exits with stdout pending from 31 contexts and under
+  nine signals; terminal sessions for the motion (fontification
+  observers, a buffer killed or a window deleted during it, nesting),
+  the swap, the squirreled buffers and three frames, on the release
+  build and one with debug assertions.  It found no wrong behaviour
+  likely to be met and seven edge cases: fixed are the command's name
+  before init_cmdargs, an interactive exit's status, the flush before a
+  restart, the swap's ticks, the panicking reports and the write
+  boundaries of `--version', `--help' and a display table's glyphs;
+  print.c's piecewise output and the dumped window are in the findings.
+  tools/round_audit.py reports no hard finding; its soft ones are the
+  stream's dropped write results, which are the fwrite, putc and fflush
+  results GNU does not read, and the streams' state (STDOUT, BUFERR,
+  STDERR_FAILED, BUFERR_STATE, INITIAL_ARGV), which is stdio's own.  On
+  the final build the probes of both reviews and the round's own (the
+  scratchpad's r363review, r363review2/w and r363fix) answer as GNU byte
+  for byte and write for write but for the recorded items.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -21597,7 +21797,150 @@ ert-tests as a whole 26,307 ms against 27,211.
   prefix key where Emaxx's echoed it, the keys arriving while GNU still
   compiled what its startup had loaded (round 361).
 
+**On `dc64efb`** (round 361): the frozen run (run 43348538650) matched
+  all 7,928 outcomes.  Setup 92.4 s against 67.6 s (1.367), test bodies
+  310.8 s against 268.3 s (1.159), in all 1.189, with no source file
+  changed since round 360's 1.192, 1.130 and 1.127: the difference is
+  the runner's (setup median 143 ms against 103, where round 360's was
+  123 against 105), and Emaxx's setup is what a slower runner costs
+  most.  The widest body gap is ert-tests (47.6 s against 38.4 s), then
+  comp-tests (18.9 against 14.8), tramp-tests (22.4 against 19.0),
+  eglot-tests (34.4 against 33.0), semantic-utest-ia (4.13 against
+  2.83), mule-tests (3.18 against 2.00), process-tests (2.88 against
+  1.78) and simple-tests (5.12 against 4.09).  The Rust gate (run
+  43348535480) passed.
+
+**On `0a742ed`** (round 362): the frozen run (run 43367428042) matched
+  all 7,928 outcomes.  Setup 48.5 s against 42.6 s (1.139), test bodies
+  224.7 s against 211.3 s (1.063), in all 1.064, on a faster runner
+  (GNU's suite took 271 s where round 361's took 356): the ratio falls
+  with the runner's speed as it rose with its slowness, and no source
+  file of the runtime changed between the two.  The widest body gaps are
+  semantic-utest-ia (2.73 s against 1.95 s), eglot-tests (28.4 against
+  27.7), process-tests (2.55 against 1.85), mule-tests (1.72 against
+  1.03), ert-tests (27.1 against 26.4) and package-tests (5.87 against
+  5.42).  The Rust gate (run 43367424699) passed.
+
 **Findings recorded, not fixed:**
+- **The undo workload's time is cycles an instruction, not instructions
+  (round 363).**  The locked run times samples of 1,000 iterations,
+  nearly all with *Messages* at its 1,000 lines, so the counts to
+  compare are taken there (400 to 600 iterations) and not at 20 to 60 as
+  before: Emaxx 1,370,145 instructions an iteration with no collection
+  in the interval, GNU 1,626,493 with one, about 1.26 million without.
+  By the wall clock Emaxx's mutator takes 1.3 of GNU's time on the
+  release build for 1.09 of the instructions, and each of its
+  collections is quicker than GNU's.  What an iteration runs through:
+  69,849 distinct instructions on 7,134 cache lines (446 KB, 486 pages)
+  in Emaxx, 32,741 on 3,316 (207 KB, 264 pages) in GNU; 80% of the
+  instructions executed fall in 111 KB of Emaxx's code and 19 KB of
+  GNU's; callgrind's simulation gives 46 thousand instruction-cache
+  misses an iteration against 11 and 27 thousand mispredicted
+  conditional branches against 17.  771 functions run in an iteration
+  against GNU's 674, of 90 distinct instructions each against 49.  The
+  byte-code loop runs 6,168 distinct instructions (exec_byte_code
+  2,402), its call helpers enter_closure_frame, call_plain and
+  call_native_nested_by_count inlined into each of the four copies of
+  the call's path (counts 0, 1, 2 and the rest);
+  set-window-configuration 1,351 (GNU 518), kill-buffer 1,015 (179),
+  save_window_save 747 (276).  By the wall clock (1,000 iterations a
+  sample, five samples a process, GNU and the two builds interleaved,
+  sixteen processes each on an idle machine, twice) the release build
+  takes 1.19 and 1.23 of GNU's time and the profile-guided build
+  tools/pgo-build.sh makes 1.03 and 1.04 (its mutator 1.09 and 1.11,
+  single processes from 0.93 to 1.13), each of Emaxx's collections the
+  quicker (17.5 ms against 20.7).  The locked suite on the
+  profile-guided build, as a diagnostic run of nine rounds: undo 1.033
+  [1.012, 1.119], cons-allocation 1.015 [0.991, 1.078], bytecode-calls
+  0.919 [0.904, 1.145], the other thirteen with medians from 0.467 to
+  0.909 and upper bounds of at most 0.954, geometric mean 0.777 (round
+  360's release build: undo 1.157, cons-allocation 1.056, geometric mean
+  0.861).  Three intervals still reach past the contract's 1.03.  Tried
+  and not adopted: one copy of the call's path for every count, as
+  exec_byte_code's docall, makes the loop 26.5 KB for 41.9 and takes
+  6.5% off the workload's simulated instruction-cache misses, but costs
+  the byte-code calls workload 27 instructions a call (455.7 an
+  iteration to 482.7, GNU 468.2).  The earlier fall of those misses from
+  70 to 46 thousand (the window walk gone) did not show in the wall
+  clock either, so cache lines alone are not the measure; the footprint
+  is.  Primitives that still cost more than GNU's an iteration, by
+  callgrind's inclusive counts on the release build:
+  set-buffer-multibyte 14.4 thousand instructions against 3.9 (the text
+  is rebuilt whole where GNU converts in place), put-text-property 27.8
+  against 18.5, message 65.5 against 54.9, forward-word 27.3 against
+  16.1, get-buffer-create 24.7 against 20.5, erase-buffer 11.5 against
+  7.5, kill-buffer with all it calls 93.5 against 66.8, and the window
+  accessors native code calls 380 times an iteration at 70 to 165
+  instructions each against GNU's 16 to 30 (window-frame 74 against 16,
+  window-buffer 86 against 23, window-parameter 105 against 29, a
+  window's absent sibling 165 against 16: Emaxx finds the frame's
+  minibuffer window for it where make_frame links it as the root's
+  sibling).  A subr called from native code costs about 40 instructions
+  of dispatch (native_subr_N, invoke_subr) where GNU's is a direct call,
+  720 calls an iteration.  The tools are in the scratchpad's p363:
+  run.py (a workload as tools/core_runtime_perf.py runs it, under a
+  prefix command), arcs.py and prim.py (call arcs and per-primitive
+  inclusive counts, Emaxx's primitives named through addr2line), natf.py
+  (each native-compiled Lisp function's direct callees in both editors),
+  foot.py, footfn.py and inl.py (executed footprint, by function and by
+  inlined helper), ev.py (a simulated event by function).
+- **Found by the review of round 363 outside the round, not fixed.**  A
+  user's dump made after `*scratch*' was killed: on its load the first
+  window shows a live buffer that is not in `(buffer-list)', where GNU's
+  shows *Messages* (probes g1.el and g3.el of the review).  A watcher on
+  `inhibit-quit' hears `(t let) (nil set) (nil unlet)' from GNU's
+  `kill-buffer' and nothing from Emaxx's: the binding is not the store
+  the round changed (probe f4.el).  `garbage-collection-messages':
+  alloc.c's garbage_collect writes "Garbage collecting..." and "Garbage
+  collecting...done" with message1_nolog, to stderr in batch; Emaxx has
+  the variable and no message.  `(window-end)' without UPDATE after a
+  `set-window-configuration' in a terminal session: 3301 in GNU and 3048
+  in Emaxx for one window of the review's p/b3.el (stage 5), the screens
+  equal.  xdisp.c's with_echo_area_buffer shows the echo area's buffer
+  in the minibuffer window with wset_buffer while it displays or resizes
+  the echo area, and so counts and uncounts it and resets that window's
+  end and base line; Emaxx's echo area display has no such store, with
+  no effect found.  The probes are in the scratchpad's r363review.
+- **print.c writes to stdout as it goes (round 363, second review; the
+  next round's subject).**  With `standard-output' t in batch, printchar
+  is one fwrite a character and strout one a string (print.c 306-335 and
+  380-408); Emaxx's printer builds an object's whole text and
+  file_io.rs's write_prepared_printer_output hands it over once.  So: a
+  `print-unreadable-function' that signals, prints or throws finds `(1 2
+  ' of `(prin1 (list 1 2 (current-buffer) 3))' already written in GNU
+  and nothing in Emaxx (GNU `(1 2 <inner>#<repl> 3)', Emaxx `<inner>(1 2
+  #<repl> 3)'); on a pipe `(prin1 (make-string 20000 ?x))' is GNU's 4096
+  four times and 3618 and Emaxx's 16384 and 3618, and on a terminal
+  `(print '(a "b" c))' is the newline's write and the rest's where Emaxx
+  makes one; and with stdout failing GNU retries each block and still
+  has a tail at fclose, so its last report names the device's error (No
+  space left on device, Bad file descriptor, Broken pipe) where Emaxx's
+  one failed write leaves nothing pending and the report says Success,
+  the status 1 in both.  Of the same printer: `standard-display-table'
+  is not applied to batch stdout (a backtrace shows `banana' where GNU's
+  table shows `bXYnXYnXY'), and raw bytes differ on stderr and stdout (a
+  raw-byte character in a message is C1 BF in GNU and EE 83 BF in Emaxx;
+  princ of the unibyte "\377\200" is C3 BF C2 80 against EE 83 BF EE 82
+  80; prin1 of the unibyte "\351" is C1 A9 against the text \351).
+  Probes in the scratchpad's r363review2/w: st/pf1, st/pf2, st/pr1 to
+  pr5, out/pfe, pe1.el, rnd/err2.el to err7.el.
+- **Found by the second review of round 363 outside the round, not
+  fixed.**  A user's dump made with a variable holding the dumped
+  session's selected or root window: after its load `(window-list-1
+  WINDOW t t)' panics with "window stores its owning frame" (display.rs,
+  status 134) where GNU answers; deleted windows holding squirreled
+  buffers dump and load as GNU's (probes out/dv1 to dv8 of
+  r363review2/w).  batch_stdout.rs has glibc's sizes and rules on every
+  unix; a BSD libc's stdio (macOS) buffers otherwise, and st_blksize of
+  8192 or more was only unit-tested here (every file system at hand
+  reports 4096).  Backtraces lack GNU's
+  `run-hooks(buffer-list-update-hook)' frame; SIGUSR2 in batch does not
+  enter the debugger; a terminal prints as `#<terminal 0 ...>' where
+  GNU's first is 1; and after `send-string-to-terminal' moves the cursor
+  GNU's relative cursor motion draws from the moved position where Emaxx
+  addresses absolutely (p/io1).  The review did not check localized
+  strerror text, two terminals at once, `suspend-emacs', or a
+  non-blocking stdout pipe's transient failures.
 - **The terminal tests' clock outside Linux (round 361).**
   tests/cli_parity.rs's PtySession reads thread states from /proc.
   Where there is none (macOS) every process counts as asleep, so the
@@ -21675,16 +22018,32 @@ ert-tests as a whole 26,307 ms against 27,211.
     invisible run, so their rows begin there and the force_start block
     moves point to 48, and the bidi ppos_it rule answers (0 0) for 46;
     Emaxx answers 46 and (2 9) (cur2.el stage 1).
-- **A wide character across an hscrolled row's left edge (round 359
-  review).**  When first_visible_x falls inside a double-width glyph,
-  display_line's move_it_in_display_line_to (MOVE_TO_X) stops before
-  it, its new x past TO_X, the row's x is negative, and the terminal
-  draws the row's glyphs from its first column: the glyph shows whole,
-  or as two `$' where insert_left_trunc_glyphs overwrites it and its
-  padding glyph, and the rest of the row one column to the right of
-  where Emaxx draws it from first_visible_x (pf.el stage 6, wc.el
-  stages 1 to 4: `$$本語ab' against `$本語ab', the cursor a column
-  to the left).  posn-at-point and pos-visible-in-window-p agree.
+- **Stretches and positions at an hscrolled row's edges (round 362
+  review).**  Answered so before the round (probes rvA.el to rvF.el in
+  the scratchpad's r361/p):
+  - An `:align-to' space takes its width when the display line is
+    built, from a column that counts one per character and eight per
+    TAB.  After wide characters it ends late (rvC.el 7: `(space
+    :align-to 20)' after `日本語a' ends at column 23), and after an
+    element display_line produces again whole under an hscroll it does
+    not move with the row's x as a TAB now does (rvA.el 4: 16 spaces
+    where GNU's produce_stretch_glyph makes 12).  To be given its width
+    in the layout, as a TAB.
+  - A zero-width stretch, `(space :width 0)': posn-at-point and
+    posn-at-x-y there give the position after it (49) where GNU gives
+    its own (48) (rvB.el 2 and 4, rvC.el 8).
+  - pos-visible-in-window-p of positions inside text a display string
+    replaces, the string ending its line in a wide character: GNU
+    answers the string's end x, Emaxx a column less (rvC.el 9, rvE.el
+    6 and 7).
+  - A last line with no newline scrolled wholly out by the hscroll:
+    GNU's window-end is the line's start (46) and its mode line says
+    Top, Emaxx's 51 and All (rvC.el 11).
+  - `truncate-lines' nil in a window truncating for its hscroll:
+    count-screen-lines over a line with wide characters at the edge is
+    6 in GNU, 7 in Emaxx (rvD.el 12).
+  - posn-at-x-y on the vertical border's column between two windows
+    side by side: posn-point 46 in GNU, 63 in Emaxx (rvD.el 9).
 - **Display strings and the text they cover (round 360 review).**
   - An overlay's after-string at the end of text a `display' string
     replaces: posn-at-point and pos-visible-in-window-p of the position

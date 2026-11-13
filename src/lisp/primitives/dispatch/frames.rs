@@ -267,6 +267,16 @@ pub(super) fn frame_parameter_of(
     Ok(alist_get(frame.param_alist, parameter))
 }
 
+/// frame.h's frame_buffer_predicate: f->buffer_predicate, which
+/// store_frame_param keeps equal to the `buffer-predicate' entry of
+/// param_alist.
+pub(super) fn frame_buffer_predicate(id: FrameRef) -> Value {
+    alist_get(
+        id.borrow().param_alist,
+        Value::Symbol(cached_symbol!("buffer-predicate").symbol()),
+    )
+}
+
 /// `frame_parameter_of' of the parameter KEY names, nil when the frame
 /// cannot report it.
 pub(super) fn frame_parameter_value(interp: &Interpreter, id: FrameRef, key: SymbolKey) -> Value {

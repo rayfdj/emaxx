@@ -6634,9 +6634,14 @@ mod tests {
             after[0] < allocated[0],
             "empty blocks are returned to the allocator"
         );
-        eprintln!(
+        crate::errprintln!(
             "cons blocks before/during/after={}/{}/{}; block bytes={} payload capacity={} metadata and padding={}",
-            before[0], allocated[0], after[0], after[1], after[2], after[3]
+            before[0],
+            allocated[0],
+            after[0],
+            after[1],
+            after[2],
+            after[3]
         );
     }
 
@@ -16339,7 +16344,7 @@ mod tests {
             assert_eq!(comparison != 0, (index & 1023) != 1023);
             result ^= comparison;
         }
-        eprintln!(
+        crate::errprintln!(
             "comparison {:?} result={}",
             started.elapsed(),
             std::hint::black_box(result)
@@ -16357,7 +16362,7 @@ mod tests {
             }
             tail
         });
-        eprintln!(
+        crate::errprintln!(
             "cons {:?} result={}",
             started.elapsed(),
             std::hint::black_box(tail)

@@ -675,8 +675,8 @@ define_dispatch!(
                 let Kind::Integer(n) = lines.kind() else {
                     return Err(wrong_type_argument("fixnump", lines));
                 };
-                // WINDOW lends only its geometry: the motion runs in the
-                // current buffer (Fvertical_motion).
+                // The motion runs in the current buffer, which WINDOW
+                // shows for as long as it takes (Fvertical_motion).
                 let window = live_motion_window(interp, args.get(1).unwrap_or(&Value::Nil))?;
                 let window_id = window_record_id_from_value(interp, &window)
                     .unwrap_or_else(|| interp.selected_window_id());
@@ -2962,6 +2962,63 @@ pub(crate) fn visual_vertical_motion_from(
     goal_col: Option<i64>,
     start_x: Option<i64>,
 ) -> Result<i64, LispError> {
+    // "Set the window's buffer temporarily to the current buffer": the
+    // window shows it, with the buffer's point as the window's, for as
+    // long as the motion takes.
+    let current = interp.current_buffer_id();
+    let shown = interp
+        .find_record(window_id)
+        .and_then(|record| record.slots.get(WINDOW_BUFFER_SLOT))
+        .copied()
+        .unwrap_or(Value::Nil);
+    if crate::lisp::primitives::window_slot_buffer_id(Some(&shown)) == Some(current) {
+        return vertical_motion_in_window(interp, env, window_id, n, goal_col, start_x);
+    }
+    // marker_position (w->pointm), for restore_window_buffer.
+    let old_point = match window_marker(interp, window_id, WINDOW_POINT_SLOT) {
+        Some(marker) => Some(
+            marker
+                .position()
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?,
+        ),
+        None => None,
+    };
+    let object = interp.buffer_value(current).unwrap_or(Value::Nil);
+    interp.wset_buffer(window_id, object);
+    let point = interp.buffer.borrow().point();
+    set_window_marker(interp, window_id, WINDOW_POINT_SLOT, current, point);
+    let result = vertical_motion_in_window(interp, env, window_id, n, goal_col, start_x);
+    // restore_window_buffer, however the motion ended: its
+    // decode_live_window first, then the window's buffer and its point
+    // (set_marker_both, which unchains the marker when that buffer has
+    // been killed).
+    let window = interp.record_value(window_id);
+    if window_buffer_id(interp, &window).is_none() {
+        return Err(wrong_type_argument("window-live-p", window));
+    }
+    interp.wset_buffer(window_id, shown);
+    if let (Some(buffer), Some(point)) = (
+        crate::lisp::primitives::window_slot_buffer_id(Some(&shown)),
+        old_point,
+    ) {
+        if interp.has_buffer_id(buffer) {
+            set_window_marker(interp, window_id, WINDOW_POINT_SLOT, buffer, point);
+        } else if let Some(marker) = window_marker(interp, window_id, WINDOW_POINT_SLOT) {
+            marker.detach();
+        }
+    }
+    result
+}
+
+/// Fvertical_motion once WINDOW_ID shows the current buffer.
+fn vertical_motion_in_window(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    n: i64,
+    goal_col: Option<i64>,
+    start_x: Option<i64>,
+) -> Result<i64, LispError> {
     if interactive_motion(interp, env) {
         // The display iterator's walk, then move_it_in_display_line to
         // the goal X on the screen line it reached (line-move-visual's
@@ -3104,10 +3161,8 @@ pub(crate) fn visual_vertical_motion_from(
             }
         }
     }
-    // Noninteractively, indent.c vmotion from point, with the current
-    // buffer shown in WINDOW meanwhile (Fvertical_motion's
-    // restore_window_buffer leaves nothing else changed); a cons LINES's
-    // goal column has no part in it.
+    // Noninteractively, indent.c vmotion from point; a cons LINES's goal
+    // column has no part in it.
     let _ = (goal_col, start_x);
     let point = interp.buffer.borrow().point();
     let pos = crate::lisp::primitives::indent_motion::vmotion(

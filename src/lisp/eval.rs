@@ -6424,6 +6424,9 @@ impl Interpreter {
             table.rebuild_index();
         }
         clone.allow_garbage_collection();
+        // A copied buffer starts with no windows counted; the copied
+        // windows show the copies.
+        clone.recount_buffer_windows();
 
         drop(symbol_scope);
         clone.select_symbol_owner();
@@ -9120,6 +9123,8 @@ impl Interpreter {
             unreachable!("window records use Value::Record");
         };
         interp.set_minibuffer_window_id(minibuffer_window_id.id);
+        // The two windows show their buffers from the start.
+        interp.recount_buffer_windows();
         // Interpreter::new also constructs several dumped values after the
         // base struct exists (keymaps, tables, and window objects).  Reconcile
         // the completed image through the same registry before exposing it;

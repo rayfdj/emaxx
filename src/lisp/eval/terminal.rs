@@ -1168,6 +1168,10 @@ impl Interpreter {
             p::WindowKind::Minibuffer.value(),
             (width, 1, 0, height - 1),
         );
+        // make_frame's set_window_buffer of each: their buffers are shown
+        // in a window more.
+        self.adjust_window_count(root.id, true);
+        self.adjust_window_count(mini.id, true);
         // make_terminal_frame's F<num>, from ++tty_frame_count.
         self.tty_frame_count += 1;
         let frame = crate::lisp::types::FrameRef::new(
@@ -1260,10 +1264,10 @@ impl Interpreter {
                 .is_some_and(|frame| frame.word() == Value::Frame(id).word())
         });
         for window in windows {
+            self.wset_buffer(window.id, Value::Nil);
             let Some(record) = self.find_record_mut(window) else {
                 continue;
             };
-            record.slots[p::WINDOW_BUFFER_SLOT] = Value::Nil;
             record.slots[p::WINDOW_KIND_SLOT] = p::WindowKind::Deleted.value();
             for slot in [
                 p::WINDOW_PARENT_SLOT,
@@ -1619,8 +1623,8 @@ pub(crate) fn send_string_to_terminal(terminal: TerminalRef, bytes: &[u8]) {
         }
     } else {
         drop(state);
-        let _ = crate::lisp::primitives::batch_stdout::write(bytes)
-            .and_then(|()| crate::lisp::primitives::batch_stdout::flush());
+        crate::lisp::primitives::batch_stdout::write(bytes);
+        crate::lisp::primitives::batch_stdout::flush();
     }
 }
 

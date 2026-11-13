@@ -277,12 +277,13 @@ pub(crate) fn message_to_stderr(
         }
         None => Vec::new(),
     };
-    let mut stderr = std::io::stderr().lock();
+    // errputc and errwrite: sysdep.c's line-buffered error stream, so the
+    // message and its newline are one write.  A write that fails is the
+    // stream's to remember, not the message's to report.
+    use crate::lisp::primitives::batch_stdout::{errputc, errwrite};
     if interp.batch_stdout_need_newline {
         interp.batch_stdout_need_newline = false;
-        stderr
-            .write_all(b"\n")
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+        errputc(b'\n');
     }
     // The line ends after a message, and after none unless the cursor is
     // to stay in the echo area.
@@ -290,16 +291,11 @@ pub(crate) fn message_to_stderr(
         || !interp
             .forwarded_c_value("cursor-in-echo-area", &Env::new())
             .is_some_and(|value| value.is_truthy());
-    stderr
-        .write_all(&bytes)
-        .and_then(|_| {
-            if newline {
-                stderr.write_all(b"\n")
-            } else {
-                Ok(())
-            }
-        })
-        .map_err(|error| LispError::Signal(error.to_string()))
+    errwrite(&bytes);
+    if newline {
+        errputc(b'\n');
+    }
+    Ok(())
 }
 
 /// xdisp.c:message3_nolog of nil (message1_nolog (0)): the echo area
@@ -416,24 +412,23 @@ pub(crate) fn vmessage(
     bytes: Vec<u8>,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    use std::io::Write;
     if interp
         .forwarded_c_value("noninteractive", &Env::new())
         .is_some_and(|value| value.is_truthy())
     {
-        let mut stderr = std::io::stderr().lock();
+        // putc, vfprintf and putc to stderr, then its fflush.
+        use crate::lisp::primitives::batch_stdout::stderr_write;
         if interp.batch_stdout_need_newline {
             interp.batch_stdout_need_newline = false;
-            let _ = stderr.write_all(b"\n");
+            stderr_write(b"\n");
         }
-        let _ = stderr.write_all(&bytes);
+        stderr_write(&bytes);
         if !interp
             .forwarded_c_value("cursor-in-echo-area", &Env::new())
             .is_some_and(|value| value.is_truthy())
         {
-            let _ = stderr.write_all(b"\n");
+            stderr_write(b"\n");
         }
-        let _ = stderr.flush();
         return Ok(());
     }
     let message = crate::lisp::primitives::strings::make_string(bytes)
@@ -861,8 +856,9 @@ pub(crate) fn bitch_at_user(interp: &mut Interpreter, env: &mut Env) -> Result<(
         .forwarded_c_value("noninteractive", env)
         .is_some_and(|value| value.is_truthy())
     {
-        return crate::lisp::primitives::batch_stdout::write(b"\x07")
-            .map_err(|error| LispError::Signal(error.to_string()));
+        // putchar (07).
+        crate::lisp::primitives::batch_stdout::write(b"\x07");
+        return Ok(());
     }
     if interp
         .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
@@ -1495,6 +1491,10 @@ fn set_window_slot_value(
     slot: usize,
     value: Value,
 ) -> Result<Value, LispError> {
+    debug_assert_ne!(
+        slot, WINDOW_BUFFER_SLOT,
+        "a window's contents are set by wset_buffer"
+    );
     let Some(record) = interp.find_record_mut(window_id) else {
         return Err(LispError::TypeError("window".into(), "deleted".into()));
     };
@@ -2990,7 +2990,7 @@ fn set_window_combination(
     set_window_slot_value(interp, id, WINDOW_KIND_SLOT, kind.value())?;
     // wset_combination stores w->contents, the one field a leaf's buffer
     // lives in too: whatever the window showed, it shows no buffer now.
-    set_window_slot_value(interp, id, WINDOW_BUFFER_SLOT, Value::Nil)?;
+    interp.wset_buffer(id, Value::Nil);
     set_window_link(interp, id, WINDOW_FIRST_CHILD_SLOT, child)
 }
 
@@ -2998,7 +2998,6 @@ fn set_window_combination(
 /// and refuses every accessor on a deleted window).
 fn clear_deleted_window(interp: &mut Interpreter, id: u64) -> Result<(), LispError> {
     set_window_combination(interp, id, false, None)?;
-    set_window_slot_value(interp, id, WINDOW_BUFFER_SLOT, Value::Nil)?;
     for slot in [
         WINDOW_PARENT_SLOT,
         WINDOW_PREV_SIBLING_SLOT,
@@ -3231,15 +3230,18 @@ fn make_parent_window(
         unreachable!("window records use Value::Record");
     };
     let parent = parent.id;
+    // make_parent_window's adjust_window_count (p, 1): P's buffer slot,
+    // copied from the window's, holds a buffer until wset_buffer below.
+    interp.adjust_window_count(parent, true);
     replace_window(interp, window, parent, true)?;
     set_window_link(interp, window, WINDOW_NEXT_SIBLING_SLOT, None)?;
     set_window_link(interp, window, WINDOW_PREV_SIBLING_SLOT, None)?;
     set_window_link(interp, window, WINDOW_PARENT_SLOT, Some(parent))?;
+    interp.wset_buffer(parent, Value::Nil);
     for slot in [
         WINDOW_START_SLOT,
         WINDOW_OLD_POINT_SLOT,
         WINDOW_POINT_SLOT,
-        WINDOW_BUFFER_SLOT,
         WINDOW_COMBINATION_LIMIT_SLOT,
         WINDOW_PREV_BUFFERS_SLOT,
         WINDOW_NEXT_BUFFERS_SLOT,
@@ -3429,7 +3431,9 @@ fn unshow_buffer(interp: &mut Interpreter, window: u64) -> Result<(), LispError>
 }
 
 /// window.c:delete_all_child_windows: delete WINDOW, the siblings after
-/// it and all their descendants, children after their later siblings.
+/// it and all their descendants, children after their later siblings.  A
+/// leaf's buffer stays in its combination limit, where a later
+/// Fset_window_configuration that revives the window finds it.
 fn delete_all_child_windows(interp: &mut Interpreter, window: u64) -> Result<(), LispError> {
     if let Some(next) = window_link(interp, window, WINDOW_NEXT_SIBLING_SLOT) {
         delete_all_child_windows(interp, next)?;
@@ -3438,6 +3442,11 @@ fn delete_all_child_windows(interp: &mut Interpreter, window: u64) -> Result<(),
         delete_all_child_windows(interp, child)?;
     } else {
         unshow_buffer(interp, window)?;
+        // wset_combination_limit (w, w->contents).
+        let contents = window_slot_value(interp, window, WINDOW_BUFFER_SLOT);
+        if matches!(contents.kind(), Kind::Buffer(_)) {
+            set_window_slot_value(interp, window, WINDOW_COMBINATION_LIMIT_SLOT, contents)?;
+        }
     }
     clear_deleted_window(interp, window)
 }
@@ -3593,6 +3602,8 @@ fn split_window_tree(
         unreachable!("window records use Value::Record");
     };
     let new_id = new_id.id;
+    // Fsplit_window_internal's set_window_buffer of the new window.
+    interp.adjust_window_count(new_id, true);
     set_window_slot_value(interp, new_id, WINDOW_FRAME_SLOT, Value::Frame(frame))?;
     let (old_cols, old_lines, old_left_col, old_top_line) = window_char_geometry(interp, old_id);
     let orthogonal = if horflag {
@@ -5343,8 +5354,17 @@ define_dispatch!(
                         .lookup_var_key(cached_symbol!("noninteractive"), env)
                         .is_some_and(|value| value.is_truthy())
                 {
-                    use std::io::Write;
-                    let _ = writeln!(std::io::stderr(), "{context}{rendered}");
+                    // print_error_message and Fterpri with
+                    // Qexternal_debugging_output as the stream: printchar
+                    // hands it a character at a time, each its own write
+                    // of the unbuffered stderr.
+                    for character in format!("{context}{rendered}\n").chars() {
+                        super::super::file_io::printchar_to_stderr(
+                            interp,
+                            u32::from(character),
+                            env,
+                        )?;
+                    }
                     return super::call(interp, "kill-emacs", &[Value::Integer(-1)], env);
                 }
                 // clear_message (1, 0), then bitch_at_user (or `ding' with
@@ -5380,8 +5400,7 @@ define_dispatch!(
                         .forwarded_c_value("noninteractive", env)
                         .is_some_and(|value| value.is_truthy())
                     {
-                        crate::lisp::primitives::batch_stdout::write(b"\x07")
-                            .map_err(|error| LispError::Signal(error.to_string()))?;
+                        crate::lisp::primitives::batch_stdout::write(b"\x07");
                     } else {
                         ring_bell(interp, env)?;
                     }
@@ -7619,20 +7638,29 @@ define_dispatch!(
                     _ if string_like(object).is_some() => interp.find_buffer_named(object),
                     _ => None,
                 };
-                // A live buffer shown in a window: window_loop's
-                // REDISPLAY_BUFFER_WINDOWS over the windows showing it.
+                // A live buffer shown in a window: window_loop
+                // (REDISPLAY_BUFFER_WINDOWS, object, false, Qvisible) over
+                // the windows showing it, window_list_1's from the
+                // selected window over the visible frames, a minibuffer
+                // window never among them.
                 let Some(buffer_id) =
                     buffer_id.filter(|buffer_id| interp.buffer_window_count(*buffer_id) > 0)
                 else {
                     return Ok(Value::Nil);
                 };
-                let showing: Vec<u64> = live_ordinary_window_ids(interp)
-                    .into_iter()
-                    .filter(|window_id| {
-                        window_buffer_id(interp, &interp.record_value(*window_id))
-                            == Some(buffer_id)
-                    })
-                    .collect();
+                let visible = Value::Symbol(cached_symbol!("visible").symbol());
+                let selected_frame = interp.selected_frame_id;
+                let start = interp.record_value(selected_frame.borrow().selected_window_id());
+                let frames = window_list_frames(interp, selected_frame, &visible);
+                let showing: Vec<u64> =
+                    window_list_ids(interp, Some(&Value::Nil), Some(&start), &frames)
+                        .into_iter()
+                        .filter(|window_id| {
+                            is_live_ordinary_window(interp, *window_id)
+                                && window_buffer_id(interp, &interp.record_value(*window_id))
+                                    == Some(buffer_id)
+                        })
+                        .collect();
                 for window_id in &showing {
                     mark_window_display_inaccurate(interp, env, *window_id);
                     set_window_flag(interp, *window_id, WINDOW_UPDATE_MODE_LINE_SLOT, true);

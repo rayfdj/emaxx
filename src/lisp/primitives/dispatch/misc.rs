@@ -1547,8 +1547,8 @@ define_dispatch!(
             }
             "flush-standard-output" => {
                 need_args(name, args, 0)?;
-                crate::lisp::primitives::batch_stdout::flush()
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                // fflush (stdout), its result unread.
+                crate::lisp::primitives::batch_stdout::flush();
                 Ok(Value::Nil)
             }
             "lossage-size" => {

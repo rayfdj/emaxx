@@ -416,9 +416,8 @@ fn read_minibuffer_value_from_batch_stdin(
         Kind::StringObject(state) => state.borrow().bytes().to_vec(),
         _ => Vec::new(),
     };
-    crate::lisp::primitives::batch_stdout::write(&prompt_bytes)
-        .and_then(|()| crate::lisp::primitives::batch_stdout::flush())
-        .map_err(|error| LispError::Signal(error.to_string()))?;
+    crate::lisp::primitives::batch_stdout::write(&prompt_bytes);
+    crate::lisp::primitives::batch_stdout::flush();
     let mut line = Vec::new();
     let mut terminated = false;
     let read = loop {
@@ -429,7 +428,7 @@ fn read_minibuffer_value_from_batch_stdin(
             }
             Ok(Some(byte)) => {
                 if let Some(hide) = hide_char {
-                    let _ = crate::lisp::primitives::batch_stdout::write(&[hide]);
+                    crate::lisp::primitives::batch_stdout::write(&[hide]);
                 }
                 line.push(byte);
             }
@@ -438,8 +437,8 @@ fn read_minibuffer_value_from_batch_stdin(
         }
     };
     if hide_char.is_some() {
-        let _ = crate::lisp::primitives::batch_stdout::write(b"\n");
-        let _ = crate::lisp::primitives::batch_stdout::flush();
+        crate::lisp::primitives::batch_stdout::write(b"\n");
+        crate::lisp::primitives::batch_stdout::flush();
         #[cfg(unix)]
         if let Some(termios) = saved_tty {
             // SAFETY: TERMIOS is the state tcgetattr returned.

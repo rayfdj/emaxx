@@ -933,6 +933,7 @@ const KEY_NAMES: &[&str] = &[
     "tty-menu-calls-mouse-position-function",
     "mouse-position-function",
     "hide",
+    "visible",
 ];
 
 struct Symbols {

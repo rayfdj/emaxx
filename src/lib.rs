@@ -87,6 +87,30 @@ pub fn tune_allocator() {
 #[cfg(target_os = "linux")]
 pub fn tune_allocator() {}
 
+/// fprintf (stderr, ...) without its newline's being added: the text as
+/// one write of C's unbuffered stderr.  A write that fails is remembered
+/// for the exit status (sysdep.c's close_output_streams), as ferror
+/// remembers it for GNU; it is no panic.
+#[macro_export]
+macro_rules! errprint {
+    ($($arg:tt)*) => {
+        $crate::lisp::stderr_write(::std::format!($($arg)*).as_bytes())
+    };
+}
+
+/// errprint with a newline, in the same write.
+#[macro_export]
+macro_rules! errprintln {
+    () => {
+        $crate::lisp::stderr_write(b"\n")
+    };
+    ($($arg:tt)*) => {{
+        let mut text = ::std::format!($($arg)*);
+        text.push('\n');
+        $crate::lisp::stderr_write(text.as_bytes())
+    }};
+}
+
 pub mod batch;
 pub(crate) mod buffer;
 pub mod compat;

@@ -155,7 +155,7 @@ impl Interpreter {
             // output is read and no filter runs outside a wait.
             self.record_child_signals();
             if std::env::var("EMAXX_DEBUG_ERT").is_ok() {
-                eprintln!("ERT running: {}", test.name);
+                crate::errprintln!("ERT running: {}", test.name);
             }
             // Timers a test scheduled but never reached firing conditions
             // for must not leak into later tests.

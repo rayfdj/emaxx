@@ -10616,3 +10616,485 @@ fn display_strings_across_newlines_answer_as_gnu_does() {
     assert!(expected.is_some(), "GNU's session wrote nothing");
     assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
 }
+
+#[test]
+fn wide_characters_at_a_truncated_rows_edges_answer_as_gnu_does() {
+    // display_line moves to first_visible_x and produces again the
+    // element that x falls in: a wide character, a glyphless escape or a
+    // `(space :width N)' stretch whole, from the row's first column, a
+    // TAB or an `:align-to' space for the columns left to its end; and
+    // move_it_in_display_line_to stops for a truncated row's edge once
+    // the element just consumed has brought x to last_visible_x or past
+    // it, so pos-visible-in-window-p and posn-at-point of a position
+    // past the edge give the end of a wide character crossing it.
+    // window-start, point, window-end, pos-visible-in-window-p,
+    // posn-at-point and posn-at-x-y over wide characters, stretches and
+    // TABs at a horizontally scrolled row's left edge, in buffer text, an
+    // overlay string and a display string, with line numbers, and over
+    // wide characters crossing the right edge.  hscroll_window_tree
+    // reads w->cursor.x, the cursor's column on the row as drawn: a
+    // column more after a wide character produced again, the last
+    // truncation glyph for a point they hide -- so with `hscroll-margin'
+    // 0 a hidden point leaves the window's hscroll alone, and with 1 it
+    // does when two truncation glyphs cover a wide character.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "wide.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(setq-default auto-hscroll-mode t)
+(defun bs-buf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "bs"))
+  (widen) (erase-buffer) (remove-overlays)
+  (setq truncate-lines t display-line-numbers nil line-prefix nil hscroll-margin 5)
+  (kill-local-variable 'auto-hscroll-mode)
+  (set-window-hscroll nil 0)
+  (dotimes (i 100) (insert (format "line %03d\n" i)))
+  (goto-char 1) (set-window-start nil 1) (sit-for 0) 46)
+(defun bs-ov (pos prop str &optional end)
+  (let ((ov (make-overlay pos (or end pos)))) (overlay-put ov prop str) ov))
+(defun bs-q (tag)
+  (push (list tag (window-hscroll) (window-start) (point) (window-end) (window-end nil t)
+              (pos-visible-in-window-p (point) nil t)
+              (let ((pp (posn-at-point))) (and pp (list (posn-col-row pp) (posn-point pp))))
+              (mapcar (lambda (q) (list q (pos-visible-in-window-p q nil t)
+                                         (let ((pp (posn-at-point q))) (and pp (posn-col-row pp)))))
+                      '(46 47 48 49 50 51 120 124 125 126 127))
+              (mapcar (lambda (x) (let ((pp (posn-at-x-y x 5))) (list x (posn-point pp) (posn-col-row pp))))
+                      '(0 1 2 3 4 78 79))
+              (current-column)
+              (save-excursion (move-to-column 3) (point))
+              (save-excursion (goto-char 46) (list (vertical-motion 1) (point))))
+        bs-res))
+(defmacro wc-st (&rest body) `(let ((p (bs-buf))) (setq-local auto-hscroll-mode nil) ,@body))
+(defconst bs-stages
+  '((wc-st (goto-char 46) (insert "a日本ab") (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert "日本語ab") (set-window-hscroll nil 1) (goto-char 47))
+    (wc-st (goto-char 46) (insert "日本語ab") (set-window-hscroll nil 2) (goto-char 48))
+    (wc-st (goto-char 46) (insert "日本語ab") (set-window-hscroll nil 3) (goto-char 49))
+    (wc-st (goto-char 46) (insert "日本語ab") (set-window-hscroll nil 3) (goto-char 46))
+    (wc-st (bs-ov 46 'before-string "日本") (set-window-hscroll nil 1) (goto-char 47))
+    (wc-st (goto-char 46) (insert "Xbcdef") (put-text-property 46 47 'display "日本") (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert "ab") (bs-ov 48 'after-string "日本語") (set-window-hscroll nil 3) (goto-char 48))
+    (wc-st (goto-char 46) (insert "Xbcdef") (put-text-property 46 47 'display '(space :width 3)) (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert "Xbcdef") (put-text-property 46 47 'display '(space :width 5)) (set-window-hscroll nil 3) (goto-char 46))
+    (wc-st (goto-char 46) (insert "Xbcdef") (put-text-property 46 47 'display '(space :align-to 3)) (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert "日\tcd") (set-window-hscroll nil 3) (goto-char 49))
+    (wc-st (goto-char 46) (insert "a日本ab") (setq display-line-numbers t) (set-window-hscroll nil 2) (goto-char 49))
+    (wc-st (goto-char 46) (insert "日" (make-string 120 ?x)) (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert (make-string 77 ?y) "日日" (make-string 40 ?x)) (set-window-hscroll nil 1) (goto-char 48))
+    (wc-st (goto-char 46) (insert (make-string 79 ?y) "日日zz") (goto-char 47))
+    (wc-st (goto-char 46) (insert (make-string 76 ?y) "\tzz") (goto-char 47))
+    (let ((p (bs-buf))) (goto-char 46) (insert (make-string 79 ?y) "日日zz") (goto-char 127))
+    (let ((p (bs-buf))) (goto-char 46) (insert "日" (make-string 120 ?x)) (set-window-hscroll nil 1) (goto-char 125))
+    (let ((p (bs-buf))) (goto-char 46) (insert "日本語abcdefghij" (make-string 100 ?x)) (set-window-hscroll nil 3) (goto-char 50))
+    (let ((p (bs-buf))) (goto-char 46) (insert "日本語abcdefghij" (make-string 100 ?x)) (set-window-hscroll nil 3) (goto-char 49))
+    (let ((p (bs-buf))) (goto-char 46) (insert "日本語" (make-string 100 ?x)) (set-window-hscroll nil 3) (goto-char 120))
+    (let ((p (bs-buf))) (goto-char 46) (insert "日本語" (make-string 100 ?x)) (set-window-hscroll nil 3) (goto-char 119))
+    (let ((p (bs-buf))) (setq hscroll-margin 0) (goto-char 46) (insert (make-string 60 ?a)) (set-window-hscroll nil 5) (goto-char 48))
+    (let ((p (bs-buf))) (setq hscroll-margin 0) (goto-char 46) (insert "aaaa日" (make-string 50 ?a)) (set-window-hscroll nil 5) (goto-char 48))
+    (let ((p (bs-buf))) (setq hscroll-margin 1) (goto-char 46) (insert "aaaa日" (make-string 50 ?a)) (set-window-hscroll nil 5) (goto-char 48))
+    (let ((p (bs-buf))) (setq hscroll-margin 1) (goto-char 46) (insert (make-string 60 ?a)) (set-window-hscroll nil 5) (goto-char 48))
+    (wc-st (goto-char 46) (insert "日本語a\tb") (set-window-hscroll nil 3) (goto-char 50))
+    (wc-st (goto-char 46) (delete-region 46 (line-end-position)) (insert "日本") (set-window-hscroll nil 3) (goto-char 48))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "wide.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 29));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "wide.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "wide.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn vertical_motion_lends_its_window_the_current_buffer() {
+    // indent.c:Fvertical_motion, when its window shows another buffer
+    // than the current one: "Set the window's buffer temporarily to the
+    // current buffer", and restore_window_buffer afterwards.  Each
+    // wset_buffer's adjust_window_count leaves the window's base line to
+    // be found again, so a mode line that had given up on the line
+    // number ("??": lines too long on average for
+    // `line-number-display-limit-width') shows it again after the
+    // motion, as after `count-screen-lines', which calls it; a motion in
+    // the window's own buffer, and no motion, leave it given up.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "vm363.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defun bs-q (tag)
+  (push (list tag (window-start) (point) (buffer-name (window-buffer)) (window-point)
+              (format-mode-line "%l"))
+        bs-res))
+(defun longbuf ()
+  (delete-other-windows)
+  (switch-to-buffer (get-buffer-create "long"))
+  (erase-buffer)
+  (dotimes (i 200) (insert (format "%03d " i) (make-string 400 ?x) "\n"))
+  (goto-char (point-min)))
+(defun qq () (forward-line 150) (redisplay) (goto-char (point-min)) (redisplay))
+(defvar bs-stages
+  '((progn (longbuf) (qq))
+    (progn (with-temp-buffer nil) (force-mode-line-update))
+    (progn (qq) (with-current-buffer "*scratch*" (vertical-motion 1)) (force-mode-line-update))
+    (progn (qq) (with-current-buffer "*scratch*" (vertical-motion 0)) (force-mode-line-update))
+    (progn (qq) (with-temp-buffer (insert "a\nb\n") (goto-char 1) (vertical-motion 1)) (force-mode-line-update))
+    (progn (qq) (with-temp-buffer (insert "a\nb\n") (goto-char 1)) (force-mode-line-update))
+    (progn (qq) (with-current-buffer "*scratch*" (count-screen-lines)) (force-mode-line-update))
+    (progn (qq) (vertical-motion 0) (force-mode-line-update))
+    (progn (qq) (with-current-buffer "*scratch*" (vertical-motion 1 (selected-window))) (force-mode-line-update))
+    (progn (qq) (with-current-buffer "*scratch*"
+                  (condition-case e (vertical-motion '(a . 1)) (error (push e bs-res))))
+           (force-mode-line-update))
+    (progn (qq) (force-mode-line-update))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (eval stage t))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "vm363.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 11));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "vm363.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "vm363.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+fn windows_of_every_frame_count_for_their_buffers() {
+    // window.c:Fforce_window_update of a buffer answers t when a window
+    // shows it, on any visible frame of the terminal (buffer_window_count,
+    // then window_loop's REDISPLAY_BUFFER_WINDOWS with Qvisible), and
+    // `get-buffer-window-list' counts those windows: through a second and
+    // a third frame, a configuration restored while another frame is
+    // selected, an indirect buffer on another frame and its base killed,
+    // a dead frame's configuration, a minibuffer read and a quit, deleted
+    // frames, a temporary buffer shown and killed and a window state put
+    // back.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "fr363.el",
+        r#"(defvar bs-stage 0)
+(defvar bs-res nil)
+(defvar f1 (selected-frame))
+(defun counts ()
+  (mapcar (lambda (b) (list (buffer-name b) (force-window-update b)
+                            (length (get-buffer-window-list b t t))))
+          (seq-filter (lambda (b) (not (string-prefix-p " *Echo" (buffer-name b))))
+                      (sort (buffer-list)
+                            (lambda (a b) (string< (buffer-name a) (buffer-name b)))))))
+(defun chk ()
+  (set-window-buffer (selected-window) (window-buffer))
+  (dolist (f (frame-list))
+    (with-selected-frame f (set-window-buffer (selected-window) (window-buffer)))))
+(defun bs-q (tag)
+  (push (list tag (condition-case e (progn (chk) (list (length (frame-list)) (counts)))
+                    (error (list 'ERR e))))
+        bs-res))
+(defvar bs-stages
+  '((progn (switch-to-buffer (get-buffer-create "a")) (setq f2 (make-frame)))
+    (progn (select-frame f2) (switch-to-buffer (get-buffer-create "b")) (split-window)
+           (set-window-buffer (next-window) "a"))
+    (progn (setq cfg2 (current-window-configuration f2)) (delete-other-windows))
+    (progn (select-frame f1) (set-window-configuration cfg2))
+    (progn (setq ind (make-indirect-buffer "b" "bi"))
+           (with-selected-frame f2 (set-window-buffer (selected-window) ind)))
+    (progn (kill-buffer "b"))
+    (progn (setq f3 (make-frame))
+           (with-selected-frame f3 (switch-to-buffer (get-buffer-create "c"))
+                                (split-window) (split-window nil nil t)))
+    (progn (setq cfg3 (current-window-configuration f3)) (delete-frame f3))
+    (progn (condition-case e (set-window-configuration cfg3) (error (push e bs-res))))
+    (progn (kill-buffer "c") (kill-buffer "a"))
+    (progn (let ((unread-command-events (listify-key-sequence "abc\r")))
+             (setq rd (read-from-minibuffer "in: "))))
+    (progn (let ((unread-command-events (listify-key-sequence "\C-g")))
+             (condition-case nil (read-from-minibuffer "in2: ") (quit (setq rd 'quit)))))
+    (progn (select-frame f2) (delete-frame f1))
+    (progn (setq f4 (make-frame)) (delete-other-frames f4))
+    (progn (switch-to-buffer "*scratch*")
+           (with-temp-buffer (switch-to-buffer (current-buffer)) (split-window)))
+    (progn (delete-other-windows)
+           (let ((ws (window-state-get nil t)))
+             (split-window) (window-state-put ws (frame-root-window))))))
+(defun bs-f5 () (interactive)
+  (when (> bs-stage 0) (bs-q bs-stage))
+  (let ((stage (nth bs-stage bs-stages)))
+    (setq bs-stage (1+ bs-stage))
+    (when stage (condition-case e (eval stage t) (error (push (list 'STAGE-ERR e) bs-res))))))
+(global-set-key [f5] #'bs-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "fr363.out" command-line-default-directory)
+      (dolist (r (reverse bs-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 16));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "fr363.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "fr363.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn failed_writes_of_the_output_streams_are_the_exit_status() {
+    // No writer of stdout or stderr reads fwrite's, putc's or fflush's
+    // result: `message', `princ', `ding', `flush-standard-output' and
+    // `external-debugging-output' go on as if the bytes were written.
+    // sysdep.c's close_output_streams, which exit runs, reports a failed
+    // stdout ("Write error to standard output" with fclose's errno, 0
+    // when the failure was an earlier write's) and exits with
+    // EXIT_FAILURE for it, for the line-buffered error stream and for
+    // stderr, whatever status `kill-emacs' was given.  A stream closed
+    // at startup is /dev/null opened for reading (init_standard_fds), so
+    // its writes fail too.
+    use std::os::unix::process::CommandExt;
+    #[derive(Clone, Copy, Debug)]
+    enum Sink {
+        Pipe,
+        Full,
+        Closed,
+    }
+    let corpus = Corpus::new();
+    let full_device = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap()
+    };
+    let run = |binary: &Path, form: &str, out: Sink, err: Sink| {
+        let full = full_device;
+        let mut command = Command::new(binary);
+        command
+            .args(["--batch", "-Q", "--eval", form])
+            .current_dir(&corpus.directory)
+            .env("HOME", &corpus.directory)
+            .env("LC_ALL", "C")
+            .stdin(std::process::Stdio::null());
+        if let Sink::Full = out {
+            command.stdout(std::process::Stdio::from(full()));
+        }
+        if let Sink::Full = err {
+            command.stderr(std::process::Stdio::from(full()));
+        }
+        let closed = [
+            (matches!(out, Sink::Closed), libc::STDOUT_FILENO),
+            (matches!(err, Sink::Closed), libc::STDERR_FILENO),
+        ];
+        // SAFETY: close is async-signal-safe and touches the child's own
+        // descriptors only.
+        unsafe {
+            command.pre_exec(move || {
+                for (close, descriptor) in closed {
+                    if close {
+                        libc::close(descriptor);
+                    }
+                }
+                Ok(())
+            });
+        }
+        let Output {
+            status,
+            stdout,
+            stderr,
+        } = command.output().unwrap();
+        let text = |bytes: &[u8]| {
+            String::from_utf8_lossy(bytes).replace(&binary.display().to_string(), "EMACS")
+        };
+        (text(&stdout), text(&stderr), status.code())
+    };
+    for (form, out, err) in [
+        (r#"(princ "x\n")"#, Sink::Full, Sink::Pipe),
+        (
+            r#"(progn (princ "x\n") (kill-emacs 3))"#,
+            Sink::Full,
+            Sink::Pipe,
+        ),
+        (
+            r#"(progn (princ "x\n") (message "r=%S" (condition-case e (flush-standard-output) (error e))) (message "after"))"#,
+            Sink::Full,
+            Sink::Pipe,
+        ),
+        (r#"(princ "x\n")"#, Sink::Closed, Sink::Pipe),
+        (
+            r#"(progn (ding t) (message "r=%S" (condition-case e (ding t) (error e))))"#,
+            Sink::Full,
+            Sink::Pipe,
+        ),
+        (
+            r#"(progn (message "r=%S" (condition-case e (length (princ (make-string 20000 ?a))) (error e))) (message "n"))"#,
+            Sink::Full,
+            Sink::Pipe,
+        ),
+        (
+            r#"(progn (message "hi") (princ "out\n"))"#,
+            Sink::Pipe,
+            Sink::Full,
+        ),
+        (
+            r#"(progn (message "hi") (princ "out\n"))"#,
+            Sink::Pipe,
+            Sink::Closed,
+        ),
+        (
+            r#"(progn (message "hi") (princ "out\n") (kill-emacs 7))"#,
+            Sink::Pipe,
+            Sink::Full,
+        ),
+        (
+            r#"(progn (external-debugging-output ?a) (princ "ok\n"))"#,
+            Sink::Pipe,
+            Sink::Full,
+        ),
+        (
+            r#"(progn (message "hi") (kill-emacs))"#,
+            Sink::Pipe,
+            Sink::Full,
+        ),
+        (
+            r#"(let ((cursor-in-echo-area t)) (message "kept") (princ "x\n"))"#,
+            Sink::Full,
+            Sink::Pipe,
+        ),
+        // Nothing failed: the streams are flushed and the status kept.
+        (
+            r#"(progn (princ "x") (let ((cursor-in-echo-area t)) (message "kept")) (kill-emacs 5))"#,
+            Sink::Pipe,
+            Sink::Pipe,
+        ),
+    ] {
+        assert_eq!(
+            run(emaxx(), form, out, err),
+            run(&oracle(), form, out, err),
+            "Emaxx (left) and GNU (right) differ for {form} with stdout {out:?}, stderr {err:?}"
+        );
+    }
+    // fprintf to stderr is no different: the dumper's report of its
+    // fingerprint and a startup error fail without stopping the editor.
+    let dump = corpus.directory.join("full363.pdmp");
+    let form = format!(
+        r#"(progn (princ "before\n") (dump-emacs-portable "{}") (princ "after\n"))"#,
+        dump.display()
+    );
+    assert_eq!(
+        run(emaxx(), &form, Sink::Pipe, Sink::Full),
+        run(&oracle(), &form, Sink::Pipe, Sink::Full),
+        "Emaxx (left) and GNU (right) differ for a dump with stderr full"
+    );
+    let missing = |binary: &Path| {
+        Command::new(binary)
+            .args(["--batch", "--dump-file", "/nonexistent/emaxx363.pdmp"])
+            .env("LC_ALL", "C")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::from(full_device()))
+            .output()
+            .unwrap()
+            .status
+            .code()
+    };
+    assert_eq!(missing(emaxx()), missing(&oracle()));
+    // `--version', `--help' and `--fingerprint' print with stdio as well;
+    // the report names the binary once init_cmdargs has set initial_argv,
+    // which `--help' and `--fingerprint' exit before, and "emacs" until
+    // then.
+    for args in [["--version"], ["--help"], ["--fingerprint"]] {
+        let report = |binary: &Path| {
+            let Output { status, stderr, .. } = Command::new(binary)
+                .args(args)
+                .env("LC_ALL", "C")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::from(full_device()))
+                .output()
+                .unwrap();
+            (
+                String::from_utf8_lossy(&stderr).replace(&binary.display().to_string(), "EMACS"),
+                status.code(),
+            )
+        };
+        assert_eq!(report(emaxx()), report(&oracle()), "arguments {args:?}");
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn an_interactive_exit_reports_a_failed_stderr() {
+    // sysdep.c's close_output_streams is exit's for every session: after
+    // a write of stderr has failed (here on a full device that
+    // `redirect-debugging-output' put in its place) an interactive
+    // `kill-emacs' with status 0 exits with EXIT_FAILURE; with stderr
+    // sound the status is kill-emacs's.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "ex363.el",
+        r#"(global-set-key [f5]
+  (lambda () (interactive)
+    (redirect-debugging-output "/dev/full")
+    (external-debugging-output ?a)
+    (kill-emacs 0)))
+(global-set-key [f6] (lambda () (interactive) (kill-emacs 0)))
+(global-set-key [f7] (lambda () (interactive) (kill-emacs 7)))"#,
+    );
+    let status = |binary: &Path, key: &[u8]| {
+        corpus.share_eln_cache();
+        let mut command = Command::new(binary);
+        command
+            .args(["-nw", "-Q", "-l", &probe])
+            .current_dir(&corpus.directory)
+            .env("HOME", &corpus.directory)
+            .env("LC_ALL", "C.UTF-8")
+            .env("TERM", "xterm");
+        let mut session = PtySession::spawn(command, 24, 80, false);
+        session.steps(&[(0.5, key)]);
+        session.finish().1
+    };
+    for key in [&b"\x1b[15~"[..], b"\x1b[17~", b"\x1b[18~"] {
+        let expected = status(&oracle(), key);
+        assert!(expected.is_some(), "GNU's session did not exit");
+        assert_eq!(status(emaxx(), key), expected, "key {key:?}");
+    }
+}
+
+#[test]
+fn a_restart_leaves_buffered_output_unwritten() {
+    // emacs.c:Fkill_emacs with RESTART is shut_down_emacs and execvp:
+    // nothing flushes stdio, so what the first process still buffered for
+    // stdout is gone; its messages and the second process's output are
+    // there.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "restart363.el",
+        r#"(let ((marker (expand-file-name "restart363.marker" command-line-default-directory)))
+  (if (file-exists-p marker)
+      (progn (delete-file marker) (princ "second-run\n") (message "second-msg"))
+    (write-region "" nil marker nil 'silent)
+    (princ "first-run-pending\n")
+    (message "first-msg")
+    (let ((cursor-in-echo-area t)) (message "partial-err"))
+    (kill-emacs nil t)))"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}

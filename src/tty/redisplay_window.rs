@@ -281,9 +281,15 @@ impl<'a, 'c> Rows<'a, 'c> {
     /// past its newline: an empty line's row ends past its start, a row
     /// at ZV with no newline does not.
     pub(super) fn ends_past_start(&self, row: Row) -> bool {
-        let start = self.row_start(row);
+        self.end_pos(row) != self.row_start(row)
+    }
+
+    /// MATRIX_ROW_END_CHARPOS of ROW, a row of a truncated line: where
+    /// the row below starts when a string's newline ended it, else past
+    /// the line's newline, or ZV.
+    pub(super) fn end_pos(&self, row: Row) -> usize {
         let laid = self.laid_at(row.line, row.origin);
-        let end = if row.seg + 1 < laid.rows.len() {
+        if row.seg + 1 < laid.rows.len() {
             self.row_start(Row {
                 seg: row.seg + 1,
                 ..row
@@ -301,8 +307,7 @@ impl<'a, 'c> Rows<'a, 'c> {
             } else {
                 line_end
             }
-        };
-        end != start
+        }
     }
 
     /// MATRIX_ROW_START_CHARPOS of ROW.

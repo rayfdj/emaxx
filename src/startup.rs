@@ -186,7 +186,7 @@ fn check_load_path(
                 "Warning: Lisp directory '{}': {reason}\n",
                 primitives::string_text(&directory)?
             );
-            eprint!("{text}");
+            crate::errprint!("{text}");
             if initialized {
                 interpreter.append_message_capture(
                     &text,

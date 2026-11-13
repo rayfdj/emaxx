@@ -187,7 +187,7 @@ fn write_dump(
         ));
     }
     if !dump_messages_suppressed() {
-        eprint!("{}", summary.report());
+        crate::errprint!("{}", summary.report());
     }
     // unblock_input (); return unbind_to (count, Qnil).
     Ok(Value::Nil)
@@ -264,7 +264,7 @@ pub(crate) fn write_image(
 ) -> Result<DumpSummary, DumpError> {
     let header_start = ctx.offset();
     if !dump_messages_suppressed() {
-        eprintln!("Dumping fingerprint: {}", hex(executable_fingerprint()));
+        crate::errprintln!("Dumping fingerprint: {}", hex(executable_fingerprint()));
     }
     ctx.write_header()?;
     let header_end = ctx.offset();
@@ -497,7 +497,7 @@ pub(crate) fn load_pdump_at_startup(
 ) -> Option<PdumperLoadRecord> {
     // term.c:fatal: "emacs: " and the message on stderr, exit 1.
     let fatal = |candidate: &std::path::Path, error: PdumperLoadError| -> ! {
-        eprintln!(
+        crate::errprintln!(
             "emacs: could not load dump file \"{}\": {}",
             candidate.display(),
             error.reason()
