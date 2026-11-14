@@ -18685,9 +18685,15 @@ setup_process_coding_systems's check now refuses). A 13-form
   `harness/` the fuzz generator, the strace and timing probes and the
   scripts that rebuild the oracle and the release binary; `records/` the
   commit message, this file's entry and the findings as drafted, the CI
-  of the round 363 head and the review's list.  Nothing under `wip/` is
-  built or tested by the gate, and none of it is the round's evidence
-  until the round is implemented again and validated.  One thing is the
+  of the round 363 head and the review's list.  `impl.patch` is the
+  round implemented again from that design, as a diff of `src/` and
+  `tests/` against round 363 (`git apply wip/r364/impl.patch`); its
+  author's checks passed, and it is not yet reviewed, nor run through
+  the gate, the integration targets and CI as a round is.
+  `lints-1.100.patch` is the part of it that only answers seven lints of
+  Rust 1.100's clippy in files the round does not otherwise touch.
+  Nothing under `wip/` is built or tested by the gate, and none of it is
+  the round's evidence until the round is validated.  One thing is the
   user's to decide before the round is committed: tools/round_audit.py's
   H2 fires on the changed line that reads
   `print-integers-as-characters', which is print.c's variable and also
