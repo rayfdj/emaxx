@@ -18892,6 +18892,13 @@ setup_process_coding_systems's check now refuses). A 13-form
   clippy and fmt are clean under it.  tools/round_audit.py reports no
   hard finding; it lists the five workflows and Cargo.toml as
   infrastructure changed, which is the round.
+- **Round 366 is unfinished: its draft is packaged in `wip/r366/`, and
+  `src/` is round 365's.**  The round makes every C read and store of a
+  variable the dynamic one (the finding round 364 recorded:
+  primitives read variables through the lexical environment).
+  `wip/r366/impl.patch` is the change as a diff against round 365 and
+  `wip/r366/README.md` says what has and has not been run on it.
+  Nothing under `wip/` is built or tested by the gate.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
