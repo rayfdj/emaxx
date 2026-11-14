@@ -18863,6 +18863,35 @@ setup_process_coding_systems's check now refuses). A 13-form
   removed with this commit and stays in commit cbb9c15f; a container was
   lost with the round's first implementation uncommitted, and what is
   unfinished is pushed as such a draft since.
+- **Round 365: Rust 1.100.0.**  CI and the local builds moved to Rust
+  1.100.0, the current stable release (CI pinned 1.99.1; the five
+  workflows that install a toolchain name it, and their caches are keyed
+  by it).  Its Clippy asked for seven changes in code no round was
+  touching: index loops become iterators in tty.rs (three), menu.rs's
+  tty_menu_calc_size, coding/units.rs's flush and accessors_random.rs's
+  seeding (needless_range_loop), and eval/threads.rs returns a negated
+  condition where it returned two literals (needless_bool); each is the
+  same loop over the same elements.  Its Cargo reports dependencies no
+  target uses, and three were none's: glob, unicode-normalization and
+  unicode-segmentation leave Cargo.toml, and unicode-normalization,
+  unicode-segmentation, tinyvec and tinyvec_macros the lock (glob stays
+  there for a dependency that uses it).  The generated native-subr table
+  is byte for byte the same under its rustc and rustfmt.  The last
+  toolchain move compiled three compares into calls and showed in the
+  timings, so the loops were counted again: by
+  tools/perf/callgrind-diff.sh the byte-code call loop takes 380
+  instructions an iteration under both toolchains (GNU 330), the `get'
+  loop 171 where 1.99.1 gave 177 (GNU 249), the interpreted loop 3,152
+  against 3,151 with dynamic binding (GNU 3,234) and 4,351 under both
+  with lexical (GNU 5,021); the 1.99.1 figures are round 364's build,
+  which differs in source by the seven loops above alone.  The locked
+  suite was not run again for this round.  The grouped gate passed its
+  3,529 library tests and the integration targets (cli, cli_parity,
+  ert_runner, native_comp_identity, native_thread_continuations,
+  package_lifecycle, runtime_ownership) passed on the 1.100.0 build, and
+  clippy and fmt are clean under it.  tools/round_audit.py reports no
+  hard finding; it lists the five workflows and Cargo.toml as
+  infrastructure changed, which is the round.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -22017,6 +22046,18 @@ ert-tests as a whole 26,307 ms against 27,211.
   tramp-tests (22.2 against 18.8), eglot-tests (34.9 against 32.6) and
   semantic-utest-ia (4.11 against 2.61).  The Rust gate (run 43402154955)
   passed.
+
+**On `3e87fb0`** (round 364): the frozen run (run 43570789840) matched
+  all 7,928 outcomes.  Setup 78.6 s against 64.1 s (1.227), test bodies
+  296.9 s against 265.1 s (1.120), in all 1.141, on a slow runner (GNU's
+  suite took 329 s).  The widest body gaps are ert-tests (43.3 s against
+  39.4 s), tramp-tests (21.6 against 18.7), comp-tests (16.9 against
+  14.3), eglot-tests (34.1 against 32.5), semantic-utest-ia (4.00
+  against 2.49), mule-tests (3.27 against 1.99) and process-tests (3.09
+  against 1.91); print-tests, whose printer the round rewrote, takes
+  0.16 s against 0.07 s in the checked build, as before it (0.16 against
+  0.08), and ert-tests 43.3 s where round 363's run took 46.8 against
+  38.7.  The Rust gate (run 43570787490) passed.
 
 **Findings recorded, not fixed:**
 - **`noninteractive' is two things in GNU and one in Emaxx (round 364's

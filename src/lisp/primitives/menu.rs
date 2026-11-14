@@ -1464,8 +1464,8 @@ impl TtyMenu {
     pub(crate) fn calc_size(&self) -> (usize, usize) {
         let mut maxsubwidth = self.width;
         let mut maxheight = self.count();
-        for i in 0..self.count() {
-            if let Some(sub) = &self.submenu[i] {
+        for (i, sub) in self.submenu.iter().enumerate().take(self.count()) {
+            if let Some(sub) = sub {
                 let (w2, h2) = sub.calc_size();
                 maxsubwidth = maxsubwidth.max(w2);
                 maxheight = maxheight.max(i + h2);

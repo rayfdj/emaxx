@@ -291,8 +291,8 @@ impl PaintRow {
                 self.text[start - 1] = ' ';
                 self.marks.retain(|(cell, _)| *cell != start - 1);
             }
-            for cell in start..col {
-                self.text[cell] = ' ';
+            for cell in self.text.iter_mut().take(col).skip(start) {
+                *cell = ' ';
             }
         }
         let mut after = col + 1;
@@ -1192,8 +1192,8 @@ fn wrap_echo_paint(long: &PaintRow, cols: usize, max_rows: usize) -> Vec<PaintRo
             .count();
         let wraps = c != PADDING_GLYPH && col < usable && col + width > usable;
         if col == usable || wraps {
-            for cell in col..cols {
-                row.text[cell] = '\\';
+            for cell in row.text.iter_mut().take(cols).skip(col) {
+                *cell = '\\';
             }
             rows.push(std::mem::replace(&mut row, PaintRow::blank(cols)));
             col = 0;
@@ -10787,9 +10787,9 @@ fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Resul
             .iter()
             .skip_while(|(cell, _)| *cell < at)
             .peekable();
-        for cell in at..run_end {
-            if rendered.text[cell] != PADDING_GLYPH {
-                text.push(rendered.text[cell]);
+        for (cell, &glyph) in rendered.text.iter().enumerate().take(run_end).skip(at) {
+            if glyph != PADDING_GLYPH {
+                text.push(glyph);
             }
             while let Some((_, mark)) = marks.next_if(|(mark_cell, _)| *mark_cell == cell) {
                 text.push(*mark);

@@ -3041,10 +3041,7 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-        if process.output_to_null {
-            return Ok(false);
-        }
-        Ok(true)
+        Ok(!process.output_to_null)
     }
 
     /// One emacs_write_sig of send_process's loop on p->outfd: the bytes

@@ -218,8 +218,7 @@ impl Units for CharUnits {
 
     fn flush(&self, from: usize, out: &mut DecodedText) {
         let mut bytes = Vec::new();
-        for index in from..self.0.len() {
-            let unit = self.0[index];
+        for &unit in self.0.iter().skip(from) {
             if unit >= 0 {
                 out.push_byte(unit as u8);
             } else {
