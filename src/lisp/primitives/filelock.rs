@@ -46,9 +46,9 @@ fn errno() -> i32 {
 }
 
 /// lisp.h's will_dump_p: this is the `--temacs' process that dumps.
-fn will_dump_p(interp: &Interpreter, env: &Env) -> bool {
+fn will_dump_p(interp: &Interpreter) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("dump-mode"), env)
+        .symbol_value_key(cached_symbol!("dump-mode"))
         .and_then(|mode| string_like(&mode).map(|mode| mode.text))
         .is_some_and(|mode| mode == "pdump" || mode == "pbootstrap")
 }
@@ -56,8 +56,8 @@ fn will_dump_p(interp: &Interpreter, env: &Env) -> bool {
 /// filelock.c:get_boot_sec: the time of the last system boot, or 0 when
 /// that is not available.  gnulib's get_boot_time keeps the answer, which
 /// a process that will dump does not ask for.
-fn get_boot_sec(interp: &Interpreter, env: &Env) -> i64 {
-    if will_dump_p(interp, env) {
+fn get_boot_sec(interp: &Interpreter) -> i64 {
+    if will_dump_p(interp) {
         return 0;
     }
     static BOOT_TIME: OnceLock<i64> = OnceLock::new();
@@ -340,7 +340,7 @@ fn lock_file_1(
     lfname: &CString,
     force: bool,
 ) -> Result<Result<(), i32>, LispError> {
-    let boot = get_boot_sec(interp, env);
+    let boot = get_boot_sec(interp);
     let user = call(interp, "user-login-name", &[], env)?;
     let mut info = match user.kind() {
         Kind::StringObject(state) => state.borrow().bytes().to_vec(),
@@ -531,7 +531,7 @@ fn current_lock_owner(
         // SAFETY: signal 0 only checks that the process exists.
         pid > 0 && (unsafe { libc::kill(pid, 0) } >= 0 || errno() == libc::EPERM)
     });
-    if alive && (boot_time == 0 || within_one_second(boot_time, get_boot_sec(interp, env))) {
+    if alive && (boot_time == 0 || within_one_second(boot_time, get_boot_sec(interp))) {
         return Ok(LockOwner::Another(LockInfo {
             user,
             at,
@@ -582,7 +582,7 @@ fn make_lock_file_name(
         return Ok(None);
     }
     // ENCODE_FILE, which refuses a NUL.
-    let name = encode_file_name(interp, env, &string_text(&name)?)?;
+    let name = encode_file_name(interp, &string_text(&name)?)?;
     Ok(Some(
         CString::new(name).expect("an encoded file name holds no NUL"),
     ))
@@ -596,12 +596,12 @@ fn make_lock_file_name(
 /// without it (nil).
 fn lock_file(interp: &mut Interpreter, env: &mut Env, file: Value) -> Result<(), LispError> {
     // No locking while dumping.
-    if will_dump_p(interp, env) {
+    if will_dump_p(interp) {
         return Ok(());
     }
     let mut lfname = None;
     if interp
-        .lookup_var_key(cached_symbol!("create-lockfiles"), env)
+        .symbol_value_key(cached_symbol!("create-lockfiles"))
         .is_some_and(|value| value.is_truthy())
     {
         lfname = make_lock_file_name(interp, env, file)?;

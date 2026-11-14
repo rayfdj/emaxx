@@ -360,10 +360,9 @@ fn setting_predicate(
     interp: &Interpreter,
     language: &str,
     thing: &str,
-    env: &Env,
 ) -> Result<Option<Value>, LispError> {
     let settings = interp
-        .lookup_var_key(cached_symbol!("treesit-thing-settings"), env)
+        .symbol_value_key(cached_symbol!("treesit-thing-settings"))
         .unwrap_or(Value::Nil);
     for language_entry in settings.to_vec()? {
         let values = language_entry.to_vec()?;
@@ -408,7 +407,7 @@ fn validate_predicate(
         return Ok(true);
     }
     if let Ok(thing) = predicate.as_symbol() {
-        let Some(definition) = setting_predicate(interp, language, thing, env)? else {
+        let Some(definition) = setting_predicate(interp, language, thing)? else {
             return Ok(false);
         };
         return validate_predicate(interp, &definition, language, env, depth + 1);
@@ -496,7 +495,7 @@ fn node_matches(
             .map(|value| value.is_truthy());
     }
     if let Ok(thing) = predicate.as_symbol() {
-        let definition = setting_predicate(interp, language, thing, env)?
+        let definition = setting_predicate(interp, language, thing)?
             .expect("validated named predicate remains defined");
         return node_matches(interp, source, tree, index, &definition, language, env);
     }

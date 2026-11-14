@@ -1495,13 +1495,12 @@ fn get_buffer_window_only_reports_selected_buffer() {
 fn find_operation_coding_system_accepts_file_buffer_cons() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("file-coding-system-alist"),
         Value::list([Value::cons(
             Value::String("\\.txt\\'".into()),
             Value::Symbol("utf-8-unix".into()),
         )]),
-        &mut env,
     );
 
     let file_arg = Value::cons(
@@ -1594,10 +1593,8 @@ fn decode_eol_preserves_embedded_cr_in_unix_text() {
     // decode_eol: a CR among LFs makes no dos or mac text, so the eol is
     // unix and the CR stays.
     let interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let env = crate::lisp::types::Env::new();
     let outcome = crate::lisp::primitives::coding::decode_coding_object(
         &interp,
-        &env,
         crate::lisp::primitives::coding::DecodeSource::Bytes(b"left\rmiddle\nnext\n"),
         "undecided",
         Some(true),

@@ -2441,45 +2441,69 @@ fn improper_environment(environment: &Value, circular: bool) -> LispError {
 /// `symbols-with-pos-enabled' is set) is declared special in the lexical
 /// environment.
 #[inline]
-pub(crate) fn environment_declares_special(environment: &Value, symbol: &SymbolName) -> bool {
+pub(crate) fn environment_declares_special(
+    environment: &Value,
+    symbol: &SymbolName,
+) -> Result<bool, LispError> {
     environment_declares_special_with(environment, symbol, symbols::symbols_with_pos_enabled())
 }
 
 /// `environment_declares_special' with `symbols-with-pos-enabled' as
-/// WITH_POS, read once by the caller: no Lisp runs in the walk.
+/// WITH_POS, read once by the caller: no Lisp runs in the walk.  An
+/// improper environment signals `listp' and a circular one
+/// `circular-list', as Fmemq's FOR_EACH_TAIL and CHECK_LIST_END do.
 #[inline(always)]
 pub(crate) fn environment_declares_special_with(
     environment: &Value,
     symbol: &SymbolName,
     with_pos: bool,
-) -> bool {
+) -> Result<bool, LispError> {
     let target = symbol.identity_ptr() | TAG_SYMBOL;
     if with_pos {
-        return environment_declares_special_with_pos(*environment, target);
+        return memq_environment(environment, |element| {
+            element.word() == target
+                || (element.is_vectorlike() && symbol_with_pos_is(element, target))
+        });
     }
-    let mut tail = *environment;
-    while let Some(cell) = tail.cons_ref() {
-        if cell.car.get().word() == target {
-            return true;
-        }
-        tail = cell.cdr.get();
-    }
-    false
+    memq_environment(environment, |element| element.word() == target)
 }
 
-/// `environment_declares_special' while `symbols-with-pos-enabled' is set.
-#[cold]
-#[inline(never)]
-fn environment_declares_special_with_pos(environment: Value, target: usize) -> bool {
-    let mut tail = environment;
-    while let Some(cell) = tail.cons_ref() {
-        let car = cell.car.get();
-        if car.word() == target || (car.is_vectorlike() && symbol_with_pos_is(car, target)) {
-            return true;
+/// fns.c:Fmemq over the lexical environment: whether an element satisfies
+/// MATCHES.
+#[inline]
+fn memq_environment(
+    environment: &Value,
+    matches: impl Fn(Value) -> bool,
+) -> Result<bool, LispError> {
+    let mut tail = match environment.cons_ref() {
+        Some(cell) => cell,
+        None if environment.is_nil() => return Ok(false),
+        None => return Err(improper_environment(environment, false)),
+    };
+    // FOR_EACH_TAIL's cycle check (Brent), as assq_environment's.
+    let mut tortoise = tail.as_ptr();
+    let mut steps = 0usize;
+    let mut lap = 2usize;
+    loop {
+        if matches(tail.car.get()) {
+            return Ok(true);
         }
-        tail = cell.cdr.get();
+        let rest = tail.cdr.get();
+        let next = match rest.cons_ref() {
+            Some(cell) => cell,
+            None if rest.is_nil() => return Ok(false),
+            None => return Err(improper_environment(environment, false)),
+        };
+        if next.as_ptr() == tortoise {
+            return Err(improper_environment(environment, true));
+        }
+        steps += 1;
+        if steps == lap {
+            tortoise = next.as_ptr();
+            lap <<= 1;
+        }
+        tail = next;
     }
-    false
 }
 
 pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
@@ -4019,10 +4043,10 @@ mod tests {
         assert!(
             matches!(tail.kind(), Kind::Cons(cell) if matches!(outer.environment().kind(), Kind::Cons(o) if SharedCons::ptr_eq(&cell, &o)))
         );
-        assert!(!environment_declares_special(
-            frame.environment(),
-            &SymbolName::intern_str("cell")
-        ));
+        assert!(
+            !environment_declares_special(frame.environment(), &SymbolName::intern_str("cell"))
+                .expect("proper environment")
+        );
     }
 
     #[test]

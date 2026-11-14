@@ -341,11 +341,7 @@ impl PrintOutput {
         self.text_parts().0
     }
 
-    pub(crate) fn into_value(
-        self,
-        interp: &mut Interpreter,
-        env: &Env,
-    ) -> Result<Value, LispError> {
+    pub(crate) fn into_value(self, interp: &mut Interpreter) -> Result<Value, LispError> {
         // Every ASCII byte is a character of its own.
         let characters = if self.bytes.is_ascii() {
             self.bytes.len()
@@ -360,7 +356,7 @@ impl PrintOutput {
         };
         crate::lisp::types::StringObjectRef::from_storage(bytes, characters, multibyte)
             .map(Value::StringObject)
-            .map_err(|error| string_storage_error(interp, env, error))
+            .map_err(|error| string_storage_error(interp, error))
     }
 
     /// print.c:print_unwind onto print_buffer holding this text: SAVED's

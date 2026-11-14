@@ -1592,7 +1592,7 @@ impl Interpreter {
     /// p->update_tick = p->tick again, for the changes those made.
     pub(crate) fn status_notify_message(&mut self, record_id: u64) -> Option<String> {
         let remove = self
-            .lookup_var_key(cached_symbol!("delete-exited-processes"), &Env::new())
+            .symbol_value_key(cached_symbol!("delete-exited-processes"))
             .is_none_or(|value| value.is_truthy());
         let process = self.find_process_state_mut(record_id)?;
         // "Get the text to use for the message."
@@ -1869,7 +1869,7 @@ impl Interpreter {
     /// read_process_output_max, INT_MAX).
     fn process_readmax(&self) -> usize {
         let max = self
-            .forwarded_c_value("read-process-output-max", &Env::new())
+            .forwarded_c_value("read-process-output-max")
             .and_then(|value| value.integer_value())
             .unwrap_or(65_536);
         max.clamp(1, i64::from(i32::MAX)) as usize
@@ -4636,11 +4636,7 @@ impl Interpreter {
                         .position(|byte| *byte == 0)
                         .unwrap_or(bytes.len());
                     // inotify.c inotifyevent_to_event: the name DECODE_FILE'd.
-                    Some(primitives::decode_file_name(
-                        self,
-                        &Env::new(),
-                        &bytes[..end],
-                    )?)
+                    Some(primitives::decode_file_name(self, &bytes[..end])?)
                 };
 
                 let mut recipients = self
@@ -4843,7 +4839,7 @@ impl Interpreter {
                     // `timer-event-handler' demotes timer errors to a message
                     // unless `debug-on-error' asks for the debugger.
                     if self
-                        .lookup_var_key(cached_symbol!("debug-on-error"), env)
+                        .symbol_value_key(cached_symbol!("debug-on-error"))
                         .is_some_and(|value| value.is_truthy())
                     {
                         self.restore_unfired_timer_batch(pending);
@@ -5294,7 +5290,7 @@ impl Interpreter {
     ) -> Result<(), LispError> {
         if self.waiting_for_user_input() {
             // read_char's CONSP (Vunread_command_events).
-            if !primitives::unread_command_events_pending(self, env) {
+            if !primitives::unread_command_events_pending(self) {
                 let _ = primitives::run_pending_user_signal_events(self, env)?;
             }
             let _ = self.service_file_notifications(env)?;

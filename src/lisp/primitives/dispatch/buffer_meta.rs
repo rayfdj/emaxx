@@ -535,10 +535,10 @@ define_dispatch!(
                 }
                 // A buffer visiting no file renames its auto-save file.
                 let visits_file = interp
-                    .lookup_var_key(cached_symbol!("buffer-file-name"), env)
+                    .symbol_value_key(cached_symbol!("buffer-file-name"))
                     .is_some_and(|value| value.is_truthy());
                 let auto_saves = interp
-                    .lookup_var_key(cached_symbol!("buffer-auto-save-file-name"), env)
+                    .symbol_value_key(cached_symbol!("buffer-auto-save-file-name"))
                     .is_some_and(|value| value.is_truthy());
                 if !visits_file && auto_saves {
                     crate::lisp::primitives::hooks_overlays::call_named_function(
@@ -1492,7 +1492,7 @@ define_dispatch!(
                 let non_nil = name == "read-non-nil-coding-system";
                 need_arg_range(name, args, 1, if non_nil { 1 } else { 2 })?;
                 let collection = interp
-                    .lookup_var_key(cached_symbol!("coding-system-alist"), env)
+                    .symbol_value_key(cached_symbol!("coding-system-alist"))
                     .unwrap_or(Value::Nil);
                 // coding.c: a symbol default is its name; read-coding-system
                 // binds `completion-ignore-case' to t around the reading.
@@ -1522,13 +1522,17 @@ define_dispatch!(
                     let result = if non_nil {
                         completing_read(interp, &completion_args, env)
                     } else {
-                        Interpreter::push_bindings(
-                            env,
-                            vec![("completion-ignore-case".into(), Value::T)],
-                        );
+                        // Fread_coding_system: specbind
+                        // (Qcompletion_ignore_case, Qt) around
+                        // Fcompleting_read, undone by unbind_to.
+                        let count = interp.specpdl_index();
+                        interp.specbind_symbol(&"completion-ignore-case".into(), Value::T, env)?;
                         let result = completing_read(interp, &completion_args, env);
-                        env.pop();
-                        result
+                        let unbound = interp.unbind_to(count, env);
+                        match (result, unbound) {
+                            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+                            (Ok(value), Ok(())) => Ok(value),
+                        }
                     }?;
                     let entered = string_text(&result)?;
                     if entered.is_empty() {
@@ -1611,13 +1615,13 @@ define_dispatch!(
             }
             "detect-coding-string" => {
                 need_args(name, args, 1)?;
-                detect_coding_string_value(interp, &args[0], args.get(1), env)
+                detect_coding_string_value(interp, &args[0], args.get(1))
             }
             "detect-coding-region" => {
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                detect_coding_region_value(interp, &args[0], &args[1], args.get(2), env)
+                detect_coding_region_value(interp, &args[0], &args[1], args.get(2))
             }
             "find-coding-systems-region-internal" => {
                 if args.len() < 2 || args.len() > 3 {
@@ -1818,7 +1822,7 @@ define_dispatch!(
                         _ => coding.symbol_cell().expect("a coding system is a symbol"),
                     });
                 }
-                interp.set_coding_system_categories_priority(&codings, env)?;
+                interp.set_coding_system_categories_priority(&codings)?;
                 Ok(Value::Nil)
             }
             "define-coding-system-internal" => {

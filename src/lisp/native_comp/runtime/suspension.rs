@@ -310,7 +310,7 @@ pub(crate) fn invoke_suspension_probe(interpreter: &mut Interpreter) -> Result<V
     let mut state = std::mem::take(&mut interpreter.native_compiler);
     let key = Value::list([Value::Integer(73)]);
     let table = interpreter
-        .lookup_var("native-suspension-weak-table", &Env::new())
+        .symbol_value("native-suspension-weak-table")
         .expect("test table");
     crate::lisp::primitives::call(
         interpreter,

@@ -64,15 +64,15 @@ impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
     }
 
     fn load_file_name(&mut self) -> Value {
-        self.interp.read_load_file_name(self.env)
+        self.interp.read_load_file_name()
     }
 
     fn force_doc_strings(&mut self) -> bool {
-        self.interp.read_force_doc_strings(self.env)
+        self.interp.read_force_doc_strings()
     }
 
     fn doc_string(&mut self, reference: Value) -> Result<Value, LispError> {
-        crate::lisp::primitives::unibyte_doc_string(self.interp, &reference, self.env)
+        crate::lisp::primitives::unibyte_doc_string(self.interp, &reference)
     }
 
     fn char_from_name(&mut self, name: &str) -> Result<Value, LispError> {
@@ -80,7 +80,7 @@ impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
     }
 
     fn read_circle(&mut self) -> bool {
-        self.interp.read_circle(self.env)
+        self.interp.read_circle()
     }
 
     fn unescaped_character_literal(&mut self, character: u8) -> Result<(), LispError> {
@@ -109,20 +109,20 @@ impl Interpreter {
     }
 
     /// Vload_file_name as the reader reads `#$'.
-    pub(crate) fn read_load_file_name(&self, env: &Env) -> Value {
-        self.lookup_var_key(cached_symbol!("load-file-name"), env)
+    pub(crate) fn read_load_file_name(&self) -> Value {
+        self.symbol_value_key(cached_symbol!("load-file-name"))
             .unwrap_or(Value::Nil)
     }
 
     /// Vread_circle as the reader tests it.
-    pub(crate) fn read_circle(&self, env: &Env) -> bool {
-        self.lookup_var_key(cached_symbol!("read-circle"), env)
+    pub(crate) fn read_circle(&self) -> bool {
+        self.symbol_value_key(cached_symbol!("read-circle"))
             .is_some_and(|value| value.is_truthy())
     }
 
     /// load_force_doc_strings as the reader tests it.
-    pub(crate) fn read_force_doc_strings(&self, env: &Env) -> bool {
-        self.lookup_var_key(cached_symbol!("load-force-doc-strings"), env)
+    pub(crate) fn read_force_doc_strings(&self) -> bool {
+        self.symbol_value_key(cached_symbol!("load-force-doc-strings"))
             .is_some_and(|value| value.is_truthy())
     }
 
@@ -401,7 +401,7 @@ impl Interpreter {
         // No cycle check here: data.c:defalias leaves it to Ffset, which
         // a `defalias-fset-function' (advice's) takes the store from.
         if self
-            .lookup_var_key(cached_symbol!("purify-flag"), env)
+            .symbol_value_key(cached_symbol!("purify-flag"))
             .is_some_and(|value| value.is_truthy())
             && !crate::lisp::primitives::is_keymap_value(self, &function)
         {
@@ -414,7 +414,7 @@ impl Interpreter {
             function.cons_values().map(|(head, _)| head.kind()),
             Some(Kind::Symbol(head)) if head.is_named("autoload")
         );
-        if !autoload || !self.will_dump(env) {
+        if !autoload || !self.will_dump() {
             self.record_symbol_definition_in_load_history("defun", &name);
         }
         if let Some(old_definition) = old_definition {
@@ -426,7 +426,7 @@ impl Interpreter {
             // loadhist uses `(defalias NAME nil)' while unloading; leaving
             // a literal nil binding here would hide any dumped autoload and
             // turn the next call into `(invalid-function nil)'.
-            if !function.is_nil() || !self.defer_unloaded_defsubst(&name, env) {
+            if !function.is_nil() || !self.defer_unloaded_defsubst(&name) {
                 // Ffset: `NILP (symbol) && !NILP (definition)' signals.
                 if args[0].is_nil() && !function.is_nil() {
                     return Err(LispError::SignalValue(Value::list([
@@ -512,15 +512,25 @@ impl Interpreter {
         // macroexp--dynvars value.  Preserve live public closure environments
         // when present; typed frames carry the same declarations otherwise.
         let mut dynvars = self
-            .lookup_var_key(cached_symbol!("macroexp--dynvars"), env)
+            .symbol_value_key(cached_symbol!("macroexp--dynvars"))
             .unwrap_or(Value::Nil);
         let mut cursor = crate::lisp::types::current_environment_value(env);
+        // eval_sub's loop has no cycle check and no QUIT: over a
+        // circular environment it never ends, in GNU until a signal's
+        // handler ends the session (terminate_due_to_signal runs from the
+        // handler).  A fatal signal is looked for here every few thousand
+        // entries, more than any environment that ends has.
+        let mut steps = 0usize;
         while let Kind::Cons(list_cell) = cursor.kind() {
             let entry = list_cell.car.get();
             if let Kind::Symbol(_) | Kind::T | Kind::Nil = entry.kind() {
                 dynvars = Value::cons(entry, dynvars);
             }
             cursor = list_cell.cdr.get();
+            steps = steps.wrapping_add(1);
+            if steps & 0xfff == 0 && crate::lisp::primitives::fatal_signal_pending() {
+                crate::lisp::primitives::run_pending_fatal_signal(self, env)?;
+            }
         }
         if let Err(error) = cached_symbol!("macroexp--dynvars")
             .with(|symbol| self.specbind_symbol(symbol, dynvars, env))

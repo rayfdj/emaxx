@@ -1,8 +1,8 @@
 use super::*;
 use crate::lisp::types::Kind;
 
-fn purify_table(interp: &Interpreter, env: &Env) -> Option<crate::lisp::types::HashTableRef> {
-    let Kind::HashTable(id) = (interp.lookup_var_key(cached_symbol!("purify-flag"), env)?).kind()
+fn purify_table(interp: &Interpreter) -> Option<crate::lisp::types::HashTableRef> {
+    let Kind::HashTable(id) = (interp.symbol_value_key(cached_symbol!("purify-flag"))?).kind()
     else {
         return None;
     };
@@ -14,14 +14,14 @@ fn hash_cons_lookup(
     value: &Value,
     env: &Env,
 ) -> Result<Option<Value>, LispError> {
-    match purify_table(interp, env) {
+    match purify_table(interp) {
         Some(id) => Ok(interp.equal_hash_lookup(id, value, env)?.flatten()),
         None => Ok(None),
     }
 }
 
 fn hash_cons_insert(interp: &mut Interpreter, value: Value, env: &Env) -> Result<Value, LispError> {
-    if let Some(id) = purify_table(interp, env) {
+    if let Some(id) = purify_table(interp) {
         interp.equal_hash_put(id, value, value, env)?;
     }
     Ok(value)
@@ -255,7 +255,7 @@ pub(crate) fn purecopy_value(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let purify = interp
-        .lookup_var_key(cached_symbol!("purify-flag"), env)
+        .symbol_value_key(cached_symbol!("purify-flag"))
         .unwrap_or(Value::Nil);
     if purify.is_nil() {
         return Ok(*value);

@@ -107,7 +107,6 @@ pub(crate) fn hash_table_test_descriptor(
 /// too large" when its index would be.
 pub(crate) fn hash_table_from_test(
     interp: &mut Interpreter,
-    env: &Env,
     descriptor: &'static crate::lisp::alloc::vectors::hash_tables::HashTableTest,
     capacity: usize,
     weak: u8,
@@ -121,7 +120,7 @@ pub(crate) fn hash_table_from_test(
     )
     .map(Value::HashTable)
     .map_err(|failure| match failure {
-        HashTableFailure::Allocation(failed) => allocation_error(interp, env, failed),
+        HashTableFailure::Allocation(failed) => allocation_error(interp, failed),
         HashTableFailure::TooLarge => LispError::Signal("Hash table too large".into()),
     })
 }
@@ -136,7 +135,7 @@ pub(crate) fn make_hash_table_value(
 ) -> Result<Value, LispError> {
     let descriptor = hash_table_test_descriptor(interp, test, env)?;
     let weak = hash_table_weakness(interp, weakness, env)?;
-    hash_table_from_test(interp, env, descriptor, capacity, weak, purecopy)
+    hash_table_from_test(interp, descriptor, capacity, weak, purecopy)
 }
 
 pub(crate) fn call_hash_table_test_function(
@@ -1126,7 +1125,7 @@ fn insert_text_and_signal(
     }
     let point = interp.buffer.borrow().point();
     // insdel.c inserts at point as the before-change hooks left it.
-    let inserted = modify_current_buffer(interp, point, point, false, env, |interp, _, env| {
+    let inserted = modify_current_buffer(interp, point, point, false, env, |interp, _, _env| {
         let start = interp.buffer.borrow().point();
         // insdel.c:copy_text: a unibyte buffer takes each character's byte.
         let unibyte_copy = if interp.buffer.borrow().is_multibyte() {
@@ -1183,7 +1182,7 @@ fn insert_text_and_signal(
         // failed xrealloc of enlarge_buffer_text reaches memory_full.
         let reserved = interp.buffer.borrow_mut().try_reserve_insertion(text.len());
         if let Err(nbytes) = reserved {
-            return Err(memory_full(interp, env, nbytes));
+            return Err(memory_full(interp, nbytes));
         }
         interp.insert_current_buffer_with(text, source, before_markers);
         interp.set_inserted_extended_chars(start, extended_chars);
@@ -1221,7 +1220,7 @@ pub(crate) fn insert_print_buffer<R>(
     text: impl FnOnce(&mut Interpreter) -> (String, Vec<(usize, u32)>, Option<usize>, R),
 ) -> Result<R, LispError> {
     let point = interp.buffer.borrow().point();
-    modify_current_buffer(interp, point, point, false, env, |interp, _, env| {
+    modify_current_buffer(interp, point, point, false, env, |interp, _, _env| {
         let (text, extended_chars, pos, value) = text(interp);
         let start = interp.buffer.borrow().point();
         // insdel.c:copy_text: a unibyte buffer takes each character's byte.
@@ -1236,7 +1235,7 @@ pub(crate) fn insert_print_buffer<R>(
         };
         let reserved = interp.buffer.borrow_mut().try_reserve_insertion(text.len());
         if let Err(nbytes) = reserved {
-            return Err(memory_full(interp, env, nbytes));
+            return Err(memory_full(interp, nbytes));
         }
         interp.insert_current_buffer_with(
             text,

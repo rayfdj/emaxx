@@ -94,7 +94,7 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     let kept = Value::cons(Value::Integer(37), Value::Nil);
-    interp.set_variable("emaxx-gc-test-kept", kept, &mut env);
+    interp.set_symbol_value_cell("emaxx-gc-test-kept", kept);
     let before = crate::lisp::types::census_live_conses();
     let floats_before = crate::lisp::types::census_live_floats();
     let (hidden, serial) = build_chain();
@@ -113,9 +113,7 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
         "the sweep returned the chain's floats to the float free list"
     );
     assert!(matches!(
-        interp
-            .lookup_var("emaxx-gc-test-kept", &env)
-            .map(|v| v.kind()),
+        interp.symbol_value("emaxx-gc-test-kept").map(|v| v.kind()),
         Some(Kind::Cons(_))
     ));
     assert!(matches!(
@@ -136,7 +134,7 @@ fn a_swept_cell_taken_again_answers_no_earlier_weak_reference() {
     // so the doomed chain is built out of this frame, its address kept
     // hidden.
     #[inline(never)]
-    fn build_chains(interp: &mut Interpreter, env: &mut Env) -> (usize, u64) {
+    fn build_chains(interp: &mut Interpreter) -> (usize, u64) {
         // The free list drained first, the chains take fresh cells of new
         // blocks, each doomed cell beside a kept one.
         let mut drain = Value::Nil;
@@ -150,7 +148,7 @@ fn a_swept_cell_taken_again_answers_no_earlier_weak_reference() {
             kept = Value::cons(Value::Integer(index), kept);
             doomed = Value::cons(Value::Integer(index), doomed);
         }
-        interp.set_variable("emaxx-gc-test-interleaved", kept, env);
+        interp.set_symbol_value_cell("emaxx-gc-test-interleaved", kept);
         let Kind::Cons(cell) = doomed.kind() else {
             unreachable!("constructed cons");
         };
@@ -159,7 +157,7 @@ fn a_swept_cell_taken_again_answers_no_earlier_weak_reference() {
     const HIDE: usize = 0x5555_5555_5555_5555;
     let mut interp = Interpreter::new();
     let mut env = Env::new();
-    let (hidden, serial) = build_chains(&mut interp, &mut env);
+    let (hidden, serial) = build_chains(&mut interp);
     crate::lisp::alloc::clobber_stack();
     crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env).expect("collect");
     let weak = crate::lisp::types::WeakConsRef::from_parts(hidden ^ HIDE, serial);
@@ -3751,10 +3749,9 @@ fn ert_resource_file_uses_test_defining_file_during_execution() {
         .to_string_lossy()
         .into_owned();
     interp.set_current_load_file(Some(test_file.clone()));
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("current-load-list"),
         Value::list([Value::String(test_file.clone().into())]),
-        &mut crate::lisp::types::Env::new(),
     );
     eval_str_with(
         &mut interp,
@@ -3765,11 +3762,7 @@ fn ert_resource_file_uses_test_defining_file_during_execution() {
                 "#
         ),
     );
-    interp.set_variable_key(
-        cached_symbol!("current-load-list"),
-        Value::Nil,
-        &mut crate::lisp::types::Env::new(),
-    );
+    interp.set_symbol_value_key(cached_symbol!("current-load-list"), Value::Nil);
     interp.set_current_load_file(None);
     assert_eq!(
         eval_str_with(
@@ -3813,10 +3806,9 @@ fn macroexp_file_name_survives_nested_ert_macro_expansion() {
     let (_permit, mut interp) = upstream_batch_interpreter_with_features(&["ert"]);
     let test_file = "/tmp/sample-nested-resource-tests.el";
     interp.set_current_load_file(Some(test_file.into()));
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("current-load-list"),
         Value::list([Value::String(test_file.into())]),
-        &mut crate::lisp::types::Env::new(),
     );
     eval_str_with(
         &mut interp,
@@ -3829,11 +3821,7 @@ fn macroexp_file_name_survives_nested_ert_macro_expansion() {
                 "#
         ),
     );
-    interp.set_variable_key(
-        cached_symbol!("current-load-list"),
-        Value::Nil,
-        &mut crate::lisp::types::Env::new(),
-    );
+    interp.set_symbol_value_key(cached_symbol!("current-load-list"), Value::Nil);
     interp.set_current_load_file(None);
     assert_eq!(
         eval_str_with(
@@ -6407,7 +6395,6 @@ fn buffer_local_variables_order_lists_every_native_slot_once() {
 #[test]
 fn native_per_buffer_manifest_is_special_and_automatically_local() {
     let interp = Interpreter::new();
-    let env = Env::new();
     let mut unbound = Vec::new();
     for variable in GNU_NATIVE_PER_BUFFER_VARIABLES {
         let name = variable.name;
@@ -6431,7 +6418,7 @@ fn native_per_buffer_manifest_is_special_and_automatically_local() {
             variable.permanent,
             "GNU DEFVAR_PER_BUFFER `{name}` has the wrong permanence metadata"
         );
-        if interp.lookup_var(name, &env).is_none() {
+        if interp.symbol_value(name).is_none() {
             unbound.push(name);
         }
     }
@@ -6779,7 +6766,6 @@ fn intern_soft_obeys_gnu_symbolp_for_positioned_symbols() {
 #[test]
 fn native_overlay_arrow_cluster_matches_xdisp_startup_contract() {
     let interp = Interpreter::new();
-    let env = Env::new();
     for name in [
         "overlay-arrow-position",
         "overlay-arrow-string",
@@ -6791,15 +6777,15 @@ fn native_overlay_arrow_cluster_matches_xdisp_startup_contract() {
         );
     }
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("overlay-arrow-position"), &env),
+        interp.symbol_value_key(cached_symbol!("overlay-arrow-position")),
         Some(Value::Nil)
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("overlay-arrow-string"), &env),
+        interp.symbol_value_key(cached_symbol!("overlay-arrow-string")),
         Some(Value::String("=>".into()))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("overlay-arrow-variable-list"), &env),
+        interp.symbol_value_key(cached_symbol!("overlay-arrow-variable-list")),
         Some(Value::list([Value::symbol("overlay-arrow-position")]))
     );
 }
@@ -6831,23 +6817,23 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
     let interp = Interpreter::new();
     let env = Env::new();
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("gc-cons-percentage"), &env),
+        interp.symbol_value_key(cached_symbol!("gc-cons-percentage")),
         Some(Value::float(0.1))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("undo-outer-limit"), &env),
+        interp.symbol_value_key(cached_symbol!("undo-outer-limit")),
         Some(Value::Integer(24_000_000))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("font-log"), &env),
+        interp.symbol_value_key(cached_symbol!("font-log")),
         Some(Value::Nil)
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("purify-flag"), &env),
+        interp.symbol_value_key(cached_symbol!("purify-flag")),
         Some(Value::T)
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("display-hourglass"), &env),
+        interp.symbol_value_key(cached_symbol!("display-hourglass")),
         Some(Value::T)
     );
     for name in [
@@ -6859,25 +6845,25 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         "temporary-file-directory",
     ] {
         assert_eq!(
-            interp.lookup_var(name, &env),
+            interp.symbol_value(name),
             Some(Value::Nil),
             "wrong C initializer for {name}"
         );
     }
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("debugger"), &env),
+        interp.symbol_value_key(cached_symbol!("debugger")),
         Some(Value::symbol("debug-early"))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("native-comp-enable-subr-trampolines"), &env),
+        interp.symbol_value_key(cached_symbol!("native-comp-enable-subr-trampolines")),
         Some(Value::Nil)
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("use-dialog-box"), &env),
+        interp.symbol_value_key(cached_symbol!("use-dialog-box")),
         Some(Value::T)
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("frame-internal-parameters"), &env),
+        interp.symbol_value_key(cached_symbol!("frame-internal-parameters")),
         Some(Value::list([
             Value::symbol("name"),
             Value::symbol("parent-id"),
@@ -6885,7 +6871,7 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         ]))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("auto-save-list-file-prefix"), &env),
+        interp.symbol_value_key(cached_symbol!("auto-save-list-file-prefix")),
         None,
         "startup.el, not Rust, owns auto-save-list-file-prefix"
     );
@@ -6895,7 +6881,7 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         "cus-start.el, not Rust, owns the Custom standard value"
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("terminal-frame"), &env),
+        interp.symbol_value_key(cached_symbol!("terminal-frame")),
         Some(Value::Frame(interp.selected_frame_id))
     );
     for name in [
@@ -6903,7 +6889,7 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         "redisplay--mode-lines-cause",
     ] {
         let table = interp
-            .lookup_var(name, &env)
+            .symbol_value(name)
             .unwrap_or_else(|| panic!("xdisp.c did not initialize {name}"));
         assert_eq!(
             crate::lisp::json::hash_table_entries(&interp, &table),
@@ -6911,18 +6897,18 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         );
     }
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("eol-mnemonic-dos"), &env),
+        interp.symbol_value_key(cached_symbol!("eol-mnemonic-dos")),
         Some(Value::string("\\"))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("eol-mnemonic-mac"), &env),
+        interp.symbol_value_key(cached_symbol!("eol-mnemonic-mac")),
         Some(Value::string("/"))
     );
     let frame_title = interp
-        .lookup_var_key(cached_symbol!("frame-title-format"), &env)
+        .symbol_value_key(cached_symbol!("frame-title-format"))
         .expect("xdisp.c initializes frame-title-format");
     let icon_title = interp
-        .lookup_var_key(cached_symbol!("icon-title-format"), &env)
+        .symbol_value_key(cached_symbol!("icon-title-format"))
         .expect("xdisp.c initializes icon-title-format");
     assert!(crate::lisp::primitives::values::values_eq_in_env(
         &interp,
@@ -6943,7 +6929,7 @@ fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
         ])
     );
     let Kind::HashTable(comp_units) = interp
-        .lookup_var_key(cached_symbol!("comp-loaded-comp-units-h"), &env)
+        .symbol_value_key(cached_symbol!("comp-loaded-comp-units-h"))
         .expect("comp.c initializes the loaded-unit table")
         .kind()
     else {
@@ -6995,7 +6981,7 @@ fn native_syntax_propertize_progress_is_buffer_local() {
         ))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("font-lock-defaults"), &Env::new()),
+        interp.symbol_value_key(cached_symbol!("font-lock-defaults")),
         None,
         "font-core.el, not Rust, owns font-lock-defaults"
     );
@@ -7004,9 +6990,8 @@ fn native_syntax_propertize_progress_is_buffer_local() {
 #[test]
 fn native_change_hook_controls_are_bound_and_dynamically_special() {
     let interp = Interpreter::new();
-    let env = Env::new();
     for name in GNU_CHANGE_HOOK_SPECIAL_VARIABLES {
-        assert_eq!(interp.lookup_var(name, &env), Some(Value::Nil));
+        assert_eq!(interp.symbol_value(name), Some(Value::Nil));
         assert!(
             interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "GNU native change-hook variable `{name}` must be dynamically special"
@@ -7353,9 +7338,7 @@ fn gnu_lread_c_variables_are_declared_special() {
             "GNU lread.c DEFVAR `{name}` must remain dynamically scoped"
         );
         assert!(
-            interp
-                .lookup_var(name, &crate::lisp::types::Env::new())
-                .is_some(),
+            interp.symbol_value(name).is_some(),
             "GNU lread.c DEFVAR `{name}` must have a startup value"
         );
     }
@@ -7426,7 +7409,7 @@ fn gnu_emacs_c_locale_variables_exist_before_lisp_startup_policy_runs() {
             "GNU emacs.c locale DEFVAR `{name}` must remain dynamically scoped"
         );
         assert_eq!(
-            interp.lookup_var(name, &crate::lisp::types::Env::new()),
+            interp.symbol_value(name),
             Some(Value::Nil),
             "GNU emacs.c locale DEFVAR `{name}` must start bound to nil"
         );
@@ -8852,10 +8835,8 @@ fn window_face_spans_layer_text_properties_region_and_overlays() {
              (overlay-put overlay 'face 'isearch)
              (overlay-put overlay 'priority 1001)))",
     );
-    let mut env: Env = crate::lisp::types::Env::new();
     let buffer_id = interp.current_buffer_id();
-    let spans =
-        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 11, true);
+    let spans = crate::lisp::primitives::window_face_spans(&mut interp, buffer_id, 1, 11, true);
     assert_eq!(
         spans,
         vec![
@@ -8867,7 +8848,7 @@ fn window_face_spans_layer_text_properties_region_and_overlays() {
     );
 
     let without_region =
-        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 11, false);
+        crate::lisp::primitives::window_face_spans(&mut interp, buffer_id, 1, 11, false);
     assert!(
         without_region
             .iter()
@@ -8886,10 +8867,8 @@ fn window_face_spans_resolve_faces_inherited_from_text_categories() {
            (put 'sample-button-category 'face 'link)
            (put-text-property 1 7 'category 'sample-button-category))",
     );
-    let mut env: Env = crate::lisp::types::Env::new();
     let buffer_id = interp.current_buffer_id();
-    let spans =
-        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 12, true);
+    let spans = crate::lisp::primitives::window_face_spans(&mut interp, buffer_id, 1, 12, true);
     assert_eq!(
         spans,
         vec![(1, 7, Value::Symbol("link".into()))],
@@ -8908,10 +8887,8 @@ fn window_face_spans_resolve_faces_inherited_from_overlay_categories() {
            (let ((overlay (make-overlay 1 11)))
              (overlay-put overlay 'category 'sample-diagnostic-category)))",
     );
-    let mut env: Env = crate::lisp::types::Env::new();
     let buffer_id = interp.current_buffer_id();
-    let spans =
-        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 16, true);
+    let spans = crate::lisp::primitives::window_face_spans(&mut interp, buffer_id, 1, 16, true);
     assert_eq!(
         spans,
         vec![(1, 11, Value::Symbol("error".into()))],
@@ -8931,10 +8908,9 @@ fn window_face_spans_honor_font_lock_face_aliases_on_overlays() {
            (let ((overlay (make-overlay 1 8)))
              (overlay-put overlay 'font-lock-face 'highlight)))",
     );
-    let mut env: Env = crate::lisp::types::Env::new();
     let buffer_id = interp.current_buffer_id();
     assert_eq!(
-        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 13, true,),
+        crate::lisp::primitives::window_face_spans(&mut interp, buffer_id, 1, 13, true,),
         vec![(1, 8, Value::Symbol("highlight".into()))]
     );
 }
@@ -10567,21 +10543,20 @@ fn echo_renders_event_heads_with_the_dash() {
 #[test]
 fn unread_command_events_pop_ahead_of_the_terminal() {
     let mut interp = Interpreter::new();
-    let mut env: Env = crate::lisp::types::Env::new();
     eval_str_with(
         &mut interp,
         "(setq unread-command-events (list 97 (cons t 98)))",
     );
-    let first = crate::lisp::primitives::take_unread_command_event(&mut interp, &mut env);
+    let first = crate::lisp::primitives::take_unread_command_event(&mut interp);
     assert_eq!(first, Some(Value::Integer(97)));
-    let second = crate::lisp::primitives::take_unread_command_event(&mut interp, &mut env);
+    let second = crate::lisp::primitives::take_unread_command_event(&mut interp);
     assert_eq!(
         second,
         Some(Value::Integer(98)),
         "the (t . EVENT) don't-re-record form unwraps"
     );
     assert_eq!(
-        crate::lisp::primitives::take_unread_command_event(&mut interp, &mut env),
+        crate::lisp::primitives::take_unread_command_event(&mut interp),
         None
     );
 }

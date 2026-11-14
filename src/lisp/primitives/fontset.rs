@@ -374,13 +374,9 @@ fn set_fontset_font_range(
 
 /// The ranges of char-script-table whose value is SCRIPT, in order
 /// (map_char_table with accumulate_script_ranges, reversed).
-fn script_ranges(
-    interp: &mut Interpreter,
-    script: &Value,
-    env: &mut Env,
-) -> Result<Vec<(u32, u32)>, LispError> {
+fn script_ranges(interp: &mut Interpreter, script: &Value) -> Result<Vec<(u32, u32)>, LispError> {
     let table = interp
-        .lookup_var_key(cached_symbol!("char-script-table"), env)
+        .symbol_value_key(cached_symbol!("char-script-table"))
         .unwrap_or(Value::Nil);
     let Kind::CharTable(table) = table.kind() else {
         return Ok(Vec::new());
@@ -515,7 +511,7 @@ pub(crate) fn set_fontset_font(
         _ => None,
     } {
         let table = interp
-            .lookup_var_key(cached_symbol!("char-script-table"), env)
+            .symbol_value_key(cached_symbol!("char-script-table"))
             .unwrap_or(Value::Nil);
         let script_list = super::call(
             interp,
@@ -527,7 +523,7 @@ pub(crate) fn set_fontset_font(
             if characters.is_key(cached_symbol!("latin")) {
                 ascii_changed = true;
             }
-            script_range_list = script_ranges(interp, &characters, env)?;
+            script_range_list = script_ranges(interp, &characters)?;
         }
         if interp.has_charset(&name) {
             if super::coding::charset_ascii_compatible_p(interp, &name) {

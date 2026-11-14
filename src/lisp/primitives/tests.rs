@@ -3765,7 +3765,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         })
     ));
     assert_eq!(
-        interp.lookup_var("emaxx-kill-seen", &crate::lisp::types::Env::new()),
+        interp.symbol_value("emaxx-kill-seen"),
         Some(Value::list([
             Value::symbol("third"),
             Value::symbol("first")
@@ -11094,10 +11094,9 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
         ])
     );
 
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("default-directory"),
         Value::String(format!("{}/", directory.display()).into()),
-        &mut env,
     );
     let relative_full = call(
         &mut interp,
@@ -12558,10 +12557,9 @@ fn process_lines_uses_default_directory_as_subprocess_cwd() {
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("default-directory"),
         Value::String(cwd.display().to_string().into()),
-        &mut env,
     );
 
     let result = call_via_lisp(
@@ -12783,10 +12781,9 @@ fn process_connection_probe_with_default(
     // GNU-Lisp runtime rather than the file-less host.
     let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("process-connection-type"),
         default_connection_type,
-        &mut env,
     );
     let (buffer_id, _) = interp.create_buffer(&format!("*{name}*"));
     let mut process_args =
@@ -13050,7 +13047,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
 fn signal_process_preserves_os_signal_status_and_sentinel_event() {
     let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("captured-signal-event", Value::Nil, &mut env);
+    interp.set_symbol_value_cell("captured-signal-event", Value::Nil);
     let process = call_via_lisp(
         &mut interp,
         "start-process",
@@ -13128,7 +13125,7 @@ fn signal_process_preserves_os_signal_status_and_sentinel_event() {
         Value::Integer(libc::SIGPIPE.into())
     );
     let event = interp
-        .lookup_var("captured-signal-event", &env)
+        .symbol_value("captured-signal-event")
         .and_then(|value| string_like(&value).map(|string| string.text))
         .expect("captured signal sentinel event");
     assert!(
@@ -13284,12 +13281,12 @@ fn run_at_time_callbacks_fire_on_accept_process_output() {
         &mut env,
     )
     .expect("run-at-time should succeed");
-    assert_eq!(interp.lookup_var("timer-fired", &env), None);
+    assert_eq!(interp.symbol_value("timer-fired"), None);
 
     call(&mut interp, "accept-process-output", &[], &mut env)
         .expect("accept-process-output should succeed");
 
-    assert_eq!(interp.lookup_var("timer-fired", &env), Some(Value::T));
+    assert_eq!(interp.symbol_value("timer-fired"), Some(Value::T));
 }
 
 #[test]
@@ -13316,12 +13313,12 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
         &mut env,
     )
     .expect("run-with-timer should succeed");
-    assert_eq!(interp.lookup_var("timer-fired", &env), None);
+    assert_eq!(interp.symbol_value("timer-fired"), None);
 
     call(&mut interp, "accept-process-output", &[], &mut env)
         .expect("accept-process-output should succeed");
 
-    assert_eq!(interp.lookup_var("timer-fired", &env), Some(Value::T));
+    assert_eq!(interp.symbol_value("timer-fired"), Some(Value::T));
 }
 
 #[test]
@@ -13965,7 +13962,7 @@ fn make_network_process_nowait_opens_through_the_event_pump() {
         .expect("initial process status"),
         Value::Symbol("connect".into())
     );
-    assert_eq!(interp.lookup_var("nowait-event", &env), None);
+    assert_eq!(interp.symbol_value("nowait-event"), None);
 
     // The lookup is getaddrinfo_a's, which wait_reading_process_output
     // looks at only at the top of an iteration of its loop: a wait may end
@@ -14001,7 +13998,7 @@ fn make_network_process_nowait_opens_through_the_event_pump() {
         Value::Symbol("open".into())
     );
     assert_eq!(
-        interp.lookup_var("nowait-event", &env),
+        interp.symbol_value("nowait-event"),
         Some(Value::String("open\n".into()))
     );
 }
@@ -14102,8 +14099,8 @@ fn inhibit_read_only_allows_buffer_read_only_edits() {
         .buffer
         .replace_state(crate::buffer::Buffer::from_text("*test*", "abc"));
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("buffer-read-only"), Value::T, &mut env);
-    interp.set_variable_key(cached_symbol!("inhibit-read-only"), Value::T, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("buffer-read-only"), Value::T);
+    interp.set_symbol_value_key(cached_symbol!("inhibit-read-only"), Value::T);
     interp.buffer.borrow_mut().goto_char(1);
 
     call(&mut interp, "delete-char", &[Value::Integer(1)], &mut env)
@@ -14129,7 +14126,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
         .buffer
         .replace_state(crate::buffer::Buffer::from_text("*test*", ""));
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("buffer-read-only"), Value::T, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("buffer-read-only"), Value::T);
 
     assert!(matches!(
         call(&mut interp, "insert", &[Value::String("x".into())], &mut env).map_err(LispError::into_kind),
@@ -14140,7 +14137,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
             ]) if name.is_named("buffer-read-only"))
     ));
 
-    interp.set_variable_key(cached_symbol!("inhibit-read-only"), Value::T, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("inhibit-read-only"), Value::T);
     call(
         &mut interp,
         "insert",
@@ -25009,7 +25006,7 @@ fn native_minibuffer_runs_initial_post_command_hook_before_input() {
         Value::String("".into())
     );
     assert_eq!(
-        interp.lookup_var("emaxx-initial-post-command-count", &env),
+        interp.symbol_value("emaxx-initial-post-command-count"),
         Some(Value::Integer(1))
     );
 }
@@ -25745,7 +25742,7 @@ fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() 
 fn native_keyboard_macro_family_publishes_gnu_status_messages() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     crate::lisp::primitives::set_echo_area_message(None);
 
     call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
@@ -25783,7 +25780,7 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
     // C-f read by a recursive edit's command loop, which a timer ends with
     // a throw to `exit' once it waits for more input (without a keyboard
     // read_char waits, as GNU's does; GNU gives the same values).
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -25800,17 +25797,17 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
     .expect("record C-f");
 
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
+        interp.symbol_value_key(cached_symbol!("last-kbd-macro")),
         Some(Value::vector([Value::Integer(6),]))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-input-event"), &env),
+        interp.symbol_value_key(cached_symbol!("last-input-event")),
         Some(Value::Integer(6))
     );
     // The command saw C-f as read_key_sequence's last_nonmenu_event (the
     // next read's replay sets it nil again).
     assert_eq!(
-        interp.lookup_var("emaxx-test-nonmenu", &env),
+        interp.symbol_value("emaxx-test-nonmenu"),
         Some(Value::Integer(6))
     );
 }
@@ -25897,7 +25894,7 @@ fn keyboard_macro_records_input_read_inside_a_command() {
     // ends the recursive edit, a throw before finalize_kbd_macro_chars
     // gives the macro its keys (GNU records [3 114 97] too).  With no
     // keyboard, nothing else ends it: read_char would wait for input.
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -25909,7 +25906,7 @@ fn keyboard_macro_records_input_read_inside_a_command() {
     .expect("record a command that reads another event");
 
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
+        interp.symbol_value_key(cached_symbol!("last-kbd-macro")),
         Some(Value::vector([
             Value::Integer(3),
             Value::Integer(114),
@@ -25962,11 +25959,11 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
     recorded.expect("record a command and its minibuffer input");
 
     assert_eq!(
-        interp.lookup_var("emaxx-test-completion-value", &env),
+        interp.symbol_value("emaxx-test-completion-value"),
         Some(Value::String("banana".into()))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
+        interp.symbol_value_key(cached_symbol!("last-kbd-macro")),
         Some(Value::vector([
             Value::Integer(3),
             Value::Integer(99),
@@ -27521,7 +27518,7 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
     )
     .expect("pump serial process input");
     assert_eq!(
-        interp.lookup_var("emaxx-test-serial-input", &env),
+        interp.symbol_value("emaxx-test-serial-input"),
         Some(Value::String("from-master".into()))
     );
 
@@ -28325,7 +28322,7 @@ fn native_process_window_and_foreground_queries_follow_pty_ownership() {
 fn tty_event_reader_feeds_interactive_event_reads() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(121)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
@@ -28339,7 +28336,7 @@ fn tty_event_reader_feeds_interactive_event_reads() {
 fn tty_event_reader_quit_signals_gnu_quit() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(7)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
@@ -28366,11 +28363,10 @@ fn tty_event_reader_quit_signals_gnu_quit() {
 fn tty_event_reader_does_not_preempt_queued_events() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
-    interp.set_variable_key(
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
+    interp.set_symbol_value_key(
         cached_symbol!("unread-command-events"),
         Value::list([Value::Integer(97)]),
-        &mut env,
     );
     set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(98)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
@@ -28465,7 +28461,7 @@ impl Drop for PipeKeyboard {
 fn blocking_tty_event_read_redraws_after_a_due_timer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -28480,9 +28476,9 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
         PipeKeyboard::install(Value::Integer(120), std::time::Duration::from_millis(200));
     let saw_timer = std::rc::Rc::new(std::cell::Cell::new(false));
     let observed = std::rc::Rc::clone(&saw_timer);
-    set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+    set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
         if interp
-            .lookup_var("emaxx-test-timer-fired", env)
+            .symbol_value("emaxx-test-timer-fired")
             .is_some_and(|value| value.is_truthy())
         {
             observed.set(true);
@@ -28506,7 +28502,7 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 fn blocking_tty_event_read_redraws_after_process_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     let process = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -28527,9 +28523,9 @@ fn blocking_tty_event_read_redraws_after_process_output() {
     let keyboard =
         PipeKeyboard::install(Value::Integer(120), std::time::Duration::from_millis(1500));
     let redraw_observation = std::rc::Rc::clone(&saw_output);
-    set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+    set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
         if interp
-            .lookup_var("emaxx-test-process-output", env)
+            .symbol_value("emaxx-test-process-output")
             .is_some_and(|value| value.is_truthy())
         {
             redraw_observation.set(true);
@@ -28628,7 +28624,7 @@ fn delayed_tty_timer_uses_the_native_clock_when_float_time_is_redefined() {
         "redefining float-time must not make a future timer ripe"
     );
     assert_eq!(
-        interp.lookup_var("emaxx-test-timer-fired", &env),
+        interp.symbol_value("emaxx-test-timer-fired"),
         Some(Value::Nil)
     );
 }
@@ -28638,7 +28634,7 @@ fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
     crate::test_support::mark_process_test();
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     set_tty_event_poller(Some(Box::new(|_| Some(None))));
     let result = crate::test_support::eval_lisp(
         &mut interp,
@@ -28676,15 +28672,15 @@ fn live_minibuffer_leaves_its_last_command_and_call_interactively_restores() {
     // the minibuffer read through `executing-kbd-macro').
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
-    let outer = |interp: &mut Interpreter, env: &mut crate::lisp::types::Env| {
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
+    let outer = |interp: &mut Interpreter| {
         for (name, value) in [
             ("this-command", "outer-command"),
             ("real-this-command", "outer-real-command"),
             ("this-original-command", "outer-original-command"),
             ("last-command", "outer-last-command"),
         ] {
-            interp.set_variable(name, Value::symbol(value), env);
+            interp.set_symbol_value_cell(name, Value::symbol(value));
         }
     };
     let feed = |text: &str| {
@@ -28697,7 +28693,7 @@ fn live_minibuffer_leaves_its_last_command_and_call_interactively_restores() {
         set_tty_event_reader(Some(Box::new(move |_| script.borrow_mut().pop())));
     };
 
-    outer(&mut interp, &mut env);
+    outer(&mut interp);
     feed("answer\r");
     let result = call(
         &mut interp,
@@ -28712,13 +28708,13 @@ fn live_minibuffer_leaves_its_last_command_and_call_interactively_restores() {
     );
     for name in ["this-command", "real-this-command", "this-original-command"] {
         assert_eq!(
-            interp.lookup_var(name, &env),
+            interp.symbol_value(name),
             Some(Value::symbol("exit-minibuffer")),
             "{name}"
         );
     }
 
-    outer(&mut interp, &mut env);
+    outer(&mut interp);
     feed("a\rb\r");
     let seen = crate::test_support::eval_lisp(
         &mut interp,
@@ -28751,7 +28747,7 @@ fn write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events()
     // invalid. Preserve both the declining error and unchanged file bytes.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     let directory = std::env::temp_dir().join(format!(
         "emaxx-write-region-mustbenew-{}-{}",
         std::process::id(),
@@ -28833,7 +28829,7 @@ fn tty_events_answer_interactive_minibuffer_prompts() {
 fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -28871,7 +28867,7 @@ fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
         Value::String("alpha".into())
     );
     assert_eq!(
-        interp.lookup_var("issue22-initial-face", &env),
+        interp.symbol_value("issue22-initial-face"),
         Some(Value::Symbol("lsp-face-highlight-textual".into())),
         "read-string copies the suggested value's face into the minibuffer"
     );
@@ -28880,7 +28876,7 @@ fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
 #[test]
 fn live_read_string_records_an_accepted_default_in_history() {
     let (mut interp, mut env) = upstream_interactive_interpreter();
-    interp.set_variable("emaxx-default-history", Value::Nil, &mut env);
+    interp.set_symbol_value_cell("emaxx-default-history", Value::Nil);
     let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
     let feed = std::rc::Rc::clone(&script);
     set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
@@ -28903,7 +28899,7 @@ fn live_read_string_records_an_accepted_default_in_history() {
         Value::String("alpha".into())
     );
     assert_eq!(
-        interp.lookup_var("emaxx-default-history", &env),
+        interp.symbol_value("emaxx-default-history"),
         Some(Value::list([Value::String("alpha".into())]))
     );
 }
@@ -28911,10 +28907,9 @@ fn live_read_string_records_an_accepted_default_in_history() {
 #[test]
 fn tty_minibuffer_edits_complete_and_recall_history() {
     let (mut interp, mut env) = upstream_interactive_interpreter();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("minibuffer-history"),
         Value::list([Value::String("older-entry".into())]),
-        &mut env,
     );
     // Type "zebraX", delete the X, recall history with M-p, come back
     // with M-n, then submit the edited fresh input.
@@ -28947,7 +28942,7 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
     );
     // The submission lands at the head of the history variable.
     let history = interp
-        .lookup_var_key(cached_symbol!("minibuffer-history"), &env)
+        .symbol_value_key(cached_symbol!("minibuffer-history"))
         .expect("history variable");
     assert_eq!(
         history,
@@ -28961,10 +28956,9 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
 #[test]
 fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
     let (mut interp, mut env) = upstream_interactive_interpreter();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("minibuffer-history"),
         Value::list([Value::String("recalled".into())]),
-        &mut env,
     );
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
         std::rc::Rc::new(std::cell::RefCell::new(
@@ -29095,8 +29089,8 @@ fn upstream_interactive_interpreter() -> (Interpreter, Env) {
     };
     let mut interp =
         crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let env = crate::lisp::types::Env::new();
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     interp
         .load_target("minibuffer")
         .expect("minibuffer.el loads");
@@ -29140,12 +29134,12 @@ fn tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands() {
         Value::String("alpha".into())
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("this-command"), &env),
+        interp.symbol_value_key(cached_symbol!("this-command")),
         Some(Value::Symbol("exit-minibuffer".into())),
         "RET must dispatch minibuffer.el's exit-minibuffer"
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-command"), &env),
+        interp.symbol_value_key(cached_symbol!("last-command")),
         Some(Value::Symbol("completion-at-point".into()))
     );
 }
@@ -29599,7 +29593,7 @@ fn marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list() {
     )
     .expect("delete succeeds");
     let undo_list = interp
-        .lookup_var_key(cached_symbol!("buffer-undo-list"), &env)
+        .symbol_value_key(cached_symbol!("buffer-undo-list"))
         .expect("undo list")
         .to_vec()
         .expect("list entries");
@@ -29769,7 +29763,7 @@ fn recenter_counts_the_window_body_for_negative_lines() {
     // as well: (recenter -3) puts point 3 rows above the window's last.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::T, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::T);
     for n in 0..60 {
         call(
             &mut interp,
@@ -29805,7 +29799,7 @@ fn recenter_counts_the_window_body_for_negative_lines() {
 fn interactive_recenter_uses_the_live_shrunken_window_height() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     for n in 0..30 {
         call(
             &mut interp,
@@ -29908,7 +29902,7 @@ fn interactive_vertical_motion_and_recenter_reseat_past_what_a_line_start_hides(
     // reseat.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     insert_prefixed_lines(
         &mut interp,
         &mut env,
@@ -29997,7 +29991,7 @@ fn interactive_vertical_motion_walks_a_display_string_spanning_two_lines() {
     // string's first.  GNU 30.2's values.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     insert_prefixed_lines(
         &mut interp,
         &mut env,
@@ -30076,7 +30070,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     // Batch ignores the goal column, GNU's --batch behavior.  `noninteractive'
     // is emacs.c's DEFVAR: nil in the dumped default, flipped to t by a
     // batch startup, so state the batch session explicitly here.
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::T, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::T);
     call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
     call(
         &mut interp,
@@ -30094,7 +30088,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     // An interactive session moves to the goal column within the row,
     // line-move-visual's contract; a float goal (posn pixels divided by
     // the frame char width) works the same way.
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
     call(&mut interp, "vertical-motion", &[goal], &mut env).expect("vertical-motion");
     assert_eq!(
@@ -30117,7 +30111,7 @@ fn format_mode_line_follows_display_mode_element() {
     // Each expected value is GNU 30's on a terminal frame (tmux probe).
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     let setup = Reader::new(
         "(progn (switch-to-buffer (get-buffer-create \"probe-buf\"))
                 (insert \"line1\\nline2\\nline3\\n\")
@@ -30244,7 +30238,7 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     call(
         &mut interp,
         "insert",
@@ -30290,7 +30284,7 @@ fn mode_line_line_number_is_relative_to_the_accessible_region() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     call(
         &mut interp,
         "insert",
@@ -30341,7 +30335,7 @@ fn emaxx_batch_output(program: &str) -> String {
             .unwrap_or_else(|error| panic!("emaxx eval failed: {error:?}"));
     }
     let value = interp
-        .lookup_var("contract-out", &env)
+        .symbol_value("contract-out")
         .expect("program sets contract-out");
     let Kind::StringObject(text) = value.kind() else {
         let text = format!("{value}");
@@ -30430,7 +30424,7 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     for n in 0..60 {
         call(
             &mut interp,
@@ -30471,7 +30465,7 @@ fn glass_mode_line_honors_font_lock_face_string_properties() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     let form = Reader::new(
         "(setq mode-line-format
                (list (propertize \" git failed\"
@@ -30594,7 +30588,7 @@ fn interactive_undo_restores_the_unmodified_state() {
     let mut interp = crate::batch::initialize_batch_interpreter(&options)
         .expect("initialize GNU-compatible batch interpreter");
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     let directory = std::env::temp_dir().join(format!("emaxx-undo-clean-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test dir");
     let path = directory.join("clean.txt");
@@ -31087,7 +31081,7 @@ fn interactive_spec_i_passes_nil_without_reading_anything() {
     )
     .expect("call-interactively");
     let args = interp
-        .lookup_var("emaxx-test-spec-args", &env)
+        .symbol_value("emaxx-test-spec-args")
         .expect("args recorded");
     assert_eq!(format!("{args}"), "(nil 1)");
 }
@@ -31387,7 +31381,7 @@ fn eager_load_expansion_invokes_the_lisp_owner_for_both_phases() {
 
     assert_eq!(result, Value::Symbol("expanded-by-owner".into()));
     assert_eq!(
-        interp.lookup_var("eager-owner-calls", &env),
+        interp.symbol_value("eager-owner-calls"),
         Some(Value::list([Value::T, Value::Nil]))
     );
 }
@@ -32278,7 +32272,7 @@ fn assert_oracle_file_contract_with_observer(
         }
     }
     let result = interp
-        .lookup_var(result_variable, &Env::new())
+        .symbol_value(result_variable)
         .expect("fixture sets its result variable");
     fs::remove_file(&path).expect("remove owned contract fixture");
     assert_eq!(result.to_string(), expected);
@@ -33162,7 +33156,7 @@ fn assert_purecopy_callback_contract(program: &str, expected: &str) {
     // message_with_string's interactive callbacks require live window metrics.
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     // Read as `load' reads: through the same symbols as the loaded Lisp
     // runtime, with its literals built.
     let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
@@ -33305,13 +33299,9 @@ fn text_conversion_c_store_does_not_localize_or_duplicate_the_field() {
     assert!(interp.symbol_value_cell("text-conversion-style").is_err());
     let replacement = Value::cons(Value::Integer(383), Value::Nil);
     interp.buffer.borrow_mut().text_conversion_style = replacement;
-    interp.set_variable_key(
-        cached_symbol!("text-conversion-style"),
-        Value::Integer(389),
-        &mut env,
-    );
+    interp.set_symbol_value_key(cached_symbol!("text-conversion-style"), Value::Integer(389));
     assert_eq!(
-        interp.forwarded_c_value("text-conversion-style", &env),
+        interp.forwarded_c_value("text-conversion-style"),
         Some(replacement)
     );
     assert_eq!(
@@ -37076,14 +37066,14 @@ fn rust_bindings_are_undone_by_unbind_to_their_depth() {
         .bind_special_dynamic("unbind-to-depth-test", Value::Integer(2), &mut env)
         .expect("inner binding");
     assert_eq!(
-        interp.lookup_var("unbind-to-depth-test", &env),
+        interp.symbol_value("unbind-to-depth-test"),
         Some(Value::Integer(2))
     );
     interp
         .restore_special_dynamic(outer, &mut env)
         .expect("outer restored first");
     assert_eq!(
-        interp.lookup_var("unbind-to-depth-test", &env),
+        interp.symbol_value("unbind-to-depth-test"),
         Some(Value::Integer(0))
     );
     assert_eq!(interp.specpdl_index(), base);
@@ -37091,7 +37081,7 @@ fn rust_bindings_are_undone_by_unbind_to_their_depth() {
         .restore_special_dynamic(inner, &mut env)
         .expect("inner restore after it was undone");
     assert_eq!(
-        interp.lookup_var("unbind-to-depth-test", &env),
+        interp.symbol_value("unbind-to-depth-test"),
         Some(Value::Integer(0))
     );
     assert_eq!(interp.specpdl_index(), base);

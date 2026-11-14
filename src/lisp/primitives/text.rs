@@ -268,13 +268,13 @@ pub(crate) fn buffer_line_statistics_value(
 /// current buffer: 1 for printable ASCII, `char-width-table''s entry
 /// (sanitized) above DEL, the buffer's tab width for TAB, 0 for newline,
 /// and 2 or 4 for another control character as `ctl-arrow' is set.
-pub(crate) fn character_width(interp: &Interpreter, c: u32, env: &Env) -> usize {
+pub(crate) fn character_width(interp: &Interpreter, c: u32) -> usize {
     if (0x20..0x7F).contains(&c) {
         return 1;
     }
     if c > 0x7F {
         let width = interp
-            .lookup_var_key(cached_symbol!("char-width-table"), env)
+            .symbol_value_key(cached_symbol!("char-width-table"))
             .and_then(|table| match table.kind() {
                 Kind::CharTable(table) => interp.char_table_get(table, c),
                 _ => None,
@@ -291,7 +291,7 @@ pub(crate) fn character_width(interp: &Interpreter, c: u32, env: &Env) -> usize 
     if c == u32::from(b'\t') {
         // SANE_TAB_WIDTH.
         return interp
-            .lookup_var_key(cached_symbol!("tab-width"), env)
+            .symbol_value_key(cached_symbol!("tab-width"))
             .and_then(|width| width.integer_value())
             .filter(|width| (1..=1000).contains(width))
             .unwrap_or(8) as usize;
@@ -300,7 +300,7 @@ pub(crate) fn character_width(interp: &Interpreter, c: u32, env: &Env) -> usize 
         return 0;
     }
     if interp
-        .lookup_var_key(cached_symbol!("ctl-arrow"), env)
+        .symbol_value_key(cached_symbol!("ctl-arrow"))
         .is_some_and(|value| value.is_truthy())
     {
         2
@@ -314,14 +314,13 @@ pub(crate) fn character_width(interp: &Interpreter, c: u32, env: &Env) -> usize 
 /// (DISP_TABLE_P: purpose `display-table' and its six extra slots).
 pub(crate) fn buffer_display_table(
     interp: &Interpreter,
-    env: &Env,
 ) -> Option<crate::lisp::types::CharTableRef> {
     [
         cached_symbol!("buffer-display-table"),
         cached_symbol!("standard-display-table"),
     ]
     .into_iter()
-    .find_map(|key| match interp.lookup_var_key(key, env)?.kind() {
+    .find_map(|key| match interp.symbol_value_key(key)?.kind() {
         Kind::CharTable(table)
             if table.has_purpose("display-table") && table.extra_count() == 6 =>
         {
@@ -337,13 +336,12 @@ pub(crate) fn display_char_width(
     interp: &Interpreter,
     c: u32,
     dp: Option<crate::lisp::types::CharTableRef>,
-    env: &Env,
 ) -> usize {
     let Some(entry) = dp.and_then(|dp| interp.char_table_get(dp, c)) else {
-        return character_width(interp, c, env);
+        return character_width(interp, c);
     };
     if !crate::lisp::primitives::interactive::is_vector_value(&entry) {
-        return character_width(interp, c, env);
+        return character_width(interp, c);
     }
     let glyphs = crate::lisp::primitives::buffers::vector_items(&entry).unwrap_or_default();
     glyphs
@@ -362,7 +360,7 @@ pub(crate) fn display_char_width(
             Kind::Integer(code) if code >= 0 => Some((code & 0x3F_FFFF) as u32),
             _ => None,
         })
-        .map(|c| character_width(interp, c, env))
+        .map(|c| character_width(interp, c))
         .sum()
 }
 

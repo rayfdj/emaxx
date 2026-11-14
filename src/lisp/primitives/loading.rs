@@ -240,7 +240,7 @@ fn call_interactively_checked(
         "real-this-command",
         "last-command",
     ]
-    .map(|name| (name, interp.lookup_var(name, env).unwrap_or(Value::Nil)));
+    .map(|name| (name, interp.symbol_value(name).unwrap_or(Value::Nil)));
     let mut minibuffer_command = Some(interp.bind_special_key(
         cached_symbol!("current-minibuffer-command"),
         saved_command_state[0].1,
@@ -324,7 +324,7 @@ fn call_interactively_bound(
         call(interp, "barf-if-buffer-read-only", &[], env)?;
     }
     for (name, value) in saved_command_state {
-        interp.set_variable(name, *value, env);
+        interp.set_symbol_value_cell(name, *value);
     }
     // A string spec's command runs with `command-debug-status' bound to
     // nil.
@@ -462,7 +462,7 @@ pub(crate) fn eval_buffer_impl(
         printflag
     };
     let eval_buffer_list = interp
-        .lookup_var_key(cached_symbol!("eval-buffer-list"), env)
+        .symbol_value_key(cached_symbol!("eval-buffer-list"))
         .unwrap_or(Value::Nil);
     let previous_eval_buffer_list = interp.bind_special_key(
         cached_symbol!("eval-buffer-list"),
@@ -501,7 +501,7 @@ pub(crate) fn eval_buffer_impl(
     let previous_input =
         interp.bind_special_key(cached_symbol!("standard-input"), readcharfun, env)?;
     let dynvars = interp
-        .lookup_var_key(cached_symbol!("macroexp--dynvars"), env)
+        .symbol_value_key(cached_symbol!("macroexp--dynvars"))
         .unwrap_or(Value::Nil);
     let previous_dynvars =
         interp.bind_special_key(cached_symbol!("macroexp--dynvars"), dynvars, env)?;
@@ -511,17 +511,11 @@ pub(crate) fn eval_buffer_impl(
         env,
     )?;
     // Feval_buffer returns nil whatever the last form evaluated to.
-    let mut result = eval_buffer_forms(
-        interp,
-        buffer_id,
-        eager_macroexpand,
-        !printflag.is_nil(),
-        env,
-    )
-    .map(|_| Value::Nil);
+    let mut result = eval_buffer_forms(interp, buffer_id, eager_macroexpand, !printflag.is_nil())
+        .map(|_| Value::Nil);
     if result.is_ok() {
         let current = interp
-            .lookup_var_key(cached_symbol!("current-load-list"), env)
+            .symbol_value_key(cached_symbol!("current-load-list"))
             .unwrap_or(Value::Nil);
         interp.commit_entire_load_history(&source_file, current);
     }
@@ -579,7 +573,7 @@ pub(crate) fn eval_region_impl(
     let explicit_reader = args.get(3).filter(|value| !value.is_nil()).copied();
     let read_function =
         explicit_reader.or_else(|| {
-            interp.lookup_var_key(cached_symbol!("load-read-function"), env).filter(
+            interp.symbol_value_key(cached_symbol!("load-read-function")).filter(
             |value| !matches!(value.kind(), Kind::Symbol(symbol) if symbol.is_named("read")),
         )
         });
@@ -602,7 +596,7 @@ pub(crate) fn eval_region_impl(
         env,
     )?);
     let eval_buffer_list = interp
-        .lookup_var_key(cached_symbol!("eval-buffer-list"), env)
+        .symbol_value_key(cached_symbol!("eval-buffer-list"))
         .unwrap_or(Value::Nil);
     restores.push(interp.bind_special_key(
         cached_symbol!("eval-buffer-list"),
@@ -614,7 +608,7 @@ pub(crate) fn eval_region_impl(
     // of the buffer's file name (loadhist_initialize), nil if it has none.
     restores.push(interp.bind_special_key(cached_symbol!("standard-input"), readcharfun, env)?);
     let dynvars = interp
-        .lookup_var_key(cached_symbol!("macroexp--dynvars"), env)
+        .symbol_value_key(cached_symbol!("macroexp--dynvars"))
         .unwrap_or(Value::Nil);
     restores.push(interp.bind_special_key(cached_symbol!("macroexp--dynvars"), dynvars, env)?);
     restores.push(interp.bind_special_key(
@@ -627,7 +621,7 @@ pub(crate) fn eval_region_impl(
     // forms in a fresh interpreter environment — the caller's lexical
     // frames never leak into the evaluated region's top level.
     let lexical = interp
-        .lookup_var_key(cached_symbol!("lexical-binding"), env)
+        .symbol_value_key(cached_symbol!("lexical-binding"))
         .is_some_and(|value| value.is_truthy());
     let print = !print_flag.is_nil();
     let mut result = with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
@@ -675,9 +669,9 @@ fn readevalloop_print(
     env: &mut Env,
 ) -> Result<(), LispError> {
     let values = interp
-        .lookup_var_key(cached_symbol!("values"), env)
+        .symbol_value_key(cached_symbol!("values"))
         .unwrap_or(Value::Nil);
-    interp.set_variable_key(cached_symbol!("values"), Value::cons(value, values), env);
+    interp.set_symbol_value_key(cached_symbol!("values"), Value::cons(value, values));
     let printer = match interp
         .symbol_value_key(cached_symbol!("standard-output"))
         .map(|v| v.kind())
@@ -889,10 +883,9 @@ fn eval_buffer_forms(
     buffer_id: u64,
     eager_macroexpand: bool,
     print: bool,
-    env: &mut Env,
 ) -> Result<Value, LispError> {
     let load_read = interp
-        .lookup_var_key(cached_symbol!("load-read-function"), env)
+        .symbol_value_key(cached_symbol!("load-read-function"))
         .unwrap_or_else(|| Value::Symbol("read".into()));
     let text = interp
         .get_buffer_by_id(buffer_id)
@@ -1042,7 +1035,7 @@ fn read_eval_buffer_loop(
         let form = match read {
             Ok(form) => form,
             Err(error) => {
-                let error = reader_end_of_file(interp, error, env);
+                let error = reader_end_of_file(interp, error);
                 // The reader moved point to where it stopped; eval-region's
                 // excursion then restores it.
                 let error = if matches!(error.kind(), LispErrorKind::ReadError(_)) {
@@ -1102,7 +1095,7 @@ fn read_next_eval_form(
     offset: &mut usize,
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
-    let shorthands = read_symbol_shorthands_in_env(interp, env)?;
+    let shorthands = read_symbol_shorthands(interp)?;
     let (value, consumed, needs_materialization) = {
         let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match source.input_from(*offset) {
@@ -1153,7 +1146,10 @@ fn with_fresh_eval_environment<T>(
         crate::lisp::types::Env::new()
     };
     interp.push_lambda_eval_context(lexical);
+    let installed =
+        interp.install_frame_environment(crate::lisp::types::current_environment_value(&eval_env));
     let result = body(interp, &mut eval_env);
+    interp.uninstall_frame_environments(installed);
     interp.pop_lambda_capture_override();
     result
 }
@@ -1331,16 +1327,14 @@ fn find_load_file(
             suffixes
         } else {
             let reps = interp
-                .forwarded_c_value("load-file-rep-suffixes", env)
+                .forwarded_c_value("load-file-rep-suffixes")
                 .unwrap_or(Value::Nil);
             super::call(interp, "append", &[suffixes, reps], &mut load_env)?
         }
     };
-    let path = interp
-        .forwarded_c_value("load-path", env)
-        .unwrap_or(Value::Nil);
+    let path = interp.forwarded_c_value("load-path").unwrap_or(Value::Nil);
     let newer = interp
-        .forwarded_c_value("load-prefer-newer", env)
+        .forwarded_c_value("load-prefer-newer")
         .is_some_and(|value| value.is_truthy());
     search::openp_search(
         interp,
@@ -1368,7 +1362,7 @@ pub(crate) fn maybe_swap_for_native(
             .extension()
             .is_none_or(|extension| extension != "elc")
         || interp
-            .lookup_var_key(cached_symbol!("load-no-native"), env)
+            .symbol_value_key(cached_symbol!("load-no-native"))
             .is_some_and(|value| value.is_truthy())
     {
         return Ok(resolved.to_path_buf());
@@ -1376,7 +1370,7 @@ pub(crate) fn maybe_swap_for_native(
 
     // The names here are Lisp file names' text; each reaches the host
     // ENCODE_FILE'd, as lread.c's maybe_swap_for_eln passes them.
-    let host = |path: &Path| host_file_name(interp, env, &path.to_string_lossy());
+    let host = |path: &Path| host_file_name(interp, &path.to_string_lossy());
     let mut source = resolved.to_path_buf();
     source.set_extension("el");
     if !fs::is_regular_file(host(&source)?) {
@@ -1394,19 +1388,19 @@ pub(crate) fn maybe_swap_for_native(
         &mut filename_env,
     )?;
     let version = interp
-        .lookup_var_key(cached_symbol!("comp-native-version-dir"), env)
+        .symbol_value_key(cached_symbol!("comp-native-version-dir"))
         .and_then(|value| string_like(&value).map(|string| string.text));
     let Some(version) = version else {
         return Ok(resolved.to_path_buf());
     };
     let load_paths = interp
-        .lookup_var_key(cached_symbol!("native-comp-eln-load-path"), env)
+        .symbol_value_key(cached_symbol!("native-comp-eln-load-path"))
         .and_then(|value| value.to_vec().ok())
         .unwrap_or_default();
     let invocation_directory = interp
-        .lookup_var_key(cached_symbol!("invocation-directory"), env)
+        .symbol_value_key(cached_symbol!("invocation-directory"))
         .and_then(|value| string_like(&value).map(|string| PathBuf::from(string.text)));
-    let resolved_mtime = fs::metadata(host_file_name(interp, env, &resolved.to_string_lossy())?)
+    let resolved_mtime = fs::metadata(host_file_name(interp, &resolved.to_string_lossy())?)
         .and_then(|metadata| metadata.modified())
         .ok();
 
@@ -1425,7 +1419,7 @@ pub(crate) fn maybe_swap_for_native(
         };
         system_directory = Some(directory.clone());
         let candidate = directory.join(&version).join(&relative);
-        let host = host_file_name(interp, env, &candidate.to_string_lossy())?;
+        let host = host_file_name(interp, &candidate.to_string_lossy())?;
         if native_candidate_is_current(&host, resolved_mtime) {
             record_native_source(interp, &candidate, &source, env)?;
             return Ok(candidate);
@@ -1436,7 +1430,7 @@ pub(crate) fn maybe_swap_for_native(
     // native directory after all ordinary cache directories.
     if let Some(directory) = system_directory {
         let candidate = directory.join(version).join("preloaded").join(relative);
-        let host = host_file_name(interp, env, &candidate.to_string_lossy())?;
+        let host = host_file_name(interp, &candidate.to_string_lossy())?;
         if native_candidate_is_current(&host, resolved_mtime) {
             record_native_source(interp, &candidate, &source, env)?;
             return Ok(candidate);
@@ -1468,7 +1462,7 @@ fn record_native_source(
     source: &Path,
     env: &Env,
 ) -> Result<(), LispError> {
-    let Some(table) = interp.lookup_var_key(cached_symbol!("comp-eln-to-el-h"), env) else {
+    let Some(table) = interp.symbol_value_key(cached_symbol!("comp-eln-to-el-h")) else {
         return Ok(());
     };
     let Some(basename) = native.file_name() else {
@@ -1515,11 +1509,10 @@ pub(crate) fn note_unescaped_character_literal(
     Ok(())
 }
 
-pub(crate) fn read_symbol_shorthands_in_env(
+pub(crate) fn read_symbol_shorthands(
     interp: &Interpreter,
-    env: &Env,
 ) -> Result<Vec<(String, String)>, LispError> {
-    let Some(raw) = interp.lookup_var_key(cached_symbol!("read-symbol-shorthands"), env) else {
+    let Some(raw) = interp.symbol_value_key(cached_symbol!("read-symbol-shorthands")) else {
         return Ok(Vec::new());
     };
     let mut shorthands = Vec::new();
@@ -1538,12 +1531,11 @@ pub(crate) fn read_symbol_shorthands_in_env(
     Ok(shorthands)
 }
 
-pub(crate) fn apply_symbol_shorthands_in_env(
+pub(crate) fn apply_symbol_shorthands(
     interp: &Interpreter,
     symbol_name: &str,
-    env: &Env,
 ) -> Result<String, LispError> {
-    for (short, long) in read_symbol_shorthands_in_env(interp, env)? {
+    for (short, long) in read_symbol_shorthands(interp)? {
         if let Some(rest) = symbol_name.strip_prefix(&short) {
             return Ok(format!("{long}{rest}"));
         }
@@ -1559,14 +1551,14 @@ pub(crate) fn get_load_suffixes_value(
     // detaches their public symbols. concat2 accepts sequences, not just strings.
     let mut suffixes = search::SearchTail::new(
         interp
-            .forwarded_c_value("load-suffixes", env)
+            .forwarded_c_value("load-suffixes")
             .unwrap_or(Value::Nil),
     );
     let mut values = Vec::new();
     while let Some((suffix, _)) = suffixes.current.cons_values() {
         let mut reps = search::SearchTail::new(
             interp
-                .forwarded_c_value("load-file-rep-suffixes", env)
+                .forwarded_c_value("load-file-rep-suffixes")
                 .unwrap_or(Value::Nil),
         );
         while let Some((rep, _)) = reps.current.cons_values() {

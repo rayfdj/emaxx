@@ -67,11 +67,7 @@ fn display_table_of(value: Value) -> Option<CharTableRef> {
 
 /// window.c window_display_table: WIN's own display table, else its
 /// buffer's `buffer-display-table', else `standard-display-table'.
-fn window_display_table(
-    interp: &Interpreter,
-    env: &Env,
-    win: MotionWindow,
-) -> Option<CharTableRef> {
+fn window_display_table(interp: &Interpreter, win: MotionWindow) -> Option<CharTableRef> {
     let own = interp
         .find_record(win.id)
         .and_then(|window| window.slots.get(super::WINDOW_DISPLAY_TABLE_SLOT).copied())
@@ -80,7 +76,7 @@ fn window_display_table(
         return own;
     }
     if win.contents == interp.current_buffer_id() {
-        return buffer_display_table(interp, env);
+        return buffer_display_table(interp);
     }
     interp
         .buffer_local_toplevel_value(win.contents, "buffer-display-table")
@@ -88,7 +84,7 @@ fn window_display_table(
         .and_then(display_table_of)
         .or_else(|| {
             interp
-                .lookup_var_key(cached_symbol!("standard-display-table"), env)
+                .symbol_value_key(cached_symbol!("standard-display-table"))
                 .and_then(display_table_of)
         })
 }
@@ -104,8 +100,8 @@ fn display_vector(interp: &Interpreter, dp: Option<CharTableRef>, c: i64) -> Opt
 
 /// BVAR (current_buffer, selective_display) as compute_motion reads it:
 /// a fixnum's value, -1 for another non-nil value, else 0.
-fn selective_display(interp: &Interpreter, env: &Env) -> i64 {
-    match interp.lookup_var_key(cached_symbol!("selective-display"), env) {
+fn selective_display(interp: &Interpreter) -> i64 {
+    match interp.symbol_value_key(cached_symbol!("selective-display")) {
         Some(value) => match value.kind() {
             Kind::Integer(n) => n,
             Kind::Nil => 0,
@@ -140,9 +136,9 @@ fn text_prop_window(interp: &Interpreter, win: MotionWindow) -> Option<u64> {
 }
 
 /// TEXT_PROP_MEANS_INVISIBLE of the `invisible' property at POS.
-fn invisible_at(interp: &Interpreter, env: &Env, pos: usize, window: Option<u64>) -> u8 {
+fn invisible_at(interp: &Interpreter, pos: usize, window: Option<u64>) -> u8 {
     let prop = char_property(interp, pos, "invisible", window);
-    super::invisibility_level(interp, &prop, env)
+    super::invisibility_level(interp, &prop)
 }
 
 /// indent.c skip_invisible, for a window: past the invisible text at POS,
@@ -151,7 +147,6 @@ fn invisible_at(interp: &Interpreter, env: &Env, pos: usize, window: Option<u64>
 /// NEXT_BOUNDARY.
 fn skip_invisible(
     interp: &Interpreter,
-    env: &Env,
     pos: usize,
     next_boundary: &mut usize,
     to: usize,
@@ -184,7 +179,7 @@ fn skip_invisible(
         .and_then(|value| value.integer_value())
         .map_or(limit, |value| value as usize);
     }
-    if invisible_at(interp, env, pos, window) != 0 {
+    if invisible_at(interp, pos, window) != 0 {
         return *next_boundary;
     }
     pos
@@ -196,7 +191,7 @@ fn skip_invisible(
 /// only the overlays for WIN.  In a multibyte buffer that is strwidth of
 /// the strings as copy_text makes them multibyte; in a unibyte one, their
 /// characters.
-fn overlay_strings_width(interp: &Interpreter, env: &Env, pos: usize, win: MotionWindow) -> i64 {
+fn overlay_strings_width(interp: &Interpreter, pos: usize, win: MotionWindow) -> i64 {
     let mut strings = Vec::new();
     let multibyte = {
         let buffer = interp.buffer.borrow();
@@ -240,9 +235,7 @@ fn overlay_strings_width(interp: &Interpreter, env: &Env, pos: usize, win: Motio
         buffer.is_multibyte()
     };
     // c_string_width reads the buffer's display table.
-    let dp = multibyte
-        .then(|| buffer_display_table(interp, env))
-        .flatten();
+    let dp = multibyte.then(|| buffer_display_table(interp)).flatten();
     let mut width = 0i64;
     for string in strings {
         let Kind::StringObject(state) = string.kind() else {
@@ -258,7 +251,7 @@ fn overlay_strings_width(interp: &Interpreter, env: &Env, pos: usize, win: Motio
         while let Some(code) = state.character_as_multibyte_advance(&mut offset) {
             width += match display_vector(interp, dp, code) {
                 Some(glyphs) => glyphs.len().min(1000) as i64,
-                None => super::character_width(interp, code as u32, env) as i64,
+                None => super::character_width(interp, code as u32) as i64,
             };
         }
     }
@@ -268,12 +261,12 @@ fn overlay_strings_width(interp: &Interpreter, env: &Env, pos: usize, win: Motio
 /// indent.c indented_beyond_p: whether the line at POS, or the last
 /// nonempty line before an empty one there, is indented COLUMN columns
 /// or more.
-fn indented_beyond_p(interp: &mut Interpreter, env: &mut Env, mut pos: usize, column: i64) -> bool {
+fn indented_beyond_p(interp: &mut Interpreter, mut pos: usize, column: i64) -> bool {
     let begv = interp.buffer.borrow().point_min();
     while pos > begv && interp.buffer.borrow().char_at(pos) == Some('\n') {
         pos = interp.buffer.borrow().line_start_at(pos - 1);
     }
-    position_indentation(interp, env, pos) as i64 >= column
+    position_indentation(interp, pos) as i64 >= column
 }
 
 /// search.c find_before_next_newline (FROM, TO, 1).
@@ -316,15 +309,15 @@ pub(crate) fn compute_motion(
     let mut vpos = fromvpos;
     // SANE_TAB_WIDTH.
     let tab_width = interp
-        .lookup_var_key(cached_symbol!("tab-width"), env)
+        .symbol_value_key(cached_symbol!("tab-width"))
         .and_then(|value| value.integer_value())
         .filter(|width| (1..=1000).contains(width))
         .unwrap_or(8);
     let ctl_arrow = interp
-        .lookup_var_key(cached_symbol!("ctl-arrow"), env)
+        .symbol_value_key(cached_symbol!("ctl-arrow"))
         .is_some_and(|value| !value.is_nil());
-    let dp = window_display_table(interp, env, win);
-    let selective = selective_display(interp, env);
+    let dp = window_display_table(interp, win);
+    let selective = selective_display(interp);
     let selective_rlen = if selective != 0 {
         dp.and_then(|dp| interp.char_table_extra_slot(dp, 4))
             .filter(super::interactive::is_vector_value)
@@ -334,10 +327,10 @@ pub(crate) fn compute_motion(
         0
     };
     let truncate_lines = interp
-        .lookup_var_key(cached_symbol!("truncate-lines"), env)
+        .symbol_value_key(cached_symbol!("truncate-lines"))
         .is_some_and(|value| !value.is_nil());
     let truncate_partial = interp
-        .lookup_var_key(cached_symbol!("truncate-partial-width-windows"), env)
+        .symbol_value_key(cached_symbol!("truncate-partial-width-windows"))
         .unwrap_or(Value::Nil);
     let multibyte = interp.buffer.borrow().is_multibyte();
     let zv = interp.buffer.borrow().point_max();
@@ -364,7 +357,7 @@ pub(crate) fn compute_motion(
     let mut contin_hpos = 0i64;
     let mut prev_tab_offset = tab_offset;
     let mut cmp_it = CompositionIterator::new();
-    cmp_it.compute_stop_pos(interp, env, pos, to);
+    cmp_it.compute_stop_pos(interp, pos, to);
 
     'scan: loop {
         while pos == next_boundary {
@@ -388,13 +381,13 @@ pub(crate) fn compute_motion(
             // The first time through, unless the caller's FROMHPOS counts
             // them, the overlay strings at POS take their columns.
             if !did_motion {
-                hpos += overlay_strings_width(interp, env, pos, win);
+                hpos += overlay_strings_width(interp, pos, win);
             }
             did_motion = false;
             if pos >= to {
                 break;
             }
-            let newpos = skip_invisible(interp, env, pos, &mut next_boundary, to, window);
+            let newpos = skip_invisible(interp, pos, &mut next_boundary, to, window);
             if newpos >= to {
                 pos = to.min(newpos);
                 break 'scan;
@@ -491,12 +484,12 @@ pub(crate) fn compute_motion(
         // A composition sequence: a static composition takes its width,
         // an automatic one a glyph cluster's characters' at a time.
         if cmp_it.composing() || (pos == cmp_it.stop_pos && cmp_it.reseat(interp, env, pos, to)) {
-            cmp_it.update(interp, env);
+            cmp_it.update(interp);
         }
         if cmp_it.composing() {
             pos += cmp_it.nchars;
             hpos += cmp_it.width;
-            cmp_it.advance(interp, env, pos, to);
+            cmp_it.advance(interp, pos, to);
             continue;
         }
 
@@ -529,7 +522,7 @@ pub(crate) fn compute_motion(
                 }
                 hpos += tab_width - tem;
             } else if c == i64::from(b'\n') {
-                if selective > 0 && indented_beyond_p(interp, env, pos, selective) {
+                if selective > 0 && indented_beyond_p(interp, pos, selective) {
                     // At TO there is no selective display to take care of.
                     if pos < to {
                         // Skip any number of invisible lines all at once.
@@ -538,7 +531,7 @@ pub(crate) fn compute_motion(
                             if pos < to {
                                 pos += 1;
                             }
-                            if !(pos < to && indented_beyond_p(interp, env, pos, selective)) {
+                            if !(pos < to && indented_beyond_p(interp, pos, selective)) {
                                 break;
                             }
                         }
@@ -584,7 +577,7 @@ pub(crate) fn compute_motion(
                 // over, whose leading byte this is -- or, for a display
                 // vector's glyph, of the ASCII character the vector is
                 // for, rewound to.
-                let mb_width = multibyte_char_width(interp, env, code as u32, dp).min(1000) as i64;
+                let mb_width = multibyte_char_width(interp, code as u32, dp).min(1000) as i64;
                 if mb_width > 1 {
                     wide_column_end_hpos = hpos + mb_width;
                 }
@@ -620,15 +613,15 @@ pub(crate) fn vmotion(
 ) -> Position {
     let hscroll = super::dispatch::display::window_hscroll_state(interp, win.id).hscroll;
     let lmargin = if hscroll > 0 { 1 - hscroll } else { 0 };
-    let selective = selective_display(interp, env).max(-1);
+    let selective = selective_display(interp).max(-1);
     let window = text_prop_window(interp, win);
     let begv = interp.buffer.borrow().point_min();
     let mut vpos = 0i64;
     // A line start PREVLINE that moving by screen lines skips: one hidden
     // by selective display, or whose newline (NEWLINE) is invisible.
-    let hidden = |interp: &mut Interpreter, env: &mut Env, prevline: usize, newline: usize| {
-        (selective > 0 && indented_beyond_p(interp, env, prevline, selective))
-            || invisible_at(interp, env, newline, window) != 0
+    let hidden = |interp: &mut Interpreter, prevline: usize, newline: usize| {
+        (selective > 0 && indented_beyond_p(interp, prevline, selective))
+            || invisible_at(interp, newline, window) != 0
     };
 
     if vpos >= vtarget {
@@ -637,7 +630,7 @@ pub(crate) fn vmotion(
         while (vpos > vtarget || first) && from > begv {
             let mut prevline = interp.buffer.borrow().line_start_at(from - 1);
             // When moving upward, check the newline before.
-            while prevline > begv && hidden(interp, env, prevline, prevline - 1) {
+            while prevline > begv && hidden(interp, prevline, prevline - 1) {
                 prevline = interp.buffer.borrow().line_start_at(prevline - 1);
             }
             let pos = compute_motion(
@@ -676,7 +669,7 @@ pub(crate) fn vmotion(
         if from > begv && interp.buffer.borrow().char_at(from - 1) != Some('\n') {
             let mut prevline = interp.buffer.borrow().line_start_at(from);
             // When moving downward, check the newline after.
-            while prevline > begv && hidden(interp, env, prevline, prevline) {
+            while prevline > begv && hidden(interp, prevline, prevline) {
                 prevline = interp.buffer.borrow().line_start_at(prevline - 1);
             }
             let pos = compute_motion(

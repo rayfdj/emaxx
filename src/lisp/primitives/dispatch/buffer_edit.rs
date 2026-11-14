@@ -16,7 +16,7 @@ fn restore_buffer_modified_p(
     let current = interp.current_buffer_id();
     let base = interp.root_buffer_id(current);
     if !interp
-        .lookup_var_key(cached_symbol!("inhibit-modification-hooks"), env)
+        .symbol_value_key(cached_symbol!("inhibit-modification-hooks"))
         .is_some_and(|value| value.is_truthy())
     {
         // `!NILP (fn) && !NILP (BVAR (b, filename))', FN the truename.
@@ -78,11 +78,11 @@ fn self_insert_command(
     };
     let c = match args.get(1).filter(|value| !value.is_nil()) {
         Some(c) => {
-            interp.set_variable_key(cached_symbol!("last-command-event"), *c, env);
+            interp.set_symbol_value_key(cached_symbol!("last-command-event"), *c);
             *c
         }
         None => interp
-            .lookup_var_key(cached_symbol!("last-command-event"), env)
+            .symbol_value_key(cached_symbol!("last-command-event"))
             .unwrap_or(Value::Nil),
     };
     if n < 0 {
@@ -96,14 +96,13 @@ fn self_insert_command(
     match c.kind() {
         Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code) => {
             let table = interp
-                .lookup_var_key(cached_symbol!("translation-table-for-input"), env)
+                .symbol_value_key(cached_symbol!("translation-table-for-input"))
                 .unwrap_or(Value::Nil);
             let character = translate_char(interp, &table, code as u32);
             if internal_self_insert(interp, character, n, env)? == 2 {
-                interp.set_variable_key(
+                interp.set_symbol_value_key(
                     cached_symbol!("undo-auto--this-command-amalgamating"),
                     Value::Nil,
-                    env,
                 );
             }
         }
@@ -123,17 +122,17 @@ fn internal_self_insert(
     env: &mut Env,
 ) -> Result<i32, LispError> {
     const MOST_POSITIVE_FIXNUM: i64 = (1 << 61) - 1;
-    let truthy = |interp: &Interpreter, env: &Env, name: crate::lisp::types::symbols::SymbolKey| {
+    let truthy = |interp: &Interpreter, name: crate::lisp::types::symbols::SymbolKey| {
         interp
-            .lookup_var_key(name, env)
+            .symbol_value_key(name)
             .is_some_and(|value| value.is_truthy())
     };
     let mut hairy = 0;
     let overwrite = interp
-        .lookup_var_key(cached_symbol!("overwrite-mode"), env)
+        .symbol_value_key(cached_symbol!("overwrite-mode"))
         .unwrap_or(Value::Nil);
-    if truthy(interp, env, cached_symbol!("before-change-functions"))
-        || truthy(interp, env, cached_symbol!("after-change-functions"))
+    if truthy(interp, cached_symbol!("before-change-functions"))
+        || truthy(interp, cached_symbol!("after-change-functions"))
     {
         hairy = 1;
     }
@@ -188,9 +187,9 @@ fn internal_self_insert(
         syntax::syntax_entry_for_code(interp, interp.current_syntax_table_id(), code).class
     };
     let point = interp.buffer.borrow().point();
-    if truthy(interp, env, cached_symbol!("abbrev-mode"))
+    if truthy(interp, cached_symbol!("abbrev-mode"))
         && syntax_class(interp, c) != syntax::SyntaxClass::Word
-        && !truthy(interp, env, cached_symbol!("buffer-read-only"))
+        && !truthy(interp, cached_symbol!("buffer-read-only"))
         && point > interp.buffer.borrow().point_min()
         && syntax_class(interp, {
             // Fprevious_char, a unibyte buffer's byte as UNIBYTE_TO_CHAR.
@@ -258,7 +257,7 @@ fn internal_self_insert(
     }
 
     let auto_fill_character = match interp
-        .lookup_var_key(cached_symbol!("auto-fill-chars"), env)
+        .symbol_value_key(cached_symbol!("auto-fill-chars"))
         .map(|value| value.kind())
     {
         Some(Kind::CharTable(table)) => interp
@@ -266,7 +265,7 @@ fn internal_self_insert(
             .is_some_and(|value| value.is_truthy()),
         _ => c == u32::from(b' ') || c == u32::from(b'\n'),
     };
-    if auto_fill_character && truthy(interp, env, cached_symbol!("auto-fill-function")) {
+    if auto_fill_character && truthy(interp, cached_symbol!("auto-fill-function")) {
         // After a newline, fill the line it ends, with the newline in
         // place already.
         if c == u32::from(b'\n') {
@@ -683,7 +682,7 @@ define_dispatch!(
                 // Noninteractively vmotion moves by lines alone; the
                 // display iterator's motion first converts CUR-COL
                 // (extract_float) and then COLS to x with window_column_x.
-                let (start_x, goal_col) = if interactive_motion(interp, env) {
+                let (start_x, goal_col) = if interactive_motion(interp) {
                     let window_arg = args.get(1).copied().unwrap_or(Value::Nil);
                     let start_x = match args.get(2).copied().filter(|value| !value.is_nil()) {
                         Some(cur_col) => {
@@ -829,7 +828,7 @@ define_dispatch!(
                     )?,
                     _ => args[0],
                 };
-                Ok(match invisibility_level(interp, &prop, env) {
+                Ok(match invisibility_level(interp, &prop) {
                     0 => Value::Nil,
                     1 => Value::T,
                     level => Value::Integer(i64::from(level)),
@@ -1210,7 +1209,7 @@ define_dispatch!(
                 };
                 if args.get(2).is_some_and(Value::is_truthy) {
                     let extractor = interp
-                        .lookup_var_key(cached_symbol!("region-extract-function"), env)
+                        .symbol_value_key(cached_symbol!("region-extract-function"))
                         .ok_or_else(|| LispError::Void(Value::symbol("region-extract-function")))?;
                     let bounds = call_function_value(
                         interp,
@@ -1289,7 +1288,7 @@ define_dispatch!(
                 // the line's start.
                 let point = interp.buffer.borrow().point();
                 let bol = line_beginning_at(interp, point);
-                Ok(Value::Integer(position_indentation(interp, env, bol) as i64))
+                Ok(Value::Integer(position_indentation(interp, bol) as i64))
             }
             "indent-to" => {
                 // indent.c Findent_to: CHECK_FIXNUM both COLUMN and MINIMUM.
@@ -1711,13 +1710,13 @@ define_dispatch!(
 /// Column width of a display spec form: integers are columns, one-element
 /// lists are pixels (one per column on the batch frame), symbols are
 /// variables, and (+ ...)/(- ...) combine recursively.
-fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> i64 {
+fn display_spec_width(interp: &mut Interpreter, spec: &Value) -> i64 {
     match spec.kind() {
         Kind::Integer(value) => value,
         Kind::Float(value) => value.get() as i64,
         Kind::Symbol(name) => interp
-            .lookup_var_symbol(&name, env)
-            .map(|value| display_spec_width(interp, env, &value))
+            .symbol_value_symbol(&name)
+            .map(|value| display_spec_width(interp, &value))
             .unwrap_or(0),
         Kind::Cons(_) => {
             let Ok(items) = spec.to_vec() else { return 0 };
@@ -1725,10 +1724,10 @@ fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> 
                 Some(Kind::Symbol(op)) if op.is_named("-") || op.is_named("+") => {
                     let mut acc = items
                         .get(1)
-                        .map(|item| display_spec_width(interp, env, item))
+                        .map(|item| display_spec_width(interp, item))
                         .unwrap_or(0);
                     for item in items.iter().skip(2) {
-                        let value = display_spec_width(interp, env, item);
+                        let value = display_spec_width(interp, item);
                         if op.is_named("-") {
                             acc -= value;
                         } else {
@@ -1737,7 +1736,7 @@ fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> 
                     }
                     acc
                 }
-                Some(inner) if items.len() == 1 => display_spec_width(interp, env, &inner.value()),
+                Some(inner) if items.len() == 1 => display_spec_width(interp, &inner.value()),
                 _ => 0,
             }
         }
@@ -1746,7 +1745,7 @@ fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> 
 }
 
 /// Column width contributed by a `line-prefix'/`wrap-prefix' property.
-fn prefix_property_width(interp: &mut Interpreter, env: &mut Env, prop: Option<Value>) -> usize {
+fn prefix_property_width(interp: &mut Interpreter, prop: Option<Value>) -> usize {
     let Some(prop) = prop else { return 0 };
     if let Some(text) = string_like(&prop) {
         return text.text.chars().count();
@@ -1757,7 +1756,7 @@ fn prefix_property_width(interp: &mut Interpreter, env: &mut Env, prop: Option<V
         let mut cursor = 1;
         while cursor + 1 < items.len() {
             if crate::lisp::types::eq_symbol_named(items[cursor], ":width") {
-                return display_spec_width(interp, env, &items[cursor + 1]).max(0) as usize;
+                return display_spec_width(interp, &items[cursor + 1]).max(0) as usize;
             }
             cursor += 2;
         }
@@ -1838,12 +1837,7 @@ pub(crate) fn window_line_number_columns(
     let buffer_id = interp.current_buffer_id();
     let enabled = interp
         .buffer_local_value_key(buffer_id, cached_symbol!("display-line-numbers"))
-        .or_else(|| {
-            interp.lookup_var_key(
-                cached_symbol!("display-line-numbers"),
-                &crate::lisp::types::Env::new(),
-            )
-        })
+        .or_else(|| interp.symbol_value_key(cached_symbol!("display-line-numbers")))
         .unwrap_or(Value::Nil);
     if enabled.is_nil() {
         return 0;
@@ -1936,9 +1930,9 @@ pub(crate) fn iterator_first_visible(
 
 /// Whether screen-line motion follows a live terminal display rather
 /// than the batch model: Fvertical_motion's `noninteractive' test.
-pub(crate) fn interactive_motion(interp: &Interpreter, env: &Env) -> bool {
+pub(crate) fn interactive_motion(interp: &Interpreter) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("noninteractive"), env)
+        .symbol_value_key(cached_symbol!("noninteractive"))
         .is_some_and(|value| value.is_nil())
 }
 
@@ -2299,7 +2293,7 @@ pub(crate) fn screen_row_starts(
     bol: usize,
     eol: usize,
 ) -> Vec<usize> {
-    if interactive_motion(interp, env) {
+    if interactive_motion(interp) {
         interactive_screen_line(interp, env, window_id, bol).row_starts
     } else {
         visual_segment_starts(interp, env, bol, eol)
@@ -2326,7 +2320,7 @@ pub(crate) fn visual_segment_starts(
 ) -> Vec<usize> {
     let mut starts = vec![bol];
     if interp
-        .lookup_var_key(cached_symbol!("truncate-lines"), env)
+        .symbol_value_key(cached_symbol!("truncate-lines"))
         .is_some_and(|value| value.is_truthy())
     {
         return starts;
@@ -2342,11 +2336,11 @@ pub(crate) fn visual_segment_starts(
     let reserve = 1;
     let line_prefix_width = {
         let prop = interp.buffer.borrow().text_property_at(bol, "line-prefix");
-        prefix_property_width(interp, env, prop)
+        prefix_property_width(interp, prop)
     };
     let wrap_prefix_width = {
         let prop = interp.buffer.borrow().text_property_at(bol, "wrap-prefix");
-        prefix_property_width(interp, env, prop)
+        prefix_property_width(interp, prop)
     };
     let widths = visual_char_widths(interp, env, bol, eol);
     let mut seg_start = bol;
@@ -2491,7 +2485,6 @@ fn checked_motion_position(interp: &Interpreter, position: i64) -> Result<usize,
 
 fn display_motion_width(
     interp: &Interpreter,
-    env: &Env,
     position: usize,
     character: char,
     hpos: i64,
@@ -2499,7 +2492,7 @@ fn display_motion_width(
     tab_offset: i64,
 ) -> i64 {
     // Redisplay's motion reads a property whose lookup signals as nil.
-    if char_is_invisible(interp, position, env).unwrap_or(false) {
+    if char_is_invisible(interp, position).unwrap_or(false) {
         return 0;
     }
     if let Some(display) = interp
@@ -2529,7 +2522,7 @@ fn display_motion_width(
     }
     if character == '\t' {
         let tab_width = interp
-            .lookup_var_key(cached_symbol!("tab-width"), env)
+            .symbol_value_key(cached_symbol!("tab-width"))
             .and_then(|value| value.integer_value())
             .unwrap_or(8)
             .max(1);
@@ -2538,7 +2531,7 @@ fn display_motion_width(
     }
     if character.is_control() {
         return if interp
-            .lookup_var_key(cached_symbol!("ctl-arrow"), env)
+            .symbol_value_key(cached_symbol!("ctl-arrow"))
             .is_some_and(|value| value.is_truthy())
         {
             2
@@ -2710,7 +2703,7 @@ pub(super) fn display_motion(
     // canonical display cell.
     width = width.max(1);
     let truncates_partial_window = match interp
-        .lookup_var_key(cached_symbol!("truncate-partial-width-windows"), env)
+        .symbol_value_key(cached_symbol!("truncate-partial-width-windows"))
         .map(|v| v.kind())
     {
         Some(Kind::Integer(threshold)) => width + 1 < interp.frame_width() && width + 1 < threshold,
@@ -2720,7 +2713,7 @@ pub(super) fn display_motion(
     let truncates = hscroll > 0
         || truncates_partial_window
         || interp
-            .lookup_var_key(cached_symbol!("truncate-lines"), env)
+            .symbol_value_key(cached_symbol!("truncate-lines"))
             .is_some_and(|value| value.is_truthy());
     let left_margin = if hscroll > 0 { 1 - hscroll } else { 0 };
 
@@ -2770,7 +2763,7 @@ pub(super) fn display_motion(
         }
 
         let character_width =
-            display_motion_width(interp, env, position, character, hpos, hscroll, tab_offset);
+            display_motion_width(interp, position, character, hpos, hscroll, tab_offset);
         if stop_on_glyph && vpos == target_vpos && hpos + character_width > target_hpos {
             // Each expanded TAB cell has the tab's buffer position.
             if character == '\t' {
@@ -2834,7 +2827,7 @@ fn line_number_display_width_value(
     // indent.c:line_number_display_width tests Vdisplay_line_numbers in
     // the current buffer, before it makes the window's buffer current.
     if interp
-        .lookup_var_key(cached_symbol!("display-line-numbers"), env)
+        .symbol_value_key(cached_symbol!("display-line-numbers"))
         .unwrap_or(Value::Nil)
         .is_nil()
     {
@@ -2858,7 +2851,7 @@ fn line_number_display_width_value(
         // The iterator lays out line numbers by the window's buffer's
         // value: none while it is nil there.
         let mode = interp
-            .lookup_var_key(cached_symbol!("display-line-numbers"), env)
+            .symbol_value_key(cached_symbol!("display-line-numbers"))
             .unwrap_or(Value::Nil);
         if mode.is_nil() {
             return Ok(none());
@@ -2892,7 +2885,7 @@ fn line_number_display_width_value(
         };
         let computed_width = displayed_maximum.max(1).to_string().len().max(2) as i64;
         let requested_width = interp
-            .lookup_var_key(cached_symbol!("display-line-numbers-width"), env)
+            .symbol_value_key(cached_symbol!("display-line-numbers-width"))
             .and_then(|value| value.integer_value())
             .unwrap_or(0)
             .max(0);
@@ -3019,7 +3012,7 @@ fn vertical_motion_in_window(
     goal_col: Option<i64>,
     start_x: Option<i64>,
 ) -> Result<i64, LispError> {
-    if interactive_motion(interp, env) {
+    if interactive_motion(interp) {
         // The display iterator's walk, then move_it_in_display_line to
         // the goal X on the screen line it reached (line-move-visual's
         // temporary-goal-column contract), made again while the
@@ -3563,13 +3556,13 @@ pub(crate) fn current_column(
     // from the line's start, an approximation, which is not recorded.
     if interp.buffer.borrow().long_line_optimizations_p()
         && let Some(Kind::Integer(threshold)) = interp
-            .lookup_var_key(cached_symbol!("long-line-threshold"), env)
+            .symbol_value_key(cached_symbol!("long-line-threshold"))
             .map(|value| value.kind())
         && (point - bol) as i64 > threshold
     {
         return Ok(point - bol);
     }
-    let column = match plain_current_column(interp, env, bol, point) {
+    let column = match plain_current_column(interp, bol, point) {
         Some(column) => column,
         None => column_at(interp, env, bol, point)?,
     };
@@ -3581,12 +3574,7 @@ pub(crate) fn current_column(
 /// start BOL, of a buffer with no intervals or overlays whose characters
 /// are each one byte (Z == Z_BYTE); None for any other buffer, which
 /// current_column_1 scans.
-fn plain_current_column(
-    interp: &Interpreter,
-    env: &crate::lisp::types::Env,
-    bol: usize,
-    point: usize,
-) -> Option<usize> {
+fn plain_current_column(interp: &Interpreter, bol: usize, point: usize) -> Option<usize> {
     {
         let buffer = interp.buffer.borrow();
         if buffer.has_interval_tree()
@@ -3598,17 +3586,17 @@ fn plain_current_column(
     }
     // SANE_TAB_WIDTH.
     let tab_width = interp
-        .lookup_var_key(cached_symbol!("tab-width"), env)
+        .symbol_value_key(cached_symbol!("tab-width"))
         .and_then(|value| value.integer_value())
         .filter(|width| (1..=1000).contains(width))
         .unwrap_or(8) as usize;
     let ctl_arrow = interp
-        .lookup_var_key(cached_symbol!("ctl-arrow"), env)
+        .symbol_value_key(cached_symbol!("ctl-arrow"))
         .is_some_and(|value| value.is_truthy());
     let selective_display = interp
-        .lookup_var_key(cached_symbol!("selective-display"), env)
+        .symbol_value_key(cached_symbol!("selective-display"))
         .is_some_and(|value| matches!(value.kind(), Kind::T));
-    let display_table = crate::lisp::primitives::buffer_display_table(interp, env);
+    let display_table = crate::lisp::primitives::buffer_display_table(interp);
     let buffer = interp.buffer.borrow();
     let (before_gap, after_gap) = buffer.text_halves(bol, point);
     let (mut col, mut tab_seen, mut post_tab) = (0usize, false, 0usize);
@@ -3699,12 +3687,12 @@ pub(super) fn indent_to(
     }
     // SANE_TAB_WIDTH.
     let tab_width = interp
-        .lookup_var_key(cached_symbol!("tab-width"), env)
+        .symbol_value_key(cached_symbol!("tab-width"))
         .and_then(|value| value.integer_value())
         .filter(|width| (1..=1000).contains(width))
         .unwrap_or(8);
     if interp
-        .lookup_var_key(cached_symbol!("indent-tabs-mode"), env)
+        .symbol_value_key(cached_symbol!("indent-tabs-mode"))
         .is_some_and(|value| value.is_truthy())
     {
         let tabs = min_col / tab_width - from_col / tab_width;

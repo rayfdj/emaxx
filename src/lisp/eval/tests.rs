@@ -63,7 +63,7 @@ fn file_notification_roots_follow_queue_dispatch_and_error_requeue() {
             .expect("deliver the surviving tail")
     );
     assert_eq!(
-        interp.lookup_var("notification-control-result", &env),
+        interp.symbol_value("notification-control-result"),
         Some(Value::Integer(113))
     );
     assert!(interp.pending_file_notifications.is_empty());

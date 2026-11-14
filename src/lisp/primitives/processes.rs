@@ -333,10 +333,10 @@ pub(crate) fn locate_program_for_exec(
         return Ok(remove_slash_colon(&program));
     }
     let exec_path = interp
-        .lookup_var_key(cached_symbol!("exec-path"), env)
+        .symbol_value_key(cached_symbol!("exec-path"))
         .unwrap_or(Value::Nil);
     let exec_suffixes = interp
-        .lookup_var_key(cached_symbol!("exec-suffixes"), env)
+        .symbol_value_key(cached_symbol!("exec-suffixes"))
         .unwrap_or(Value::Nil);
     let (found, errno) = locate_file_search(
         interp,
@@ -603,11 +603,10 @@ fn preferred_coding_system(interp: &Interpreter) -> Value {
 /// system.
 pub(crate) fn complement_process_encoding_system(
     interp: &Interpreter,
-    env: &Env,
     coding: Value,
 ) -> Result<Value, LispError> {
     let default = interp
-        .lookup_var_key(cached_symbol!("default-process-coding-system"), env)
+        .symbol_value_key(cached_symbol!("default-process-coding-system"))
         .and_then(|value| value.cons_values())
         .map_or(Value::Nil, |(_, encoding)| encoding);
     let candidates = [coding, default, preferred_coding_system(interp)];
@@ -700,7 +699,7 @@ fn encode_process_input_with(
     let mut coding = name(encoder.coding.unwrap_or(encoding));
     let mut last_used = coding;
     if multibyte {
-        let complemented = name(complement_process_encoding_system(interp, env, encoding)?);
+        let complemented = name(complement_process_encoding_system(interp, encoding)?);
         interp.set_process_encoding(process_id, complemented);
         if coding.symbol_str() != complemented.symbol_str() {
             *encoder = EncoderSpec::default();
@@ -708,13 +707,13 @@ fn encode_process_input_with(
             last_used = complemented;
         }
         encoder.coding = Some(coding);
-    } else if coding_requires_encoding(interp, &coding, env) {
+    } else if coding_requires_encoding(interp, &coding) {
         let symbol = super::coding::coding_text_of(interp, &coding)?;
         if coding_requires_flushing(interp, &symbol) {
             // The flush, send_process (proc, "", 0, Qt): its object is
             // neither a buffer nor a string, so nothing is encoded or
             // sent; only the multibyte arm's complement takes effect.
-            let complemented = name(complement_process_encoding_system(interp, env, encoding)?);
+            let complemented = name(complement_process_encoding_system(interp, encoding)?);
             interp.set_process_encoding(process_id, complemented);
             if last_used.symbol_str() != complemented.symbol_str() {
                 last_used = complemented;
@@ -725,7 +724,7 @@ fn encode_process_input_with(
         *encoder = EncoderSpec::default();
         encoder.coding = Some(Value::symbol(&raw_text));
     }
-    interp.set_variable_key(cached_symbol!("last-coding-system-used"), last_used, env);
+    interp.set_symbol_value_key(cached_symbol!("last-coding-system-used"), last_used);
     send_process_bytes(interp, text, encoder, env)
 }
 
@@ -738,7 +737,7 @@ fn send_process_bytes(
     env: &mut Env,
 ) -> Result<Vec<u8>, LispError> {
     let coding = encoder.coding.unwrap_or(Value::Nil);
-    if super::coding::coding_requires_encoding(interp, &coding, env) {
+    if super::coding::coding_requires_encoding(interp, &coding) {
         let symbol = super::coding::coding_text_of(interp, &coding)?;
         super::coding::encode_process_block(interp, text, &symbol, encoder, env)
     } else {
@@ -808,7 +807,7 @@ pub(crate) fn call_process_arguments(
         must_encode |= state.borrow().is_multibyte();
     }
     let coding_for_write = interp
-        .lookup_var_key(cached_symbol!("coding-system-for-write"), env)
+        .symbol_value_key(cached_symbol!("coding-system-for-write"))
         .unwrap_or(Value::Nil);
     // Unibyte arguments alone pass through as they are, whatever raw-text
     // completes to.
@@ -833,7 +832,7 @@ pub(crate) fn call_process_arguments(
             .cons_values()
             .map_or(Value::Nil, |(_, encoding)| encoding)
     };
-    let coding = complement_process_encoding_system(interp, env, coding)?;
+    let coding = complement_process_encoding_system(interp, coding)?;
     // setup_coding_system reads nil as `undecided'.
     let mut coding = if coding.is_nil() {
         "undecided".to_string()
@@ -891,7 +890,7 @@ pub(crate) fn create_temp_file(
     env: &mut Env,
 ) -> Result<(fs::File, Value, CallProcessTempFile), LispError> {
     let tmpdir = interp
-        .lookup_var_key(cached_symbol!("temporary-file-directory"), env)
+        .symbol_value_key(cached_symbol!("temporary-file-directory"))
         .filter(Value::is_string);
     let tmpdir = match tmpdir {
         Some(directory) => directory,
@@ -904,7 +903,7 @@ pub(crate) fn create_temp_file(
             #[cfg(not(unix))]
             let outf = std::env::var("TMPDIR").ok().map(String::into_bytes);
             super::make_string(outf.unwrap_or_else(|| b"/tmp/".to_vec()))
-                .map_err(|error| super::string_storage_error(interp, env, error))?
+                .map_err(|error| super::string_storage_error(interp, error))?
         }
     };
     let pattern = fexpand_file_name(interp, env, Value::string("emacsXXXXXX"), tmpdir)?;
@@ -932,7 +931,7 @@ pub(crate) fn create_temp_file(
         template.pop();
         // Fcopy_sequence of the encoded pattern, which mkostemp filled in.
         let name = super::make_specified_string(template, multibyte)
-            .map_err(|error| super::string_storage_error(interp, env, error))?;
+            .map_err(|error| super::string_storage_error(interp, error))?;
         let guard = CallProcessTempFile(encoded_host_path(&name));
         Ok((file, name, guard))
     }
@@ -949,7 +948,7 @@ pub(crate) fn create_temp_file(
             template.truncate(stem);
             template.extend_from_slice(suffix.as_bytes());
             let name = super::make_specified_string(template.clone(), multibyte)
-                .map_err(|error| super::string_storage_error(interp, env, error))?;
+                .map_err(|error| super::string_storage_error(interp, error))?;
             match fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -1025,7 +1024,7 @@ pub(crate) fn call_process(
     let output_file = match output_file {
         Some(file) => {
             let directory = interp
-                .lookup_var_key(cached_symbol!("default-directory"), env)
+                .symbol_value_key(cached_symbol!("default-directory"))
                 .unwrap_or(Value::Nil);
             let file = fexpand_file_name(interp, env, file, directory)?;
             if !file.is_string() {
@@ -1043,20 +1042,20 @@ pub(crate) fn call_process(
     // Each name without its "/:", ENCODE_FILE'd before the program is
     // searched for; an error names DECODE_FILE of what was opened.
     let error_file = if error_file.is_string() {
-        let file = remove_slash_colon_value(interp, env, error_file)?;
+        let file = remove_slash_colon_value(interp, error_file)?;
         encode_file_value(interp, env, file)?
     } else {
         error_file
     };
     let output_file = match output_file {
         Some(file) => {
-            let file = remove_slash_colon_value(interp, env, file)?;
+            let file = remove_slash_colon_value(interp, file)?;
             Some(encode_file_value(interp, env, file)?)
         }
         None => None,
     };
     let program = locate_program_for_exec(interp, env, args[0], false)?;
-    let program = host_file_name(interp, env, &program)?.into_os_string();
+    let program = host_file_name(interp, &program)?.into_os_string();
     let discard_output = no_wait || (buffer.is_nil() && output_file.is_none());
     let (output_read, output) = if discard_output {
         let output = fs::OpenOptions::new()
@@ -1110,7 +1109,7 @@ pub(crate) fn call_process(
     } else {
         None
     };
-    let environment = child_environment(interp, env, directory)?;
+    let environment = child_environment(interp, directory)?;
     #[cfg(unix)]
     child_signal_init(interp)?;
     let mut child = spawn_call_process(
@@ -1378,11 +1377,10 @@ pub(crate) type ChildEnvironment = (Vec<Vec<u8>>, Vec<u8>);
 /// encoded name, the directory also set on COMMAND.
 pub(crate) fn configure_external_command(
     interp: &mut Interpreter,
-    env: &mut Env,
     command: &mut Command,
     directory: Value,
 ) -> Result<ChildEnvironment, LispError> {
-    let environment = child_environment(interp, env, directory)?;
+    let environment = child_environment(interp, directory)?;
     set_command_environment(command, &environment);
     Ok(environment)
 }
@@ -1399,7 +1397,7 @@ pub(crate) fn process_current_directory(
     encode: bool,
 ) -> Result<Value, LispError> {
     let curdir = interp
-        .lookup_var_key(cached_symbol!("default-directory"), env)
+        .symbol_value_key(cached_symbol!("default-directory"))
         .unwrap_or(Value::Nil);
     // GNU's get_current_directory(true) asks a handler for the local
     // directory without delegating the process operation itself.  This
@@ -1418,7 +1416,7 @@ pub(crate) fn process_current_directory(
         dir
     };
     let dir = super::system::expand_and_dir_to_file(interp, env, dir)?;
-    let unquoted = remove_slash_colon_value(interp, env, dir)?;
+    let unquoted = remove_slash_colon_value(interp, dir)?;
     let encoded = encode_file_value(interp, env, unquoted)?;
     if let Err(error) = super::system::accessible_directory(&sdata_c_string(&encoded)) {
         return Err(report_file_errno(
@@ -1436,11 +1434,10 @@ pub(crate) fn process_current_directory(
 /// directory (SSDATA, which ENCODE_FILE leaves without a NUL).
 fn child_environment(
     interp: &mut Interpreter,
-    env: &mut Env,
     directory: Value,
 ) -> Result<ChildEnvironment, LispError> {
     let directory = sdata_c_string(&directory);
-    let block = make_environment_block(interp, env, &directory);
+    let block = make_environment_block(interp, &directory);
     Ok((block, directory))
 }
 
@@ -1504,7 +1501,7 @@ pub(crate) fn spawn_persistent_process(
     child_signal_init(interp)?;
     let mut command = Command::new(program);
     add_command_arguments(&mut command, argv);
-    let child_environment = configure_external_command(interp, env, &mut command, directory)?;
+    let child_environment = configure_external_command(interp, &mut command, directory)?;
     let (input_pty, output_pty) = pty_modes;
     // create_process's forkerr: the `:stderr' pipe process's
     // SUBPROCESS_STDOUT itself, -1 once an earlier child was given it.
@@ -2696,9 +2693,9 @@ pub(crate) fn connection_coding_systems(
     let current_unibyte = !interp.buffer.borrow().is_multibyte();
     // Vdefault_process_coding_system as each fallback reads it, after
     // the find-operation-coding-system call before it.
-    let default = |interp: &Interpreter, env: &Env| {
+    let default = |interp: &Interpreter| {
         interp
-            .lookup_var_key(cached_symbol!("default-process-coding-system"), env)
+            .symbol_value_key(cached_symbol!("default-process-coding-system"))
             .and_then(|value| value.cons_values())
     };
     let mut coding_systems = None;
@@ -2733,7 +2730,7 @@ pub(crate) fn connection_coding_systems(
             .cons_values()
             .map_or(coding, |(decoding, _)| decoding)
     } else if let Some(value) = interp
-        .lookup_var_key(cached_symbol!("coding-system-for-read"), env)
+        .symbol_value_key(cached_symbol!("coding-system-for-read"))
         .filter(|value| !value.is_nil())
     {
         value
@@ -2742,7 +2739,7 @@ pub(crate) fn connection_coding_systems(
     } else {
         match operation_coding(interp, env)?.cons_values() {
             Some((found, _)) => found,
-            None => default(interp, env).map_or(Value::Nil, |(decoding, _)| decoding),
+            None => default(interp).map_or(Value::Nil, |(decoding, _)| decoding),
         }
     };
     let encoding = if !coding.is_nil() {
@@ -2750,7 +2747,7 @@ pub(crate) fn connection_coding_systems(
             .cons_values()
             .map_or(coding, |(_, encoding)| encoding)
     } else if let Some(value) = interp
-        .lookup_var_key(cached_symbol!("coding-system-for-write"), env)
+        .symbol_value_key(cached_symbol!("coding-system-for-write"))
         .filter(|value| !value.is_nil())
     {
         value
@@ -2759,7 +2756,7 @@ pub(crate) fn connection_coding_systems(
     } else {
         match operation_coding(interp, env)?.cons_values() {
             Some((_, found)) => found,
-            None => default(interp, env).map_or(Value::Nil, |(_, encoding)| encoding),
+            None => default(interp).map_or(Value::Nil, |(_, encoding)| encoding),
         }
     };
     Ok((decoding, encoding))
@@ -2785,9 +2782,9 @@ pub(crate) fn make_process_coding_systems(
 ) -> Result<(Value, Value), LispError> {
     // Vdefault_process_coding_system as each fallback reads it, after
     // the find-operation-coding-system call before it.
-    let default = |interp: &Interpreter, env: &Env| {
+    let default = |interp: &Interpreter| {
         interp
-            .lookup_var_key(cached_symbol!("default-process-coding-system"), env)
+            .symbol_value_key(cached_symbol!("default-process-coding-system"))
             .and_then(|value| value.cons_values())
     };
     let mut coding_systems = None;
@@ -2813,7 +2810,7 @@ pub(crate) fn make_process_coding_systems(
     };
     let mut decoding = if coding.is_nil() {
         interp
-            .lookup_var_key(cached_symbol!("coding-system-for-read"), env)
+            .symbol_value_key(cached_symbol!("coding-system-for-read"))
             .unwrap_or(Value::Nil)
     } else {
         coding
@@ -2823,12 +2820,12 @@ pub(crate) fn make_process_coding_systems(
     if decoding.is_nil() {
         decoding = match operation_coding(interp, env)?.cons_values() {
             Some((found, _)) => found,
-            None => default(interp, env).map_or(Value::Nil, |(decoding, _)| decoding),
+            None => default(interp).map_or(Value::Nil, |(decoding, _)| decoding),
         };
     }
     let mut encoding = if coding.is_nil() {
         interp
-            .lookup_var_key(cached_symbol!("coding-system-for-write"), env)
+            .symbol_value_key(cached_symbol!("coding-system-for-write"))
             .unwrap_or(Value::Nil)
     } else {
         coding
@@ -2838,7 +2835,7 @@ pub(crate) fn make_process_coding_systems(
     if encoding.is_nil() {
         encoding = match operation_coding(interp, env)?.cons_values() {
             Some((_, found)) => found,
-            None => default(interp, env).map_or(Value::Nil, |(_, encoding)| encoding),
+            None => default(interp).map_or(Value::Nil, |(_, encoding)| encoding),
         };
     }
     Ok((decoding, encoding))
@@ -2864,7 +2861,7 @@ pub(crate) fn make_process_arguments(
             let coding = match argument_coding {
                 Some(coding) => coding,
                 None => {
-                    let coding = complement_process_encoding_system(interp, env, encoding)?;
+                    let coding = complement_process_encoding_system(interp, encoding)?;
                     argument_coding = Some(coding);
                     coding
                 }
@@ -2902,7 +2899,7 @@ fn run_asynch_code(
     body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<(), LispError>,
 ) -> Result<(), LispError> {
     let odeactivate = interp
-        .lookup_var_key(cached_symbol!("deactivate-mark"), env)
+        .symbol_value_key(cached_symbol!("deactivate-mark"))
         .unwrap_or(Value::Nil);
     // record_unwind_current_buffer.
     let saved_buffer_id = interp.current_buffer_id();
@@ -2953,7 +2950,7 @@ fn call_catching_process_errors(
     body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<(), LispError>,
 ) -> Result<(), LispError> {
     if interp
-        .lookup_var_key(cached_symbol!("debug-on-error"), env)
+        .symbol_value_key(cached_symbol!("debug-on-error"))
         .is_some_and(|value| value.is_truthy())
     {
         return body(interp, env);
@@ -2979,7 +2976,7 @@ fn call_catching_process_errors(
     crate::lisp::primitives::interactive::cmd_error_internal(interp, env, data, context)?;
     interp.set_c_variable("inhibit-quit", Value::T);
     let pause = interp
-        .lookup_var_key(cached_symbol!("process-error-pause-time"), env)
+        .symbol_value_key(cached_symbol!("process-error-pause-time"))
         .and_then(|value| value.integer_value())
         .unwrap_or(0);
     if pause > 0 {
@@ -3010,7 +3007,7 @@ pub(crate) fn deliver_process_output_decoded(
     });
     let fast = default_filter
         && interp
-            .lookup_var_key(cached_symbol!("fast-read-process-output"), env)
+            .symbol_value_key(cached_symbol!("fast-read-process-output"))
             .is_some_and(|value| value.is_truthy());
     run_asynch_code(interp, env, |interp, env| {
         if fast {
@@ -3263,13 +3260,9 @@ fn add_env(block: &mut Vec<Vec<u8>>, string: Vec<u8>) {
 /// lacks it; then the strings of `process-environment' up to its first
 /// non-string, each left out when an earlier entry names its variable.
 /// The lone names are dropped last.
-pub(crate) fn make_environment_block(
-    interp: &Interpreter,
-    env: &Env,
-    current_dir: &[u8],
-) -> Vec<Vec<u8>> {
+pub(crate) fn make_environment_block(interp: &Interpreter, current_dir: &[u8]) -> Vec<Vec<u8>> {
     let process_environment = interp
-        .lookup_var_key(cached_symbol!("process-environment"), env)
+        .symbol_value_key(cached_symbol!("process-environment"))
         .unwrap_or(Value::Nil);
     let mut strings = Vec::new();
     let mut cursor = process_environment;
@@ -3281,7 +3274,7 @@ pub(crate) fn make_environment_block(
         cursor = rest;
     }
     let mut block = Vec::with_capacity(strings.len() + 2);
-    if getenv_internal(interp, env, b"PWD", &Value::Nil)
+    if getenv_internal(interp, b"PWD", &Value::Nil)
         .ok()
         .flatten()
         .is_some()
@@ -3305,7 +3298,7 @@ pub(crate) fn make_environment_block(
             .and_then(|display| string_object_bytes(&display));
         if display.is_none() {
             let initial = interp
-                .lookup_var_key(cached_symbol!("initial-environment"), env)
+                .symbol_value_key(cached_symbol!("initial-environment"))
                 .unwrap_or(Value::Nil);
             if initial.is_cons() {
                 display = getenv_internal_1(b"DISPLAY", initial).flatten();
@@ -3358,12 +3351,11 @@ pub(crate) fn getenv_internal_1(variable: &[u8], environment: Value) -> Option<O
 /// parameter (FRAME nil: the selected frame's) or `initial-environment's.
 pub(crate) fn getenv_internal(
     interp: &Interpreter,
-    env: &Env,
     variable: &[u8],
     frame: &Value,
 ) -> Result<Option<Vec<u8>>, LispError> {
     let process_environment = interp
-        .lookup_var_key(cached_symbol!("process-environment"), env)
+        .symbol_value_key(cached_symbol!("process-environment"))
         .unwrap_or(Value::Nil);
     if let Some(value) = getenv_internal_1(variable, process_environment) {
         return Ok(value);
@@ -3374,7 +3366,7 @@ pub(crate) fn getenv_internal(
             return Ok(Some(display));
         }
         let initial = interp
-            .lookup_var_key(cached_symbol!("initial-environment"), env)
+            .symbol_value_key(cached_symbol!("initial-environment"))
             .unwrap_or(Value::Nil);
         if let Some(value) = getenv_internal_1(variable, initial) {
             return Ok(value);
@@ -3417,7 +3409,7 @@ pub(crate) fn append_process_bytes_to_buffer(
     // `default-process-coding-system' (nil decodes as undecided); a
     // unibyte buffer reads raw text with its eol type.
     let mut coding = match interp
-        .lookup_var_key(cached_symbol!("coding-system-for-read"), env)
+        .symbol_value_key(cached_symbol!("coding-system-for-read"))
         .filter(|value| !value.is_nil())
     {
         Some(value) => checked_coding_given(interp, &value)?,
@@ -3431,7 +3423,7 @@ pub(crate) fn append_process_bytes_to_buffer(
         coding = match operation_coding.cons_values() {
             Some((decoding, _)) => checked_coding_given(interp, &decoding)?,
             None => match interp
-                .lookup_var_key(cached_symbol!("default-process-coding-system"), env)
+                .symbol_value_key(cached_symbol!("default-process-coding-system"))
                 .and_then(|value| value.cons_values())
             {
                 Some((decoding, _)) => checked_coding_given(interp, &decoding)?,
@@ -3447,10 +3439,9 @@ pub(crate) fn append_process_bytes_to_buffer(
     };
     let result = insert_process_output(interp, bytes, &coding, multibyte, env);
     let result = result.map(|coding_used| {
-        interp.set_variable_key(
+        interp.set_symbol_value_key(
             cached_symbol!("last-coding-system-used"),
             Value::Symbol(coding_used.into()),
-            env,
         );
     });
     if target_id != original_id {
@@ -3478,7 +3469,7 @@ fn insert_process_output(
         .coding_system_canonical_name(coding)
         .unwrap_or_else(|| coding.to_string());
     let inhibit_eol_conversion = interp
-        .lookup_var_key(cached_symbol!("inhibit-eol-conversion"), env)
+        .symbol_value_key(cached_symbol!("inhibit-eol-conversion"))
         .is_some_and(|value| value.is_truthy());
     // CODING_MAY_REQUIRE_DECODING: every coding but a raw-text one with a
     // unix eol and no post-read conversion requires decoding or detection.
@@ -3577,7 +3568,7 @@ fn decode_process_bytes_at_point(
         mut decoded,
         coding: coding_used,
         ..
-    } = super::coding::decode_coding_block(interp, env, bytes, coding, Some(multibyte), decoder)?;
+    } = super::coding::decode_coding_block(interp, bytes, coding, Some(multibyte), decoder)?;
     let mut produced = decoded.char_count();
     let layout = decoded.take_layout();
     let props = decoded_annotation_props(&mut decoded);
@@ -3602,11 +3593,11 @@ fn decode_process_bytes_at_point(
     if let Some(function) = post_read {
         let prev_z = interp.buffer.borrow().size_total();
         let undo_list = interp
-            .lookup_var_key(cached_symbol!("buffer-undo-list"), env)
+            .symbol_value_key(cached_symbol!("buffer-undo-list"))
             .unwrap_or(Value::Nil);
-        interp.set_variable_key(cached_symbol!("buffer-undo-list"), Value::T, env);
+        interp.set_symbol_value_key(cached_symbol!("buffer-undo-list"), Value::T);
         let result = interp.safe_funcall(function, &[Value::Integer(produced as i64)], env);
-        interp.set_variable_key(cached_symbol!("buffer-undo-list"), undo_list, env);
+        interp.set_symbol_value_key(cached_symbol!("buffer-undo-list"), undo_list);
         let value = result?;
         if value.integer_value().is_none_or(|count| count < 0) {
             return Err(LispError::WrongTypeArgument("wholenump".into(), value));
@@ -3651,8 +3642,7 @@ fn decode_process_output(
     // carryover and decoder state the last read left, the read's bytes,
     // and CODING_MODE_LAST_BLOCK once a read found the end.
     let mut decoder = interp.take_process_decoder(process_id);
-    let decoded =
-        super::coding::decode_coding_block(interp, env, bytes, &coding, None, &mut decoder);
+    let decoded = super::coding::decode_coding_block(interp, bytes, &coding, None, &mut decoder);
     interp.restore_process_decoder(process_id, decoder);
     let CodingDecode {
         decoded,
@@ -3661,11 +3651,7 @@ fn decode_process_output(
     } = decoded?;
     let text = decoded_string_value(interp, decoded, !for_unibyte, env)?;
     let settled_value = Value::symbol(&settled);
-    interp.set_variable_key(
-        cached_symbol!("last-coding-system-used"),
-        settled_value,
-        env,
-    );
+    interp.set_symbol_value_key(cached_symbol!("last-coding-system-used"), settled_value);
     if decoding != settled_value {
         let encoding = if encoding.is_nil() && interp.process_is_live(process_id) {
             super::file_io::inherit_write_coding_eol(interp, settled_value, Value::Nil)?
@@ -4646,7 +4632,7 @@ pub(crate) fn make_network_process(
         let inherit = get(interp, ":coding").is_nil()
             && !buffer.is_nil()
             && interp
-                .lookup_var_key(cached_symbol!("inherit-process-coding-system"), env)
+                .symbol_value_key(cached_symbol!("inherit-process-coding-system"))
                 .is_some_and(|value| value.is_truthy());
         interp.set_process_inherit_coding_system_flag(process_id, inherit)?;
         let is_server = !server.is_nil();
@@ -5542,7 +5528,7 @@ pub(crate) fn make_serial_process(
     let process_id = interp.resolve_process_id(&process)?;
     let inherit = coding.is_nil()
         && interp
-            .lookup_var_key(cached_symbol!("inherit-process-coding-system"), env)
+            .symbol_value_key(cached_symbol!("inherit-process-coding-system"))
             .is_some_and(|value| value.is_truthy());
     interp.set_process_inherit_coding_system_flag(process_id, inherit)?;
     Ok(process)
@@ -5782,7 +5768,7 @@ pub(crate) fn wait_reading_process_output(
         && request.nsecs == 0
         && let Some(process_id) = request.wait_proc
         && interp
-            .lookup_var_key(cached_symbol!("inhibit-quit"), env)
+            .symbol_value_key(cached_symbol!("inhibit-quit"))
             .is_some_and(|value| value.is_truthy())
         && !interp.process_status_exit(process_id)
     {
@@ -5902,8 +5888,7 @@ fn wait_reading_process_output_1(
                 (lisp, native) => lisp.or(native),
             };
             // If there is unread keyboard input, also return.
-            if read_kbd != 0 && crate::lisp::primitives::unread_command_events_pending(interp, env)
-            {
+            if read_kbd != 0 && crate::lisp::primitives::unread_command_events_pending(interp) {
                 break;
             }
         }
@@ -6183,7 +6168,7 @@ fn wait_reading_process_output_1(
             }
         }
         // If there is unread keyboard input, also return.
-        if read_kbd != 0 && crate::lisp::primitives::unread_command_events_pending(interp, env) {
+        if read_kbd != 0 && crate::lisp::primitives::unread_command_events_pending(interp) {
             break;
         }
         // If we are not checking for keyboard input now, do process events
@@ -6225,7 +6210,7 @@ fn wait_reading_process_output_1(
         ready.sort_unstable();
         ready.dedup();
         let prioritize = interp
-            .lookup_var_key(cached_symbol!("process-prioritize-lower-fds"), env)
+            .symbol_value_key(cached_symbol!("process-prioritize-lower-fds"))
             .is_some_and(|value| value.is_truthy());
         let channel_start = if prioritize {
             0

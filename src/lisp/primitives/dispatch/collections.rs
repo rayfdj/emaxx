@@ -954,7 +954,7 @@ define_dispatch!(
                     // data.c:Faset's string case: CHECK_IMPURE, the index,
                     // then CHECK_CHARACTER of NEWELT.
                     aset_string_value(&args[0], raw_idx, &args[2])
-                        .map_err(|error| string_storage_error(interp, env, error))?;
+                        .map_err(|error| string_storage_error(interp, error))?;
                     return Ok(args[2]);
                 }
                 // data.c:Faset permits actual records as well as arrays;
@@ -1007,7 +1007,7 @@ define_dispatch!(
 
             "nreverse" => {
                 need_args(name, args, 1)?;
-                nreverse_sequence_value(interp, env, &args[0])
+                nreverse_sequence_value(interp, &args[0])
             }
 
             "copy-sequence" => {

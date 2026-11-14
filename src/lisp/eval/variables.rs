@@ -892,14 +892,19 @@ impl Interpreter {
     /// whether NAME is declared locally special in the current
     /// environment. The Lisp environment itself is authoritative, including
     /// bare symbols installed or mutated after a closure was constructed.
-    pub(crate) fn local_special_active(&self, symbol: &SymbolName, env: &Env) -> bool {
-        crate::lisp::types::current_environment(env).is_some_and(|environment| {
-            crate::lisp::types::environment_declares_special_with(
+    pub(crate) fn local_special_active(
+        &self,
+        symbol: &SymbolName,
+        env: &Env,
+    ) -> Result<bool, LispError> {
+        match crate::lisp::types::current_environment(env) {
+            Some(environment) => crate::lisp::types::environment_declares_special_with(
                 environment,
                 symbol,
                 self.symbols_with_positions_enabled(),
-            )
-        })
+            ),
+            None => Ok(false),
+        }
     }
 
     /// Whether GNU's hidden `internal-interpreter-environment' is non-nil.
@@ -920,10 +925,19 @@ impl Interpreter {
     /// `(eval FORM)' supplies a nil lexical environment, so bindings made
     /// directly by FORM are dynamic even for undeclared symbols.  Existing
     /// lexical functions called by FORM mask this override at their boundary.
-    pub(crate) fn binding_is_dynamic_symbol(&self, symbol: &SymbolName, env: &Env) -> bool {
-        self.lambda_capture_override() == Some(false)
-            || self.is_special_variable_symbol(symbol)
-            || self.local_special_active(symbol, env)
+    pub(crate) fn binding_is_dynamic_symbol(
+        &self,
+        symbol: &SymbolName,
+        env: &Env,
+    ) -> Result<bool, LispError> {
+        // Flet: `!NILP (lexenv) && SYMBOLP (var) && !declared_special &&
+        // NILP (Fmemq (var, Vinternal_interpreter_environment))', the
+        // Fmemq (and its errors) only once the others have not decided.
+        if self.lambda_capture_override() == Some(false) || self.is_special_variable_symbol(symbol)
+        {
+            return Ok(true);
+        }
+        self.local_special_active(symbol, env)
     }
 
     /// Only the object registered by a C initializer owns its dedicated slot.
@@ -3480,7 +3494,12 @@ impl Interpreter {
             })
             .map_or(0, |below| below + 1);
         self.swap_special_bindings_for_thread_switch(start, false);
-        let result = self.eval(form, &mut context);
+        // eval_sub under the frame's Vinternal_interpreter_environment:
+        // lexical binding when that is non-nil, whatever the function
+        // `backtrace-eval' was called from is written in.
+        let lexical = !crate::lisp::types::current_environment_value(&context).is_nil();
+        let result =
+            self.with_lambda_eval_context(lexical, |interp| interp.eval(form, &mut context));
         self.swap_special_bindings_for_thread_switch(start, true);
         result
     }
@@ -3879,7 +3898,7 @@ impl Interpreter {
     /// entered since the last input event.  Whether it was entered.
     fn maybe_call_debugger(&mut self, error: &LispError, env: &mut Env) -> Result<bool, LispError> {
         if self
-            .lookup_var_key(cached_symbol!("inhibit-debugger"), env)
+            .symbol_value_key(cached_symbol!("inhibit-debugger"))
             .is_some_and(|value| value.is_truthy())
         {
             return Ok(false);
@@ -3890,25 +3909,25 @@ impl Interpreter {
         let quit = error_symbol.as_str() == "quit"
             || conditions.iter().any(|name| name.as_str() == "quit");
         let wanted = if quit {
-            self.lookup_var_key(cached_symbol!("debug-on-quit"), env)
+            self.symbol_value_key(cached_symbol!("debug-on-quit"))
                 .is_some_and(|value| value.is_truthy())
         } else {
             let list = self
-                .lookup_var_key(cached_symbol!("debug-on-error"), env)
+                .symbol_value_key(cached_symbol!("debug-on-error"))
                 .unwrap_or(Value::Nil);
             wants_debugger(list, &conditions)
         };
         if !wanted || self.skip_debugger(&conditions, object, env)? {
             return Ok(false);
         }
-        let integer = |interp: &mut Self, name: &str, env: &mut Env| {
+        let integer = |interp: &mut Self, name: &str| {
             interp
-                .lookup_var(name, env)
+                .symbol_value(name)
                 .and_then(|value| value.as_integer().ok())
                 .unwrap_or(0)
         };
-        let entered = integer(self, "internal-when-entered-debugger", env);
-        let events = integer(self, "num-nonmacro-input-events", env);
+        let entered = integer(self, "internal-when-entered-debugger");
+        let events = integer(self, "num-nonmacro-input-events");
         if entered >= events {
             return Ok(false);
         }
@@ -3925,7 +3944,7 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<bool, LispError> {
         let ignored = self
-            .lookup_var_key(cached_symbol!("debug-ignored-errors"), env)
+            .symbol_value_key(cached_symbol!("debug-ignored-errors"))
             .unwrap_or(Value::Nil);
         let mut message = None;
         let mut tail = ignored;

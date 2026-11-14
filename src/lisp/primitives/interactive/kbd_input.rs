@@ -620,7 +620,7 @@ pub(crate) fn kbd_buffer_store_event(
 /// `while-no-input-ignore-events' holds nil.
 fn is_ignored_event(interp: &Interpreter, _event: Option<&Value>) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("while-no-input-ignore-events"), &Env::new())
+        .symbol_value_key(cached_symbol!("while-no-input-ignore-events"))
         .and_then(|list| list.to_vec().ok())
         .is_some_and(|items| items.iter().any(Value::is_nil))
 }
@@ -655,8 +655,8 @@ fn special_events_pending(interp: &Interpreter) -> bool {
 /// keyboard.c:requeued_events_pending_p: an event in
 /// `unread-command-events' (CONSP) or a non-nil
 /// `unread-post-input-method-events' or `unread-input-method-events'.
-pub(crate) fn requeued_events_pending_p(interp: &Interpreter, env: &Env) -> bool {
-    unread_command_events_pending(interp, env)
+pub(crate) fn requeued_events_pending_p(interp: &Interpreter) -> bool {
+    unread_command_events_pending(interp)
         || [
             cached_symbol!("unread-post-input-method-events"),
             cached_symbol!("unread-input-method-events"),
@@ -664,15 +664,15 @@ pub(crate) fn requeued_events_pending_p(interp: &Interpreter, env: &Env) -> bool
         .into_iter()
         .any(|list| {
             interp
-                .lookup_var_key(list, env)
+                .symbol_value_key(list)
                 .is_some_and(|value| !value.is_nil())
         })
 }
 
 /// CONSP (Vunread_command_events): any value but a cons holds no event.
-pub(crate) fn unread_command_events_pending(interp: &Interpreter, env: &Env) -> bool {
+pub(crate) fn unread_command_events_pending(interp: &Interpreter) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("unread-command-events"), env)
+        .symbol_value_key(cached_symbol!("unread-command-events"))
         .is_some_and(|events| events.is_cons())
 }
 
@@ -759,7 +759,7 @@ pub(crate) fn sit_for(
     swallow_events(interp, env, do_display)?;
     if detect_input_pending_run_timers(interp, env, do_display)?
         || interp
-            .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+            .symbol_value_key(cached_symbol!("executing-kbd-macro"))
             .is_some_and(|value| value.is_truthy())
     {
         return Ok(false);
@@ -969,7 +969,7 @@ fn quit_throw_to_read_char(
         call(interp, "kill-emacs", &[Value::Nil, Value::Nil], env)?;
     }
     WAITING_FOR_INPUT.set(false);
-    interp.set_variable_key(cached_symbol!("unread-command-events"), Value::Nil, env);
+    interp.set_symbol_value_key(cached_symbol!("unread-command-events"), Value::Nil);
     QUIT_THROWN_TO_READ_CHAR.set(true);
     Ok(())
 }
@@ -1028,7 +1028,7 @@ pub(crate) fn read_char_redisplay(
         swallow_events(interp, env, false)?;
     }
     let dont_pause = interp
-        .lookup_var_key(cached_symbol!("redisplay-dont-pause"), env)
+        .symbol_value_key(cached_symbol!("redisplay-dont-pause"))
         .is_some_and(|value| value.is_truthy());
     let mut input_pending = detect_input_pending(interp, env)?;
     // Redisplay if no pending input.
@@ -1066,9 +1066,9 @@ pub(crate) fn note_redisplay_input_pending() {
 }
 
 /// read_char's Fdo_auto_save argument: t with `auto-save-no-message'.
-pub(crate) fn auto_save_no_message(interp: &Interpreter, env: &Env) -> Value {
+pub(crate) fn auto_save_no_message(interp: &Interpreter) -> Value {
     if interp
-        .lookup_var_key(cached_symbol!("auto-save-no-message"), env)
+        .symbol_value_key(cached_symbol!("auto-save-no-message"))
         .is_some_and(|value| value.is_truthy())
     {
         Value::T
@@ -1080,9 +1080,9 @@ pub(crate) fn auto_save_no_message(interp: &Interpreter, env: &Env) -> Value {
 /// read_char's "Maybe auto save due to number of keystrokes" test:
 /// `auto-save-interval' positive and more than it (and 20) input events
 /// since the last auto-save.
-pub(crate) fn keystroke_auto_save_due(interp: &Interpreter, env: &Env) -> bool {
+pub(crate) fn keystroke_auto_save_due(interp: &Interpreter) -> bool {
     let interval = interp
-        .lookup_var_key(cached_symbol!("auto-save-interval"), env)
+        .symbol_value_key(cached_symbol!("auto-save-interval"))
         .and_then(|value| value.as_integer().ok())
         .unwrap_or(0);
     interval > 0 && num_nonmacro_input_events(interp) - LAST_AUTO_SAVE.get() > interval.max(20)
@@ -1114,7 +1114,7 @@ pub(crate) fn read_char_idle(
     delay_level = delay_level.max(4);
     // Auto save if enough time goes by without input.
     let timeout = interp
-        .lookup_var_key(cached_symbol!("auto-save-timeout"), env)
+        .symbol_value_key(cached_symbol!("auto-save-timeout"))
         .and_then(|value| match value.kind() {
             Kind::Integer(seconds) if seconds > 0 => Some(seconds),
             _ => None,
@@ -1128,8 +1128,8 @@ pub(crate) fn read_char_idle(
         let timeout = timeout.min(MOST_POSITIVE_FIXNUM / delay_level * 4);
         let timeout = delay_level * timeout / 4;
         let waited = sit_for(interp, env, Value::Integer(timeout), true, 1)?;
-        if waited && !unread_command_events_pending(interp, env) {
-            let no_message = auto_save_no_message(interp, env);
+        if waited && !unread_command_events_pending(interp) {
+            let no_message = auto_save_no_message(interp);
             crate::lisp::primitives::file_io::do_auto_save(interp, env, no_message, Value::Nil)?;
             super::run_tty_frame_redraw(interp, env);
         }
@@ -1157,7 +1157,7 @@ pub(crate) fn kbd_buffer_get_event_wait(
     };
     loop {
         // Break loop if there's an unread command event.
-        if unread_command_events_pending(interp, env) {
+        if unread_command_events_pending(interp) {
             return Ok(KbdWait::Ready);
         }
         if terminal_buffer_nonempty() {

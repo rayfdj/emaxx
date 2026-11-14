@@ -12,9 +12,9 @@
 use super::*;
 
 /// keyboard.c:echo_keystrokes_p: `echo-keystrokes' a positive number.
-pub(crate) fn echo_keystrokes_p(interp: &Interpreter, env: &Env) -> bool {
+pub(crate) fn echo_keystrokes_p(interp: &Interpreter) -> bool {
     match interp
-        .lookup_var_key(cached_symbol!("echo-keystrokes"), env)
+        .symbol_value_key(cached_symbol!("echo-keystrokes"))
         .map(|value| value.kind())
     {
         Some(Kind::Float(seconds)) => seconds.get() > 0.0,
@@ -54,15 +54,15 @@ fn concat2(
 }
 
 /// help_char_p: C is `help-char' or one of `help-event-list'.
-pub(super) fn help_char_p(interp: &Interpreter, c: Value, env: &Env) -> bool {
+pub(super) fn help_char_p(interp: &Interpreter, c: Value) -> bool {
     if interp
-        .lookup_var_key(cached_symbol!("help-char"), env)
+        .symbol_value_key(cached_symbol!("help-char"))
         .is_some_and(|help| crate::lisp::types::eq(help, c))
     {
         return true;
     }
     let mut tail = interp
-        .lookup_var_key(cached_symbol!("help-event-list"), env)
+        .symbol_value_key(cached_symbol!("help-event-list"))
         .unwrap_or(Value::Nil);
     while let Some((event, rest)) = tail.cons_values() {
         if crate::lisp::types::eq(event, c) {
@@ -98,7 +98,7 @@ fn echo_add_key(interp: &mut Interpreter, c: Value, env: &mut Env) -> Result<(),
     if let Some(name) = multibyte_name {
         new_string = concat2(interp, new_string, name, env)?;
     }
-    if (echo.is_nil() || schars(&echo) == 0) && help_char_p(interp, c, env) {
+    if (echo.is_nil() || schars(&echo) == 0) && help_char_p(interp, c) {
         let help = Value::string(" (Type ? for further options, C-q for quick help)");
         let props = Value::list([Value::symbol("face"), Value::symbol("help-key-binding")]);
         call(
@@ -137,7 +137,7 @@ pub(crate) fn echo_dash(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         return Ok(());
     }
     let help = interp
-        .lookup_var_key(cached_symbol!("echo-keystrokes-help"), env)
+        .symbol_value_key(cached_symbol!("echo-keystrokes-help"))
         .is_some_and(|value| value.is_truthy());
     let chars: Vec<char> = crate::lisp::primitives::string_text(&echo)
         .unwrap_or_default()
@@ -308,9 +308,9 @@ pub(crate) fn echo_timer(
         }
     }
     if interp
-        .forwarded_c_value("noninteractive", &Env::new())
+        .forwarded_c_value("noninteractive")
         .is_some_and(|value| value.is_truthy())
-        || !echo_keystrokes_p(interp, env)
+        || !echo_keystrokes_p(interp)
     {
         return Ok(None);
     }
@@ -328,7 +328,7 @@ pub(crate) fn echo_timer(
         return Ok(None);
     }
     let seconds = match interp
-        .lookup_var_key(cached_symbol!("echo-keystrokes"), env)
+        .symbol_value_key(cached_symbol!("echo-keystrokes"))
         .map(|value| value.kind())
     {
         Some(Kind::Float(seconds)) => seconds.get(),
@@ -347,7 +347,7 @@ pub(crate) fn echo_timer(
 /// command events.
 pub(crate) fn echo_timer_expired(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     if interp
-        .lookup_var_key(cached_symbol!("unread-command-events"), env)
+        .symbol_value_key(cached_symbol!("unread-command-events"))
         .is_some_and(|events| events.is_cons())
     {
         return Ok(());

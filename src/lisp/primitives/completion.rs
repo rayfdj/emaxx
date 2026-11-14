@@ -4,8 +4,8 @@ use crate::lisp::types::obarray::{self, Buckets};
 
 pub(crate) const OBARRAY_RECORD_TYPE: &str = "obarray";
 
-pub(crate) fn ensure_interaction_allowed(interp: &Interpreter, env: &Env) -> Result<(), LispError> {
-    if !interaction_allowed(interp, env) {
+pub(crate) fn ensure_interaction_allowed(interp: &Interpreter) -> Result<(), LispError> {
+    if !interaction_allowed(interp) {
         // minibuf.c:barf_if_interaction_inhibited, xsignal0.
         return Err(LispError::SignalValue(Value::list([Value::Symbol(
             "inhibited-interaction".into(),
@@ -14,9 +14,9 @@ pub(crate) fn ensure_interaction_allowed(interp: &Interpreter, env: &Env) -> Res
     Ok(())
 }
 
-pub(crate) fn interaction_allowed(interp: &Interpreter, env: &Env) -> bool {
+pub(crate) fn interaction_allowed(interp: &Interpreter) -> bool {
     !interp
-        .lookup_var_key(cached_symbol!("inhibit-interaction"), env)
+        .symbol_value_key(cached_symbol!("inhibit-interaction"))
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -386,7 +386,7 @@ pub(crate) fn unintern_from_obarray(
         Ok(symbol) => (symbol.lisp_name(), Some(symbol)),
         Err(_) => {
             let text = string_text(target)?;
-            let longhand = apply_symbol_shorthands_in_env(interp, &text, env)?;
+            let longhand = apply_symbol_shorthands(interp, &text)?;
             if longhand == text {
                 (*target, None)
             } else {
@@ -602,9 +602,9 @@ pub(crate) fn substitute_object_in_subtree(
     Ok(())
 }
 
-pub(crate) fn completion_ignores_case(interp: &Interpreter, env: &Env) -> bool {
+pub(crate) fn completion_ignores_case(interp: &Interpreter) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("completion-ignore-case"), env)
+        .symbol_value_key(cached_symbol!("completion-ignore-case"))
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -899,9 +899,9 @@ pub(crate) fn try_completion(
     let Some(mut elements) = elements else {
         return call_completion_table(interp, string, args[1], args.get(2), Value::Nil, env);
     };
-    let ignore_case = completion_ignores_case(interp, env);
+    let ignore_case = completion_ignores_case(interp);
     let regexps = interp
-        .lookup_var_key(cached_symbol!("completion-regexp-list"), env)
+        .symbol_value_key(cached_symbol!("completion-regexp-list"))
         .unwrap_or(Value::Nil);
     let predicate = args.get(2).copied().filter(|value| !value.is_nil());
     let size = string_chars(&string);
@@ -1032,9 +1032,9 @@ pub(crate) fn all_completions(
     let Some(mut elements) = elements else {
         return call_completion_table(interp, string, args[1], args.get(2), Value::T, env);
     };
-    let ignore_case = completion_ignores_case(interp, env);
+    let ignore_case = completion_ignores_case(interp);
     let regexps = interp
-        .lookup_var_key(cached_symbol!("completion-regexp-list"), env)
+        .symbol_value_key(cached_symbol!("completion-regexp-list"))
         .unwrap_or(Value::Nil);
     let predicate = args.get(2).copied().filter(|value| !value.is_nil());
     let hide_spaces = args.get(3).is_some_and(Value::is_truthy);
@@ -1098,7 +1098,7 @@ pub(crate) fn test_completion(
         let action = Value::Symbol("lambda".into());
         return call_completion_table(interp, string, collection, args.get(2), action, env);
     }
-    let ignore_case = completion_ignores_case(interp, env);
+    let ignore_case = completion_ignores_case(interp);
     let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![Value::Nil, Value::Nil]);
     let hash_table = table == CompletionTable::Hash;
     if let Kind::HashTable(table) = collection.kind() {
@@ -1190,7 +1190,7 @@ pub(crate) fn test_completion(
     }
     // Reject this element if it fails to match all the regexps.
     let regexps = interp
-        .lookup_var_key(cached_symbol!("completion-regexp-list"), env)
+        .symbol_value_key(cached_symbol!("completion-regexp-list"))
         .unwrap_or(Value::Nil);
     if !match_regexps(interp, env, &string, regexps, ignore_case)? {
         return Ok(Value::Nil);
@@ -1309,10 +1309,10 @@ thread_local! {
 /// read_minibuf with INHERIT-INPUT-METHOD: `current-input-method' as the
 /// current buffer has it (it is buffer-local), remembered before the
 /// minibuffer is entered; nothing without INHERIT.
-pub(crate) fn inherit_minibuffer_input_method(interp: &Interpreter, env: &Env, inherit: bool) {
+pub(crate) fn inherit_minibuffer_input_method(interp: &Interpreter, inherit: bool) {
     MINIBUFFER_INPUT_METHOD.set(inherit.then(|| {
         interp
-            .lookup_var_key(cached_symbol!("current-input-method"), env)
+            .symbol_value_key(cached_symbol!("current-input-method"))
             .unwrap_or(Value::Nil)
     }));
 }
@@ -1417,14 +1417,14 @@ const MINIBUF_SAVE_VARIABLES: [&str; 5] = [
     "overriding-local-map",
 ];
 
-fn push_minibuf_save_list(interp: &mut Interpreter, env: &Env) -> usize {
+fn push_minibuf_save_list(interp: &mut Interpreter) -> usize {
     let start = interp.keyboard_input.minibuf_save_list.len();
     // Fthis_command_keys_vector, kept as a list of the same events.
     let keys = Value::list(interp.keyboard_input.command_keys.iter().copied());
     interp.keyboard_input.minibuf_save_list.push(keys);
     for name in MINIBUF_SAVE_VARIABLES {
         let value = interp
-            .lookup_var_key(crate::lisp::types::symbols::SymbolKey::new(name), env)
+            .symbol_value_key(crate::lisp::types::symbols::SymbolKey::new(name))
             .unwrap_or(Value::Nil);
         interp.keyboard_input.minibuf_save_list.push(value);
     }
@@ -1433,7 +1433,7 @@ fn push_minibuf_save_list(interp: &mut Interpreter, env: &Env) -> usize {
 
 /// read_minibuf_unwind's "Restore prompt, etc, from outer minibuffer
 /// level": this-command-keys and the saved variables.
-fn pop_minibuf_save_list(interp: &mut Interpreter, start: usize, env: &mut Env) {
+fn pop_minibuf_save_list(interp: &mut Interpreter, start: usize) {
     let list = &mut interp.keyboard_input.minibuf_save_list;
     let saved = list.split_off(start.min(list.len()));
     let mut saved = saved.into_iter();
@@ -1443,11 +1443,7 @@ fn pop_minibuf_save_list(interp: &mut Interpreter, start: usize, env: &mut Env) 
     let roots: Vec<Value> = saved.collect();
     interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
         for (name, value) in MINIBUF_SAVE_VARIABLES.into_iter().zip(roots.iter()) {
-            interp.set_variable_key(
-                crate::lisp::types::symbols::SymbolKey::new(name),
-                *value,
-                env,
-            );
+            interp.set_symbol_value_key(crate::lisp::types::symbols::SymbolKey::new(name), *value);
         }
     });
 }
@@ -1518,7 +1514,7 @@ pub(crate) fn activate_minibuffer_with_history(
     // The ambient buffer's default directory, or, when that is not a
     // string, FOR_EACH_LIVE_BUFFER's first buffer whose directory is.
     let default_directory = interp
-        .lookup_var_key(cached_symbol!("default-directory"), env)
+        .symbol_value_key(cached_symbol!("default-directory"))
         .filter(Value::is_string)
         .or_else(|| {
             let ids: Vec<u64> = interp.buffer_list.iter().map(|(id, _)| *id).collect();
@@ -1547,7 +1543,7 @@ pub(crate) fn activate_minibuffer_with_history(
         )?;
     }
     let saved_windows = interp
-        .lookup_var_key(cached_symbol!("read-minibuffer-restore-windows"), env)
+        .symbol_value_key(cached_symbol!("read-minibuffer-restore-windows"))
         .is_none_or(|restore| restore.is_truthy())
         .then(|| interp.snapshot_window_configuration());
     let depth = interp.minibuffer_depth().saturating_add(1);
@@ -1565,7 +1561,7 @@ pub(crate) fn activate_minibuffer_with_history(
     // read_minibuf arranges to restore a number of minibuffer-related
     // variables (minibuf_save_list), then starts changing them: `help-form'
     // is `minibuffer-help-form' for the read.
-    let save_list_start = push_minibuf_save_list(interp, env);
+    let save_list_start = push_minibuf_save_list(interp);
     let previous_minibuffer_selected_window_id = interp.minibuffer_selected_window_id();
     let active = ActiveMinibuffer {
         buffer_id,
@@ -1582,15 +1578,13 @@ pub(crate) fn activate_minibuffer_with_history(
     // clear-message-function.
     let setup = (|| -> Result<(), LispError> {
         let help_form = interp
-            .lookup_var_key(
-                crate::lisp::types::symbols::SymbolKey::new("minibuffer-help-form"),
-                env,
-            )
+            .symbol_value_key(crate::lisp::types::symbols::SymbolKey::new(
+                "minibuffer-help-form",
+            ))
             .unwrap_or(Value::Nil);
-        interp.set_variable_key(
+        interp.set_symbol_value_key(
             crate::lisp::types::symbols::SymbolKey::new("help-form"),
             help_form,
-            env,
         );
         // Vminibuffer_history_position and Vminibuffer_history_variable:
         // HIST's car and cdr (a bare symbol HIST the variable), nil being
@@ -1609,28 +1603,23 @@ pub(crate) fn activate_minibuffer_with_history(
         } else {
             history_position
         };
-        interp.set_variable_key(
+        interp.set_symbol_value_key(
             cached_symbol!("minibuffer-history-variable"),
             history_variable,
-            env,
         );
-        interp.set_variable_key(
+        interp.set_symbol_value_key(
             cached_symbol!("minibuffer-history-position"),
             history_position,
-            env,
         );
         // If this minibuffer is reading a file name, that doesn't mean
         // recursive ones are: `lambda', "t" in this minibuffer, nil in the
         // next.
         if interp
-            .lookup_var("minibuffer-completing-file-name", env)
+            .symbol_value("minibuffer-completing-file-name")
             .is_some_and(|value| value.is_truthy())
         {
-            interp.set_variable(
-                "minibuffer-completing-file-name",
-                Value::symbol("lambda"),
-                env,
-            );
+            interp
+                .set_symbol_value_cell("minibuffer-completing-file-name", Value::symbol("lambda"));
         }
         // If the history variable is unbound, make it nil.
         if history_variable.is_symbol()
@@ -1702,7 +1691,7 @@ pub(crate) fn activate_minibuffer_with_history(
                 stamp(interp, env, Value::symbol(name), Value::T)?;
             }
             let properties = interp
-                .lookup_var_key(cached_symbol!("minibuffer-prompt-properties"), env)
+                .symbol_value_key(cached_symbol!("minibuffer-prompt-properties"))
                 .unwrap_or(Value::Nil);
             let mut list = properties;
             while let Some((name, rest)) = list.cons_values() {
@@ -1793,10 +1782,10 @@ pub(crate) fn activate_minibuffer_with_history(
 /// a read while a minibuffer is active is a user error when the minibuffer
 /// window is selected, and from any other window cancels the active read
 /// (its recursive edit signals the thrown string as an error).
-pub(crate) fn check_recursive_minibuffer(interp: &Interpreter, env: &Env) -> Result<(), LispError> {
+pub(crate) fn check_recursive_minibuffer(interp: &Interpreter) -> Result<(), LispError> {
     if interp.minibuffer_depth() == 0
         || interp
-            .lookup_var_key(cached_symbol!("enable-recursive-minibuffers"), env)
+            .symbol_value_key(cached_symbol!("enable-recursive-minibuffers"))
             .is_some_and(|value| value.is_truthy())
     {
         return Ok(());
@@ -2028,7 +2017,7 @@ fn run_exit_minibuf_hook(
 fn erase_expired_minibuffer(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     with_minibuffer_edits_inhibited(interp, env, |interp, env| {
         let old_deactivate_mark = interp
-            .lookup_var_key(cached_symbol!("deactivate-mark"), env)
+            .symbol_value_key(cached_symbol!("deactivate-mark"))
             .unwrap_or(Value::Nil);
         let erased = super::call(interp, "erase-buffer", &[], env).map(drop);
         interp.set_c_variable("deactivate-mark", old_deactivate_mark);
@@ -2066,7 +2055,7 @@ fn read_minibuf_unwind(interp: &mut Interpreter, state: ActiveMinibuffer, env: &
         && interp.set_current_buffer_id(state.buffer_id).is_ok();
     interp.restore_minibuffer_runtime(state.previous_runtime);
     // "Restore prompt, etc, from outer minibuffer level".
-    pop_minibuf_save_list(interp, state.save_list_start, env);
+    pop_minibuf_save_list(interp, state.save_list_start);
     if expired {
         let _ = erase_expired_minibuffer(interp, env);
         if interp

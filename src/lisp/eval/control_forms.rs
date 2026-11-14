@@ -271,7 +271,7 @@ impl Interpreter {
                 let name_value = if symbol { binding } else { binding.car()? };
                 let name =
                     crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
-                if self.binding_is_dynamic_symbol(&name, env) {
+                if self.binding_is_dynamic_symbol(&name, env)? {
                     self.specbind_symbol(&name, *value, env)?;
                 } else {
                     lexenv = Self::cons_binding(name, *value, lexenv);
@@ -343,7 +343,7 @@ impl Interpreter {
                 };
                 let name =
                     crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
-                if self.binding_is_dynamic_symbol(&name, env) {
+                if self.binding_is_dynamic_symbol(&name, env)? {
                     self.specbind_symbol(&name, value, env)?;
                 } else {
                     let newenv = Self::cons_binding(

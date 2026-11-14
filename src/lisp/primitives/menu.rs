@@ -164,9 +164,9 @@ fn set_item_prop(interp: &Interpreter, index: usize, value: Value) {
 }
 
 /// Whether `enable-disabled-menus-and-buttons' is non-nil.
-fn enable_disabled_menus_and_buttons(interp: &Interpreter, env: &Env) -> bool {
+fn enable_disabled_menus_and_buttons(interp: &Interpreter) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("enable-disabled-menus-and-buttons"), env)
+        .symbol_value_key(cached_symbol!("enable-disabled-menus-and-buttons"))
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -251,7 +251,7 @@ pub(crate) fn parse_menu_item(
         // Get enable property, if any.
         if item.is_symbol() {
             let tem = super::symbol_get(interp, item, cached_symbol!("menu-enable"));
-            if enable_disabled_menus_and_buttons(interp, env) {
+            if enable_disabled_menus_and_buttons(interp) {
                 set_item_prop(interp, ITEM_PROPERTY_ENABLE, Value::T);
             } else if !tem.is_nil() {
                 set_item_prop(interp, ITEM_PROPERTY_ENABLE, tem);
@@ -280,7 +280,7 @@ pub(crate) fn parse_menu_item(
                     break;
                 };
                 if crate::lisp::types::eq(tem, sym(cached_symbol!(":enable"))) {
-                    if enable_disabled_menus_and_buttons(interp, env) {
+                    if enable_disabled_menus_and_buttons(interp) {
                         set_item_prop(interp, ITEM_PROPERTY_ENABLE, Value::T);
                     } else {
                         set_item_prop(interp, ITEM_PROPERTY_ENABLE, value);
@@ -511,7 +511,7 @@ pub(crate) fn menu_bar_items(
     // because (1) errors will clear it anyway and (2) this avoids risk of
     // specpdl overflow.
     let oquit = interp
-        .forwarded_c_value("inhibit-quit", &Env::new())
+        .forwarded_c_value("inhibit-quit")
         .unwrap_or(Value::Nil);
     interp.set_c_variable("inhibit-quit", Value::T);
     let result = menu_bar_items_1(interp, old, env);
@@ -530,13 +530,13 @@ fn menu_bar_items_1(
     // Build our list of keymaps.
     let mut maps = RootedVec::<Value>::new();
     let otlm = interp
-        .lookup_var_key(cached_symbol!("overriding-terminal-local-map"), env)
+        .symbol_value_key(cached_symbol!("overriding-terminal-local-map"))
         .unwrap_or(Value::Nil);
     let olm = interp
-        .lookup_var_key(cached_symbol!("overriding-local-map"), env)
+        .symbol_value_key(cached_symbol!("overriding-local-map"))
         .unwrap_or(Value::Nil);
     let menu_flag = interp
-        .lookup_var_key(cached_symbol!("overriding-local-map-menu-flag"), env)
+        .symbol_value_key(cached_symbol!("overriding-local-map-menu-flag"))
         .is_some_and(|value| value.is_truthy());
     if menu_flag && !olm.is_nil() {
         // Yes, use them (if non-nil) as well as the global map.
@@ -591,7 +591,7 @@ fn menu_bar_items_1(
 
     // Move to the end those items that should be at the end.
     let mut tail = interp
-        .lookup_var_key(cached_symbol!("menu-bar-final-items"), env)
+        .symbol_value_key(cached_symbol!("menu-bar-final-items"))
         .unwrap_or(Value::Nil);
     let mut cycle = super::values::ForEachTail::new(tail);
     while let Some((head, next)) = tail.cons_values() {
@@ -735,7 +735,7 @@ pub(crate) fn show_help_echo(
         }
     }
     let noninteractive = interp
-        .forwarded_c_value("noninteractive", &Env::new())
+        .forwarded_c_value("noninteractive")
         .is_some_and(|value| value.is_truthy());
     if !noninteractive && help.is_string() {
         help = interp.call_function_value(
@@ -747,7 +747,7 @@ pub(crate) fn show_help_echo(
     }
     if help.is_string() || help.is_nil() {
         let function = interp
-            .lookup_var_key(cached_symbol!("show-help-function"), env)
+            .symbol_value_key(cached_symbol!("show-help-function"))
             .unwrap_or(Value::Nil);
         if !function.is_nil() {
             let help = help_echo_substitute_command_keys(interp, help, env)?;
@@ -884,9 +884,9 @@ fn frame_initial_p(frame: Value) -> bool {
     }
 }
 
-fn menu_updating_frame(interp: &Interpreter, env: &Env) -> Value {
+fn menu_updating_frame(interp: &Interpreter) -> Value {
     interp
-        .lookup_var_key(cached_symbol!("menu-updating-frame"), env)
+        .symbol_value_key(cached_symbol!("menu-updating-frame"))
         .unwrap_or(Value::Nil)
 }
 
@@ -1016,7 +1016,7 @@ fn single_menu_item(
     if let Some(prefix) = prefix {
         item_string = concat2(interp, Value::string(prefix), item_string, env)?;
     }
-    if frame_termcap_p(menu_updating_frame(interp, env)) && !map.is_nil() {
+    if frame_termcap_p(menu_updating_frame(interp)) && !map.is_nil() {
         // Indicate visually that this is a submenu.
         item_string = concat2(interp, item_string, Value::string(" >"), env)?;
     }
@@ -1207,7 +1207,7 @@ pub(crate) fn x_popup_menu_1(
                     .unwrap_or(Value::Nil)
             };
             let last = interp
-                .lookup_var_key(cached_symbol!("last-nonmenu-event"), env)
+                .symbol_value_key(cached_symbol!("last-nonmenu-event"))
                 .unwrap_or(Value::Nil);
             if !crate::lisp::types::eq(posn_posn(last), posn_posn(position))
                 && tem2.car_if_list().is_some_and(|head| {
@@ -1478,12 +1478,11 @@ impl TtyMenu {
 /// menu.c:menu_item_width: the columns of the C string STR's
 /// characters.
 pub(crate) fn menu_item_width(interp: &Interpreter, bytes: &[u8]) -> usize {
-    let env = Env::new();
     let mut len = 0;
     let mut p = 0;
     while p < bytes.len() && bytes[p] != 0 {
         let (ch, ch_len) = super::syntax::string_char_and_length(&bytes[p..]);
-        len += super::character_width(interp, ch as u32, &env);
+        len += super::character_width(interp, ch as u32);
         p += ch_len;
     }
     len
@@ -1893,7 +1892,7 @@ fn tty_menu_show_1(
     // tty_menu_activate's redisplay switches at will.
     let buffer = interp.current_buffer_id();
     let navigation = interp
-        .lookup_var_key(cached_symbol!("tty-menu-navigation-map"), env)
+        .symbol_value_key(cached_symbol!("tty-menu-navigation-map"))
         .unwrap_or(Value::Nil);
     let count = interp.specpdl_index();
     interp.specbind_symbol(
@@ -1997,7 +1996,7 @@ pub(crate) fn update_menu_bar(
     // happen when, for instance, an activate-menubar-hook causes a
     // redisplay.
     if interp
-        .lookup_var_key(cached_symbol!("inhibit-menubar-update"), env)
+        .symbol_value_key(cached_symbol!("inhibit-menubar-update"))
         .is_some_and(|value| value.is_truthy())
     {
         return Ok(hooks_run);
@@ -2024,7 +2023,7 @@ pub(crate) fn update_menu_bar(
             interp.set_current_buffer_id(buffer)?;
         }
         if !interp
-            .lookup_var_key(cached_symbol!("overriding-local-map-menu-flag"), env)
+            .symbol_value_key(cached_symbol!("overriding-local-map-menu-flag"))
             .is_some_and(|value| value.is_truthy())
         {
             interp.specbind_symbol(
@@ -2087,7 +2086,6 @@ pub(crate) fn display_menu_bar_items(
 ) -> Vec<(Value, usize)> {
     let items = frame.borrow().menu_bar_items;
     let cols = frame.borrow().width.max(0) as usize;
-    let env = Env::new();
     let mut shown = Vec::new();
     let mut hpos = 0usize;
     let mut i = 0usize;
@@ -2106,7 +2104,7 @@ pub(crate) fn display_menu_bar_items(
                 .map(|text| {
                     text.character_codes()
                         .into_iter()
-                        .map(|c| super::character_width(interp, c as u32, &env))
+                        .map(|c| super::character_width(interp, c as u32))
                         .sum()
                 })
                 .unwrap_or(0);
@@ -2219,9 +2217,9 @@ fn event_has_parameters(event: Value) -> bool {
     event.cons_values().is_some_and(|(_, rest)| rest.is_cons())
 }
 
-fn menu_prompting(interp: &Interpreter, env: &Env) -> bool {
+fn menu_prompting(interp: &Interpreter) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("menu-prompting"), env)
+        .symbol_value_key(cached_symbol!("menu-prompting"))
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -2230,7 +2228,7 @@ fn menu_prompting(interp: &Interpreter, env: &Env) -> bool {
 fn record_menu_key(interp: &mut Interpreter, c: Value, env: &mut Env) -> Result<(), LispError> {
     // Wipe the echo area.
     super::dispatch::display::clear_message(interp, env, true, false)?;
-    super::record_external_input_event(interp, &c, env);
+    super::record_external_input_event(interp, &c);
     // Once we reread a character, echoing can happen the next time we
     // pause to read a new one.
     interp.keyboard_input.ok_to_echo_at_next_pause = false;
@@ -2239,7 +2237,7 @@ fn record_menu_key(interp: &mut Interpreter, c: Value, env: &mut Env) -> Result<
     super::add_read_event_to_command_keys(interp, c, env)?;
     super::echo_update(interp, env)?;
     // Re-reading in the middle of a command.
-    interp.set_variable_key(cached_symbol!("last-input-event"), c, env);
+    interp.set_symbol_value_key(cached_symbol!("last-input-event"), c);
     Ok(())
 }
 
@@ -2256,7 +2254,7 @@ pub(crate) fn read_char_x_menu_prompt(
 ) -> Result<Value, LispError> {
     *used_mouse_menu = false;
     // Use local over global Menu maps.
-    if !menu_prompting(interp, env) {
+    if !menu_prompting(interp) {
         return Ok(Value::Nil);
     }
     // If we got to this point via a mouse click, use a real menu for
@@ -2289,10 +2287,10 @@ pub(crate) fn read_char_x_menu_prompt(
             // If we got more than one event, put all but the first onto
             // this list to be read later.  Return just the first event now.
             let unread = interp
-                .lookup_var_key(cached_symbol!("unread-command-events"), env)
+                .symbol_value_key(cached_symbol!("unread-command-events"))
                 .unwrap_or(Value::Nil);
             let combined = super::call(interp, "nconc", &[rest, unread], env)?;
-            interp.set_variable_key(cached_symbol!("unread-command-events"), combined, env);
+            interp.set_symbol_value_key(cached_symbol!("unread-command-events"), combined);
             value = first;
         } else if value.is_nil() {
             value = Value::T;
@@ -2319,7 +2317,7 @@ pub(crate) fn read_char_minibuf_menu_prompt(
     let mut idx: Option<usize> = None;
     let mut nobindings = true;
     let mut vector = Value::Nil;
-    if !menu_prompting(interp, env) {
+    if !menu_prompting(interp) {
         return Ok(Value::Nil);
     }
     let map = super::get_keymap(interp, map, false, true, env)?;
@@ -2471,21 +2469,21 @@ pub(crate) fn read_char_minibuf_menu_prompt(
         // pressed.  Help characters are not recorded because menu
         // prompting is not used on replay.
         let orig_defn_macro = interp
-            .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
+            .symbol_value_key(cached_symbol!("defining-kbd-macro"))
             .unwrap_or(Value::Nil);
-        interp.set_variable_key(cached_symbol!("defining-kbd-macro"), Value::Nil, env);
+        interp.set_symbol_value_key(cached_symbol!("defining-kbd-macro"), Value::Nil);
         // That read_char records the key (record_char, with no macro being
         // defined) and adds it to this-command-keys (add_command_key and
         // echo_update), where the read_char that prompts adds nothing.
         let obj = super::read_menu_prompt_char(interp, env, commandflag, quit_char_is_event)
             .and_then(|obj| {
-                super::record_unrecorded_event(interp, &obj, env);
+                super::record_unrecorded_event(interp, &obj);
                 super::add_read_event_to_command_keys(interp, obj, env).map(|()| obj)
             });
-        interp.set_variable_key(cached_symbol!("defining-kbd-macro"), orig_defn_macro, env);
+        interp.set_symbol_value_key(cached_symbol!("defining-kbd-macro"), orig_defn_macro);
         let obj = obj?;
         let more = interp
-            .lookup_var_key(cached_symbol!("menu-prompt-more-char"), env)
+            .symbol_value_key(cached_symbol!("menu-prompt-more-char"))
             .unwrap_or(Value::Nil);
         let is_more = crate::lisp::types::eq(obj, more)
             || more

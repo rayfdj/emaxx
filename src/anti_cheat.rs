@@ -1037,12 +1037,11 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
 
 pub(crate) fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() {
     use crate::lisp::eval::Interpreter;
-    use crate::lisp::types::{Env, Value};
+    use crate::lisp::types::Value;
 
     let interpreter = Interpreter::new();
-    let environment = Env::new();
     assert_eq!(
-        interpreter.lookup_var_key(cached_symbol!("region-extract-function"), &environment),
+        interpreter.symbol_value_key(cached_symbol!("region-extract-function")),
         Some(Value::Nil),
         "casefiddle.c creates region-extract-function as nil before simple.el loads"
     );
@@ -1057,7 +1056,7 @@ pub(crate) fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() 
         "url-dead-buffer-list",
     ] {
         assert_eq!(
-            interpreter.lookup_var(elisp_owned, &environment),
+            interpreter.symbol_value(elisp_owned),
             None,
             "bare runtime fabricated GNU Elisp-owned variable `{elisp_owned}`"
         );

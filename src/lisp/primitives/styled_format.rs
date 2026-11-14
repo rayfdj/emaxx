@@ -141,26 +141,24 @@ fn copy_text(buf: &mut Vec<u8>, bytes: &[u8], from_multibyte: bool, to_multibyte
 #[inline]
 fn reserve(
     interp: &mut Interpreter,
-    env: &Env,
     buf: &mut Vec<u8>,
     additional: usize,
 ) -> Result<(), LispError> {
     if additional < 1 << 16 {
         return Ok(());
     }
-    reserve_large(interp, env, buf, additional)
+    reserve_large(interp, buf, additional)
 }
 
 #[inline(never)]
 fn reserve_large(
     interp: &mut Interpreter,
-    env: &Env,
     buf: &mut Vec<u8>,
     additional: usize,
 ) -> Result<(), LispError> {
     let nbytes = buf.len().saturating_add(additional);
     buf.try_reserve(additional)
-        .map_err(|_| memory_full(interp, env, nbytes))
+        .map_err(|_| memory_full(interp, nbytes))
 }
 
 /// The columns, characters and bytes lisp_string_width reports.
@@ -177,7 +175,6 @@ pub(crate) struct StringWidth {
 #[allow(clippy::too_many_arguments)]
 fn string_width_walk(
     interp: &mut Interpreter,
-    env: &Env,
     dp: Option<crate::lisp::types::CharTableRef>,
     bytes: &[u8],
     multibyte: bool,
@@ -216,7 +213,7 @@ fn string_width_walk(
             }
             None => {
                 let (c, nbytes) = char_bytes(i_byte);
-                (1, nbytes, display_char_width(interp, c, dp, env))
+                (1, nbytes, display_char_width(interp, c, dp))
             }
         };
         if 0 < precision && precision - (width as isize) < thiswidth as isize {
@@ -246,7 +243,6 @@ fn string_width_walk(
 /// columns, and CHARS and BYTES count what it took.
 pub(crate) fn lisp_string_width(
     interp: &mut Interpreter,
-    env: &Env,
     string: &Value,
     from: usize,
     to: usize,
@@ -255,13 +251,12 @@ pub(crate) fn lisp_string_width(
     let Kind::StringObject(state) = string.kind() else {
         return Err(LispError::WrongTypeArgument("stringp".into(), *string));
     };
-    let dp = buffer_display_table(interp, env);
+    let dp = buffer_display_table(interp);
     if !state.borrow().props.has_intervals() {
         let state = state.borrow();
         let multibyte = state.len() < state.bytes().len();
         return string_width_walk(
             interp,
-            env,
             dp,
             state.bytes(),
             multibyte,
@@ -280,14 +275,13 @@ pub(crate) fn lisp_string_width(
     let compositions = StringCompositions::of(interp, string)?;
     string_width_walk(
         interp,
-        env,
         dp,
         &bytes,
         multibyte,
         from,
         to,
         precision,
-        |interp, at| compositions.at(interp, env, string, at),
+        |interp, at| compositions.at(interp, string, at),
     )
 }
 
@@ -829,7 +823,7 @@ pub(crate) fn styled_format(
             {
                 arg = Value::StringObject(
                     StringObjectRef::from_characters(&[arg])
-                        .map_err(|error| string_storage_error(interp, env, error))?,
+                        .map_err(|error| string_storage_error(interp, error))?,
                 );
                 text = Some(arg);
                 conversion = b's';
@@ -895,7 +889,7 @@ pub(crate) fn styled_format(
                 if prec < 0 && field_width == 0 && !intervals {
                     (0, whole_chars, whole_bytes)
                 } else {
-                    let measured = lisp_string_width(interp, env, &text, 0, whole_chars, prec)?;
+                    let measured = lisp_string_width(interp, &text, 0, whole_chars, prec)?;
                     if prec < 0 {
                         (measured.width, whole_chars, whole_bytes)
                     } else {
@@ -908,7 +902,7 @@ pub(crate) fn styled_format(
             if MAX_BUFSIZE - padding as isize <= nbytes as isize {
                 return Err(string_overflow());
             }
-            reserve(interp, env, &mut buf, padding + nbytes * 2)?;
+            reserve(interp, &mut buf, padding + nbytes * 2)?;
             // With properties in the format, the spec's span takes in the
             // padding on its left.
             let mut start = nchars;
@@ -1066,7 +1060,7 @@ pub(crate) fn styled_format(
             let unsigned = match arg.kind() {
                 Kind::Integer(i) => {
                     let binary_as_unsigned = interp
-                        .forwarded_c_value("binary-as-unsigned", env)
+                        .forwarded_c_value("binary-as-unsigned")
                         .is_some_and(|value| value.is_truthy());
                     if binary_as_unsigned {
                         // XUFIXNUM: the fixnum's bits as an unsigned value.
@@ -1209,7 +1203,7 @@ pub(crate) fn styled_format(
             // ENDLEN bytes of the output, TRAILING_PADDING spaces.
             let printed: Printed = SmallVec::from_slice(&buf[p_start..p_start + sprintf_bytes]);
             buf.truncate(p_start);
-            reserve(interp, env, &mut buf, incr)?;
+            reserve(interp, &mut buf, incr)?;
             push_repeated(&mut buf, b' ', leading_padding as usize);
             buf.extend_from_slice(&printed[..beglen]);
             buf.extend_from_slice(&prefix[..prefixlen]);
@@ -1235,7 +1229,7 @@ pub(crate) fn styled_format(
     }
     let val = Value::StringObject(
         StringObjectRef::from_storage(buf, nchars, multibyte)
-            .map_err(|error| string_storage_error(interp, env, error))?,
+            .map_err(|error| string_storage_error(interp, error))?,
     );
     if fmt_props || arg_intervals {
         add_format_properties(&val, &args[0], &discarded, &specs)?;

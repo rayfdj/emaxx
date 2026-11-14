@@ -1646,13 +1646,9 @@ impl Interpreter {
     fn call_debugger_with_room(&mut self, arg: Value, env: &mut Env) -> Result<Value, LispError> {
         self.clear_debug_on_next_call();
         let events = self
-            .lookup_var_key(cached_symbol!("num-nonmacro-input-events"), env)
+            .symbol_value_key(cached_symbol!("num-nonmacro-input-events"))
             .unwrap_or(Value::Integer(0));
-        self.set_variable_key(
-            cached_symbol!("internal-when-entered-debugger"),
-            events,
-            env,
-        );
+        self.set_symbol_value_key(cached_symbol!("internal-when-entered-debugger"), events);
         let mut restores = Vec::with_capacity(4);
         for (name, value) in [
             ("debugger-may-continue", Value::T),
@@ -1672,7 +1668,7 @@ impl Interpreter {
         }
 
         let debugger = self
-            .lookup_var_key(cached_symbol!("debugger"), env)
+            .symbol_value_key(cached_symbol!("debugger"))
             .unwrap_or(Value::Nil);
         // apply1 (Vdebugger, arg): ARG's elements are the debugger's
         // arguments, as debug.el's (debug &rest ARGS) reads them.
@@ -2628,7 +2624,7 @@ impl Interpreter {
         let recover = self.current_thread_is_main()
             && self.command_loops_entered > 0
             && self
-                .forwarded_c_value("attempt-stack-overflow-recovery", env)
+                .forwarded_c_value("attempt-stack-overflow-recovery")
                 .is_some_and(|value| value.is_truthy());
         if !recover {
             #[cfg(unix)]
@@ -2973,10 +2969,9 @@ mod eval_value_buffer_tests {
         let source = root.join("seq.el");
         assert!(source.is_file(), "unchanged GNU fixture must exist");
         interpreter.set_load_path(vec![root]);
-        interpreter.set_variable_key(
+        interpreter.set_symbol_value_key(
             cached_symbol!("load-suffixes"),
             Value::list([Value::string(".el")]),
-            &mut env,
         );
         for detached in [false, true] {
             if detached {
@@ -3277,7 +3272,7 @@ mod eval_value_buffer_tests {
                 )
                 .expect("data.c detaches the symbol without changing its C slot");
                 assert!(interpreter.symbol_value_cell(name).is_err(), "{name}");
-                assert_eq!(interpreter.forwarded_c_value(name, &env), Some(c_value));
+                assert_eq!(interpreter.forwarded_c_value(name), Some(c_value));
                 let plain = Value::string("uncoerced plain value");
                 primitives::call(&mut interpreter, "set", &[symbol, plain], &mut env)
                     .expect("a detached plain symbol has no forwarded type restriction");
@@ -3286,7 +3281,7 @@ mod eval_value_buffer_tests {
                     interpreter.symbol_value_cell(name).expect("plain binding"),
                     plain
                 );
-                assert_eq!(interpreter.forwarded_c_value(name, &env), Some(c_value));
+                assert_eq!(interpreter.forwarded_c_value(name), Some(c_value));
                 assert_eq!(
                     interpreter
                         .detached_forwarded_variables
@@ -3331,10 +3326,7 @@ mod eval_value_buffer_tests {
             other => panic!("process_quit_flag must consume the C flag: {other:?}"),
         }
         interpreter.maybe_quit(&mut env).expect("C flag is now nil");
-        assert_eq!(
-            interpreter.forwarded_c_value("quit-flag", &env),
-            Some(Value::Nil)
-        );
+        assert_eq!(interpreter.forwarded_c_value("quit-flag"), Some(Value::Nil));
         interpreter.lisp_eval_depth = 51;
         assert!(!interpreter.lisp_eval_depth_exceeded());
         assert_eq!(interpreter.max_lisp_eval_depth_value(), 100);

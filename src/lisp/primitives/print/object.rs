@@ -223,7 +223,7 @@ pub(crate) fn print(
     sink: PrintSink,
 ) -> Result<(), LispError> {
     interp.print_globals.new_backquote_output = 0;
-    prepare_print_numbering(interp, env);
+    prepare_print_numbering(interp);
     if print_flag(interp, CIRCLE) {
         print_preprocess(interp, env, obj)?;
         if let Some(table) = number_table(interp) {
@@ -352,7 +352,7 @@ pub(crate) fn print_preprocess(
         if circle_candidate(interp, &obj, gensym) {
             if number_table(interp).is_none() {
                 let table = json::make_hash_table(interp, "eq", Vec::new());
-                interp.set_variable_key(cached_symbol!("print-number-table"), table, env);
+                interp.set_symbol_value_key(cached_symbol!("print-number-table"), table);
             }
             let num = number_table_get(interp, env, &obj)?;
             // byte-compile-output-docform's gensyms always get a number.

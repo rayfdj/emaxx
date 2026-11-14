@@ -5269,7 +5269,7 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
             let interpreter = unsafe { &mut *active.interpreter };
             let environment = unsafe { &mut *active.environment.get() };
             if !interpreter
-                .lookup_var_key(cached_symbol!("comp-sanitizer-active"), environment)
+                .symbol_value_key(cached_symbol!("comp-sanitizer-active"))
                 .is_some_and(|active| active.is_truthy())
             {
                 return Ok(0);
@@ -7632,11 +7632,11 @@ mod tests {
             Value::Nil
         );
         assert_eq!(
-            interpreter.lookup_var("native-map-a", &environment),
+            interpreter.symbol_value("native-map-a"),
             Some(Value::Integer(11))
         );
         assert_eq!(
-            interpreter.lookup_var("native-map-b", &environment),
+            interpreter.symbol_value("native-map-b"),
             Some(Value::Integer(22))
         );
 
@@ -9889,7 +9889,7 @@ mod tests {
         }
         execute_cleanup(&mut runtime, &mut interpreter, &mut environment);
         assert_eq!(
-            interpreter.lookup_var("native-cleanup-collection-count", &environment),
+            interpreter.symbol_value("native-cleanup-collection-count"),
             Some(Value::Integer(1))
         );
         assert_eq!(interpreter.specpdl_index(), 0);
@@ -10866,23 +10866,23 @@ mod tests {
             .expect("automatic collection finishes through native entry");
         assert_eq!(runtime.heap.gc.collections, 2);
         assert_eq!(
-            interpreter.lookup_var_key(cached_symbol!("gcs-done"), &environment),
+            interpreter.symbol_value_key(cached_symbol!("gcs-done")),
             Some(Value::Integer(1))
         );
         assert_eq!(
-            interpreter.lookup_var("native-auto-hook-count", &environment),
+            interpreter.symbol_value("native-auto-hook-count"),
             Some(Value::Integer(1))
         );
         assert_eq!(
-            interpreter.lookup_var("native-auto-hook-gcs", &environment),
+            interpreter.symbol_value("native-auto-hook-gcs"),
             Some(Value::Integer(1))
         );
         assert_eq!(
-            interpreter.lookup_var("native-auto-hook-nested", &environment),
+            interpreter.symbol_value("native-auto-hook-nested"),
             Some(Value::Nil)
         );
         assert_eq!(
-            interpreter.lookup_var_key(cached_symbol!("gc-elapsed"), &environment),
+            interpreter.symbol_value_key(cached_symbol!("gc-elapsed")),
             Some(Value::Nil)
         );
         assert!(!interpreter.garbage_collection_is_inhibited());
@@ -12051,9 +12051,9 @@ mod tests {
             [word ^ HIDE, tail_word ^ HIDE]
         }
         #[inline(never)]
-        fn witness(interpreter: &Interpreter, environment: &Env) -> Vec<Value> {
+        fn witness(interpreter: &Interpreter) -> Vec<Value> {
             interpreter
-                .lookup_var("native-gc-detach-witness", environment)
+                .symbol_value("native-gc-detach-witness")
                 .expect("the list is reachable from Lisp")
                 .to_vec()
                 .expect("the list remains valid")
@@ -12090,7 +12090,7 @@ mod tests {
             "a reachable cell keeps its view"
         );
         assert_eq!(
-            witness(&interpreter, &environment),
+            witness(&interpreter),
             [Value::Integer(7), Value::Integer(9)],
             "the write through the words reaches Lisp"
         );
@@ -14947,12 +14947,8 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         let payload = Value::list([Value::symbol("error"), Value::string("allocation-probe-47")]);
-        interpreter.set_variable_key(
-            cached_symbol!("memory-signal-data"),
-            payload,
-            &mut environment,
-        );
-        interpreter.set_variable_key(cached_symbol!("memory-full"), Value::Nil, &mut environment);
+        interpreter.set_symbol_value_key(cached_symbol!("memory-signal-data"), payload);
+        interpreter.set_symbol_value_key(cached_symbol!("memory-full"), Value::Nil);
         for code in [97, 128, 0x20_0000] {
             let args = [Value::Integer(1_i64 << 58), Value::Integer(code)];
             let error = crate::lisp::primitives::call(
@@ -14974,7 +14970,7 @@ mod tests {
                 .expect_err("native nonlocal exit carries the same Lisp condition");
             assert!(crate::lisp::eval::error_condition_value(&error).eq_value(payload));
             assert_eq!(
-                interpreter.lookup_var_key(cached_symbol!("memory-full"), &environment),
+                interpreter.symbol_value_key(cached_symbol!("memory-full")),
                 Some(Value::Nil)
             );
         }

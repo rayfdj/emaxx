@@ -205,7 +205,7 @@ fn decode_coding_region_reports_the_detected_eol_variant() {
         .expect("decode ISO-2022 text");
 
         assert_eq!(
-            interp.lookup_var_key(cached_symbol!("last-coding-system-used"), &env),
+            interp.symbol_value_key(cached_symbol!("last-coding-system-used")),
             Some(Value::Symbol(expected.into()))
         );
     }
@@ -638,7 +638,7 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
         .borrow_mut()
         .set_file_truename(Value::string(&old_path));
     interp.buffer.borrow_mut().set_visited_file_modtime(
-        stat_visited_modtime(&interp, &env, &old_path)
+        stat_visited_modtime(&interp, &old_path)
             .expect("source modtime")
             .expect("source modtime"),
     );
@@ -657,8 +657,7 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
         interp.buffer.borrow().file_name_text().as_deref(),
         Some(new_path.as_str())
     );
-    let canonical_new_path =
-        canonical_file_name(&interp, &env, &new_path).expect("canonical file name");
+    let canonical_new_path = canonical_file_name(&interp, &new_path).expect("canonical file name");
     assert_eq!(
         interp.buffer.borrow().file_truename_text().as_deref(),
         Some(canonical_new_path.as_str())
@@ -696,7 +695,7 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
         .set_file_truename(Value::string(&path));
     interp.buffer.borrow_mut().set_multibyte(false);
     interp.buffer.borrow_mut().set_visited_file_modtime(
-        stat_visited_modtime(&interp, &env, &path)
+        stat_visited_modtime(&interp, &path)
             .expect("source modtime")
             .expect("source modtime"),
     );
@@ -781,13 +780,13 @@ fn write_region_checks_supersession_when_lockfile_creation_is_disabled() {
         .buffer
         .borrow_mut()
         .set_file_name(Value::string(&path));
-    let truename = canonical_file_name(&interp, &env, &path).expect("canonical file name");
+    let truename = canonical_file_name(&interp, &path).expect("canonical file name");
     interp
         .buffer
         .borrow_mut()
         .set_file_truename(Value::string(&truename));
     interp.buffer.borrow_mut().set_visited_file_modtime(
-        stat_visited_modtime(&interp, &env, &path)
+        stat_visited_modtime(&interp, &path)
             .expect("initial visited modtime")
             .expect("initial visited modtime"),
     );
@@ -824,11 +823,11 @@ fn write_region_checks_supersession_when_lockfile_creation_is_disabled() {
     )
     .expect("write-region supersession check");
     let observed = interp
-        .lookup_var("emaxx-test-supersession-file", &env)
+        .symbol_value("emaxx-test-supersession-file")
         .expect("supersession observer records the visited file");
     assert_eq!(
         string_text(&observed).expect("supersession observer receives a file name"),
-        canonical_file_name(&interp, &env, &path).expect("canonical file name")
+        canonical_file_name(&interp, &path).expect("canonical file name")
     );
     assert_eq!(
         std::fs::read_to_string(&path).expect("read supersession write"),
@@ -857,7 +856,7 @@ fn buffer_stale_default_detects_clean_file_modtime_changes() {
         .borrow_mut()
         .set_file_truename(Value::string(&path));
     interp.buffer.borrow_mut().set_visited_file_modtime(
-        stat_visited_modtime(&interp, &env, &path)
+        stat_visited_modtime(&interp, &path)
             .expect("source modtime")
             .expect("source modtime"),
     );
@@ -1106,10 +1105,9 @@ fn call_process_sends_stderr_to_its_file_and_output_to_the_buffer() {
     // raw-byte expectation below is the utf-8 answer.  Binding
     // coding-system-for-read makes the contract locale-independent
     // (finding 113's hardcoded-expectation class).
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("coding-system-for-read"),
         Value::Symbol("utf-8".into()),
-        &mut env,
     );
 
     let status = call_sh(
@@ -1197,7 +1195,7 @@ fn call_process_decodes_with_the_default_process_coding_system() {
 
     assert_eq!(interp.buffer.borrow().buffer_string(), "Symbol’s\n");
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-coding-system-used"), &env),
+        interp.symbol_value_key(cached_symbol!("last-coding-system-used")),
         Some(Value::Symbol("utf-8-unix".into()))
     );
 }
@@ -1211,26 +1209,27 @@ fn process_coding_alist_overrides_the_default_for_synchronous_output() {
         "(erase-buffer)",
     )
     .expect("erase scratch");
-    let mut env = crate::lisp::types::Env::from_vec(vec![crate::lisp::types::EnvFrame::bindings(
-        [(
-            "process-coding-system-alist".into(),
-            Value::list([Value::cons(
-                Value::String("\\`sh\\'".into()),
-                Value::cons(
-                    Value::Symbol("raw-text-unix".into()),
-                    Value::Symbol("raw-text-unix".into()),
-                ),
-            )]),
-        )],
-        &Value::Nil,
-    )]);
+    // callproc.c reads Vprocess_coding_system_alist, the variable's
+    // dynamic value: an entry of that name in a lexical environment is
+    // nothing Fcall_process sees.
+    interp.set_symbol_value_cell(
+        "process-coding-system-alist",
+        Value::list([Value::cons(
+            Value::String("\\`sh\\'".into()),
+            Value::cons(
+                Value::Symbol("raw-text-unix".into()),
+                Value::Symbol("raw-text-unix".into()),
+            ),
+        )]),
+    );
+    let mut env = crate::lisp::types::Env::new();
 
     call_sh(&mut interp, &mut env, Value::T, "printf '\\342\\200\\231'")
         .expect("decode process output through process-coding-system-alist");
 
     assert_eq!(interp.buffer.borrow().buffer_string().chars().count(), 3);
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-coding-system-used"), &env),
+        interp.symbol_value_key(cached_symbol!("last-coding-system-used")),
         Some(Value::Symbol("raw-text-unix".into()))
     );
 }

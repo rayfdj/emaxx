@@ -385,7 +385,7 @@ pub(crate) fn probe_collection(tot_before: Option<usize>, tot_after: usize) {
 
 /// profiler.c:make_profiler_log: the sizes `profiler-log-size' and
 /// `profiler-max-stack-depth' give now.
-fn make_profiler_log(interp: &mut Interpreter, env: &Env) -> Result<ProfilerLog, LispError> {
+fn make_profiler_log(interp: &mut Interpreter) -> Result<ProfilerLog, LispError> {
     let read = |interp: &Interpreter, name: &str| {
         interp
             .symbol_value_cell(name)
@@ -399,7 +399,7 @@ fn make_profiler_log(interp: &mut Interpreter, env: &Env) -> Result<ProfilerLog,
         let bytes = size
             .saturating_mul(depth.saturating_add(4))
             .saturating_mul(8);
-        super::strings::memory_full(interp, env, bytes)
+        super::strings::memory_full(interp, bytes)
     })
 }
 
@@ -608,7 +608,6 @@ mod cpu_timer {
 pub(crate) fn profiler_cpu_start(
     interp: &mut Interpreter,
     sampling_interval: Value,
-    env: &mut Env,
 ) -> Result<Value, LispError> {
     if with_profiler(|profiler| profiler.cpu_running) != CpuRunning::Not {
         return Err(values::doprnt_error(
@@ -618,7 +617,7 @@ pub(crate) fn profiler_cpu_start(
         ));
     }
     if with_profiler(|profiler| profiler.cpu.is_none()) {
-        let log = make_profiler_log(interp, env)?;
+        let log = make_profiler_log(interp)?;
         with_profiler(|profiler| profiler.cpu = Some(log));
     }
     match cpu_timer::setup(sampling_interval) {
@@ -684,16 +683,13 @@ pub(crate) fn profiler_cpu_log(
     };
     if prof_cpu {
         let interval = Value::Integer(with_profiler(|profiler| profiler.cpu_interval));
-        profiler_cpu_start(interp, interval, env)?;
+        profiler_cpu_start(interp, interval)?;
     }
     Ok(ret)
 }
 
 /// profiler.c:Fprofiler_memory_start.
-pub(crate) fn profiler_memory_start(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<Value, LispError> {
+pub(crate) fn profiler_memory_start(interp: &mut Interpreter) -> Result<Value, LispError> {
     if with_profiler(|profiler| profiler.memory_running) {
         return Err(values::doprnt_error(
             interp,
@@ -702,7 +698,7 @@ pub(crate) fn profiler_memory_start(
         ));
     }
     if with_profiler(|profiler| profiler.memory.is_none()) {
-        let log = make_profiler_log(interp, env)?;
+        let log = make_profiler_log(interp)?;
         with_profiler(|profiler| profiler.memory = Some(log));
     }
     with_profiler(|profiler| profiler.memory_running = true);
@@ -743,7 +739,7 @@ pub(crate) fn profiler_memory_log(
         None => Value::Nil,
     };
     if prof_mem {
-        profiler_memory_start(interp, env)?;
+        profiler_memory_start(interp)?;
     }
     Ok(ret)
 }

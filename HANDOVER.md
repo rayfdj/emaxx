@@ -18892,13 +18892,123 @@ setup_process_coding_systems's check now refuses). A 13-form
   clippy and fmt are clean under it.  tools/round_audit.py reports no
   hard finding; it lists the five workflows and Cargo.toml as
   infrastructure changed, which is the round.
-- **Round 366 is unfinished: its draft is packaged in `wip/r366/`, and
-  `src/` is round 365's.**  The round makes every C read and store of a
-  variable the dynamic one (the finding round 364 recorded:
-  primitives read variables through the lexical environment).
-  `wip/r366/impl.patch` is the change as a diff against round 365 and
-  `wip/r366/README.md` says what has and has not been run on it.
-  Nothing under `wip/` is built or tested by the gate.
+- **Round 366: C reads and stores a variable's dynamic binding.**  GNU's
+  C reads a variable as the C variable a DEFVAR forwards to or with
+  find_symbol_value, and stores with an assignment or set_internal: the
+  dynamic binding, the buffer's where the variable is local.  Only
+  eval_sub's own `Fassq (form, Vinternal_interpreter_environment)' for a
+  symbol form, Fsetq's `XSETCDR (lex_binding, val)' and the forms that
+  bind look in the lexical environment.  Emaxx's primitives were handed
+  the caller's environment and read and stored through it first (round
+  364's finding), so an entry of a special variable's name in the alist
+  `eval' is given, or in an interpreted closure's, was the variable to
+  them.  bindings.rs's lexical-first functions are gone (lookup_var,
+  lookup_var_key, lookup_var_symbol, lookup_var_with_resolved_name,
+  lexical_value, set_variable, set_variable_key, set_variable_checked,
+  set_lexical_variable_checked), and the 711 runtime calls of them (583
+  reads: 508 of lookup_var_key, 16 of lookup_var, 6 of
+  lookup_var_symbol, 53 of forwarded_c_value; 128 stores: 121 of
+  set_variable_key, 7 of set_variable) are symbol_value_key,
+  symbol_value (new: by name), symbol_value_symbol, forwarded_c_value
+  without an environment, set_symbol_value_key (new) and
+  set_symbol_value_cell.  The evaluator's references are core.rs's
+  lookup, lookup_symbol and lookup_symbol_plain (lookup does its Fassq
+  inline now) and definitions.rs's set_lexical_variable_checked_symbol,
+  unchanged in what they do.  174 functions lost an environment
+  parameter they only read variables with, and 11 closures; four
+  callbacks keep theirs unused, their types being fixed.  One place had
+  used the lexical lookup to pass a value: `read-coding-system' pushed a
+  lexical frame binding `completion-ignore-case' for completing_read to
+  find, and now does coding.c's specbind and unbind_to.  Checked against
+  the C before they changed: the debugger's entry (maybe_call_debugger
+  and call_debugger read Vinhibit_debugger, debug_on_quit,
+  Vdebug_on_error, Vdebug_ignored_errors and Vdebugger), `function'
+  (Vinternal_make_interpreted_closure_function), macro expansion
+  (Vmacroexp__dynvars), a mode line's symbols (display_mode_element's
+  Fsymbol_value), display-spec widths (buffer_local_value), timers
+  (timer_check's Vtimer_list) and the byte code's temp-output op
+  (Vtemp_buffer_show_function); sf_function's read of `lexical-binding'
+  has no counterpart in Ffunction and is dynamic like the rest.  Two
+  tests had used the old functions as the evaluator's own:
+  a_closure_shares_the_binding_conses_of_the_scope_it_was_made_in now
+  evaluates `(setq cell 23)' and `cell' in the scope (and asserts that
+  no global `cell' appears), and
+  process_coding_alist_overrides_the_default_for_synchronous_output sets
+  `process-coding-system-alist' where it bound it in a lexical frame,
+  which GNU ignores (`find-operation-coding-system' under such an entry
+  is nil in GNU and was `(latin-1 . latin-1)').  With primitives reading
+  dynamically, two places that evaluate a form in another environment
+  showed that they left the caller's dialect in force (the review's
+  regressions): Fdocumentation_property's `Feval (tem, Qnil)' is
+  eval_impl with a nil environment now, and backtrace_eval_at evaluates
+  under the frame's own environment's dialect
+  (with_lambda_eval_context), so a lambda's parameter named like a
+  special variable is specbound there as in GNU; for that the
+  environment readevalloop binds (`(t)' for a file with lexical binding,
+  nil otherwise) is installed for the frames below a load or an
+  eval-buffer (install_frame_environment, as Feval's already was), where
+  a frame under a file's top level found none.  And Flet's `Fmemq (var,
+  Vinternal_interpreter_environment)' is FOR_EACH_TAIL's (types.rs's
+  memq_environment; local_special_active and binding_is_dynamic_symbol
+  return the error): an improper environment signals `listp' and a
+  circular one `circular-list', where the walk passed over the first and
+  never ended on the second, deaf to SIGTERM.  The macro call's walk of
+  the environment for `macroexp--dynvars' is eval_sub's, with no cycle
+  check and no QUIT, and over a circular environment never ends in GNU
+  either, until a signal's handler ends the session; it looks for a
+  fatal signal every 4,096 entries (run_pending_fatal_signal), so
+  SIGTERM ends Emaxx there as it ends GNU.  Tests: cli_parity's
+  primitives_read_and_store_variables_as_c_reads_and_stores_them runs
+  223 forms of the shape `(eval 'FORM '((VAR . VALUE) ...))' (the
+  reader, file names, searches, obarrays, columns, buffers and their
+  hooks, text properties, processes, formats, times and timers, load,
+  keymaps, the minibuffer, syntax scans, undo, case conversion, the
+  command loop, and what C stores), GNU and Emaxx side by side, and 90
+  of the review's forms on the dialect of a documentation form and of
+  backtrace-eval, Flet's Fmemq and lambda parameters named like special
+  variables; eval_05's
+  c_reads_and_stores_of_a_variable_pass_over_the_lexical_environment
+  does the reads and stores from Lisp and from Rust under a caller frame
+  that binds the names.  The grouped gate passed its 3,530 library tests
+  and the integration targets (cli, cli_parity, ert_runner,
+  native_comp_identity, native_thread_continuations, package_lifecycle,
+  runtime_ownership) passed on the final source; clippy and fmt are
+  clean under Rust 1.100.0.  The frozen harness refuses an oracle built
+  outside CI (its binary is pinned by hash), so GNU's 459 `*-tests.el'
+  files were run under ERT, one process each, with round 365's build and
+  this one: the outcomes are the same in every file (four whose first
+  runs had disturbed each other agree run alone).  Round 364's
+  comparisons of the printer with GNU give what they gave (the probes,
+  1,597 and 400 generated programs, the strace runs, the terminal
+  session).  tools/perf/callgrind-diff.sh: the byte-code call loop and
+  the `get' loop take the 380 and 171 instructions an iteration they
+  took; the interpreted loops 3,180 with dynamic binding and 4,402 with
+  lexical where round 365 took 3,152 and 4,351 (GNU 3,234 and 5,021),
+  the difference being Flet's Fmemq with its cycle check.  An
+  independent review read the diff against eval.c, data.c and doc.c and
+  ran some 1,180 forms on GNU and both builds (582 in ten programs, 599
+  one to a process), GNU's ERT files and three terminal sessions.  It
+  found no runtime code that recognises a test or runs GNU, no test
+  removed, the fifteen assertion lines the audit lists renamed or gone
+  with the deleted setters, and the round's model sound; 87 of its 599
+  forms were wrong before the round and right after it.  It found one
+  regression in two places (the documentation form and backtrace-eval
+  above), fixed here with the hang in Flet's Fmemq, which was older; and
+  four older differences in the same ground, recorded: `nil' and `t' as
+  symbol forms, a DEFVAR's C variable after makunbound, byte code's
+  environment frame, and `(when FORM . SPEC)' display specifications.
+  After the fixes its sets on documentation forms, backtrace-eval,
+  keyboard, mode-line, minibuffer and byte-code-to-Lisp calls agree with
+  GNU form for form (12, 29, 51, 20, 29 and 38), the lambda-parameter
+  set but for the form that prints the build's version, and the others
+  but for the recorded differences.  tools/round_audit.py reports no
+  hard finding; it lists sixteen assertion lines changed or removed
+  (twelve the same assertion under the renamed function, two the debug
+  assertions of the deleted setters, one rewritten in
+  a_closure_shares_the_binding_conses_of_the_scope_it_was_made_in, one
+  that unwraps the result Fmemq's walk now has), dropped results that
+  are an unset variable read as nil, and src/anti_cheat.rs for two
+  renamed calls and an import.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -22066,7 +22176,80 @@ ert-tests as a whole 26,307 ms against 27,211.
   0.08), and ert-tests 43.3 s where round 363's run took 46.8 against
   38.7.  The Rust gate (run 43570787490) passed.
 
+**On `16b2ea1`** (round 365, the first CI on Rust 1.100.0): the Rust
+  gate (run 43576587303) passed.  The frozen run's first attempt (run
+  43576589312) matched 7,927 of 7,928 outcomes, the one mismatch GNU's
+  again: the oracle's `eglot-test-rust-completion-exit-function` failed
+  with a `jsonrpc-error` from the language server and Emaxx's passed, as
+  on `ef33383` and `c65fc87`.  Setup 55.9 s against 47.4 s (1.181), test
+  bodies 237.5 s against 229.6 s (1.034), in all 1.059, on a fast runner
+  (GNU's suite took 277 s).  Its second attempt (run 43582693661)
+  matched all 7,928 with no unsuccessful execution: setup 63.4 s against
+  47.4 s (1.339), test bodies 241.5 s against 224.4 s (1.076), in all
+  1.122 (GNU's suite 272 s); the widest body gaps are comp-tests (13.7 s
+  against 10.6 s), tramp-tests (15.2 against 13.2), simple-tests (3.31
+  against 2.30), semantic-utest-ia (2.84 against 2.00), process-tests
+  (2.27 against 1.56) and mule-tests (1.99 against 1.36).
+
 **Findings recorded, not fixed:**
+- **`nil' and `t' are symbols to eval_sub (round 366's review).**  GNU's
+  eval_sub does `Fassq (form, Vinternal_interpreter_environment)' for
+  any symbol form, `nil' and `t' among them, and evaluates a fixed-arity
+  subr's omitted arguments as `eval_sub (Fcar (args_left))', a reference
+  to `nil'.  So `(eval '(list nil t) '((nil . 3) (t . 4)))' is `(3 4)',
+  `(funcall (lambda (t) t) 1)' is 1, `(eval '(substring "abcdef" 1)
+  '((nil . 3)))' is "bc" and `(condition-case t (signal 'error '(1))
+  (error t))' is `(error 1)'.  Emaxx returns the two constants
+  unevaluated (core.rs; types.rs's assq_binding says they are never
+  bound) and fills omitted arguments with nil: `(nil t)', t, "bcdef" and
+  t.  The same Fassq signals for an omitted argument under an
+  environment that is no list or is circular (`(eval '(string-match "A"
+  "a") CIRCULAR)' is circular-list in GNU and 0 in Emaxx).  Round 365
+  answers the same; 11 of the review's 16 such forms differ, and two
+  more of its forms on malformed environments.  The next round's
+  subject.
+- **After `makunbound' of a DEFVAR, C still has its variable (round
+  366's review).**  data.c's set_internal makes the symbol a plain one
+  when void is stored (`redirect = SYMBOL_PLAINVAL'), and the C variable
+  keeps its value: C goes on reading and assigning it, and what Lisp
+  then sets is the symbol's alone.  `(progn (makunbound 'print-length)
+  (setq print-length 1) (prin1-to-string '(1 2 3)))' is "(1 2 3)" in GNU
+  and "(1 ...)" in Emaxx; with `case-fold-search' unbound `(string-match
+  "A" "a")' is 0 in GNU; after `(makunbound 'last-coding-system-used)' a
+  decode leaves it unbound in GNU and bound in Emaxx.  Only
+  forwarded_c_value (60 calls) reads the detached slot; the 672
+  symbol_value_key reads and 259 set_symbol_value_key stores round 366
+  settled on go to the symbol, as the functions before them did.  25 of
+  the review's 41 forms differ, the same before the round.  To be done
+  by the generated list of C variables: a DEFVAR's reads and stores to
+  the slot, the rest to the symbol.
+- **Byte code runs under an environment frame GNU does not have (round
+  366's review).**  funcall_lambda returns exec_byte_code for lexical
+  byte code before anything is bound, so
+  Vinternal_interpreter_environment is the caller's while it runs; Emaxx
+  pushes a nil frame (core.rs, vm.rs: to keep the caller's lexical
+  bindings out of the VM's reads, which no longer look there).  `(let
+  ((zz-nv 1)) (funcall (byte-compile (lambda ()
+  (internal--define-uninitialized-variable 'zz-nv)))))' signals
+  "Defining as dynamic an already lexical var" in Emaxx and returns in
+  GNU, and the obsolete ops that call eval_sub (Bcatch, Bcondition_case
+  with a form) do not see the caller's lexical variables (GNU 5, Emaxx
+  void-variable).  5 of 27 and 7 of 9 of the review's forms differ, the
+  same before the round.
+- **`(when FORM . SPEC)' display specifications are not evaluated (round
+  366's review, on a terminal).**  xdisp.c's handle_single_display_spec
+  evaluates FORM with `object', `position', `buffer-position' and
+  `window' bound; Emaxx shows the specification without asking.  All
+  five lines of the review's terminal probe differ.
+- **A fatal signal waits for the next check (seen in round 366).**
+  GNU's handler for SIGTERM, SIGHUP and SIGINT in batch runs
+  terminate_due_to_signal, and so Fkill_emacs, from the signal itself,
+  whatever C was doing.  Emaxx records the signal and runs the same when
+  its code next looks (maybe_quit, the waits, the byte-code loop), so
+  Rust code that loops without looking does not end: round 366 found two
+  such loops over a circular lexical environment (Flet's Fmemq, which
+  signals now, and the macro call's walk, which looks for the signal
+  now), and others are not excluded.
 - **`noninteractive' is two things in GNU and one in Emaxx (round 364's
   review).**  print.c, xdisp.c and the rest of GNU's C read the C flag
   `noninteractive', which emacs.c sets once from the command line; the
@@ -22146,26 +22329,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   batch session is `n=17837' in Emaxx: the symbols GNU's C interns that
   Emaxx's does not (the oracle is an X build; which of the difference is
   that and which is missing DEFSYMs is not yet counted).
-- **Primitives read variables through the lexical environment (seen in
-  round 364).**  GNU's C reads a DEFVAR as the C variable it is and any
-  other variable with Fsymbol_value: the dynamic value.  Only the
-  evaluator's own reference to a variable looks in the lexical
-  environment.  Emaxx's primitives are handed the caller's environment
-  and most read variables through it (523 `lookup_var_key
-  (cached_symbol! ...)' sites and 42 `lookup_var' ones outside the
-  tests), so an entry of a special variable's name there (in the alist
-  `eval' is given, or an interpreted closure's) is taken for the
-  variable: `(eval '(read "#1=(a . #1#)") '((read-circle . nil)))'
-  signals invalid-read-syntax where GNU reads the circle, `(eval
-  '(expand-file-name "x") '((default-directory . "/nonexistent/")))'
-  expands under that directory, `(eval '(intern-soft "car") '((obarray .
-  [])))' signals, and `current-column' takes `tab-width' from it (4 of
-  24 such forms tried; round 363 answers the same).  Round 364 made the
-  printer's reads dynamic: its stream (`standard-output'), the batch
-  flag where the printer and `terpri' read it, and the print variables.
-  The rest is a round of its own: each site either a C read (the dynamic
-  value, a buffer-local one where GNU's is per buffer) or the
-  evaluator's.
 - **Interpreted code and the call from C to a Lisp function are slower
   than GNU's (measured in round 364).**  The round's timing probes are
   user plus system seconds, least of five, startup included.  Printing

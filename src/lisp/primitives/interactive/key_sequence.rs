@@ -54,7 +54,7 @@ impl KeySequenceReader {
             cached_symbol!("local-function-key-map"),
             cached_symbol!("key-translation-map"),
         ] {
-            let map = interp.lookup_var_key(name, env).unwrap_or(Value::Nil);
+            let map = interp.symbol_value_key(name).unwrap_or(Value::Nil);
             roots.push(map);
             roots.push(map);
         }
@@ -83,19 +83,19 @@ impl KeySequenceReader {
         // and is shown at once (echo_now), echoing going on only with
         // `echo-keystrokes'; without one, `cursor-in-echo-area' with
         // `echo-keystrokes' has the dash put after what is echoed.
-        let interactive = interactive_p(interp, env);
+        let interactive = interactive_p(interp);
         if interactive {
             if !prompt.is_nil() {
                 super::set_echo_prompt(interp, prompt);
                 interp.keyboard_input.immediate_echo = false;
                 super::echo_now(interp, env)?;
-                if !super::echo_keystrokes_p(interp, env) {
+                if !super::echo_keystrokes_p(interp) {
                     interp.keyboard_input.immediate_echo = false;
                 }
             } else if interp
-                .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
+                .symbol_value_key(cached_symbol!("cursor-in-echo-area"))
                 .is_some_and(|value| value.is_truthy())
-                && super::echo_keystrokes_p(interp, env)
+                && super::echo_keystrokes_p(interp)
             {
                 super::echo_dash(interp, env)?;
             }
@@ -122,7 +122,7 @@ impl KeySequenceReader {
         mock_input: bool,
     ) -> Result<(), LispError> {
         // replay_sequence: from the beginning of keybuf, no key read.
-        interp.set_variable_key(cached_symbol!("last-nonmenu-event"), Value::Nil, env);
+        interp.set_symbol_value_key(cached_symbol!("last-nonmenu-event"), Value::Nil);
         // keyboard.c:active_maps: the EVENT_START of a first event with
         // parameters, or of the second when the first is the fake prefix
         // (`mode-line' and the like) its POSN_POSN names.
@@ -148,7 +148,7 @@ impl KeySequenceReader {
         self.omitted.clear();
         self.fresh_omitted = false;
         interp.keyboard_input.command_keys.truncate(self.keys_start);
-        if mock_input && interactive_p(interp, env) {
+        if mock_input && interactive_p(interp) {
             super::echo_truncate(interp, self.echo_start, env)?;
         }
         Ok(())
@@ -332,7 +332,7 @@ impl KeySequenceReader {
         if !self.roots[6].is_nil()
             || self.remaps[2].start < self.read
             || !interp
-                .lookup_var_key(cached_symbol!("translate-upper-case-key-bindings"), env)
+                .symbol_value_key(cached_symbol!("translate-upper-case-key-bindings"))
                 .is_some_and(|value| value.is_truthy())
         {
             return Ok(false);
@@ -415,10 +415,9 @@ impl KeySequenceReader {
             self.shift_translated = false;
         }
         if self.shift_translated {
-            interp.set_variable_key(
+            interp.set_symbol_value_key(
                 cached_symbol!("this-command-keys-shift-translated"),
                 Value::T,
-                env,
             );
         }
         // ...and echo_update.
@@ -437,9 +436,9 @@ impl KeySequenceReader {
     /// read_key_sequence's last_nonmenu_event as read_char is called
     /// for the next key: the last key read not from a mouse menu, nil
     /// before the first.
-    pub(crate) fn prev_event(&self, interp: &Interpreter, env: &Env) -> Value {
+    pub(crate) fn prev_event(&self, interp: &Interpreter) -> Value {
         interp
-            .lookup_var_key(cached_symbol!("last-nonmenu-event"), env)
+            .symbol_value_key(cached_symbol!("last-nonmenu-event"))
             .unwrap_or(Value::Nil)
     }
 
@@ -497,7 +496,7 @@ impl KeySequenceReader {
         interp.set_c_variable("quit-flag", Value::Nil);
         // read_char past the input method: an unread or macro event not yet
         // recorded is recorded as the input method left it.
-        super::record_unrecorded_event(interp, &event, env);
+        super::record_unrecorded_event(interp, &event);
         // read_char added the event to this-command-keys unless it was
         // reread with keys already there.
         let reread = std::mem::take(&mut interp.keyboard_input.last_event_reread);
@@ -526,7 +525,7 @@ impl KeySequenceReader {
         };
         self.raw.push(raw);
         interp.keyboard_input.raw_keys.push(raw);
-        interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
+        interp.set_symbol_value_key(cached_symbol!("last-input-event"), event);
         let mut expanded = false;
         if mouse_event_head(interp, &event).is_none()
             && let Some(position_tail) = event
@@ -639,10 +638,9 @@ impl KeySequenceReader {
             // used, we don't update last_nonmenu_event; it continues to
             // hold the mouse event that preceded the first level of menu.
             if !self.menu_keys.get(self.read - 1).copied().unwrap_or(false) {
-                interp.set_variable_key(
+                interp.set_symbol_value_key(
                     cached_symbol!("last-nonmenu-event"),
                     self.keys[self.read - 1],
-                    env,
                 );
             }
             // read_char's add_command_key for a key read, or
@@ -680,9 +678,9 @@ impl KeySequenceReader {
             if self.roots[6].is_nil() && self.read > 1 {
                 let key = self.keys[self.read - 1];
                 let head = key.cons_values().map_or(key, |(head, _)| head);
-                if super::echo::help_char_p(interp, head, env) {
+                if super::echo::help_char_p(interp, head) {
                     let command = interp
-                        .lookup_var_key(cached_symbol!("prefix-help-command"), env)
+                        .symbol_value_key(cached_symbol!("prefix-help-command"))
                         .unwrap_or(Value::Nil);
                     self.roots[10] = command;
                     return if command.is_nil() || command.is_symbol() {
@@ -707,7 +705,7 @@ impl KeySequenceReader {
 /// (or is t, an early exit).
 fn at_end_of_macro_p(interp: &mut Interpreter, env: &mut Env) -> Result<bool, LispError> {
     let macro_value = interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro"))
         .unwrap_or(Value::Nil);
     if macro_value.is_nil() {
         return Ok(false);
@@ -716,7 +714,7 @@ fn at_end_of_macro_p(interp: &mut Interpreter, env: &mut Env) -> Result<bool, Li
         return Ok(true);
     }
     let index = interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro-index"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro-index"))
         .unwrap_or(Value::Integer(0));
     let length = super::call(interp, "length", &[macro_value], env)?;
     Ok(index.as_integer()? >= length.as_integer()?)
@@ -736,12 +734,12 @@ fn wait_for_sequence_event(
 
 /// keyboard.c's INTERACTIVE: no keyboard macro executing, and not
 /// `noninteractive'.
-fn interactive_p(interp: &Interpreter, env: &Env) -> bool {
+fn interactive_p(interp: &Interpreter) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro"))
         .is_none_or(|value| value.is_nil())
         && !interp
-            .forwarded_c_value("noninteractive", &Env::new())
+            .forwarded_c_value("noninteractive")
             .is_some_and(|value| value.is_truthy())
 }
 
@@ -830,12 +828,10 @@ pub(crate) fn read_key_sequence(
     let result: Result<Option<KeyResolution>, LispError> = (|| loop {
         // At the end of an executing macro, with no unread events, the
         // sequence ends empty (t = 0), whatever it has read.
-        if at_end_of_macro_p(interp, env)?
-            && !super::kbd_input::requeued_events_pending_p(interp, env)
-        {
+        if at_end_of_macro_p(interp, env)? && !super::kbd_input::requeued_events_pending_p(interp) {
             return Ok(None);
         }
-        let prev_event = reader.prev_event(interp, env);
+        let prev_event = reader.prev_event(interp);
         let interrupted_frame = interp.selected_frame_value();
         let event = wait_for_sequence_event(
             interp,

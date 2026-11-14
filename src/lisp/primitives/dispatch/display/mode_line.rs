@@ -336,9 +336,7 @@ fn dsafe_eval(interp: &mut Interpreter, env: &mut Env, sexpr: Value) -> Result<V
 /// A buffer-local C variable as redisplay reads it (BVAR, or the
 /// variable's value in the current buffer).
 fn bvar(interp: &Interpreter, name: crate::lisp::types::symbols::SymbolKey) -> Value {
-    interp
-        .lookup_var_key(name, &crate::lisp::types::Env::new())
-        .unwrap_or(Value::Nil)
+    interp.symbol_value_key(name).unwrap_or(Value::Nil)
 }
 
 impl<'a> ModeLine<'a> {
@@ -539,7 +537,7 @@ impl<'a> ModeLine<'a> {
         // Pad to FIELD_WIDTH.
         if field_width > 0 && n < field_width {
             n += match self.target {
-                Target::NoProp => self.store_noprop(interp, env, &[], field_width - n, 0),
+                Target::NoProp => self.store_noprop(interp, &[], field_width - n, 0),
                 Target::String => self.store_string(
                     interp,
                     env,
@@ -627,7 +625,7 @@ impl<'a> ModeLine<'a> {
             let prec = precision - n;
             match self.target {
                 Target::NoProp => {
-                    n += self.store_noprop(interp, env, &chars, -1, prec);
+                    n += self.store_noprop(interp, &chars, -1, prec);
                 }
                 Target::String => {
                     n += self.store_string(interp, env, false, elt, true, 0, prec, Value::Nil)?;
@@ -664,10 +662,10 @@ impl<'a> ModeLine<'a> {
                 // most what PRECISION allows.
                 offset -= 1;
                 let run = &chars[last_offset..offset];
-                let (prec, nchars) = c_string_width(interp, env, run, precision - n);
+                let (prec, nchars) = c_string_width(interp, run, precision - n);
                 match self.target {
                     Target::NoProp => {
-                        n += self.store_noprop(interp, env, &chars[last_offset..], 0, prec);
+                        n += self.store_noprop(interp, &chars[last_offset..], 0, prec);
                     }
                     Target::String => {
                         let end = if precision <= 0 {
@@ -733,7 +731,7 @@ impl<'a> ModeLine<'a> {
                     let (spec, string) = self.decode_mode_spec(interp, env, c, field)?;
                     match self.target {
                         Target::NoProp => {
-                            n += self.store_noprop(interp, env, &spec, field, prec);
+                            n += self.store_noprop(interp, &spec, field, prec);
                         }
                         Target::String => {
                             let tem = Value::String(spec.iter().collect::<String>().into());
@@ -772,14 +770,13 @@ impl<'a> ModeLine<'a> {
     fn store_noprop(
         &mut self,
         interp: &mut Interpreter,
-        env: &mut Env,
         text: &[char],
         field_width: i64,
         precision: i64,
     ) -> i64 {
         // The C string ends at its first NUL.
         let text = &text[..text.iter().position(|&c| c == '\0').unwrap_or(text.len())];
-        let (mut n, nchars) = c_string_width(interp, env, text, precision);
+        let (mut n, nchars) = c_string_width(interp, text, precision);
         let nchars = if precision > 0 { nchars } else { text.len() };
         self.noprop.extend(&text[..nchars]);
         while field_width > 0 && n < field_width {
@@ -1199,12 +1196,12 @@ fn display_min_width(
 /// character.c c_string_width with the buffer's display table: TEXT's
 /// columns, and with PRECISION > 0 those of the longest prefix that
 /// fits, with the characters it holds.
-fn c_string_width(interp: &Interpreter, env: &Env, text: &[char], precision: i64) -> (i64, usize) {
-    let dp = crate::lisp::primitives::buffer_display_table(interp, env);
+fn c_string_width(interp: &Interpreter, text: &[char], precision: i64) -> (i64, usize) {
+    let dp = crate::lisp::primitives::buffer_display_table(interp);
     let mut width: i64 = 0;
     for (index, character) in text.iter().enumerate() {
         let code = crate::lisp::primitives::string_character_code(true, *character) as u32;
-        let this = crate::lisp::primitives::display_char_width(interp, code, dp, env) as i64;
+        let this = crate::lisp::primitives::display_char_width(interp, code, dp) as i64;
         if 0 < precision && precision - width < this {
             return (width, index);
         }

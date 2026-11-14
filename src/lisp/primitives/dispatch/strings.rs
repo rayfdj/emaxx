@@ -37,7 +37,7 @@ define_dispatch!(
                         length,
                         args.get(2).is_some_and(Value::is_truthy),
                     )
-                    .map_err(|error| string_storage_error(interp, env, error))?,
+                    .map_err(|error| string_storage_error(interp, error))?,
                 ))
             }
             "make-temp-name" => {
@@ -56,7 +56,7 @@ define_dispatch!(
                 // allocate_clear_vector: memory_full past VECTOR_ELTS_MAX
                 // slots or when lisp_malloc finds no room.
                 let vector = crate::lisp::types::VectorRef::try_filled(length as usize, args[1])
-                    .map_err(|failed| allocation_error(interp, env, failed))?;
+                    .map_err(|failed| allocation_error(interp, failed))?;
                 if length > 0 {
                     crate::lisp::native_comp::note_lisp_allocation((length as usize + 1) * 8);
                 }
@@ -72,7 +72,7 @@ define_dispatch!(
                 // a vector's or cannot be allocated.
                 crate::lisp::types::BoolVectorRef::try_filled(length as usize, args[1].is_truthy())
                     .map(Value::BoolVector)
-                    .map_err(|failed| allocation_error(interp, env, failed))
+                    .map_err(|failed| allocation_error(interp, failed))
             }
             "bool-vector" => Ok(make_bool_vector_value(args.iter().map(Value::is_truthy))),
             "make-keymap" => {
@@ -117,11 +117,11 @@ define_dispatch!(
                     if result_len
                         > crate::lisp::primitives::numeric_time::MOST_POSITIVE_FIXNUM as usize
                     {
-                        return Err(memory_full(interp, env, usize::MAX));
+                        return Err(memory_full(interp, usize::MAX));
                     }
                 }
                 let vector = crate::lisp::types::VectorRef::try_filled(result_len, Value::Nil)
-                    .map_err(|failed| allocation_error(interp, env, failed))?;
+                    .map_err(|failed| allocation_error(interp, failed))?;
                 if result_len > 0 {
                     crate::lisp::native_comp::note_lisp_allocation((result_len + 1) * 8);
                 }
@@ -178,7 +178,7 @@ define_dispatch!(
             // ── String operations ──
             "concat" => {
                 let result = StringObjectRef::concatenate(args)
-                    .map_err(|error| string_storage_error(interp, env, error))?;
+                    .map_err(|error| string_storage_error(interp, error))?;
                 Ok(Value::StringObject(result))
             }
             "string-match" => regexp::string_match_impl(interp, args, env, true),
@@ -198,7 +198,7 @@ define_dispatch!(
                     args.get(2).copied().unwrap_or(Value::Nil),
                     length,
                 )?;
-                let width = lisp_string_width(interp, env, &args[0], from, to, -1)?.width;
+                let width = lisp_string_width(interp, &args[0], from, to, -1)?.width;
                 Ok(Value::Integer(width as i64))
             }
             "char-width" => {
@@ -207,12 +207,12 @@ define_dispatch!(
                     Kind::Integer(c) if (0..=MAX_CHAR as i64).contains(&c) => c as u32,
                     _ => return Err(LispError::WrongTypeArgument("characterp".into(), args[0])),
                 };
-                let dp = buffer_display_table(interp, env);
-                Ok(Value::Integer(display_char_width(interp, c, dp, env) as i64))
+                let dp = buffer_display_table(interp);
+                Ok(Value::Integer(display_char_width(interp, c, dp) as i64))
             }
             "string" => Ok(Value::StringObject(
                 StringObjectRef::from_characters(args)
-                    .map_err(|error| string_storage_error(interp, env, error))?,
+                    .map_err(|error| string_storage_error(interp, error))?,
             )),
             "substring" | "substring-no-properties" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -265,7 +265,7 @@ define_dispatch!(
                 }
                 StringObjectRef::from_storage(bytes, state.len(), true)
                     .map(Value::StringObject)
-                    .map_err(|error| string_storage_error(interp, env, error))
+                    .map_err(|error| string_storage_error(interp, error))
             }
             "string-make-multibyte" => {
                 need_args(name, args, 1)?;
@@ -322,7 +322,7 @@ define_dispatch!(
                 }
                 StringObjectRef::from_storage(bytes, characters, true)
                     .map(Value::StringObject)
-                    .map_err(|error| string_storage_error(interp, env, error))
+                    .map_err(|error| string_storage_error(interp, error))
             }
             "string-make-unibyte" => {
                 // fns.c string_make_unibyte: STRING itself when unibyte,
@@ -512,7 +512,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(Value::StringObject(
                     StringObjectRef::from_characters(args)
-                        .map_err(|error| string_storage_error(interp, env, error))?,
+                        .map_err(|error| string_storage_error(interp, error))?,
                 ))
             }
             "base64-encode-region" => {

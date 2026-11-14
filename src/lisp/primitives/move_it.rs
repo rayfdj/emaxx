@@ -266,7 +266,7 @@ fn pos_reached_by(
         return target;
     }
     let reached = text_reached(interp, target);
-    if interactive_motion(interp, env) {
+    if interactive_motion(interp) {
         // move_it_to's check at each line it begins: IT_CHARPOS at or
         // past TARGET with the iterator in the buffer -- after a buffer
         // newline, or a string's newline that ended its string, before
@@ -339,7 +339,7 @@ fn screen_line_start_row(
     // Whether the row begins inside a `display' string; without the
     // display iterator, a second row beginning where the string does.
     let inside_display = index > 0
-        && if super::dispatch::interactive_motion(interp, env) {
+        && if super::dispatch::interactive_motion(interp) {
             interactive_screen_line(interp, env, window_id, bol)
                 .row_first_string(index)
                 .is_some_and(|(display, character)| display && character > 0)
@@ -428,7 +428,7 @@ fn zv_strings_row(
 ) -> Option<usize> {
     if pos != interp.buffer.borrow().point_max()
         || pos <= bol
-        || !super::dispatch::interactive_motion(interp, env)
+        || !super::dispatch::interactive_motion(interp)
     {
         return None;
     }
@@ -466,7 +466,7 @@ pub(crate) fn rows_between(
     let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
     // The iterator reseated at FROM: inside text a `display' string
     // replaces it delivers the string from its start.
-    let mut index = interactive_motion(interp, env)
+    let mut index = interactive_motion(interp)
         .then(|| interactive_screen_line(interp, env, window_id, bol).reseated_string_row(from))
         .flatten()
         .unwrap_or_else(|| row_index_of(&starts, from));
@@ -544,7 +544,7 @@ fn forward_rows(
     let zv = interp.buffer.borrow().point_max();
     // screen_row_starts, keeping a terminal's layout of the line, whose
     // glyphs say what each row begins with.
-    let interactive = interactive_motion(interp, env);
+    let interactive = interactive_motion(interp);
     let lay_out = |interp: &mut Interpreter, env: &mut Env, bol: usize, eol: usize| {
         if interactive {
             let layout = interactive_screen_line(interp, env, window_id, bol);
@@ -702,7 +702,7 @@ fn move_it_by_lines_back(
         // reseat loads the strings again, and it2, walking from them to
         // the text, comes back as far as -DVPOS allows.
         let reloaded = start_row > 0
-            && super::dispatch::interactive_motion(interp, env)
+            && super::dispatch::interactive_motion(interp)
             && super::dispatch::interactive_screen_line(interp, env, window_id, it)
                 .row_first_string(start_row)
                 .is_some_and(|(display, character)| !display && character > 0);

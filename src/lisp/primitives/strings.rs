@@ -11,7 +11,7 @@ const SPARE_MEMORY: usize = 1 << 14;
 /// within a cons block's worth of consing (with the system malloc there
 /// is no spare memory to release).  Either way the signal is the current
 /// `memory-signal-data', its car the error symbol (xsignal (Qnil, ...)).
-pub(crate) fn memory_full(interp: &mut Interpreter, env: &Env, nbytes: usize) -> LispError {
+pub(crate) fn memory_full(interp: &mut Interpreter, nbytes: usize) -> LispError {
     let mut enough_free_memory = false;
     if SPARE_MEMORY < nbytes {
         let layout =
@@ -33,7 +33,7 @@ pub(crate) fn memory_full(interp: &mut Interpreter, env: &Env, nbytes: usize) ->
     }
     LispError::SignalValue(
         interp
-            .lookup_var_key(cached_symbol!("memory-signal-data"), env)
+            .symbol_value_key(cached_symbol!("memory-signal-data"))
             .unwrap_or(Value::Nil),
     )
 }
@@ -61,10 +61,9 @@ pub(crate) fn string_storage_error_shared(
 /// alloc.c:memory_full for a vector allocator's failure.
 pub(crate) fn allocation_error(
     interp: &mut Interpreter,
-    env: &Env,
     failed: crate::lisp::alloc::vectors::AllocationFailed,
 ) -> LispError {
-    memory_full(interp, env, failed.0)
+    memory_full(interp, failed.0)
 }
 
 /// alloc.c:memory_full for a failed string allocation. Rust storage
@@ -72,13 +71,12 @@ pub(crate) fn allocation_error(
 /// primitive body, including generated direct and native dispatch.
 pub(crate) fn string_storage_error(
     interp: &mut Interpreter,
-    env: &Env,
     error: crate::lisp::types::string_data::StringError,
 ) -> LispError {
     use crate::lisp::types::string_data::StringError;
     match error {
         StringError::Condition(error) => error,
-        StringError::AllocationFailed(nbytes) => memory_full(interp, env, nbytes),
+        StringError::AllocationFailed(nbytes) => memory_full(interp, nbytes),
     }
 }
 
@@ -1055,7 +1053,6 @@ pub(crate) fn string_like_value(text: String, props: Option<crate::intervals::In
 /// one, any other a multibyte one of the same bytes.
 pub(crate) fn reverse_string_value(
     interp: &mut Interpreter,
-    env: &Env,
     value: &Value,
 ) -> Result<Value, LispError> {
     let Kind::StringObject(state) = value.kind() else {
@@ -1089,16 +1086,15 @@ pub(crate) fn reverse_string_value(
     };
     StringObjectRef::from_storage(reversed, size, multibyte)
         .map(Value::StringObject)
-        .map_err(|error| string_storage_error(interp, env, error))
+        .map_err(|error| string_storage_error(interp, error))
 }
 
 pub(crate) fn reverse_sequence_value(
     interp: &mut Interpreter,
-    env: &Env,
     value: &Value,
 ) -> Result<Value, LispError> {
     if matches!(value.kind(), Kind::StringObject(_)) {
-        return reverse_string_value(interp, env, value);
+        return reverse_string_value(interp, value);
     }
     if is_bool_vector_value(value) {
         let mut bits = bool_vector_bits(value)?;
@@ -1122,11 +1118,10 @@ pub(crate) fn reverse_sequence_value(
 
 pub(crate) fn nreverse_sequence_value(
     interp: &mut Interpreter,
-    env: &Env,
     value: &Value,
 ) -> Result<Value, LispError> {
     if matches!(value.kind(), Kind::StringObject(_)) {
-        return reverse_string_value(interp, env, value);
+        return reverse_string_value(interp, value);
     }
     // fns.c:Fnreverse: the bits swapped in place.
     if let Kind::BoolVector(vector) = value.kind() {

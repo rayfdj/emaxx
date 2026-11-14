@@ -642,7 +642,6 @@ impl<'a> JsonParser<'a> {
                 // included.
                 let table = crate::lisp::primitives::hash_table_from_test(
                     self.interp,
-                    &self.env,
                     test,
                     members.len() / 2,
                     0,

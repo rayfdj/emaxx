@@ -1061,10 +1061,10 @@ pub(crate) fn column_at(
 /// one, and so does a multibyte character of the space category; text
 /// invisible without an ellipsis is skipped as skip_invisible skips it
 /// for counting columns, newlines and all.
-pub(crate) fn position_indentation(interp: &mut Interpreter, env: &mut Env, pos: usize) -> usize {
+pub(crate) fn position_indentation(interp: &mut Interpreter, pos: usize) -> usize {
     // SANE_TAB_WIDTH.
     let tab_width = interp
-        .lookup_var_key(cached_symbol!("tab-width"), env)
+        .symbol_value_key(cached_symbol!("tab-width"))
         .and_then(|value| value.integer_value())
         .filter(|width| (1..=1000).contains(width))
         .unwrap_or(8) as usize;
@@ -1165,18 +1165,18 @@ pub(crate) fn scan_for_column(
     let goal = goal.unwrap_or(usize::MAX);
     // SANE_TAB_WIDTH.
     let tab_width = interp
-        .lookup_var_key(cached_symbol!("tab-width"), env)
+        .symbol_value_key(cached_symbol!("tab-width"))
         .and_then(|value| value.integer_value())
         .filter(|width| (1..=1000).contains(width))
         .unwrap_or(8) as usize;
     let ctl_arrow = interp
-        .lookup_var_key(cached_symbol!("ctl-arrow"), env)
+        .symbol_value_key(cached_symbol!("ctl-arrow"))
         .is_some_and(|value| value.is_truthy());
     let selective_display = interp
-        .lookup_var_key(cached_symbol!("selective-display"), env)
+        .symbol_value_key(cached_symbol!("selective-display"))
         .is_some_and(|value| matches!(value.kind(), Kind::T));
     let multibyte = interp.buffer.borrow().is_multibyte();
-    let display_table = buffer_display_table(interp, env);
+    let display_table = buffer_display_table(interp);
     let end = end.min(interp.buffer.borrow().point_max());
     let spec = {
         let buffer = interp.buffer.borrow();
@@ -1199,12 +1199,12 @@ pub(crate) fn scan_for_column(
     let window = dispatch::display::buffer_window(interp, interp.current_buffer_id(), &Value::Nil)?;
     let windowed = window.is_some();
     if interp.buffer.borrow().long_line_optimizations_p()
-        && let Some(scan) = truncated_long_line_column(interp, env, window, line_start, end, goal)?
+        && let Some(scan) = truncated_long_line_column(interp, window, line_start, end, goal)?
     {
         return Ok(scan);
     }
     let mut cmp_it = dispatch::CompositionIterator::for_window(windowed);
-    cmp_it.compute_stop_pos(interp, env, scan, end);
+    cmp_it.compute_stop_pos(interp, scan, end);
     'scan: while scan < end {
         // skip_invisible with no window: invisible text, not the text an
         // ellipsis stands for.
@@ -1237,14 +1237,14 @@ pub(crate) fn scan_for_column(
         // automatic one's a glyph cluster at a time.
         if cmp_it.composing() || (scan == cmp_it.stop_pos && cmp_it.reseat(interp, env, scan, end))
         {
-            cmp_it.update(interp, env);
+            cmp_it.update(interp);
         }
         if cmp_it.composing() {
             scan += cmp_it.nchars;
             if scan <= end {
                 col += cmp_it.width.max(0) as usize;
             }
-            cmp_it.advance(interp, env, scan, end);
+            cmp_it.advance(interp, scan, end);
             continue;
         }
         let Some(ch) = interp.buffer.borrow().char_at(scan) else {
@@ -1283,7 +1283,7 @@ pub(crate) fn scan_for_column(
                     // stored as.
                     let code = crate::lisp::primitives::public_buffer_char_code_at(interp, scan)
                         .map_or(ch as u32, |code| code as u32);
-                    col += multibyte_char_width(interp, env, code, display_table);
+                    col += multibyte_char_width(interp, code, display_table);
                 }
                 _ if ctl_arrow && (ch < ' ' || ch == '\u{7f}') => col += 2,
                 _ if !(' '..'\u{7f}').contains(&ch) => col += 4,
@@ -1309,18 +1309,17 @@ pub(crate) fn scan_for_column(
 /// lines are not truncated or the column is not that large.
 fn truncated_long_line_column(
     interp: &mut Interpreter,
-    env: &mut Env,
     window: Option<Value>,
     bolpos: usize,
     end: usize,
     goal: usize,
 ) -> Result<Option<ColumnScan>, LispError> {
     let mut lines_truncated = interp
-        .lookup_var_key(cached_symbol!("truncate-lines"), env)
+        .symbol_value_key(cached_symbol!("truncate-lines"))
         .is_some_and(|value| !value.is_nil());
     if !lines_truncated {
         let partial = interp
-            .lookup_var_key(cached_symbol!("truncate-partial-width-windows"), env)
+            .symbol_value_key(cached_symbol!("truncate-partial-width-windows"))
             .unwrap_or(Value::Nil);
         // `w->total_cols < FRAME_COLS (XFRAME (WINDOW_FRAME (w)))'.
         if !partial.is_nil()
@@ -1355,7 +1354,7 @@ fn truncated_long_line_column(
     }
     let col = scan - bolpos;
     let threshold = match interp
-        .lookup_var_key(cached_symbol!("large-hscroll-threshold"), env)
+        .symbol_value_key(cached_symbol!("large-hscroll-threshold"))
         .map(|value| value.kind())
     {
         Some(Kind::Integer(threshold)) => threshold,
@@ -1379,7 +1378,6 @@ fn truncated_long_line_column(
 /// sanitize_char_width).
 pub(crate) fn multibyte_char_width(
     interp: &Interpreter,
-    env: &Env,
     code: u32,
     display_table: Option<crate::lisp::types::CharTableRef>,
 ) -> usize {
@@ -1392,7 +1390,7 @@ pub(crate) fn multibyte_char_width(
             .min(1000);
     }
     let width = interp
-        .lookup_var_key(cached_symbol!("char-width-table"), env)
+        .symbol_value_key(cached_symbol!("char-width-table"))
         .and_then(|value| match value.kind() {
             Kind::CharTable(table) => interp.char_table_get(table, code),
             _ => None,
@@ -1499,10 +1497,10 @@ fn check_display_width(
         // The column width of the character at POS, when above one.
         if let Some(ch) = interp.buffer.borrow().char_at(pos) {
             let char_width = if ch > '\u{7f}' {
-                let table = buffer_display_table(interp, env);
+                let table = buffer_display_table(interp);
                 let code = crate::lisp::primitives::public_buffer_char_code_at(interp, pos)
                     .map_or(ch as u32, |code| code as u32);
-                multibyte_char_width(interp, env, code, table)
+                multibyte_char_width(interp, code, table)
             } else {
                 1
             };
@@ -1533,24 +1531,20 @@ fn text_property_range_end(buffer: &crate::buffer::Buffer, pos: usize, prop: &st
     }
 }
 
-pub(crate) fn char_is_invisible(
-    interp: &Interpreter,
-    pos: usize,
-    env: &Env,
-) -> Result<bool, LispError> {
+pub(crate) fn char_is_invisible(interp: &Interpreter, pos: usize) -> Result<bool, LispError> {
     let value = buffer_char_property_at(interp, &interp.buffer.borrow(), pos, "invisible")?;
-    Ok(invisibility_value_is_hidden(interp, &value, env))
+    Ok(invisibility_value_is_hidden(interp, &value))
 }
 
-pub(crate) fn invisibility_value_is_hidden(interp: &Interpreter, value: &Value, env: &Env) -> bool {
-    invisibility_level(interp, value, env) != 0
+pub(crate) fn invisibility_value_is_hidden(interp: &Interpreter, value: &Value) -> bool {
+    invisibility_level(interp, value) != 0
 }
 
 /// TEXT_PROP_MEANS_INVISIBLE of VALUE under the current buffer's
 /// `buffer-invisibility-spec': 0, 1, or 2 for text shown as an ellipsis.
-pub(crate) fn invisibility_level(interp: &Interpreter, value: &Value, env: &Env) -> u8 {
+pub(crate) fn invisibility_level(interp: &Interpreter, value: &Value) -> u8 {
     let spec = interp
-        .lookup_var_key(cached_symbol!("buffer-invisibility-spec"), env)
+        .symbol_value_key(cached_symbol!("buffer-invisibility-spec"))
         .unwrap_or(Value::T);
     super::invisibility::text_prop_means_invisible(*value, spec)
 }

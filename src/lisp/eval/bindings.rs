@@ -80,12 +80,18 @@ impl InterpreterState {
 }
 
 impl Interpreter {
-    pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
-        // data.c:find_symbol_value works on the symbol: a name that is an
+    /// data.c:find_symbol_value of the symbol named NAME, as C code reads
+    /// a variable it knows by name (`Fsymbol_value (intern ("name"))'): the
+    /// alias chain followed, then the buffer-local, dynamic or global
+    /// value.  The evaluator's lexical environment is not searched; only
+    /// eval_sub's own reference of a symbol form (`lookup',
+    /// `lookup_symbol') looks there.
+    pub fn symbol_value(&self, name: &str) -> Option<Value> {
+        // find_symbol_value works on the symbol: a name that is an
         // interned symbol's is resolved to it once (an address-keyed
         // cache) and read by id from there.
         if let Some(symbol) = SymbolName::interned_cached(name) {
-            return self.lookup_var_symbol(&symbol, env);
+            return self.symbol_value_symbol(&symbol);
         }
         // Cow avoids a per-lookup String allocation for the overwhelmingly
         // common non-aliased name.
@@ -96,34 +102,7 @@ impl Interpreter {
                 .unwrap_or_else(|_| name.to_string())
                 .into()
         };
-        self.lookup_var_with_resolved_name(name, resolved.as_ref(), env, None)
-            .ok()
-            .flatten()
-    }
-
-    /// `lookup_var' for a symbol in hand: the alias chain, the flags, the
-    /// buffer-local cell and the global cell by id.
-    /// `find_symbol_value' of a symbol the caller holds through
-    /// `cached_symbol!': no name to resolve.
-    pub(crate) fn lookup_var_key(
-        &self,
-        key: crate::lisp::types::symbols::SymbolKey,
-        env: &Env,
-    ) -> Option<Value> {
-        key.with(|symbol| self.lookup_var_symbol(symbol, env))
-    }
-
-    pub(crate) fn lookup_var_symbol(&self, symbol: &SymbolName, env: &Env) -> Option<Value> {
-        let resolved_owned;
-        let resolved = if self.globals.alias(symbol).is_none() {
-            symbol
-        } else {
-            resolved_owned = self.resolve_variable_symbol(symbol).unwrap_or(*symbol);
-            &resolved_owned
-        };
-        self.lookup_var_with_resolved_name(symbol.as_str(), resolved.as_str(), env, Some(resolved))
-            .ok()
-            .flatten()
+        self.find_symbol_value_resolved(resolved.as_ref(), None)
     }
 
     /// data.c:find_symbol_value as C code reads a variable (a DEFVAR's
@@ -177,45 +156,6 @@ impl Interpreter {
         key: crate::lisp::types::symbols::SymbolKey,
     ) -> Option<Value> {
         key.with(|symbol| self.symbol_value_symbol(symbol))
-    }
-
-    /// eval_sub's `Fassq (form, Vinternal_interpreter_environment)': the
-    /// current environment's binding of NAME, by symbol identity when the
-    /// symbol in hand is the name's (an alias is looked up under its own
-    /// name), by text otherwise.
-    fn lexical_value(
-        &self,
-        name: &str,
-        env: &Env,
-        symbol: Option<&SymbolName>,
-    ) -> Result<Option<Value>, LispError> {
-        let Some(environment) = current_environment(env) else {
-            return Ok(None);
-        };
-        // NAME is most often the symbol's own text, the same slice.
-        let binding = match symbol {
-            Some(symbol)
-                if std::ptr::eq(symbol.as_str(), name)
-                    || (symbol.as_str().len() == name.len() && symbol.as_str() == name) =>
-            {
-                assq_binding(environment, symbol)?
-            }
-            _ => assq_binding_named(environment, name)?,
-        };
-        Ok(binding.map(|binding| binding.cdr.get()))
-    }
-
-    fn lookup_var_with_resolved_name(
-        &self,
-        name: &str,
-        resolved: &str,
-        env: &Env,
-        resolved_symbol: Option<&SymbolName>,
-    ) -> Result<Option<Value>, LispError> {
-        if let Some(value) = self.lexical_value(name, env, resolved_symbol)? {
-            return Ok(Some(value));
-        }
-        Ok(self.find_symbol_value_resolved(resolved, resolved_symbol))
     }
 
     /// data.c:find_symbol_value for a symbol whose alias chain is
@@ -426,7 +366,7 @@ impl Interpreter {
     /// C readers keep using the C slot even after `makunbound' disconnects
     /// the Lisp symbol. Direct evaluator fields may subsequently change
     /// independently of that symbol (for example process_quit_flag).
-    pub(crate) fn forwarded_c_value(&self, name: &str, env: &Env) -> Option<Value> {
+    pub(crate) fn forwarded_c_value(&self, name: &str) -> Option<Value> {
         if name == "text-conversion-style" {
             return Some(self.buffer.borrow().text_conversion_style);
         }
@@ -439,7 +379,7 @@ impl Interpreter {
         {
             return Some(*detached);
         }
-        self.lookup_var(name, env)
+        self.symbol_value(name)
     }
 
     /// `forwarded_c_value' of a C variable named by KEY that is none of the
@@ -882,7 +822,15 @@ impl Interpreter {
         // an alias signals with the symbol that was evaluated, not with
         // the end of its redirect chain.
         let resolved = self.resolve_variable_name(name)?;
-        self.lookup_var_with_resolved_name(name, &resolved, env, None)?
+        // eval_sub's `Fassq (form, Vinternal_interpreter_environment)': the
+        // current environment's binding of the name as written (an alias
+        // is looked up under its own name).
+        if let Some(environment) = current_environment(env)
+            && let Some(binding) = assq_binding_named(environment, name)?
+        {
+            return Ok(binding.cdr.get());
+        }
+        self.find_symbol_value_resolved(&resolved, None)
             .ok_or_else(|| LispError::Void(Value::symbol(name)))
     }
 
@@ -1158,71 +1106,27 @@ impl Interpreter {
         self.function_binding_generation = self.function_binding_generation.wrapping_add(1);
     }
 
-    /// Set a variable in the innermost local frame, or in globals.
-    ///
-    /// Source `setq' uses the checked form so GNU's live-alist errors remain
-    /// observable.  The infallible wrapper remains for host-side state
-    /// restoration paths, whose environments are constructed internally and
-    /// therefore cannot contain malformed Lisp tails.
-    /// `set_variable' of the cached key's symbol (Fset of Qname from C,
-    /// a lexical binding of it first).
-    pub(crate) fn set_variable_key(
+    /// A store C code makes into the variable KEY names (a DEFVAR's
+    /// assignment, `Fset (Qname, value)'): data.c:set_internal's store
+    /// into the alias chain's end, in the buffer-local or the global cell.
+    /// C never stores into a lexical binding, so no interpreter
+    /// environment is searched; Fsetq's `XSETCDR (lex_binding, val)' is
+    /// `set_lexical_variable_checked_symbol'.
+    pub(crate) fn set_symbol_value_key(
         &mut self,
         key: crate::lisp::types::symbols::SymbolKey,
         value: Value,
-        env: &mut Env,
     ) {
         let symbol = key.symbol();
-        let result = self
-            .set_lexical_variable_checked_symbol(&symbol, value, env)
-            .map(|lexical| {
-                if !lexical {
-                    // `set_symbol_value_cell's resolution: a cycle stores
-                    // into the symbol itself.
-                    let resolved = self.resolve_variable_symbol(&symbol).unwrap_or(symbol);
-                    self.set_symbol_value_cell_resolved(&resolved, value);
-                }
-            });
-        debug_assert!(result.is_ok(), "host environment must be well formed");
+        // `set_symbol_value_cell's resolution: a cycle stores into the
+        // symbol itself.
+        let resolved = self.resolve_variable_symbol(&symbol).unwrap_or(symbol);
+        self.set_symbol_value_cell_resolved(&resolved, value);
     }
 
-    pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
-        let result = self.set_variable_checked(name, value, env);
-        debug_assert!(result.is_ok(), "host environment must be well formed");
-    }
-
-    pub(super) fn set_variable_checked(
-        &mut self,
-        name: &str,
-        value: Value,
-        env: &mut Env,
-    ) -> Result<(), LispError> {
-        if !self.set_lexical_variable_checked(name, value, env)? {
-            self.set_symbol_value_cell(name, value);
-        }
-        Ok(())
-    }
-
-    /// Fsetq's `XSETCDR (lex_binding, val)': the current environment's
-    /// binding of NAME assigned in place, false when there is none.
-    fn set_lexical_variable_checked(
-        &mut self,
-        name: &str,
-        value: Value,
-        env: &mut Env,
-    ) -> Result<bool, LispError> {
-        let Some(environment) = current_environment(env) else {
-            return Ok(false);
-        };
-        let Some(binding) = assq_binding_named(environment, name)? else {
-            return Ok(false);
-        };
-        binding.cdr.set(value);
-        Ok(true)
-    }
-
-    /// `set_lexical_variable_checked' for the symbol in hand: Fassq
-    /// compares symbols by identity.
+    /// Fsetq's `XSETCDR (lex_binding, val)' for the symbol in hand: the
+    /// current environment's binding of SYMBOL assigned in place, false
+    /// when there is none.  Fassq compares symbols by identity.
     pub(super) fn set_lexical_variable_checked_symbol(
         &mut self,
         symbol: &SymbolName,
@@ -1381,7 +1285,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         self.validate_function_binding_symbol(symbol, argument, &definition)?;
         let installs_trampolines = self
-            .lookup_var_key(cached_symbol!("native-comp-enable-subr-trampolines"), env)
+            .symbol_value_key(cached_symbol!("native-comp-enable-subr-trampolines"))
             .is_some_and(|value| value.is_truthy());
         let replaces_primitive = matches!(
             self.raw_function_binding_symbol(symbol, &Env::new())
@@ -1419,10 +1323,10 @@ impl Interpreter {
         self.timer_callback_depth += 1;
     }
 
-    pub(crate) fn defer_unloaded_defsubst(&mut self, symbol: &SymbolName, env: &Env) -> bool {
+    pub(crate) fn defer_unloaded_defsubst(&mut self, symbol: &SymbolName) -> bool {
         if self.timer_callback_depth == 0
             || !self
-                .lookup_var("loadhist-unload-filename", env)
+                .symbol_value("loadhist-unload-filename")
                 .is_some_and(|value| value.is_truthy())
             || !cached_symbol!("byte-optimizer")
                 .with(|property| self.get_symbol_property_of(symbol, property))

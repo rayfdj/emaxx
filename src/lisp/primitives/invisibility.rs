@@ -56,12 +56,7 @@ pub(crate) fn resolve_buffer_invisibility(
     }
     let spec = interpreter
         .buffer_local_value_key(buffer_id, cached_symbol!("buffer-invisibility-spec"))
-        .or_else(|| {
-            interpreter.lookup_var_key(
-                cached_symbol!("buffer-invisibility-spec"),
-                &crate::lisp::types::Env::new(),
-            )
-        })
+        .or_else(|| interpreter.symbol_value_key(cached_symbol!("buffer-invisibility-spec")))
         .unwrap_or(Value::T);
     invisibility_spec_of(spec)
 }
@@ -98,12 +93,7 @@ pub(crate) fn resolve_buffer_invisibility_in(
     }
     let spec = interpreter
         .buffer_local_value_key(buffer_id, cached_symbol!("buffer-invisibility-spec"))
-        .or_else(|| {
-            interpreter.lookup_var_key(
-                cached_symbol!("buffer-invisibility-spec"),
-                &crate::lisp::types::Env::new(),
-            )
-        })
+        .or_else(|| interpreter.symbol_value_key(cached_symbol!("buffer-invisibility-spec")))
         .unwrap_or(Value::T);
     invisibility_spec_of(spec)
 }

@@ -589,7 +589,7 @@ define_dispatch!(
                 // only the host Buffer field lost bindings used by ordinary
                 // save code (including backup creation).
                 Ok(interp
-                    .lookup_var_key(cached_symbol!("buffer-file-name"), env)
+                    .symbol_value_key(cached_symbol!("buffer-file-name"))
                     .unwrap_or(Value::Nil))
             }
             "visited-file-modtime" => {
@@ -619,7 +619,7 @@ define_dispatch!(
                 }
                 // The file's time, or time_error_value's for the failure,
                 // and its size.
-                let (stamp, size) = match stat_visited_modtime(interp, env, path)? {
+                let (stamp, size) = match stat_visited_modtime(interp, path)? {
                     Ok(current) => (current.stamp, current.size),
                     Err(error) => (time_error_value(&error), -1),
                 };
@@ -663,7 +663,7 @@ define_dispatch!(
                     ));
                 } else {
                     let path = string_text(&args[1])?;
-                    match stat_visited_modtime(interp, env, &path)? {
+                    match stat_visited_modtime(interp, &path)? {
                         Ok(modtime) => modtime,
                         // file_attribute_errno: a missing file leaves the
                         // recorded time as it was.
@@ -702,7 +702,7 @@ define_dispatch!(
                 );
                 let mode = if is_scratch {
                     interp
-                        .lookup_var_key(cached_symbol!("initial-major-mode"), env)
+                        .symbol_value_key(cached_symbol!("initial-major-mode"))
                         .unwrap_or(Value::Nil)
                 } else {
                     let mode = super::call(
@@ -714,7 +714,7 @@ define_dispatch!(
                     // buffer.c: a nil default takes the current buffer's
                     // mode unless that is a special mode.
                     let current = interp
-                        .lookup_var_key(cached_symbol!("major-mode"), env)
+                        .symbol_value_key(cached_symbol!("major-mode"))
                         .unwrap_or(Value::Nil);
                     if mode.is_nil()
                         && super::call(interp, "get", &[current, Value::symbol("mode-class")], env)?
@@ -823,7 +823,7 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 make_specified_string(bytes[..p].to_vec(), multibyte)
-                    .map_err(|error| string_storage_error(interp, env, error))
+                    .map_err(|error| string_storage_error(interp, error))
             }
             "file-name-nondirectory" => {
                 need_args(name, args, 1)?;
@@ -833,7 +833,7 @@ define_dispatch!(
                     p -= 1;
                 }
                 make_specified_string(bytes[p..].to_vec(), multibyte)
-                    .map_err(|error| string_storage_error(interp, env, error))
+                    .map_err(|error| string_storage_error(interp, error))
             }
             "file-name-as-directory" => {
                 need_args(name, args, 1)?;
@@ -844,7 +844,7 @@ define_dispatch!(
                     bytes.push(b'/');
                 }
                 make_specified_string(bytes, multibyte)
-                    .map_err(|error| string_storage_error(interp, env, error))
+                    .map_err(|error| string_storage_error(interp, error))
             }
             "directory-file-name" => {
                 need_args(name, args, 1)?;
@@ -857,7 +857,7 @@ define_dispatch!(
                     }
                 }
                 make_specified_string(bytes, multibyte)
-                    .map_err(|error| string_storage_error(interp, env, error))
+                    .map_err(|error| string_storage_error(interp, error))
             }
             "directory-name-p" => {
                 need_args(name, args, 1)?;
@@ -950,7 +950,7 @@ define_dispatch!(
                     }
                 }
                 make_specified_string(result, multibyte)
-                    .map_err(|error| string_storage_error(interp, env, error))
+                    .map_err(|error| string_storage_error(interp, error))
             }
             "find-file-name-handler" => {
                 need_args(name, args, 2)?;
@@ -1020,14 +1020,14 @@ define_dispatch!(
             // expand_and_dir_to_file made, ENCODE_FILE'd.
             "file-directory-p" => {
                 need_args(name, args, 1)?;
-                let host = encoded_file_name(interp, env, &args[0])?;
+                let host = encoded_file_name(interp, &args[0])?;
                 Ok(lisp_truth(file_directory_p(interp, env, &host)?))
             }
             // fileio.c:Ffile_accessible_directory_p: the expanded name
             // ENCODE_FILE'd, file_accessible_directory_p.
             "file-accessible-directory-p" => {
                 need_args(name, args, 1)?;
-                let host = encoded_file_name(interp, env, &args[0])?;
+                let host = encoded_file_name(interp, &args[0])?;
                 Ok(lisp_truth(
                     accessible_directory(host.as_os_str().as_encoded_bytes()).is_ok(),
                 ))
@@ -1041,7 +1041,7 @@ define_dispatch!(
                     "file-readable-p" => libc::R_OK,
                     _ => libc::X_OK,
                 };
-                let host = encoded_file_name(interp, env, &args[0])?;
+                let host = encoded_file_name(interp, &args[0])?;
                 Ok(lisp_truth(file_access_p(&host, amode).is_ok()))
             }
             "access-file" => {
@@ -1051,7 +1051,7 @@ define_dispatch!(
                 // its errno -- FILENAME as given, which the preamble
                 // passes after the two arguments.
                 need_args(name, args, 3)?;
-                let host = encoded_file_name(interp, env, &args[0])?;
+                let host = encoded_file_name(interp, &args[0])?;
                 match faccessat_errno(&host, libc::R_OK) {
                     Ok(()) => Ok(Value::Nil),
                     // report_file_error (SSDATA (string), filename).
@@ -1077,7 +1077,7 @@ define_dispatch!(
             // for one that does not exist W_OK | X_OK on its directory.
             "file-writable-p" => {
                 need_args(name, args, 1)?;
-                let host = encoded_file_name(interp, env, &args[0])?;
+                let host = encoded_file_name(interp, &args[0])?;
                 Ok(lisp_truth(file_writable_p(&host)))
             }
             // dired.c:Ffile_attributes past its expansion and handler
@@ -1085,7 +1085,7 @@ define_dispatch!(
             "file-attributes" => {
                 need_arg_range(name, args, 1, 2)?;
                 let id_format = args.get(1).copied().unwrap_or(Value::Nil);
-                let host = encoded_file_name(interp, env, &args[0])?;
+                let host = encoded_file_name(interp, &args[0])?;
                 file_attributes(interp, env, &host, args[0], id_format)
             }
             "file-attributes-lessp" => {
@@ -1106,7 +1106,7 @@ define_dispatch!(
                 if users.is_empty() {
                     users.push(
                         interp
-                            .lookup_var_key(cached_symbol!("user-real-login-name"), env)
+                            .symbol_value_key(cached_symbol!("user-real-login-name"))
                             .unwrap_or(Value::Nil),
                     );
                 }
@@ -1128,8 +1128,8 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let first = string_text(&args[0])?;
                 let second = string_text(&args[1])?;
-                let first = host_file_name(interp, env, &first)?;
-                let second = host_file_name(interp, env, &second)?;
+                let first = host_file_name(interp, &first)?;
+                let second = host_file_name(interp, &second)?;
                 let Ok(first_modified) =
                     fs::metadata(first).and_then(|metadata| metadata.modified())
                 else {
@@ -1146,7 +1146,7 @@ define_dispatch!(
                 // fileio.c:Ffile_acl: expand_and_dir_to_file, ENCODE_FILE,
                 // acl_get_file and acl_to_text.
                 let absname = string_text(&args[0])?;
-                let path = host_file_name(interp, env, &absname)?;
+                let path = host_file_name(interp, &absname)?;
                 #[cfg(target_os = "linux")]
                 if let Some(libacl) = crate::lisp::primitives::system::acl::libacl() {
                     use crate::lisp::primitives::system::acl::{ACL_TYPE_ACCESS, acl_errno_valid};
@@ -1225,7 +1225,7 @@ define_dispatch!(
                             }
                             return Ok(Value::Nil);
                         }
-                        let path = host_file_name(interp, env, &absname)?;
+                        let path = host_file_name(interp, &absname)?;
                         let failed = match c_file_name(&path) {
                             Some(path) => {
                                 (libacl.set_file)(path.as_ptr(), ACL_TYPE_ACCESS, acl) != 0
@@ -1285,8 +1285,8 @@ define_dispatch!(
                 let keep_time = args.get(3).is_some_and(Value::is_truthy);
                 let preserve_uid_gid = args.get(4).is_some_and(Value::is_truthy);
                 let preserve_permissions = args.get(5).is_some_and(Value::is_truthy);
-                let host_file = host_file_name(interp, env, &file)?;
-                let host_newname = host_file_name(interp, env, &newname)?;
+                let host_file = host_file_name(interp, &file)?;
+                let host_newname = host_file_name(interp, &newname)?;
                 let mut input = fs::OpenOptions::new()
                     .read(true)
                     .custom_flags(libc::O_NONBLOCK)
@@ -1575,8 +1575,8 @@ define_dispatch!(
                 let newname_value = args[1];
                 let mut ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
-                let host_file = host_file_name(interp, env, &file)?;
-                let host_newname = host_file_name(interp, env, &newname)?;
+                let host_file = host_file_name(interp, &file)?;
+                let host_newname = host_file_name(interp, &newname)?;
                 let mut plain_rename = ok_if_already_exists.is_truthy() && !interactive;
                 let mut rename_errno = 0;
                 if !plain_rename {
@@ -1666,7 +1666,7 @@ define_dispatch!(
                     let target = fs::read_link(&host_file).map_err(|error| {
                         renaming_error(error.raw_os_error().unwrap_or(libc::EIO))
                     })?;
-                    let target = decode_host_file_name(interp, env, &target)?;
+                    let target = decode_host_file_name(interp, &target)?;
                     call(
                         interp,
                         "make-symbolic-link",
@@ -1690,7 +1690,7 @@ define_dispatch!(
             "system-move-file-to-trash" => {
                 need_args(name, args, 1)?;
                 let path = string_text(&args[0])?;
-                if let Err(error) = fs::symlink_metadata(host_file_name(interp, env, &path)?) {
+                if let Err(error) = fs::symlink_metadata(host_file_name(interp, &path)?) {
                     return Err(removing_old_name_error(&path, &error));
                 }
                 move_to_system_trash(&path).map_err(|error| {
@@ -1714,7 +1714,7 @@ define_dispatch!(
                 // -- the errno's own condition (`permission-denied' for
                 // EACCES, which url-cache's pruner and callers handling
                 // `file-error' expect), not a plain `error'.
-                let removed = match fs::remove_file(host_file_name(interp, env, &path)?) {
+                let removed = match fs::remove_file(host_file_name(interp, &path)?) {
                     Ok(()) => true,
                     Err(error) if error.kind() == ErrorKind::NotFound => false,
                     Err(error) => {
@@ -1741,7 +1741,7 @@ define_dispatch!(
                     crate::lisp::primitives::fexpand_file_name(interp, env, args[0], Value::Nil)?;
                 let directory = super::call(interp, "directory-file-name", &[directory], env)?;
                 let path = string_text(&directory)?;
-                fs::remove_dir(host_file_name(interp, env, &path)?).map_err(|error| {
+                fs::remove_dir(host_file_name(interp, &path)?).map_err(|error| {
                     crate::lisp::primitives::file_io::report_file_errno(
                         interp,
                         "Removing directory",
@@ -1765,7 +1765,7 @@ define_dispatch!(
                 use std::os::unix::fs::DirBuilderExt;
                 std::fs::DirBuilder::new()
                     .mode(0o777 & !crate::lisp::primitives::file_io::auto_saving_dir_umask())
-                    .create(host_file_name(interp, env, &path)?)
+                    .create(host_file_name(interp, &path)?)
                     .map_err(|error| {
                         crate::lisp::primitives::file_io::report_file_errno(
                             interp,
@@ -1788,8 +1788,8 @@ define_dispatch!(
                 let newname_value = args[1];
                 let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
-                let host_file = host_file_name(interp, env, &file)?;
-                let host_newname = host_file_name(interp, env, &newname)?;
+                let host_file = host_file_name(interp, &file)?;
+                let host_newname = host_file_name(interp, &newname)?;
                 let mut linked = fs::hard_link(&host_file, &host_newname);
                 if linked
                     .as_ref()
@@ -1887,7 +1887,7 @@ define_dispatch!(
                 let flags = aspects;
                 interp.validate_inotify_aspects(&flags)?;
                 let path = string_text(&args[0])?;
-                let encoded = encode_file_name(interp, env, &path)?;
+                let encoded = encode_file_name(interp, &path)?;
                 interp.register_inotify_file_notify_watch(path, encoded, flags, args[2])
             }
             #[cfg(target_os = "linux")]
@@ -1934,7 +1934,7 @@ define_dispatch!(
                 // registering anything; Emaxx accepted any path and returned
                 // a live descriptor (finding 13's "never fails" half, per the
                 // second audit).
-                if let Err(error) = fs::metadata(host_file_name(interp, env, &path)?) {
+                if let Err(error) = fs::metadata(host_file_name(interp, &path)?) {
                     return Err(report_file_errno(
                         interp,
                         "File does not exist",
@@ -2017,7 +2017,7 @@ define_dispatch!(
             "file-modes" => {
                 need_arg_range(name, args, 1, 2)?;
                 let path = string_text(&args[0])?;
-                let path = host_file_name(interp, env, &path)?;
+                let path = host_file_name(interp, &path)?;
                 #[cfg(unix)]
                 {
                     let metadata = if args.get(1).is_some_and(Value::is_truthy) {
@@ -2070,7 +2070,7 @@ define_dispatch!(
                 };
                 let nofollow = args.get(2).is_some_and(Value::is_truthy);
                 let path = string_text(&args[0])?;
-                let host = host_file_name(interp, env, &path)?;
+                let host = host_file_name(interp, &path)?;
                 fchmodat_errno(&host, (mode & 0o7777) as libc::mode_t, nofollow).map_err(
                     |error| {
                         crate::lisp::primitives::file_io::report_file_errno(
@@ -2096,7 +2096,7 @@ define_dispatch!(
             "set-file-times" => {
                 need_arg_range(name, args, 1, 3)?;
                 let path = string_text(&args[0])?;
-                let host = host_file_name(interp, env, &path)?;
+                let host = host_file_name(interp, &path)?;
                 let modified = match args.get(1).map(|v| v.kind()) {
                     None | Some(Kind::Nil) => SystemTime::now(),
                     Some(value) => file_modtime_from_value(interp, &value.value())?.modified,
@@ -2116,7 +2116,7 @@ define_dispatch!(
             "file-system-info" => {
                 need_args(name, args, 1)?;
                 let path = string_text(&args[0])?;
-                let path = encode_file_name(interp, env, &path)?;
+                let path = encode_file_name(interp, &path)?;
                 #[cfg(unix)]
                 {
                     let path = CString::new(path)
@@ -2153,9 +2153,9 @@ define_dispatch!(
             // DECODE_FILE'd, nil when readlinkat fails.
             "file-symlink-p" => {
                 need_args(name, args, 1)?;
-                let host = encoded_file_name(interp, env, &args[0])?;
+                let host = encoded_file_name(interp, &args[0])?;
                 match fs::read_link(&host) {
-                    Ok(target) => decode_host_file_name(interp, env, &target),
+                    Ok(target) => decode_host_file_name(interp, &target),
                     Err(_) => Ok(Value::Nil),
                 }
             }
@@ -2173,8 +2173,8 @@ define_dispatch!(
                 let linkname_value = args[1];
                 let ok_if_already_exists = args.get(2).copied().unwrap_or(Value::Nil);
                 let interactive = matches!(ok_if_already_exists.kind(), Kind::Integer(_));
-                let host_target = host_file_name(interp, env, &target)?;
-                let host_link = host_file_name(interp, env, &linkname)?;
+                let host_target = host_file_name(interp, &target)?;
+                let host_link = host_file_name(interp, &linkname)?;
                 let mut linked = symlink(&host_target, &host_link);
                 if let Err(error) = &linked {
                     if error.raw_os_error() == Some(libc::ENOSYS) {
@@ -2244,7 +2244,7 @@ define_dispatch!(
                     infile
                 };
                 let filefd =
-                    fs::File::open(encoded_file_name(interp, env, &infile)?).map_err(|error| {
+                    fs::File::open(encoded_file_name(interp, &infile)?).map_err(|error| {
                         crate::lisp::primitives::file_io::report_file_errno(
                             interp,
                             "Opening process input file",
@@ -3238,7 +3238,7 @@ define_dispatch!(
                 } else {
                     let (mut filefd, tempfile_name, tempfile) = create_temp_file(interp, env)?;
                     let coding = interp
-                        .lookup_var_key(cached_symbol!("coding-system-for-write"), env)
+                        .symbol_value_key(cached_symbol!("coding-system-for-write"))
                         .unwrap_or(Value::Nil);
                     let coding = if !coding.is_nil() {
                         coding
@@ -3252,7 +3252,7 @@ define_dispatch!(
                             .cons_values()
                             .map_or(Value::Nil, |(_, encoding)| encoding)
                     };
-                    let coding = complement_process_encoding_system(interp, env, coding)?;
+                    let coding = complement_process_encoding_system(interp, coding)?;
                     let contents = crate::lisp::primitives::file_io::encode_process_input(
                         interp, start, end, coding, env,
                     )?;
@@ -3372,20 +3372,14 @@ define_dispatch!(
                         .buffer_local_value_key(id, cached_symbol!("buffer-auto-save-file-name"))
                         .unwrap_or(Value::Nil);
                     let wanted =
-                        |interp: &Interpreter,
-                         env: &Env,
-                         name: crate::lisp::types::symbols::SymbolKey| {
+                        |interp: &Interpreter, name: crate::lisp::types::symbols::SymbolKey| {
                             interp
-                                .lookup_var_key(name, env)
+                                .symbol_value_key(name)
                                 .is_some_and(|value| value.is_truthy())
                         };
                     if modified
-                        && wanted(
-                            interp,
-                            env,
-                            cached_symbol!("kill-buffer-delete-auto-save-files"),
-                        )
-                        && wanted(interp, env, cached_symbol!("delete-auto-save-files"))
+                        && wanted(interp, cached_symbol!("kill-buffer-delete-auto-save-files"))
+                        && wanted(interp, cached_symbol!("delete-auto-save-files"))
                         && interp
                             .get_buffer_by_id(id)
                             .is_some_and(|buffer| buffer.recent_auto_save_p())
@@ -3861,7 +3855,7 @@ pub(crate) fn make_pipe_process_value(
         interp.install_pipe_process_channels(process_id, channels);
         // add_process_read_fd, then p->adaptive_read_buffering.
         let adaptive = interp
-            .lookup_var_key(cached_symbol!("process-adaptive-read-buffering"), env)
+            .symbol_value_key(cached_symbol!("process-adaptive-read-buffering"))
             .unwrap_or(Value::Nil);
         interp.set_process_adaptive_read_buffering(process_id, adaptive);
         let buffer = match plist_argument(args, ":buffer") {
@@ -3926,7 +3920,7 @@ fn make_process_value(
     }
     if plist_argument(args, ":file-handler").is_truthy() {
         let default_directory = interp
-            .lookup_var_key(cached_symbol!("default-directory"), env)
+            .symbol_value_key(cached_symbol!("default-directory"))
             .and_then(|value| string_like(&value).map(|string| string.text))
             .unwrap_or_default();
         if let Some(handler) = find_file_name_handler(
@@ -4001,7 +3995,7 @@ fn make_process_value(
             return Err(LispError::WrongTypeArgument("null".into(), stop));
         }
         let default_pty = interp
-            .lookup_var_key(cached_symbol!("process-connection-type"), env)
+            .symbol_value_key(cached_symbol!("process-connection-type"))
             .is_some_and(|value| value.is_truthy());
         let connection_type = plist_argument(args, ":connection-type");
         let pty_modes = procs::process_connection_pty_modes(
@@ -4023,12 +4017,12 @@ fn make_process_value(
         // !(NILP (buffer) || !inherit_process_coding_system).
         let inherit_coding_system = !buffer.is_nil()
             && interp
-                .lookup_var_key(cached_symbol!("inherit-process-coding-system"), env)
+                .symbol_value_key(cached_symbol!("inherit-process-coding-system"))
                 .is_some_and(|value| value.is_truthy());
         interp.set_process_inherit_coding_system_flag(process_id, inherit_coding_system)?;
         // p->adaptive_read_buffering from `process-adaptive-read-buffering'.
         let adaptive = interp
-            .lookup_var_key(cached_symbol!("process-adaptive-read-buffering"), env)
+            .symbol_value_key(cached_symbol!("process-adaptive-read-buffering"))
             .unwrap_or(Value::Nil);
         interp.set_process_adaptive_read_buffering(process_id, adaptive);
         if program.is_nil() {
@@ -4065,7 +4059,7 @@ fn make_process_value(
             return setup_process_coding_systems(interp, env, process_id, decoding, encoding);
         }
         let executable = locate_program_for_exec(interp, env, program, true)?;
-        let executable = host_file_name(interp, env, &executable)?.into_os_string();
+        let executable = host_file_name(interp, &executable)?.into_os_string();
         let arguments = command.to_vec()?;
         let arguments =
             make_process_arguments(interp, env, arguments.get(1..).unwrap_or(&[]), encoding)?;
@@ -4726,15 +4720,15 @@ fn file_name_completion_1(
     const BEST: usize = 3;
     const NAME: usize = 4;
     let schars = |value: &Value| string_like(value).map_or(0, |text| text.text.chars().count());
-    let ignore_case = completion_ignores_case(interp, env);
-    let encoded_file = encode_file_name(interp, env, &string_text(&roots[FILE])?)?;
+    let ignore_case = completion_ignores_case(interp);
+    let encoded_file = encode_file_name(interp, &string_text(&roots[FILE])?)?;
     let dirname = string_text(&roots[DIRNAME])?;
     // A file-name coding that decomposes characters (HFS+) needs the
     // decoded names compared too, FILE recomposed first.
     let coding = interp
-        .lookup_var_key(cached_symbol!("file-name-coding-system"), env)
+        .symbol_value_key(cached_symbol!("file-name-coding-system"))
         .filter(Value::is_truthy)
-        .or_else(|| interp.lookup_var_key(cached_symbol!("default-file-name-coding-system"), env))
+        .or_else(|| interp.symbol_value_key(cached_symbol!("default-file-name-coding-system")))
         .unwrap_or(Value::Nil);
     let check_decoded = !coding.is_nil() && {
         let plist = super::call(interp, "coding-system-plist", &[coding], env)?;
@@ -4745,9 +4739,9 @@ fn file_name_completion_1(
         .is_truthy()
     };
     if check_decoded && string_like(&roots[FILE]).is_some_and(|text| text.multibyte) {
-        roots[FILE] = decode_file_name(interp, env, &encoded_file)?;
+        roots[FILE] = decode_file_name(interp, &encoded_file)?;
     }
-    let host_directory = host_file_name(interp, env, &directory_file_name(&dirname))?;
+    let host_directory = host_file_name(interp, &directory_file_name(&dirname))?;
     let entries = read_directory_entries(&host_directory).map_err(|(step, error)| {
         let rendered = error.to_string();
         let detail = rendered
@@ -4781,7 +4775,7 @@ fn file_name_completion_1(
         if len < enc_file_len || (!ignore_case && !bytes.starts_with(&encoded_file)) {
             continue;
         }
-        roots[NAME] = decode_file_name(interp, env, bytes)?;
+        roots[NAME] = decode_file_name(interp, bytes)?;
         let name_text = string_text(&roots[NAME])?;
         let name_bytes = name_text.as_bytes();
         let name_len = schars(&roots[NAME]);
@@ -4812,7 +4806,7 @@ fn file_name_completion_1(
         };
         if !all {
             let extensions = interp
-                .lookup_var_key(cached_symbol!("completion-ignored-extensions"), env)
+                .symbol_value_key(cached_symbol!("completion-ignored-extensions"))
                 .unwrap_or(Value::Nil);
             let mut canexclude = false;
             if directoryp && (bytes == b"." || bytes == b"..") {
@@ -4888,7 +4882,7 @@ fn file_name_completion_1(
             }
         }
         let mut regexps = interp
-            .lookup_var_key(cached_symbol!("completion-regexp-list"), env)
+            .symbol_value_key(cached_symbol!("completion-regexp-list"))
             .unwrap_or(Value::Nil);
         while let Some((regexp, rest)) = regexps.cons_values() {
             regexps = rest;
@@ -5049,7 +5043,7 @@ fn decode_system(
 ) -> Result<Value, LispError> {
     let raw = super::super::coding::bytes_to_unibyte_value(bytes);
     let coding = interp
-        .lookup_var_key(cached_symbol!("locale-coding-system"), env)
+        .symbol_value_key(cached_symbol!("locale-coding-system"))
         .unwrap_or(Value::Nil);
     if coding.is_nil() {
         return Ok(raw);
@@ -5100,7 +5094,7 @@ pub(crate) fn file_attributes(
     let file_type = if metadata.file_type().is_symlink() {
         // fileio.c:check_emacs_readlinkat.
         match fs::read_link(host) {
-            Ok(target) => decode_host_file_name(interp, env, &target)?,
+            Ok(target) => decode_host_file_name(interp, &target)?,
             Err(error) if error.raw_os_error() == Some(libc::EINVAL) => Value::Nil,
             Err(error) => file_metadata_errno(interp, "Reading symbolic link", filename, &error)?,
         }
@@ -5141,12 +5135,8 @@ pub(crate) fn file_attributes(
     ]))
 }
 
-fn encoded_file_name(
-    interp: &Interpreter,
-    env: &crate::lisp::types::Env,
-    name: &Value,
-) -> Result<std::path::PathBuf, LispError> {
-    host_file_name(interp, env, &string_text(name)?)
+fn encoded_file_name(interp: &Interpreter, name: &Value) -> Result<std::path::PathBuf, LispError> {
+    host_file_name(interp, &string_text(name)?)
 }
 
 /// fileio.c:file_access_p: faccessat (AT_FDCWD, FILE, AMODE, AT_EACCESS).

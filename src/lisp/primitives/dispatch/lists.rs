@@ -59,13 +59,13 @@ fn execute_kbd_macro(
     }
     let loop_function = args.get(2).cloned().unwrap_or(Value::Nil);
     let previous_macro = interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro"))
         .unwrap_or(Value::Nil);
     let previous_index = interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro-index"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro-index"))
         .unwrap_or(Value::Nil);
     let previous_real_this_command = interp
-        .lookup_var_key(cached_symbol!("real-this-command"), env)
+        .symbol_value_key(cached_symbol!("real-this-command"))
         .unwrap_or(Value::Nil);
     // macros.c:Fexecute_kbd_macro saves the public state in two ordinary
     // conses, the argument of its record_unwind_protect (pop_kbd_macro),
@@ -81,14 +81,13 @@ fn execute_kbd_macro(
         let mut result = Ok(());
         let mut success_count = 0;
         loop {
-            interp.set_variable_key(cached_symbol!("executing-kbd-macro"), roots[0], env);
+            interp.set_symbol_value_key(cached_symbol!("executing-kbd-macro"), roots[0]);
             interp.executing_kbd_macro = true;
-            interp.set_variable_key(
+            interp.set_symbol_value_key(
                 cached_symbol!("executing-kbd-macro-index"),
                 Value::Integer(0),
-                env,
             );
-            interp.set_variable_key(cached_symbol!("prefix-arg"), Value::Nil, env);
+            interp.set_symbol_value_key(cached_symbol!("prefix-arg"), Value::Nil);
 
             if !roots[1].is_nil() {
                 match call_function_value(interp, &roots[1], &[], env) {
@@ -126,7 +125,7 @@ fn execute_kbd_macro(
                 }
             }
             let still_executing = interp
-                .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+                .symbol_value_key(cached_symbol!("executing-kbd-macro"))
                 .is_some_and(|value| value.is_string() || is_vector_value(&value));
             if !still_executing {
                 break;
@@ -155,16 +154,11 @@ pub(crate) fn pop_kbd_macro(
     let (previous_macro, tail) = info.cons_values().expect("saved macro pair");
     let (previous_index, previous_real_this_command) =
         tail.cons_values().expect("saved macro index and command");
-    interp.set_variable_key(cached_symbol!("executing-kbd-macro"), previous_macro, env);
-    interp.set_variable_key(
-        cached_symbol!("executing-kbd-macro-index"),
-        previous_index,
-        env,
-    );
-    interp.set_variable_key(
+    interp.set_symbol_value_key(cached_symbol!("executing-kbd-macro"), previous_macro);
+    interp.set_symbol_value_key(cached_symbol!("executing-kbd-macro-index"), previous_index);
+    interp.set_symbol_value_key(
         cached_symbol!("real-this-command"),
         previous_real_this_command,
-        env,
     );
     run_hook(
         interp,
@@ -178,7 +172,7 @@ pub(crate) fn next_kbd_macro_event(
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
     let array = interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro"))
         .unwrap_or(Value::Nil);
     // macros.c:at_end_of_macro_p treats t as an explicit stop. There is
     // no private event queue or cursor to keep consuming after this store.
@@ -186,7 +180,7 @@ pub(crate) fn next_kbd_macro_event(
         return Ok(None);
     }
     let index = interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro-index"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro-index"))
         .unwrap_or(Value::Integer(0))
         .as_integer()?;
     if index >= sequence_length_value(&array)? {
@@ -196,17 +190,16 @@ pub(crate) fn next_kbd_macro_event(
     // replacement and Lisp assignments to the index are visible directly.
     let frame = Value::symbol("macro");
     interp.keyboard_input.internal_last_event_frame = Some(frame);
-    interp.set_variable_key(cached_symbol!("last-event-frame"), frame, env);
+    interp.set_symbol_value_key(cached_symbol!("last-event-frame"), frame);
     let mut event = super::call(interp, "aref", &[array, Value::Integer(index)], env)?;
     if array.is_string()
         && let Kind::Integer(code @ 0x80..=0xff) = event.kind()
     {
         event = Value::Integer(KEY_DESCRIPTION_META_BIT | (code & 0x7f));
     }
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("executing-kbd-macro-index"),
         Value::Integer(index + 1),
-        env,
     );
     interp.keyboard_input.num_input_events += 1;
     interp.keyboard_input.last_event_reread = false;
@@ -275,7 +268,7 @@ fn read_minibuf(
         }
         let allow_props = allow_props
             || interp
-                .lookup_var_key(cached_symbol!("minibuffer-allow-text-properties"), env)
+                .symbol_value_key(cached_symbol!("minibuffer-allow-text-properties"))
                 .is_some_and(|value| value.is_truthy());
         let contents = if allow_props {
             "minibuffer-contents"
@@ -297,7 +290,7 @@ fn read_minibuf(
         Value::Nil
     };
     let add = interp
-        .lookup_var_key(cached_symbol!("history-add-new-input"), env)
+        .symbol_value_key(cached_symbol!("history-add-new-input"))
         .is_some_and(|value| value.is_truthy());
     if add && !histstring.is_nil() {
         let roots = [val, histvar, histstring];
@@ -393,7 +386,7 @@ fn read_minibuffer_value_from_batch_stdin(
     prompt: &Value,
 ) -> Result<Value, LispError> {
     let hide_char = interp
-        .lookup_var_key(cached_symbol!("read-hide-char"), env)
+        .symbol_value_key(cached_symbol!("read-hide-char"))
         .and_then(|value| match value.kind() {
             Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code) => Some(code as u8),
             _ => None,
@@ -454,8 +447,7 @@ fn read_minibuffer_value_from_batch_stdin(
             Value::String("Error reading from stdin".into()),
         ])));
     }
-    crate::lisp::primitives::make_string(line)
-        .map_err(|error| string_storage_error(interp, env, error))
+    crate::lisp::primitives::make_string(line).map_err(|error| string_storage_error(interp, error))
 }
 
 /// minibuf.c:string_to_object: an empty VAL replaced by DEFALT (or its
@@ -506,10 +498,10 @@ fn read_char_after_help(interp: &mut Interpreter, env: &mut Env) -> Result<Value
         Some(event) => event,
         None => pop_unread_command_event_value(interp, env)?,
     };
-    crate::lisp::primitives::record_unrecorded_event(interp, &event, env);
+    crate::lisp::primitives::record_unrecorded_event(interp, &event);
     crate::lisp::primitives::add_read_event_to_command_keys(interp, event, env)?;
-    interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
-    if crate::lisp::primitives::help_form_applies(interp, event, env) {
+    interp.set_symbol_value_key(cached_symbol!("last-input-event"), event);
+    if crate::lisp::primitives::help_form_applies(interp, event) {
         return crate::lisp::primitives::run_help_form(interp, env, &mut read_char_after_help);
     }
     Ok(event)
@@ -722,7 +714,7 @@ define_dispatch!(
             }
             "reverse" => {
                 need_args(name, args, 1)?;
-                reverse_sequence_value(interp, env, &args[0])
+                reverse_sequence_value(interp, &args[0])
             }
             "copy-alist" => {
                 need_args(name, args, 1)?;
@@ -838,7 +830,7 @@ define_dispatch!(
                 }
                 StringObjectRef::concatenate(&parts)
                     .map(Value::StringObject)
-                    .map_err(|error| string_storage_error(interp, env, error))
+                    .map_err(|error| string_storage_error(interp, error))
             }
             "position-symbol" => {
                 need_args(name, args, 2)?;
@@ -1063,7 +1055,7 @@ define_dispatch!(
             "start-kbd-macro" => {
                 need_arg_range(name, args, 1, 2)?;
                 if interp
-                    .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
+                    .symbol_value_key(cached_symbol!("defining-kbd-macro"))
                     .is_some_and(|value| value.is_truthy())
                 {
                     return Err(LispError::Signal("Already defining kbd macro".into()));
@@ -1071,7 +1063,7 @@ define_dispatch!(
                 interp.update_mode_lines = 19;
                 if args[0].is_truthy() {
                     let previous = interp
-                        .lookup_var_key(cached_symbol!("last-kbd-macro"), env)
+                        .symbol_value_key(cached_symbol!("last-kbd-macro"))
                         .unwrap_or(Value::Nil);
                     interp.kbd_macro_definition = if let Some(string) = string_like(&previous) {
                         string
@@ -1099,13 +1091,13 @@ define_dispatch!(
                     "Defining kbd macro..."
                 };
                 super::call(interp, "message", &[Value::String(status.into())], env)?;
-                interp.set_variable_key(cached_symbol!("defining-kbd-macro"), Value::T, env);
+                interp.set_symbol_value_key(cached_symbol!("defining-kbd-macro"), Value::T);
                 Ok(Value::Nil)
             }
             "end-kbd-macro" => {
                 need_arg_range(name, args, 0, 2)?;
                 if interp
-                    .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
+                    .symbol_value_key(cached_symbol!("defining-kbd-macro"))
                     .is_none_or(|value| value.is_nil())
                 {
                     return Err(LispError::Signal("Not defining kbd macro".into()));
@@ -1117,7 +1109,7 @@ define_dispatch!(
                     .transpose()?
                     .unwrap_or(1);
                 // end_kbd_macro.
-                interp.set_variable_key(cached_symbol!("defining-kbd-macro"), Value::Nil, env);
+                interp.set_symbol_value_key(cached_symbol!("defining-kbd-macro"), Value::Nil);
                 interp.update_mode_lines = 20;
                 {
                     let state = &mut **interp;
@@ -1126,7 +1118,7 @@ define_dispatch!(
                         .truncate(state.kbd_macro_committed_len);
                 }
                 let last_macro = Value::vector(interp.kbd_macro_definition.iter().cloned());
-                interp.set_variable_key(cached_symbol!("last-kbd-macro"), last_macro, env);
+                interp.set_symbol_value_key(cached_symbol!("last-kbd-macro"), last_macro);
                 super::call(
                     interp,
                     "message",
@@ -1152,18 +1144,17 @@ define_dispatch!(
             "call-last-kbd-macro" => {
                 need_arg_range(name, args, 0, 2)?;
                 let macro_value = interp
-                    .lookup_var_key(cached_symbol!("last-kbd-macro"), env)
+                    .symbol_value_key(cached_symbol!("last-kbd-macro"))
                     .unwrap_or(Value::Nil);
-                interp.set_variable_key(
+                interp.set_symbol_value_key(
                     cached_symbol!("this-command"),
                     interp
-                        .lookup_var_key(cached_symbol!("last-command"), env)
+                        .symbol_value_key(cached_symbol!("last-command"))
                         .unwrap_or(Value::Nil),
-                    env,
                 );
-                interp.set_variable_key(cached_symbol!("real-this-command"), macro_value, env);
+                interp.set_symbol_value_key(cached_symbol!("real-this-command"), macro_value);
                 if interp
-                    .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
+                    .symbol_value_key(cached_symbol!("defining-kbd-macro"))
                     .is_some_and(|value| value.is_truthy())
                 {
                     return Err(crate::lisp::primitives::values::doprnt_error(
@@ -1178,12 +1169,11 @@ define_dispatch!(
                 let mut execute_args = vec![macro_value];
                 execute_args.extend_from_slice(args);
                 execute_kbd_macro(interp, &execute_args, env)?;
-                interp.set_variable_key(
+                interp.set_symbol_value_key(
                     cached_symbol!("this-command"),
                     interp
-                        .lookup_var_key(cached_symbol!("last-command"), env)
+                        .symbol_value_key(cached_symbol!("last-command"))
                         .unwrap_or(Value::Nil),
-                    env,
                 );
                 Ok(Value::Nil)
             }
@@ -1201,7 +1191,7 @@ define_dispatch!(
             "store-kbd-macro-event" => {
                 need_args(name, args, 1)?;
                 if interp
-                    .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
+                    .symbol_value_key(cached_symbol!("defining-kbd-macro"))
                     .is_some_and(|value| value.is_truthy())
                 {
                     interp.kbd_macro_definition.push(args[0]);
@@ -1379,10 +1369,10 @@ define_dispatch!(
                     }
                 };
                 let read_only = interp
-                    .lookup_var_key(cached_symbol!("buffer-read-only"), env)
+                    .symbol_value_key(cached_symbol!("buffer-read-only"))
                     .is_some_and(|value| value.is_truthy());
                 let inhibited = interp
-                    .lookup_var_key(cached_symbol!("inhibit-read-only"), env)
+                    .symbol_value_key(cached_symbol!("inhibit-read-only"))
                     .is_some_and(|value| value.is_truthy());
                 if read_only
                     && !inhibited
@@ -1485,7 +1475,7 @@ define_dispatch!(
                 if !args[0].is_nil() && !args[0].is_string() {
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
                 }
-                ensure_interaction_allowed(interp, env)?;
+                ensure_interaction_allowed(interp)?;
                 let events = crate::lisp::primitives::read_key_sequence_vs(
                     interp,
                     args[0],
@@ -1498,7 +1488,7 @@ define_dispatch!(
                 Ok(event_array(&events, name == "read-key-sequence-vector"))
             }
             "read-event" | "read-char" | "read-char-exclusive" => {
-                ensure_interaction_allowed(interp, env)?;
+                ensure_interaction_allowed(interp)?;
                 // lread.c: a non-nil PROMPT is shown, unlogged, as the
                 // read begins.
                 if let Some(prompt) = args.first().filter(|prompt| !prompt.is_nil()) {
@@ -1573,16 +1563,16 @@ define_dispatch!(
                     // recorded now, the event (as the input method left
                     // it) joins this-command-keys unless the read had an
                     // end time, and it is `last-input-event'.
-                    crate::lisp::primitives::record_unrecorded_event(interp, &event, env);
+                    crate::lisp::primitives::record_unrecorded_event(interp, &event);
                     if deadline.is_none() {
                         crate::lisp::primitives::add_read_event_to_command_keys(
                             interp, event, env,
                         )?;
                     }
-                    interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
+                    interp.set_symbol_value_key(cached_symbol!("last-input-event"), event);
                     // read_char's help character: `help-form' shown, the
                     // event read after it the read's.
-                    let event = if crate::lisp::primitives::help_form_applies(interp, event, env) {
+                    let event = if crate::lisp::primitives::help_form_applies(interp, event) {
                         crate::lisp::primitives::run_help_form(
                             interp,
                             env,
@@ -1607,10 +1597,9 @@ define_dispatch!(
                             ));
                         }
                         None if name == "read-char" => {
-                            interp.set_variable_key(
+                            interp.set_symbol_value_key(
                                 cached_symbol!("unread-command-events"),
                                 Value::list([event]),
-                                env,
                             );
                             return Err(LispError::Signal("Non-character input-event".into()));
                         }
@@ -1622,7 +1611,7 @@ define_dispatch!(
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), 0));
                 }
-                ensure_interaction_allowed(interp, env)?;
+                ensure_interaction_allowed(interp)?;
                 let initial_value = args.get(1).cloned().unwrap_or(Value::Nil);
                 let prompt = args[0];
                 if string_like(&prompt).is_none() {
@@ -1635,7 +1624,7 @@ define_dispatch!(
                         crate::lisp::primitives::keymap::get_keymap(interp, *map, true, false, env)?
                     }
                     _ => interp
-                        .lookup_var_key(cached_symbol!("minibuffer-local-map"), env)
+                        .symbol_value_key(cached_symbol!("minibuffer-local-map"))
                         .unwrap_or(Value::Nil),
                 };
                 // read_minibuf checks INITIAL, a string or (STRING .
@@ -1645,7 +1634,7 @@ define_dispatch!(
                 let initial = string_like(&initial_string)
                     .map(|string| string.text)
                     .unwrap_or_default();
-                crate::lisp::primitives::check_recursive_minibuffer(interp, env)?;
+                crate::lisp::primitives::check_recursive_minibuffer(interp)?;
                 // HIST and DEFAULT sit at different positions per reader:
                 // read-from-minibuffer's KEYMAP and READ shift them to
                 // args 4 and 5, read-string keeps GNU's 2 and 3.
@@ -1677,7 +1666,7 @@ define_dispatch!(
                 interp.specbind_symbol(&"minibuffer-default".into(), default, env)?;
                 interp.specbind_symbol(&"inhibit-read-only".into(), Value::Nil, env)?;
                 let completing_file_name = interp
-                    .lookup_var_key(cached_symbol!("minibuffer-completing-file-name"), env)
+                    .symbol_value_key(cached_symbol!("minibuffer-completing-file-name"))
                     .unwrap_or(Value::Nil);
                 interp.specbind_symbol(
                     &"minibuffer-completing-file-name".into(),
@@ -1685,10 +1674,9 @@ define_dispatch!(
                     env,
                 )?;
                 if crate::lisp::types::eq(completing_file_name, Value::symbol("lambda")) {
-                    interp.set_variable_key(
+                    interp.set_symbol_value_key(
                         cached_symbol!("minibuffer-completing-file-name"),
                         Value::Nil,
-                        env,
                     );
                 }
                 let read = (|| {
@@ -1699,10 +1687,10 @@ define_dispatch!(
                     // the recursive command loop, whose read_char consumes
                     // unread events first and then the macro.
                     let batch_stdin = interp
-                        .lookup_var_key(cached_symbol!("noninteractive"), env)
+                        .symbol_value_key(cached_symbol!("noninteractive"))
                         .is_some_and(|value| value.is_truthy())
                         && interp
-                            .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+                            .symbol_value_key(cached_symbol!("executing-kbd-macro"))
                             .is_none_or(|value| value.is_nil());
                     if batch_stdin {
                         // read_minibuf_noninteractive returns before any
@@ -1727,9 +1715,9 @@ define_dispatch!(
                     let inherit = args
                         .get(if name == "read-from-minibuffer" { 6 } else { 4 })
                         .is_some_and(Value::is_truthy);
-                    crate::lisp::primitives::inherit_minibuffer_input_method(interp, env, inherit);
+                    crate::lisp::primitives::inherit_minibuffer_input_method(interp, inherit);
                     let allow_props = interp
-                        .forwarded_c_value("minibuffer-allow-text-properties", &Env::new())
+                        .forwarded_c_value("minibuffer-allow-text-properties")
                         .is_some_and(|value| value.is_truthy());
                     let val = read_minibuf(
                         interp,
@@ -1773,7 +1761,7 @@ define_dispatch!(
                 let predicate = args.get(3).copied().unwrap_or(Value::Nil);
                 let count = interp.specpdl_index();
                 let ignore_case = interp
-                    .lookup_var_key(cached_symbol!("read-buffer-completion-ignore-case"), env)
+                    .symbol_value_key(cached_symbol!("read-buffer-completion-ignore-case"))
                     .is_some_and(|value| value.is_truthy());
                 interp.specbind_symbol(
                     &"completion-ignore-case".into(),
@@ -1783,7 +1771,7 @@ define_dispatch!(
                 let roots = [args[0], def, require_match, predicate];
                 let result = interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
                     let function = interp
-                        .lookup_var_key(cached_symbol!("read-buffer-function"), env)
+                        .symbol_value_key(cached_symbol!("read-buffer-function"))
                         .unwrap_or(Value::Nil);
                     if !function.is_nil() {
                         // Partial backward compatibility for older
@@ -1860,7 +1848,7 @@ define_dispatch!(
                     default
                 };
                 let obarray = interp
-                    .lookup_var_key(cached_symbol!("obarray"), env)
+                    .symbol_value_key(cached_symbol!("obarray"))
                     .unwrap_or(Value::Nil);
                 let predicate = if name == "read-command" {
                     Value::Symbol("commandp".into())

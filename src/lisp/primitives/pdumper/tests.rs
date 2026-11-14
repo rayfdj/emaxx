@@ -155,7 +155,7 @@ fn symbol_constant_state_survives_image_copy_and_restore() {
     source.set_global_binding("constant-image-root", graph);
     let mut copied = source.deep_clone_image();
     let copied_graph = copied
-        .lookup_var("constant-image-root", &Env::new())
+        .symbol_value("constant-image-root")
         .expect("constant object operation survives image relocation");
     check(&mut copied, copied_graph);
 
@@ -253,7 +253,7 @@ fn standard_unintern_images_keep_both_same_named_objects() {
     source.set_global_binding("membership-image-root", graph);
     let mut clone = source.deep_clone_image();
     let copied = clone
-        .lookup_var("membership-image-root", &Env::new())
+        .symbol_value("membership-image-root")
         .expect("cloned root");
     check(&mut clone, copied);
 
@@ -305,7 +305,7 @@ fn string_images_preserve_empty_roots_distinct_headers_and_restored_mutability()
     source.set_global_binding("string-image-root", graph);
     let cloned = source.deep_clone_image();
     let Kind::Vector(cloned_graph) = cloned
-        .lookup_var("string-image-root", &Env::new())
+        .symbol_value("string-image-root")
         .expect("cloned graph")
         .kind()
     else {
@@ -342,7 +342,7 @@ fn string_images_preserve_empty_roots_distinct_headers_and_restored_mutability()
     target.set_global_binding("string-image-root", loaded);
     let cloned = target.deep_clone_image();
     let Kind::Vector(cloned_graph) = cloned
-        .lookup_var("string-image-root", &Env::new())
+        .symbol_value("string-image-root")
         .expect("cloned restored graph")
         .kind()
     else {
@@ -995,10 +995,7 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
             Value::string("restored-process-test")
         );
         assert_eq!(
-            interpreter.lookup_var_key(
-                cached_symbol!("default-directory"),
-                &crate::lisp::types::Env::new()
-            ),
+            interpreter.symbol_value_key(cached_symbol!("default-directory")),
             Some(Value::string(&crate::lisp::primitives::default_directory()))
         );
         let environment = interpreter
@@ -2381,11 +2378,7 @@ fn closure_slot_graphs_survive_interpreter_cloning_and_dump_restoration() {
         documentation,
         malformed,
     ]);
-    source.set_variable(
-        "closure-slot-graph",
-        root,
-        &mut crate::lisp::types::Env::new(),
-    );
+    source.set_symbol_value_cell("closure-slot-graph", root);
     let clone = source.clone();
     let cloned = clone
         .symbol_value_cell("closure-slot-graph")
@@ -2535,11 +2528,7 @@ fn inline_record_type_and_data_cycles_survive_clone_and_dump() {
     record.set(2, shared);
     record.set(3, shared);
     let root = Value::vector([object, shared, Value::LispRecord(descriptor)]);
-    source.set_variable(
-        "inline-record-graph",
-        root,
-        &mut crate::lisp::types::Env::new(),
-    );
+    source.set_symbol_value_cell("inline-record-graph", root);
     let clone = source.deep_clone_image();
     let cloned = clone
         .symbol_value_cell("inline-record-graph")

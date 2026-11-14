@@ -1600,7 +1600,7 @@ pub(crate) fn where_is_internal_command(
     // Ignore all menu bindings entirely.
     let nomenus = !firstonly.is_nil() && !non_ascii;
     let preferred = interp
-        .lookup_var_key(cached_symbol!("where-is-preferred-modifier"), env)
+        .symbol_value_key(cached_symbol!("where-is-preferred-modifier"))
         .map_or(0, |symbol| super::keys::solitary_modifier_of(&symbol));
 
     // The keymaps in which to search.

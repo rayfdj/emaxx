@@ -105,15 +105,14 @@ pub(crate) fn load_file(
         let path = PathBuf::from(string_text(&found.name)?);
         let native = maybe_swap_for_native(interp, &requested, &path, env)?;
         if native != path
-            && let Ok(file) =
-                fs::File::open(host_file_name(interp, env, &native.to_string_lossy())?)
+            && let Ok(file) = fs::File::open(host_file_name(interp, &native.to_string_lossy())?)
         {
             found.name = Value::string(&native.display().to_string());
             found.file = Some(file);
         }
     }
     if interp
-        .forwarded_c_value("user-init-file", &Env::new())
+        .forwarded_c_value("user-init-file")
         .is_some_and(|value| values_eq_in_env(interp, &value, &Value::T, env))
     {
         if let Some(slot) = interp
@@ -183,7 +182,7 @@ pub(crate) fn load_file(
             )?;
         }
         if !interp
-            .forwarded_c_value("noninteractive", &Env::new())
+            .forwarded_c_value("noninteractive")
             .is_some_and(|value| value.is_truthy())
         {
             load_message(interp, &request, completion.kind, true, env)?;
@@ -214,7 +213,7 @@ fn load_with_context(
             found.name
         };
         let history = if interp
-            .forwarded_c_value("purify-flag", &Env::new())
+            .forwarded_c_value("purify-flag")
             .is_some_and(|value| value.is_truthy())
         {
             let directory = super::super::call(
@@ -259,21 +258,21 @@ fn load_with_context(
                 }
                 // openp already checked for newness with load-prefer-newer.
                 let prefer_newer = interp
-                    .forwarded_c_value("load-prefer-newer", &Env::new())
+                    .forwarded_c_value("load-prefer-newer")
                     .is_some_and(|value| value.is_truthy());
                 if !prefer_newer && is_elc {
                     newer = source_newer_than_compiled(interp, request, &path, env)?;
                 }
             }
             let source_loader = interp
-                .forwarded_c_value("load-source-file-function", &Env::new())
+                .forwarded_c_value("load-source-file-function")
                 .unwrap_or(Value::Nil);
             if !compiled && !module && !native && source_loader.is_truthy() {
                 // The unchanged Lisp owner opens/decodes its own source. It
                 // owns load-history and after-load hooks on this branch too.
                 drop(found.file.take());
                 let force = interp
-                    .forwarded_c_value("force-load-messages", &Env::new())
+                    .forwarded_c_value("force-load-messages")
                     .is_some_and(|value| value.is_truthy());
                 let result = interp.call_function_value(
                     source_loader,
@@ -362,7 +361,7 @@ fn load_message(
 ) -> Result<(), LispError> {
     if request.nomessage.is_nil()
         || interp
-            .forwarded_c_value("force-load-messages", &Env::new())
+            .forwarded_c_value("force-load-messages")
             .is_some_and(|value| value.is_truthy())
     {
         // lread.c's message_with_string, which in batch only writes to
@@ -388,7 +387,7 @@ fn native_effective_filename(
         std::slice::from_ref(name),
         env,
     )?;
-    let Some(table) = interp.forwarded_c_value("comp-eln-to-el-h", &Env::new()) else {
+    let Some(table) = interp.forwarded_c_value("comp-eln-to-el-h") else {
         return Ok(*name);
     };
     let source = super::super::call(interp, "gethash", &[basename, table, Value::Nil], env)?;
@@ -446,7 +445,7 @@ fn source_newer_than_compiled(
         return Ok(false);
     }
     let force = interp
-        .forwarded_c_value("force-load-messages", &Env::new())
+        .forwarded_c_value("force-load-messages")
         .is_some_and(|value| value.is_truthy());
     if request.nomessage.is_truthy() && !force && compiled != std::time::UNIX_EPOCH {
         super::super::dispatch::display::message_with_string(
@@ -486,7 +485,7 @@ fn safe_to_load_version(
                 version = i32::from(header[4] as i8);
             }
             let pattern = interp
-                .forwarded_c_value("bytecomp-version-regexp", &Env::new())
+                .forwarded_c_value("bytecomp-version-regexp")
                 .unwrap_or(Value::Nil);
             if !super::super::search::fast_c_string_match_ignore_case(
                 interp,
@@ -522,7 +521,7 @@ mod tests {
         let path = gnu_root().join("test/src/comp-resources/comp-test-45603.el");
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        interp.set_variable_key(cached_symbol!("purify-flag"), Value::Nil, &mut env);
+        interp.set_symbol_value_key(cached_symbol!("purify-flag"), Value::Nil);
         let file = fs::File::open(&path).expect("open unchanged GNU fixture");
         let descriptor = Value::string(&format!("/dev/fd/{}", file.as_raw_fd()));
         let before = super::super::super::call(
@@ -542,11 +541,7 @@ mod tests {
             &[192, 193, 33, 135],
             vec![Value::symbol("file-exists-p"), descriptor],
         );
-        interp.set_variable_key(
-            cached_symbol!("load-source-file-function"),
-            callback,
-            &mut env,
-        );
+        interp.set_symbol_value_key(cached_symbol!("load-source-file-function"), callback);
         let name = Value::string(&path.display().to_string());
         let request = LoadRequest::new(&[name, Value::Nil, Value::T])
             .expect("construct a valid load request");
@@ -571,11 +566,7 @@ mod tests {
     fn direct_load_keeps_the_selected_inode_when_its_filename_is_replaced() {
         let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
         let mut env = Env::new();
-        interp.set_variable_key(
-            cached_symbol!("load-source-file-function"),
-            Value::Nil,
-            &mut env,
-        );
+        interp.set_symbol_value_key(cached_symbol!("load-source-file-function"), Value::Nil);
         let root = std::env::temp_dir().join(format!(
             "load-descriptor-{}-{}",
             std::process::id(),

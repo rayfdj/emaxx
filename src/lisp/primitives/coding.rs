@@ -571,7 +571,7 @@ pub(crate) fn pre_write_convert(
     env: &mut Env,
 ) -> Result<StringLike, LispError> {
     let old_deactivate_mark = interp
-        .lookup_var_key(cached_symbol!("deactivate-mark"), env)
+        .symbol_value_key(cached_symbol!("deactivate-mark"))
         .unwrap_or(Value::Nil);
     let src_multibyte =
         source.multibyte && (!source.text.is_ascii() || !source.extended_chars.is_empty());
@@ -638,7 +638,7 @@ pub(crate) fn decode_into_work_buffer(
     env: &mut Env,
 ) -> Result<StringLike, LispError> {
     let old_deactivate_mark = interp
-        .lookup_var_key(cached_symbol!("deactivate-mark"), env)
+        .symbol_value_key(cached_symbol!("deactivate-mark"))
         .unwrap_or(Value::Nil);
     let work = code_conversion_save(interp, decoded.multibyte, env)?;
     let result = (|| -> Result<StringLike, LispError> {
@@ -2124,14 +2124,13 @@ pub(crate) fn detect_auto_bom_coding(
     interp: &Interpreter,
     coding: &str,
     source: &detect::DetectSource,
-    env: &Env,
 ) -> Option<String> {
     if !coding_system_auto_detects_bom(interp, coding)
         || interp.coding_system_kind_name(coding).as_deref() == Some("undecided")
     {
         return None;
     }
-    let found = detect::detect_coding(interp, source, coding, env)?;
+    let found = detect::detect_coding(interp, source, coding)?;
     Some(adjust_coding_eol_type(
         interp,
         &found,
@@ -2793,18 +2792,14 @@ pub(crate) fn decode_translation_table(
     interp: &Interpreter,
     coding: &(impl CodingRef + ?Sized),
 ) -> Value {
-    let env = Env::new();
     if interp
-        .lookup_var_key(cached_symbol!("enable-character-translation"), &env)
+        .symbol_value_key(cached_symbol!("enable-character-translation"))
         .is_none_or(|value| value.is_nil())
     {
         return Value::Nil;
     }
     let standard = interp
-        .lookup_var_key(
-            cached_symbol!("standard-translation-table-for-decode"),
-            &env,
-        )
+        .symbol_value_key(cached_symbol!("standard-translation-table-for-decode"))
         .unwrap_or(Value::Nil);
     let table = coding_attr(interp, coding, ":decode-translation-table").unwrap_or(Value::Nil);
     if table.is_nil() {
@@ -2853,19 +2848,15 @@ pub(crate) fn decode_translation_table(
 /// coding's `:decode-translation-table' (a symbol naming its
 /// `translation-table' property, a list of tables, or the table) with
 /// `standard-translation-table-for-decode' after it.
-fn decode_translation_table_p(
-    interp: &Interpreter,
-    coding: &(impl CodingRef + ?Sized),
-    env: &Env,
-) -> bool {
+fn decode_translation_table_p(interp: &Interpreter, coding: &(impl CodingRef + ?Sized)) -> bool {
     if interp
-        .lookup_var_key(cached_symbol!("enable-character-translation"), env)
+        .symbol_value_key(cached_symbol!("enable-character-translation"))
         .is_none_or(|value| value.is_nil())
     {
         return false;
     }
     let standard = interp
-        .lookup_var_key(cached_symbol!("standard-translation-table-for-decode"), env)
+        .symbol_value_key(cached_symbol!("standard-translation-table-for-decode"))
         .unwrap_or(Value::Nil);
     let table = coding_attr(interp, coding, ":decode-translation-table").unwrap_or(Value::Nil);
     if table.is_nil() {
@@ -2898,13 +2889,9 @@ pub(crate) fn decode_text_bytes_annotated(
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
     // detect_coding settles an auto-BOM coding before it decodes.
-    let canonical = detect_auto_bom_coding(
-        interp,
-        &canonical,
-        &detect::DetectSource::from_bytes(bytes),
-        &Env::new(),
-    )
-    .unwrap_or(canonical);
+    let canonical =
+        detect_auto_bom_coding(interp, &canonical, &detect::DetectSource::from_bytes(bytes))
+            .unwrap_or(canonical);
     decode_bytes_with_coding(interp, bytes, &canonical)
 }
 
@@ -3097,10 +3084,8 @@ fn emacs_mule_layout(interp: &Interpreter) -> EmacsMuleLayout {
     lengths[0x9C] = 4;
     lengths[0x9D] = 4;
     let mut charsets = vec![None; 256];
-    if let Some(table) = interp.lookup_var_key(
-        cached_symbol!("emacs-mule-charset-table"),
-        &crate::lisp::types::Env::new(),
-    ) && let Ok(entries) = vector_items(&table)
+    if let Some(table) = interp.symbol_value_key(cached_symbol!("emacs-mule-charset-table"))
+        && let Ok(entries) = vector_items(&table)
     {
         for (id, entry) in entries.into_iter().take(256).enumerate() {
             let Some(charset) = entry.charset_symbol() else {
@@ -3221,13 +3206,12 @@ pub(crate) fn detect_coding_string_value(
     interp: &Interpreter,
     value: &Value,
     highest: Option<&Value>,
-    env: &Env,
 ) -> Result<Value, LispError> {
     let string = string_like(value).ok_or_else(|| wrong_type_argument("stringp", *value))?;
     let highest = highest.is_some_and(Value::is_truthy);
     let src = DetectSource::from_text(&string.text, string.multibyte);
     Ok(detected_names_value(
-        detect::detect_coding_system(interp, &src, highest, None, env),
+        detect::detect_coding_system(interp, &src, highest, None),
         highest,
     ))
 }
@@ -3237,7 +3221,6 @@ pub(crate) fn detect_coding_region_value(
     start: &Value,
     end: &Value,
     highest: Option<&Value>,
-    env: &Env,
 ) -> Result<Value, LispError> {
     // coding.c:Fdetect_coding_region: validate_region, then the text.
     let (start, end) = validate_region(interp, start, end)?;
@@ -3249,7 +3232,7 @@ pub(crate) fn detect_coding_region_value(
     let highest = highest.is_some_and(Value::is_truthy);
     let src = DetectSource::from_text(&text, interp.buffer.borrow().is_multibyte());
     Ok(detected_names_value(
-        detect::detect_coding_system(interp, &src, highest, None, env),
+        detect::detect_coding_system(interp, &src, highest, None),
         highest,
     ))
 }
@@ -3264,13 +3247,13 @@ pub(crate) fn encode_translation_tables(
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
     if interp
-        .lookup_var_key(cached_symbol!("enable-character-translation"), env)
+        .symbol_value_key(cached_symbol!("enable-character-translation"))
         .is_some_and(|value| value.is_nil())
     {
         return Ok(Vec::new());
     }
     let standard = interp
-        .lookup_var_key(cached_symbol!("standard-translation-table-for-encode"), env)
+        .symbol_value_key(cached_symbol!("standard-translation-table-for-encode"))
         .unwrap_or(Value::Nil);
     let table = coding_attr(interp, coding, ":encode-translation-table").unwrap_or(Value::Nil);
     if table.is_nil() {
@@ -3377,7 +3360,7 @@ pub(crate) fn find_coding_systems_region_internal_value(
     // coding.c walks the actual Lisp registration list, retaining its
     // order and duplicates, including a dynamically bound list.
     let mut registered = interp
-        .lookup_var_key(cached_symbol!("coding-system-list"), env)
+        .symbol_value_key(cached_symbol!("coding-system-list"))
         .unwrap_or(Value::Nil);
     while let Some((head, tail)) = registered.cons_values() {
         let coding_value = head;
@@ -3549,7 +3532,7 @@ pub(crate) fn find_operation_coding_system_value(
     } else {
         cached_symbol!("process-coding-system-alist")
     };
-    let mut chain = interp.lookup_var_key(alist_name, env).unwrap_or(Value::Nil);
+    let mut chain = interp.symbol_value_key(alist_name).unwrap_or(Value::Nil);
     while let Some((elt, rest)) = chain.cons_values() {
         chain = rest;
         let Some((key, val)) = elt.cons_values() else {
@@ -3741,7 +3724,7 @@ fn encode_coding_converted(
         .coding_id(coding)
         .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
     let inhibit_eol_conversion = interp
-        .lookup_var_key(cached_symbol!("inhibit-eol-conversion"), env)
+        .symbol_value_key(cached_symbol!("inhibit-eol-conversion"))
         .is_some_and(|value| value.is_truthy());
     // code_convert_string only preserves identity for ASCII-compatible,
     // ASCII-only input with no EOL work. It runs before pre-write conversion.
@@ -3808,7 +3791,7 @@ pub(crate) fn encode_process_block(
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
     let inhibit_eol_conversion = interp
-        .lookup_var_key(cached_symbol!("inhibit-eol-conversion"), env)
+        .symbol_value_key(cached_symbol!("inhibit-eol-conversion"))
         .is_some_and(|value| value.is_truthy());
     let pre_write = coding_attr(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
     let converted = if pre_write.is_nil() {
@@ -3846,7 +3829,7 @@ pub(crate) fn coding_requires_flushing(
 /// standing for `undecided'): every type but undecided and raw-text, any
 /// coding with a pre-write conversion, and those two with a dos or mac
 /// eol unless `inhibit-eol-conversion' makes every eol unix.
-pub(crate) fn coding_requires_encoding(interp: &Interpreter, coding: &Value, env: &Env) -> bool {
+pub(crate) fn coding_requires_encoding(interp: &Interpreter, coding: &Value) -> bool {
     let canonical = if coding.is_nil() {
         interp.coding_system_canonical_name("undecided")
     } else {
@@ -3867,7 +3850,7 @@ pub(crate) fn coding_requires_encoding(interp: &Interpreter, coding: &Value, env
         return true;
     }
     let inhibit_eol_conversion = interp
-        .lookup_var_key(cached_symbol!("inhibit-eol-conversion"), env)
+        .symbol_value_key(cached_symbol!("inhibit-eol-conversion"))
         .is_some_and(|value| value.is_truthy());
     !inhibit_eol_conversion && matches!(coding_eol_type(interp, &canonical), Some(1 | 2))
 }
@@ -4041,12 +4024,11 @@ pub(crate) fn coding_eol_type(
 /// decoded text (naming its subsidiary) and converts.
 pub(crate) fn decode_coding_object(
     interp: &Interpreter,
-    env: &Env,
     source: DecodeSource<'_>,
     coding: &str,
     dst_multibyte: Option<bool>,
 ) -> Result<CodingDecode, LispError> {
-    decode_coding(interp, env, source, coding, dst_multibyte, false, None)
+    decode_coding(interp, source, coding, dst_multibyte, false, None)
 }
 
 /// decode_coding_c_string of one block of a stream: BYTES after what
@@ -4055,7 +4037,6 @@ pub(crate) fn decode_coding_object(
 /// decoder leaves unconsumed is DECODER's carryover for the next.
 pub(crate) fn decode_coding_block(
     interp: &Interpreter,
-    env: &Env,
     bytes: &[u8],
     coding: &str,
     dst_multibyte: Option<bool>,
@@ -4063,7 +4044,6 @@ pub(crate) fn decode_coding_block(
 ) -> Result<CodingDecode, LispError> {
     decode_coding(
         interp,
-        env,
         DecodeSource::Bytes(bytes),
         coding,
         dst_multibyte,
@@ -4077,14 +4057,12 @@ pub(crate) fn decode_coding_block(
 /// optimization.
 pub(crate) fn decode_coding_gap(
     interp: &Interpreter,
-    env: &Env,
     bytes: Vec<u8>,
     coding: &str,
     dst_multibyte: bool,
 ) -> Result<CodingDecode, LispError> {
     decode_coding(
         interp,
-        env,
         DecodeSource::Gap(bytes),
         coding,
         Some(dst_multibyte),
@@ -4095,7 +4073,6 @@ pub(crate) fn decode_coding_gap(
 
 fn decode_coding(
     interp: &Interpreter,
-    env: &Env,
     source: DecodeSource<'_>,
     coding: &str,
     dst_multibyte: Option<bool>,
@@ -4144,7 +4121,7 @@ fn decode_coding(
         } else {
             src
         };
-        detection = detect::detect_coding_outcome(interp, &src, &canonical, env);
+        detection = detect::detect_coding_outcome(interp, &src, &canonical);
         if let Some(found) = &detection.found {
             name = adjust_coding_eol_type(interp, found, coding_eol_type(interp, &canonical));
             settled = interp
@@ -4155,7 +4132,7 @@ fn decode_coding(
     let for_unibyte =
         coding_attr(interp, &settled, ":for-unibyte").is_some_and(|value| value.is_truthy());
     let inhibit_eol_conversion = interp
-        .lookup_var_key(cached_symbol!("inhibit-eol-conversion"), env)
+        .symbol_value_key(cached_symbol!("inhibit-eol-conversion"))
         .is_some_and(|value| value.is_truthy());
     // decode_coding_gap's ASCII optimization: with an ascii-compatible
     // coding, no post-read conversion and no translation table, ASCII
@@ -4171,11 +4148,11 @@ fn decode_coding(
         && text.is_none()
         && (bytes.is_ascii() || utf_8_whole)
         && interp
-            .lookup_var_key(cached_symbol!("disable-ascii-optimization"), env)
+            .symbol_value_key(cached_symbol!("disable-ascii-optimization"))
             .is_none_or(|value| value.is_nil())
         && coding_system_is_ascii_compatible(interp, &settled)
         && coding_attr(interp, &settled, ":post-read-conversion").is_none_or(|value| value.is_nil())
-        && !decode_translation_table_p(interp, &settled, env)
+        && !decode_translation_table_p(interp, &settled)
     {
         let mut decoded = if bytes.is_ascii() {
             let len = bytes.len();
@@ -4422,7 +4399,7 @@ fn decode_coding_parts(
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
     let inhibit_eol_conversion = interp
-        .lookup_var_key(cached_symbol!("inhibit-eol-conversion"), env)
+        .symbol_value_key(cached_symbol!("inhibit-eol-conversion"))
         .is_some_and(|value| value.is_truthy());
     // code_convert_string's fast path: an ascii-compatible coding, an
     // ASCII string (a multibyte one whose characters are its bytes) and
@@ -4462,7 +4439,6 @@ fn decode_coding_parts(
         for_unibyte,
     } = decode_coding_object(
         interp,
-        env,
         match (&unibyte, &string) {
             (Some(bytes), _) => DecodeSource::Bytes(bytes),
             (None, Some(string)) => DecodeSource::Text(string),

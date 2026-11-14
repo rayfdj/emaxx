@@ -5928,10 +5928,7 @@ impl Interpreter {
             self.set_symbol_value_cell("gc-elapsed", Value::float(self.gc_elapsed_total));
         }
         // `gcs_done++' on the C int the variable forwards to.
-        let done = match self
-            .forwarded_c_value("gcs-done", &Env::new())
-            .map(|v| v.kind())
-        {
+        let done = match self.forwarded_c_value("gcs-done").map(|v| v.kind()) {
             Some(Kind::Integer(done)) => done.saturating_add(1),
             _ => 1,
         };
@@ -8254,11 +8251,7 @@ impl Interpreter {
         // out set to `no-conversion'; `set-coding-system-priority' is what
         // assigns the prioritized coding systems.
         for name in coding::CODING_CATEGORY_NAMES {
-            interp.set_variable(
-                name,
-                Value::symbol("no-conversion"),
-                &mut crate::lisp::types::Env::new(),
-            );
+            interp.set_symbol_value_cell(name, Value::symbol("no-conversion"));
         }
         // The history lists and hook the other syms_of_* functions Fset.
         for name in GNU_C_FSET_VARIABLES {
@@ -8390,9 +8383,8 @@ impl Interpreter {
         // before bindings.el populates its shared function-key-map parent.
         // A fresh fallback map on each lookup loses identity and inheritance.
         let local_function_key_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
-        let empty_env = crate::lisp::types::Env::new();
         let function_key_map = interp
-            .lookup_var_key(cached_symbol!("function-key-map"), &empty_env)
+            .symbol_value_key(cached_symbol!("function-key-map"))
             .expect("initial function-key-map");
         primitives::set_keymap_parent(
             &mut interp,
@@ -8406,10 +8398,9 @@ impl Interpreter {
         // its order: no D-Bus (HAVE_DBUS) or w32 events, threads and inotify
         // file notification as in this build, and no `select-window' (GNU
         // keeps that one commented out).
-        if let Some(special_event_map) = interp.lookup_var_key(
-            cached_symbol!("special-event-map"),
-            &crate::lisp::types::Env::new(),
-        ) {
+        if let Some(special_event_map) =
+            interp.symbol_value_key(cached_symbol!("special-event-map"))
+        {
             for (event, command) in [
                 ("delete-frame", "handle-delete-frame"),
                 ("ns-put-working-text", "ns-put-working-text"),
@@ -9255,12 +9246,7 @@ impl Interpreter {
 
     pub fn current_global_map_value(&self) -> Value {
         self.current_global_map
-            .or_else(|| {
-                self.lookup_var_key(
-                    cached_symbol!("global-map"),
-                    &crate::lisp::types::Env::new(),
-                )
-            })
+            .or_else(|| self.symbol_value_key(cached_symbol!("global-map")))
             .unwrap_or(Value::Nil)
     }
 
@@ -9322,7 +9308,7 @@ impl Interpreter {
 
     // Append echo-area output to the active `ert-with-message-capture'
     // scope, keeping a dynamically bound capture variable current.
-    pub fn append_message_capture(&mut self, text: &str, newline: bool, env: &mut Env) {
+    pub fn append_message_capture(&mut self, text: &str, newline: bool) {
         let live_update = if let Some(capture) = self.message_capture_stack.last_mut() {
             capture.text.push_str(text);
             if newline {
@@ -9336,7 +9322,7 @@ impl Interpreter {
             None
         };
         if let Some((var, captured)) = live_update {
-            self.set_variable(&var, Value::String(captured.into()), env);
+            self.set_symbol_value_cell(&var, Value::String(captured.into()));
         }
     }
 

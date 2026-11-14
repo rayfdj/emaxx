@@ -901,7 +901,7 @@ pub(crate) fn read_next_load_input_form(
     offset: &mut usize,
     env: &mut types::Env,
 ) -> Result<Option<types::Value>, types::LispError> {
-    let shorthands = primitives::read_symbol_shorthands_in_env(interp, env)?;
+    let shorthands = primitives::read_symbol_shorthands(interp)?;
     let (value, needs_materialization) = {
         let mut context = eval::LispReadContext::current(interp, env);
         let (reader, base) = match input {
@@ -922,8 +922,8 @@ pub(crate) fn read_next_load_input_form(
     };
     // An end inside a datum is end_of_file_error, naming
     // `load-true-file-name'.
-    let value = value
-        .map_err(|error| crate::lisp::primitives::print::reader_end_of_file(interp, error, env))?;
+    let value =
+        value.map_err(|error| crate::lisp::primitives::print::reader_end_of_file(interp, error))?;
     match value {
         Some(value) if needs_materialization => interp
             .materialize_read_object_literals(value, env)
@@ -984,10 +984,19 @@ fn read_lisp_file_bytes(
     });
     // Fload's `infile' for a file stream, until close_infile_unwind.
     let _infile = matches!(text, LoadText::File(_)).then(reader::InfileLoad::enter);
-    interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
+    // readevalloop's `specbind (Qinternal_interpreter_environment, ...)':
+    // `(t)' for a file with lexical binding and nil otherwise, the
+    // environment of the frames below until the load is over.
+    let top_environment = if settings.lexical_binding {
+        types::Value::list([types::Value::T])
+    } else {
+        types::Value::Nil
+    };
+    let installed = interp.install_frame_environment(top_environment);
+    let loaded = interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
         let previous = interp.set_current_load_file(Some(load_file.clone()));
         let mut env = if settings.lexical_binding {
-            crate::lisp::types::Env::from_vec(vec![types::EnvFrame::lexical()])
+            crate::lisp::types::Env::from_vec(vec![types::EnvFrame::from_alist(top_environment)])
         } else {
             types::Env::new()
         };
@@ -996,7 +1005,7 @@ fn read_lisp_file_bytes(
         // as `(let ((load-file-name nil)) (load ...))' must be shadowed by the
         // file being loaded, then restored on every exit path.
         let macroexp_dynvars = interp
-            .lookup_var_key(cached_symbol!("macroexp--dynvars"), &env)
+            .symbol_value_key(cached_symbol!("macroexp--dynvars"))
             .unwrap_or(types::Value::Nil);
         let mut dynamic_restores = Vec::with_capacity(9);
         for (name, value) in [
@@ -1040,7 +1049,7 @@ fn read_lisp_file_bytes(
                 )
             {
                 if name == "lexical-binding" && settings.lexical_binding {
-                    interp.set_variable(name, types::Value::T, &mut env);
+                    interp.set_symbol_value_cell(name, types::Value::T);
                 }
                 continue;
             }
@@ -1118,7 +1127,7 @@ fn read_lisp_file_bytes(
             // restores the filename in current-load-list. That unfinished
             // load must not be published as a completed history entry.
             let current_load_list = interp
-                .lookup_var_key(cached_symbol!("current-load-list"), &types::Env::new())
+                .symbol_value_key(cached_symbol!("current-load-list"))
                 .unwrap_or_else(|| {
                     types::Value::list([types::Value::String(load_file.clone().into())])
                 });
@@ -1161,7 +1170,9 @@ fn read_lisp_file_bytes(
         }
         reader::forget_saved_lazy_strings();
         Ok(stopped)
-    })
+    });
+    interp.uninstall_frame_environments(installed);
+    loaded
 }
 
 fn restore_special_dynamic_bindings(
@@ -1587,14 +1598,12 @@ mod tests {
         super::load_file_strict(&mut interp, &source_path)
             .expect("load source reader-object fixture");
         assert_eq!(
-            interp.lookup_var("eager-owner-saw-char-table", &env),
+            interp.symbol_value("eager-owner-saw-char-table"),
             Some(super::types::Value::T),
             "GNU's Lisp macroexpander must receive the C-reader object, not a private placeholder"
         );
         assert!(matches!(
-            interp
-                .lookup_var("loaded-source-table", &env)
-                .map(|v| v.kind()),
+            interp.symbol_value("loaded-source-table").map(|v| v.kind()),
             Some(super::types::Kind::CharTable(_))
         ));
 
@@ -1602,7 +1611,7 @@ mod tests {
             .expect("load compiled reader-object fixture");
         assert!(matches!(
             interp
-                .lookup_var("loaded-compiled-table", &env)
+                .symbol_value("loaded-compiled-table")
                 .map(|v| v.kind()),
             Some(super::types::Kind::CharTable(_))
         ));

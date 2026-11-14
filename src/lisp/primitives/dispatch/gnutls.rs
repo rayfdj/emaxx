@@ -1677,7 +1677,7 @@ pub(crate) fn flush_gnutls_log(interp: &mut Interpreter, env: &mut Env) -> Resul
         return Ok(());
     }
     let global = interp
-        .lookup_var_key(cached_symbol!("gnutls-log-level"), env)
+        .symbol_value_key(cached_symbol!("gnutls-log-level"))
         .and_then(|value| value.integer_value())
         .unwrap_or(0);
     let max = global.clamp(i64::from(c_int::MIN), i64::from(c_int::MAX)) as c_int;

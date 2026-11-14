@@ -245,25 +245,25 @@ impl Interpreter {
     /// will_dump_p holds: eval.c and fns.c clear gflags.will_dump_ before
     /// the error an autoload or `require' signals there, so reporting it
     /// cannot land here again.
-    fn will_dump_mode(&self, env: &Env) -> Option<String> {
+    fn will_dump_mode(&self) -> Option<String> {
         if self.will_dump_reported {
             return None;
         }
-        self.lookup_var_key(cached_symbol!("dump-mode"), env)
+        self.symbol_value_key(cached_symbol!("dump-mode"))
             .and_then(|mode| crate::lisp::primitives::string_like(&mode).map(|mode| mode.text))
             .filter(|mode| mode == "pdump" || mode == "pbootstrap")
     }
 
     /// lisp.h's will_dump_p.
-    pub(crate) fn will_dump(&self, env: &Env) -> bool {
-        self.will_dump_mode(env).is_some()
+    pub(crate) fn will_dump(&self) -> bool {
+        self.will_dump_mode().is_some()
     }
 
     /// will_dump_p && !will_bootstrap_p: the `--temacs=pdump' process,
     /// which loadup.el must not make autoload or require (the preloaded
     /// files are listed explicitly).
-    fn will_dump_without_bootstrap(&self, env: &Env) -> bool {
-        self.will_dump_mode(env).is_some_and(|mode| mode == "pdump")
+    fn will_dump_without_bootstrap(&self) -> bool {
+        self.will_dump_mode().is_some_and(|mode| mode == "pdump")
     }
 
     /// eval.c:Fautoload_do_load: load FUNDEF's file when it is an
@@ -290,7 +290,7 @@ impl Interpreter {
         if crate::lisp::types::eq_symbol_named(macro_only, "macro") && !loads_macro {
             return Ok(fundef);
         }
-        if self.will_dump_without_bootstrap(env) {
+        if self.will_dump_without_bootstrap() {
             self.will_dump_reported = true;
             let name = crate::lisp::primitives::call(self, "symbol-name", &[funname], env)?;
             return Err(primitives::values::doprnt_error_sdata(
@@ -323,7 +323,7 @@ impl Interpreter {
         if crate::lisp::primitives::values_equal(self, &function, &fundef)? {
             // The file `load-history' names last, as Frequire's message.
             let loaded = self
-                .lookup_var_key(cached_symbol!("load-history"), env)
+                .symbol_value_key(cached_symbol!("load-history"))
                 .unwrap_or(Value::Nil);
             let loaded = crate::lisp::primitives::call(self, "car", &[loaded], env)?;
             let loaded = crate::lisp::primitives::call(self, "car", &[loaded], env)?;
@@ -410,7 +410,7 @@ impl Interpreter {
         };
         if result.is_ok() {
             let current = self
-                .lookup_var_key(cached_symbol!("current-load-list"), &load_environment)
+                .symbol_value_key(cached_symbol!("current-load-list"))
                 .unwrap_or_else(|| Value::list([Value::string(history_filename)]));
             self.commit_entire_load_history(&Value::string(history_filename), current);
         }
@@ -482,7 +482,7 @@ impl Interpreter {
         // shares with the interned one, which names the file too.
         let feature = symbol.name_text();
         let (open, close) = self.effective_quote_pair();
-        if self.will_dump_without_bootstrap(env) {
+        if self.will_dump_without_bootstrap() {
             self.will_dump_reported = true;
             return Err(LispError::Signal(format!(
                 "(require {feature}) while preparing to dump"
@@ -511,7 +511,7 @@ impl Interpreter {
             // records last (the resolved path, not the feature), or
             // "Required feature ... was not provided" when there is none.
             let loaded_file = self
-                .lookup_var_key(cached_symbol!("load-history"), env)
+                .symbol_value_key(cached_symbol!("load-history"))
                 .and_then(|history| history.car_if_list())
                 .and_then(|entry| entry.car_if_list())
                 .and_then(|file| crate::lisp::primitives::string_like(&file).map(|s| s.text));
@@ -1101,10 +1101,7 @@ impl Interpreter {
     /// redisplay began may use them).
     pub(crate) fn init_iterator_faces(&mut self, frame: crate::lisp::types::FrameRef) {
         if self
-            .lookup_var_key(
-                cached_symbol!("inhibit-free-realized-faces"),
-                &crate::lisp::types::Env::new(),
-            )
+            .symbol_value_key(cached_symbol!("inhibit-free-realized-faces"))
             .is_some_and(|value| !value.is_nil())
         {
             return;
@@ -3514,7 +3511,7 @@ impl Interpreter {
         // redefinition the length of the file's list so far).
         let mut file = Value::Nil;
         let mut tail = self
-            .lookup_var_key(cached_symbol!("current-load-list"), &Env::new())
+            .symbol_value_key(cached_symbol!("current-load-list"))
             .unwrap_or(Value::Nil);
         let mut seen = 0usize;
         while let Kind::Cons(cell) = tail.kind() {
@@ -3572,7 +3569,7 @@ impl Interpreter {
         }
 
         let mut history = self
-            .lookup_var_key(cached_symbol!("load-history"), &Env::new())
+            .symbol_value_key(cached_symbol!("load-history"))
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default();
         history.retain(|existing| match existing.car() {
@@ -3602,7 +3599,7 @@ impl Interpreter {
         // owned by subr.el's real `eval-after-load'; the Rust host only
         // performs the C-owned lookup/invocation boundary.
         let after_load_alist = self
-            .lookup_var_key(cached_symbol!("after-load-alist"), env)
+            .symbol_value_key(cached_symbol!("after-load-alist"))
             .unwrap_or(Value::Nil);
         let entry = crate::lisp::primitives::call(
             self,

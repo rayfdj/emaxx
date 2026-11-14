@@ -519,12 +519,12 @@ fn print_prune_string_charset(
 /// starts numbering over even when `print-continuous-numbering' itself
 /// is non-nil.  The reset is a store into the C variable, which runs no
 /// watcher: a table already nil is left as it is.
-fn prepare_print_numbering(interp: &mut Interpreter, env: &mut Env) {
+fn prepare_print_numbering(interp: &mut Interpreter) {
     let table = interp.symbol_value_key(cached_symbol!("print-number-table"));
     if !print_continuous_numbering(interp) || table.is_none_or(|value| value.is_nil()) {
         interp.print_number_index = 0;
         if table.is_none_or(|value| !value.is_nil()) {
-            interp.set_variable_key(cached_symbol!("print-number-table"), Value::Nil, env);
+            interp.set_symbol_value_key(cached_symbol!("print-number-table"), Value::Nil);
         }
     }
 }
@@ -653,7 +653,7 @@ pub(crate) fn deliver(
         }
         PrintSink::Stdout => {
             if !interp.message_capture_stack.is_empty() {
-                interp.append_message_capture(&output.host_text(), false, env);
+                interp.append_message_capture(&output.host_text(), false);
             }
             if standard_display_table_p(interp) {
                 return deliver_through_display_table(interp, env, output);
@@ -677,7 +677,7 @@ pub(crate) fn deliver(
         }
         PrintSink::Echo => {
             let text = output.host_text();
-            interp.append_message_capture(&text, false, env);
+            interp.append_message_capture(&text, false);
             if !output.has_octets() {
                 crate::lisp::primitives::echo_area_print_logged(interp, &text, env);
                 return Ok(());
@@ -967,9 +967,9 @@ pub(crate) fn printchar_unsigned(
 /// loaded (`load-true-file-name' a string), else `(end-of-file)'.
 /// A reader's end-of-input as lread.c's end_of_file_error signals it;
 /// any other error is ERROR.
-pub(crate) fn reader_end_of_file(interp: &Interpreter, error: LispError, env: &Env) -> LispError {
+pub(crate) fn reader_end_of_file(interp: &Interpreter, error: LispError) -> LispError {
     if matches!(error.kind(), LispErrorKind::EndOfInput) {
-        end_of_file_error(interp, env)
+        end_of_file_error(interp)
     } else {
         error
     }
@@ -986,9 +986,9 @@ pub(crate) fn is_end_of_file_error(error: &LispError) -> bool {
     }
 }
 
-fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
+fn end_of_file_error(interp: &Interpreter) -> LispError {
     match interp
-        .lookup_var_key(cached_symbol!("load-true-file-name"), env)
+        .symbol_value_key(cached_symbol!("load-true-file-name"))
         .map(|v| v.kind())
     {
         Some(file @ Kind::StringObject(_)) => LispError::SignalValue(Value::list([
@@ -1031,7 +1031,7 @@ fn read_one_from_reader(
 ) -> Result<(Value, usize), LispError> {
     // lread.c resolves each atom in the selected obarray. A post-read walk
     // would first intern a private name in the standard table and leak it.
-    let shorthands = read_symbol_shorthands_in_env(interp, env)?;
+    let shorthands = read_symbol_shorthands(interp)?;
     let read = (|| {
         let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match input {
@@ -1061,8 +1061,8 @@ fn read_one_from_reader(
         ))
     })();
     let (value, needs_materialization, consumed) =
-        read.map_err(|error| reader_end_of_file(interp, error, env))?;
-    let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
+        read.map_err(|error| reader_end_of_file(interp, error))?;
+    let value = value.ok_or_else(|| end_of_file_error(interp))?;
     // Allocate identity-bearing literals before resolving references into them.
     let value = if needs_materialization {
         interp.materialize_read_object_literals(value, env)?
@@ -1214,7 +1214,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
             // lread.c:readchar reads a killed buffer as at its end.
             let buffer_id = interp
                 .live_buffer_id(buffer)
-                .ok_or_else(|| end_of_file_error(interp, env))?;
+                .ok_or_else(|| end_of_file_error(interp))?;
             let (start, end) = {
                 let buffer = interp
                     .get_buffer_by_id(buffer_id)
@@ -1297,7 +1297,7 @@ fn read_one_positioned_form(
     // zip desynced on any non-symbol token — a number, `t' — and then
     // silently dropped every later position; bytecomp warnings inherited
     // the enclosing defun's position instead of the offending form's).
-    let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
+    let symbol_shorthands = read_symbol_shorthands(interp)?;
     let read = (|| {
         let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match input {
@@ -1339,8 +1339,8 @@ fn read_one_positioned_form(
         Ok((value, consumed, reader.emitted_reader_forms()))
     })();
     let (value, consumed, needs_materialization) =
-        read.map_err(|error| reader_end_of_file(interp, error, env))?;
-    let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
+        read.map_err(|error| reader_end_of_file(interp, error))?;
+    let value = value.ok_or_else(|| end_of_file_error(interp))?;
     // GNU's reader constructs `#s(...)', `#^[...]', and bool-vector objects
     // before read-positioning-symbols returns.  In particular, the byte
     // compiler must receive an actual hash table constant rather than
@@ -1443,15 +1443,15 @@ impl crate::lisp::reader::ReadContext for CallableReader<'_> {
     }
 
     fn load_file_name(&mut self) -> Value {
-        self.interp.read_load_file_name(self.env)
+        self.interp.read_load_file_name()
     }
 
     fn force_doc_strings(&mut self) -> bool {
-        self.interp.read_force_doc_strings(self.env)
+        self.interp.read_force_doc_strings()
     }
 
     fn doc_string(&mut self, reference: Value) -> Result<Value, LispError> {
-        crate::lisp::primitives::unibyte_doc_string(self.interp, &reference, self.env)
+        crate::lisp::primitives::unibyte_doc_string(self.interp, &reference)
     }
 
     fn char_from_name(&mut self, name: &str) -> Result<Value, LispError> {
@@ -1459,7 +1459,7 @@ impl crate::lisp::reader::ReadContext for CallableReader<'_> {
     }
 
     fn read_circle(&mut self) -> bool {
-        self.interp.read_circle(self.env)
+        self.interp.read_circle()
     }
 
     fn unescaped_character_literal(&mut self, character: u8) -> Result<(), LispError> {
@@ -1486,14 +1486,14 @@ impl crate::lisp::reader::ReaderStream for CallableReader<'_> {
 
     fn intern_symbol(&mut self, name: &str, shorthand: bool) -> Result<Value, LispError> {
         let name = if shorthand {
-            let shorthands = read_symbol_shorthands_in_env(self.interp, self.env)?;
+            let shorthands = read_symbol_shorthands(self.interp)?;
             crate::lisp::reader::apply_symbol_shorthands_to_token(name.to_owned(), &shorthands)
         } else {
             name.to_owned()
         };
         let obarray = self
             .interp
-            .lookup_var_key(cached_symbol!("obarray"), self.env)
+            .symbol_value_key(cached_symbol!("obarray"))
             .unwrap_or(Value::Nil);
         intern_in_obarray(self.interp, &obarray, &name)
     }
@@ -1520,8 +1520,8 @@ fn read_callable_source(
     };
     // end_of_file_error names `load-true-file-name' whatever the stream.
     let value = value
-        .map_err(|error| reader_end_of_file(interp, error, env))?
-        .ok_or_else(|| end_of_file_error(interp, env))?;
+        .map_err(|error| reader_end_of_file(interp, error))?
+        .ok_or_else(|| end_of_file_error(interp))?;
     if needs_materialization {
         interp.materialize_read_object_literals(value, env)
     } else {
@@ -1865,7 +1865,7 @@ fn read_from_lisp_source_raw(
             // lread.c:readchar reads a killed buffer as at its end.
             let buffer_id = interp
                 .live_buffer_id(buffer)
-                .ok_or_else(|| end_of_file_error(interp, env))?;
+                .ok_or_else(|| end_of_file_error(interp))?;
             let (start, end) = {
                 let buffer = interp
                     .get_buffer_by_id(buffer_id)
@@ -1993,11 +1993,11 @@ pub(crate) fn md5_source_bytes(
             let e = Value::Integer(e as i64);
             if coding.is_nil() {
                 coding = interp
-                    .lookup_var_key(cached_symbol!("coding-system-for-write"), env)
+                    .symbol_value_key(cached_symbol!("coding-system-for-write"))
                     .unwrap_or(Value::Nil);
                 if coding.is_nil() {
                     let default = interp
-                        .lookup_var_key(cached_symbol!("buffer-file-coding-system"), env)
+                        .symbol_value_key(cached_symbol!("buffer-file-coding-system"))
                         .unwrap_or(Value::Nil);
                     coding = default;
                     let local = call(
@@ -2034,7 +2034,7 @@ pub(crate) fn md5_source_bytes(
                         coding = default;
                     }
                     let selector = interp
-                        .lookup_var_key(cached_symbol!("select-safe-coding-system-function"), env)
+                        .symbol_value_key(cached_symbol!("select-safe-coding-system-function"))
                         .unwrap_or(Value::Nil);
                     if !force_raw
                         && call(interp, "fboundp", std::slice::from_ref(&selector), env)?
@@ -2176,7 +2176,7 @@ mod tests {
         print_preprocess(&mut interp, &object, &mut env).expect("preprocess shared list");
 
         let table = interp
-            .lookup_var_key(cached_symbol!("print-number-table"), &env)
+            .symbol_value_key(cached_symbol!("print-number-table"))
             .expect("public number table");
         assert_eq!(table_state(&interp, &table, &a), Some(Value::Integer(-1)));
         assert_eq!(table_state(&interp, &table, &b), Some(Value::Integer(-2)));
@@ -2193,7 +2193,7 @@ mod tests {
         print_preprocess(&mut interp, &object, &mut env).expect("preprocess cyclic list");
 
         let table = interp
-            .lookup_var_key(cached_symbol!("print-number-table"), &env)
+            .symbol_value_key(cached_symbol!("print-number-table"))
             .expect("public number table");
         assert_eq!(
             table_state(&interp, &table, &object),
