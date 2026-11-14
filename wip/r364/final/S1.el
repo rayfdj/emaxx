@@ -1,0 +1,6 @@
+(let ((print-circle t) (print-continuous-numbering t)
+      (print-number-table (make-hash-table :test 'eq)) (y "str"))
+  (puthash y (string-to-unibyte "\351") print-number-table)
+  (prin1 (list y))
+  (prin1 (list y) (lambda (c) (princ (format " %d" c))))
+  (with-temp-buffer (prin1 (list y) (current-buffer)) (princ (format " %S" (append (buffer-string) nil)))))

@@ -1,0 +1,25 @@
+Probes written to answer the round 364 review; all must answer as GNU.
+GNU's outputs: g2 (((7 11 0)) "ouz1r-text"); g3 (((-26 3 0)) "ab"); g4
+(((10 14 0) (5 10 0)) "some textmore" "first"); g5 ((((13 14 0) "(13 14
+0)") ((1 13 0) "(1 13 0)")) "(outer text)\n"); g6 (((6 7 0))
+"012abc3456789" 11 #<marker at 7 in  *temp*>)(((8 9 0) (6 7 0))
+"012abcXY3456789" 2 #<marker at 9 in  *temp*>); g7 (((mod nil 5 5) (mod t
+9 11 0) (front nil 3 3) (front t -36 8 0)) "01front23inside456789"); g8
+((buffer-read-only #<buffer  *temp*>) 1 "" "" "(still works)"); g9 ("
+*temp*" "" "moved"); g10 (((4 5 0)) (97 233 98 99)); t3 (97 233 98 100 101
+102 0)(97 120 98 99 100 101 102 0)(97 120 98 98 99 100 233)(97 98 99 100
+233 102)(97 98 99 100 101 102 0); p36 stderr FF 83 FE A9 then " msg: 1\n".
+codes1/codes2: `write-char' and `external-debugging-output' of codes that
+are no characters on stdout, stderr, a function and a buffer (codes2 with
+`standard-display-table' set).  Single-code map of GNU (stdout /
+external-debugging-output): -1 FF / FF BF; -2 FE / FF BE; -129 7F / FD BF;
+-1000 18 / F0 98; -65536 00 / C0 80; #x400000 00 / 00; #x3fffff C1 BF;
+#x3fff80 C0 80; #x8000041 A; #x4000041 01; #x10000041 and #x20000061 and
+#x7fffffff error "Invalid character: 10000041" (20000061, 703fffff);
+#x2000040 @; #x100000041 A; 2^32+1 01; -2^31 00 / C0 80; #xffffffff FF /
+FF BF; most-negative-fixnum 00.  A function is called with the code as an
+unsigned 32-bit number (4294967295 for -1), never an error.  With a
+coding system (coding-system-for-write) a negative code whose two-byte
+form is a character's (first byte C0..DF) is encoded as that character
+(-65536 gives 80 under utf-8, latin-1, raw-text); the others are GNU
+reading past the string (not reproduced).

@@ -18675,6 +18675,23 @@ setup_process_coding_systems's check now refuses). A 13-form
   the final build the probes of both reviews and the round's own (the
   scratchpad's r363review, r363review2/w and r363fix) answer as GNU byte
   for byte and write for write but for the recorded items.
+- **Round 364 is unfinished: its draft is packaged in `wip/r364/`, and
+  `src/` is round 363's.**  The round makes the printer write as
+  print.c's printchar and strout do (the finding round 363 recorded).
+  It was implemented and validated once, and lost with its container
+  before it was committed.  `wip/r364/SPEC.md` is the design that
+  passed; `code/` holds the hardest functions as they were; `forms/`,
+  `final/`, `extra/` and `tty/` the tests and probes with GNU's answers;
+  `harness/` the fuzz generator, the strace and timing probes and the
+  scripts that rebuild the oracle and the release binary; `records/` the
+  commit message, this file's entry and the findings as drafted, the CI
+  of the round 363 head and the review's list.  Nothing under `wip/` is
+  built or tested by the gate, and none of it is the round's evidence
+  until the round is implemented again and validated.  One thing is the
+  user's to decide before the round is committed: tools/round_audit.py's
+  H2 fires on the changed line that reads
+  `print-integers-as-characters', which is print.c's variable and also
+  the name of an ERT test.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's

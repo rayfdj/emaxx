@@ -1,0 +1,5 @@
+(prin1 (make-string 20000 ?x))
+(terpri)
+(princ (make-string 20000 ?y))
+(terpri)
+(prin1 (make-list 3000 'elt))

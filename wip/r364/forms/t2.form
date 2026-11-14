@@ -1,0 +1,43 @@
+(list
+ ;; print.c's print_buffer is one static: a print into a buffer run by
+ ;; `print-unreadable-function' sets the outer print's text aside, and
+ ;; print_unwind copies it back but leaves `pos' where the inner print
+ ;; ended, so the outer print goes on from there.
+ (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'zz))))
+   (prin1-to-string (list 1 2 (current-buffer) 3)))
+ (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'zz) nil)))
+   (prin1-to-string (list 1 2 (get-buffer-create "pb364") 3)))
+ (let ((print-unreadable-function (lambda (_o _e) (format "%S" 'q))))
+   (prin1-to-string (list 1 2 (current-buffer) 3 4 5)))
+ (let ((print-unreadable-function
+        (lambda (_o _e) (with-temp-buffer (prin1 'abcdefgh (current-buffer)) "R"))))
+   (prin1-to-string (list 1 2 (current-buffer) 3 4 5)))
+ (let ((print-unreadable-function
+        (lambda (_o _e) (with-temp-buffer (prin1 'ab (current-buffer)) "R"))))
+   (with-temp-buffer
+     (prin1 (list 1 2 (current-buffer) 3 4 5) (current-buffer))
+     (buffer-string)))
+ ;; A print to a function or a string printed by `princ' leaves it alone.
+ (let ((print-unreadable-function
+        (lambda (_o _e) (prin1 'inner #'ignore) (princ "plain" #'ignore) "R")))
+   (prin1-to-string (list 1 2 (current-buffer) 3)))
+ ;; The function finds the destination as it was: nothing is inserted
+ ;; before print_finish.
+ (let* ((seen nil)
+        (print-unreadable-function (lambda (o _e) (push (with-current-buffer o (buffer-string)) seen) nil)))
+   (with-temp-buffer
+     (rename-buffer "pb364b")
+     (insert "old")
+     (prin1 (list 1 (current-buffer) 2) (current-buffer))
+     (list seen (buffer-string))))
+ ;; `princ' of a plain string is print_string alone: the depth of a print
+ ;; under way is not reset by it, as it is by any other print.
+ (let ((print-level 3)
+       (print-unreadable-function (lambda (_o _e) (princ "s" #'ignore) "U")))
+   (prin1-to-string (list (current-buffer) '(1 (2 (3 (4)))))))
+ (let ((print-level 3)
+       (print-unreadable-function (lambda (_o _e) (prin1 "s" #'ignore) "U")))
+   (prin1-to-string (list (current-buffer) '(1 (2 (3 (4)))))))
+ ;; `print-level' is compared as any fixnum.
+ (let ((print-level -1)) (list (prin1-to-string '(a)) (prin1-to-string [a (b)]) (prin1-to-string 5)))
+ (let ((print-level 0)) (list (prin1-to-string '(a)) (prin1-to-string [a (b)]))))

@@ -1,0 +1,98 @@
+(list
+ ;; What a function printed to changes in the object is what the walk
+ ;; reads next: a list's first element after its parenthesis, a quoted
+ ;; form's after the quote, a buffer's name after `#<', an object's
+ ;; label after its `=', a string's intervals after its text, a hash
+ ;; table's entries after `#s(' and a symbol's name for each character.
+ (let ((l (list 'a 'b 'c)) (acc nil))
+   (prin1 l (lambda (c) (push c acc) (when (= c ?\() (setcar l 'z))))
+   (concat (nreverse acc)))
+ (let ((l (list 'quote 'b)) (acc nil))
+   (prin1 l (lambda (c) (push c acc) (when (= c ?\') (setcar (cdr l) 'y))))
+   (concat (nreverse acc)))
+ (let ((acc nil) (b (generate-new-buffer "bufname364")))
+   (prin1 b (lambda (c) (push c acc) (when (= c ?<) (with-current-buffer b (rename-buffer "renamed364")))))
+   (kill-buffer b)
+   (concat (nreverse acc)))
+ (let ((print-circle t) (x (list 1)) (acc nil))
+   (prin1 (list x x x) (lambda (c) (push c acc) (when (= c ?=) (clrhash print-number-table))))
+   (concat (nreverse acc)))
+ (let ((s (propertize "abcd" 'k 'v)) (acc nil) (print-charset-text-property t))
+   (prin1 s (lambda (c) (push c acc) (when (= c ?b) (set-text-properties 0 4 nil s))))
+   (concat (nreverse acc)))
+ (let ((acc nil) (h (make-hash-table)))
+   (puthash 'a 1 h) (puthash 'b 2 h)
+   (prin1 h (lambda (c) (push c acc) (when (= c ?#) (puthash 'c 3 h))))
+   (concat (nreverse acc)))
+ (let ((acc nil) (s (make-symbol "abcdef")))
+   (prin1 s (lambda (c) (push c acc) (when (= c ?b) (aset (symbol-name s) 3 ?Z))))
+   (concat (nreverse acc)))
+ ;; print.c's prstack is one static that a non-local exit does not
+ ;; unwind: a print left by a throw or an error leaves its entries, and
+ ;; the print it was run from goes on with them.
+ (let ((acc nil))
+   (prin1 '(a b c)
+          (lambda (c) (push c acc)
+            (when (= c ?b)
+              (catch 'k (prin1 '(x y z) (lambda (d) (when (= d ?y) (throw 'k nil))))))))
+   (concat (nreverse acc)))
+ (let ((print-unreadable-function
+        (lambda (_o _e)
+          (condition-case nil
+              (let ((print-unreadable-function (lambda (_o _e) (error "x"))))
+                (prin1-to-string (list 1 (make-marker) 2)))
+            (error nil))
+          nil)))
+   (prin1-to-string (list 'a (make-marker) 'c)))
+ ;; print_prepare's record_unwind_current_buffer: the buffer current
+ ;; when a print began is current when it ends, whatever a function
+ ;; printed to or `print-unreadable-function' made current.
+ (with-temp-buffer
+   (let ((b (get-buffer-create "other364a")))
+     (prin1 'x (lambda (_c) (set-buffer b)))
+     (buffer-name)))
+ (with-temp-buffer
+   (let* ((b (get-buffer-create "other364b"))
+          (print-unreadable-function (lambda (_o _e) (set-buffer b) nil)))
+     (prin1 (list 'a (make-marker)) (current-buffer))
+     (list (buffer-string) (with-current-buffer b (buffer-string)))))
+ ;; print_finish sets the marker printed to in the buffer current after
+ ;; the insertion's hooks, and inserts where a destination killed
+ ;; meanwhile left it: in the buffer current then.
+ (let ((ob (get-buffer-create "other364c")))
+   (with-temp-buffer
+     (rename-buffer "home364")
+     (let ((m (point-marker)))
+       (add-hook 'after-change-functions (lambda (&rest _) (set-buffer ob)) nil t)
+       (prin1 'q m)
+       (list (buffer-name) (marker-position m) (buffer-name (marker-buffer m))
+             (with-current-buffer "home364" (buffer-string))))))
+ (with-temp-buffer
+   (let* ((dest (generate-new-buffer "dst364"))
+          (m (with-current-buffer dest (insert "abc") (copy-marker 2)))
+          (print-unreadable-function (lambda (_o _e) (kill-buffer dest) nil)))
+     (prin1 (list 'aa (make-marker)) m)
+     (list (marker-position m) (eq (marker-buffer m) (current-buffer)) (buffer-string))))
+ ;; A print of nothing into a buffer still runs `after-change-functions'
+ ;; (print_finish's `signal_after_change (PT, 0, 0)'); a print run by
+ ;; `before-change-functions' is over before the outer text is inserted,
+ ;; and leaves print_buffer's `pos' for the after-change hooks.
+ (with-temp-buffer
+   (insert "abcdef") (goto-char 4)
+   (let ((log nil))
+     (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+     (princ "" (current-buffer))
+     (terpri (point-min-marker) t)
+     log))
+ (let ((tb (generate-new-buffer "tb364")) (l nil))
+   (with-temp-buffer
+     (add-hook 'before-change-functions (lambda (&rest _) (prin1 'hk tb)) nil t)
+     (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+     (prin1 'outer-text (current-buffer))
+     (list l (buffer-string) (with-current-buffer tb (buffer-string)))))
+ ;; A marker outside its buffer's accessible part is the error's datum.
+ (with-temp-buffer
+   (insert "hello world")
+   (let ((m (copy-marker 8)))
+     (narrow-to-region 1 4)
+     (condition-case e (prin1 'x m) (error (list (car e) (cadr e) (eq (nth 2 e) m)))))))

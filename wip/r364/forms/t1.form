@@ -1,0 +1,88 @@
+(list
+ ;; Each character when the walk reaches it, the unreadable object's
+ ;; function in its place among them.
+ (let* ((log nil)
+        (print-unreadable-function (lambda (_o _e) (push 'unreadable log) "R")))
+   (prin1 (list 1 "ab" (current-buffer) 'sym 2.5) (lambda (c) (push c log)))
+   (concat (mapcar (lambda (c) (if (eq c 'unreadable) ?! c)) (reverse log))))
+ ;; A stream that signals at its third character: nothing after it is
+ ;; looked at.
+ (let ((n 0) (called nil))
+   (condition-case err
+       (let ((print-unreadable-function (lambda (_o _e) (setq called t) "R")))
+         (prin1 (list 1 2 (current-buffer))
+                (lambda (_c) (setq n (1+ n)) (when (= n 3) (error "third")))))
+     (error (list err n called))))
+ ;; What the stream changes is read for what is printed next: the print
+ ;; variables,
+ (let ((out nil) (print-length nil))
+   (prin1 '((1 2 3 4) (1 2 3 4) (1 2 3 4))
+          (lambda (c) (push c out) (when (eq c ?3) (setq print-length 2))))
+   (concat (reverse out)))
+ ;; the escape variables inside one string,
+ (let ((out nil) (print-escape-newlines nil))
+   (prin1 "a\nb\nc" (lambda (c) (push c out) (when (eq c ?b) (setq print-escape-newlines t))))
+   (concat (reverse out)))
+ ;; and the string `princ' is printing, but not the one `prin1' is, which
+ ;; prints a copy unless `print-charset-text-property' is t.
+ (let ((s (copy-sequence "abcdef")) (out nil))
+   (princ s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+   (concat (reverse out)))
+ (let ((s (copy-sequence "abcdef")) (out nil))
+   (prin1 s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+   (concat (reverse out)))
+ (let ((s (copy-sequence "abcdef")) (out nil) (print-charset-text-property t))
+   (prin1 s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+   (concat (reverse out)))
+ ;; `princ' reads the string's sizes once: one the function makes shorter
+ ;; is read at its terminating NUL, one it makes longer up to the bytes
+ ;; it had.
+ (let ((s (copy-sequence "a\351bcdef")) (acc nil))
+   (setq s (string-to-multibyte s))
+   (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 1 ?x))))
+   (nreverse acc))
+ (let ((s (string-to-multibyte "axbcd\351f")) (acc nil))
+   (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 1 #x3fffe9))))
+   (nreverse acc))
+ (let ((s (copy-sequence "abcdef")) (acc nil))
+   (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 4 #xe9))))
+   (nreverse acc))
+ ;; A unibyte string's bytes are characters for `princ', raw bytes for
+ ;; `prin1'.
+ (let ((out nil))
+   (princ (string-to-unibyte "a\377") (lambda (c) (push c out)))
+   (prin1 (string-to-unibyte "a\377") (lambda (c) (push c out)))
+   (prin1 (string-to-multibyte "a\377") (lambda (c) (push c out)))
+   (reverse out))
+ ;; A variable print.c reads after it has written something is read
+ ;; after the function has had that: `print-length' after a list's
+ ;; parenthesis, a vector's bracket and a hash table's " data (", the
+ ;; escape variables after a string's quote and for each byte of a bool
+ ;; vector.
+ (let ((out nil) (print-length nil))
+   (prin1 '(1 2 3) (lambda (c) (push c out) (when (eq c ?\() (setq print-length 1))))
+   (concat (reverse out)))
+ (let ((out nil) (print-length nil))
+   (prin1 [1 2 3] (lambda (c) (push c out) (when (eq c ?\[) (setq print-length 1))))
+   (concat (reverse out)))
+ (let ((out nil) (print-length nil) (h (make-hash-table)))
+   (puthash 1 2 h)
+   (puthash 3 4 h)
+   (prin1 h (lambda (c) (push c out) (when (eq c ?d) (setq print-length 1))))
+   (concat (reverse out)))
+ (let ((out nil) (print-escape-newlines nil))
+   (prin1 "\nx\n" (lambda (c) (push c out) (when (eq c ?\") (setq print-escape-newlines t))))
+   (concat (reverse out)))
+ (let ((out nil) (print-escape-newlines nil))
+   (prin1 (bool-vector nil t nil t nil nil nil nil nil t nil t nil nil nil nil)
+          (lambda (c) (push c out) (when (eq c ?\n) (setq print-escape-newlines t))))
+   (concat (reverse out)))
+ ;; `terpri', `write-char' and `print' call it too; `terpri' with ENSURE
+ ;; cannot tell where a function's line begins.
+ (let ((out nil))
+   (terpri (lambda (c) (push c out)))
+   (write-char ?x (lambda (c) (push c out)))
+   (print 'q (lambda (c) (push c out)))
+   (reverse out))
+ (condition-case err (terpri (lambda (c) c) t) (error (car err)))
+ (condition-case err (terpri 'car t) (error err)))
