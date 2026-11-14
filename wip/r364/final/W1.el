@@ -1,1 +1,0 @@
-(write-char -1)

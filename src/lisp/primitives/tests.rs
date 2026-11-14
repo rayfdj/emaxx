@@ -1478,6 +1478,274 @@ f\", (1 2 3 4)") ("bYc" (1 1 0)) ("str" "sym" "5" "z1.5") (nil nil t) buffer-rea
 }
 
 #[test]
+fn a_function_stream_is_called_as_the_printer_walks() {
+    // print.c writes while it walks: printchar hands a function each
+    // character where the walk stands, so what the function does is
+    // what the printer reads next, and an error it signals ends the
+    // print there.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ ;; Each character when the walk reaches it, the unreadable object's
+ ;; function in its place among them.
+ (let* ((log nil)
+        (print-unreadable-function (lambda (_o _e) (push 'unreadable log) "R")))
+   (prin1 (list 1 "ab" (current-buffer) 'sym 2.5) (lambda (c) (push c log)))
+   (concat (mapcar (lambda (c) (if (eq c 'unreadable) ?! c)) (reverse log))))
+ ;; A stream that signals at its third character: nothing after it is
+ ;; looked at.
+ (let ((n 0) (called nil))
+   (condition-case err
+       (let ((print-unreadable-function (lambda (_o _e) (setq called t) "R")))
+         (prin1 (list 1 2 (current-buffer))
+                (lambda (_c) (setq n (1+ n)) (when (= n 3) (error "third")))))
+     (error (list err n called))))
+ ;; What the stream changes is read for what is printed next: the print
+ ;; variables,
+ (let ((out nil) (print-length nil))
+   (prin1 '((1 2 3 4) (1 2 3 4) (1 2 3 4))
+          (lambda (c) (push c out) (when (eq c ?3) (setq print-length 2))))
+   (concat (reverse out)))
+ ;; the escape variables inside one string,
+ (let ((out nil) (print-escape-newlines nil))
+   (prin1 "a\nb\nc" (lambda (c) (push c out) (when (eq c ?b) (setq print-escape-newlines t))))
+   (concat (reverse out)))
+ ;; and the string `princ' is printing, but not the one `prin1' is, which
+ ;; prints a copy unless `print-charset-text-property' is t.
+ (let ((s (copy-sequence "abcdef")) (out nil))
+   (princ s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+   (concat (reverse out)))
+ (let ((s (copy-sequence "abcdef")) (out nil))
+   (prin1 s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+   (concat (reverse out)))
+ (let ((s (copy-sequence "abcdef")) (out nil) (print-charset-text-property t))
+   (prin1 s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+   (concat (reverse out)))
+ ;; `princ' reads the string's sizes once: one the function makes shorter
+ ;; is read at its terminating NUL, one it makes longer up to the bytes
+ ;; it had.
+ (let ((s (copy-sequence "a\351bcdef")) (acc nil))
+   (setq s (string-to-multibyte s))
+   (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 1 ?x))))
+   (nreverse acc))
+ (let ((s (string-to-multibyte "axbcd\351f")) (acc nil))
+   (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 1 #x3fffe9))))
+   (nreverse acc))
+ (let ((s (copy-sequence "abcdef")) (acc nil))
+   (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 4 #xe9))))
+   (nreverse acc))
+ ;; A unibyte string's bytes are characters for `princ', raw bytes for
+ ;; `prin1'.
+ (let ((out nil))
+   (princ (string-to-unibyte "a\377") (lambda (c) (push c out)))
+   (prin1 (string-to-unibyte "a\377") (lambda (c) (push c out)))
+   (prin1 (string-to-multibyte "a\377") (lambda (c) (push c out)))
+   (reverse out))
+ ;; A variable print.c reads after it has written something is read
+ ;; after the function has had that: `print-length' after a list's
+ ;; parenthesis, a vector's bracket and a hash table's " data (", the
+ ;; escape variables after a string's quote and for each byte of a bool
+ ;; vector.
+ (let ((out nil) (print-length nil))
+   (prin1 '(1 2 3) (lambda (c) (push c out) (when (eq c ?\() (setq print-length 1))))
+   (concat (reverse out)))
+ (let ((out nil) (print-length nil))
+   (prin1 [1 2 3] (lambda (c) (push c out) (when (eq c ?\[) (setq print-length 1))))
+   (concat (reverse out)))
+ (let ((out nil) (print-length nil) (h (make-hash-table)))
+   (puthash 1 2 h)
+   (puthash 3 4 h)
+   (prin1 h (lambda (c) (push c out) (when (eq c ?d) (setq print-length 1))))
+   (concat (reverse out)))
+ (let ((out nil) (print-escape-newlines nil))
+   (prin1 "\nx\n" (lambda (c) (push c out) (when (eq c ?\") (setq print-escape-newlines t))))
+   (concat (reverse out)))
+ (let ((out nil) (print-escape-newlines nil))
+   (prin1 (bool-vector nil t nil t nil nil nil nil nil t nil t nil nil nil nil)
+          (lambda (c) (push c out) (when (eq c ?\n) (setq print-escape-newlines t))))
+   (concat (reverse out)))
+ ;; `terpri', `write-char' and `print' call it too; `terpri' with ENSURE
+ ;; cannot tell where a function's line begins.
+ (let ((out nil))
+   (terpri (lambda (c) (push c out)))
+   (write-char ?x (lambda (c) (push c out)))
+   (print 'q (lambda (c) (push c out)))
+   (reverse out))
+ (condition-case err (terpri (lambda (c) c) t) (error (car err)))
+ (condition-case err (terpri 'car t) (error err)))"##,
+        r##"("(1 \"ab\" !R sym 2.5)" ((error "third") 3 nil) "((1 2 3 4) (1 2 ...) (1 2 ...))" "\"a
+b\\nc\"" "abcdXf" "\"abcdef\"" "\"abcdXf\"" (97 4194281 98 100 101 102 0) (97 120 98 98 99 100 4194281) (97 98 99 100 233 102) (97 255 34 97 4194303 34 34 97 92 51 55 55 34) "(1 ...)" "[1 ...]" "#s(hash-table data (1 2 ...))" "\"\\nx\\n\"" "#&16\"
+\\n\"" (10 120 10 113 10) error (error "Unsupported function argument" car))"##,
+        "a function stream is called as the printer walks",
+    );
+}
+
+#[test]
+fn prints_into_buffers_share_print_buffer() {
+    // print.c's print_buffer is one static: print_prepare sets the text
+    // of a print under way aside and print_unwind copies it back over
+    // what the print run inside it left, `pos' and `pos_byte' as that
+    // print left them.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ ;; print.c's print_buffer is one static: a print into a buffer run by
+ ;; `print-unreadable-function' sets the outer print's text aside, and
+ ;; print_unwind copies it back but leaves `pos' where the inner print
+ ;; ended, so the outer print goes on from there.
+ (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'zz))))
+   (prin1-to-string (list 1 2 (current-buffer) 3)))
+ (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'zz) nil)))
+   (prin1-to-string (list 1 2 (get-buffer-create "pb364") 3)))
+ (let ((print-unreadable-function (lambda (_o _e) (format "%S" 'q))))
+   (prin1-to-string (list 1 2 (current-buffer) 3 4 5)))
+ (let ((print-unreadable-function
+        (lambda (_o _e) (with-temp-buffer (prin1 'abcdefgh (current-buffer)) "R"))))
+   (prin1-to-string (list 1 2 (current-buffer) 3 4 5)))
+ (let ((print-unreadable-function
+        (lambda (_o _e) (with-temp-buffer (prin1 'ab (current-buffer)) "R"))))
+   (with-temp-buffer
+     (prin1 (list 1 2 (current-buffer) 3 4 5) (current-buffer))
+     (buffer-string)))
+ ;; A print to a function or a string printed by `princ' leaves it alone.
+ (let ((print-unreadable-function
+        (lambda (_o _e) (prin1 'inner #'ignore) (princ "plain" #'ignore) "R")))
+   (prin1-to-string (list 1 2 (current-buffer) 3)))
+ ;; The function finds the destination as it was: nothing is inserted
+ ;; before print_finish.
+ (let* ((seen nil)
+        (print-unreadable-function (lambda (o _e) (push (with-current-buffer o (buffer-string)) seen) nil)))
+   (with-temp-buffer
+     (rename-buffer "pb364b")
+     (insert "old")
+     (prin1 (list 1 (current-buffer) 2) (current-buffer))
+     (list seen (buffer-string))))
+ ;; `princ' of a plain string is print_string alone: the depth of a print
+ ;; under way is not reset by it, as it is by any other print.
+ (let ((print-level 3)
+       (print-unreadable-function (lambda (_o _e) (princ "s" #'ignore) "U")))
+   (prin1-to-string (list (current-buffer) '(1 (2 (3 (4)))))))
+ (let ((print-level 3)
+       (print-unreadable-function (lambda (_o _e) (prin1 "s" #'ignore) "U")))
+   (prin1-to-string (list (current-buffer) '(1 (2 (3 (4)))))))
+ ;; `print-level' is compared as any fixnum.
+ (let ((print-level -1)) (list (prin1-to-string '(a)) (prin1-to-string [a (b)]) (prin1-to-string 5)))
+ (let ((print-level 0)) (list (prin1-to-string '(a)) (prin1-to-string [a (b)]))))"##,
+        r##"("(1zz 3)" "(1#<buffer pb364> 3)" "(q 3 4 5)" "(1 2 fghR 3 4 5)" "(1R 3 4 5)" "(1 2 R 3)" (("old") "old(1 #<buffer pb364b> 2)") "(U (1 (2 ...)))" "(U (1 (2 (3 (4)))))" ("..." "[a ...]" "5") ("..." "[a ...]"))"##,
+        "prints into buffers share print_buffer",
+    );
+}
+
+#[test]
+fn a_print_goes_on_from_what_lisp_left_it() {
+    // What Lisp run by a print changes is what the print goes on with:
+    // the object, the print stack (prstack, one static that a non-local
+    // exit does not unwind), the current buffer (restored when the print
+    // ends) and, at print_finish, the buffer the text is inserted in and
+    // print_buffer itself.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ ;; What a function printed to changes in the object is what the walk
+ ;; reads next: a list's first element after its parenthesis, a quoted
+ ;; form's after the quote, a buffer's name after `#<', an object's
+ ;; label after its `=', a string's intervals after its text, a hash
+ ;; table's entries after `#s(' and a symbol's name for each character.
+ (let ((l (list 'a 'b 'c)) (acc nil))
+   (prin1 l (lambda (c) (push c acc) (when (= c ?\() (setcar l 'z))))
+   (concat (nreverse acc)))
+ (let ((l (list 'quote 'b)) (acc nil))
+   (prin1 l (lambda (c) (push c acc) (when (= c ?\') (setcar (cdr l) 'y))))
+   (concat (nreverse acc)))
+ (let ((acc nil) (b (generate-new-buffer "bufname364")))
+   (prin1 b (lambda (c) (push c acc) (when (= c ?<) (with-current-buffer b (rename-buffer "renamed364")))))
+   (kill-buffer b)
+   (concat (nreverse acc)))
+ (let ((print-circle t) (x (list 1)) (acc nil))
+   (prin1 (list x x x) (lambda (c) (push c acc) (when (= c ?=) (clrhash print-number-table))))
+   (concat (nreverse acc)))
+ (let ((s (propertize "abcd" 'k 'v)) (acc nil) (print-charset-text-property t))
+   (prin1 s (lambda (c) (push c acc) (when (= c ?b) (set-text-properties 0 4 nil s))))
+   (concat (nreverse acc)))
+ (let ((acc nil) (h (make-hash-table)))
+   (puthash 'a 1 h) (puthash 'b 2 h)
+   (prin1 h (lambda (c) (push c acc) (when (= c ?#) (puthash 'c 3 h))))
+   (concat (nreverse acc)))
+ (let ((acc nil) (s (make-symbol "abcdef")))
+   (prin1 s (lambda (c) (push c acc) (when (= c ?b) (aset (symbol-name s) 3 ?Z))))
+   (concat (nreverse acc)))
+ ;; print.c's prstack is one static that a non-local exit does not
+ ;; unwind: a print left by a throw or an error leaves its entries, and
+ ;; the print it was run from goes on with them.
+ (let ((acc nil))
+   (prin1 '(a b c)
+          (lambda (c) (push c acc)
+            (when (= c ?b)
+              (catch 'k (prin1 '(x y z) (lambda (d) (when (= d ?y) (throw 'k nil))))))))
+   (concat (nreverse acc)))
+ (let ((print-unreadable-function
+        (lambda (_o _e)
+          (condition-case nil
+              (let ((print-unreadable-function (lambda (_o _e) (error "x"))))
+                (prin1-to-string (list 1 (make-marker) 2)))
+            (error nil))
+          nil)))
+   (prin1-to-string (list 'a (make-marker) 'c)))
+ ;; print_prepare's record_unwind_current_buffer: the buffer current
+ ;; when a print began is current when it ends, whatever a function
+ ;; printed to or `print-unreadable-function' made current.
+ (with-temp-buffer
+   (let ((b (get-buffer-create "other364a")))
+     (prin1 'x (lambda (_c) (set-buffer b)))
+     (buffer-name)))
+ (with-temp-buffer
+   (let* ((b (get-buffer-create "other364b"))
+          (print-unreadable-function (lambda (_o _e) (set-buffer b) nil)))
+     (prin1 (list 'a (make-marker)) (current-buffer))
+     (list (buffer-string) (with-current-buffer b (buffer-string)))))
+ ;; print_finish sets the marker printed to in the buffer current after
+ ;; the insertion's hooks, and inserts where a destination killed
+ ;; meanwhile left it: in the buffer current then.
+ (let ((ob (get-buffer-create "other364c")))
+   (with-temp-buffer
+     (rename-buffer "home364")
+     (let ((m (point-marker)))
+       (add-hook 'after-change-functions (lambda (&rest _) (set-buffer ob)) nil t)
+       (prin1 'q m)
+       (list (buffer-name) (marker-position m) (buffer-name (marker-buffer m))
+             (with-current-buffer "home364" (buffer-string))))))
+ (with-temp-buffer
+   (let* ((dest (generate-new-buffer "dst364"))
+          (m (with-current-buffer dest (insert "abc") (copy-marker 2)))
+          (print-unreadable-function (lambda (_o _e) (kill-buffer dest) nil)))
+     (prin1 (list 'aa (make-marker)) m)
+     (list (marker-position m) (eq (marker-buffer m) (current-buffer)) (buffer-string))))
+ ;; A print of nothing into a buffer still runs `after-change-functions'
+ ;; (print_finish's `signal_after_change (PT, 0, 0)'); a print run by
+ ;; `before-change-functions' is over before the outer text is inserted,
+ ;; and leaves print_buffer's `pos' for the after-change hooks.
+ (with-temp-buffer
+   (insert "abcdef") (goto-char 4)
+   (let ((log nil))
+     (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+     (princ "" (current-buffer))
+     (terpri (point-min-marker) t)
+     log))
+ (let ((tb (generate-new-buffer "tb364")) (l nil))
+   (with-temp-buffer
+     (add-hook 'before-change-functions (lambda (&rest _) (prin1 'hk tb)) nil t)
+     (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+     (prin1 'outer-text (current-buffer))
+     (list l (buffer-string) (with-current-buffer tb (buffer-string)))))
+ ;; A marker outside its buffer's accessible part is the error's datum.
+ (with-temp-buffer
+   (insert "hello world")
+   (let ((m (copy-marker 8)))
+     (narrow-to-region 1 4)
+     (condition-case e (prin1 'x m) (error (list (car e) (cadr e) (eq (nth 2 e) m)))))))"##,
+        r##"("(z b c)" "'y" "#<buffer renamed364>" "(#1=(1) #1# #1#)" "#(\"abcd\"" "#s(hash-table data (a 1 b 2 c 3))" "abcZef" "(a b z) c)" "(a #<marker in no buffer> 2) c)" " *temp*" ("(a #<marker in no buffer>)" "") ("home364" 1 "other364c" "q") (28 t "(aa #<marker in no buffer>)") ((1 1 0) (4 4 0)) (((9 11 0)) "outer-text" "hk") (error "Marker is outside the accessible part of the buffer" t))"##,
+        "a print goes on from what Lisp left it",
+    );
+}
+
+#[test]
 fn undo_inhibit_record_point_turns_record_point_off() {
     // undo.c:record_point returns at once under undo_inhibit_record_point,
     // so an insertion or deletion records neither point before the last

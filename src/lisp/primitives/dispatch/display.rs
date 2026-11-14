@@ -598,11 +598,34 @@ pub(crate) fn log_message_partial(interp: &mut Interpreter, text: &str, env: &En
 /// left open when a message has held the echo area since, then
 /// message_dolog of TEXT, its line left open, and TEXT in the echo area.
 pub(crate) fn echo_area_print_logged(interp: &mut Interpreter, text: &str, env: &Env) {
+    echo_area_print_logged_as(interp, text, text, env);
+}
+
+/// `echo_area_print_logged' of a C string's bytes, which message_dolog
+/// takes as text (LOGGED) and the echo area a character each (SHOWN).
+pub(crate) fn echo_area_print_logged_as(
+    interp: &mut Interpreter,
+    logged: &str,
+    shown: &str,
+    env: &Env,
+) {
     if !ECHO_FROM_PRINT.with(std::cell::Cell::get) {
         message_log_maybe_newline(interp, env);
     }
-    log_message_partial(interp, text, env);
-    echo_area_print(text);
+    log_message_partial(interp, logged, env);
+    echo_area_print(shown);
+}
+
+/// xdisp.c setup_echo_area_for_printing, as print_prepare calls it for
+/// a print to t before anything is printed: when a message has held the
+/// echo area since the last print, the log line printing left open is
+/// ended and the echo area starts empty; otherwise the print goes on
+/// where the last one stopped.
+pub(crate) fn setup_echo_area_for_printing(interp: &mut Interpreter, env: &Env) {
+    if !ECHO_FROM_PRINT.with(std::cell::Cell::get) {
+        message_log_maybe_newline(interp, env);
+    }
+    echo_area_print("");
 }
 
 fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &Env) {
@@ -881,11 +904,16 @@ pub(crate) fn echo_area_print(text: &str) {
     });
     ECHO_AREA_LAST_DISPLAYED
         .with_borrow_mut(|slot| *slot = ECHO_AREA_MESSAGE.with_borrow(|current| current.clone()));
+    // xdisp.c current_message_1: the echo area buffer's text, or nil
+    // when it holds none.
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| {
         *slot = ECHO_AREA_MESSAGE.with_borrow(|current| {
-            current.as_ref().map(|(text, _)| {
-                crate::lisp::primitives::strings::string_like_value(text.clone(), None)
-            })
+            current
+                .as_ref()
+                .filter(|(text, _)| !text.is_empty())
+                .map(|(text, _)| {
+                    crate::lisp::primitives::strings::string_like_value(text.clone(), None)
+                })
         })
     });
     ECHO_FROM_PRINT.with(|flag| flag.set(true));
@@ -5118,6 +5146,140 @@ pub(crate) fn prin1_to_string(
     restored.and(result)
 }
 
+/// print.c:print_error_message: an error message for the error DATA
+/// onto the Lisp output stream STREAM (suitable for the print functions),
+/// each piece in a print_prepare and print_finish of its own.  CONTEXT,
+/// a C string describing the context of the error, is written first
+/// (write_string); CALLER, the Lisp function inside which the error was
+/// signaled, is shown in *Messages* when it is a symbol.
+pub(crate) fn print_error_message(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    data: Value,
+    stream: Value,
+    context: Option<&[u8]>,
+    caller: Value,
+) -> Result<(), LispError> {
+    use crate::lisp::primitives::file_io::{write_c_string, write_printer_output};
+    if let Some(context) = context {
+        write_c_string(interp, context, Some(&stream), env)?;
+    }
+    // If we know from where the error was signaled, show it in
+    // *Messages*.
+    match caller.kind() {
+        Kind::Symbol(caller) => {
+            log_message_partial(interp, &caller.name_text(), env);
+            log_message_partial(interp, ": ", env);
+        }
+        Kind::T => log_message_partial(interp, "t: ", env),
+        _ => {}
+    }
+    let error = Value::symbol("error");
+    let obj = data;
+    // Fcar (data).
+    let errname = match obj.cons_values() {
+        Some((head, _)) => head,
+        None if obj.is_nil() => Value::Nil,
+        None => return Err(LispError::WrongTypeArgument("listp".into(), obj)),
+    };
+    let (mut errmsg, file_error, data) = if crate::lisp::types::eq(errname, error) {
+        let data = obj.cons_values().map_or(Value::Nil, |(_, rest)| rest);
+        let data = if data.cons_values().is_some() {
+            data
+        } else {
+            Value::Nil
+        };
+        (
+            data.cons_values().map_or(Value::Nil, |(car, _)| car),
+            false,
+            data,
+        )
+    } else {
+        let conditions = super::call(
+            interp,
+            "get",
+            &[errname, Value::symbol("error-conditions")],
+            env,
+        )?;
+        let mut errmsg = super::call(
+            interp,
+            "get",
+            &[errname, Value::symbol("error-message")],
+            env,
+        )?;
+        // During loadup `substitute-command-keys' may be missing, and
+        // its errors are ignored (safe_calln).
+        let substitute = Value::symbol("substitute-command-keys");
+        if super::call(interp, "fboundp", &[substitute], env)?.is_truthy()
+            && let Ok(substituted) = interp.call_function_value(
+                substitute,
+                Some("substitute-command-keys"),
+                &[errmsg],
+                env,
+            )
+            && !substituted.is_nil()
+        {
+            errmsg = substituted;
+        }
+        let file_error = super::call(
+            interp,
+            "memq",
+            &[Value::symbol("file-error"), conditions],
+            env,
+        )?
+        .is_truthy();
+        (errmsg, file_error, obj)
+    };
+    let mut tail = data.cons_values().map_or(Value::Nil, |(_, rest)| rest);
+    // A file-error's message is its first datum.
+    if file_error && let Some((first, rest)) = tail.cons_values() {
+        errmsg = first;
+        tail = rest;
+    }
+    // Each piece goes onto the stream through a print_prepare and
+    // print_finish of its own (into the hidden prin1 buffer with
+    // modification hooks live: text already inserted stays there when a
+    // datum's printing or the tail's cycle escapes, for the next
+    // prin1-to-string to take).
+    let mut sep = Some(": ");
+    match errmsg.kind() {
+        Kind::StringObject(message) if message.borrow().len() == 0 => sep = None,
+        Kind::StringObject(_) => {
+            super::call(interp, "princ", &[errmsg, stream], env)?;
+        }
+        _ => write_printer_output(interp, "peculiar error", Some(&stream), env)?,
+    }
+    // princ for file-error, end-of-file and user-error data, prin1 for
+    // every other condition's: Magit's multi-part git errors keep their
+    // quotes and escapes.
+    let printer = if file_error
+        || crate::lisp::types::eq(errname, Value::symbol("end-of-file"))
+        || crate::lisp::types::eq(errname, Value::symbol("user-error"))
+    {
+        "princ"
+    } else {
+        "prin1"
+    };
+    let mut cycle = crate::lisp::primitives::values::ForEachTail::new(tail);
+    // FOR_EACH_TAIL: `XCAR (tail)' is read once the separator is
+    // written and `XCDR (tail)' once the datum is printed, so what the
+    // stream's function or `print-unreadable-function' stores in the
+    // list is what comes next.
+    while tail.cons_values().is_some() {
+        if let Some(sep) = sep {
+            write_printer_output(interp, sep, Some(&stream), env)?;
+        }
+        sep = Some(", ");
+        let datum = tail.cons_values().map_or(Value::Nil, |(datum, _)| datum);
+        super::call(interp, printer, &[datum, stream], env)?;
+        tail = tail.cons_values().map_or(Value::Nil, |(_, next)| next);
+        if cycle.step(tail) {
+            return Err(crate::lisp::types::circular_list(tail));
+        }
+    }
+    Ok(())
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -5213,113 +5375,10 @@ define_dispatch!(
                 {
                     return Ok(message);
                 }
-                // print_error_message.
-                let errname = match obj.cons_values() {
-                    Some((head, _)) => head,
-                    None if obj.is_nil() => Value::Nil,
-                    None => return Err(LispError::WrongTypeArgument("listp".into(), obj)),
-                };
-                let (mut errmsg, file_error, data) = if crate::lisp::types::eq(errname, error) {
-                    let data = obj.cons_values().map_or(Value::Nil, |(_, rest)| rest);
-                    let data = if data.cons_values().is_some() {
-                        data
-                    } else {
-                        Value::Nil
-                    };
-                    (
-                        data.cons_values().map_or(Value::Nil, |(car, _)| car),
-                        false,
-                        data,
-                    )
-                } else {
-                    let conditions = super::call(
-                        interp,
-                        "get",
-                        &[errname, Value::symbol("error-conditions")],
-                        env,
-                    )?;
-                    let mut errmsg = super::call(
-                        interp,
-                        "get",
-                        &[errname, Value::symbol("error-message")],
-                        env,
-                    )?;
-                    // During loadup `substitute-command-keys' may be
-                    // missing, and its errors are ignored (safe_calln).
-                    let substitute = Value::symbol("substitute-command-keys");
-                    if super::call(interp, "fboundp", &[substitute], env)?.is_truthy()
-                        && let Ok(substituted) = interp.call_function_value(
-                            substitute,
-                            Some("substitute-command-keys"),
-                            &[errmsg],
-                            env,
-                        )
-                        && !substituted.is_nil()
-                    {
-                        errmsg = substituted;
-                    }
-                    let file_error = super::call(
-                        interp,
-                        "memq",
-                        &[Value::symbol("file-error"), conditions],
-                        env,
-                    )?
-                    .is_truthy();
-                    (errmsg, file_error, obj)
-                };
-                let mut tail = data.cons_values().map_or(Value::Nil, |(_, rest)| rest);
-                // A file-error's message is its first datum.
-                if file_error && let Some((first, rest)) = tail.cons_values() {
-                    errmsg = first;
-                    tail = rest;
-                }
-                // Each piece goes into the hidden prin1 buffer through a
-                // print_prepare/print_finish of its own, modification hooks
-                // live; text already inserted stays there when a datum's
-                // printing or the tail's cycle escapes, for the next
-                // prin1-to-string to take.
+                // print_error_message (obj, Vprin1_to_string_buffer, 0,
+                // Qnil), then that buffer's text.
                 let hidden = prin1_to_string_buffer(interp, env)?;
-                let mut sep = Some(": ");
-                match errmsg.kind() {
-                    Kind::StringObject(message) if message.borrow().len() == 0 => sep = None,
-                    Kind::StringObject(_) => {
-                        super::call(interp, "princ", &[errmsg, hidden], env)?;
-                    }
-                    _ => crate::lisp::primitives::file_io::write_printer_output(
-                        interp,
-                        "peculiar error",
-                        Some(&hidden),
-                        env,
-                    )?,
-                }
-                // princ for file-error, end-of-file and user-error data,
-                // prin1 for every other condition's: Magit's multi-part git
-                // errors keep their quotes and escapes.
-                let printer = if file_error
-                    || crate::lisp::types::eq(errname, Value::symbol("end-of-file"))
-                    || crate::lisp::types::eq(errname, Value::symbol("user-error"))
-                {
-                    "princ"
-                } else {
-                    "prin1"
-                };
-                let mut cycle = crate::lisp::primitives::values::ForEachTail::new(tail);
-                while let Some((datum, next)) = tail.cons_values() {
-                    if let Some(sep) = sep {
-                        crate::lisp::primitives::file_io::write_printer_output(
-                            interp,
-                            sep,
-                            Some(&hidden),
-                            env,
-                        )?;
-                    }
-                    sep = Some(", ");
-                    super::call(interp, printer, &[datum, hidden], env)?;
-                    tail = next;
-                    if cycle.step(tail) {
-                        return Err(crate::lisp::types::circular_list(tail));
-                    }
-                }
+                print_error_message(interp, env, obj, hidden, None, Value::Nil)?;
                 take_prin1_buffer_text(interp, env, &hidden, false)
             }
             "command-error-default-function" => {
@@ -5341,14 +5400,17 @@ define_dispatch!(
                         .any(|condition| {
                             crate::lisp::types::eq_symbol_named(condition, "minibuffer-quit")
                         });
-                let context = string_text(&args[1])?;
+                // CHECK_STRING (context), then its SSDATA.
+                string_text(&args[1])?;
+                let context = match args[1].kind() {
+                    Kind::StringObject(state) => state.borrow().bytes().to_vec(),
+                    _ => Vec::new(),
+                };
                 // keyboard.c command-error-default-function, noninteractive
                 // branch: print CONTEXT plus the error to stderr and
                 // kill-emacs -1.  The previous arm computed the message and
                 // discarded it, silently converting a should-fail batch run
                 // into a clean exit (2026-08-23 audit finding 80).
-                let message = super::call(interp, "error-message-string", &[args[0]], env)?;
-                let rendered = string_text(&message).unwrap_or_default();
                 if !minibuffer_quit
                     && interp
                         .lookup_var_key(cached_symbol!("noninteractive"), env)
@@ -5358,13 +5420,9 @@ define_dispatch!(
                     // Qexternal_debugging_output as the stream: printchar
                     // hands it a character at a time, each its own write
                     // of the unbuffered stderr.
-                    for character in format!("{context}{rendered}\n").chars() {
-                        super::super::file_io::printchar_to_stderr(
-                            interp,
-                            u32::from(character),
-                            env,
-                        )?;
-                    }
+                    let stream = Value::symbol("external-debugging-output");
+                    print_error_message(interp, env, args[0], stream, Some(&context), args[2])?;
+                    super::call(interp, "terpri", &[stream], env)?;
                     return super::call(interp, "kill-emacs", &[Value::Integer(-1)], env);
                 }
                 // clear_message (1, 0), then bitch_at_user (or `ding' with
@@ -5380,15 +5438,8 @@ define_dispatch!(
                     super::call(interp, "discard-input", &[], env)?;
                     super::call(interp, "ding", &[], env)?;
                 }
-                // print_error_message (data, Qt, context, signal): printed
-                // to the echo area (CONTEXT, empty or not, first), the
-                // signalling function only logged.
-                echo_area_print_logged(interp, &context, env);
-                if let Kind::Symbol(caller) = args[2].kind() {
-                    log_message_partial(interp, caller.as_ref(), env);
-                    log_message_partial(interp, ": ", env);
-                }
-                echo_area_print_logged(interp, &rendered, env);
+                // print_error_message (data, Qt, context, signal).
+                print_error_message(interp, env, args[0], Value::T, Some(&context), args[2])?;
                 Ok(Value::Nil)
             }
             "ding" => {
@@ -5602,7 +5653,7 @@ define_dispatch!(
             "prin1" => {
                 need_arg_range(name, args, 1, 3)?;
                 with_print_overrides(interp, env, args.get(2), |interp, env| {
-                    let stream = printer_stream_value(interp, env, args.get(1));
+                    let stream = printer_stream_value(interp, args.get(1));
                     print_object_to_stream(interp, &args[0], stream, env, true, false)
                 })
             }
@@ -5610,48 +5661,93 @@ define_dispatch!(
                 if args.is_empty() {
                     return Ok(Value::Nil);
                 }
-                let stream = printer_stream_value(interp, env, args.get(1));
+                let stream = printer_stream_value(interp, args.get(1));
+                // Fprinc's fast path for plain strings: print_string
+                // alone, between print_prepare and print_finish; the
+                // depth and the numbering of a print under way are left
+                // as they are.
+                if let Kind::StringObject(string) = args[0].kind()
+                    && string.borrow().props.intervals().is_none()
+                    && interp
+                        .symbol_value_key(cached_symbol!("print-continuous-numbering"))
+                        .is_none_or(|value| value.is_nil())
+                {
+                    super::super::file_io::with_print_stream(
+                        interp,
+                        stream.as_ref(),
+                        env,
+                        |interp, env, sink| {
+                            super::super::print::print_string(interp, env, string, sink)
+                        },
+                    )?;
+                    return Ok(args[0]);
+                }
                 print_object_to_stream(interp, &args[0], stream, env, false, false)
             }
             "print" => {
                 if args.is_empty() {
                     return Ok(Value::Nil);
                 }
-                let stream = printer_stream_value(interp, env, args.get(1));
+                let stream = printer_stream_value(interp, args.get(1));
                 print_object_to_stream(interp, &args[0], stream, env, true, true)
             }
             "terpri" => {
                 need_arg_range(name, args, 0, 2)?;
-                let stream = printer_stream_value(interp, env, args.first());
-                if args.get(1).is_some_and(Value::is_truthy) {
-                    if let Some(function) = stream.as_ref()
-                        && super::call(interp, "functionp", std::slice::from_ref(function), env)?
-                            .is_truthy()
-                    {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("error".into()),
-                            Value::String("Unsupported function argument".into()),
-                            *function,
-                        ])));
-                    }
-                    let noninteractive_stdout = interp
-                        .lookup_var_key(cached_symbol!("noninteractive"), env)
-                        .is_some_and(|value| value.is_truthy())
-                        && stream
-                            .as_ref()
-                            .is_some_and(|value| matches!(value.kind(), Kind::T));
-                    let at_line_start = if noninteractive_stdout {
-                        interp.batch_standard_output_last_char == Some(u32::from(b'\n'))
-                    } else {
-                        printer_stream_at_line_start(interp, stream.as_ref())?
-                    };
-                    if at_line_start {
-                        return Ok(Value::Nil);
-                    }
-                }
-                write_printer_output(interp, "\n", stream.as_ref(), env)?;
-                record_batch_standard_output_char(interp, stream.as_ref(), env, u32::from(b'\n'));
-                Ok(Value::T)
+                let stream = printer_stream_value(interp, args.first());
+                let ensure = args.get(1).is_some_and(Value::is_truthy);
+                // print.c:Fterpri, between print_prepare and
+                // print_finish.
+                let printed = super::super::file_io::with_print_stream(
+                    interp,
+                    stream.as_ref(),
+                    env,
+                    |interp, env, sink| {
+                        let newline = if !ensure {
+                            true
+                        } else {
+                            // Difficult to check if at line beginning so
+                            // abort.
+                            if let PrintSink::Function(function) = sink
+                                && function_value_p(interp, &function, env)
+                            {
+                                // signal_error: a function that is a
+                                // proper list is the data's tail.
+                                return Err(super::super::values::signal_error(
+                                    "Unsupported function argument",
+                                    function,
+                                ));
+                            }
+                            let batch = matches!(sink, PrintSink::Stdout)
+                                || (matches!(sink, PrintSink::Function(_))
+                                    && interp
+                                        .symbol_value_key(cached_symbol!("noninteractive"))
+                                        .is_some_and(|value| value.is_truthy()));
+                            if batch {
+                                // `printchar_stdout_last == 10'.
+                                interp.batch_standard_output_last_char != Some(u32::from(b'\n'))
+                            } else if matches!(sink, PrintSink::Echo) {
+                                // NILP (Fbolp ()) in the echo area buffer,
+                                // which setup_echo_area_for_printing made
+                                // current: at the end of what is printed
+                                // there.
+                                echo_area_message()
+                                    .is_some_and(|text| !text.is_empty() && !text.ends_with('\n'))
+                            } else {
+                                // NILP (Fbolp ()).
+                                let buffer = interp.buffer.borrow();
+                                !super::super::file_io::buffer_position_at_line_start(
+                                    &buffer,
+                                    buffer.point(),
+                                )
+                            }
+                        };
+                        if newline {
+                            super::super::print::printchar(interp, env, sink, u32::from(b'\n'))?;
+                        }
+                        Ok(newline)
+                    },
+                )?;
+                Ok(if printed { Value::T } else { Value::Nil })
             }
             "prin1-to-string" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -5661,32 +5757,32 @@ define_dispatch!(
             "write-char" => {
                 need_arg_range(name, args, 1, 2)?;
                 // print.c Fwrite_char: CHECK_FIXNUM, then printchar of the
-                // code as an unsigned int.  A function stream is called
-                // with that number as it is; other output stores its
-                // CHAR_STRING form, whose modifier bits char_string
-                // resolves and whose code past MAX_CHAR is an error.
+                // code as an unsigned int, between print_prepare and
+                // print_finish.  A function stream is called with that
+                // number as it is; other output stores its CHAR_STRING
+                // form, whose modifier bits char_string resolves and
+                // whose code past MAX_CHAR is an error.
+                let stream = printer_stream_value(interp, args.get(1));
                 let Kind::Integer(code) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
                 let code = code as u32;
-                let stream = printer_stream_value(interp, env, args.get(1));
-                match stream.map(|stream| stream.kind()) {
-                    None | Some(Kind::T | Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
-                        let mut rendered = PrintOutput::default();
-                        rendered.push_code(super::super::ccl::written_character(code as i32)?);
-                        write_printer_output_codes(interp, &rendered, stream.as_ref(), env)?;
-                    }
-                    Some(_) => {
-                        let function = stream.expect("function stream");
-                        interp.call_function_value(
-                            function,
-                            None,
-                            &[Value::Integer(i64::from(code))],
-                            env,
-                        )?;
-                    }
-                }
-                record_batch_standard_output_char(interp, stream.as_ref(), env, code);
+                super::super::file_io::with_print_stream(
+                    interp,
+                    stream.as_ref(),
+                    env,
+                    |interp, env, sink| match sink {
+                        PrintSink::Function(function) => interp
+                            .call_function_value(
+                                function,
+                                None,
+                                &[Value::Integer(i64::from(code))],
+                                env,
+                            )
+                            .map(drop),
+                        _ => super::super::print::printchar_unsigned(interp, env, sink, code),
+                    },
+                )?;
                 Ok(args[0])
             }
             "redirect-debugging-output" => {
@@ -5707,7 +5803,7 @@ define_dispatch!(
                 let Kind::Integer(code) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
-                super::super::file_io::printchar_to_stderr(interp, code as u32, env)?;
+                super::super::file_io::printchar_to_stream(interp, code as u32, false, env)?;
                 Ok(args[0])
             }
             "print--preprocess" => {

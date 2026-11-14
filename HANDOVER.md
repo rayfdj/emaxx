@@ -18675,31 +18675,194 @@ setup_process_coding_systems's check now refuses). A 13-form
   the final build the probes of both reviews and the round's own (the
   scratchpad's r363review, r363review2/w and r363fix) answer as GNU byte
   for byte and write for write but for the recorded items.
-- **Round 364 is unfinished: its draft is packaged in `wip/r364/`, and
-  `src/` is round 363's.**  The round makes the printer write as
-  print.c's printchar and strout do (the finding round 363 recorded).
-  It was implemented and validated once, and lost with its container
-  before it was committed.  `wip/r364/SPEC.md` is the design that
-  passed; `code/` holds the hardest functions as they were; `forms/`,
-  `final/`, `extra/` and `tty/` the tests and probes with GNU's answers;
-  `harness/` the fuzz generator, the strace and timing probes and the
-  scripts that rebuild the oracle and the release binary; `records/` the
-  commit message, this file's entry and the findings as drafted, the CI
-  of the round 363 head and the review's list.  `impl.patch` is the
-  round implemented again from that design, as a diff of `src/` and
-  `tests/` against round 363 (`git apply wip/r364/impl.patch`); its
-  author's checks passed, and it is not yet reviewed, nor run through
-  the gate, the integration targets and CI as a round is.
-  `lints-1.100.patch` answers seven lints of Rust 1.100's clippy in
-  files the round does not touch; it is no part of `impl.patch` (CI is
-  on 1.99.1, under which the patched tree's clippy and fmt are clean),
-  and belongs to the round that moves the toolchain.
-  Nothing under `wip/` is built or tested by the gate, and none of it is
-  the round's evidence until the round is validated.  One thing is the
-  user's to decide before the round is committed: tools/round_audit.py's
-  H2 fires on the changed line that reads
-  `print-integers-as-characters', which is print.c's variable and also
-  the name of an ERT test.
+- **Round 364: the printer writes as print.c's printchar and strout
+  do.**  print.c writes while it walks: printchar one character and
+  strout one block, into print_buffer (a buffer or marker; print_finish
+  inserts it), onto stdout in a batch session (an fwrite each), into the
+  echo area and the message log in an interactive one, or to a function
+  called with each character.  Emaxx built an object's text whole and
+  handed it over at the end (round 363's recorded finding).
+  print/output.rs's PrintOutput now remembers the strouts' blocks (and
+  which are a C string's octets, written to a stdio stream as they
+  were), that strout was called at all, and every other character as a
+  printchar's (`pieces', `last_printchar').  print.rs has PrintSink
+  (Buffer, Stdout, Echo, Function: printcharfun as print_prepare leaves
+  it), `deliver' (printchar and strout of each piece onto a sink),
+  `printchar', printchar_unsigned (Fwrite_char's), `print_string' and
+  print_string_to_function (the string read again for each character, to
+  the sizes read at the start), and with_print_buffer (print_buffer as
+  print_prepare empties it and as print_unwind or print_free_buffer
+  leave it).  print/object.rs's Printer writes where print.c does: `out'
+  is print_buffer itself for a buffer sink (`held': taken from
+  PrintGlobals.buffer, handed back by `flush' before Lisp runs and taken
+  again by `resume'), nothing for a function (printchar_code calls it),
+  up to STDOUT_PENDING (4096) bytes for stdout, whose stream makes the
+  same writes of the same fwrites whenever they come, and the echo
+  area's text until the next flush; `flush' runs before
+  `print-unreadable-function', at the end and on an error return
+  (print() flushes before it reports the walk's error, so an error of
+  the output's own comes first).  The print variables are read as
+  print.c reads them, each where the printer first needs it and again
+  after Lisp has run: `vars' reads those not yet read, `lisp_ran'
+  forgets them all, and print() itself reads only
+  `print-continuous-numbering' and `print-circle'; what print.c writes
+  before it reads is written first (a list's parenthesis, a quote,
+  `#<buffer ', a label's `#N=', `#s(hash-table', a string's text before
+  its intervals), and a symbol's name is read for each character.  The
+  pieces are print.c's: a fixnum one strout, nil and t printchars,
+  octalout printchars, `\x' escapes and `\ ' strouts, `#<subr NAME>' two
+  print_c_strings and a printchar, frame, window, process, thread, mutex
+  and condition variable names through print_string, print_bool_vector's
+  pieces, a string found in `print-number-table' a strout of its data
+  (strout_string), a string printed by `prin1' to a function a character
+  at a time from print_prune_string_charset's copy (print_pruned_string
+  says when it is the string itself) with the escape variables read for
+  each (prin1_string_char is one turn of that loop).  print.c's statics
+  are one each: PRSTACK is the print stack of every print (thread-local,
+  as round 348's RDSTACK; each print works above its base_sp and a
+  non-local exit leaves its entries, which the print it was run from
+  then finishes: GNU's `(a b z) c)'), and PrintGlobals.buffer is
+  print_buffer (a nested print into a buffer saves the outer text and
+  print_unwind's copy of SCHARS bytes leaves `pos' where the inner print
+  ended: PrintOutput::overwritten_by, GNU's "(1zz 3)").  file_io.rs:
+  with_print_stream (print_prepared) is print_prepare and print_finish
+  around a body given the sink; print_finish_insertion runs inside
+  print_buffer's extent, in the buffer current then: hash_insert.rs's
+  insert_print_buffer is insert_1_both with PREPARE (no properties
+  inherited, no update_compositions) and `signal_after_change (PT - pos,
+  0, pos)', the text and `pos' read after prepare_to_modify_buffer
+  (print_finish_text), so a print a before-change hook runs into a
+  buffer changes both, as in GNU; PrintGlobals.inserting counts the
+  insertions waiting on their hooks and PrintGlobals.memory is
+  print_buffer's bytes past `pos_byte' while one waits (exact for texts
+  whose bytes are characters; where a copy ends inside a multibyte
+  character each stray byte stays a raw byte).  A print of no characters
+  is the signal alone.  select_printer_destination sets the marker
+  printed to in the buffer current after the insertion and gives the
+  out-of-range error its datum; with_printer_destination restores the
+  buffer current at print_prepare for every sink.
+  print_object_to_stream is Fprin1, Fprinc and Fprint (newlines as
+  printchars), write_printer_output is write_string, write_c_string the
+  same for a Lisp string's SSDATA (to its first NUL, a function handed
+  each byte as a C char, the echo area a character a byte and the log
+  the text), printchar_to_stream takes stdout or stderr and any unsigned
+  int; the guesses record_batch_standard_output_char and
+  native_print_updates_batch_last_char are gone, `printchar_stdout_last'
+  being the last character `deliver' saw printchar write.
+  batch_stdout.rs: write_chars is an fwrite a character
+  (Stream::xsputn_chars).  display.rs: print_error_message (data,
+  stream, context, caller) is one function, used by
+  Ferror_message_string with the hidden buffer and by
+  Fcommand_error_default_function with `external-debugging-output' and
+  Fterpri in a batch session and t in an interactive one; `terpri' is
+  Fterpri (ENSURE: an error for a function, `printchar_stdout_last' in a
+  batch session for any sink but a buffer, the echo area's text for the
+  echo area, Fbolp otherwise); `write-char' printchar in its own
+  print_prepare; `princ' has Fprinc's fast path; `print-level' is any
+  fixnum; `current-message' is nil while the echo area's text is empty.
+  ccl.rs's written_character gives a negative int's low byte as the
+  ASCII character it is.  The printer's stream and its batch test are
+  the variables' dynamic values (printer_stream_value, PrintSink::of and
+  Fterpri's batch branch read `standard-output' and `noninteractive'
+  with symbol_value_key, as print.c reads Vstandard_output;
+  readevalloop's test of it too): an entry of that name in the lexical
+  environment `eval' was given, which both were taken from before, is
+  what a reference evaluates to and nothing the printer sees.
+  print_string_literal prints print_prune_string_charset's copy whatever
+  the sink, as print.c does (a string consed for each string `prin1'
+  prints unless `print-charset-text-property' is t: `memory-use-counts'
+  and the collections of a print loop are GNU's, 15 against its 14 where
+  round 363 made 6 for 200,000 prints of a nine-element list to a
+  function).  A print to stdout or the echo area keeps its text in room
+  PrintGlobals holds from one print to the next (take_pending,
+  give_pending), and a fixnum's digits are a strout of bytes
+  (strout_ascii).  After the second review: print_pruned_string gives
+  the string print_object goes on with (the string itself, or
+  print_prune_string_charset's copy as a Lisp string with the pruned
+  intervals, StringObjectRef via
+  SharedStringState::copy_with_intervals), made before `#(' and read for
+  its intervals one at a time (Intervals::bounds), so nothing of it
+  lives in a host vector while Lisp runs; print_preprocess's `pending'
+  and a tree-sitter record's fields are RootedVecs; PRINT_OBJECTS counts
+  the print_objects running and prstack_enter and prstack_leave empty
+  PRSTACK when it is zero (print.c's stack is no root; entries of a
+  print left by a throw are finished by the print it was run from while
+  one runs, and are nobody's after); a marker's, an overlay's, a
+  window's, a frame's and a font spec's fields are read where print.c
+  reads them; print_error_message's loop is FOR_EACH_TAIL's order of
+  reads; CharTableRef::is_display_table and disp_char_vector are
+  DISP_TABLE_P and DISP_CHAR_VECTOR, used by printchar_to_stream and
+  `deliver'; Fterpri signals with values.rs's signal_error; a label of
+  the most negative fixnum is stored back as itself.  The grouped gate
+  passed its 3,529 library tests
+  (a_function_stream_is_called_as_the_printer_walks,
+  prints_into_buffers_share_print_buffer,
+  a_print_goes_on_from_what_lisp_left_it and two of the stream are new);
+  the integration targets (cli, cli_parity with
+  printed_text_reaches_its_output_as_the_walk_goes,
+  a_print_into_a_buffer_inside_another_shares_the_print_buffer,
+  terpri_asks_what_printchar_last_wrote,
+  the_standard_display_table_shows_what_goes_to_stdout,
+  a_batch_error_is_printed_onto_the_debugging_output,
+  a_print_of_nothing_still_owes_the_batch_newline,
+  printing_to_t_fills_the_echo_area_and_the_message_log,
+  a_print_copies_its_text_once_the_change_hooks_have_run,
+  a_code_that_is_no_character_is_written_as_char_string_stores_it,
+  a_print_ends_in_the_buffer_it_began_in,
+  stdout_is_written_a_character_and_a_block_at_a_time,
+  the_printer_reads_its_variables_as_c_reads_them,
+  prin1_conses_the_copy_print_prune_string_charset_makes,
+  what_lisp_changes_during_a_print_is_read_where_print_c_reads_it,
+  a_print_keeps_what_it_reads_alive_and_no_longer and
+  the_standard_display_table_is_looked_up_as_disp_char_vector_does new,
+  ert_runner, native_comp_identity, native_thread_continuations,
+  package_lifecycle, runtime_ownership) passed, and clippy and fmt are
+  clean under Rust 1.99.1, which CI stays on (1.100 answers seven lints
+  in code this round does not touch; the move is the next round's).
+  Beyond the tests, on the final build each of these was compared with
+  GNU's stdout, stderr and status: the first review's 24 programs (22
+  the same; B1 is the `noninteractive' finding and S1's last list an
+  answer of GNU's that varies from run to run), the 14 written when its
+  findings were fixed, the second review's 12 (11; the order of a
+  string's intervals under `print-circle' is recorded) and its 66 probes
+  (64; that order again and the multibyte finding), the three library
+  forms under both bindings, a terminal session's 356 dump lines, and
+  1,597 generated programs in six corpora, of which 24 differ: 22 only
+  where GNU's print stack is reallocated under a print that Lisp
+  interrupts (none of them once a print of an 80-deep list has grown the
+  stack first) and 2 by the multibyte finding.  The second review's 400
+  generated programs all agree.  Under strace the writes to descriptors
+  1 and 2 are GNU's one for one for four programs to a pipe, a file and
+  a terminal, and to /dev/full but for the length of the exit report,
+  which holds the binary's path.  By user and system time, least of five
+  runs, printing to stdout, into a string, of small objects, of long
+  strings and lists and `princ' of strings, numbers and symbols take
+  0.79, 0.79, 0.58, 0.57 and 0.99 of GNU's time; a print to an
+  interpreted function 1.08, which the findings put in the call from C
+  to Lisp.  Two independent reviews read the round against print.c.  The
+  first was of the implementation that was lost with its container
+  before it was committed; the design this one was written from answers
+  its nine P2 and nine P3 differences but for the three recorded.  The
+  second was of this implementation: it found no runtime code that
+  recognises a test, runs GNU or reads its files, no assertion removed,
+  and the new tests' expectations GNU's own (62 of 63 of their programs
+  run again identical, the other differing in addresses alone), and
+  twelve differences from GNU, four of them new with the round.  Nine
+  are fixed in it and three recorded: the order of a string's intervals,
+  and two of the echo area, which is no buffer here.
+  tools/round_audit.py reports no hard finding (the line that reads
+  `print-integers-as-characters', print.c's variable and also an ERT
+  test's name, is unchanged by this implementation); its soft ones are
+  the stream's dropped write results, which are the fwrite results GNU
+  does not read, an unset variable, an absent output, a window with no
+  buffer and a missing record read as nil or empty, and PRSTACK and
+  PRINT_OBJECTS, which are print.c's prstack and whether a print_object
+  is running.  The draft this round was packaged in while unfinished
+  (`wip/r364': the specification, the probes with GNU's answers, the
+  fuzz generators, the strace and timing scripts, the records) is
+  removed with this commit and stays in commit cbb9c15f; a container was
+  lost with the round's first implementation uncommitted, and what is
+  unfinished is pushed as such a draft since.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -21846,7 +22009,165 @@ ert-tests as a whole 26,307 ms against 27,211.
   1.03), ert-tests (27.1 against 26.4) and package-tests (5.87 against
   5.42).  The Rust gate (run 43367424699) passed.
 
+**On `654b4b0`** (round 363): the frozen run (run 43402158643) matched
+  all 7,928 outcomes.  Setup 81.7 s against 66.0 s (1.238), test bodies
+  306.1 s against 267.4 s (1.144), in all 1.142, on a slow runner (GNU's
+  suite took 353 s where round 362's took 271).  The widest body gaps are
+  ert-tests (46.8 s against 38.7 s), comp-tests (18.2 against 14.7),
+  tramp-tests (22.2 against 18.8), eglot-tests (34.9 against 32.6) and
+  semantic-utest-ia (4.11 against 2.61).  The Rust gate (run 43402154955)
+  passed.
+
 **Findings recorded, not fixed:**
+- **`noninteractive' is two things in GNU and one in Emaxx (round 364's
+  review).**  print.c, xdisp.c and the rest of GNU's C read the C flag
+  `noninteractive', which emacs.c sets once from the command line; the
+  Lisp variable of that name is `noninteractive1', copied from the flag
+  at startup, and binding it changes nothing C does.  Emaxx reads the
+  Lisp variable at each of those places (109 sites: PrintSink::of,
+  `message', `terpri', the command loop's and the process code's batch
+  branches), so under `(let ((noninteractive nil)) ...)' in a batch
+  session `princ' writes to the echo area and the log where GNU writes
+  stdout, and under `(let ((noninteractive t)) ...)' in a terminal
+  session the reverse.  A round of its own: one flag set at startup,
+  read by what reads GNU's, the variable left to Lisp.
+- **What print.c's undefined cases give is not reproduced (round 364).**
+  Where GNU reads memory that is no part of the text, Emaxx stops or
+  stores a raw byte and the results differ from one GNU run to the next:
+  a string in `print-number-table' whose unibyte data is printed into a
+  multibyte buffer (bytes that are no character; `buffer-string' then
+  reads past them); `write-char' of a negative code whose low byte is
+  not ASCII into a multibyte buffer (the same: Emaxx stores that byte's
+  raw-byte character); the same code to `external-debugging-output' or
+  through `standard-display-table' with a coding system when its
+  two-byte form is no character's (GNU encodes a string that ends inside
+  a character; Emaxx writes the two bytes); a string made shorter by
+  more than its terminating NUL while `princ' or `prin1' walks it (Emaxx
+  stops at the NUL); a print run by a before-change hook of
+  print_finish's insertion that makes print_buffer grow (insert_1_both
+  holds the freed block; Emaxx inserts the text it held) or whose
+  partial copy ends inside a multibyte character of the waiting text
+  (GNU inserts bytes that are no character with the old counts; Emaxx a
+  raw byte each); a print that goes on, after a print run from inside
+  it, from the `pos' that print left inside a multibyte character of its
+  own text (the same bytes that are no character: GNU's buffer reads
+  `(c<obarray n=0>)' where `(é #<obarray n=0>)' was printed with a
+  `print-unreadable-function' that calls `prin1-to-string', in two of
+  the fuzz programs; Emaxx's reads the raw byte and the `#'); the point
+  print_finish sets past the end of the buffer a killed destination left
+  the print in (Emaxx clamps it); a print stack entry of a print left by
+  a non-local exit whose object has since been freed (GNU aborts in one
+  of the reviewer's programs, status 134); and a print run by a function
+  printed to that makes the print stack grow while the outer print holds
+  a pointer to its entry (xpalloc moves the stack, the outer entry's
+  step for that element is written to the freed block, and GNU prints
+  the element twice: `[(1 2 2 3' and `(p 1 1)' in two of the fuzz
+  programs; Emaxx's stack has no such pointer; the 20 fuzz programs that
+  differ so agree once a print of an 80-deep list has grown GNU's stack
+  beforehand, two of them where GNU otherwise dies of SIGSEGV); and a
+  print run whole from inside another, which resets print_depth, so that
+  the outer print's own decrements take it below zero and print.c stores
+  at `being_printed[print_depth]' before the array (in the oracle's
+  build index -4 is `printchar_stdout_last', so a later `terpri' with
+  ENSURE answers by the object stored there, and lower ones are
+  print_buffer's fields; Emaxx keeps the depth signed and stores
+  nothing).  The negative codes' bytes themselves (low byte alone in
+  printchar, the two-byte arithmetic in printchar_to_stream) are what
+  the oracle's build makes of CHAR_STRING where `eassume (0 <= c)' does
+  not hold, and are reproduced as that build gives them; a function is
+  handed a C string's bytes as `char' is signed on the host, as GNU's
+  `int ch = ptr[i]' is.
+- **The echo area is not a buffer (round 364's review).**  GNU's print
+  to t in an interactive session inserts into the echo area buffer (`
+  *Echo Area 0*' or 1), current after setup_echo_area_for_printing, and
+  Lisp can read it there; Emaxx keeps the echo area's text apart and
+  those buffers stay empty.  The second review's two cases are of it: a
+  print to t of a character a Rust `char' cannot hold reaches
+  `current-message' and `*Messages*' as another (`(princ (string
+  #x110000 ?a #x3fff7f))' gives 63743 97 63743, and the private-use
+  characters from #xe080 to #xe0ff come back as raw bytes), since
+  `deliver' hands the echo area host text; and after `(kill-buffer
+  (messages-buffer))' a `princ' that starts with a strout leaves
+  `current-message' nil in GNU, whose strout logs (and makes
+  `*Messages*' again) before it inserts.  One case of the first review
+  is not understood: an uncaught error from `(princ "é")' under
+  `standard-display-table' with an unknown `coding-system-for-write'
+  starts GNU's stderr with one more newline than Emaxx's.
+- **The obarray holds fewer symbols than GNU's (seen in round 364's
+  fuzz).**  `#<obarray n=18160>' for GNU's `obarray' at the start of a
+  batch session is `n=17837' in Emaxx: the symbols GNU's C interns that
+  Emaxx's does not (the oracle is an X build; which of the difference is
+  that and which is missing DEFSYMs is not yet counted).
+- **Primitives read variables through the lexical environment (seen in
+  round 364).**  GNU's C reads a DEFVAR as the C variable it is and any
+  other variable with Fsymbol_value: the dynamic value.  Only the
+  evaluator's own reference to a variable looks in the lexical
+  environment.  Emaxx's primitives are handed the caller's environment
+  and most read variables through it (523 `lookup_var_key
+  (cached_symbol! ...)' sites and 42 `lookup_var' ones outside the
+  tests), so an entry of a special variable's name there (in the alist
+  `eval' is given, or an interpreted closure's) is taken for the
+  variable: `(eval '(read "#1=(a . #1#)") '((read-circle . nil)))'
+  signals invalid-read-syntax where GNU reads the circle, `(eval
+  '(expand-file-name "x") '((default-directory . "/nonexistent/")))'
+  expands under that directory, `(eval '(intern-soft "car") '((obarray .
+  [])))' signals, and `current-column' takes `tab-width' from it (4 of
+  24 such forms tried; round 363 answers the same).  Round 364 made the
+  printer's reads dynamic: its stream (`standard-output'), the batch
+  flag where the printer and `terpri' read it, and the print variables.
+  The rest is a round of its own: each site either a C read (the dynamic
+  value, a buffer-local one where GNU's is per buffer) or the
+  evaluator's.
+- **Interpreted code and the call from C to a Lisp function are slower
+  than GNU's (measured in round 364).**  The round's timing probes are
+  user plus system seconds, least of five, startup included.  Printing
+  to stdout (0.54 s against GNU's 0.68), into a string (0.96 against
+  1.21), small objects (1.82 against 3.13), `princ' of strings, numbers
+  and symbols (0.66 against 0.67) and long strings and lists (0.54
+  against 0.96) are at or under GNU; the first two take a sixth longer
+  than round 363's build did, which made no copy of the strings it
+  printed.  Two things outside the printer show in them.  An interpreted
+  loop of four `(ignore X)' forms 1,500,000 times takes 0.39 s against
+  GNU's 0.29 (1.37): eval_sub's own work for a form in source.  And a
+  print to a function, a call of an interpreted one-argument lambda for
+  each of 12,800,000 characters, takes 1.06 s against GNU's 0.98 (1.08;
+  round 363's build 0.97): under callgrind the printer's own part is
+  smaller than round 363's (314 million instructions of 2,015 million
+  against 406 of 2,063 for a tenth of the run) and what is left is
+  Interpreter::call_function_value and call_function_value_general, some
+  200 instructions a call before funcall_interpreted_lambda begins.
+  Round 363 took less time there only because it made 6 collections
+  where GNU makes 14: it did not make the copy
+  print_prune_string_charset makes of each string `prin1' prints, which
+  round 364 makes (15 collections, and `memory-use-counts' as GNU's for
+  it).  Both belong to the performance contract's work on calls, not to
+  the printer.
+- **print_preprocess numbers a string's intervals in the order of
+  positions; GNU's in its interval tree's (round 364's second review).**
+  print_preprocess_string runs under traverse_intervals_noorder, which
+  visits a tree's root, then its left subtree, then its right, so with
+  `print-circle' the labels of values shared between a string's property
+  lists follow the shape of the tree: for two one-character pieces each
+  with `k' and `j' the same list, GNU prints `#("xx" 0 1 (j #2=(1) k
+  #2#) 1 2 (j #1=(2) k #1#))' and Emaxx numbers them 1 then 2; for seven
+  pieces GNU's labels are 3 2 4 1 6 5 7.  Emaxx's intervals are a
+  sequence with no tree, so the order cannot be told from them: it needs
+  intervals.c's tree and its balancing (balance_intervals, the rotations
+  of split and merge) kept as GNU keeps them.  Round 363 answers the
+  same.
+- **DISP_CHAR_VECTOR outside the printer (round 364's second review).**
+  The review found `standard-display-table' looked up with
+  CHAR_TABLE_REF where print.c uses DISP_TABLE_P and DISP_CHAR_VECTOR
+  (an ASCII character is answered by the table's own ASCII slot, never
+  its parent, and by the default only while no ASCII character has an
+  entry; six extra slots are required), and round 364 gave the char
+  table those two (CharTableRef::is_display_table, disp_char_vector) for
+  the printer's stdout and stderr.  The redisplay and motion code still
+  reads display tables with CHAR_TABLE_REF: tty.rs (2 sites),
+  indent_motion.rs's display_vector, text.rs and values.rs (one each),
+  where a parent table's ASCII entries and a default beside an ASCII
+  entry are shown that GNU does not show.  To be moved to the same two
+  functions with terminal tests of their own.
 - **The undo workload's time is cycles an instruction, not instructions
   (round 363).**  The locked run times samples of 1,000 iterations,
   nearly all with *Messages* at its 1,000 lines, so the counts to
@@ -21926,29 +22247,6 @@ ert-tests as a whole 26,307 ms against 27,211.
   the echo area, and so counts and uncounts it and resets that window's
   end and base line; Emaxx's echo area display has no such store, with
   no effect found.  The probes are in the scratchpad's r363review.
-- **print.c writes to stdout as it goes (round 363, second review; the
-  next round's subject).**  With `standard-output' t in batch, printchar
-  is one fwrite a character and strout one a string (print.c 306-335 and
-  380-408); Emaxx's printer builds an object's whole text and
-  file_io.rs's write_prepared_printer_output hands it over once.  So: a
-  `print-unreadable-function' that signals, prints or throws finds `(1 2
-  ' of `(prin1 (list 1 2 (current-buffer) 3))' already written in GNU
-  and nothing in Emaxx (GNU `(1 2 <inner>#<repl> 3)', Emaxx `<inner>(1 2
-  #<repl> 3)'); on a pipe `(prin1 (make-string 20000 ?x))' is GNU's 4096
-  four times and 3618 and Emaxx's 16384 and 3618, and on a terminal
-  `(print '(a "b" c))' is the newline's write and the rest's where Emaxx
-  makes one; and with stdout failing GNU retries each block and still
-  has a tail at fclose, so its last report names the device's error (No
-  space left on device, Bad file descriptor, Broken pipe) where Emaxx's
-  one failed write leaves nothing pending and the report says Success,
-  the status 1 in both.  Of the same printer: `standard-display-table'
-  is not applied to batch stdout (a backtrace shows `banana' where GNU's
-  table shows `bXYnXYnXY'), and raw bytes differ on stderr and stdout (a
-  raw-byte character in a message is C1 BF in GNU and EE 83 BF in Emaxx;
-  princ of the unibyte "\377\200" is C3 BF C2 80 against EE 83 BF EE 82
-  80; prin1 of the unibyte "\351" is C1 A9 against the text \351).
-  Probes in the scratchpad's r363review2/w: st/pf1, st/pf2, st/pr1 to
-  pr5, out/pfe, pe1.el, rnd/err2.el to err7.el.
 - **Found by the second review of round 363 outside the round, not
   fixed.**  A user's dump made with a variable holding the dumped
   session's selected or root window: after its load `(window-list-1

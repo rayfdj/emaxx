@@ -879,6 +879,22 @@ impl SharedStringState {
         )
     }
 
+    /// Fcopy_sequence of the string once its copy's properties have been
+    /// set to INTERVALS (print_prune_string_charset's): these bytes, a
+    /// string of its own.
+    pub(crate) fn copy_with_intervals(
+        &self,
+        intervals: Option<crate::intervals::Intervals>,
+    ) -> StringObjectRef {
+        StringObjectRef::from_slice(
+            self.bytes(),
+            self.len(),
+            self.is_multibyte(),
+            StringProperties::new(intervals),
+            StringAllocation::Ordinary,
+        )
+    }
+
     /// fns.c:Fsubstring copies the actual byte range and preserves encoding,
     /// then (with PROPERTIES) the properties of [FROM, TO) as
     /// copy_text_properties does: each interval with a plist added to the

@@ -1,6 +1,0 @@
-(let ((acc nil))
-  (prin1 '(a b c)
-         (lambda (c) (push c acc)
-           (when (= c ?b)
-             (catch 'k (prin1 '(x y z) (lambda (d) (when (= d ?y) (throw 'k nil))))))))
-  (princ (concat (nreverse acc))))

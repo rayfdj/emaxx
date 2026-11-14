@@ -1411,13 +1411,6 @@ impl Interpreter {
             .map(|process| process.name)
     }
 
-    /// The name's text, for host code that shows it.
-    pub fn process_name_text(&self, record_id: u64) -> Option<String> {
-        self.process_name(record_id).map(|name| {
-            crate::lisp::primitives::with_string_text(&name, str::to_owned).unwrap_or_default()
-        })
-    }
-
     pub fn process_os_id(&self, record_id: u64) -> Option<u32> {
         self.find_process_state(record_id)
             .and_then(|process| process.os_pid)

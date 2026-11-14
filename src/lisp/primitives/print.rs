@@ -1,14 +1,51 @@
 mod object;
 mod output;
 pub(crate) use object::PrintGlobals;
-pub(crate) use output::PrintOutput;
+pub(crate) use output::{Piece, PrintOutput};
 
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
-/// print.c's DEFVAR_BOOLs a string literal is escaped by.
+/// print.c's PRINTCHARFUN as print_prepare leaves it.
 #[derive(Clone, Copy)]
+pub(crate) enum PrintSink {
+    /// nil: print_buffer, which print_finish inserts in the buffer (a
+    /// buffer's or a marker's) that print_prepare made current.
+    Buffer,
+    /// t in a batch session: stdout.
+    Stdout,
+    /// t in an interactive session: the echo area and the message log.
+    Echo,
+    /// Anything else: a function, called with each character.
+    Function(Value),
+}
+
+impl PrintSink {
+    /// The sink of STREAM: nil is `standard-output', and that nil is t.
+    /// (GNU's batch test is its C flag `noninteractive'; Emaxx has the
+    /// Lisp variable alone.)
+    pub(crate) fn of(interp: &Interpreter, stream: Option<&Value>) -> Self {
+        let stream = crate::lisp::primitives::file_io::printer_stream_value(interp, stream);
+        match stream.map(|stream| stream.kind()) {
+            Some(Kind::Buffer(_) | Kind::Marker(_)) => PrintSink::Buffer,
+            None | Some(Kind::Nil | Kind::T) => {
+                if interp
+                    .symbol_value_key(cached_symbol!("noninteractive"))
+                    .is_some_and(|value| value.is_truthy())
+                {
+                    PrintSink::Stdout
+                } else {
+                    PrintSink::Echo
+                }
+            }
+            Some(function) => PrintSink::Function(function.value()),
+        }
+    }
+}
+
+/// print.c's DEFVAR_BOOLs a string literal is escaped by.
+#[derive(Clone, Copy, Default)]
 pub(crate) struct StringEscapes {
     multibyte: bool,
     newlines: bool,
@@ -16,191 +53,302 @@ pub(crate) struct StringEscapes {
     nonascii: bool,
 }
 
-impl StringEscapes {
-    /// The variables' dynamic values, as C reads them: no lexical binding
-    /// of a special variable to search for.
-    pub(crate) fn current(interp: &Interpreter) -> Self {
-        let enabled = |key| {
-            interp
-                .symbol_value_key(key)
-                .is_some_and(|value| value.is_truthy())
-        };
-        Self {
-            multibyte: enabled(cached_symbol!("print-escape-multibyte")),
-            newlines: enabled(cached_symbol!("print-escape-newlines")),
-            control: enabled(cached_symbol!("print-escape-control-characters")),
-            nonascii: enabled(cached_symbol!("print-escape-nonascii")),
-        }
+/// print.c:octalout's digits for C: three when it needs them or the
+/// character after it is an octal digit.
+fn octal_digits(c: u32, next_is_octal: bool) -> u32 {
+    if c > 0o77 || next_is_octal {
+        3
+    } else if c > 0o7 {
+        2
+    } else {
+        1
     }
 }
 
+/// print.c:octalout of C: printchars.
+fn octalout(c: u32, next_is_octal: bool, out: &mut PrintOutput) {
+    out.push('\\');
+    for shift in (0..octal_digits(c, next_is_octal)).rev() {
+        out.push_code(u32::from(b'0') + ((c >> (3 * shift)) & 7));
+    }
+}
+
+/// One turn of print_object's loop over a string printed with
+/// `escapeflag': the character at byte OFFSET of STATE
+/// (fetch_string_char_advance; at the string's end its terminating NUL)
+/// as ESCAPES have it written, the pieces print.c's (printchars, but a
+/// hex escape and the `\ ' after one, which are strouts).  MULTIBYTE is
+/// STRING_MULTIBYTE as it was when the print of the string began.
+#[inline]
+pub(crate) fn prin1_string_char(
+    escapes: StringEscapes,
+    multibyte: bool,
+    state: &crate::lisp::types::SharedStringState,
+    offset: &mut usize,
+    need_nonhex: &mut bool,
+    out: &mut PrintOutput,
+) {
+    let bytes = state.bytes();
+    let byte = bytes.get(*offset).copied().unwrap_or(0);
+    // The usual character: itself, one printchar.
+    if (0x20..0x7f).contains(&byte) && byte != b'"' && byte != b'\\' && !*need_nonhex {
+        *offset += 1;
+        out.push_code(u32::from(byte));
+        return;
+    }
+    let (code, width) = if byte >= 0x80 && state.is_multibyte() {
+        crate::lisp::types::string_data::decode_character(&bytes[*offset..])
+            .unwrap_or((u32::from(byte), 1))
+    } else {
+        (u32::from(byte), 1)
+    };
+    *offset += width;
+    let next_is_octal = || {
+        bytes
+            .get(*offset)
+            .is_some_and(|next| (b'0'..=b'7').contains(next))
+    };
+    // When printing a raw 8-bit byte in a multibyte buffer, or (when
+    // requested) a non-ASCII character in a unibyte buffer, print
+    // single-byte non-ASCII string chars using octal escapes.
+    let raw = if multibyte {
+        (0x3fff80..=0x3fffff)
+            .contains(&code)
+            .then(|| code - 0x3fff00)
+    } else {
+        ((0x80..0x100).contains(&code) && escapes.nonascii).then_some(code)
+    };
+    if let Some(byte) = raw {
+        octalout(byte, next_is_octal(), out);
+        *need_nonhex = false;
+    } else if multibyte && code >= 0x80 && escapes.multibyte {
+        // When requested, print multibyte chars using hex escapes.
+        out.push_str(&format!("\\x{code:04x}"));
+        *need_nonhex = true;
+    } else {
+        // If we just had a hex escape, and this character could be taken
+        // as part of it, output `\ ' to prevent that.
+        if code < 0x80 && (code as u8).is_ascii_hexdigit() {
+            if *need_nonhex {
+                out.push_str("\\ ");
+            }
+            out.push_code(code);
+        } else if code == 0x0a && escapes.newlines {
+            out.push('\\');
+            out.push('n');
+        } else if code == 0x0c && escapes.newlines {
+            out.push('\\');
+            out.push('f');
+        } else if code == 0x22 || code == 0x5c {
+            out.push('\\');
+            out.push_code(code);
+        } else if escapes.control && (code < 0x20 || code == 0x7f) {
+            octalout(code, next_is_octal(), out);
+        } else if !multibyte && (0x80..0x100).contains(&code) {
+            out.push_code(0x3fff00 + code);
+        } else {
+            out.push_code(code);
+        }
+        *need_nonhex = false;
+    }
+}
+
+/// print_object's Lisp_String case under `escapeflag', for a string no
+/// Lisp can change while it is printed: the quotes and every character
+/// between them.
 pub(crate) fn render_prin1_string(
     escapes: StringEscapes,
+    multibyte: bool,
     state: &crate::lisp::types::SharedStringState,
     rendered: &mut PrintOutput,
 ) {
-    let StringEscapes {
-        multibyte: escape_multibyte,
-        newlines: escape_newlines,
-        control: escape_control,
-        nonascii: escape_nonascii,
-    } = escapes;
-    let multibyte = state.is_multibyte();
     rendered.push('"');
+    let size_byte = state.bytes().len();
     let mut offset = 0;
     let mut need_nonhex = false;
-    while offset < state.bytes().len() {
-        // print.c:fetch_string_char_advance, before any escaping decision.
-        let byte = state.bytes()[offset];
-        let (code, width) = if multibyte && byte >= 0x80 {
-            crate::lisp::types::string_data::decode_character(&state.bytes()[offset..])
-                .expect("stored string character")
-        } else {
-            (u32::from(byte), 1)
-        };
-        offset += width;
-        let raw = if multibyte && (0x3fff80..=0x3fffff).contains(&code) {
-            Some(code - 0x3fff00)
-        } else if !multibyte && code >= 128 && escape_nonascii {
-            Some(code)
-        } else {
-            None
-        };
-        if let Some(byte) = raw {
-            rendered.push_str(&format!("\\{byte:03o}"));
-            need_nonhex = false;
-        } else if multibyte && code >= 128 && escape_multibyte {
-            rendered.push_str(&format!("\\x{code:04x}"));
-            need_nonhex = true;
-        } else {
-            if code <= 127 && (code as u8).is_ascii_hexdigit() && need_nonhex {
-                rendered.push_str("\\ ");
-            }
-            need_nonhex = false;
-            match code {
-                34 => rendered.push_str("\\\""),
-                92 => rendered.push_str("\\\\"),
-                10 if escape_newlines => rendered.push_str("\\n"),
-                12 if escape_newlines => rendered.push_str("\\f"),
-                code if escape_control && (code < 32 || code == 127) => {
-                    let next_is_octal = state
-                        .bytes()
-                        .get(offset)
-                        .is_some_and(|next| (b'0'..=b'7').contains(next));
-                    let digits = if code > 0o77 || next_is_octal {
-                        3
-                    } else if code > 0o7 {
-                        2
-                    } else {
-                        1
-                    };
-                    rendered.push('\\');
-                    for shift in (0..digits).rev() {
-                        rendered.push_code(u32::from(b'0') + ((code >> (3 * shift)) & 7));
-                    }
-                }
-                code if !multibyte && code >= 128 => rendered.push_code(0x3fff00 + code),
-                code => rendered.push_code(code),
-            }
-        }
+    while offset < size_byte {
+        prin1_string_char(
+            escapes,
+            multibyte,
+            state,
+            &mut offset,
+            &mut need_nonhex,
+            rendered,
+        );
     }
     rendered.push('"');
 }
 
+/// print.c's printer variables, as the printer last read them.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct PrintOptions {
-    /// print.c passes `escapeflag' to every `print_object' call: `prin1'
-    /// sets it, `princ' clears it, and it reaches nested elements too, so
-    /// `(princ (list "a"))' prints `(a)'.
-    escape: bool,
     circle: bool,
-    continuous_numbering: bool,
     gensym: bool,
     integers_as_characters: bool,
     symbols_bare: bool,
+    /// `print-length' when FIXNATP.
     length: Option<usize>,
-    level: Option<usize>,
+    /// `print-level' when FIXNUMP: any fixnum, a negative one below
+    /// every depth.
+    level: Option<i64>,
     quoted: bool,
-    /// print_string sends unibyte character codes to function streams,
-    /// while buffer/stdout output preserves their byte8 representation.
-    output_is_function: bool,
 }
 
-fn render_princ_string(
+/// print.c:print_string's strout of the string STATE onto a sink that is
+/// no function: its text as `princ' prints it, one block.  Under
+/// `print-escape-nonascii' (which print_prepare binds for a multibyte
+/// buffer) string_escape_byte8's octal escapes of its raw bytes; else a
+/// unibyte string's bytes past 127 as the raw bytes they are.
+fn strout_princ_string(
     interp: &Interpreter,
     state: &crate::lisp::types::SharedStringState,
-    env: &Env,
-    output_is_function: bool,
-) -> PrintOutput {
-    let escape_nonascii = !output_is_function
-        && interp
-            .lookup_var_key(cached_symbol!("print-escape-nonascii"), env)
-            .is_some_and(|value| value.is_truthy());
-    let mut rendered = PrintOutput::with_capacity(state.bytes().len());
-    let mut offset = 0;
-    while offset < state.bytes().len() {
-        let byte = state.bytes()[offset];
-        let (code, width) = if state.is_multibyte() && byte >= 0x80 {
-            crate::lisp::types::string_data::decode_character(&state.bytes()[offset..])
-                .expect("stored string character")
-        } else {
-            (u32::from(byte), 1)
-        };
-        offset += width;
-        let raw = if (0x3fff80..=0x3fffff).contains(&code) {
-            Some(code - 0x3fff00)
-        } else if !state.is_multibyte() && code >= 128 {
-            Some(code)
-        } else {
-            None
-        };
-        if let Some(byte) = raw {
-            if escape_nonascii {
-                rendered.push_str(&format!("\\{byte:03o}"));
-            } else if output_is_function && !state.is_multibyte() {
-                rendered.push_code(byte);
-            } else {
-                rendered.push_code(0x3fff00 + byte);
-            }
-        } else {
-            rendered.push_code(code);
-        }
+    out: &mut PrintOutput,
+) {
+    let bytes = state.bytes();
+    if bytes.is_ascii() {
+        return out.strout_block(|block| block.push_ascii(bytes));
     }
-    rendered
+    let escape_nonascii = print_flag(interp, ESCAPE_NONASCII);
+    let multibyte = state.is_multibyte();
+    out.strout_block(|block| {
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let byte = bytes[offset];
+            let (code, width) = if multibyte && byte >= 0x80 {
+                crate::lisp::types::string_data::decode_character(&bytes[offset..])
+                    .expect("stored string character")
+            } else {
+                (u32::from(byte), 1)
+            };
+            offset += width;
+            let raw = if (0x3fff80..=0x3fffff).contains(&code) {
+                Some(code - 0x3fff00)
+            } else if !multibyte && code >= 128 {
+                Some(code)
+            } else {
+                None
+            };
+            match raw {
+                Some(byte) if escape_nonascii => {
+                    block.push('\\');
+                    for shift in (0..3).rev() {
+                        block.push_code(u32::from(b'0') + ((byte >> (3 * shift)) & 7));
+                    }
+                }
+                Some(byte) => block.push_code(0x3fff00 + byte),
+                None => block.push_code(code),
+            }
+        }
+    });
 }
 
+/// The printer's variables, a bit each: what a print has read since Lisp
+/// last ran.
+const CIRCLE: u16 = 1 << 0;
+const GENSYM: u16 = 1 << 1;
+const INTEGERS_AS_CHARACTERS: u16 = 1 << 2;
+const SYMBOLS_BARE: u16 = 1 << 3;
+const QUOTED: u16 = 1 << 4;
+const LENGTH: u16 = 1 << 5;
+const LEVEL: u16 = 1 << 6;
+const ESCAPE_MULTIBYTE: u16 = 1 << 7;
+const ESCAPE_NEWLINES: u16 = 1 << 8;
+const ESCAPE_CONTROL: u16 = 1 << 9;
+const ESCAPE_NONASCII: u16 = 1 << 10;
+const ESCAPES: u16 = ESCAPE_MULTIBYTE | ESCAPE_NEWLINES | ESCAPE_CONTROL | ESCAPE_NONASCII;
+
 /// print.c reads the printer's DEFVARs as C variables: their dynamic
-/// values, never a lexical binding.
-pub(crate) fn print_options(interp: &Interpreter) -> PrintOptions {
-    PrintOptions {
-        escape: true,
-        circle: interp
+/// values, never a lexical binding.  The boolean one FLAG names.
+#[inline(always)]
+fn print_flag(interp: &Interpreter, flag: u16) -> bool {
+    match flag {
+        CIRCLE => interp
             .symbol_value_key(cached_symbol!("print-circle"))
             .is_some_and(|value| value.is_truthy()),
-        continuous_numbering: interp
-            .symbol_value_key(cached_symbol!("print-continuous-numbering"))
-            .is_some_and(|value| value.is_truthy()),
-        gensym: interp
+        GENSYM => interp
             .symbol_value_key(cached_symbol!("print-gensym"))
             .is_some_and(|value| value.is_truthy()),
-        integers_as_characters: interp
+        INTEGERS_AS_CHARACTERS => interp
             .symbol_value_key(cached_symbol!("print-integers-as-characters"))
             .is_some_and(|value| value.is_truthy()),
-        symbols_bare: interp
+        SYMBOLS_BARE => interp
             .symbol_value_key(cached_symbol!("print-symbols-bare"))
             .is_some_and(|value| value.is_truthy()),
-        length: interp
-            .symbol_value_key(cached_symbol!("print-length"))
-            .and_then(|value| value.integer_value())
-            .and_then(|value| usize::try_from(value).ok()),
-        level: interp
-            .symbol_value_key(cached_symbol!("print-level"))
-            .and_then(|value| value.integer_value())
-            .and_then(|value| usize::try_from(value).ok()),
-        quoted: interp
+        QUOTED => interp
             .symbol_value_key(cached_symbol!("print-quoted"))
             .is_some_and(|value| value.is_truthy()),
-        output_is_function: false,
+        ESCAPE_MULTIBYTE => interp
+            .symbol_value_key(cached_symbol!("print-escape-multibyte"))
+            .is_some_and(|value| value.is_truthy()),
+        ESCAPE_NEWLINES => interp
+            .symbol_value_key(cached_symbol!("print-escape-newlines"))
+            .is_some_and(|value| value.is_truthy()),
+        ESCAPE_CONTROL => interp
+            .symbol_value_key(cached_symbol!("print-escape-control-characters"))
+            .is_some_and(|value| value.is_truthy()),
+        ESCAPE_NONASCII => interp
+            .symbol_value_key(cached_symbol!("print-escape-nonascii"))
+            .is_some_and(|value| value.is_truthy()),
+        _ => false,
+    }
+}
+
+/// `print-continuous-numbering', a DEFVAR_LISP: non-nil.
+fn print_continuous_numbering(interp: &Interpreter) -> bool {
+    interp
+        .symbol_value_key(cached_symbol!("print-continuous-numbering"))
+        .is_some_and(|value| value.is_truthy())
+}
+
+/// The variables of BITS as they are now, into OPTIONS and ESCAPES: the
+/// printer reads each where print.c first reads it, and again once Lisp
+/// has run.
+#[inline(always)]
+fn read_print_variables(
+    interp: &Interpreter,
+    bits: u16,
+    options: &mut PrintOptions,
+    escapes: &mut StringEscapes,
+) {
+    if bits & CIRCLE != 0 {
+        options.circle = print_flag(interp, CIRCLE);
+    }
+    if bits & GENSYM != 0 {
+        options.gensym = print_flag(interp, GENSYM);
+    }
+    if bits & INTEGERS_AS_CHARACTERS != 0 {
+        options.integers_as_characters = print_flag(interp, INTEGERS_AS_CHARACTERS);
+    }
+    if bits & SYMBOLS_BARE != 0 {
+        options.symbols_bare = print_flag(interp, SYMBOLS_BARE);
+    }
+    if bits & QUOTED != 0 {
+        options.quoted = print_flag(interp, QUOTED);
+    }
+    if bits & LENGTH != 0 {
+        // FIXNATP (Vprint_length).
+        options.length = interp
+            .symbol_value_key(cached_symbol!("print-length"))
+            .and_then(|value| value.integer_value())
+            .and_then(|value| usize::try_from(value).ok());
+    }
+    if bits & LEVEL != 0 {
+        // FIXNUMP (Vprint_level).
+        options.level = interp
+            .symbol_value_key(cached_symbol!("print-level"))
+            .and_then(|value| value.fixnum());
+    }
+    if bits & ESCAPE_MULTIBYTE != 0 {
+        escapes.multibyte = print_flag(interp, ESCAPE_MULTIBYTE);
+    }
+    if bits & ESCAPE_NEWLINES != 0 {
+        escapes.newlines = print_flag(interp, ESCAPE_NEWLINES);
+    }
+    if bits & ESCAPE_CONTROL != 0 {
+        escapes.control = print_flag(interp, ESCAPE_CONTROL);
+    }
+    if bits & ESCAPE_NONASCII != 0 {
+        escapes.nonascii = print_flag(interp, ESCAPE_NONASCII);
     }
 }
 
@@ -227,10 +375,9 @@ pub(crate) fn print_preprocess(
     value: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let options = print_options(interp);
-    if options.circle {
+    if print_flag(interp, CIRCLE) {
         interp.print_number_index = 0;
-        object::print_preprocess(interp, env, *value, options)?;
+        object::print_preprocess(interp, env, *value)?;
     }
     Ok(Value::Nil)
 }
@@ -248,157 +395,53 @@ pub(crate) fn symbol_name_looks_like_number(name: &str) -> bool {
         || crate::lisp::reader::parse_special_float_token(name).is_some()
 }
 
-fn render_integer_as_character(
+/// print.c print_prune_string_charset for STRING printed with
+/// `escapeflag': the string print_object goes on with.  Unless
+/// `print-charset-text-property' is t (the function is not called), or
+/// is non-nil and a `charset' property is unsafe, that is a copy
+/// (Fcopy_sequence) with its `charset' properties removed, or all its
+/// intervals where it has no other: a string of its own, which nothing
+/// Lisp does to STRING while it is printed changes, and whose intervals
+/// the collector marks with it.
+fn print_pruned_string(
     interp: &Interpreter,
-    value: &Value,
-    escape: bool,
-) -> Option<String> {
-    // print.c's case_Lisp_Int: a fixnum up to MAX_UNICODE_CHAR prints as
-    // `?' and the character when named_escape names it or graphic_base_p
-    // admits it; bignums always print as numbers.
-    let Kind::Integer(code) = value.kind() else {
-        return None;
-    };
-    let codepoint = u32::try_from(code).ok().filter(|code| *code <= 0x10ffff)?;
-    let named = match codepoint {
-        0x08 => Some('b'),
-        0x09 => Some('t'),
-        0x0a => Some('n'),
-        0x0c => Some('f'),
-        0x0d => Some('r'),
-        0x20 => Some('s'),
-        _ => None,
-    };
-    if let Some(name) = named {
-        return Some(format!("?\\{name}"));
+    string: crate::lisp::types::StringObjectRef,
+) -> Result<crate::lisp::types::StringObjectRef, LispError> {
+    let setting = interp
+        .symbol_value_key(cached_symbol!("print-charset-text-property"))
+        .unwrap_or(Value::Nil);
+    if matches!(setting.kind(), Kind::T) {
+        return Ok(string);
     }
-    if !super::search::graphic_base_p(interp, codepoint) {
-        return None;
-    }
-    let ch = char::from_u32(codepoint)?;
-    if escape
-        && matches!(
-            ch,
-            ';' | '"' | '\'' | '\\' | '(' | ')' | '{' | '}' | '[' | ']'
-        )
-    {
-        Some(format!("?\\{ch}"))
-    } else {
-        Some(format!("?{ch}"))
-    }
-}
-
-pub(crate) fn render_princ_integer_as_character(
-    interp: &Interpreter,
-    value: &Value,
-) -> Option<String> {
-    render_integer_as_character(interp, value, false)
-}
-
-pub(crate) fn render_prin1_symbol(
-    symbol: &crate::lisp::types::SymbolName,
-    options: PrintOptions,
-    out: &mut PrintOutput,
-) {
-    let visible = crate::lisp::types::visible_symbol_name(symbol.as_str());
-    // print.c: `#:' under `print-gensym' for a symbol not interned in the
-    // initial obarray, else `##' for the empty name.
-    let gensym = options.gensym
-        && (symbol.cell().is_uninterned()
-            || crate::lisp::types::is_private_obarray_symbol(symbol.as_str()));
-    if gensym {
-        out.push_str("#:");
-    } else if visible.is_empty() {
-        out.push_str("##");
-        return;
-    }
-    // print.c reads the name with fetch_string_char_advance, which takes
-    // each byte of a unibyte name as the character of that code: a byte
-    // 0xC0 prints as `À', not as a raw byte.
-    let unibyte_bytes = if visible.is_ascii() {
-        None
-    } else {
-        match symbol.lisp_name().kind() {
-            Kind::StringObject(name) => {
-                let name = name.borrow();
-                (!name.is_multibyte()).then(|| name.bytes().to_vec())
+    let state = string.borrow();
+    let pruned = match state.props.intervals() {
+        None => None,
+        Some(intervals) => {
+            match print_prune_string_charset(interp, setting, &state.codes(), intervals)? {
+                (_, true) => return Ok(string),
+                (pruned, false) => pruned,
             }
-            _ => None,
         }
     };
-    // print.c quotes a symbol's confusing characters only under
-    // `escapeflag'; `princ' writes the name as it stands.
-    if !options.escape {
-        match unibyte_bytes {
-            Some(bytes) => bytes
-                .iter()
-                .for_each(|&byte| out.push_code(u32::from(byte))),
-            None => out.push_str(visible),
-        }
-        return;
-    }
-    let first = visible.chars().next();
-    let mut confusing =
-        symbol_name_looks_like_number(visible) || first == Some('?') || first == Some('.');
-    let quoted = |ch: char| {
-        matches!(
-            ch,
-            '"' | '\\' | '\'' | ';' | '#' | '(' | ')' | ',' | '`' | '[' | ']'
-        ) || ch <= ' '
-            || ch == '\u{00A0}'
-    };
-    if let Some(bytes) = unibyte_bytes {
-        for byte in bytes {
-            if quoted(char::from(byte)) || confusing {
-                out.push('\\');
-                confusing = false;
-            }
-            out.push_code(u32::from(byte));
-        }
-        return;
-    }
-    if visible.is_ascii() {
-        for byte in visible.bytes() {
-            if quoted(char::from(byte)) || confusing {
-                out.push('\\');
-                confusing = false;
-            }
-            out.push_code(u32::from(byte));
-        }
-        return;
-    }
-    let mut rendered = String::with_capacity(visible.len() + 2);
-    for ch in visible.chars() {
-        if quoted(ch) || confusing {
-            rendered.push('\\');
-            confusing = false;
-        }
-        rendered.push(ch);
-    }
-    out.push_str(&rendered);
+    Ok(state.copy_with_intervals(pruned))
 }
 
 /// print.c print_prune_string_charset: the intervals a string prints
 /// with, from a string with INTERVALS whose characters are CODES (as
-/// fetch_string_char_advance reads them).  Unless
-/// `print-charset-text-property' is t, print_check_string_charset_prop
-/// looks for a property other than `charset' and for a `charset' that a
-/// non-ASCII character of its interval does not belong to (CHAR_CHARSET);
-/// with the variable nil or no such charset, a copy of the string loses
-/// its `charset' properties, or all its intervals where it has no other.
-/// None for a string that prints without them.
-pub(crate) fn print_prune_string_charset(
+/// fetch_string_char_advance reads them), under a
+/// `print-charset-text-property' SETTING that is not t:
+/// print_check_string_charset_prop looks for a property other than
+/// `charset' and for a `charset' that a non-ASCII character of its
+/// interval does not belong to (CHAR_CHARSET); with the variable nil or
+/// no such charset, a copy of the string loses its `charset' properties,
+/// or all its intervals where it has no other.  None for a string that
+/// prints without them; and whether the string was left as it is.
+fn print_prune_string_charset(
     interp: &Interpreter,
-    env: &Env,
+    setting: Value,
     codes: &[u32],
     intervals: &crate::intervals::Intervals,
-) -> Result<Option<crate::intervals::Intervals>, LispError> {
-    let setting = interp
-        .lookup_var_key(cached_symbol!("print-charset-text-property"), env)
-        .unwrap_or(Value::Nil);
-    if matches!(setting.kind(), Kind::T) {
-        return Ok(Some(intervals.clone()));
-    }
+) -> Result<(Option<crate::intervals::Intervals>, bool), LispError> {
     let charset_symbol = Value::symbol("charset");
     let (mut non_charset, mut unsafe_charset) = (false, false);
     let mut ordered = None;
@@ -447,17 +490,17 @@ pub(crate) fn print_prune_string_charset(
         }
     }
     if !setting.is_nil() && unsafe_charset {
-        return Ok(Some(intervals.clone()));
+        return Ok((Some(intervals.clone()), true));
     }
     if !non_charset {
         // Fset_text_properties of nil over the whole copy, which
         // Fcopy_sequence gave every interval (copy_intervals).
         crate::lisp::alloc::counters::note_intervals(intervals.count());
-        return Ok(None);
+        return Ok((None, false));
     }
     // Fremove_text_properties of (charset) over the whole copy.
     let Some(mut copy) = intervals.copy(0, intervals.total_length())? else {
-        return Ok(None);
+        return Ok((None, false));
     };
     let len = copy.total_length();
     crate::intervals::remove_text_properties_range(
@@ -468,83 +511,17 @@ pub(crate) fn print_prune_string_charset(
         Value::Nil,
         &mut crate::intervals::NoRecord,
     )?;
-    Ok(Some(copy))
+    Ok((Some(copy), false))
 }
 
-/// `print_bool_vector' (print.c): the bits are packed eight to a byte,
-/// low-order bit first, and each byte is written with the escape rules
-/// `octalout' applies.
-fn render_bool_vector_prin1(
-    interp: &Interpreter,
-    env: &Env,
-    vector: crate::lisp::types::BoolVectorRef,
-    options: PrintOptions,
-) -> String {
-    let escape_newlines = interp
-        .lookup_var_key(cached_symbol!("print-escape-newlines"), env)
-        .is_some_and(|value| value.is_truthy());
-    let escape_control = interp
-        .lookup_var_key(cached_symbol!("print-escape-control-characters"), env)
-        .is_some_and(|value| value.is_truthy());
-
-    let size = vector.len();
-    let real_size_in_bytes = size.div_ceil(8);
-    // bool_vector_uchar_data: the words' bytes in memory order.
-    let data = vector
-        .words()
-        .iter()
-        .flat_map(|word| word.get().to_le_bytes())
-        .take(real_size_in_bytes)
-        .collect::<Vec<u8>>();
-    let size_in_bytes = options
-        .length
-        .map_or(real_size_in_bytes, |limit| limit.min(real_size_in_bytes));
-
-    let mut rendered = format!("#&{size}\"");
-    for index in 0..size_in_bytes {
-        let byte = data[index];
-        if byte == b'\n' && escape_newlines {
-            rendered.push_str("\\n");
-        } else if byte == 0x0c && escape_newlines {
-            rendered.push_str("\\f");
-        } else if byte > 0o177 || (escape_control && byte.is_ascii_control()) {
-            let digits = if byte > 0o77
-                || data
-                    .get(index + 1)
-                    .is_some_and(|next| index + 1 < size_in_bytes && (b'0'..=b'7').contains(next))
-            {
-                3
-            } else if byte > 0o7 {
-                2
-            } else {
-                1
-            };
-            rendered.push('\\');
-            for shift in (0..digits).rev() {
-                rendered.push(char::from(b'0' + ((byte >> (3 * shift)) & 7)));
-            }
-        } else {
-            if byte == b'"' || byte == b'\\' {
-                rendered.push('\\');
-            }
-            rendered.push(char::from(byte));
-        }
-    }
-    if size_in_bytes < real_size_in_bytes {
-        rendered.push_str(" ...");
-    }
-    rendered.push('"');
-    rendered
-}
-
-fn prepare_print_numbering(interp: &mut Interpreter, env: &mut Env, options: PrintOptions) {
-    // print.c resets both pieces of state unless continuous numbering has a
-    // live public table.  A nil table therefore starts numbering over even
-    // when `print-continuous-numbering' itself is non-nil.  The reset is a
-    // store into the C variable, which runs no watcher: a table already
-    // nil is left as it is.
+/// print.c:print's reset of the numbering: both pieces of state unless
+/// continuous numbering has a live public table.  A nil table therefore
+/// starts numbering over even when `print-continuous-numbering' itself
+/// is non-nil.  The reset is a store into the C variable, which runs no
+/// watcher: a table already nil is left as it is.
+fn prepare_print_numbering(interp: &mut Interpreter, env: &mut Env) {
     let table = interp.symbol_value_key(cached_symbol!("print-number-table"));
-    if !options.continuous_numbering || table.is_none_or(|value| value.is_nil()) {
+    if !print_continuous_numbering(interp) || table.is_none_or(|value| value.is_nil()) {
         interp.print_number_index = 0;
         if table.is_none_or(|value| !value.is_nil()) {
             interp.set_variable_key(cached_symbol!("print-number-table"), Value::Nil, env);
@@ -558,7 +535,7 @@ pub(crate) fn render_prin1_output(
     env: &mut Env,
 ) -> Result<PrintOutput, LispError> {
     with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
-        render_printer_output(interp, value, env, true, false)
+        render_printer_output(interp, value, env, true)
     })
 }
 
@@ -567,9 +544,7 @@ pub(crate) fn render_prin1(
     value: &Value,
     env: &mut crate::lisp::types::Env,
 ) -> Result<String, LispError> {
-    with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
-        render_printer_object(interp, value, env, true, false)
-    })
+    render_prin1_output(interp, value, env).map(|output| output.host_text())
 }
 
 /// keyboard.c:cmd_error: `print-level' and `print-length' are 10 while
@@ -624,28 +599,19 @@ pub(crate) fn with_printer_buffer_escape<T>(
     restored.and(result)
 }
 
-pub(crate) fn render_printer_object(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-    escape: bool,
-    output_is_function: bool,
-) -> Result<String, LispError> {
-    render_printer_output(interp, value, env, escape, output_is_function)
-        .map(|output| output.host_text())
-}
-
+/// VALUE's text as `prin1' (ESCAPE) or `princ' prints it, for host code
+/// that wants the text and prints nowhere: printed into a print_buffer
+/// of its own, the one of a print under way left as it is.
 pub(crate) fn render_printer_output(
     interp: &mut Interpreter,
     value: &Value,
     env: &mut Env,
     escape: bool,
-    output_is_function: bool,
 ) -> Result<PrintOutput, LispError> {
-    let mut options = print_options(interp);
-    options.escape = escape;
-    options.output_is_function = output_is_function;
-    object::print(interp, env, *value, options)
+    let under_way = interp.print_globals.buffer.replace(PrintOutput::plain());
+    let printed = object::print(interp, env, *value, escape, PrintSink::Buffer);
+    let text = std::mem::replace(&mut interp.print_globals.buffer, under_way);
+    printed.map(|()| text.unwrap_or_default())
 }
 
 pub(crate) fn render_prin1_ephemeral(
@@ -655,6 +621,346 @@ pub(crate) fn render_prin1_ephemeral(
 ) -> Result<String, LispError> {
     let mut env = env.clone();
     render_prin1(interp, value, &mut env)
+}
+
+/// print.c:print of VALUE onto SINK, between a print_prepare and its
+/// print_finish.
+pub(crate) fn print_to_sink(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    value: &Value,
+    escape: bool,
+    sink: PrintSink,
+) -> Result<(), LispError> {
+    object::print(interp, env, *value, escape, sink)
+}
+
+/// print.c's printchar and strout of OUTPUT's pieces onto SINK.
+pub(crate) fn deliver(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    sink: PrintSink,
+    output: &PrintOutput,
+) -> Result<(), LispError> {
+    match sink {
+        PrintSink::Buffer => {
+            interp
+                .print_globals
+                .buffer
+                .get_or_insert_with(PrintOutput::plain)
+                .append_strout(output);
+            Ok(())
+        }
+        PrintSink::Stdout => {
+            if !interp.message_capture_stack.is_empty() {
+                interp.append_message_capture(&output.host_text(), false, env);
+            }
+            if standard_display_table_p(interp) {
+                return deliver_through_display_table(interp, env, output);
+            }
+            for piece in output.pieces() {
+                match piece {
+                    Piece::Chars(chars) => {
+                        crate::lisp::primitives::batch_stdout::write_chars(chars)
+                    }
+                    Piece::Strout(block) => crate::lisp::primitives::batch_stdout::write(block),
+                    Piece::Octets(block) => {
+                        crate::lisp::primitives::batch_stdout::write(&raw_octets(block))
+                    }
+                }
+            }
+            if let Some(last) = output.last_printchar() {
+                interp.batch_standard_output_last_char = Some(last);
+            }
+            interp.batch_stdout_need_newline = true;
+            Ok(())
+        }
+        PrintSink::Echo => {
+            let text = output.host_text();
+            interp.append_message_capture(&text, false, env);
+            if !output.has_octets() {
+                crate::lisp::primitives::echo_area_print_logged(interp, &text, env);
+                return Ok(());
+            }
+            // strout of a C string into the echo area: message_dolog of
+            // its bytes as the multibyte text they are, and insert_char
+            // of each byte as the character of that code.
+            for piece in output.pieces() {
+                match piece {
+                    Piece::Octets(block) => {
+                        let octets = raw_octets(block);
+                        let logged = PrintOutput::from_memory(&octets, true).host_text();
+                        let shown: String = octets.iter().map(|&byte| char::from(byte)).collect();
+                        crate::lisp::primitives::echo_area_print_logged_as(
+                            interp, &logged, &shown, env,
+                        );
+                    }
+                    Piece::Chars(block) | Piece::Strout(block) => {
+                        let text = PrintOutput::from_memory(block, true).host_text();
+                        crate::lisp::primitives::echo_area_print_logged(interp, &text, env);
+                    }
+                }
+            }
+            Ok(())
+        }
+        PrintSink::Function(function) => {
+            for code in output.codes() {
+                interp.call_function_value(
+                    function,
+                    None,
+                    &[Value::Integer(i64::from(code))],
+                    env,
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// print.c:print_string of the string STATE onto SINK: one strout of
+/// its text (as `princ' prints it) onto a buffer, stdout or the echo
+/// area; a printchar a character onto a function.
+pub(crate) fn print_string(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    state: crate::lisp::types::StringObjectRef,
+    sink: PrintSink,
+) -> Result<(), LispError> {
+    if let PrintSink::Function(function) = sink {
+        return print_string_to_function(interp, env, state, function);
+    }
+    let mut output = interp.print_globals.take_pending();
+    strout_princ_string(interp, &state.borrow(), &mut output);
+    let delivered = deliver(interp, env, sink, &output);
+    interp.print_globals.give_pending(output);
+    delivered
+}
+
+/// print_string's loop for a function: each character handed over
+/// before the next is read, the string looked at again each time
+/// ("string may be relocated by printing one char"); `size' and
+/// `size_byte' are read once.  A unibyte string's bytes are the
+/// characters of those codes.
+pub(crate) fn print_string_to_function(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    state: crate::lisp::types::StringObjectRef,
+    function: Value,
+) -> Result<(), LispError> {
+    let (size, size_byte) = {
+        let state = state.borrow();
+        (state.len(), state.bytes().len())
+    };
+    let mut offset = 0;
+    loop {
+        let code = {
+            let state = state.borrow();
+            let bytes = state.bytes();
+            // The loop runs to the `size_byte' read at the start.  A
+            // string the function made shorter than that is read at its
+            // terminating NUL next; nothing past that is the string's.
+            if offset >= size_byte || offset > bytes.len() {
+                return Ok(());
+            }
+            let byte = bytes.get(offset).copied().unwrap_or(0);
+            if size == size_byte || byte < 0x80 {
+                offset += 1;
+                u32::from(byte)
+            } else {
+                let (code, width) =
+                    crate::lisp::types::string_data::decode_character(&bytes[offset..])
+                        .unwrap_or((u32::from(byte), 1));
+                offset += width;
+                code
+            }
+        };
+        interp.call_function_value(function, None, &[Value::Integer(i64::from(code))], env)?;
+    }
+}
+
+/// print.c:printchar of CH onto SINK.
+pub(crate) fn printchar(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    sink: PrintSink,
+    ch: u32,
+) -> Result<(), LispError> {
+    if let PrintSink::Function(function) = sink {
+        return interp
+            .call_function_value(function, None, &[Value::Integer(i64::from(ch))], env)
+            .map(drop);
+    }
+    let mut one = interp.print_globals.take_pending();
+    one.push_code(ch);
+    let delivered = deliver(interp, env, sink, &one);
+    interp.print_globals.give_pending(one);
+    delivered
+}
+
+/// `DISP_TABLE_P (Vstandard_display_table)'.
+fn standard_display_table_p(interp: &Interpreter) -> bool {
+    matches!(
+        interp
+            .symbol_value_key(cached_symbol!("standard-display-table"))
+            .map(|value| value.kind()),
+        Some(Kind::CharTable(table)) if table.is_display_table()
+    )
+}
+
+/// The octets a strout of a C string wrote, from the raw-byte characters
+/// the output holds them as.
+fn raw_octets(block: &[u8]) -> Vec<u8> {
+    let mut octets = Vec::with_capacity(block.len());
+    let mut rest = block;
+    while let Ok((code, width)) = crate::lisp::types::string_data::decode_character(rest) {
+        octets.push(if code >= 0x3fff80 {
+            (code - 0x3fff00) as u8
+        } else {
+            code as u8
+        });
+        rest = &rest[width..];
+        if rest.is_empty() {
+            break;
+        }
+    }
+    octets
+}
+
+/// printchar and strout onto stdout with a display table: each character
+/// through printchar_to_stream (strout reads its block a character at a
+/// time with string_char_and_length), which can signal (the coding
+/// system it encodes with).  printchar sets `printchar_stdout_last'
+/// before it writes and `noninteractive_need_newline' after; strout sets
+/// the latter after its whole block.
+fn deliver_through_display_table(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    output: &PrintOutput,
+) -> Result<(), LispError> {
+    for piece in output.pieces() {
+        let printchars = matches!(piece, Piece::Chars(_));
+        let octets = match piece {
+            Piece::Octets(block) => Some(raw_octets(block)),
+            Piece::Chars(_) | Piece::Strout(_) => None,
+        };
+        let mut rest = match (&octets, piece) {
+            (Some(octets), _) => &octets[..],
+            (None, Piece::Chars(chars) | Piece::Strout(chars) | Piece::Octets(chars)) => chars,
+        };
+        while let Some(&byte) = rest.first() {
+            let (code, width) = crate::lisp::types::string_data::decode_character(rest)
+                .unwrap_or((u32::from(byte), 1));
+            rest = &rest[width..];
+            if printchars {
+                interp.batch_standard_output_last_char = Some(code);
+            }
+            crate::lisp::primitives::file_io::printchar_to_stream(interp, code, true, env)?;
+            if printchars {
+                interp.batch_stdout_need_newline = true;
+            }
+        }
+        if !printchars {
+            interp.batch_stdout_need_newline = true;
+        }
+    }
+    // A strout of nothing among them.
+    if output.strout_called() {
+        interp.batch_stdout_need_newline = true;
+    }
+    Ok(())
+}
+
+/// print.c's print_buffer around BODY, for a print whose printcharfun is
+/// nil: as print_prepare leaves it, empty (the text of a print under way
+/// set aside, where print_prepare keeps it in a string), and when BODY is
+/// done, by an error too, as the unwinding leaves it: freed, or with the
+/// text set aside copied back over it (print_unwind copies SCHARS bytes
+/// and leaves `pos' and `pos_byte' as BODY left them, so the print under
+/// way goes on from where this one ended).  The text BODY printed.
+pub(crate) fn with_print_buffer<T>(
+    interp: &mut Interpreter,
+    body: impl FnOnce(&mut Interpreter) -> Result<T, LispError>,
+) -> Result<(T, PrintOutput), LispError> {
+    let saved = interp.print_globals.buffer.replace(PrintOutput::plain());
+    // A print run by a hook of print_finish's insertion: that insertion
+    // copies from print_buffer's memory when the hooks are done, so from
+    // here on what the memory holds past `pos_byte' matters.
+    if interp.print_globals.inserting > 0
+        && interp.print_globals.memory.is_none()
+        && let Some(saved) = &saved
+    {
+        interp.print_globals.memory = Some(saved.bytes().to_vec());
+    }
+    let result = body(interp);
+    let text = interp.print_globals.buffer.take().unwrap_or_default();
+    if let (Some(memory), Some(saved)) = (&mut interp.print_globals.memory, &saved) {
+        // What BODY wrote, then print_unwind's copy.
+        let restored = saved.restored_len();
+        if memory.len() < text.len().max(restored) {
+            memory.resize(text.len().max(restored), 0);
+        }
+        memory[..text.len()].copy_from_slice(text.bytes());
+        memory[..restored].copy_from_slice(&saved.bytes()[..restored]);
+    }
+    interp.print_globals.buffer = saved.map(|saved| text.clone().overwritten_by(&saved));
+    result.map(|value| (value, text))
+}
+
+/// print.c:print_finish's text for insert_1_both, read once
+/// prepare_to_modify_buffer has run: the NBYTES bytes (MULTIBYTE as the
+/// text was) insert_1_both was told of before, as print_buffer's memory
+/// holds them now, which a print run by a before-change hook has written
+/// over and print_unwind only partly restored.  FINISH is given the text
+/// and, when such a print ran, the `pos' print_buffer has now.
+pub(crate) fn print_finish_text<R>(
+    interp: &mut Interpreter,
+    nbytes: usize,
+    multibyte: bool,
+    finish: impl FnOnce(&PrintOutput, Option<usize>) -> R,
+) -> R {
+    match interp.print_globals.memory.as_ref() {
+        Some(memory) => {
+            let held = PrintOutput::from_memory(&memory[..nbytes.min(memory.len())], multibyte);
+            let pos = interp
+                .print_globals
+                .buffer
+                .as_ref()
+                .map_or(0, PrintOutput::pos);
+            finish(&held, Some(pos))
+        }
+        None => match interp.print_globals.buffer.as_ref() {
+            Some(text) => finish(text, None),
+            None => finish(&PrintOutput::default(), None),
+        },
+    }
+}
+
+/// print.c:printchar of the unsigned int CH that `write-char' was given,
+/// onto a SINK that is no function.  CHAR_STRING of a code that is no
+/// character: char_string resolves a modifier bit and drops what is left
+/// of them, and signals for a code still past MAX_CHAR; a negative int
+/// (`eassume (0 <= c)' does not hold) is stored as its low byte alone,
+/// which fwrite puts on stdout as it is.  With `standard-display-table'
+/// it is printchar_to_stream's to write.
+pub(crate) fn printchar_unsigned(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    sink: PrintSink,
+    ch: u32,
+) -> Result<(), LispError> {
+    if (ch as i32) < 0 && matches!(sink, PrintSink::Stdout) {
+        interp.batch_standard_output_last_char = Some(ch);
+        if standard_display_table_p(interp) {
+            crate::lisp::primitives::file_io::printchar_to_stream(interp, ch, true, env)?;
+        } else {
+            crate::lisp::primitives::batch_stdout::write(&[ch as u8]);
+        }
+        interp.batch_stdout_need_newline = true;
+        return Ok(());
+    }
+    let mut one = PrintOutput::default();
+    one.push_code(crate::lisp::primitives::ccl::written_character(ch as i32)?);
+    deliver(interp, env, sink, &one)
 }
 
 /// lread.c:end_of_file_error: `(end-of-file FILE)' while a file is being
@@ -1932,7 +2238,7 @@ mod tests {
             ));
             object = Value::list([Value::vector(vec![record])]);
         }
-        let printed = render_printer_output(&mut interp, &object, &mut env, true, false)
+        let printed = render_printer_output(&mut interp, &object, &mut env, true)
             .expect("print a deep object")
             .host_text();
         let expected = format!("{}a{}", "([#s(r ".repeat(levels), ")])".repeat(levels));

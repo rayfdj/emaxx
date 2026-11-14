@@ -679,7 +679,7 @@ fn readevalloop_print(
         .unwrap_or(Value::Nil);
     interp.set_variable_key(cached_symbol!("values"), Value::cons(value, values), env);
     let printer = match interp
-        .lookup_var_key(cached_symbol!("standard-output"), env)
+        .symbol_value_key(cached_symbol!("standard-output"))
         .map(|v| v.kind())
     {
         Some(Kind::T) => "prin1",

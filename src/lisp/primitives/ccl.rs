@@ -701,13 +701,15 @@ pub(crate) fn char_resolve_modifier_mask(mut c: i64) -> i64 {
 /// character.c:char_string's, whose modifier bits resolve as
 /// char_resolve_modifier_mask resolves them (a remaining bit dropped);
 /// one beyond MAX_CHAR is an error.  A negative C, whose low byte alone
-/// CHAR_STRING stores (an invalid multibyte form, which a string here
-/// cannot hold), is that byte's raw-byte character.
+/// CHAR_STRING stores, is that byte: the ASCII character it is, or (an
+/// invalid multibyte form, which a string here cannot hold) its raw-byte
+/// character.
 pub(crate) fn written_character(c: i32) -> Result<u32, LispError> {
     const CHAR_MODIFIER_MASK: u32 = 0xFC0_0000;
     const MAX_CHAR: u32 = 0x3F_FFFF;
     if c < 0 {
-        return Ok(0x3F_FF00 + (c as u32 & 0xFF));
+        let byte = c as u32 & 0xFF;
+        return Ok(if byte < 0x80 { byte } else { 0x3F_FF00 + byte });
     }
     if c < 0x1_0000 {
         return Ok(c as u32);

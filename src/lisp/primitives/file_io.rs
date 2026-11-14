@@ -1578,14 +1578,16 @@ fn write_region_with_coding(
     Ok(Value::Nil)
 }
 
-/// print.c printchar_to_stream onto stderr: CH, or the characters among
-/// the elements of the vector `standard-display-table' shows it as; an
-/// ASCII character as its byte, any other as its multibyte form, encoded
-/// by `coding-system-for-write', else `locale-coding-system', when either
-/// is set (code_convert_string_norecord).
-pub(crate) fn printchar_to_stderr(
+/// print.c printchar_to_stream onto stdout (TO_STDOUT) or stderr: CH, or
+/// the characters among the elements of the vector
+/// `standard-display-table' shows it as; an ASCII character as its byte,
+/// any other as its multibyte form, encoded by `coding-system-for-write',
+/// else `locale-coding-system', when either is set
+/// (code_convert_string_norecord).
+pub(crate) fn printchar_to_stream(
     interp: &mut Interpreter,
     ch: u32,
+    to_stdout: bool,
     env: &mut Env,
 ) -> Result<(), LispError> {
     let mut chars = vec![ch];
@@ -1593,9 +1595,9 @@ pub(crate) fn printchar_to_stderr(
         && let Some(Kind::CharTable(table)) = interp
             .symbol_value_key(cached_symbol!("standard-display-table"))
             .map(|value| value.kind())
-        && table.has_purpose("display-table")
-        && let Some(entry) = interp.char_table_get(table, ch)
-        && crate::lisp::primitives::interactive::is_vector_value(&entry)
+        && table.is_display_table()
+        && let Some(entry) = Some(table.disp_char_vector(ch))
+            .filter(crate::lisp::primitives::interactive::is_vector_value)
     {
         chars = crate::lisp::primitives::buffers::vector_items(&entry)?
             .iter()
@@ -1611,18 +1613,47 @@ pub(crate) fn printchar_to_stderr(
         .or_else(|| interp.forwarded_c_value("locale-coding-system", env))
         .filter(|value| !value.is_nil());
     // putc for an ASCII character and fwrite for any other, each its own
-    // write of the stream; print.c reads neither's result.
-    use crate::lisp::primitives::batch_stdout::stderr_write;
+    // call on the stream (on the unbuffered stderr its own write);
+    // print.c reads neither's result.
+    let stream_write = |bytes: &[u8]| {
+        if to_stdout {
+            crate::lisp::primitives::batch_stdout::write(bytes)
+        } else {
+            crate::lisp::primitives::batch_stdout::stderr_write(bytes)
+        }
+    };
     for c in chars {
         if c < 0x80 {
-            stderr_write(&[c as u8]);
+            stream_write(&[c as u8]);
             continue;
         }
-        // CHAR_STRING's multibyte form.
+        let code = if (c as i32) < 0 {
+            // CHAR_STRING of a negative int, here where it is known to
+            // be no ASCII character: its two-byte form's arithmetic
+            // (`0xC0 | (c >> 6)', `0x80 | (c & 0x3F)').  That is some
+            // character's form when its first byte is a two-byte
+            // character's; otherwise the bytes are no character's and
+            // go out as they are.
+            let c = c as i32;
+            let form = [0xC0 | (c >> 6) as u8, 0x80 | (c & 0x3F) as u8];
+            match crate::lisp::types::string_data::decode_character(&form) {
+                Ok((code, 2)) if form[0] < 0xE0 => code,
+                _ => {
+                    stream_write(&form);
+                    continue;
+                }
+            }
+        } else {
+            // CHAR_STRING's multibyte form: char_string resolves the
+            // modifier bits of a code that has them and drops what is
+            // left of them, and a code past MAX_CHAR even so is an
+            // error.
+            crate::lisp::primitives::ccl::written_character(c as i32)?
+        };
         let mut one = PrintOutput::default();
-        one.push_code(c);
+        one.push_code(code);
         let Some(coding) = &coding else {
-            stderr_write(one.bytes());
+            stream_write(one.bytes());
             continue;
         };
         let string = one.into_value(interp, env)?;
@@ -1631,7 +1662,7 @@ pub(crate) fn printchar_to_stderr(
         let given = crate::lisp::primitives::coding::checked_coding_given(interp, coding)?;
         let encoded =
             encode_coding_value_recording(interp, &string, given.as_deref(), true, false, env)?;
-        stderr_write(&crate::lisp::primitives::text::internal_string_bytes(
+        stream_write(&crate::lisp::primitives::text::internal_string_bytes(
             &string_like(&encoded).expect("an encoded string"),
         )?);
     }
@@ -1712,6 +1743,273 @@ pub(crate) fn redirect_debugging_output(
     Ok(())
 }
 
+/// print.c's print_prepare, BODY writing to the sink it resolves STREAM
+/// to, and print_finish.
+pub(crate) fn with_print_stream<T>(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env, PrintSink) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    print_prepared(interp, stream, env, body).map(|(value, _)| value)
+}
+
+/// `with_print_stream', with the octets of a text print_finish inserted
+/// in a multibyte buffer a character each (`print_object_to_buffer').
+fn print_prepared<T>(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env, PrintSink) -> Result<T, LispError>,
+) -> Result<(T, Option<Vec<u8>>), LispError> {
+    let sink = PrintSink::of(interp, stream);
+    with_printer_destination(interp, stream, env, |interp, env| {
+        if !matches!(sink, PrintSink::Buffer) {
+            if matches!(sink, PrintSink::Echo) {
+                crate::lisp::primitives::setup_echo_area_for_printing(interp, env);
+            }
+            return body(interp, env, sink).map(|value| (value, None));
+        }
+        let multibyte = interp.buffer.borrow().is_multibyte();
+        with_printer_buffer_escape(interp, env, Some(multibyte), |interp, env| {
+            // print_finish runs before the unwinding that gives
+            // print_buffer back.
+            with_print_buffer(interp, |interp| {
+                let value = body(interp, env, sink)?;
+                let octets = print_finish_insertion(interp, env)?;
+                Ok((value, octets))
+            })
+            .map(|(result, _)| result)
+        })
+    })
+}
+
+/// print.c:print_finish for a print into a buffer: `insert_1_both
+/// (print_buffer.buffer, pos, pos_byte, 0, 1, 0)' at point of the buffer
+/// current now, and `signal_after_change (PT - print_buffer.pos, 0,
+/// print_buffer.pos)'.  insert_1_both of no characters returns at once
+/// (no prepare_to_modify_buffer), and the signal still runs; otherwise
+/// the hooks of prepare_to_modify_buffer run before the text is copied
+/// out of print_buffer, so a print one of them runs into a buffer
+/// changes both the text and the `pos' the signal is given.  No
+/// update_compositions follows.  The octets of a text whose bytes
+/// strout counted a character each, when the buffer is multibyte.
+fn print_finish_insertion(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Option<Vec<u8>>, LispError> {
+    let (nbytes, was_multibyte) = interp
+        .print_globals
+        .buffer
+        .as_ref()
+        .map_or((0, false), |text| (text.len(), text.is_multibyte()));
+    if nbytes == 0 {
+        let point = interp.buffer.borrow().point();
+        super::insdel::signal_after_change(
+            interp,
+            super::insdel::AfterChange::new(point, 0, 0),
+            &super::hooks_overlays::OverlayHookCalls::none(),
+            env,
+        )?;
+        return Ok(None);
+    }
+    // `print_buffer.pos != print_buffer.pos_byte' in a unibyte buffer:
+    // copy_text makes the text unibyte in a block of its own before
+    // insert_1_both is called, which no print its hooks run writes over.
+    let unibyte_copy = {
+        let multibyte = interp.buffer.borrow().is_multibyte();
+        interp
+            .print_globals
+            .buffer
+            .as_ref()
+            .filter(|text| !multibyte && text.is_multibyte())
+            .cloned()
+    };
+    // The text waits on prepare_to_modify_buffer from here until
+    // insert_1_both copies it (the after-change hooks run later).  A
+    // print that is itself run by a hook of a waiting one has written
+    // its text over the start of print_buffer's memory.
+    interp.print_globals.inserting += 1;
+    let globals = &mut interp.print_globals;
+    if let (Some(memory), Some(text)) = (globals.memory.as_mut(), globals.buffer.as_ref()) {
+        if memory.len() < nbytes {
+            memory.resize(nbytes, 0);
+        }
+        memory[..nbytes].copy_from_slice(text.bytes());
+    }
+    let copied = |interp: &mut Interpreter| {
+        interp.print_globals.inserting -= 1;
+        if interp.print_globals.inserting == 0 {
+            interp.print_globals.memory = None;
+        }
+    };
+    let mut waiting = true;
+    let inserted = insert_print_buffer(interp, env, |interp| {
+        let multibyte = interp.buffer.borrow().is_multibyte();
+        let text = crate::lisp::primitives::print::print_finish_text(
+            interp,
+            nbytes,
+            was_multibyte,
+            |text, pos| {
+                let text = unibyte_copy.as_ref().unwrap_or(text);
+                // A text whose `pos' is its `pos_byte' though it holds
+                // multibyte characters (print_unwind left it counted
+                // so): insert_1_both is told of a character a byte.
+                if multibyte && text.bytes_counted_as_characters() {
+                    let octets = text.bytes().to_vec();
+                    let mut bytes = PrintOutput::plain();
+                    bytes.push_octets(&octets);
+                    let (parts, extended) = bytes.text_parts();
+                    return (parts, extended, pos, Some(octets));
+                }
+                let octets = (multibyte && !text.is_multibyte() && !text.bytes().is_ascii())
+                    .then(|| text.octets());
+                let (parts, extended) = text.text_parts();
+                (parts, extended, pos, octets)
+            },
+        );
+        waiting = false;
+        copied(interp);
+        text
+    });
+    if waiting {
+        // prepare_to_modify_buffer signaled.
+        copied(interp);
+    }
+    inserted
+}
+
+/// print.c:print_prepare binds print--unreadable-callback-buffer to the
+/// buffer current before it selects the output's, for BODY.
+pub(crate) fn with_printer_destination<T>(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let caller = interp.current_buffer_id();
+    let callback = interp.print_unreadable_callback_buffer.replace(caller);
+    let result = select_printer_destination(interp, stream, env, body);
+    interp.print_unreadable_callback_buffer = callback;
+    // record_unwind_current_buffer: whatever BODY (a function printed
+    // to, `print-unreadable-function') made current, the buffer current
+    // at print_prepare is current again, if it lives.
+    let restored = if interp.current_buffer_id() != caller && interp.has_buffer_id(caller) {
+        interp.set_current_buffer_id(caller)
+    } else {
+        Ok(())
+    };
+    match (result, restored) {
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+/// print.c:print_prepare selects the output's buffer (a buffer's own, or
+/// a marker's with point at the marker) before BODY, and print_finish
+/// sets the marker printed to and point after it, in the buffer current
+/// by then.
+fn select_printer_destination<T>(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let (buffer_id, marker_position) = match stream.map(|value| value.kind()) {
+        Some(Kind::Buffer(buffer)) => (buffer.id, None),
+        Some(Kind::Marker(marker)) => {
+            let buffer = marker
+                .buffer()
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+            let position = marker
+                .position()
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+            (buffer.id, Some((marker, position)))
+        }
+        _ => return body(interp, env),
+    };
+    if interp.current_buffer_id() != buffer_id {
+        interp.set_current_buffer_id(buffer_id)?;
+    }
+    let marker_position = match marker_position {
+        Some((marker, position)) => {
+            let old_point = {
+                let state = interp.buffer.borrow();
+                if !(state.point_min()..=state.point_max()).contains(&position) {
+                    // signal_error (..., printcharfun).
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("error".into()),
+                        Value::String("Marker is outside the accessible part of the buffer".into()),
+                        *stream.expect("matched Some"),
+                    ])));
+                }
+                state.point()
+            };
+            interp.buffer.borrow_mut().goto_char(position);
+            Some((marker, position, old_point))
+        }
+        None => None,
+    };
+    let value = body(interp, env)?;
+    if let Some((marker, start, old_point)) = marker_position {
+        // print_finish: `set_marker_both (old_printcharfun, Qnil, PT,
+        // PT_BYTE)' and SET_PT_BOTH, in the buffer current now: the
+        // one the insertion's hooks left, or where a destination
+        // killed meanwhile left the print.
+        let end = interp.buffer.borrow().point();
+        let current = interp.current_buffer_id();
+        interp.set_marker(marker, Some(end), Some(current))?;
+        let restored_point = if old_point >= start {
+            old_point.saturating_add(end).saturating_sub(start)
+        } else {
+            old_point
+        };
+        interp.buffer.borrow_mut().goto_char(restored_point);
+    }
+    Ok(value)
+}
+
+/// print.c:write_string of the C string TEXT onto STREAM.
+pub(crate) fn write_printer_output(
+    interp: &mut Interpreter,
+    text: &str,
+    stream: Option<&Value>,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    write_c_string(interp, text.as_bytes(), stream, env)
+}
+
+/// print.c:write_string of the C string DATA, a Lisp string's SSDATA: to
+/// its first NUL, as strlen measures it, in one strout whose bytes are a
+/// character each, a function handed each as the C `char' it is; in a
+/// print_prepare and print_finish of its own.
+pub(crate) fn write_c_string(
+    interp: &mut Interpreter,
+    data: &[u8],
+    stream: Option<&Value>,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let data = &data[..data
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(data.len())];
+    with_print_stream(interp, stream, env, |interp, env, sink| {
+        let mut output = PrintOutput::default();
+        if matches!(sink, PrintSink::Function(_)) {
+            for &byte in data {
+                output.push_c_function_byte(byte);
+            }
+        } else {
+            output.push_octets(data);
+        }
+        deliver(interp, env, sink, &output)
+    })
+}
+
+/// print.c's Fprin1 (ESCAPE), Fprinc and Fprint (NEWLINES: a printchar
+/// of a newline before the object and one after) of VALUE onto STREAM,
+/// `standard-output' already put in a nil one's place: print_prepare,
+/// print and print_finish.
 pub(crate) fn print_object_to_stream(
     interp: &mut Interpreter,
     value: &Value,
@@ -1720,30 +2018,15 @@ pub(crate) fn print_object_to_stream(
     escape: bool,
     newlines: bool,
 ) -> Result<Value, LispError> {
-    with_printer_destination(interp, stream.as_ref(), env, |interp, env| {
-        let multibyte = match stream.map(|value| value.kind()) {
-            None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
-                Some(interp.buffer.borrow().is_multibyte())
-            }
-            _ => None,
-        };
-        let output_is_function =
-            multibyte.is_none() && stream.is_some_and(|value| !matches!(value.kind(), Kind::T));
-        with_printer_buffer_escape(interp, env, multibyte, |interp, env| {
-            let rendered = render_printer_output(interp, value, env, escape, output_is_function)?;
-            let rendered = if newlines {
-                rendered.enclosed("\n", "\n")
-            } else {
-                rendered
-            };
-            write_prepared_printer_output(interp, &rendered, stream.as_ref(), env)?;
-            if (newlines || native_print_updates_batch_last_char(interp, value, env, escape))
-                && let Some(last) = rendered.codes().last()
-            {
-                record_batch_standard_output_char(interp, stream.as_ref(), env, last);
-            }
-            Ok(*value)
-        })
+    with_print_stream(interp, stream.as_ref(), env, |interp, env, sink| {
+        if newlines {
+            printchar(interp, env, sink, u32::from(b'\n'))?;
+        }
+        print_to_sink(interp, env, value, escape, sink)?;
+        if newlines {
+            printchar(interp, env, sink, u32::from(b'\n'))?;
+        }
+        Ok(*value)
     })
 }
 
@@ -1760,201 +2043,22 @@ pub(crate) fn print_object_to_buffer(
     env: &mut Env,
     escape: bool,
 ) -> Result<Option<Vec<u8>>, LispError> {
-    with_printer_destination(interp, Some(&stream), env, |interp, env| {
-        let multibyte = interp.buffer.borrow().is_multibyte();
-        with_printer_buffer_escape(interp, env, Some(multibyte), |interp, env| {
-            let rendered = render_printer_output(interp, value, env, escape, false)?;
-            let octets = (multibyte && !rendered.is_multibyte() && !rendered.bytes().is_ascii())
-                .then(|| rendered.octets());
-            write_prepared_printer_output(interp, &rendered, Some(&stream), env)?;
-            Ok(octets)
-        })
+    print_prepared(interp, Some(&stream), env, |interp, env, sink| {
+        print_to_sink(interp, env, value, escape, sink)
     })
+    .map(|((), octets)| octets)
 }
 
-/// print.c:print_prepare binds print--unreadable-callback-buffer to the
-/// buffer current before it selects the output's, for BODY.
-pub(crate) fn with_printer_destination<T>(
-    interp: &mut Interpreter,
-    stream: Option<&Value>,
-    env: &mut Env,
-    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
-) -> Result<T, LispError> {
-    let caller = interp.current_buffer_id();
-    let callback = interp.print_unreadable_callback_buffer.replace(caller);
-    let result = select_printer_destination(interp, stream, env, body);
-    interp.print_unreadable_callback_buffer = callback;
-    result
-}
-
-/// print.c:print_prepare selects the output buffer before rendering, and
-/// print_finish moves a marker and restores point after successful insertion.
-/// The original current buffer is restored on either normal or error return.
-fn select_printer_destination<T>(
-    interp: &mut Interpreter,
-    stream: Option<&Value>,
-    env: &mut Env,
-    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
-) -> Result<T, LispError> {
-    let (buffer_id, marker_position) = match stream.map(|value| value.kind()) {
-        Some(Kind::Buffer(buffer)) => (buffer.id, None),
-        Some(Kind::Marker(marker)) => {
-            let buffer = marker
-                .buffer()
-                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
-            let position = marker
-                .position()
-                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
-            let state = buffer.borrow();
-            if !(state.point_min()..=state.point_max()).contains(&position) {
-                return Err(LispError::Signal(
-                    "Marker is outside the accessible part of the buffer".into(),
-                ));
-            }
-            (buffer.id, Some((marker, position, state.point())))
-        }
-        _ => return body(interp, env),
-    };
-    let saved_buffer = interp.current_buffer_id();
-    interp.set_current_buffer_id(buffer_id)?;
-    if let Some((_, position, _)) = marker_position {
-        interp.buffer.borrow_mut().goto_char(position);
-    }
-    let result = body(interp, env).and_then(|value| {
-        if let Some((marker, start, old_point)) = marker_position {
-            let end = interp.buffer.borrow().point();
-            interp.set_marker(marker, Some(end), Some(buffer_id))?;
-            let restored_point = if old_point >= start {
-                old_point.saturating_add(end).saturating_sub(start)
-            } else {
-                old_point
-            };
-            interp.buffer.borrow_mut().goto_char(restored_point);
-        }
-        Ok(value)
-    });
-    let restored = if interp.has_buffer_id(saved_buffer) {
-        interp.set_current_buffer_id(saved_buffer)
-    } else {
-        Ok(())
-    };
-    match (result, restored) {
-        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
-        (Ok(value), Ok(())) => Ok(value),
-    }
-}
-
-pub(crate) fn write_printer_output(
-    interp: &mut Interpreter,
-    text: &str,
-    stream: Option<&Value>,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    with_printer_destination(interp, stream, env, |interp, env| {
-        write_prepared_printer_output(interp, &PrintOutput::from(text), stream, env)
-    })
-}
-
-/// Write printer OUTPUT, already in the internal encoding, to STREAM.
-pub(crate) fn write_printer_output_codes(
-    interp: &mut Interpreter,
-    output: &PrintOutput,
-    stream: Option<&Value>,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    with_printer_destination(interp, stream, env, |interp, env| {
-        write_prepared_printer_output(interp, output, stream, env)
-    })
-}
-
-fn write_prepared_printer_output(
-    interp: &mut Interpreter,
-    output: &PrintOutput,
-    stream: Option<&Value>,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    match stream.map(|value| value.kind()) {
-        Some(Kind::T) => {
-            // Existing echo/message-capture APIs still accept host text.
-            // Actual batch output consumes the canonical bytes directly.
-            let text = output.host_text();
-            interp.append_message_capture(&text, false, env);
-            if interp
-                .lookup_var_key(cached_symbol!("noninteractive"), env)
-                .is_some_and(|value| value.is_truthy())
-            {
-                crate::lisp::primitives::batch_stdout::write(output.bytes());
-                interp.batch_stdout_need_newline = true;
-            } else {
-                crate::lisp::primitives::echo_area_print_logged(interp, &text, env);
-            }
-            Ok(())
-        }
-        None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
-            let (text, extended) = output.text_parts();
-            insert_text_with_hooks(interp, &text, None, &extended, false, false, env)
-        }
-        Some(_) => {
-            let function = *stream.expect("matched Some");
-            for code in output.codes() {
-                call_function_value(interp, &function, &[Value::Integer(i64::from(code))], env)?;
-            }
-            Ok(())
-        }
-    }
-}
-
-/// Record output that GNU's printer sends through `printchar'.
-///
-/// Its batch `terpri' state is deliberately narrower than the last byte
-/// written to stdout: bulk `strout' paths (notably plain strings and numbers)
-/// do not update it.  Callers therefore opt in only for character-wise paths.
-pub(crate) fn record_batch_standard_output_char(
-    interp: &mut Interpreter,
-    stream: Option<&Value>,
-    env: &Env,
-    ch: u32,
-) {
-    if stream.is_some_and(|value| matches!(value.kind(), Kind::T))
-        && interp
-            .lookup_var_key(cached_symbol!("noninteractive"), env)
-            .is_some_and(|value| value.is_truthy())
-    {
-        interp.batch_standard_output_last_char = Some(ch);
-    }
-}
-
-/// Whether native `print' emits the final character of VALUE through GNU's
-/// character-wise printer rather than its bulk string path.
-pub(crate) fn native_print_updates_batch_last_char(
-    interp: &Interpreter,
-    value: &Value,
-    env: &Env,
-    escaped: bool,
-) -> bool {
-    match value.kind() {
-        Kind::Integer(integer) => {
-            interp
-                .lookup_var_key(cached_symbol!("print-integers-as-characters"), env)
-                .is_some_and(|value| value.is_truthy())
-                && render_princ_integer_as_character(interp, &Value::Integer(integer)).is_some()
-        }
-        Kind::BigInteger(_) | Kind::Float(_) => false,
-        Kind::StringObject(_) => escaped,
-        Kind::Symbol(name) => !name.as_str().is_empty(),
-        _ => true,
-    }
-}
-
+/// The stream a print is given, `standard-output' in a nil one's place:
+/// print.c reads Vstandard_output, the variable's dynamic value, which a
+/// lexical environment's entry of that name does not change.
 pub(crate) fn printer_stream_value(
     interp: &Interpreter,
-    env: &Env,
     explicit: Option<&Value>,
 ) -> Option<Value> {
     let resolved = match explicit.map(|v| v.kind()) {
-        Some(Kind::Nil) => interp.lookup_var_key(cached_symbol!("standard-output"), env),
+        None | Some(Kind::Nil) => interp.symbol_value_key(cached_symbol!("standard-output")),
         Some(value) => Some(value.value()),
-        None => interp.lookup_var_key(cached_symbol!("standard-output"), env),
     };
     match resolved.map(|v| v.kind()) {
         // GNU's `print_prepare' turns a nil effective stream into t after
@@ -2099,44 +2203,6 @@ fn print_override_bindings(overrides: &Value) -> Result<Vec<(&'static str, Value
             return Err(not_consp());
         };
         cell = next;
-    }
-}
-
-pub(crate) fn printer_stream_at_line_start(
-    interp: &Interpreter,
-    stream: Option<&Value>,
-) -> Result<bool, LispError> {
-    match stream.map(|v| v.kind()) {
-        None | Some(Kind::Nil | Kind::T) => Ok(buffer_position_at_line_start(
-            &interp.buffer.borrow(),
-            interp.buffer.borrow().point(),
-        )),
-        Some(Kind::Buffer(_)) => {
-            let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
-            let buffer = interp
-                .get_buffer_by_id(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            Ok(buffer_position_at_line_start(&buffer, buffer.point()))
-        }
-        Some(Kind::Marker(id)) => {
-            let marker = id;
-            let buffer_id = marker
-                .buffer()
-                .map(|buffer| buffer.id)
-                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
-            let position = marker
-                .position()
-                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
-            let buffer = interp
-                .get_buffer_by_id(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            Ok(buffer_position_at_line_start(&buffer, position))
-        }
-        Some(Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Closure(_)) => Ok(false),
-        Some(other) => Err(LispError::TypeError(
-            "output-stream".into(),
-            other.value().type_name(),
-        )),
     }
 }
 

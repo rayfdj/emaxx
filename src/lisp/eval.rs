@@ -7067,7 +7067,8 @@ pub struct InterpreterState {
     /// temporary table is later unwound, and continuous printer calls reuse
     /// it while their public table remains non-nil.
     pub(crate) print_number_index: usize,
-    /// print.c's `print_depth', `being_printed' and `new_backquote_output'.
+    /// print.c's `print_depth', `being_printed', `new_backquote_output'
+    /// and `print_buffer'.
     pub(crate) print_globals: crate::lisp::primitives::print::PrintGlobals,
     /// window.c's `sequence_number': the last one given a window, and each
     /// live window's (struct window's `sequence_number').

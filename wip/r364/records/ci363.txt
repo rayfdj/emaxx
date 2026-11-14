@@ -1,8 +1,0 @@
-**On `654b4b0`** (round 363): the frozen run (run 43402158643) matched
-  all 7,928 outcomes.  Setup 81.7 s against 66.0 s (1.238), test bodies
-  306.1 s against 267.4 s (1.144), in all 1.142, on a slow runner (GNU's
-  suite took 353 s where round 362's took 271).  The widest body gaps are
-  ert-tests (46.8 s against 38.7 s), comp-tests (18.2 against 14.7),
-  tramp-tests (22.2 against 18.8), eglot-tests (34.9 against 32.6) and
-  semantic-utest-ia (4.11 against 2.61).  The Rust gate (run 43402154955)
-  passed.
