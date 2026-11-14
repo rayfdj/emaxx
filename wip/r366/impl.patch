@@ -1120,7 +1120,7 @@ index ea658e2f..a1303bb8 100644
          );
      }
 diff --git a/src/lisp/eval/macros.rs b/src/lisp/eval/macros.rs
-index f55378f3..bb30c561 100644
+index f55378f3..f95d6449 100644
 --- a/src/lisp/eval/macros.rs
 +++ b/src/lisp/eval/macros.rs
 @@ -64,15 +64,15 @@ impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
@@ -1205,7 +1205,7 @@ index f55378f3..bb30c561 100644
                  // Ffset: `NILP (symbol) && !NILP (definition)' signals.
                  if args[0].is_nil() && !function.is_nil() {
                      return Err(LispError::SignalValue(Value::list([
-@@ -512,7 +512,7 @@ impl Interpreter {
+@@ -512,15 +512,25 @@ impl Interpreter {
          // macroexp--dynvars value.  Preserve live public closure environments
          // when present; typed frames carry the same declarations otherwise.
          let mut dynvars = self
@@ -1213,7 +1213,25 @@ index f55378f3..bb30c561 100644
 +            .symbol_value_key(cached_symbol!("macroexp--dynvars"))
              .unwrap_or(Value::Nil);
          let mut cursor = crate::lisp::types::current_environment_value(env);
++        // eval_sub's loop has no cycle check and no QUIT: over a
++        // circular environment it never ends, in GNU until a signal's
++        // handler ends the session (terminate_due_to_signal runs from the
++        // handler).  A fatal signal is looked for here every few thousand
++        // entries, more than any environment that ends has.
++        let mut steps = 0usize;
          while let Kind::Cons(list_cell) = cursor.kind() {
+             let entry = list_cell.car.get();
+             if let Kind::Symbol(_) | Kind::T | Kind::Nil = entry.kind() {
+                 dynvars = Value::cons(entry, dynvars);
+             }
+             cursor = list_cell.cdr.get();
++            steps = steps.wrapping_add(1);
++            if steps & 0xfff == 0 && crate::lisp::primitives::fatal_signal_pending() {
++                crate::lisp::primitives::run_pending_fatal_signal(self, env)?;
++            }
+         }
+         if let Err(error) = cached_symbol!("macroexp--dynvars")
+             .with(|symbol| self.specbind_symbol(symbol, dynvars, env))
 diff --git a/src/lisp/eval/roots.rs b/src/lisp/eval/roots.rs
 index 3dc1ab7d..fe7e4437 100644
 --- a/src/lisp/eval/roots.rs
