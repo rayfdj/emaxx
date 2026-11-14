@@ -26,7 +26,7 @@ index 7a28d1b2..6f3e81fc 100644
      (
          "window_sequence_number",
 diff --git a/src/lisp/eval/threads.rs b/src/lisp/eval/threads.rs
-index 3d6f276c..d7868742 100644
+index 3d6f276c..880b5f40 100644
 --- a/src/lisp/eval/threads.rs
 +++ b/src/lisp/eval/threads.rs
 @@ -1411,13 +1411,6 @@ impl Interpreter {
@@ -43,18 +43,6 @@ index 3d6f276c..d7868742 100644
      pub fn process_os_id(&self, record_id: u64) -> Option<u32> {
          self.find_process_state(record_id)
              .and_then(|process| process.os_pid)
-@@ -3048,10 +3041,7 @@ impl Interpreter {
-         let process = self
-             .find_process_state_mut(record_id)
-             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
--        if process.output_to_null {
--            return Ok(false);
--        }
--        Ok(true)
-+        Ok(!process.output_to_null)
-     }
- 
-     /// One emacs_write_sig of send_process's loop on p->outfd: the bytes
 diff --git a/src/lisp/primitives.rs b/src/lisp/primitives.rs
 index 5f9f59fd..25d2975b 100644
 --- a/src/lisp/primitives.rs
@@ -69,28 +57,6 @@ index 5f9f59fd..25d2975b 100644
  };
  pub(crate) use dispatch::{
      FACE_NO_UNDERLINE, FACE_TTY_DEFAULT_BG_COLOR, FACE_TTY_DEFAULT_COLOR,
-diff --git a/src/lisp/primitives/accessors_random.rs b/src/lisp/primitives/accessors_random.rs
-index f4cf6c7f..e9c65749 100644
---- a/src/lisp/primitives/accessors_random.rs
-+++ b/src/lisp/primitives/accessors_random.rs
-@@ -20,7 +20,7 @@ impl RandomState {
-         };
-         let mut word = if seed == 0 { 1 } else { seed } as i32;
-         generator.state[0] = word;
--        for slot in 1..31 {
-+        for slot in generator.state.iter_mut().skip(1) {
-             // state[i] = (16807 * state[i - 1]) % 2147483647, without
-             // overflowing 31 bits.
-             let hi = i64::from(word) / 127_773;
-@@ -29,7 +29,7 @@ impl RandomState {
-             if word < 0 {
-                 word = word.wrapping_add(2_147_483_647);
-             }
--            generator.state[slot] = word;
-+            *slot = word;
-         }
-         for _ in 0..310 {
-             generator.next();
 diff --git a/src/lisp/primitives/batch_stdout.rs b/src/lisp/primitives/batch_stdout.rs
 index d3b23fd9..4915f587 100644
 --- a/src/lisp/primitives/batch_stdout.rs
@@ -309,20 +275,6 @@ index a0bb8ff1..1101dcd5 100644
      }
      if c < 0x1_0000 {
          return Ok(c as u32);
-diff --git a/src/lisp/primitives/coding/units.rs b/src/lisp/primitives/coding/units.rs
-index e835ff9a..c4b3eae7 100644
---- a/src/lisp/primitives/coding/units.rs
-+++ b/src/lisp/primitives/coding/units.rs
-@@ -218,8 +218,7 @@ impl Units for CharUnits {
- 
-     fn flush(&self, from: usize, out: &mut DecodedText) {
-         let mut bytes = Vec::new();
--        for index in from..self.0.len() {
--            let unit = self.0[index];
-+        for &unit in self.0.iter().skip(from) {
-             if unit >= 0 {
-                 out.push_byte(unit as u8);
-             } else {
 diff --git a/src/lisp/primitives/dispatch.rs b/src/lisp/primitives/dispatch.rs
 index a7c802a4..2f93bf78 100644
 --- a/src/lisp/primitives/dispatch.rs
@@ -338,7 +290,7 @@ index a7c802a4..2f93bf78 100644
  pub(crate) use lists::{
      event_array, next_kbd_macro_event, pop_kbd_macro, recursive_edit_exit_value,
 diff --git a/src/lisp/primitives/dispatch/display.rs b/src/lisp/primitives/dispatch/display.rs
-index d5a4e1bd..9fe123ab 100644
+index d5a4e1bd..e597250a 100644
 --- a/src/lisp/primitives/dispatch/display.rs
 +++ b/src/lisp/primitives/dispatch/display.rs
 @@ -598,11 +598,34 @@ pub(crate) fn log_message_partial(interp: &mut Interpreter, text: &str, env: &En
@@ -707,10 +659,21 @@ index d5a4e1bd..9fe123ab 100644
                  Ok(Value::Nil)
              }
              "ding" => {
-@@ -5611,6 +5657,26 @@ define_dispatch!(
+@@ -5602,7 +5648,7 @@ define_dispatch!(
+             "prin1" => {
+                 need_arg_range(name, args, 1, 3)?;
+                 with_print_overrides(interp, env, args.get(2), |interp, env| {
+-                    let stream = printer_stream_value(interp, env, args.get(1));
++                    let stream = printer_stream_value(interp, args.get(1));
+                     print_object_to_stream(interp, &args[0], stream, env, true, false)
+                 })
+             }
+@@ -5610,48 +5656,92 @@ define_dispatch!(
+                 if args.is_empty() {
                      return Ok(Value::Nil);
                  }
-                 let stream = printer_stream_value(interp, env, args.get(1));
+-                let stream = printer_stream_value(interp, env, args.get(1));
++                let stream = printer_stream_value(interp, args.get(1));
 +                // Fprinc's fast path for plain strings: print_string
 +                // alone, between print_prepare and print_finish; the
 +                // depth and the numbering of a print under way are left
@@ -734,10 +697,16 @@ index d5a4e1bd..9fe123ab 100644
                  print_object_to_stream(interp, &args[0], stream, env, false, false)
              }
              "print" => {
-@@ -5623,35 +5689,59 @@ define_dispatch!(
+                 if args.is_empty() {
+                     return Ok(Value::Nil);
+                 }
+-                let stream = printer_stream_value(interp, env, args.get(1));
++                let stream = printer_stream_value(interp, args.get(1));
+                 print_object_to_stream(interp, &args[0], stream, env, true, true)
+             }
              "terpri" => {
                  need_arg_range(name, args, 0, 2)?;
-                 let stream = printer_stream_value(interp, env, args.first());
+-                let stream = printer_stream_value(interp, env, args.first());
 -                if args.get(1).is_some_and(Value::is_truthy) {
 -                    if let Some(function) = stream.as_ref()
 -                        && super::call(interp, "functionp", std::slice::from_ref(function), env)?
@@ -767,6 +736,7 @@ index d5a4e1bd..9fe123ab 100644
 -                write_printer_output(interp, "\n", stream.as_ref(), env)?;
 -                record_batch_standard_output_char(interp, stream.as_ref(), env, u32::from(b'\n'));
 -                Ok(Value::T)
++                let stream = printer_stream_value(interp, args.first());
 +                let ensure = args.get(1).is_some_and(Value::is_truthy);
 +                // print.c:Fterpri, between print_prepare and
 +                // print_finish.
@@ -792,7 +762,7 @@ index d5a4e1bd..9fe123ab 100644
 +                            let batch = matches!(sink, PrintSink::Stdout)
 +                                || (matches!(sink, PrintSink::Function(_))
 +                                    && interp
-+                                        .lookup_var_key(cached_symbol!("noninteractive"), env)
++                                        .symbol_value_key(cached_symbol!("noninteractive"))
 +                                        .is_some_and(|value| value.is_truthy()));
 +                            if batch {
 +                                // `printchar_stdout_last == 10'.
@@ -836,7 +806,7 @@ index d5a4e1bd..9fe123ab 100644
 +                // number as it is; other output stores its CHAR_STRING
 +                // form, whose modifier bits char_string resolves and
 +                // whose code past MAX_CHAR is an error.
-+                let stream = printer_stream_value(interp, env, args.get(1));
++                let stream = printer_stream_value(interp, args.get(1));
                  let Kind::Integer(code) = args[0].kind() else {
                      return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                  };
@@ -888,7 +858,7 @@ index d5a4e1bd..9fe123ab 100644
              }
              "print--preprocess" => {
 diff --git a/src/lisp/primitives/file_io.rs b/src/lisp/primitives/file_io.rs
-index 516e8409..890282fb 100644
+index 516e8409..97ad8743 100644
 --- a/src/lisp/primitives/file_io.rs
 +++ b/src/lisp/primitives/file_io.rs
 @@ -1578,14 +1578,16 @@ fn write_region_with_coding(
@@ -1027,7 +997,7 @@ index 516e8409..890282fb 100644
 +    env: &mut Env,
 +    body: impl FnOnce(&mut Interpreter, &mut Env, PrintSink) -> Result<T, LispError>,
 +) -> Result<(T, Option<Vec<u8>>), LispError> {
-+    let sink = PrintSink::of(interp, stream, env);
++    let sink = PrintSink::of(interp, stream);
 +    with_printer_destination(interp, stream, env, |interp, env| {
 +        if !matches!(sink, PrintSink::Buffer) {
 +            if matches!(sink, PrintSink::Echo) {
@@ -1194,7 +1164,7 @@ index 516e8409..890282fb 100644
  fn select_printer_destination<T>(
      interp: &mut Interpreter,
      stream: Option<&Value>,
-@@ -1805,145 +1924,129 @@ fn select_printer_destination<T>(
+@@ -1805,156 +1924,141 @@ fn select_printer_destination<T>(
              let position = marker
                  .position()
                  .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
@@ -1347,14 +1317,17 @@ index 516e8409..890282fb 100644
 -                crate::lisp::primitives::echo_area_print_logged(interp, &text, env);
 -            }
 -            Ok(())
--        }
--        None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
--            let (text, extended) = output.text_parts();
--            insert_text_with_hooks(interp, &text, None, &extended, false, false, env)
 +    escape: bool,
 +    newlines: bool,
 +) -> Result<Value, LispError> {
 +    with_print_stream(interp, stream.as_ref(), env, |interp, env, sink| {
++        if newlines {
++            printchar(interp, env, sink, u32::from(b'\n'))?;
+         }
+-        None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
+-            let (text, extended) = output.text_parts();
+-            insert_text_with_hooks(interp, &text, None, &extended, false, false, env)
++        print_to_sink(interp, env, value, escape, sink)?;
 +        if newlines {
 +            printchar(interp, env, sink, u32::from(b'\n'))?;
          }
@@ -1364,10 +1337,7 @@ index 516e8409..890282fb 100644
 -                call_function_value(interp, &function, &[Value::Integer(i64::from(code))], env)?;
 -            }
 -            Ok(())
-+        print_to_sink(interp, env, value, escape, sink)?;
-+        if newlines {
-+            printchar(interp, env, sink, u32::from(b'\n'))?;
-         }
+-        }
 -    }
 +        Ok(*value)
 +    })
@@ -1430,8 +1400,23 @@ index 516e8409..890282fb 100644
 +    .map(|((), octets)| octets)
  }
  
++/// The stream a print is given, `standard-output' in a nil one's place:
++/// print.c reads Vstandard_output, the variable's dynamic value, which a
++/// lexical environment's entry of that name does not change.
  pub(crate) fn printer_stream_value(
-@@ -2102,44 +2205,6 @@ fn print_override_bindings(overrides: &Value) -> Result<Vec<(&'static str, Value
+     interp: &Interpreter,
+-    env: &Env,
+     explicit: Option<&Value>,
+ ) -> Option<Value> {
+     let resolved = match explicit.map(|v| v.kind()) {
+-        Some(Kind::Nil) => interp.lookup_var_key(cached_symbol!("standard-output"), env),
++        None | Some(Kind::Nil) => interp.symbol_value_key(cached_symbol!("standard-output")),
+         Some(value) => Some(value.value()),
+-        None => interp.lookup_var_key(cached_symbol!("standard-output"), env),
+     };
+     match resolved.map(|v| v.kind()) {
+         // GNU's `print_prepare' turns a nil effective stream into t after
+@@ -2102,44 +2206,6 @@ fn print_override_bindings(overrides: &Value) -> Result<Vec<(&'static str, Value
      }
  }
  
@@ -1535,23 +1520,21 @@ index 0c09bc37..ba3d1c97 100644
  #[cfg(test)]
  mod tests {
      use super::*;
-diff --git a/src/lisp/primitives/menu.rs b/src/lisp/primitives/menu.rs
-index 4085891b..72fa4f1d 100644
---- a/src/lisp/primitives/menu.rs
-+++ b/src/lisp/primitives/menu.rs
-@@ -1464,8 +1464,8 @@ impl TtyMenu {
-     pub(crate) fn calc_size(&self) -> (usize, usize) {
-         let mut maxsubwidth = self.width;
-         let mut maxheight = self.count();
--        for i in 0..self.count() {
--            if let Some(sub) = &self.submenu[i] {
-+        for (i, sub) in self.submenu.iter().enumerate().take(self.count()) {
-+            if let Some(sub) = sub {
-                 let (w2, h2) = sub.calc_size();
-                 maxsubwidth = maxsubwidth.max(w2);
-                 maxheight = maxheight.max(i + h2);
+diff --git a/src/lisp/primitives/loading.rs b/src/lisp/primitives/loading.rs
+index 92150322..5a86f33b 100644
+--- a/src/lisp/primitives/loading.rs
++++ b/src/lisp/primitives/loading.rs
+@@ -679,7 +679,7 @@ fn readevalloop_print(
+         .unwrap_or(Value::Nil);
+     interp.set_variable_key(cached_symbol!("values"), Value::cons(value, values), env);
+     let printer = match interp
+-        .lookup_var_key(cached_symbol!("standard-output"), env)
++        .symbol_value_key(cached_symbol!("standard-output"))
+         .map(|v| v.kind())
+     {
+         Some(Kind::T) => "prin1",
 diff --git a/src/lisp/primitives/print.rs b/src/lisp/primitives/print.rs
-index 33a408cf..8257314c 100644
+index 33a408cf..59eacc03 100644
 --- a/src/lisp/primitives/print.rs
 +++ b/src/lisp/primitives/print.rs
 @@ -1,14 +1,51 @@
@@ -1584,13 +1567,13 @@ index 33a408cf..8257314c 100644
 +    /// The sink of STREAM: nil is `standard-output', and that nil is t.
 +    /// (GNU's batch test is its C flag `noninteractive'; Emaxx has the
 +    /// Lisp variable alone.)
-+    pub(crate) fn of(interp: &Interpreter, stream: Option<&Value>, env: &Env) -> Self {
-+        let stream = crate::lisp::primitives::file_io::printer_stream_value(interp, env, stream);
++    pub(crate) fn of(interp: &Interpreter, stream: Option<&Value>) -> Self {
++        let stream = crate::lisp::primitives::file_io::printer_stream_value(interp, stream);
 +        match stream.map(|stream| stream.kind()) {
 +            Some(Kind::Buffer(_) | Kind::Marker(_)) => PrintSink::Buffer,
 +            None | Some(Kind::Nil | Kind::T) => {
 +                if interp
-+                    .lookup_var_key(cached_symbol!("noninteractive"), env)
++                    .symbol_value_key(cached_symbol!("noninteractive"))
 +                    .is_some_and(|value| value.is_truthy())
 +                {
 +                    PrintSink::Stdout
@@ -1994,7 +1977,7 @@ index 33a408cf..8257314c 100644
 +/// The variables of BITS as they are now, into OPTIONS and ESCAPES: the
 +/// printer reads each where print.c first reads it, and again once Lisp
 +/// has run.
-+#[inline(never)]
++#[inline(always)]
 +fn read_print_variables(
 +    interp: &Interpreter,
 +    bits: u16,
@@ -2419,7 +2402,7 @@ index 33a408cf..8257314c 100644
  }
  
  pub(crate) fn render_prin1_ephemeral(
-@@ -657,6 +614,342 @@ pub(crate) fn render_prin1_ephemeral(
+@@ -657,6 +614,346 @@ pub(crate) fn render_prin1_ephemeral(
      render_prin1(interp, value, &mut env)
  }
  
@@ -2529,9 +2512,11 @@ index 33a408cf..8257314c 100644
 +    if let PrintSink::Function(function) = sink {
 +        return print_string_to_function(interp, env, state, function);
 +    }
-+    let mut output = PrintOutput::default();
++    let mut output = interp.print_globals.take_pending();
 +    strout_princ_string(interp, &state.borrow(), &mut output);
-+    deliver(interp, env, sink, &output)
++    let delivered = deliver(interp, env, sink, &output);
++    interp.print_globals.give_pending(output);
++    delivered
 +}
 +
 +/// print_string's loop for a function: each character handed over
@@ -2588,9 +2573,11 @@ index 33a408cf..8257314c 100644
 +            .call_function_value(function, None, &[Value::Integer(i64::from(ch))], env)
 +            .map(drop);
 +    }
-+    let mut one = PrintOutput::default();
++    let mut one = interp.print_globals.take_pending();
 +    one.push_code(ch);
-+    deliver(interp, env, sink, &one)
++    let delivered = deliver(interp, env, sink, &one);
++    interp.print_globals.give_pending(one);
++    delivered
 +}
 +
 +/// `DISP_TABLE_P (Vstandard_display_table)'.
@@ -2762,7 +2749,7 @@ index 33a408cf..8257314c 100644
  /// lread.c:end_of_file_error: `(end-of-file FILE)' while a file is being
  /// loaded (`load-true-file-name' a string), else `(end-of-file)'.
  /// A reader's end-of-input as lread.c's end_of_file_error signals it;
-@@ -1932,7 +2225,7 @@ mod tests {
+@@ -1932,7 +2229,7 @@ mod tests {
              ));
              object = Value::list([Value::vector(vec![record])]);
          }
@@ -2772,7 +2759,7 @@ index 33a408cf..8257314c 100644
              .host_text();
          let expected = format!("{}a{}", "([#s(r ".repeat(levels), ")])".repeat(levels));
 diff --git a/src/lisp/primitives/print/object.rs b/src/lisp/primitives/print/object.rs
-index cb6df2d0..f8416d66 100644
+index cb6df2d0..6b8c0391 100644
 --- a/src/lisp/primitives/print/object.rs
 +++ b/src/lisp/primitives/print/object.rs
 @@ -1,18 +1,25 @@
@@ -2807,7 +2794,7 @@ index cb6df2d0..f8416d66 100644
  #[derive(Clone)]
  pub(crate) struct PrintGlobals {
      /// `print_depth': signed as in C, where a print run from a callback
-@@ -23,6 +30,16 @@ pub(crate) struct PrintGlobals {
+@@ -23,6 +30,36 @@ pub(crate) struct PrintGlobals {
      being_printed: [Value; PRINT_CIRCLE],
      /// `new_backquote_output'.
      new_backquote_output: i64,
@@ -2821,16 +2808,37 @@ index cb6df2d0..f8416d66 100644
 +    /// print_buffer's bytes as its memory holds them while an insertion
 +    /// waits and a print run by its hooks has written over them.
 +    pub(crate) memory: Option<Vec<u8>>,
++    /// Room for what a print holds for stdout or the echo area before it
++    /// hands it over, kept from one print to the next: empty between
++    /// them.
++    pending: PrintOutput,
++}
++
++impl PrintGlobals {
++    /// An empty output for stdout or the echo area, with the room the
++    /// last one left.
++    pub(crate) fn take_pending(&mut self) -> PrintOutput {
++        std::mem::take(&mut self.pending)
++    }
++
++    /// OUTPUT's room kept for the next print, unless it grew large.
++    pub(crate) fn give_pending(&mut self, mut output: PrintOutput) {
++        if output.room() <= 2 * STDOUT_PENDING {
++            output.clear();
++            self.pending = output;
++        }
++    }
  }
  
  impl Default for PrintGlobals {
-@@ -31,17 +48,21 @@ impl Default for PrintGlobals {
+@@ -31,17 +68,22 @@ impl Default for PrintGlobals {
              depth: 0,
              being_printed: [Value::Nil; PRINT_CIRCLE],
              new_backquote_output: 0,
 +            buffer: None,
 +            inserting: 0,
 +            memory: None,
++            pending: PrintOutput::default(),
          }
      }
  }
@@ -2847,7 +2855,7 @@ index cb6df2d0..f8416d66 100644
          tortoise: Value,
          n: i64,
          m: i64,
-@@ -59,7 +80,7 @@ enum PrintEntry {
+@@ -59,7 +101,7 @@ enum PrintEntry {
      },
      /// PE_hash: the rest of a hash table's keys and values.
      Hash {
@@ -2856,7 +2864,7 @@ index cb6df2d0..f8416d66 100644
          nobjs: usize,
          idx: usize,
          printed: usize,
-@@ -67,6 +88,55 @@ enum PrintEntry {
+@@ -67,6 +109,55 @@ enum PrintEntry {
      },
  }
  
@@ -2912,7 +2920,7 @@ index cb6df2d0..f8416d66 100644
  /// How print_object goes on after an object's own case.
  enum Step {
      /// `break': the object is done, print_depth back down.
-@@ -78,28 +148,36 @@ enum Step {
+@@ -78,28 +169,36 @@ enum Step {
  }
  
  struct Printer {
@@ -2959,7 +2967,7 @@ index cb6df2d0..f8416d66 100644
          if let Some(table) = number_table(interp) {
              let once = table
                  .entries()
-@@ -112,18 +190,35 @@ pub(crate) fn print(
+@@ -112,18 +211,38 @@ pub(crate) fn print(
          }
      }
      interp.print_globals.depth = 0;
@@ -2972,7 +2980,7 @@ index cb6df2d0..f8416d66 100644
 +                .unwrap_or_else(PrintOutput::plain),
 +            true,
 +        ),
-+        PrintSink::Stdout | PrintSink::Echo => (PrintOutput::default(), false),
++        PrintSink::Stdout | PrintSink::Echo => (interp.print_globals.take_pending(), false),
 +        PrintSink::Function(_) => (PrintOutput::plain(), false),
 +    };
      let mut printer = Printer {
@@ -2993,6 +3001,9 @@ index cb6df2d0..f8416d66 100644
 +    // What the walk wrote before it stopped is the output's first, and
 +    // so is an error of the output's own.
 +    let flushed = printer.flush(interp, env);
++    if matches!(sink, PrintSink::Stdout | PrintSink::Echo) {
++        interp.print_globals.give_pending(printer.out);
++    }
 +    flushed.and(walked)
  }
  
@@ -3002,7 +3013,7 @@ index cb6df2d0..f8416d66 100644
      match obj.kind() {
          Kind::StringObject(_)
          | Kind::Cons(_)
-@@ -136,12 +231,12 @@ fn circle_candidate(interp: &Interpreter, obj: &Value, options: PrintOptions) ->
+@@ -136,12 +255,12 @@ fn circle_candidate(interp: &Interpreter, obj: &Value, options: PrintOptions) ->
          Kind::Record(id) => interp
              .find_record(id)
              .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Font),
@@ -3017,7 +3028,7 @@ index cb6df2d0..f8416d66 100644
      match interp
          .symbol_value_key(cached_symbol!("print-number-table"))?
          .kind()
-@@ -152,7 +247,9 @@ fn number_table(interp: &Interpreter) -> Option<HashTableRef> {
+@@ -152,7 +271,9 @@ fn number_table(interp: &Interpreter) -> Option<HashTableRef> {
  }
  
  /// Vprint_number_table as Fgethash and Fputhash check it.
@@ -3028,7 +3039,7 @@ index cb6df2d0..f8416d66 100644
      let table = interp
          .symbol_value_key(cached_symbol!("print-number-table"))
          .unwrap_or(Value::Nil);
-@@ -193,19 +290,20 @@ pub(crate) fn print_preprocess(
+@@ -193,19 +314,20 @@ pub(crate) fn print_preprocess(
      interp: &mut Interpreter,
      env: &mut Env,
      obj: Value,
@@ -3052,7 +3063,7 @@ index cb6df2d0..f8416d66 100644
                  && matches!(obj.kind(), Kind::Symbol(symbol) if symbol.cell().is_uninterned());
              if !num.is_nil() || numbered_gensym {
                  if matches!(num.kind(), Kind::Nil | Kind::T | Kind::Symbol(_)) {
-@@ -225,7 +323,7 @@ pub(crate) fn print_preprocess(
+@@ -225,7 +347,7 @@ pub(crate) fn print_preprocess(
                              .map(|intervals| intervals.plists().collect())
                              .unwrap_or_default();
                          for plist in plists.into_iter().filter(|plist| !plist.is_nil()) {
@@ -3061,7 +3072,7 @@ index cb6df2d0..f8416d66 100644
                          }
                      }
                      Kind::Cons(_) => {
-@@ -281,9 +379,8 @@ fn vectorlike_slot(obj: &Value, index: usize) -> Value {
+@@ -281,9 +403,8 @@ fn vectorlike_slot(obj: &Value, index: usize) -> Value {
      .unwrap_or(Value::Nil)
  }
  
@@ -3069,11 +3080,11 @@ index cb6df2d0..f8416d66 100644
 -fn push_fixnum(out: &mut PrintOutput, n: i64) {
 -    let mut digits = [0u8; 20];
 +/// fixnum_to_string: N's decimal digits, at the end of DIGITS.
-+fn fixnum_digits(n: i64, digits: &mut [u8; 20]) -> &str {
++fn fixnum_digits(n: i64, digits: &mut [u8; 20]) -> &[u8] {
      let mut at = digits.len();
      let mut rest = n.unsigned_abs();
      loop {
-@@ -295,18 +392,382 @@ fn push_fixnum(out: &mut PrintOutput, n: i64) {
+@@ -295,18 +416,399 @@ fn push_fixnum(out: &mut PrintOutput, n: i64) {
          }
      }
      if n < 0 {
@@ -3084,7 +3095,7 @@ index cb6df2d0..f8416d66 100644
 +        at -= 1;
 +        digits[at] = b'-';
      }
-+    std::str::from_utf8(&digits[at..]).expect("decimal digits")
++    &digits[at..]
  }
  
  fn is_symbol_key(value: &Value, key: crate::lisp::types::symbols::SymbolKey) -> bool {
@@ -3292,6 +3303,23 @@ index cb6df2d0..f8416d66 100644
 +        Ok(())
 +    }
 +
++    /// strout of ASCII the printer made itself (a number's digits).
++    fn strout_ascii(
++        &mut self,
++        interp: &mut Interpreter,
++        env: &mut Env,
++        ascii: &[u8],
++    ) -> Result<(), LispError> {
++        if let PrintSink::Function(function) = self.sink {
++            for &byte in ascii {
++                self.call_function(interp, env, function, u32::from(byte))?;
++            }
++            return Ok(());
++        }
++        self.out.strout_ascii(ascii);
++        Ok(())
++    }
++
 +    /// print.c:print_c_string of the C string OCTETS: one strout whose
 +    /// bytes are a character each, a function handed each as the `char'
 +    /// it is.
@@ -3460,7 +3488,7 @@ index cb6df2d0..f8416d66 100644
      /// print.c:print_object: OBJ and, through the stack entries it pushes,
      /// everything inside it, before returning to the entries below.
      fn print_object(
-@@ -316,7 +777,7 @@ impl Printer {
+@@ -316,7 +818,7 @@ impl Printer {
          obj: Value,
          escape: bool,
      ) -> Result<(), LispError> {
@@ -3469,7 +3497,7 @@ index cb6df2d0..f8416d66 100644
          let mut obj = obj;
          loop {
              if let Some(next) = self.print_obj(interp, env, obj, escape)? {
-@@ -339,41 +800,53 @@ impl Printer {
+@@ -339,41 +841,53 @@ impl Printer {
          obj: Value,
          escape: bool,
      ) -> Result<Option<Value>, LispError> {
@@ -3552,7 +3580,7 @@ index cb6df2d0..f8416d66 100644
              }
          }
          interp.print_globals.depth += 1;
-@@ -395,75 +868,161 @@ impl Printer {
+@@ -395,75 +909,161 @@ impl Printer {
          escape: bool,
      ) -> Result<Step, LispError> {
          match obj.kind() {
@@ -3689,7 +3717,7 @@ index cb6df2d0..f8416d66 100644
 +        }
 +        let mut digits = [0u8; 20];
 +        let text = fixnum_digits(n, &mut digits);
-+        self.strout(interp, env, text)
++        self.strout_ascii(interp, env, text)
 +    }
 +
 +    /// print_object's Lisp_Symbol case: `#:' or `##', then the name, read
@@ -3757,7 +3785,7 @@ index cb6df2d0..f8416d66 100644
      /// print_object's Lisp_Cons case.
      fn print_cons(
          &mut self,
-@@ -473,32 +1032,41 @@ impl Printer {
+@@ -473,32 +1073,41 @@ impl Printer {
          escape: bool,
      ) -> Result<Step, LispError> {
          // If deeper than spec'd depth, print placeholder.
@@ -3810,7 +3838,7 @@ index cb6df2d0..f8416d66 100644
                  interp.print_globals.new_backquote_output -= 1;
                  return Ok(Step::Done);
              }
-@@ -508,20 +1076,24 @@ impl Printer {
+@@ -508,20 +1117,24 @@ impl Printer {
              {
                  self.print_object(interp, env, car, false)?;
                  interp.print_globals.new_backquote_output -= 1;
@@ -3840,7 +3868,7 @@ index cb6df2d0..f8416d66 100644
              last: obj,
              maxlen: print_length,
              tortoise: obj,
-@@ -529,27 +1101,34 @@ impl Printer {
+@@ -529,27 +1142,34 @@ impl Printer {
              m: 2,
              tortoise_idx: 0,
          });
@@ -3882,7 +3910,7 @@ index cb6df2d0..f8416d66 100644
      }
  
      /// print_object's PVEC_HASH_TABLE case: a readable
-@@ -558,58 +1137,124 @@ impl Printer {
+@@ -558,58 +1178,124 @@ impl Printer {
          &mut self,
          interp: &mut Interpreter,
          env: &mut Env,
@@ -4020,7 +4048,7 @@ index cb6df2d0..f8416d66 100644
                  PrintEntry::List {
                      last,
                      maxlen,
-@@ -621,55 +1266,81 @@ impl Printer {
+@@ -621,55 +1307,81 @@ impl Printer {
                      let next = last.cons_values().map_or(Value::Nil, |(_, cdr)| cdr);
                      if next.is_nil() {
                          // End of list: print ")".
@@ -4140,7 +4168,7 @@ index cb6df2d0..f8416d66 100644
                  PrintEntry::Vector {
                      obj,
                      size,
-@@ -677,69 +1348,80 @@ impl Printer {
+@@ -677,69 +1389,80 @@ impl Printer {
                      end,
                      truncated,
                  } => {
@@ -4267,7 +4295,7 @@ index cb6df2d0..f8416d66 100644
          }
          Ok(None)
      }
-@@ -751,41 +1433,94 @@ impl Printer {
+@@ -751,41 +1474,103 @@ impl Printer {
          &mut self,
          interp: &mut Interpreter,
          env: &mut Env,
@@ -4344,8 +4372,17 @@ index cb6df2d0..f8416d66 100644
 -            render_prin1_string(self.escapes, &state, &mut self.out);
 +            self.call_function(interp, env, function, u32::from(b'"'))?;
 +        } else {
++            // print_prune_string_charset's Fcopy_sequence is made whoever
++            // reads the copy: a string consed, and what the walk prints.
++            let printed = if itself {
++                string
++            } else {
++                string
++                    .borrow()
++                    .copy_without_properties(crate::lisp::alloc::StringAllocation::Ordinary)
++            };
 +            self.vars(interp, ESCAPES);
-+            render_prin1_string(self.escapes, multibyte, &string.borrow(), &mut self.out);
++            render_prin1_string(self.escapes, multibyte, &printed.borrow(), &mut self.out);
 +            self.sync(interp, env)?;
 +        }
 +        // `if (string_intervals (obj))' again: the string itself may
@@ -4380,7 +4417,7 @@ index cb6df2d0..f8416d66 100644
      }
  
      /// print_vectorlike_unreadable's head: `print-unreadable-function',
-@@ -803,55 +1538,54 @@ impl Printer {
+@@ -803,55 +1588,54 @@ impl Printer {
          if function.is_nil() || !function_value_p(interp, &function, env) {
              return Ok(false);
          }
@@ -4476,7 +4513,7 @@ index cb6df2d0..f8416d66 100644
      /// print.c:print_vectorlike_unreadable.
      fn print_vectorlike_unreadable(
          &mut self,
-@@ -865,109 +1599,147 @@ impl Printer {
+@@ -865,109 +1649,147 @@ impl Printer {
          }
          match obj.kind() {
              Kind::Marker(marker) => {
@@ -4673,21 +4710,21 @@ index cb6df2d0..f8416d66 100644
      /// print_vectorlike_unreadable for the pseudovectors kept as records.
      fn print_record_unreadable(
          &mut self,
-@@ -979,58 +1751,70 @@ impl Printer {
+@@ -979,58 +1801,70 @@ impl Printer {
      ) -> Result<(), LispError> {
          use crate::lisp::eval::RecordKind;
          let Some(kind) = interp.find_record(id).map(|record| record.kind) else {
 -            self.out.push_str(&obj.to_string());
 -            return Ok(());
--        };
++            return self.strout(interp, env, &obj.to_string());
+         };
 -        // print.c prints a thread, mutex or condition variable by its
 -        // name string, falling back to the object's address; Emaxx quotes
 -        // its own object identity in the same syntax.
 -        let named = |kind: &str, name: Value| match crate::lisp::primitives::string_text(&name) {
 -            Ok(name) => format!("#<{kind} {name}>"),
 -            Err(_) => format!("#<{kind} 0x{:x}>", id.identity()),
-+            return self.strout(interp, env, &obj.to_string());
-         };
+-        };
 -        let rendered = match kind {
 -            RecordKind::ModuleFunction => crate::lisp::modules::print_function(interp, id.id),
 -            RecordKind::UserPointer => crate::lisp::modules::print_user_pointer(interp, id.id),
@@ -4726,14 +4763,14 @@ index cb6df2d0..f8416d66 100644
 -                } else {
 -                    name
 +                    self.strout(interp, env, "#<process ")?;
-+                }
+                 }
 +                match interp.process_name(id.id).map(|name| name.kind()) {
 +                    Some(Kind::StringObject(name)) => self.print_string(interp, env, name)?,
 +                    _ => self.strout(interp, env, &format!("0x{:x}", id.identity()))?,
 +                }
 +                if escape {
 +                    self.printchar(interp, env, '>')?;
-                 }
++                }
 +                Ok(())
              }
              RecordKind::Obarray => {
@@ -4775,7 +4812,7 @@ index cb6df2d0..f8416d66 100644
              // print.c PVEC_FONT: `#<font-spec' or `#<font-entity' and the
              // FONT_SPEC_MAX slots (an entity's FONT_EXTRA_INDEX, private
              // to its driver, left out), or `#<font-object NAME>'.
-@@ -1047,18 +1831,22 @@ impl Printer {
+@@ -1047,18 +1881,22 @@ impl Printer {
                  };
                  let slot = |index: usize| slots.get(index).copied().unwrap_or(Value::Nil);
                  if kind_name == "font-object" {
@@ -4805,7 +4842,7 @@ index cb6df2d0..f8416d66 100644
                              // The style slots' numbers as their names
                              // (font_style_symbolic).
                              let value = if (crate::lisp::primitives::font::FONT_WEIGHT_INDEX
-@@ -1078,26 +1866,22 @@ impl Printer {
+@@ -1078,26 +1916,22 @@ impl Printer {
                          }
                      }
                  }
@@ -4838,7 +4875,7 @@ index cb6df2d0..f8416d66 100644
      }
  }
 diff --git a/src/lisp/primitives/print/output.rs b/src/lisp/primitives/print/output.rs
-index 9ecca0c2..937f0219 100644
+index 9ecca0c2..ac211280 100644
 --- a/src/lisp/primitives/print/output.rs
 +++ b/src/lisp/primitives/print/output.rs
 @@ -4,13 +4,41 @@
@@ -4922,7 +4959,7 @@ index 9ecca0c2..937f0219 100644
          }
      }
  
-@@ -39,6 +88,21 @@ impl PrintOutput {
+@@ -39,6 +88,26 @@ impl PrintOutput {
          self.bytes
      }
  
@@ -4941,10 +4978,15 @@ index 9ecca0c2..937f0219 100644
 +        self.counted = None;
 +    }
 +
++    /// The bytes the output has room for.
++    pub(crate) fn room(&self) -> usize {
++        self.bytes.capacity()
++    }
++
      /// Whether a multibyte character joined the output; otherwise each of
      /// its codes is an octet print.c's strout counted as a character.
      pub(crate) fn is_multibyte(&self) -> bool {
-@@ -59,6 +123,8 @@ impl PrintOutput {
+@@ -59,6 +128,8 @@ impl PrintOutput {
              .collect()
      }
  
@@ -4953,7 +4995,7 @@ index 9ecca0c2..937f0219 100644
      pub(crate) fn push_code(&mut self, code: u32) {
          if code < 0x80 {
              self.bytes.push(code as u8);
-@@ -69,13 +135,17 @@ impl PrintOutput {
+@@ -69,13 +140,17 @@ impl PrintOutput {
          self.bytes.extend_from_slice(&bytes[..count]);
      }
  
@@ -4973,17 +5015,10 @@ index 9ecca0c2..937f0219 100644
          if text.is_ascii() {
              self.bytes.extend_from_slice(text.as_bytes());
          } else {
-@@ -83,13 +153,26 @@ impl PrintOutput {
+@@ -83,13 +158,34 @@ impl PrintOutput {
              self.bytes
                  .extend_from_slice(&encode_text(text, true, &[]).expect("valid host printer text"));
          }
-+        self.mark_strout(start, false);
-+    }
-+
-+    /// One strout of the characters WRITE pushes.
-+    pub(crate) fn strout_block(&mut self, write: impl FnOnce(&mut Self)) {
-+        let start = self.bytes.len();
-+        write(self);
 +        self.mark_strout(start, false);
      }
  
@@ -4992,10 +5027,25 @@ index 9ecca0c2..937f0219 100644
 -    /// unibyte Lisp string if the complete output never became multibyte.
 -    pub(crate) fn push_c_string(&mut self, text: &str) {
 -        for byte in text.bytes() {
++    /// One strout of the characters WRITE pushes.
++    pub(crate) fn strout_block(&mut self, write: impl FnOnce(&mut Self)) {
++        let start = self.bytes.len();
++        write(self);
++        self.mark_strout(start, false);
++    }
++
 +    /// ASCII characters, as push_code of each.
 +    pub(crate) fn push_ascii(&mut self, ascii: &[u8]) {
 +        debug_assert!(ascii.is_ascii());
 +        self.bytes.extend_from_slice(ascii);
++    }
++
++    /// One strout of ASCII text.
++    pub(crate) fn strout_ascii(&mut self, ascii: &[u8]) {
++        debug_assert!(ascii.is_ascii());
++        let start = self.bytes.len();
++        self.bytes.extend_from_slice(ascii);
++        self.mark_strout(start, false);
 +    }
 +
 +    /// One strout of OCTETS, each counted a character.
@@ -5005,7 +5055,7 @@ index 9ecca0c2..937f0219 100644
              let code = if byte < 128 {
                  u32::from(byte)
              } else {
-@@ -98,35 +181,121 @@ impl PrintOutput {
+@@ -98,35 +194,121 @@ impl PrintOutput {
              let (bytes, count) = encode_character(code).expect("valid C-string byte");
              self.bytes.extend_from_slice(&bytes[..count]);
          }
@@ -5122,21 +5172,21 @@ index 9ecca0c2..937f0219 100644
 +    /// Whether strout was called for this output, if only with nothing.
 +    pub(crate) fn strout_called(&self) -> bool {
 +        self.strout_called
-+    }
-+
+     }
+ 
 +    /// Whether a strout of a C string's octets that are not all ASCII is
 +    /// among the output.
 +    pub(crate) fn has_octets(&self) -> bool {
 +        self.strouts
 +            .iter()
 +            .any(|strout| strout.octets && !self.bytes[strout.start..strout.end].is_ascii())
-     }
- 
++    }
++
 +    /// The numbers a function printed to is called with, one a character.
      pub(crate) fn codes(&self) -> impl Iterator<Item = u32> + '_ {
          let mut remaining = self.bytes();
          let mut function_codes = self.function_codes.iter().peekable();
-@@ -180,26 +349,114 @@ impl PrintOutput {
+@@ -180,26 +362,114 @@ impl PrintOutput {
              .map(Value::StringObject)
              .map_err(|error| string_storage_error(interp, env, error))
      }
@@ -5544,50 +5594,11 @@ index d2777eb4..5a91c61f 100644
  #[test]
  fn undo_inhibit_record_point_turns_record_point_off() {
      // undo.c:record_point returns at once under undo_inhibit_record_point,
-diff --git a/src/tty.rs b/src/tty.rs
-index c6d7633a..41e0e739 100644
---- a/src/tty.rs
-+++ b/src/tty.rs
-@@ -291,8 +291,8 @@ impl PaintRow {
-                 self.text[start - 1] = ' ';
-                 self.marks.retain(|(cell, _)| *cell != start - 1);
-             }
--            for cell in start..col {
--                self.text[cell] = ' ';
-+            for cell in self.text.iter_mut().take(col).skip(start) {
-+                *cell = ' ';
-             }
-         }
-         let mut after = col + 1;
-@@ -1192,8 +1192,8 @@ fn wrap_echo_paint(long: &PaintRow, cols: usize, max_rows: usize) -> Vec<PaintRo
-             .count();
-         let wraps = c != PADDING_GLYPH && col < usable && col + width > usable;
-         if col == usable || wraps {
--            for cell in col..cols {
--                row.text[cell] = '\\';
-+            for cell in row.text.iter_mut().take(cols).skip(col) {
-+                *cell = '\\';
-             }
-             rows.push(std::mem::replace(&mut row, PaintRow::blank(cols)));
-             col = 0;
-@@ -10787,9 +10787,9 @@ fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Resul
-             .iter()
-             .skip_while(|(cell, _)| *cell < at)
-             .peekable();
--        for cell in at..run_end {
--            if rendered.text[cell] != PADDING_GLYPH {
--                text.push(rendered.text[cell]);
-+        for (cell, &glyph) in rendered.text.iter().enumerate().take(run_end).skip(at) {
-+            if glyph != PADDING_GLYPH {
-+                text.push(glyph);
-             }
-             while let Some((_, mark)) = marks.next_if(|(mark_cell, _)| *mark_cell == cell) {
-                 text.push(*mark);
 diff --git a/tests/cli_parity.rs b/tests/cli_parity.rs
-index 1b617dd1..400ea9f9 100644
+index 1b617dd1..28fe93f9 100644
 --- a/tests/cli_parity.rs
 +++ b/tests/cli_parity.rs
-@@ -11098,3 +11098,1208 @@ fn a_restart_leaves_buffered_output_unwritten() {
+@@ -11098,3 +11098,1249 @@ fn a_restart_leaves_buffered_output_unwritten() {
      );
      assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
  }
@@ -6795,4 +6806,45 @@ index 1b617dd1..400ea9f9 100644
 +            "Emaxx (left) and GNU (right) differ for {form}"
 +        );
 +    }
++}
++
++#[test]
++fn the_printer_reads_its_variables_as_c_reads_them() {
++    // print.c reads Vstandard_output and its DEFVARs as C variables: the
++    // dynamic values.  An entry of one of those names in a lexical
++    // environment (the alist `eval' is given) is what a reference
++    // evaluates to and nothing the printer sees: the output still goes to
++    // stdout, and the limits and formats are the variables' own.
++    let corpus = Corpus::new();
++    let program = corpus.write(
++        "lexenv.el",
++        r##";;; -*- lexical-binding: t -*-
++(eval '(princ "x1\n") '((standard-output . ignore)))
++(eval '(progn (princ standard-output) (terpri)) '((standard-output . ignore)))
++(eval '(print 'x2) '((standard-output . ignore)))
++(eval '(progn (terpri) (write-char ?w) (prin1 "s") (princ (prin1-to-string 'q)))
++      '((standard-output . ignore)))
++(eval '(princ (list print-length print-circle (prin1-to-string '(1 2 3))))
++      '((print-length . 1) (print-circle . t)))
++(eval '(princ (format "%S" '(1 2 3))) '((print-length . 1)))
++(eval '(princ (error-message-string '(error "a" (1 2 3))))
++      '((print-length . 1) (standard-output . ignore)))
++(eval '(message "%S" (list 1 2 3 float-output-format (prin1-to-string 1.5)))
++      '((float-output-format . "%.3f")))
++(terpri)
++(let ((acc nil))
++  (eval '(progn (princ "to stdout") (terpri)) (list (cons 'standard-output (lambda (c) (push c acc)))))
++  (princ (list 'collected acc))
++  (terpri))
++(let ((standard-output (lambda (_c) nil)))
++  (eval '(progn (princ "dropped") (princ standard-output)) '((standard-output . t))))
++(princ (condition-case err
++           (eval '(with-output-to-string (princ "kept") (princ standard-output))
++                 '((standard-output . t)))
++         (error (list 'signaled err))))
++(terpri)
++(eval '(princ (list noninteractive)) '((noninteractive . nil)))
++(terpri)"##,
++    );
++    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
 +}

@@ -18690,8 +18690,10 @@ setup_process_coding_systems's check now refuses). A 13-form
   `tests/` against round 363 (`git apply wip/r364/impl.patch`); its
   author's checks passed, and it is not yet reviewed, nor run through
   the gate, the integration targets and CI as a round is.
-  `lints-1.100.patch` is the part of it that only answers seven lints of
-  Rust 1.100's clippy in files the round does not otherwise touch.
+  `lints-1.100.patch` answers seven lints of Rust 1.100's clippy in
+  files the round does not touch; it is no part of `impl.patch` (CI is
+  on 1.99.1, under which the patched tree's clippy and fmt are clean),
+  and belongs to the round that moves the toolchain.
   Nothing under `wip/` is built or tested by the gate, and none of it is
   the round's evidence until the round is validated.  One thing is the
   user's to decide before the round is committed: tools/round_audit.py's
