@@ -940,6 +940,28 @@ index e187100c..9a12aeaa 100644
                      .expect("parent write"),
              );
              interpreter.with_lisp_stack_roots(&local, suspend)?;
+diff --git a/src/lisp/eval/control_forms.rs b/src/lisp/eval/control_forms.rs
+index 28cd28ce..43252d8a 100644
+--- a/src/lisp/eval/control_forms.rs
++++ b/src/lisp/eval/control_forms.rs
+@@ -271,7 +271,7 @@ impl Interpreter {
+                 let name_value = if symbol { binding } else { binding.car()? };
+                 let name =
+                     crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
+-                if self.binding_is_dynamic_symbol(&name, env) {
++                if self.binding_is_dynamic_symbol(&name, env)? {
+                     self.specbind_symbol(&name, *value, env)?;
+                 } else {
+                     lexenv = Self::cons_binding(name, *value, lexenv);
+@@ -343,7 +343,7 @@ impl Interpreter {
+                 };
+                 let name =
+                     crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
+-                if self.binding_is_dynamic_symbol(&name, env) {
++                if self.binding_is_dynamic_symbol(&name, env)? {
+                     self.specbind_symbol(&name, value, env)?;
+                 } else {
+                     let newenv = Self::cons_binding(
 diff --git a/src/lisp/eval/core.rs b/src/lisp/eval/core.rs
 index 9b0a042a..90e30faa 100644
 --- a/src/lisp/eval/core.rs
@@ -2502,10 +2524,73 @@ index 848b0e45..bd51e7ed 100644
              &PathBuf::from(value_string(&user_directory)?)
                  .join("tree-sitter")
 diff --git a/src/lisp/eval/variables.rs b/src/lisp/eval/variables.rs
-index 81f1832c..6bde19e8 100644
+index 81f1832c..a8c18dd3 100644
 --- a/src/lisp/eval/variables.rs
 +++ b/src/lisp/eval/variables.rs
-@@ -3879,7 +3879,7 @@ impl Interpreter {
+@@ -892,14 +892,19 @@ impl Interpreter {
+     /// whether NAME is declared locally special in the current
+     /// environment. The Lisp environment itself is authoritative, including
+     /// bare symbols installed or mutated after a closure was constructed.
+-    pub(crate) fn local_special_active(&self, symbol: &SymbolName, env: &Env) -> bool {
+-        crate::lisp::types::current_environment(env).is_some_and(|environment| {
+-            crate::lisp::types::environment_declares_special_with(
++    pub(crate) fn local_special_active(
++        &self,
++        symbol: &SymbolName,
++        env: &Env,
++    ) -> Result<bool, LispError> {
++        match crate::lisp::types::current_environment(env) {
++            Some(environment) => crate::lisp::types::environment_declares_special_with(
+                 environment,
+                 symbol,
+                 self.symbols_with_positions_enabled(),
+-            )
+-        })
++            ),
++            None => Ok(false),
++        }
+     }
+ 
+     /// Whether GNU's hidden `internal-interpreter-environment' is non-nil.
+@@ -920,10 +925,19 @@ impl Interpreter {
+     /// `(eval FORM)' supplies a nil lexical environment, so bindings made
+     /// directly by FORM are dynamic even for undeclared symbols.  Existing
+     /// lexical functions called by FORM mask this override at their boundary.
+-    pub(crate) fn binding_is_dynamic_symbol(&self, symbol: &SymbolName, env: &Env) -> bool {
+-        self.lambda_capture_override() == Some(false)
+-            || self.is_special_variable_symbol(symbol)
+-            || self.local_special_active(symbol, env)
++    pub(crate) fn binding_is_dynamic_symbol(
++        &self,
++        symbol: &SymbolName,
++        env: &Env,
++    ) -> Result<bool, LispError> {
++        // Flet: `!NILP (lexenv) && SYMBOLP (var) && !declared_special &&
++        // NILP (Fmemq (var, Vinternal_interpreter_environment))', the
++        // Fmemq (and its errors) only once the others have not decided.
++        if self.lambda_capture_override() == Some(false) || self.is_special_variable_symbol(symbol)
++        {
++            return Ok(true);
++        }
++        self.local_special_active(symbol, env)
+     }
+ 
+     /// Only the object registered by a C initializer owns its dedicated slot.
+@@ -3480,7 +3494,12 @@ impl Interpreter {
+             })
+             .map_or(0, |below| below + 1);
+         self.swap_special_bindings_for_thread_switch(start, false);
+-        let result = self.eval(form, &mut context);
++        // eval_sub under the frame's Vinternal_interpreter_environment:
++        // lexical binding when that is non-nil, whatever the function
++        // `backtrace-eval' was called from is written in.
++        let lexical = !crate::lisp::types::current_environment_value(&context).is_nil();
++        let result =
++            self.with_lambda_eval_context(lexical, |interp| interp.eval(form, &mut context));
+         self.swap_special_bindings_for_thread_switch(start, true);
+         result
+     }
+@@ -3879,7 +3898,7 @@ impl Interpreter {
      /// entered since the last input event.  Whether it was entered.
      fn maybe_call_debugger(&mut self, error: &LispError, env: &mut Env) -> Result<bool, LispError> {
          if self
@@ -2514,7 +2599,7 @@ index 81f1832c..6bde19e8 100644
              .is_some_and(|value| value.is_truthy())
          {
              return Ok(false);
-@@ -3890,25 +3890,25 @@ impl Interpreter {
+@@ -3890,25 +3909,25 @@ impl Interpreter {
          let quit = error_symbol.as_str() == "quit"
              || conditions.iter().any(|name| name.as_str() == "quit");
          let wanted = if quit {
@@ -2546,7 +2631,7 @@ index 81f1832c..6bde19e8 100644
          if entered >= events {
              return Ok(false);
          }
-@@ -3925,7 +3925,7 @@ impl Interpreter {
+@@ -3925,7 +3944,7 @@ impl Interpreter {
          env: &mut Env,
      ) -> Result<bool, LispError> {
          let ignored = self
@@ -2568,7 +2653,7 @@ index a8355853..9cf8287a 100644
                      members.len() / 2,
                      0,
 diff --git a/src/lisp/mod.rs b/src/lisp/mod.rs
-index ccf6854f..b6a17864 100644
+index ccf6854f..66e3116d 100644
 --- a/src/lisp/mod.rs
 +++ b/src/lisp/mod.rs
 @@ -901,7 +901,7 @@ pub(crate) fn read_next_load_input_form(
@@ -2591,7 +2676,29 @@ index ccf6854f..b6a17864 100644
      match value {
          Some(value) if needs_materialization => interp
              .materialize_read_object_literals(value, env)
-@@ -996,7 +996,7 @@ fn read_lisp_file_bytes(
+@@ -984,10 +984,19 @@ fn read_lisp_file_bytes(
+     });
+     // Fload's `infile' for a file stream, until close_infile_unwind.
+     let _infile = matches!(text, LoadText::File(_)).then(reader::InfileLoad::enter);
+-    interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
++    // readevalloop's `specbind (Qinternal_interpreter_environment, ...)':
++    // `(t)' for a file with lexical binding and nil otherwise, the
++    // environment of the frames below until the load is over.
++    let top_environment = if settings.lexical_binding {
++        types::Value::list([types::Value::T])
++    } else {
++        types::Value::Nil
++    };
++    let installed = interp.install_frame_environment(top_environment);
++    let loaded = interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
+         let previous = interp.set_current_load_file(Some(load_file.clone()));
+         let mut env = if settings.lexical_binding {
+-            crate::lisp::types::Env::from_vec(vec![types::EnvFrame::lexical()])
++            crate::lisp::types::Env::from_vec(vec![types::EnvFrame::from_alist(top_environment)])
+         } else {
+             types::Env::new()
+         };
+@@ -996,7 +1005,7 @@ fn read_lisp_file_bytes(
          // as `(let ((load-file-name nil)) (load ...))' must be shadowed by the
          // file being loaded, then restored on every exit path.
          let macroexp_dynvars = interp
@@ -2600,7 +2707,7 @@ index ccf6854f..b6a17864 100644
              .unwrap_or(types::Value::Nil);
          let mut dynamic_restores = Vec::with_capacity(9);
          for (name, value) in [
-@@ -1040,7 +1040,7 @@ fn read_lisp_file_bytes(
+@@ -1040,7 +1049,7 @@ fn read_lisp_file_bytes(
                  )
              {
                  if name == "lexical-binding" && settings.lexical_binding {
@@ -2609,7 +2716,7 @@ index ccf6854f..b6a17864 100644
                  }
                  continue;
              }
-@@ -1118,7 +1118,7 @@ fn read_lisp_file_bytes(
+@@ -1118,7 +1127,7 @@ fn read_lisp_file_bytes(
              // restores the filename in current-load-list. That unfinished
              // load must not be published as a completed history entry.
              let current_load_list = interp
@@ -2618,7 +2725,18 @@ index ccf6854f..b6a17864 100644
                  .unwrap_or_else(|| {
                      types::Value::list([types::Value::String(load_file.clone().into())])
                  });
-@@ -1587,14 +1587,12 @@ mod tests {
+@@ -1161,7 +1170,9 @@ fn read_lisp_file_bytes(
+         }
+         reader::forget_saved_lazy_strings();
+         Ok(stopped)
+-    })
++    });
++    interp.uninstall_frame_environments(installed);
++    loaded
+ }
+ 
+ fn restore_special_dynamic_bindings(
+@@ -1587,14 +1598,12 @@ mod tests {
          super::load_file_strict(&mut interp, &source_path)
              .expect("load source reader-object fixture");
          assert_eq!(
@@ -2635,7 +2753,7 @@ index ccf6854f..b6a17864 100644
              Some(super::types::Kind::CharTable(_))
          ));
  
-@@ -1602,7 +1600,7 @@ mod tests {
+@@ -1602,7 +1611,7 @@ mod tests {
              .expect("load compiled reader-object fixture");
          assert!(matches!(
              interp
@@ -7314,7 +7432,7 @@ index 73d2bfbd..bf6ac15d 100644
                  let predicate = if name == "read-command" {
                      Value::Symbol("commandp".into())
 diff --git a/src/lisp/primitives/dispatch/misc.rs b/src/lisp/primitives/dispatch/misc.rs
-index 142bcaa2..2a02d770 100644
+index 142bcaa2..e8ee3f05 100644
 --- a/src/lisp/primitives/dispatch/misc.rs
 +++ b/src/lisp/primitives/dispatch/misc.rs
 @@ -56,11 +56,7 @@ fn fringe_fixnum(value: &Value) -> Result<i64, LispError> {
@@ -7654,16 +7772,22 @@ index 142bcaa2..2a02d770 100644
          Kind::NativeFunction(function) => {
              crate::lisp::native_comp::function_documentation(interp, env, function)
          }
-@@ -2270,7 +2247,7 @@ fn documentation_property(
+@@ -2270,10 +2247,11 @@ fn documentation_property(
      if doc == Value::Integer(0) {
          doc = Value::Nil;
      } else if is_doc_reference(&doc) {
 -        doc = resolve_doc_reference(interp, &doc, env)?.unwrap_or(Value::Nil);
 +        doc = resolve_doc_reference(interp, &doc)?.unwrap_or(Value::Nil);
      } else if string_like(&doc).is_none() && !doc.is_nil() {
-         // Feval (tem, Qnil): dynamically, outside the caller's scope.
-         doc = interp.eval(&doc, &mut Env::new())?;
-@@ -2333,14 +2310,13 @@ fn documentation(
+-        // Feval (tem, Qnil): dynamically, outside the caller's scope.
+-        doc = interp.eval(&doc, &mut Env::new())?;
++        // Feval (tem, Qnil): with a nil lexical environment, so
++        // dynamically, whatever the caller is written in.
++        doc = crate::lisp::primitives::loading::eval_impl(interp, &[doc, Value::Nil], env)?;
+     }
+     substitute_doc_keys(interp, doc, args.get(2).is_some_and(Value::is_truthy), env)
+ }
+@@ -2333,14 +2311,13 @@ fn documentation(
      } else {
          match function.kind() {
              Kind::BuiltinFunc(name) => {
@@ -7680,7 +7804,7 @@ index 142bcaa2..2a02d770 100644
                  }
              }
              _ => function_documentation(interp, &function, env).unwrap_or(Value::Nil),
-@@ -2356,7 +2332,7 @@ fn documentation(
+@@ -2356,7 +2333,7 @@ fn documentation(
      if doc == Value::Integer(0) {
          doc = Value::Nil;
      } else if is_doc_reference(&doc) {
@@ -10470,7 +10594,7 @@ index e11c3d35..68213e0d 100644
  
      // The keymaps in which to search.
 diff --git a/src/lisp/primitives/loading.rs b/src/lisp/primitives/loading.rs
-index 5a86f33b..8471b044 100644
+index 5a86f33b..c9b9acfc 100644
 --- a/src/lisp/primitives/loading.rs
 +++ b/src/lisp/primitives/loading.rs
 @@ -240,7 +240,7 @@ fn call_interactively_checked(
@@ -10608,7 +10732,18 @@ index 5a86f33b..8471b044 100644
      let (value, consumed, needs_materialization) = {
          let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
          let reader = match source.input_from(*offset) {
-@@ -1331,16 +1324,14 @@ fn find_load_file(
+@@ -1153,7 +1146,10 @@ fn with_fresh_eval_environment<T>(
+         crate::lisp::types::Env::new()
+     };
+     interp.push_lambda_eval_context(lexical);
++    let installed =
++        interp.install_frame_environment(crate::lisp::types::current_environment_value(&eval_env));
+     let result = body(interp, &mut eval_env);
++    interp.uninstall_frame_environments(installed);
+     interp.pop_lambda_capture_override();
+     result
+ }
+@@ -1331,16 +1327,14 @@ fn find_load_file(
              suffixes
          } else {
              let reps = interp
@@ -10628,7 +10763,7 @@ index 5a86f33b..8471b044 100644
          .is_some_and(|value| value.is_truthy());
      search::openp_search(
          interp,
-@@ -1368,7 +1359,7 @@ pub(crate) fn maybe_swap_for_native(
+@@ -1368,7 +1362,7 @@ pub(crate) fn maybe_swap_for_native(
              .extension()
              .is_none_or(|extension| extension != "elc")
          || interp
@@ -10637,7 +10772,7 @@ index 5a86f33b..8471b044 100644
              .is_some_and(|value| value.is_truthy())
      {
          return Ok(resolved.to_path_buf());
-@@ -1376,7 +1367,7 @@ pub(crate) fn maybe_swap_for_native(
+@@ -1376,7 +1370,7 @@ pub(crate) fn maybe_swap_for_native(
  
      // The names here are Lisp file names' text; each reaches the host
      // ENCODE_FILE'd, as lread.c's maybe_swap_for_eln passes them.
@@ -10646,7 +10781,7 @@ index 5a86f33b..8471b044 100644
      let mut source = resolved.to_path_buf();
      source.set_extension("el");
      if !fs::is_regular_file(host(&source)?) {
-@@ -1394,19 +1385,19 @@ pub(crate) fn maybe_swap_for_native(
+@@ -1394,19 +1388,19 @@ pub(crate) fn maybe_swap_for_native(
          &mut filename_env,
      )?;
      let version = interp
@@ -10670,7 +10805,7 @@ index 5a86f33b..8471b044 100644
          .and_then(|metadata| metadata.modified())
          .ok();
  
-@@ -1425,7 +1416,7 @@ pub(crate) fn maybe_swap_for_native(
+@@ -1425,7 +1419,7 @@ pub(crate) fn maybe_swap_for_native(
          };
          system_directory = Some(directory.clone());
          let candidate = directory.join(&version).join(&relative);
@@ -10679,7 +10814,7 @@ index 5a86f33b..8471b044 100644
          if native_candidate_is_current(&host, resolved_mtime) {
              record_native_source(interp, &candidate, &source, env)?;
              return Ok(candidate);
-@@ -1436,7 +1427,7 @@ pub(crate) fn maybe_swap_for_native(
+@@ -1436,7 +1430,7 @@ pub(crate) fn maybe_swap_for_native(
      // native directory after all ordinary cache directories.
      if let Some(directory) = system_directory {
          let candidate = directory.join(version).join("preloaded").join(relative);
@@ -10688,7 +10823,7 @@ index 5a86f33b..8471b044 100644
          if native_candidate_is_current(&host, resolved_mtime) {
              record_native_source(interp, &candidate, &source, env)?;
              return Ok(candidate);
-@@ -1468,7 +1459,7 @@ fn record_native_source(
+@@ -1468,7 +1462,7 @@ fn record_native_source(
      source: &Path,
      env: &Env,
  ) -> Result<(), LispError> {
@@ -10697,7 +10832,7 @@ index 5a86f33b..8471b044 100644
          return Ok(());
      };
      let Some(basename) = native.file_name() else {
-@@ -1515,11 +1506,10 @@ pub(crate) fn note_unescaped_character_literal(
+@@ -1515,11 +1509,10 @@ pub(crate) fn note_unescaped_character_literal(
      Ok(())
  }
  
@@ -10711,7 +10846,7 @@ index 5a86f33b..8471b044 100644
          return Ok(Vec::new());
      };
      let mut shorthands = Vec::new();
-@@ -1538,12 +1528,11 @@ pub(crate) fn read_symbol_shorthands_in_env(
+@@ -1538,12 +1531,11 @@ pub(crate) fn read_symbol_shorthands_in_env(
      Ok(shorthands)
  }
  
@@ -10726,7 +10861,7 @@ index 5a86f33b..8471b044 100644
          if let Some(rest) = symbol_name.strip_prefix(&short) {
              return Ok(format!("{long}{rest}"));
          }
-@@ -1559,14 +1548,14 @@ pub(crate) fn get_load_suffixes_value(
+@@ -1559,14 +1551,14 @@ pub(crate) fn get_load_suffixes_value(
      // detaches their public symbols. concat2 accepts sequences, not just strings.
      let mut suffixes = search::SearchTail::new(
          interp
@@ -14310,6 +14445,118 @@ index b3cdb3e7..53eddacf 100644
  }
  
  fn sqlitep(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
+diff --git a/src/lisp/types.rs b/src/lisp/types.rs
+index 0833e941..78de4cc9 100644
+--- a/src/lisp/types.rs
++++ b/src/lisp/types.rs
+@@ -2441,45 +2441,69 @@ fn improper_environment(environment: &Value, circular: bool) -> LispError {
+ /// `symbols-with-pos-enabled' is set) is declared special in the lexical
+ /// environment.
+ #[inline]
+-pub(crate) fn environment_declares_special(environment: &Value, symbol: &SymbolName) -> bool {
++pub(crate) fn environment_declares_special(
++    environment: &Value,
++    symbol: &SymbolName,
++) -> Result<bool, LispError> {
+     environment_declares_special_with(environment, symbol, symbols::symbols_with_pos_enabled())
+ }
+ 
+ /// `environment_declares_special' with `symbols-with-pos-enabled' as
+-/// WITH_POS, read once by the caller: no Lisp runs in the walk.
++/// WITH_POS, read once by the caller: no Lisp runs in the walk.  An
++/// improper environment signals `listp' and a circular one
++/// `circular-list', as Fmemq's FOR_EACH_TAIL and CHECK_LIST_END do.
+ #[inline(always)]
+ pub(crate) fn environment_declares_special_with(
+     environment: &Value,
+     symbol: &SymbolName,
+     with_pos: bool,
+-) -> bool {
++) -> Result<bool, LispError> {
+     let target = symbol.identity_ptr() | TAG_SYMBOL;
+     if with_pos {
+-        return environment_declares_special_with_pos(*environment, target);
+-    }
+-    let mut tail = *environment;
+-    while let Some(cell) = tail.cons_ref() {
+-        if cell.car.get().word() == target {
+-            return true;
+-        }
+-        tail = cell.cdr.get();
++        return memq_environment(environment, |element| {
++            element.word() == target
++                || (element.is_vectorlike() && symbol_with_pos_is(element, target))
++        });
+     }
+-    false
++    memq_environment(environment, |element| element.word() == target)
+ }
+ 
+-/// `environment_declares_special' while `symbols-with-pos-enabled' is set.
+-#[cold]
+-#[inline(never)]
+-fn environment_declares_special_with_pos(environment: Value, target: usize) -> bool {
+-    let mut tail = environment;
+-    while let Some(cell) = tail.cons_ref() {
+-        let car = cell.car.get();
+-        if car.word() == target || (car.is_vectorlike() && symbol_with_pos_is(car, target)) {
+-            return true;
++/// fns.c:Fmemq over the lexical environment: whether an element satisfies
++/// MATCHES.
++#[inline]
++fn memq_environment(
++    environment: &Value,
++    matches: impl Fn(Value) -> bool,
++) -> Result<bool, LispError> {
++    let mut tail = match environment.cons_ref() {
++        Some(cell) => cell,
++        None if environment.is_nil() => return Ok(false),
++        None => return Err(improper_environment(environment, false)),
++    };
++    // FOR_EACH_TAIL's cycle check (Brent), as assq_environment's.
++    let mut tortoise = tail.as_ptr();
++    let mut steps = 0usize;
++    let mut lap = 2usize;
++    loop {
++        if matches(tail.car.get()) {
++            return Ok(true);
++        }
++        let rest = tail.cdr.get();
++        let next = match rest.cons_ref() {
++            Some(cell) => cell,
++            None if rest.is_nil() => return Ok(false),
++            None => return Err(improper_environment(environment, false)),
++        };
++        if next.as_ptr() == tortoise {
++            return Err(improper_environment(environment, true));
+         }
+-        tail = cell.cdr.get();
++        steps += 1;
++        if steps == lap {
++            tortoise = next.as_ptr();
++            lap <<= 1;
++        }
++        tail = next;
+     }
+-    false
+ }
+ 
+ pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
+@@ -4019,10 +4043,10 @@ mod tests {
+         assert!(
+             matches!(tail.kind(), Kind::Cons(cell) if matches!(outer.environment().kind(), Kind::Cons(o) if SharedCons::ptr_eq(&cell, &o)))
+         );
+-        assert!(!environment_declares_special(
+-            frame.environment(),
+-            &SymbolName::intern_str("cell")
+-        ));
++        assert!(
++            !environment_declares_special(frame.environment(), &SymbolName::intern_str("cell"))
++                .expect("proper environment")
++        );
+     }
+ 
+     #[test]
 diff --git a/src/startup.rs b/src/startup.rs
 index c660661e..35302132 100644
 --- a/src/startup.rs
@@ -14938,10 +15185,10 @@ index ad1e3f0b..9b908a83 100644
      };
      let key = Value::Integer(i64::from(cause));
 diff --git a/tests/cli_parity.rs b/tests/cli_parity.rs
-index 73fa1d16..1095c7ca 100644
+index 73fa1d16..b47c815e 100644
 --- a/tests/cli_parity.rs
 +++ b/tests/cli_parity.rs
-@@ -12610,3 +12610,343 @@ fn the_standard_display_table_is_looked_up_as_disp_char_vector_does() {
+@@ -12610,3 +12610,455 @@ fn the_standard_display_table_is_looked_up_as_disp_char_vector_does() {
      );
      assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
  }
@@ -15282,6 +15529,118 @@ index 73fa1d16..1095c7ca 100644
 +(zz 221 (eval '(progn (define-coding-system-alias 'zz-cv-alias 'utf-8) (list coding-system-list coding-system-alist)) '((coding-system-list . lex) (coding-system-alist . lex2))))
 +(zz 222 (eval '(with-temp-buffer (insert "ab") (goto-char 1) (list (progn (self-insert-command 1 ?x) last-command-event) (buffer-string))) '((last-command-event . lex))))
 +(zz 223 (eval '(progn (set-coding-system-priority 'utf-8) (list coding-category-list (car (symbol-value 'coding-category-list)))) '((coding-category-list . lex))))"##,
++    );
++    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
++    // Forms evaluated in another environment take that environment's
++    // dialect: a documentation property that is a form is `Feval (tem,
++    // Qnil)' and `backtrace-eval' is eval_sub under the frame's own
++    // environment, so a lambda's parameter named like a special variable
++    // is specbound there and the primitives it calls see it.  Flet's
++    // `Fmemq (var, Vinternal_interpreter_environment)' signals for an
++    // environment that is no list or is circular.  And a parameter of
++    // that name in a lexical lambda is a dynamic binding wherever it is.
++    let program = corpus.write(
++        "lexenv-dialect.el",
++        r##";;; -*- lexical-binding: t -*-
++(defmacro zz (n form)
++  `(princ (format "%d: %S\n" ,n (condition-case err ,form (error (list 'ERR err))))))
++(defun zz-lexdbg (n exp) (backtrace-eval exp n))
++;; --- a documentation property that is a form: Feval (tem, Qnil)
++(zz 1 (progn (put 'zz-v 'variable-documentation '(funcall (lambda (tab-width) (with-temp-buffer (insert "\t") (format "%d" (current-column)))) 3)) (documentation-property 'zz-v 'variable-documentation t)))
++(zz 2 (progn (put 'zz-v 'variable-documentation '(condition-case tab-width (signal 'error nil) (error (condition-case e2 (with-temp-buffer (insert "\t") (format "%d" (current-column))) (error (format "%S" e2)))))) (documentation-property 'zz-v 'variable-documentation t)))
++(zz 3 (progn (defun zz-fd () nil) (put 'zz-fd 'function-documentation '(funcall (lambda (case-fold-search) (format "%S" (string-match "A" "a"))) nil)) (documentation 'zz-fd t)))
++(zz 4 (progn (put 'zz-v 'variable-documentation '(funcall (lambda (print-length) (format "%S" '(1 2 3))) 1)) (documentation-property 'zz-v 'variable-documentation t)))
++(zz 5 (progn (put 'zz-v 'variable-documentation '(mapconcat (lambda (print-length) (prin1-to-string '(1 2 3))) '(1 2) " ")) (documentation-property 'zz-v 'variable-documentation t)))
++(zz 6 (progn (put 'zz-v 'variable-documentation '(let ((zz-undecl "dyn")) (if (boundp 'zz-undecl) (symbol-value 'zz-undecl) "lex"))) (documentation-property 'zz-v 'variable-documentation t)))
++(zz 7 (progn (put 'zz-v 'variable-documentation '(let ((zz-undecl 5)) (format "%S" (funcall (lambda () (boundp 'zz-undecl)))))) (documentation-property 'zz-v 'variable-documentation t)))
++(zz 8 (progn (put 'zz-v 'variable-documentation '(format "%S" (special-variable-p (progn (defvar zz-docdv) 'zz-docdv)))) (documentation-property 'zz-v 'variable-documentation t)))
++(zz 9 (progn (put 'zz-v 'variable-documentation '(format "%S" (list (functionp (lambda (x) x)) (interpreted-function-p (lambda (x) x)) (aref (lambda (x) x) 2)))) (documentation-property 'zz-v 'variable-documentation t)))
++(zz 10 (progn (defmacro zz-dm () (format "%S" lexical-binding)) (put 'zz-v 'variable-documentation '(zz-dm)) (documentation-property 'zz-v 'variable-documentation t)))
++(zz 11 (funcall (byte-compile (lambda () (put 'zz-v 'variable-documentation '(funcall (lambda (tab-width) (with-temp-buffer (insert "\t") (format "%d" (current-column)))) 3)) (documentation-property 'zz-v 'variable-documentation t)))))
++(zz 12 (eval '(progn (put 'zz-v 'variable-documentation '(funcall (lambda (tab-width) (with-temp-buffer (insert "\t") (format "%d" (current-column)))) 3)) (documentation-property 'zz-v 'variable-documentation t)) nil))
++;; --- backtrace-eval: eval_sub under the frame's environment
++(defvar zz-r nil)
++(zz 13 (funcall '(lambda () (zz-lexdbg 1 '(let ((zz-q 1)) (boundp 'zz-q))))))
++(zz 14 (funcall '(lambda () (zz-lexdbg 1 '(funcall (lambda (tab-width) (with-temp-buffer (insert "\t") (current-column))) 3)))))
++(zz 15 (funcall '(lambda () (zz-lexdbg 1 '(interpreted-function-p (lambda (x) x))))))
++(zz 16 (funcall '(lambda () (zz-lexdbg 1 '(aref (lambda (x) x) 2)))))
++(zz 17 (funcall (lambda () (zz-lexdbg 1 '(let ((zz-q 1)) (boundp 'zz-q))))))
++(zz 18 (let ((zz-lv 'lex)) (funcall (lambda () (zz-lexdbg 1 'zz-lv)))))
++(zz 19 (let ((zz-lv 'lex)) (funcall (lambda () (zz-lexdbg 1 '(setq zz-lv 'changed)) zz-lv))))
++(zz 20 (let ((zz-lv 'lex)) (funcall '(lambda () (zz-lexdbg 1 '(condition-case nil zz-lv (error 'void)))))))
++(zz 21 (let ((zz-lv 'lex)) (funcall '(lambda () (zz-lexdbg 2 '(condition-case nil zz-lv (error 'void)))))))
++(zz 22 (let ((zz-lv 'lex)) (funcall '(lambda () (zz-lexdbg 3 '(condition-case nil zz-lv (error 'void)))))))
++(zz 23 (eval '(funcall (lambda () (zz-lexdbg 1 '(let ((zz-q 1)) (boundp 'zz-q))))) nil))
++(zz 24 (eval '(let ((zz-dynv 5)) (zz-lexdbg 1 '(list zz-dynv (boundp 'zz-dynv)))) nil))
++(zz 25 (eval '(let ((tab-width 5)) (zz-lexdbg 2 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))) nil))
++(zz 26 (let ((tab-width 5)) (zz-lexdbg 2 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))))
++(zz 27 (let ((tab-width 5)) (funcall (lambda () (zz-lexdbg 3 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))))))
++(zz 28 (funcall (lambda (tab-width) (zz-lexdbg 1 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))) 3))
++(zz 29 (funcall '(lambda (tab-width) (zz-lexdbg 1 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))) 3))
++(zz 30 (funcall '(lambda (tab-width) (zz-lexdbg 2 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))) 3))
++(zz 31 (funcall '(lambda (tab-width) (zz-lexdbg 3 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))) 3))
++(zz 32 (let ((zz-lv 'lex)) (funcall (lambda (a) (mapcar (lambda (x) (if (consp x) (car x) x)) (zz-lexdbg 1 '(backtrace--locals 1)))) 1)))
++(zz 33 (let ((zz-lv 'lex)) (funcall (lambda (a) (list zz-lv (backtrace--locals 1))) 1)))
++(zz 34 (let ((zz-lv 'lex)) (funcall (lambda (a) (list zz-lv (backtrace--locals 2))) 1)))
++(zz 35 (let ((zz-lv 'lex)) (funcall (lambda (a) (list zz-lv (backtrace--locals 3))) 1)))
++(zz 36 (let ((tab-width 3)) (funcall (lambda (a) (list (backtrace--locals 1) (backtrace--locals 2) (backtrace--locals 3))) 1)))
++(zz 37 (funcall '(lambda (zz-da) (list (backtrace--locals 1) (backtrace--locals 2))) 1))
++(zz 38 (funcall (lambda (zz-la) (let ((zz-l2 2) (tab-width 4)) (list zz-la (backtrace--locals 1) (backtrace--locals 2)))) 1))
++;; --- Flet's Fmemq over a lexical environment that is no list
++(zz 39 (eval '(let ((zz-x 3)) zz-x) '((zz-y . 1) . 2)))
++(zz 40 (let ((al (list (cons 'zz-y 1)))) (setcdr al al) (car (condition-case e (eval '(let ((zz-q 1)) (boundp 'zz-q)) al) (error e)))))
++(zz 41 (eval '(let* ((zz-x 3)) zz-x) '((zz-y . 1) . 2)))
++;; --- a lambda's parameter named like a special variable is specbound
++(defvar zz-r nil)
++(zz 42 (funcall (lambda (default-directory) (list default-directory (equal (expand-file-name "x") (expand-file-name "x" (symbol-value 'default-directory))) (file-relative-name "/zz/a"))) "/zz/"))
++(zz 43 (funcall (lambda (default-directory) (with-temp-buffer (list default-directory (equal (symbol-value 'default-directory) default-directory)))) "/zz/"))
++(zz 44 (funcall (lambda (default-directory) (with-temp-buffer (call-process "pwd" nil t) (equal (buffer-string) "/\n"))) "/"))
++(zz 45 (funcall (lambda (standard-output) (princ "to-stdout-or-lexical") (terpri) standard-output) 'ignore))
++(zz 46 (funcall (lambda (standard-output) (with-output-to-string (princ "inner"))) 'ignore))
++(zz 47 (funcall (lambda (buffer-file-name) (list buffer-file-name (buffer-file-name) (symbol-value 'buffer-file-name))) "/zz/f"))
++(zz 48 (funcall (lambda (buffer-read-only) (with-temp-buffer (insert "x") (list buffer-read-only (buffer-string)))) t))
++(zz 49 (funcall (lambda (inhibit-read-only) (with-temp-buffer (setq buffer-read-only t) (condition-case e (insert "x") (error (car e))))) t))
++(zz 50 (funcall (lambda (case-fold-search) (with-temp-buffer (insert "abc") (goto-char 1) (list (search-forward "B" nil t) (looking-back "A" 1) (char-equal ?a ?A)))) nil))
++(zz 51 (funcall (lambda (print-length print-level) (list (format "%S" '(1 2 3 (4 (5)))) (prin1-to-string '(1 2 3)) (with-output-to-string (print '(1 2 3))) (error-message-string '(error "x" (1 2 3))))) 1 1))
++(zz 52 (funcall (lambda (print-escape-newlines print-escape-nonascii print-escape-multibyte) (prin1-to-string "a\né")) t t t))
++(zz 53 (funcall (lambda (float-output-format) (list (format "%s" 1.5) (number-to-string 1.5) (prin1-to-string 1.5))) "%.3f"))
++(zz 54 (funcall (lambda (text-quoting-style) (list (format-message "`a'") (substitute-quotes "`a'") (error-message-string '(void-variable x)))) 'grave))
++(zz 55 (funcall (lambda (tab-width indent-tabs-mode) (with-temp-buffer (insert "\t") (indent-to 20) (list (current-column) (buffer-string) (current-indentation)))) 2 nil))
++(zz 56 (funcall (lambda (fill-column left-margin) (with-temp-buffer (insert "aaa bbb ccc ddd eee") (fill-region 1 (point-max)) (buffer-string))) 8 2))
++(zz 57 (funcall (lambda (major-mode mode-name) (with-temp-buffer (list major-mode mode-name (symbol-value 'major-mode)))) 'zz-mode "Zz"))
++(zz 58 (funcall (lambda (load-path) (list (length load-path) (stringp (locate-library "subr")))) nil))
++(zz 59 (funcall (lambda (features) (list features (featurep 'subr-x) (require 'subr-x))) nil))
++(zz 60 (funcall (lambda (obarray) (list (intern-soft "car") (symbolp (intern "zz-lam-new")) (read "car"))) (obarray-make)))
++(zz 61 (funcall (lambda (process-environment) (list (getenv "ZZ_LAM") (with-temp-buffer (call-process "sh" nil t nil "-c" "echo ${ZZ_LAM:-unset}") (buffer-string)))) '("ZZ_LAM=lex")))
++(zz 62 (funcall (lambda (exec-path) (stringp (executable-find "sh"))) nil))
++(zz 63 (funcall (lambda (coding-system-for-read coding-system-for-write) (let ((f (make-temp-file "zz"))) (unwind-protect (progn (with-temp-buffer (insert "é") (write-region nil nil f nil 'silent)) (list (file-attribute-size (file-attributes f)) (with-temp-buffer (insert-file-contents f) (buffer-string)))) (delete-file f)))) 'latin-1 'latin-1))
++(zz 64 (funcall (lambda (buffer-file-coding-system enable-multibyte-characters) (with-temp-buffer (list buffer-file-coding-system enable-multibyte-characters (multibyte-string-p (buffer-string)) (symbol-value 'enable-multibyte-characters)))) 'utf-16 nil))
++(zz 65 (funcall (lambda (system-time-locale) (format-time-string "%a %b" 0 t)) "fr_FR.UTF-8"))
++(zz 66 (funcall (lambda (completion-ignore-case completion-regexp-list) (list (try-completion "A" '("abc" "abd")) (all-completions "a" '("abc" "abd")) (test-completion "ABC" '("abc")))) t '("d$")))
++(zz 67 (funcall (lambda (inhibit-quit quit-flag) (list inhibit-quit quit-flag (symbol-value 'inhibit-quit) (symbol-value 'quit-flag))) t nil))
++(zz 68 (funcall (lambda (debug-on-error) (condition-case e (car 1) (error (car e)))) t))
++(zz 69 (funcall (lambda (gc-cons-threshold gc-cons-percentage) (garbage-collect) (list gc-cons-threshold (= gc-cons-threshold (symbol-value 'gc-cons-threshold)))) 1 0.9))
++(zz 70 (funcall (lambda (max-lisp-eval-depth) (list max-lisp-eval-depth (> (symbol-value 'max-lisp-eval-depth) 100))) 10))
++(zz 71 (funcall (lambda (last-command this-command) (call-interactively 'ignore) (list last-command this-command (symbol-value 'this-command))) 'lc 'tc))
++(zz 72 (funcall (lambda (unread-command-events) (list unread-command-events (input-pending-p))) '(?a)))
++(zz 73 (funcall (lambda (deactivate-mark mark-active) (with-temp-buffer (insert "x") (list deactivate-mark mark-active (symbol-value 'deactivate-mark)))) 'lex 'lex2))
++(zz 74 (funcall (lambda (buffer-undo-list) (with-temp-buffer (buffer-enable-undo) (insert "x") (list buffer-undo-list (consp (symbol-value 'buffer-undo-list))))) 'lex))
++(zz 75 (funcall (lambda (parse-sexp-ignore-comments parse-sexp-lookup-properties) (with-temp-buffer (emacs-lisp-mode) (insert "(a ; )\n b)") (goto-char 1) (condition-case nil (progn (forward-sexp) (point)) (error 'err)))) nil nil))
++(zz 76 (funcall (lambda (search-spaces-regexp) (list (string-match "a b" "a   b") (with-temp-buffer (insert "a   b") (goto-char 1) (re-search-forward "a b" nil t)))) "[ ]+"))
++(zz 77 (funcall (lambda (inhibit-changing-match-data) (string-match "a" "a") (match-data)) t))
++(zz 78 (funcall (lambda (data-directory doc-directory) (list (stringp (documentation 'car)) data-directory)) "/zz/" "/zz/"))
++(zz 79 (funcall (lambda (load-in-progress load-file-name) (list load-in-progress (symbol-value 'load-in-progress) (equal load-file-name (symbol-value 'load-file-name)))) 'lex "lexname"))
++(zz 80 (funcall (lambda (lexical-binding) (list lexical-binding (symbol-value 'lexical-binding) (eval '(let ((zz-q 1)) (boundp 'zz-q)) lexical-binding) (aref (lambda (x) x) 2))) nil))
++(zz 81 (funcall (lambda (lexical-binding) (with-temp-buffer (insert "(setq zz-r (let ((zz-q 1)) (boundp 'zz-q)))") (eval-buffer) (list lexical-binding zz-r))) nil))
++(zz 82 (funcall (lambda (noninteractive) (list noninteractive (symbol-value 'noninteractive))) nil))
++(zz 83 (funcall (lambda (features load-history) (provide 'zz-lam-feat) (list features load-history (featurep 'zz-lam-feat))) 'lex 'lex2))
++(zz 84 (funcall (lambda (values) (eval-expression 5) (list values (car (symbol-value 'values)))) 'lex))
++(zz 85 (funcall (lambda (temporary-file-directory) (let ((f (make-temp-file "zz"))) (prog1 (list temporary-file-directory (file-exists-p f)) (delete-file f)))) "/nonexistent-zz/"))
++(zz 86 (funcall (lambda (inhibit-message message-log-max) (message "zz-lam-msg") (current-message)) t nil))
++(zz 87 (funcall (lambda (window-system initial-window-system) (list window-system (display-graphic-p) (framep (selected-frame)))) 'x 'x))
++(zz 88 (funcall (lambda (kill-ring interprogram-cut-function) (with-temp-buffer (insert "abc") (kill-region 1 3) (list kill-ring (car (symbol-value 'kill-ring))))) 'lex nil))
++(zz 89 (funcall (lambda (minibuffer-history history-length) (condition-case e (read-string "p: ") (error (car e)))) 'lex 0))
++(zz 90 (funcall (lambda (auto-save-default make-backup-files create-lockfiles) (let ((f (make-temp-file "zz"))) (unwind-protect (with-current-buffer (find-file-noselect f) (insert "x") (let ((inhibit-message t)) (save-buffer)) (prog1 (list (buffer-modified-p) (file-exists-p (concat f "~"))) (kill-buffer))) (delete-file f) (ignore-errors (delete-file (concat f "~")))))) nil nil nil))"##,
 +    );
 +    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
 +}

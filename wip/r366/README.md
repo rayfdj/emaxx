@@ -15,8 +15,10 @@ taken for the variable (HANDOVER's finding from round 364).  The patch
 moves 711 runtime reads and stores to the dynamic API and removes the
 lexical-first one.
 
-Its author's checks passed (fmt and clippy under Rust 1.100.0, the
-library gate's 3,530 tests, cli and cli_parity with a new test of 223
-forms compared with GNU, the round audit with no hard finding).  It is
-not yet reviewed independently, and the other integration targets and
-CI have not run on it.
+Its author's checks passed, and an independent review found no
+cheating, the round's model sound, and one regression of two sites
+(a documentation property that is a form, and `backtrace-eval', left
+the caller's dialect in force), which this state of the patch answers
+with Flet's Fmemq over an improper or circular environment (an older
+hang).  Clippy and fmt are clean under Rust 1.100.0; the gate, the
+integration targets and CI have not run on this state.
