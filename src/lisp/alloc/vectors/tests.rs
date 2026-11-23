@@ -394,3 +394,254 @@ fn native_unit_traces_seven_fields_from_a_subr_and_collects_the_unreachable_cycl
         );
     }
 }
+
+#[test]
+fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
+    use crate::lisp::primitives::{WINDOW_FRAME_SLOT, WindowRef};
+    use windows::{WINDOW_GNU_VECTOR_SLOTS, WINDOW_SLOT_COUNT};
+
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let before = live_record_census();
+    let window = interpreter.make_window(vec![Value::Integer(17), Value::Integer(29)]);
+    let after = live_record_census();
+    let value = window.value();
+    let Kind::Window(object) = value.kind() else {
+        panic!("a window is a window object")
+    };
+    let header = object.0.as_ptr();
+    // The real allocated header: lisp.h's PVEC_WINDOW, the Lisp words
+    // first and the id, owner and held count in the two words after them.
+    unsafe {
+        assert_eq!((*header).tag(), VectorTag::Window);
+        assert_eq!(VectorTag::Window as usize, 11);
+        assert_eq!((*header).nbytes(), (1 + WINDOW_SLOT_COUNT + 2) * WORD_SIZE);
+        assert_eq!((*header).size & PSEUDOVECTOR_SIZE_MASK, WINDOW_SLOT_COUNT);
+        assert_eq!(
+            ((*header).size >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK,
+            2
+        );
+        assert!(value_of(header).eq_value(value));
+        let words = header.cast::<usize>();
+        assert_eq!(words.add(1).read(), Value::Integer(17).word());
+        assert_eq!(words.add(2).read(), Value::Integer(29).word());
+        assert_eq!(
+            words.add(1 + WINDOW_FRAME_SLOT).read(),
+            interpreter.selected_frame_value().word()
+        );
+        // A slot the window does not hold is a nil word of the object.
+        for index in WINDOW_FRAME_SLOT + 1..WINDOW_SLOT_COUNT {
+            assert_eq!(words.add(1 + index).read(), Value::Nil.word());
+        }
+        assert_eq!(words.add(1 + WINDOW_SLOT_COUNT).read() as u64, window.id());
+        // A store through the handle is the object's own word.
+        window.set_slot(&mut interpreter, WINDOW_SLOT_COUNT - 1, Value::Integer(313));
+        assert_eq!(
+            words.add(WINDOW_SLOT_COUNT).read(),
+            Value::Integer(313).word()
+        );
+    }
+    assert_eq!(std::mem::size_of::<windows::WindowState>(), 456);
+    assert_eq!(value.word(), object.identity() | 5);
+    assert!(matches!(value.kind(), Kind::Window(same) if same.ptr_eq(&object)));
+    assert!(WindowRef::from_value(&value).is_some_and(|same| same.id() == window.id()));
+    // alloc.c counts a window as window.c's whole struct, one vector.
+    assert_eq!(after.0 - before.0, 1);
+    assert_eq!(after.1 - before.1, WINDOW_GNU_VECTOR_SLOTS);
+}
+
+#[test]
+fn window_holds_its_first_slots_and_gains_the_rest_by_stores() {
+    use crate::lisp::primitives::{WINDOW_END_VALID_SLOT, WINDOW_FRAME_SLOT, WINDOW_KIND_SLOT};
+    use windows::WINDOW_SLOT_COUNT;
+
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    // make_window keeps the slots up to the frame's, whatever it is given.
+    let window = interpreter.make_window(vec![Value::T; WINDOW_SLOT_COUNT]);
+    assert_eq!(window.slots().len(), WINDOW_FRAME_SLOT + 1);
+    assert_eq!(window.slot_opt(WINDOW_KIND_SLOT), Some(Value::T));
+    assert_eq!(
+        window.slot_opt(WINDOW_FRAME_SLOT),
+        Some(interpreter.selected_frame_value())
+    );
+    // Absent, which reads as nil but is not a held nil.
+    assert_eq!(window.slot_opt(WINDOW_FRAME_SLOT + 1), None);
+    assert_eq!(window.slot(WINDOW_FRAME_SLOT + 1), Value::Nil);
+    // A store where the slot is held only: nothing for an absent one.
+    window.set_slot_if_held(&mut interpreter, WINDOW_FRAME_SLOT + 2, Value::T);
+    assert_eq!(window.slot_opt(WINDOW_FRAME_SLOT + 2), None);
+    assert_eq!(window.slots().len(), WINDOW_FRAME_SLOT + 1);
+    // ensure_slot and set_slot grow the held slots with nil.
+    window.ensure_slot(&mut interpreter, WINDOW_FRAME_SLOT + 2);
+    assert_eq!(window.slots().len(), WINDOW_FRAME_SLOT + 3);
+    assert_eq!(window.slot_opt(WINDOW_FRAME_SLOT + 1), Some(Value::Nil));
+    assert_eq!(window.slot_opt(WINDOW_FRAME_SLOT + 2), Some(Value::Nil));
+    window.set_slot_if_held(&mut interpreter, WINDOW_FRAME_SLOT + 2, Value::T);
+    assert_eq!(window.slot_opt(WINDOW_FRAME_SLOT + 2), Some(Value::T));
+    window.set_slot(&mut interpreter, WINDOW_END_VALID_SLOT, Value::Integer(5));
+    assert_eq!(window.slots().len(), WINDOW_SLOT_COUNT);
+    assert_eq!(
+        window.slot_opt(WINDOW_END_VALID_SLOT),
+        Some(Value::Integer(5))
+    );
+    assert_eq!(window.slot_opt(WINDOW_END_VALID_SLOT - 1), Some(Value::Nil));
+    // An ensure of a held slot changes nothing.
+    window.ensure_slot(&mut interpreter, WINDOW_KIND_SLOT);
+    assert_eq!(window.slots().len(), WINDOW_SLOT_COUNT);
+    assert_eq!(window.slot_opt(WINDOW_KIND_SLOT), Some(Value::T));
+}
+
+#[test]
+fn window_traces_every_slot_and_is_reclaimed_from_the_registry_and_type_index() {
+    use windows::WINDOW_SLOT_COUNT;
+    const HIDE: usize = 0x5555_5555_5555_5555;
+
+    // The window's address, its id, and each slot's vector.
+    type Hidden = (usize, u64, [usize; WINDOW_SLOT_COUNT]);
+
+    #[inline(never)]
+    fn allocate(
+        interpreter: &mut crate::lisp::eval::Interpreter,
+    ) -> (crate::lisp::alloc::RootedVec<Value>, Hidden) {
+        let window = interpreter.make_window(Vec::new());
+        let value = window.value();
+        let mut children = [0; WINDOW_SLOT_COUNT];
+        // A vector nothing but its slot holds, in every slot: the last
+        // stores are of slots a new window does not yet hold.
+        for (index, child) in children.iter_mut().enumerate() {
+            let vector = Value::vector([Value::Integer(index as i64), value]);
+            window.set_slot(interpreter, index, vector);
+            *child = (vector.word() & !7) ^ HIDE;
+        }
+        let Kind::Window(object) = value.kind() else {
+            panic!("a window is a window object")
+        };
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        roots.push(value);
+        (roots, (object.identity() ^ HIDE, window.id(), children))
+    }
+    #[inline(never)]
+    fn is_live(hidden: usize, tag: VectorTag) -> bool {
+        let address = hidden ^ HIDE;
+        matches!(unsafe { crate::lisp::alloc::mem_find(address) },
+            Some(crate::lisp::alloc::Found::Vectorlike(header))
+                if header as usize == address && unsafe { header_tag(header) } == tag)
+    }
+    #[inline(never)]
+    fn check_slots(
+        interpreter: &crate::lisp::eval::Interpreter,
+        roots: &crate::lisp::alloc::RootedVec<Value>,
+        id: u64,
+    ) {
+        let value = roots[0];
+        let Kind::Window(window) = value.kind() else {
+            panic!("window kind")
+        };
+        assert_eq!(window.id(), id);
+        assert_eq!(window.held(), WINDOW_SLOT_COUNT);
+        for index in 0..WINDOW_SLOT_COUNT {
+            let Some(Kind::Vector(vector)) = window.slot(index).map(|slot| slot.kind()) else {
+                panic!("traced window slot {index}")
+            };
+            assert_eq!(vector.get(0), Some(Value::Integer(index as i64)));
+            assert!(vector.get(1).expect("cycle slot").eq_value(value));
+        }
+        // The registry and the type index name the same object.
+        assert!(
+            interpreter
+                .window_ref(id)
+                .is_some_and(|found| found.value().eq_value(value))
+        );
+        assert!(interpreter.record_ids_by_type("window").contains(&id));
+    }
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let environment = Env::new();
+    let windows_before = interpreter.record_ids_by_type("window");
+    let (roots, (window, id, children)) = allocate(&mut interpreter);
+    for _ in 0..3 {
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        assert!(is_live(window, VectorTag::Window));
+        for child in &children {
+            assert!(is_live(*child, VectorTag::Normal));
+        }
+        check_slots(&interpreter, &roots, id);
+    }
+    drop(roots);
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+    assert!(
+        !is_live(window, VectorTag::Window),
+        "unreachable window retained"
+    );
+    for child in &children {
+        assert!(
+            !is_live(*child, VectorTag::Normal),
+            "unreachable window slot retained"
+        );
+    }
+    // The freed window's id names nothing: neither the registry nor the
+    // type index keeps a window the sweep freed.
+    assert!(interpreter.window_ref(id).is_none());
+    assert_eq!(interpreter.record_ids_by_type("window"), windows_before);
+    // The windows of the frame, which the frame holds, are as they were.
+    for id in windows_before {
+        assert!(interpreter.window_ref(id).is_some());
+    }
+}
+
+#[test]
+fn window_alone_holds_its_three_markers() {
+    use crate::lisp::primitives::{WINDOW_MARKER_SLOTS, window_record_slots};
+    const HIDE: usize = 0x5555_5555_5555_5555;
+
+    #[inline(never)]
+    fn allocate(
+        interpreter: &mut crate::lisp::eval::Interpreter,
+    ) -> (crate::lisp::alloc::RootedVec<Value>, [usize; 3]) {
+        let buffer = interpreter.current_buffer_id();
+        let slots = window_record_slots(interpreter, Some(buffer), 1, Value::Nil, (80, 10, 0, 0));
+        let window = interpreter.make_window(slots);
+        let markers = WINDOW_MARKER_SLOTS.map(|slot| {
+            let Kind::Marker(marker) = window.slot(slot).kind() else {
+                panic!("a leaf window's marker")
+            };
+            assert!(marker.buffer().is_some(), "a marker of the window's buffer");
+            marker.identity() ^ HIDE
+        });
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        roots.push(window.value());
+        (roots, markers)
+    }
+    #[inline(never)]
+    fn is_live(hidden: usize) -> bool {
+        let address = hidden ^ HIDE;
+        matches!(unsafe { crate::lisp::alloc::mem_find(address) },
+            Some(crate::lisp::alloc::Found::Vectorlike(header))
+                if header as usize == address
+                    && unsafe { header_tag(header) } == VectorTag::Marker)
+    }
+    #[inline(never)]
+    fn chained(interpreter: &crate::lisp::eval::Interpreter) -> usize {
+        interpreter.buffer.markers().count()
+    }
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let environment = Env::new();
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+    let chained_before = chained(&interpreter);
+    let (roots, markers) = allocate(&mut interpreter);
+    assert_eq!(chained(&interpreter), chained_before + 3);
+    for _ in 0..2 {
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        // Nothing but the window's own slots holds the three markers.
+        assert!(markers.iter().all(|marker| is_live(*marker)));
+        assert_eq!(chained(&interpreter), chained_before + 3);
+    }
+    drop(roots);
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+    // With the window they go, off the buffer's chain first.
+    assert!(!markers.iter().any(|marker| is_live(*marker)));
+    assert_eq!(chained(&interpreter), chained_before);
+}

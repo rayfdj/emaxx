@@ -2562,3 +2562,153 @@ fn inline_record_type_and_data_cycles_survive_clone_and_dump() {
     record.set(3, Value::Integer(101));
     assert_eq!(unsafe { words.add(4).read() }, Value::Integer(101).word());
 }
+
+#[test]
+fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
+    // pdumper.c:dump_vectorlike writes PVEC_WINDOW with
+    // dump_nilled_pseudovec: every Lisp field nil, so the window a
+    // variable of the dumped session held is a deleted window of the
+    // process that loads the image -- `#<window 0>', on no frame, showing
+    // no buffer -- beside the windows that process made for its first
+    // frame.  The dumping process's id for it is no identity there: both
+    // processes number their first windows alike.
+    fn eval(interp: &mut Interpreter, source: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(source)
+            .read()
+            .expect("the form parses")
+            .expect("a form");
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    }
+    fn printed(interp: &mut Interpreter, value: &Value) -> String {
+        let value = crate::lisp::native_comp::call_c_primitive(
+            interp,
+            &mut crate::lisp::types::Env::new(),
+            "prin1-to-string",
+            std::slice::from_ref(value),
+        )
+        .unwrap_or_else(|error| panic!("prin1-to-string: {error:?}"));
+        string_like(&value).expect("a string").text
+    }
+    let mut source = Interpreter::new();
+    let selected = source.selected_window_value();
+    let minibuffer = source.minibuffer_window_value();
+    let dumped_ids = [selected, minibuffer].map(|window| {
+        crate::lisp::primitives::WindowRef::from_value(&window)
+            .expect("a window of the dumping process")
+            .id()
+    });
+    assert_ne!(selected, minibuffer);
+    let bytes = dump(
+        &mut source,
+        vec![(
+            RootSlot::LoadPath,
+            Value::vector([selected, minibuffer, selected]),
+        )],
+    );
+
+    let mut target = Interpreter::new();
+    // The loading process's own windows, numbered as the dumped ones.
+    let live_selected = target.selected_window_value();
+    let live_minibuffer = target.minibuffer_window_value();
+    let live_ids = [live_selected, live_minibuffer].map(|window| {
+        crate::lisp::primitives::WindowRef::from_value(&window)
+            .expect("a window of the loading process")
+            .id()
+    });
+    assert_eq!(live_ids, dumped_ids, "both processes number alike");
+    let live_printed = printed(&mut target, &live_selected);
+    let windows_before = target.record_ids_by_type("window");
+
+    let image = load_image(&bytes, &mut target).expect("load nilled windows");
+    let graph = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .expect("root")
+        .1;
+    let Kind::Vector(slots) = graph.kind() else {
+        panic!("window vector")
+    };
+    let restored = slots.slots().collect::<Vec<_>>();
+    assert_eq!(restored.len(), 3);
+    assert_ne!(restored[0], restored[1]);
+    assert_eq!(restored[0], restored[2], "one object for one window");
+
+    // The live windows are the objects they were, under the ids they had.
+    assert_eq!(target.selected_window_value(), live_selected);
+    assert_eq!(target.minibuffer_window_value(), live_minibuffer);
+    assert_eq!(target.window_value(live_ids[0]), live_selected);
+    assert_eq!(target.window_value(live_ids[1]), live_minibuffer);
+    assert_eq!(printed(&mut target, &live_selected), live_printed);
+    target.set_global_binding("d3-live", live_selected);
+    assert_eq!(
+        eval(
+            &mut target,
+            "(list (window-live-p d3-live) (window-valid-p d3-live) \
+               (bufferp (window-buffer d3-live)) (framep (window-frame d3-live)) \
+               (eq (selected-window) d3-live))"
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+
+    let mut dead_ids = Vec::new();
+    for dead in [restored[0], restored[1]] {
+        let Kind::Window(window) = dead.kind() else {
+            panic!("a restored window is a window")
+        };
+        assert_ne!(dead, live_selected);
+        assert_ne!(dead, live_minibuffer);
+        // An id of its own: no live window's, and not the dumped one's.
+        assert!(!windows_before.contains(&window.id()));
+        assert!(!dumped_ids.contains(&window.id()));
+        assert_eq!(target.window_value(window.id()), dead);
+        dead_ids.push(window.id());
+        // Every Lisp field nil but what says the window is deleted.
+        let handle = crate::lisp::primitives::WindowRef::from_value(&dead).expect("a window");
+        assert_eq!(handle.kind(), crate::lisp::primitives::WindowKind::Deleted);
+        for (index, slot) in handle.slots().into_iter().enumerate() {
+            assert!(
+                slot.is_nil() || index == crate::lisp::primitives::WINDOW_KIND_SLOT,
+                "slot {index} of a nilled window"
+            );
+        }
+        assert_eq!(printed(&mut target, &dead), "#<window 0>");
+        target.set_global_binding("d3-dead", dead);
+        // GNU's answers for the nilled window (window.c's WINDOWP,
+        // WINDOW_VALID_P, WINDOW_LIVE_P, Fwindow_buffer's leaf test, and
+        // decode_valid_window and decode_live_window's errors).
+        let answers = eval(
+            &mut target,
+            "(list (windowp d3-dead) (window-live-p d3-dead) (window-valid-p d3-dead) \
+               (window-buffer d3-dead) (type-of d3-dead) \
+               (condition-case err (window-frame d3-dead) (error err)) \
+               (condition-case err (window-parent d3-dead) (error err)) \
+               (condition-case err (window-list-1 d3-dead t t) (error err)) \
+               (condition-case err (window-parameter d3-dead 'x) (error err)) \
+               (eq d3-dead (selected-window)) (equal d3-dead (selected-window)))",
+        );
+        assert_eq!(
+            printed(&mut target, &answers),
+            concat!(
+                "(t nil nil nil window",
+                " (wrong-type-argument window-valid-p #<window 0>)",
+                " (wrong-type-argument window-valid-p #<window 0>)",
+                " (wrong-type-argument window-live-p #<window 0>)",
+                " nil nil nil)"
+            )
+        );
+    }
+    assert_ne!(dead_ids[0], dead_ids[1]);
+    // The type index lists the two dead windows beside the live ones.
+    let mut windows = windows_before.clone();
+    windows.extend(dead_ids.iter().copied());
+    windows.sort_unstable();
+    assert_eq!(target.record_ids_by_type("window"), windows);
+    assert_eq!(
+        target.frame_states.len(),
+        1,
+        "nilled objects are not live frame roots"
+    );
+}
