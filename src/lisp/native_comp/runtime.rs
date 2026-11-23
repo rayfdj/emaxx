@@ -8027,9 +8027,9 @@ mod tests {
         }
     }
 
-    /// A link-table entry that answers from its argument words and the
-    /// objects they name: the subr's name, how many arguments it takes,
-    /// and whether it is a predicate, answering t or nil.
+    /// A link-table entry the samples are given to: the subr's name, how
+    /// many arguments its entry takes, and whether it is a predicate,
+    /// answering t or nil.
     struct WordLevelEntry {
         name: &'static str,
         arguments: usize,
@@ -8085,30 +8085,47 @@ mod tests {
         word_entry("recordp", 1, true),
     ];
 
-    /// The generator's other targets, which read the interpreter, walk or
-    /// store into their arguments, allocate or call Lisp: each has a
-    /// contract test of its own.
-    const OTHER_DIRECT_ENTRIES: &[&str] = &[
-        "eql",
-        "type-of",
-        "symbol-value",
-        "get",
-        "funcall",
-        "list",
-        "memq",
-        "assq",
-        "nreverse",
-        "nconc",
-        "aref",
-        "char-table-extra-slot",
-        "functionp",
-        "aset",
-        "autoload-do-load",
-        "gethash",
-        "puthash",
-        "length",
-        "plist-member",
-        "make-closure",
+    /// The generator's targets that read the interpreter or walk their
+    /// arguments and neither store into them, make a new object each call
+    /// nor call Lisp: compared with their primitives over the samples as
+    /// the entries above are, but for the reader's forms, a third
+    /// argument nil.  Each also has a contract test of its own.
+    const READING_ENTRIES: &[WordLevelEntry] = &[
+        word_entry("eql", 2, true),
+        word_entry("type-of", 1, false),
+        word_entry("symbol-value", 1, false),
+        word_entry("get", 2, false),
+        word_entry("memq", 2, false),
+        word_entry("assq", 2, false),
+        word_entry("aref", 2, false),
+        word_entry("char-table-extra-slot", 2, false),
+        word_entry("functionp", 1, true),
+        word_entry("gethash", 3, false),
+        word_entry("length", 1, false),
+        word_entry("plist-member", 3, false),
+    ];
+
+    /// The generator's targets that this harness cannot compare with
+    /// their primitives, with the arity of each entry (-2 for MANY's
+    /// count and vector).  Each has a contract test of its own.
+    const UNCOMPARED_ENTRIES: &[(&str, i32)] = &[
+        // MANY, which the harness does not call, and it calls Lisp.
+        ("funcall", -2),
+        // MANY, and each call makes a new list, so that two answers are
+        // never one object.
+        ("list", -2),
+        // MANY, and it stores into its arguments.
+        ("nconc", -2),
+        // MANY, and each call makes a new closure.
+        ("make-closure", -2),
+        // It stores into its argument, which would change the samples.
+        ("nreverse", 1),
+        // It stores into its first argument.
+        ("aset", 3),
+        // It stores into its table.
+        ("puthash", 3),
+        // It loads a file, which runs Lisp.
+        ("autoload-do-load", 3),
     ];
 
     #[test]
@@ -8117,7 +8134,9 @@ mod tests {
 
         // The names here are the names the generator gives a target of
         // their own, read from its selection as the fast-path inventory
-        // reads it: a name added there is tested here or named above.
+        // reads it, each with the arity of its entry, which the generator
+        // asserts of GNU's subr: a name added there is compared here, or
+        // named above with the reason it is not, at that arity.
         let generator = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tools/generate_native_subrs.rs"
@@ -8133,21 +8152,42 @@ mod tests {
             .split_once("fn read_min_arg_constants")
             .expect("the end of the generator's target selection")
             .0;
-        let selected = regex::Regex::new(r#""([^"\\]+)"\s*=>"#)
+        let names = regex::Regex::new(r#""([^"\\]+)"\s*=>"#)
             .expect("compile the selection pattern")
             .captures_iter(selection)
-            .map(|capture| capture[1].to_owned())
+            .count();
+        let selected = regex::Regex::new(r#""([^"\\]+)"\s*=>\s*\(\s*"[^"\\]+"\s*,\s*(-?\d+)\s*\)"#)
+            .expect("compile the selection pattern")
+            .captures_iter(selection)
+            .map(|capture| {
+                let arity = capture[2].parse::<i32>().expect("an arity");
+                (capture[1].to_owned(), arity)
+            })
             .collect::<BTreeSet<_>>();
+        assert_eq!(selected.len(), names, "each selected name has an arity");
+        // `purecopy' takes its object, the other context entries nothing.
         let listed = WORD_LEVEL_ENTRIES
             .iter()
-            .map(|entry| entry.name)
-            .chain(CONTEXT_ENTRIES.iter().copied())
-            .chain(OTHER_DIRECT_ENTRIES.iter().copied())
-            .map(str::to_owned)
+            .chain(READING_ENTRIES)
+            .map(|entry| (entry.name, entry.arguments as i32))
+            .chain(
+                CONTEXT_ENTRIES
+                    .iter()
+                    .map(|name| (*name, i32::from(*name == "purecopy"))),
+            )
+            .chain(UNCOMPARED_ENTRIES.iter().copied())
+            .map(|(name, arity)| (name.to_owned(), arity))
             .collect::<BTreeSet<_>>();
+        let listed_names = listed.iter().map(|(name, _)| name).collect::<BTreeSet<_>>();
         assert_eq!(
-            listed.len(),
-            WORD_LEVEL_ENTRIES.len() + CONTEXT_ENTRIES.len() + OTHER_DIRECT_ENTRIES.len(),
+            (listed.len(), listed_names.len()),
+            (
+                WORD_LEVEL_ENTRIES.len()
+                    + READING_ENTRIES.len()
+                    + CONTEXT_ENTRIES.len()
+                    + UNCOMPARED_ENTRIES.len(),
+                listed.len()
+            ),
             "an entry is listed once"
         );
         assert_eq!(selected, listed);
@@ -8163,11 +8203,25 @@ mod tests {
         assert_eq!(kinds, [true; UNBOUND_ORDINAL], "a sample of every kind");
 
         // (t answered, nil answered) of each entry over the samples.
-        let mut answers = vec![(false, false); WORD_LEVEL_ENTRIES.len()];
+        let compared = || WORD_LEVEL_ENTRIES.iter().chain(READING_ENTRIES);
+        let mut answers = vec![(false, false); compared().count()];
         for enabled in [Value::Nil, Value::T] {
             interpreter.set_symbol_value_cell("symbols-with-pos-enabled", enabled);
-            for (entry, answered) in WORD_LEVEL_ENTRIES.iter().zip(&mut answers) {
+            for (place, (entry, answered)) in compared().zip(&mut answers).enumerate() {
+                let reads = place >= WORD_LEVEL_ENTRIES.len();
                 let mut agree = |names: &[&str], arguments: &[Value]| {
+                    // The reader's forms are objects GNU does not have,
+                    // which an entry that reads further than the object's
+                    // kind reports as an internal error, its message a
+                    // string made at each signal: only the word-level
+                    // entries are asked of them.
+                    if reads
+                        && arguments
+                            .iter()
+                            .any(|argument| matches!(argument.kind(), Kind::ReaderForm(_)))
+                    {
+                        return;
+                    }
                     let answer = assert_entry_agrees(
                         &mut interpreter,
                         &mut runtime,
@@ -8201,11 +8255,21 @@ mod tests {
                             }
                         }
                     }
+                    3 => {
+                        for (left_name, left) in samples.iter() {
+                            for (right_name, right) in samples.iter() {
+                                agree(
+                                    &[left_name, right_name, "nil"],
+                                    &[*left, *right, Value::Nil],
+                                );
+                            }
+                        }
+                    }
                     count => panic!("{} takes {count} arguments", entry.name),
                 }
             }
         }
-        for (entry, answered) in WORD_LEVEL_ENTRIES.iter().zip(&answers) {
+        for (entry, answered) in compared().zip(&answers) {
             if entry.predicate {
                 assert_eq!(
                     *answered,
