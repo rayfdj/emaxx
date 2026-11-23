@@ -368,16 +368,16 @@ fn resize_frame_windows(
     if new_pixel_size == old_pixel_size && (horflag || top == margin) {
     } else if window_combination(interp, root).is_none() {
         if horflag {
-            set_window_char_slot(interp, root, WINDOW_TOTAL_COLS_SLOT, new_size);
+            set_window_total_cols(interp, root, new_size);
             set_window_geometry(interp, root, (new_pixel_size, height, left, top))?;
         } else {
-            set_window_char_slot(interp, root, WINDOW_TOP_LINE_SLOT, margin);
-            set_window_char_slot(interp, root, WINDOW_TOTAL_LINES_SLOT, new_size);
+            set_window_top_line(interp, root, margin);
+            set_window_total_lines(interp, root, new_size);
             set_window_geometry(interp, root, (width, new_pixel_size, left, margin))?;
         }
     } else {
         if !horflag {
-            set_window_char_slot(interp, root, WINDOW_TOP_LINE_SLOT, margin);
+            set_window_top_line(interp, root, margin);
             set_window_geometry(interp, root, (width, height, left, margin))?;
         }
         let delta = new_pixel_size - old_pixel_size;
@@ -396,7 +396,7 @@ fn resize_frame_windows(
     if let Some(mini) = mini {
         let (mini_width, mini_pixel_height, mini_left, mini_top) = window_geometry(interp, mini);
         if horflag {
-            set_window_char_slot(interp, mini, WINDOW_TOTAL_COLS_SLOT, new_size);
+            set_window_total_cols(interp, mini, new_size);
             set_window_geometry(
                 interp,
                 mini,
@@ -405,13 +405,8 @@ fn resize_frame_windows(
         } else {
             let (_, root_height, _, root_top) = window_geometry(interp, root);
             let (_, root_lines, _, root_top_line) = window_char_geometry(interp, root);
-            set_window_char_slot(interp, mini, WINDOW_TOTAL_LINES_SLOT, mini_height);
-            set_window_char_slot(
-                interp,
-                mini,
-                WINDOW_TOP_LINE_SLOT,
-                root_top_line + root_lines,
-            );
+            set_window_total_lines(interp, mini, mini_height);
+            set_window_top_line(interp, mini, root_top_line + root_lines);
             set_window_geometry(
                 interp,
                 mini,
@@ -433,10 +428,10 @@ fn window_resize_apply_total(interp: &mut Interpreter, window: u64, horflag: boo
         .unwrap_or(0);
     let (_, _, left_col, top_line) = window_char_geometry(interp, window);
     let mut edge = if horflag {
-        set_window_char_slot(interp, window, WINDOW_TOTAL_COLS_SLOT, new_total);
+        set_window_total_cols(interp, window, new_total);
         left_col
     } else {
-        set_window_char_slot(interp, window, WINDOW_TOTAL_LINES_SLOT, new_total);
+        set_window_total_lines(interp, window, new_total);
         top_line
     };
     let Some(horizontal) = window_combination(interp, window) else {
@@ -444,16 +439,11 @@ fn window_resize_apply_total(interp: &mut Interpreter, window: u64, horflag: boo
     };
     let mut child = window_first_child(interp, window);
     while let Some(child_id) = child {
-        set_window_char_slot(
-            interp,
-            child_id,
-            if horflag {
-                WINDOW_LEFT_COL_SLOT
-            } else {
-                WINDOW_TOP_LINE_SLOT
-            },
-            edge,
-        );
+        if horflag {
+            set_window_left_col(interp, child_id, edge);
+        } else {
+            set_window_top_line(interp, child_id, edge);
+        }
         window_resize_apply_total(interp, child_id, horflag);
         if horizontal == horflag {
             let (cols, lines, _, _) = window_char_geometry(interp, child_id);
@@ -473,24 +463,19 @@ pub(super) fn window_resize_apply_total_for_frame(
 ) {
     let root = frame.borrow().root_window_id();
     // Necessary when deleting the top-/or leftmost window.
-    set_window_char_slot(interp, root, WINDOW_LEFT_COL_SLOT, 0);
-    set_window_char_slot(interp, root, WINDOW_TOP_LINE_SLOT, frame_top_margin(frame));
+    set_window_left_col(interp, root, 0);
+    set_window_top_line(interp, root, frame_top_margin(frame));
     window_resize_apply_total(interp, root, horizontal);
     if let Some(mini) = frame_mini_window(interp, frame) {
         let new_total = window_slot_value(interp, mini, WINDOW_NEW_TOTAL_SLOT)
             .integer_value()
             .unwrap_or(0);
         if horizontal {
-            set_window_char_slot(interp, mini, WINDOW_TOTAL_COLS_SLOT, new_total);
+            set_window_total_cols(interp, mini, new_total);
         } else {
             let (_, root_lines, _, root_top_line) = window_char_geometry(interp, root);
-            set_window_char_slot(
-                interp,
-                mini,
-                WINDOW_TOP_LINE_SLOT,
-                root_top_line + root_lines,
-            );
-            set_window_char_slot(interp, mini, WINDOW_TOTAL_LINES_SLOT, new_total);
+            set_window_top_line(interp, mini, root_top_line + root_lines);
+            set_window_total_lines(interp, mini, new_total);
         }
     }
 }

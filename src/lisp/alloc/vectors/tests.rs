@@ -398,7 +398,9 @@ fn native_unit_traces_seven_fields_from_a_subr_and_collects_the_unreachable_cycl
 #[test]
 fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
     use crate::lisp::primitives::{WINDOW_FRAME_SLOT, WindowRef};
-    use windows::{WINDOW_GNU_VECTOR_SLOTS, WINDOW_LISP_WORDS, WINDOW_SLOT_COUNT};
+    use windows::{
+        WINDOW_GNU_VECTOR_SLOTS, WINDOW_LISP_WORDS, WINDOW_REST_WORDS, WINDOW_SLOT_COUNT,
+    };
 
     let mut interpreter = crate::lisp::eval::Interpreter::new();
     let before = live_record_census();
@@ -411,16 +413,21 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
     let header = object.0.as_ptr();
     // The real allocated header: lisp.h's PVEC_WINDOW, the Lisp words
     // first (the contents, then the slots) and the id, the owner and
-    // held count, the use time, the sequence number and the bits in the
-    // five words after them.
+    // held count, the use time, the sequence number, the fourteen
+    // integers of the geometry and the bits in the twenty words after
+    // them.
     unsafe {
         assert_eq!((*header).tag(), VectorTag::Window);
         assert_eq!(VectorTag::Window as usize, 11);
-        assert_eq!((*header).nbytes(), (1 + WINDOW_LISP_WORDS + 5) * WORD_SIZE);
+        assert_eq!(WINDOW_REST_WORDS, 20);
+        assert_eq!(
+            (*header).nbytes(),
+            (1 + WINDOW_LISP_WORDS + WINDOW_REST_WORDS) * WORD_SIZE
+        );
         assert_eq!((*header).size & PSEUDOVECTOR_SIZE_MASK, WINDOW_LISP_WORDS);
         assert_eq!(
             ((*header).size >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK,
-            5
+            WINDOW_REST_WORDS
         );
         assert!(value_of(header).eq_value(value));
         let words = header.cast::<usize>();
@@ -453,20 +460,63 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
         assert_eq!(integers.read(), 41);
         assert_eq!(integers.add(1).read(), interpreter.window_sequence_number);
         assert_eq!(integers.add(1).read(), window.sequence_number());
-        // The bits are bytes of the word after them.
+        // The fourteen integers of the geometry follow, in window.h's
+        // order: all zero in a window given no edge and no size.
+        let geometry = integers.add(2);
+        let read_geometry =
+            || std::array::from_fn::<i64, 14, _>(|index| geometry.add(index).read());
+        assert_eq!(read_geometry(), [0; 14]);
+        // The bits are bytes of the words after them: mini, horizontal
+        // and cursor_off_p, then one for each edge and size the window
+        // has been given.
         let bits = header
             .cast::<u8>()
-            .add((1 + WINDOW_LISP_WORDS + 4) * WORD_SIZE);
-        let read = || [bits.read(), bits.add(1).read(), bits.add(2).read()];
-        assert_eq!(read(), [0, 0, 0]);
+            .add((1 + WINDOW_LISP_WORDS + 18) * WORD_SIZE);
+        let read = || std::array::from_fn::<u8, 11, _>(|index| bits.add(index).read());
+        assert_eq!(read(), [0; 11]);
         window.set_mini(true);
-        assert_eq!(read(), [1, 0, 0]);
+        assert_eq!(read(), [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         window.set_horizontal(true);
-        assert_eq!(read(), [1, 1, 0]);
+        assert_eq!(read(), [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         window.set_cursor_off_p(true);
-        assert_eq!(read(), [1, 1, 1]);
+        assert_eq!(read(), [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        // Each store through the handle is the object's own integer, and
+        // an edge or size given sets its bit.
+        window.set_pixel_left(Some(101));
+        window.set_pixel_top(Some(102));
+        window.set_left_col(Some(103));
+        window.set_top_line(Some(104));
+        window.set_pixel_width(Some(105));
+        window.set_pixel_height(Some(106));
+        window.set_old_pixel_width(107);
+        window.set_old_pixel_height(108);
+        window.set_old_body_pixel_width(109);
+        window.set_old_body_pixel_height(110);
+        window.set_total_cols(Some(111));
+        window.set_total_lines(Some(112));
+        window.set_left_margin_cols(113);
+        window.set_right_margin_cols(114);
+        assert_eq!(
+            read_geometry(),
+            [
+                101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114
+            ]
+        );
+        assert_eq!(read(), [1; 11]);
+        // One taken back is zero again, its bit clear.
+        window.set_total_cols(None);
+        assert_eq!(geometry.add(10).read(), 0);
+        assert_eq!(read(), [1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1]);
+        // No Lisp word of the object changed for any of them.
+        for index in (2..WINDOW_SLOT_COUNT - 1).filter(|index| *index != WINDOW_FRAME_SLOT) {
+            assert_eq!(words.add(2 + index).read(), Value::Nil.word());
+        }
     }
-    assert_eq!(std::mem::size_of::<windows::WindowState>(), 456);
+    assert_eq!(
+        std::mem::size_of::<windows::WindowState>(),
+        (WINDOW_LISP_WORDS + WINDOW_REST_WORDS) * WORD_SIZE
+    );
+    assert_eq!(std::mem::size_of::<windows::WindowState>(), 464);
     assert_eq!(value.word(), object.identity() | 5);
     assert!(matches!(value.kind(), Kind::Window(same) if same.ptr_eq(&object)));
     assert!(WindowRef::from_value(&value).is_some_and(|same| same.id() == window.id()));
@@ -716,7 +766,7 @@ fn window_alone_holds_its_three_markers() {
         interpreter: &mut crate::lisp::eval::Interpreter,
     ) -> (crate::lisp::alloc::RootedVec<Value>, [usize; 3]) {
         let buffer = interpreter.current_buffer_id();
-        let slots = window_record_slots(interpreter, Some(buffer), 1, (80, 10, 0, 0));
+        let slots = window_record_slots(interpreter, Some(buffer), 1);
         let window = interpreter.make_window(slots);
         let markers = WINDOW_MARKER_SLOTS.map(|slot| {
             let Kind::Marker(marker) = window.slot(slot).kind() else {

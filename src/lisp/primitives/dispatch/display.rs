@@ -1515,17 +1515,20 @@ fn window_first_child(interp: &Interpreter, window_id: u64) -> Option<u64> {
         .map(WindowRef::id)
 }
 
+/// WINDOW_ID's pixel geometry as (pixel_width, pixel_height, pixel_left,
+/// pixel_top).  A window given no size reads the selected frame's, and
+/// one given no edge the frame's corner.
 fn window_geometry(interp: &Interpreter, window_id: u64) -> (i64, i64, i64, i64) {
-    let integer_slot = |slot, fallback| {
-        window_slot_value(interp, window_id, slot)
-            .as_integer()
-            .unwrap_or(fallback)
-    };
+    let window = interp.window_ref(window_id);
     (
-        integer_slot(WINDOW_PIXEL_WIDTH_SLOT, interp.frame_width()),
-        integer_slot(WINDOW_PIXEL_HEIGHT_SLOT, interp.frame_height()),
-        integer_slot(WINDOW_PIXEL_LEFT_SLOT, 0),
-        integer_slot(WINDOW_PIXEL_TOP_SLOT, 0),
+        window
+            .and_then(WindowRef::pixel_width)
+            .unwrap_or_else(|| interp.frame_width()),
+        window
+            .and_then(WindowRef::pixel_height)
+            .unwrap_or_else(|| interp.frame_height()),
+        window.and_then(WindowRef::pixel_left).unwrap_or(0),
+        window.and_then(WindowRef::pixel_top).unwrap_or(0),
     )
 }
 
@@ -1832,14 +1835,14 @@ fn set_window_geometry(
     window_id: u64,
     geometry: (i64, i64, i64, i64),
 ) -> Result<(), LispError> {
-    for (slot, value) in [
-        (WINDOW_PIXEL_WIDTH_SLOT, geometry.0),
-        (WINDOW_PIXEL_HEIGHT_SLOT, geometry.1),
-        (WINDOW_PIXEL_LEFT_SLOT, geometry.2),
-        (WINDOW_PIXEL_TOP_SLOT, geometry.3),
-    ] {
-        set_window_slot_value(interp, window_id, slot, Value::Integer(value))?;
-    }
+    let Some(window) = interp.window_ref(window_id) else {
+        return Err(LispError::TypeError("window".into(), "deleted".into()));
+    };
+    let (width, height, left, top) = geometry;
+    window.set_pixel_width(Some(width));
+    window.set_pixel_height(Some(height));
+    window.set_pixel_left(Some(left));
+    window.set_pixel_top(Some(top));
     Ok(())
 }
 
@@ -3060,16 +3063,11 @@ fn window_resize_apply(interp: &mut Interpreter, id: u64, horflag: bool) -> Resu
         height = new_pixel;
     }
     set_window_geometry(interp, id, (width, height, left, top))?;
-    set_window_char_slot(
-        interp,
-        id,
-        if horflag {
-            WINDOW_TOTAL_COLS_SLOT
-        } else {
-            WINDOW_TOTAL_LINES_SLOT
-        },
-        new_pixel,
-    );
+    if horflag {
+        set_window_total_cols(interp, id, new_pixel);
+    } else {
+        set_window_total_lines(interp, id, new_pixel);
+    }
     let new_normal = window_slot_value(interp, id, WINDOW_NEW_NORMAL_SLOT);
     if matches!(new_normal.kind(), Kind::Integer(_) | Kind::Float(_)) {
         let slot = if horflag {
@@ -3094,16 +3092,11 @@ fn window_resize_apply(interp: &mut Interpreter, id: u64, horflag: bool) -> Resu
             (child_width, child_height, child_left, edge)
         };
         set_window_geometry(interp, child_id, placed)?;
-        set_window_char_slot(
-            interp,
-            child_id,
-            if horflag {
-                WINDOW_LEFT_COL_SLOT
-            } else {
-                WINDOW_TOP_LINE_SLOT
-            },
-            edge,
-        );
+        if horflag {
+            set_window_left_col(interp, child_id, edge);
+        } else {
+            set_window_top_line(interp, child_id, edge);
+        }
         window_resize_apply(interp, child_id, horflag)?;
         if horizontal == horflag {
             edge += window_pixel_size(interp, child_id, horflag);
@@ -3144,7 +3137,7 @@ fn resize_mini_window_apply(
     let root = frame.borrow().root_window_id();
     let (width, height, left, top) = window_geometry(interp, mini);
     set_window_geometry(interp, mini, (width, height + delta, left, top))?;
-    set_window_char_slot(interp, mini, WINDOW_TOTAL_LINES_SLOT, height + delta);
+    set_window_total_lines(interp, mini, height + delta);
     window_resize_apply(interp, root, false)?;
     let (_, root_height, _, root_top) = window_geometry(interp, root);
     let (_, root_lines, _, root_top_line) = window_char_geometry(interp, root);
@@ -3153,12 +3146,7 @@ fn resize_mini_window_apply(
         mini,
         (width, height + delta, left, root_top + root_height),
     )?;
-    set_window_char_slot(
-        interp,
-        mini,
-        WINDOW_TOP_LINE_SLOT,
-        root_top_line + root_lines,
-    );
+    set_window_top_line(interp, mini, root_top_line + root_lines);
     // fset_redisplay (f).
     interp.fset_redisplay(frame);
     Ok(())
@@ -3182,14 +3170,10 @@ fn replace_window(
     if setflag {
         set_window_geometry(interp, new, window_geometry(interp, old))?;
         let (total_cols, total_lines, left_col, top_line) = window_char_geometry(interp, old);
-        for (slot, value) in [
-            (WINDOW_LEFT_COL_SLOT, left_col),
-            (WINDOW_TOP_LINE_SLOT, top_line),
-            (WINDOW_TOTAL_COLS_SLOT, total_cols),
-            (WINDOW_TOTAL_LINES_SLOT, total_lines),
-        ] {
-            set_window_char_slot(interp, new, slot, value);
-        }
+        set_window_left_col(interp, new, left_col);
+        set_window_top_line(interp, new, top_line);
+        set_window_total_cols(interp, new, total_cols);
+        set_window_total_lines(interp, new, total_lines);
         for slot in [WINDOW_NORMAL_WIDTH_SLOT, WINDOW_NORMAL_HEIGHT_SLOT] {
             let normal = window_slot_value(interp, old, slot);
             set_window_slot_value(interp, new, slot, normal)?;
@@ -3229,12 +3213,20 @@ fn make_parent_window(
     let original = interp.window_ref(window);
     let slots = original.map(WindowRef::slots).unwrap_or_default();
     let copy = interp.make_window(slots);
-    // The memcpy's contents, use time and bits, which are no slots; the
-    // copy has make_window's sequence number of its own (`p->sequence_number
-    // = ++sequence_number'), and its cursor is on, whatever the window's.
+    // The memcpy's contents, use time, pixel edges and sizes and bits,
+    // which are no slots; the copy has make_window's sequence number of
+    // its own (`p->sequence_number = ++sequence_number'), and its cursor
+    // is on, whatever the window's.  Its columns and lines replace_window
+    // gives it below; the sizes window_change_record recorded and the
+    // margins it starts without, as it did when those were slots past the
+    // ones a new window holds.
     if let Some(original) = original {
         copy.set_contents(original.contents());
         copy.set_use_time(original.use_time());
+        copy.set_pixel_left(original.pixel_left());
+        copy.set_pixel_top(original.pixel_top());
+        copy.set_pixel_width(original.pixel_width());
+        copy.set_pixel_height(original.pixel_height());
         copy.set_mini(original.mini());
         copy.set_horizontal(original.horizontal());
     }
@@ -3609,19 +3601,12 @@ fn split_window_tree(
     interp.adjust_window_count(new_id, true);
     set_window_slot_value(interp, new_id, WINDOW_FRAME_SLOT, Value::Frame(frame))?;
     let (old_cols, old_lines, old_left_col, old_top_line) = window_char_geometry(interp, old_id);
-    let orthogonal = if horflag {
-        [
-            (WINDOW_TOP_LINE_SLOT, old_top_line),
-            (WINDOW_TOTAL_LINES_SLOT, old_lines),
-        ]
+    if horflag {
+        set_window_top_line(interp, new_id, old_top_line);
+        set_window_total_lines(interp, new_id, old_lines);
     } else {
-        [
-            (WINDOW_LEFT_COL_SLOT, old_left_col),
-            (WINDOW_TOTAL_COLS_SLOT, old_cols),
-        ]
-    };
-    for (slot, value) in orthogonal {
-        set_window_char_slot(interp, new_id, slot, value);
+        set_window_left_col(interp, new_id, old_left_col);
+        set_window_total_cols(interp, new_id, old_cols);
     }
     let old_parent = window_link(interp, old_id, WINDOW_PARENT_SLOT);
     set_window_link(interp, new_id, WINDOW_PARENT_SLOT, old_parent)?;
@@ -4060,11 +4045,11 @@ fn delete_other_windows_from_tree(
         for horflag in [false, true] {
             let (width, height, left, top) = window_geometry(interp, window_id);
             let delta = if horflag {
-                set_window_char_slot(interp, window_id, WINDOW_LEFT_COL_SLOT, root_left_col);
+                set_window_left_col(interp, window_id, root_left_col);
                 set_window_geometry(interp, window_id, (width, height, root_left, top))?;
                 root_width - width
             } else {
-                set_window_char_slot(interp, window_id, WINDOW_TOP_LINE_SLOT, root_top_line);
+                set_window_top_line(interp, window_id, root_top_line);
                 set_window_geometry(interp, window_id, (width, height, left, root_top))?;
                 root_height - height
             };
@@ -4207,6 +4192,20 @@ fn window_integer_slot(interp: &Interpreter, window: u64, slot: usize) -> i64 {
         .unwrap_or(0)
 }
 
+/// WINDOW's old_pixel_width, old_pixel_height, old_body_pixel_width and
+/// old_body_pixel_height: the sizes window_change_record recorded, 0 for
+/// a window made since.
+fn window_old_sizes(interp: &Interpreter, window: u64) -> (i64, i64, i64, i64) {
+    interp.window_ref(window).map_or((0, 0, 0, 0), |window| {
+        (
+            window.old_pixel_width(),
+            window.old_pixel_height(),
+            window.old_body_pixel_width(),
+            window.old_body_pixel_height(),
+        )
+    })
+}
+
 /// window.c:run_window_change_functions_1: the functions of SYMBOL's
 /// default value with frame argument (BUFFER nil), or of its buffer-local
 /// value in BUFFER with WINDOW's argument; `t' and a dead argument skip.
@@ -4272,15 +4271,14 @@ fn window_change_record(interp: &mut Interpreter, record_frames: bool) {
                 for (slot, value) in [
                     (WINDOW_CHANGE_STAMP_SLOT, Value::Integer(stamp)),
                     (WINDOW_OLD_BUFFER_SLOT, buffer),
-                    (WINDOW_OLD_PIXEL_WIDTH_SLOT, Value::Integer(width)),
-                    (WINDOW_OLD_PIXEL_HEIGHT_SLOT, Value::Integer(height)),
-                    (WINDOW_OLD_BODY_PIXEL_WIDTH_SLOT, Value::Integer(body_width)),
-                    (
-                        WINDOW_OLD_BODY_PIXEL_HEIGHT_SLOT,
-                        Value::Integer(body_height),
-                    ),
                 ] {
                     let _ = set_window_slot_value(interp, window, slot, value);
+                }
+                if let Some(window) = interp.window_ref(window) {
+                    window.set_old_pixel_width(width);
+                    window.set_old_pixel_height(height);
+                    window.set_old_body_pixel_width(body_width);
+                    window.set_old_body_pixel_height(body_height);
                 }
             }
             let mut state = frame.borrow_mut();
@@ -4311,12 +4309,7 @@ fn frame_window_change(
             let (body_width, body_height) = window_body_pixel_size(interp, window);
             window_integer_slot(interp, window, WINDOW_CHANGE_STAMP_SLOT) != stamp
                 || !buffer.eq_value(window_slot_value(interp, window, WINDOW_OLD_BUFFER_SLOT))
-                || width != window_integer_slot(interp, window, WINDOW_OLD_PIXEL_WIDTH_SLOT)
-                || height != window_integer_slot(interp, window, WINDOW_OLD_PIXEL_HEIGHT_SLOT)
-                || body_width
-                    != window_integer_slot(interp, window, WINDOW_OLD_BODY_PIXEL_WIDTH_SLOT)
-                || body_height
-                    != window_integer_slot(interp, window, WINDOW_OLD_BODY_PIXEL_HEIGHT_SLOT)
+                || (width, height, body_width, body_height) != window_old_sizes(interp, window)
         })
 }
 
@@ -4399,12 +4392,8 @@ fn run_window_change_functions_body(
             let (body_width, body_height) = window_body_pixel_size(interp, window);
             let size_change = window_change
                 && (buffer_change
-                    || width != window_integer_slot(interp, window, WINDOW_OLD_PIXEL_WIDTH_SLOT)
-                    || height != window_integer_slot(interp, window, WINDOW_OLD_PIXEL_HEIGHT_SLOT)
-                    || body_width
-                        != window_integer_slot(interp, window, WINDOW_OLD_BODY_PIXEL_WIDTH_SLOT)
-                    || body_height
-                        != window_integer_slot(interp, window, WINDOW_OLD_BODY_PIXEL_HEIGHT_SLOT));
+                    || (width, height, body_width, body_height)
+                        != window_old_sizes(interp, window));
             frame_buffer_change |= buffer_change;
             frame_size_change |= size_change;
             if buffer_change {
@@ -6731,22 +6720,22 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let window = args.first().copied().unwrap_or(Value::Nil);
                 let window_id = valid_window_id(interp, &window)?;
-                let slot = if name == "window-old-pixel-width" {
-                    WINDOW_OLD_PIXEL_WIDTH_SLOT
+                let (width, height, _, _) = window_old_sizes(interp, window_id);
+                Ok(Value::Integer(if name == "window-old-pixel-width" {
+                    width
                 } else {
-                    WINDOW_OLD_PIXEL_HEIGHT_SLOT
-                };
-                Ok(Value::Integer(window_integer_slot(interp, window_id, slot)))
+                    height
+                }))
             }
             "window-old-body-pixel-width" | "window-old-body-pixel-height" => {
                 need_arg_range(name, args, 0, 1)?;
                 let window_id = live_window_id_or_selected(interp, args.first())?;
-                let slot = if name == "window-old-body-pixel-width" {
-                    WINDOW_OLD_BODY_PIXEL_WIDTH_SLOT
+                let (_, _, width, height) = window_old_sizes(interp, window_id);
+                Ok(Value::Integer(if name == "window-old-body-pixel-width" {
+                    width
                 } else {
-                    WINDOW_OLD_BODY_PIXEL_HEIGHT_SLOT
-                };
-                Ok(Value::Integer(window_integer_slot(interp, window_id, slot)))
+                    height
+                }))
             }
             "window-new-pixel" | "window-new-total" | "window-new-normal" => {
                 need_arg_range(name, args, 0, 1)?;

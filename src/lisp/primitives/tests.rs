@@ -37001,6 +37001,242 @@ fn window_sequence_number_use_time_and_cursor_bit_are_the_windows_own() {
 }
 
 #[test]
+fn window_geometry_is_the_windows_own_integers() {
+    // window.h: pixel_left, pixel_top, left_col, top_line, pixel_width,
+    // pixel_height, the four old sizes, total_cols, total_lines and the
+    // two margins are integers of the window.  A window here is made with
+    // its pixel edges and sizes and reads its columns and lines from
+    // them until window.c's resizing assigns those.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"))
+    };
+    let handle = |value: Value| WindowRef::from_value(&value).expect("a window");
+    let pixels = |window: WindowRef| {
+        (
+            window.pixel_width(),
+            window.pixel_height(),
+            window.pixel_left(),
+            window.pixel_top(),
+        )
+    };
+    let chars = |window: WindowRef| {
+        (
+            window.total_cols(),
+            window.total_lines(),
+            window.left_col(),
+            window.top_line(),
+        )
+    };
+    let old_sizes = |window: WindowRef| {
+        (
+            window.old_pixel_width(),
+            window.old_pixel_height(),
+            window.old_body_pixel_width(),
+            window.old_body_pixel_height(),
+        )
+    };
+    let margins = |window: WindowRef| (window.left_margin_cols(), window.right_margin_cols());
+    let integers = |values: &[i64]| Value::list(values.iter().copied().map(Value::Integer));
+
+    // make_window's window: the pixel edges and sizes it is made with,
+    // no columns or lines of its own, which read as the pixels do, no
+    // old sizes and no margins.
+    let id = interp.current_buffer_id();
+    let lone = make_leaf_window(&mut interp, id, 1, false, (80, 10, 3, 4));
+    interp.adjust_window_count(lone.id(), true);
+    assert_eq!(pixels(lone), (Some(80), Some(10), Some(3), Some(4)));
+    assert_eq!(chars(lone), (None, None, None, None));
+    assert_eq!(window_char_geometry(&interp, lone.id()), (80, 10, 3, 4));
+    assert_eq!((old_sizes(lone), margins(lone)), ((0, 0, 0, 0), (0, 0)));
+    assert_eq!(window_margin_cols(&interp, lone.id()), (None, None));
+    // `w->total_cols = 70' and `w->top_line = 6' are the window's own,
+    // apart from its pixels; the others still read as those.
+    set_window_total_cols(&interp, lone.id(), 70);
+    set_window_top_line(&interp, lone.id(), 6);
+    assert_eq!(chars(lone), (Some(70), None, None, Some(6)));
+    assert_eq!(pixels(lone), (Some(80), Some(10), Some(3), Some(4)));
+    assert_eq!(window_char_geometry(&interp, lone.id()), (70, 10, 3, 6));
+    set_window_left_col(&interp, lone.id(), 0);
+    set_window_total_lines(&interp, lone.id(), 0);
+    assert_eq!(window_char_geometry(&interp, lone.id()), (70, 0, 0, 6));
+    // The dead window of a dump is given nothing.
+    let dead = interp.install_dead_window(3);
+    assert_eq!(pixels(dead), (None, None, None, None));
+    assert_eq!(chars(dead), (None, None, None, None));
+    assert_eq!(window_char_geometry(&interp, dead.id()), (0, 0, 0, 0));
+    assert_eq!((old_sizes(dead), margins(dead)), ((0, 0, 0, 0), (0, 0)));
+    // Nothing holds the two from here on: the lone window shows its
+    // buffer no longer.
+    interp.wset_buffer(lone.id(), Value::Nil);
+
+    // The frame's windows: what Lisp reads is the window's integers.
+    let top = handle(interp.selected_window_value());
+    assert!(matches!(pixels(top), (Some(_), Some(_), Some(0), Some(_))));
+    let (cols, lines, left_col, top_line) = window_char_geometry(&interp, top.id());
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-pixel-width) (window-pixel-height) (window-pixel-left) (window-pixel-top)
+                   (window-total-width) (window-total-height) (window-left-column) (window-top-line))"
+        ),
+        integers(&[
+            top.pixel_width().expect("a width"),
+            top.pixel_height().expect("a height"),
+            top.pixel_left().expect("a left edge"),
+            top.pixel_top().expect("a top edge"),
+            cols,
+            lines,
+            left_col,
+            top_line
+        ])
+    );
+    // The old sizes are read from the window.
+    top.set_old_pixel_width(71);
+    top.set_old_pixel_height(72);
+    top.set_old_body_pixel_width(73);
+    top.set_old_body_pixel_height(74);
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-old-pixel-width) (window-old-pixel-height)
+                   (window-old-body-pixel-width) (window-old-body-pixel-height))"
+        ),
+        integers(&[71, 72, 73, 74])
+    );
+
+    // A split: the new parent has the old window's pixel edges and sizes
+    // and its columns and lines (replace_window), its top line the one
+    // window-resize-apply-total gives the frame's root; the old window
+    // and the new one have the lines window_resize_apply gave them, the
+    // new one starting where the old one ends.
+    let before = (pixels(top), window_char_geometry(&interp, top.id()));
+    let bottom = handle(run(&mut interp, "(setq wg-bottom (split-window))"));
+    let column = handle(run(&mut interp, "(window-parent)"));
+    assert_eq!(pixels(column), before.0);
+    let (cols, lines, left_col, _) = before.1;
+    assert_eq!(
+        (column.total_cols(), column.total_lines(), column.left_col()),
+        (Some(cols), Some(lines), Some(left_col))
+    );
+    assert!(column.top_line().is_some());
+    assert_eq!(
+        top.total_lines()
+            .zip(bottom.total_lines())
+            .map(|(a, b)| a + b),
+        Some(lines)
+    );
+    let (_, top_lines, _, top_top_line) = window_char_geometry(&interp, top.id());
+    let (_, bottom_lines, _, bottom_top_line) = window_char_geometry(&interp, bottom.id());
+    assert_eq!(bottom_top_line, top_top_line + top_lines);
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-total-height wg-bottom) (window-top-line wg-bottom)
+                   (window-pixel-height wg-bottom) (window-pixel-top wg-bottom))"
+        ),
+        integers(&[
+            bottom_lines,
+            bottom_top_line,
+            bottom.pixel_height().expect("a height"),
+            bottom.pixel_top().expect("a top edge"),
+        ])
+    );
+
+    // Fset_window_margins stores the two margins, 0 for none.
+    assert_eq!(run(&mut interp, "(set-window-margins nil 2 3)"), Value::T);
+    assert_eq!(margins(top), (2, 3));
+    assert_eq!(margins(bottom), (0, 0));
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-margins) (window-margins wg-bottom))"
+        ),
+        Value::list([
+            Value::cons(Value::Integer(2), Value::Integer(3)),
+            Value::cons(Value::Nil, Value::Nil)
+        ])
+    );
+
+    // A copy of the image has the integers, and which the window has
+    // been given, in its own windows.
+    let copy = interp.deep_clone_image();
+    for window in [top, bottom, column] {
+        let copied = copy.window_ref(window.id()).expect("the copied window");
+        assert_ne!(copied.value(), window.value());
+        assert_eq!(
+            (
+                pixels(copied),
+                chars(copied),
+                old_sizes(copied),
+                margins(copied)
+            ),
+            (
+                pixels(window),
+                chars(window),
+                old_sizes(window),
+                margins(window)
+            )
+        );
+    }
+    drop(copy);
+    interp.select_symbol_owner();
+
+    // A configuration saves the margins with the edges and sizes, and
+    // Fset_window_configuration stores them back, in a window it revives
+    // too (the frame's windows are then fitted to the frame as it is
+    // now); the old sizes are not its to restore.  What Lisp reads is
+    // again the window's integers.
+    run(&mut interp, "(setq wg-all (current-window-configuration))");
+    run(&mut interp, "(set-window-margins nil nil 1)");
+    assert_eq!(margins(top), (0, 1));
+    let split = pixels(top);
+    run(&mut interp, "(delete-other-windows)");
+    assert_ne!(pixels(top), split);
+    assert!(!bottom.is_valid() && !column.is_valid());
+    run(&mut interp, "(set-window-configuration wg-all)");
+    assert!(top.is_valid() && bottom.is_valid() && column.is_valid());
+    assert_eq!((margins(top), margins(bottom)), ((2, 3), (0, 0)));
+    assert_eq!(old_sizes(top), (71, 72, 73, 74));
+    assert_eq!(
+        run(&mut interp, "(window-margins)"),
+        Value::cons(Value::Integer(2), Value::Integer(3))
+    );
+    for (window, name) in [(top, "(selected-window)"), (bottom, "wg-bottom")] {
+        let (cols, lines, left_col, top_line) = window_char_geometry(&interp, window.id());
+        assert_eq!(
+            run(
+                &mut interp,
+                &format!(
+                    "(let ((w {name}))
+                       (list (window-pixel-width w) (window-pixel-height w)
+                             (window-pixel-left w) (window-pixel-top w)
+                             (window-total-width w) (window-total-height w)
+                             (window-left-column w) (window-top-line w)))"
+                )
+            ),
+            integers(&[
+                window.pixel_width().expect("a width"),
+                window.pixel_height().expect("a height"),
+                window.pixel_left().expect("a left edge"),
+                window.pixel_top().expect("a top edge"),
+                cols,
+                lines,
+                left_col,
+                top_line
+            ])
+        );
+    }
+}
+
+#[test]
 fn a_deleted_window_keeps_its_buffer_for_a_later_configuration() {
     // window.c:delete_all_child_windows leaves a leaf's buffer in its
     // combination limit, and any later Fset_window_configuration that

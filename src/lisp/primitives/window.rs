@@ -39,77 +39,54 @@ pub(crate) const WINDOW_CURSOR_TYPE_SLOT: usize = 10;
 pub(crate) const WINDOW_PARENT_SLOT: usize = 11;
 pub(crate) const WINDOW_PREV_SIBLING_SLOT: usize = 12;
 pub(crate) const WINDOW_NEXT_SIBLING_SLOT: usize = 13;
-pub(crate) const WINDOW_PIXEL_WIDTH_SLOT: usize = 14;
-pub(crate) const WINDOW_PIXEL_HEIGHT_SLOT: usize = 15;
-pub(crate) const WINDOW_PIXEL_LEFT_SLOT: usize = 16;
-pub(crate) const WINDOW_PIXEL_TOP_SLOT: usize = 17;
-pub(crate) const WINDOW_NORMAL_WIDTH_SLOT: usize = 18;
-pub(crate) const WINDOW_NORMAL_HEIGHT_SLOT: usize = 19;
-pub(crate) const WINDOW_COMBINATION_LIMIT_SLOT: usize = 20;
-pub(crate) const WINDOW_HSCROLL_SLOT: usize = 21;
-pub(crate) const WINDOW_MIN_HSCROLL_SLOT: usize = 22;
-pub(crate) const WINDOW_SUSPEND_AUTO_HSCROLL_SLOT: usize = 23;
-pub(crate) const WINDOW_OLD_BUFFER_SLOT: usize = 24;
-pub(crate) const WINDOW_POINT_SLOT: usize = 25;
-pub(crate) const WINDOW_FRAME_SLOT: usize = 26;
-/// window.c's change_stamp and old pixel and body sizes: the state
-/// window_change_record_windows recorded when window change functions
-/// last ran (absent, read as 0, for a window created since).
-pub(crate) const WINDOW_CHANGE_STAMP_SLOT: usize = 27;
-pub(crate) const WINDOW_OLD_PIXEL_WIDTH_SLOT: usize = 28;
-pub(crate) const WINDOW_OLD_PIXEL_HEIGHT_SLOT: usize = 29;
-pub(crate) const WINDOW_OLD_BODY_PIXEL_WIDTH_SLOT: usize = 30;
-pub(crate) const WINDOW_OLD_BODY_PIXEL_HEIGHT_SLOT: usize = 31;
+pub(crate) const WINDOW_NORMAL_WIDTH_SLOT: usize = 14;
+pub(crate) const WINDOW_NORMAL_HEIGHT_SLOT: usize = 15;
+pub(crate) const WINDOW_COMBINATION_LIMIT_SLOT: usize = 16;
+pub(crate) const WINDOW_HSCROLL_SLOT: usize = 17;
+pub(crate) const WINDOW_MIN_HSCROLL_SLOT: usize = 18;
+pub(crate) const WINDOW_SUSPEND_AUTO_HSCROLL_SLOT: usize = 19;
+pub(crate) const WINDOW_OLD_BUFFER_SLOT: usize = 20;
+pub(crate) const WINDOW_POINT_SLOT: usize = 21;
+pub(crate) const WINDOW_FRAME_SLOT: usize = 22;
+/// window.c's change_stamp: the frame's stamp when
+/// window_change_record_windows last recorded the window (absent, read
+/// as 0, for a window created since).
+pub(crate) const WINDOW_CHANGE_STAMP_SLOT: usize = 23;
 /// window.h's base_line_number and base_line_pos for the mode line's
 /// %l, with the buffer and the state they were counted under (absent,
 /// read as no cache, for a window that has not shown a line number).
-pub(crate) const WINDOW_BASE_LINE_SLOT: usize = 32;
+pub(crate) const WINDOW_BASE_LINE_SLOT: usize = 24;
 /// window.h's window_end_pos: Z minus the end of the text the window's
 /// last redisplay showed (absent before one).
-pub(crate) const WINDOW_END_POS_SLOT: usize = 33;
+pub(crate) const WINDOW_END_POS_SLOT: usize = 25;
 /// window.h's force_start, optional_new_start and start_at_line_beg:
 /// how redisplay_window treats the window's start (absent, read as
 /// false, until a command or redisplay sets them).
-pub(crate) const WINDOW_FORCE_START_SLOT: usize = 34;
-pub(crate) const WINDOW_OPTIONAL_NEW_START_SLOT: usize = 35;
-pub(crate) const WINDOW_START_AT_LINE_BEG_SLOT: usize = 36;
-/// window.h's left_col, top_line, total_cols and total_lines: the
-/// window's edges and sizes in frame columns and lines.  window.c keeps
-/// them apart from the pixel geometry and assigns them on its own
-/// schedule (window_resize_apply, window-resize-apply-total,
-/// resize_frame_windows), so the two can differ: a batch frame's root
-/// keeps pixel_top 0 while window-resize-apply-total puts its top_line
-/// below the menu bar.  A text frame's character cell is one pixel.
-pub(crate) const WINDOW_LEFT_COL_SLOT: usize = 37;
-pub(crate) const WINDOW_TOP_LINE_SLOT: usize = 38;
-pub(crate) const WINDOW_TOTAL_COLS_SLOT: usize = 39;
-pub(crate) const WINDOW_TOTAL_LINES_SLOT: usize = 40;
-/// window.h's left_margin_cols and right_margin_cols (nil for none,
-/// GNU's 0).
-pub(crate) const WINDOW_LEFT_MARGIN_COLS_SLOT: usize = 41;
-pub(crate) const WINDOW_RIGHT_MARGIN_COLS_SLOT: usize = 42;
+pub(crate) const WINDOW_FORCE_START_SLOT: usize = 26;
+pub(crate) const WINDOW_OPTIONAL_NEW_START_SLOT: usize = 27;
+pub(crate) const WINDOW_START_AT_LINE_BEG_SLOT: usize = 28;
 /// window.h's redisplay and update_mode_line: the window must be
 /// redisplayed (wset_redisplay), and its mode line with it
 /// (wset_update_mode_line), until mark_window_display_accurate_1 clears
 /// them (absent, read as false).
-pub(crate) const WINDOW_REDISPLAY_SLOT: usize = 43;
-pub(crate) const WINDOW_UPDATE_MODE_LINE_SLOT: usize = 44;
+pub(crate) const WINDOW_REDISPLAY_SLOT: usize = 29;
+pub(crate) const WINDOW_UPDATE_MODE_LINE_SLOT: usize = 30;
 /// window.h's last_had_star: whether the buffer was modified when the
 /// window's mode line was last displayed.
-pub(crate) const WINDOW_LAST_HAD_STAR_SLOT: usize = 45;
+pub(crate) const WINDOW_LAST_HAD_STAR_SLOT: usize = 31;
 /// window.h's column_number_displayed: the column a `%c' or `%C' of the
 /// mode line last showed (absent or nil for -1, none).
-pub(crate) const WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT: usize = 46;
+pub(crate) const WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT: usize = 32;
 /// window.h's last_point, last_modified and last_overlay_modified: point
 /// and the buffer's modification counts as the window's last complete
 /// redisplay left them (absent, read as 0).
-pub(crate) const WINDOW_LAST_POINT_SLOT: usize = 47;
-pub(crate) const WINDOW_LAST_MODIFIED_SLOT: usize = 48;
-pub(crate) const WINDOW_LAST_OVERLAY_MODIFIED_SLOT: usize = 49;
+pub(crate) const WINDOW_LAST_POINT_SLOT: usize = 33;
+pub(crate) const WINDOW_LAST_MODIFIED_SLOT: usize = 34;
+pub(crate) const WINDOW_LAST_OVERLAY_MODIFIED_SLOT: usize = 35;
 /// window.h's window_end_valid: the window's last redisplay completed
 /// (mark_window_display_accurate_1) and nothing since asked for its
 /// display to be made anew; try_cursor_movement needs it.
-pub(crate) const WINDOW_END_VALID_SLOT: usize = 50;
+pub(crate) const WINDOW_END_VALID_SLOT: usize = 36;
 
 /// `w->window_end_valid = false'.
 pub(crate) fn invalidate_window_end(interp: &mut Interpreter, window_id: u64) {
@@ -117,56 +94,68 @@ pub(crate) fn invalidate_window_end(interp: &mut Interpreter, window_id: u64) {
 }
 
 /// WINDOW_ID's character geometry as (total_cols, total_lines, left_col,
-/// top_line), in window_geometry's order.  A record from before these
-/// slots existed reads its pixel geometry, which it then still equals.
+/// top_line), in window_geometry's order: window.h's fields of those
+/// names, the window's edges and sizes in frame columns and lines.
+/// window.c keeps them apart from the pixel geometry and assigns them on
+/// its own schedule (window_resize_apply, window-resize-apply-total,
+/// resize_frame_windows), so the two can differ: a batch frame's root
+/// keeps pixel_top 0 while window-resize-apply-total puts its top_line
+/// below the menu bar.  A text frame's character cell is one pixel, and a
+/// window not yet given one of the four reads its pixel edge or size,
+/// which it then still equals.
 pub(crate) fn window_char_geometry(interp: &Interpreter, window_id: u64) -> (i64, i64, i64, i64) {
-    let window = interp.window_ref(window_id);
-    let slot = |slot: usize, fallback: usize| {
-        window
-            .and_then(|window| {
-                window
-                    .slot_opt(slot)
-                    .filter(|value| !value.is_nil())
-                    .or_else(|| window.slot_opt(fallback))
-            })
-            .and_then(|value| value.integer_value())
-            .unwrap_or(0)
+    let Some(window) = interp.window_ref(window_id) else {
+        return (0, 0, 0, 0);
     };
     (
-        slot(WINDOW_TOTAL_COLS_SLOT, WINDOW_PIXEL_WIDTH_SLOT),
-        slot(WINDOW_TOTAL_LINES_SLOT, WINDOW_PIXEL_HEIGHT_SLOT),
-        slot(WINDOW_LEFT_COL_SLOT, WINDOW_PIXEL_LEFT_SLOT),
-        slot(WINDOW_TOP_LINE_SLOT, WINDOW_PIXEL_TOP_SLOT),
+        window.total_cols().or(window.pixel_width()).unwrap_or(0),
+        window.total_lines().or(window.pixel_height()).unwrap_or(0),
+        window.left_col().or(window.pixel_left()).unwrap_or(0),
+        window.top_line().or(window.pixel_top()).unwrap_or(0),
     )
 }
 
-/// Store one of WINDOW_ID's character-geometry slots (above).
-pub(crate) fn set_window_char_slot(
-    interp: &mut Interpreter,
-    window_id: u64,
-    slot: usize,
-    value: i64,
-) {
+/// `w->left_col = COL' for WINDOW_ID.
+pub(crate) fn set_window_left_col(interp: &Interpreter, window_id: u64, col: i64) {
     if let Some(window) = interp.window_ref(window_id) {
-        window.set_slot(interp, slot, Value::Integer(value));
+        window.set_left_col(Some(col));
     }
 }
 
-/// WINDOW_ID's left_margin_cols and right_margin_cols (None for 0).
+/// `w->top_line = LINE' for WINDOW_ID.
+pub(crate) fn set_window_top_line(interp: &Interpreter, window_id: u64, line: i64) {
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_top_line(Some(line));
+    }
+}
+
+/// `w->total_cols = COLS' for WINDOW_ID.
+pub(crate) fn set_window_total_cols(interp: &Interpreter, window_id: u64, cols: i64) {
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_total_cols(Some(cols));
+    }
+}
+
+/// `w->total_lines = LINES' for WINDOW_ID.
+pub(crate) fn set_window_total_lines(interp: &Interpreter, window_id: u64, lines: i64) {
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_total_lines(Some(lines));
+    }
+}
+
+/// WINDOW_ID's left_margin_cols and right_margin_cols (None for 0, no
+/// margin).
 pub(crate) fn window_margin_cols(
     interp: &Interpreter,
     window_id: u64,
 ) -> (Option<i64>, Option<i64>) {
-    let window = interp.window_ref(window_id);
-    let slot = |slot: usize| {
-        window
-            .and_then(|window| window.slot_opt(slot))
-            .and_then(|value| value.integer_value())
-            .filter(|cols| *cols != 0)
+    let Some(window) = interp.window_ref(window_id) else {
+        return (None, None);
     };
+    let margin = |cols: i64| Some(cols).filter(|cols| *cols != 0);
     (
-        slot(WINDOW_LEFT_MARGIN_COLS_SLOT),
-        slot(WINDOW_RIGHT_MARGIN_COLS_SLOT),
+        margin(window.left_margin_cols()),
+        margin(window.right_margin_cols()),
     )
 }
 
@@ -177,14 +166,8 @@ pub(crate) fn set_window_margin_cols(
     right: Option<i64>,
 ) {
     if let Some(window) = interp.window_ref(window_id) {
-        window.ensure_slot(interp, WINDOW_RIGHT_MARGIN_COLS_SLOT);
-        let value = |cols: Option<i64>| {
-            cols.filter(|cols| *cols != 0)
-                .map(Value::Integer)
-                .unwrap_or(Value::Nil)
-        };
-        window.set_held_slot(interp, WINDOW_LEFT_MARGIN_COLS_SLOT, value(left));
-        window.set_held_slot(interp, WINDOW_RIGHT_MARGIN_COLS_SLOT, value(right));
+        window.set_left_margin_cols(left.unwrap_or(0));
+        window.set_right_margin_cols(right.unwrap_or(0));
     }
 }
 
@@ -391,8 +374,9 @@ pub(crate) fn slot_marker_position(value: Option<&Value>) -> Option<usize> {
 /// through, whatever holds it (a value, a frame's field, an id in the
 /// registry).  The state behind it is the window object's own
 /// (alloc/vectors/windows.rs): window.h's contents, its use_time and
-/// sequence_number, its mini, horizontal and cursor_off_p bits, and the
-/// Lisp words laid out by the `WINDOW_*_SLOT' constants above.
+/// sequence_number, the integers of its geometry, its mini, horizontal
+/// and cursor_off_p bits, and the Lisp words laid out by the
+/// `WINDOW_*_SLOT' constants above.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WindowRef(crate::lisp::types::WindowObjectRef);
 
@@ -526,6 +510,182 @@ impl WindowRef {
         self.0.set_cursor_off_p(off);
     }
 
+    /// w->pixel_left: the window's left edge in frame pixels; None for a window not given one
+    /// (alloc/vectors/windows.rs).
+    #[inline]
+    pub(crate) fn pixel_left(self) -> Option<i64> {
+        self.0.pixel_left()
+    }
+
+    /// `w->pixel_left = VALUE'; None takes it back.
+    #[inline]
+    pub(crate) fn set_pixel_left(self, value: Option<i64>) {
+        self.0.set_pixel_left(value);
+    }
+
+    /// w->pixel_top: the window's top edge in frame pixels; None for a window not given one
+    /// (alloc/vectors/windows.rs).
+    #[inline]
+    pub(crate) fn pixel_top(self) -> Option<i64> {
+        self.0.pixel_top()
+    }
+
+    /// `w->pixel_top = VALUE'; None takes it back.
+    #[inline]
+    pub(crate) fn set_pixel_top(self, value: Option<i64>) {
+        self.0.set_pixel_top(value);
+    }
+
+    /// w->left_col: the window's left edge in frame columns; None for a window not given one
+    /// (alloc/vectors/windows.rs).
+    #[inline]
+    pub(crate) fn left_col(self) -> Option<i64> {
+        self.0.left_col()
+    }
+
+    /// `w->left_col = VALUE'; None takes it back.
+    #[inline]
+    pub(crate) fn set_left_col(self, value: Option<i64>) {
+        self.0.set_left_col(value);
+    }
+
+    /// w->top_line: the window's top edge in frame lines; None for a window not given one
+    /// (alloc/vectors/windows.rs).
+    #[inline]
+    pub(crate) fn top_line(self) -> Option<i64> {
+        self.0.top_line()
+    }
+
+    /// `w->top_line = VALUE'; None takes it back.
+    #[inline]
+    pub(crate) fn set_top_line(self, value: Option<i64>) {
+        self.0.set_top_line(value);
+    }
+
+    /// w->pixel_width; None for a window not given one
+    /// (alloc/vectors/windows.rs).
+    #[inline]
+    pub(crate) fn pixel_width(self) -> Option<i64> {
+        self.0.pixel_width()
+    }
+
+    /// `w->pixel_width = VALUE'; None takes it back.
+    #[inline]
+    pub(crate) fn set_pixel_width(self, value: Option<i64>) {
+        self.0.set_pixel_width(value);
+    }
+
+    /// w->pixel_height; None for a window not given one
+    /// (alloc/vectors/windows.rs).
+    #[inline]
+    pub(crate) fn pixel_height(self) -> Option<i64> {
+        self.0.pixel_height()
+    }
+
+    /// `w->pixel_height = VALUE'; None takes it back.
+    #[inline]
+    pub(crate) fn set_pixel_height(self, value: Option<i64>) {
+        self.0.set_pixel_height(value);
+    }
+
+    /// w->total_cols: the window's width in columns; None for a window not given one
+    /// (alloc/vectors/windows.rs).
+    #[inline]
+    pub(crate) fn total_cols(self) -> Option<i64> {
+        self.0.total_cols()
+    }
+
+    /// `w->total_cols = VALUE'; None takes it back.
+    #[inline]
+    pub(crate) fn set_total_cols(self, value: Option<i64>) {
+        self.0.set_total_cols(value);
+    }
+
+    /// w->total_lines: the window's height in lines; None for a window not given one
+    /// (alloc/vectors/windows.rs).
+    #[inline]
+    pub(crate) fn total_lines(self) -> Option<i64> {
+        self.0.total_lines()
+    }
+
+    /// `w->total_lines = VALUE'; None takes it back.
+    #[inline]
+    pub(crate) fn set_total_lines(self, value: Option<i64>) {
+        self.0.set_total_lines(value);
+    }
+
+    /// w->old_pixel_width: the pixel width window_change_record recorded.
+    #[inline]
+    pub(crate) fn old_pixel_width(self) -> i64 {
+        self.0.old_pixel_width()
+    }
+
+    /// `w->old_pixel_width = VALUE'.
+    #[inline]
+    pub(crate) fn set_old_pixel_width(self, value: i64) {
+        self.0.set_old_pixel_width(value);
+    }
+
+    /// w->old_pixel_height.
+    #[inline]
+    pub(crate) fn old_pixel_height(self) -> i64 {
+        self.0.old_pixel_height()
+    }
+
+    /// `w->old_pixel_height = VALUE'.
+    #[inline]
+    pub(crate) fn set_old_pixel_height(self, value: i64) {
+        self.0.set_old_pixel_height(value);
+    }
+
+    /// w->old_body_pixel_width.
+    #[inline]
+    pub(crate) fn old_body_pixel_width(self) -> i64 {
+        self.0.old_body_pixel_width()
+    }
+
+    /// `w->old_body_pixel_width = VALUE'.
+    #[inline]
+    pub(crate) fn set_old_body_pixel_width(self, value: i64) {
+        self.0.set_old_body_pixel_width(value);
+    }
+
+    /// w->old_body_pixel_height.
+    #[inline]
+    pub(crate) fn old_body_pixel_height(self) -> i64 {
+        self.0.old_body_pixel_height()
+    }
+
+    /// `w->old_body_pixel_height = VALUE'.
+    #[inline]
+    pub(crate) fn set_old_body_pixel_height(self, value: i64) {
+        self.0.set_old_body_pixel_height(value);
+    }
+
+    /// w->left_margin_cols, 0 for no margin.
+    #[inline]
+    pub(crate) fn left_margin_cols(self) -> i64 {
+        self.0.left_margin_cols()
+    }
+
+    /// `w->left_margin_cols = VALUE'.
+    #[inline]
+    pub(crate) fn set_left_margin_cols(self, value: i64) {
+        self.0.set_left_margin_cols(value);
+    }
+
+    /// w->right_margin_cols, 0 for no margin.
+    #[inline]
+    pub(crate) fn right_margin_cols(self) -> i64 {
+        self.0.right_margin_cols()
+    }
+
+    /// `w->right_margin_cols = VALUE'.
+    #[inline]
+    pub(crate) fn set_right_margin_cols(self, value: i64) {
+        self.0.set_right_margin_cols(value);
+    }
+
     /// A copy of the slots the window holds, as make_parent_window's
     /// memcpy takes them.
     pub(crate) fn slots(self) -> Vec<Value> {
@@ -604,9 +764,7 @@ pub(crate) fn window_record_slots(
     interp: &Interpreter,
     buffer_id: Option<u64>,
     start: usize,
-    geometry: (i64, i64, i64, i64),
 ) -> Vec<Value> {
-    let (width, height, left, top) = geometry;
     let marker = |point: bool| {
         let marker = crate::lisp::types::MarkerRef::new();
         if let Some(buffer_id) = buffer_id
@@ -631,19 +789,11 @@ pub(crate) fn window_record_slots(
         (WINDOW_NEW_TOTAL_SLOT, Value::Integer(0)),
         (WINDOW_NEW_NORMAL_SLOT, Value::Integer(0)),
         (WINDOW_CURSOR_TYPE_SLOT, Value::T),
-        (WINDOW_PIXEL_WIDTH_SLOT, Value::Integer(width)),
-        (WINDOW_PIXEL_HEIGHT_SLOT, Value::Integer(height)),
-        (WINDOW_PIXEL_LEFT_SLOT, Value::Integer(left)),
-        (WINDOW_PIXEL_TOP_SLOT, Value::Integer(top)),
         (WINDOW_NORMAL_WIDTH_SLOT, Value::float(1.0)),
         (WINDOW_NORMAL_HEIGHT_SLOT, Value::float(1.0)),
         (WINDOW_HSCROLL_SLOT, Value::Integer(0)),
         (WINDOW_MIN_HSCROLL_SLOT, Value::Integer(0)),
         (WINDOW_POINT_SLOT, point_marker),
-        (WINDOW_TOTAL_COLS_SLOT, Value::Integer(width)),
-        (WINDOW_TOTAL_LINES_SLOT, Value::Integer(height)),
-        (WINDOW_LEFT_COL_SLOT, Value::Integer(left)),
-        (WINDOW_TOP_LINE_SLOT, Value::Integer(top)),
     ] {
         slots[slot] = value;
     }
@@ -651,11 +801,13 @@ pub(crate) fn window_record_slots(
 }
 
 /// window.c:make_window for a leaf that is to show BUFFER_ID from START
-/// (`window_record_slots'), a minibuffer window when MINI.  Its contents
-/// name the buffer by its id, as a new window's always have here: the
-/// buffer itself is stored by wset_buffer, when set_window_buffer first
-/// shows a buffer in the window.  The buffer's count of windows is the
-/// caller's to keep.
+/// (`window_record_slots'), a minibuffer window when MINI, with GEOMETRY
+/// its pixel width, height, left and top edges (its columns and lines are
+/// those until window.c's resizing assigns them: `window_char_geometry').
+/// Its contents name the buffer by its id, as a new window's always have
+/// here: the buffer itself is stored by wset_buffer, when
+/// set_window_buffer first shows a buffer in the window.  The buffer's
+/// count of windows is the caller's to keep.
 pub(crate) fn make_leaf_window(
     interp: &mut Interpreter,
     buffer_id: u64,
@@ -663,8 +815,13 @@ pub(crate) fn make_leaf_window(
     mini: bool,
     geometry: (i64, i64, i64, i64),
 ) -> WindowRef {
-    let slots = window_record_slots(interp, Some(buffer_id), start, geometry);
+    let slots = window_record_slots(interp, Some(buffer_id), start);
     let window = interp.make_window(slots);
+    let (width, height, left, top) = geometry;
+    window.set_pixel_width(Some(width));
+    window.set_pixel_height(Some(height));
+    window.set_pixel_left(Some(left));
+    window.set_pixel_top(Some(top));
     window.set_contents(Value::Integer(buffer_id as i64));
     window.set_mini(mini);
     window

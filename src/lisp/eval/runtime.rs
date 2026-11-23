@@ -1840,15 +1840,31 @@ impl Interpreter {
                 _ => None,
             };
             p[SW_BUFFER] = buffer.map_or(Value::Nil, Value::Buffer);
+            // The edges and sizes as fixnums, nil for one the window has
+            // not been given (its columns and lines until window.c's
+            // resizing assigns them, which then read as its pixels do).
+            for (field, value) in [
+                (SW_PIXEL_LEFT, record.pixel_left()),
+                (SW_PIXEL_TOP, record.pixel_top()),
+                (SW_PIXEL_HEIGHT, record.pixel_height()),
+                (SW_PIXEL_WIDTH, record.pixel_width()),
+                (SW_LEFT_COL, record.left_col()),
+                (SW_TOP_LINE, record.top_line()),
+                (SW_TOTAL_COLS, record.total_cols()),
+                (SW_TOTAL_LINES, record.total_lines()),
+                // The margins, nil for none.
+                (
+                    SW_LEFT_MARGIN_COLS,
+                    Some(record.left_margin_cols()).filter(|cols| *cols != 0),
+                ),
+                (
+                    SW_RIGHT_MARGIN_COLS,
+                    Some(record.right_margin_cols()).filter(|cols| *cols != 0),
+                ),
+            ] {
+                p[field] = value.map_or(Value::Nil, Value::Integer);
+            }
             for (field, index) in [
-                (SW_PIXEL_LEFT, primitives::WINDOW_PIXEL_LEFT_SLOT),
-                (SW_PIXEL_TOP, primitives::WINDOW_PIXEL_TOP_SLOT),
-                (SW_PIXEL_HEIGHT, primitives::WINDOW_PIXEL_HEIGHT_SLOT),
-                (SW_PIXEL_WIDTH, primitives::WINDOW_PIXEL_WIDTH_SLOT),
-                (SW_LEFT_COL, primitives::WINDOW_LEFT_COL_SLOT),
-                (SW_TOP_LINE, primitives::WINDOW_TOP_LINE_SLOT),
-                (SW_TOTAL_COLS, primitives::WINDOW_TOTAL_COLS_SLOT),
-                (SW_TOTAL_LINES, primitives::WINDOW_TOTAL_LINES_SLOT),
                 (SW_NORMAL_COLS, primitives::WINDOW_NORMAL_WIDTH_SLOT),
                 (SW_NORMAL_LINES, primitives::WINDOW_NORMAL_HEIGHT_SLOT),
                 (SW_HSCROLL, primitives::WINDOW_HSCROLL_SLOT),
@@ -1858,14 +1874,6 @@ impl Interpreter {
                     primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
                 ),
                 (SW_DISPLAY_TABLE, primitives::WINDOW_DISPLAY_TABLE_SLOT),
-                (
-                    SW_LEFT_MARGIN_COLS,
-                    primitives::WINDOW_LEFT_MARGIN_COLS_SLOT,
-                ),
-                (
-                    SW_RIGHT_MARGIN_COLS,
-                    primitives::WINDOW_RIGHT_MARGIN_COLS_SLOT,
-                ),
                 (SW_DEDICATED, primitives::WINDOW_DEDICATED_SLOT),
                 (
                     SW_COMBINATION_LIMIT,
@@ -2243,15 +2251,22 @@ impl Interpreter {
             if matches!(squirreled.kind(), Kind::Buffer(_)) {
                 self.wset_buffer(window, squirreled);
             }
+            if let Some(record) = self.window_ref(window) {
+                // The saved edges and sizes, one saved as nil taken back
+                // from the window; the saved margins, nil for none.
+                let integer = |field| saved_field(saved, field).integer_value();
+                record.set_pixel_left(integer(SW_PIXEL_LEFT));
+                record.set_pixel_top(integer(SW_PIXEL_TOP));
+                record.set_pixel_width(integer(SW_PIXEL_WIDTH));
+                record.set_pixel_height(integer(SW_PIXEL_HEIGHT));
+                record.set_left_col(integer(SW_LEFT_COL));
+                record.set_top_line(integer(SW_TOP_LINE));
+                record.set_total_cols(integer(SW_TOTAL_COLS));
+                record.set_total_lines(integer(SW_TOTAL_LINES));
+                record.set_left_margin_cols(integer(SW_LEFT_MARGIN_COLS).unwrap_or(0));
+                record.set_right_margin_cols(integer(SW_RIGHT_MARGIN_COLS).unwrap_or(0));
+            }
             for (field, index) in [
-                (SW_PIXEL_LEFT, primitives::WINDOW_PIXEL_LEFT_SLOT),
-                (SW_PIXEL_TOP, primitives::WINDOW_PIXEL_TOP_SLOT),
-                (SW_PIXEL_WIDTH, primitives::WINDOW_PIXEL_WIDTH_SLOT),
-                (SW_PIXEL_HEIGHT, primitives::WINDOW_PIXEL_HEIGHT_SLOT),
-                (SW_LEFT_COL, primitives::WINDOW_LEFT_COL_SLOT),
-                (SW_TOP_LINE, primitives::WINDOW_TOP_LINE_SLOT),
-                (SW_TOTAL_COLS, primitives::WINDOW_TOTAL_COLS_SLOT),
-                (SW_TOTAL_LINES, primitives::WINDOW_TOTAL_LINES_SLOT),
                 (SW_NORMAL_COLS, primitives::WINDOW_NORMAL_WIDTH_SLOT),
                 (SW_NORMAL_LINES, primitives::WINDOW_NORMAL_HEIGHT_SLOT),
                 (SW_HSCROLL, primitives::WINDOW_HSCROLL_SLOT),
@@ -2261,14 +2276,6 @@ impl Interpreter {
                 ),
                 (SW_MIN_HSCROLL, primitives::WINDOW_MIN_HSCROLL_SLOT),
                 (SW_DISPLAY_TABLE, primitives::WINDOW_DISPLAY_TABLE_SLOT),
-                (
-                    SW_LEFT_MARGIN_COLS,
-                    primitives::WINDOW_LEFT_MARGIN_COLS_SLOT,
-                ),
-                (
-                    SW_RIGHT_MARGIN_COLS,
-                    primitives::WINDOW_RIGHT_MARGIN_COLS_SLOT,
-                ),
                 (SW_DEDICATED, primitives::WINDOW_DEDICATED_SLOT),
                 (
                     SW_COMBINATION_LIMIT,
