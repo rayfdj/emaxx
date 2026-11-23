@@ -115,6 +115,13 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   unchanged (339 against 244 from byte code, 141 against 48 from native
   code).  The stages that change the object follow; the item closes
   when a window is GNU's `struct window' and the counts are GNU's.
+- **In progress: D17 and D25** (C calling byte code).  Round 370: a
+  byte-compiled callback of `mapc' costs 413.7 instructions against
+  GNU's 288.9 (was 457.7) and 19.5 ns against 13.7 (was 25.7) on the
+  release build; of `mapatoms' 403.1 against 299, a closure there 501.0
+  against 459, of `maphash' 415.9 against 291.  Ffuncall's part is
+  level with GNU's; what is left is in the frame entry (the round's
+  entry lists it by piece).
 
 ## Where things stand — 15 October 2026
 
@@ -19225,6 +19232,88 @@ setup_process_coding_systems's check now refuses). A 13-form
   (63 vector cells against GNU's 185) can move; then GNU's field
   semantics for the slots above, the holders keeping the object and not
   an id, and the ids removed.
+- **Round 370: the byte-code loop returns a function's value in
+  registers (M2, D17 and D25; neither is closed).**  A function called
+  from C that is byte code (`mapc', `mapatoms', `maphash', a hook, a
+  sort predicate, a call from the evaluator or from native code) is
+  entered by `funcall_closure', which sets up the frame and calls the
+  verified loop, `run_verified'.  Before the round a byte-compiled
+  one-argument callback of `mapc' cost 457.7 instructions a call
+  against GNU's 288.9, by function `funcall_closure' 222,
+  `call_function_value' 121, `run_verified' 80, `map_sequence_of' 22
+  and the length 10, against exec_byte_code 112, Ffuncall 61,
+  funcall_general 47, funcall_lambda 40, mapcar1 17 and list_length
+  9.5: Ffuncall's part is level (121 against 108) and the frame entry
+  is twice GNU's (302 against 152).  In time it was worse than in
+  instructions: 25.7 ns a call against 13.7, 1.88 of GNU's where the
+  instructions are 1.58 (the release build, the least of nine runs,
+  on a host with other load); the simulated branch predictor missed
+  alike in both.  Two causes are gone.  **The loop's answer came back
+  through memory**: `(FastExit, Option<usize>)', seven words that the
+  loop wrote a word at a time and its caller then read sixteen bytes at
+  a time (a load over two narrower stores, which the processor cannot
+  forward) before it matched on them and stored the stack's top a
+  second time.  `run_verified' now answers `Option<Value>': the value
+  the function returned to the loop's caller, in two registers as
+  exec_byte_code's `return val' is, or None with any other exit written
+  to a slot the caller passes (`left', read only after None), the top
+  stored by the loop on each way out that stored it before.  **The
+  plain entry tested the code twice**: `entry_program' answers only for
+  a closure whose code string is current and verified with the entry's
+  operands, nothing between that answer and the loop runs Lisp,
+  collects or stores into a string, and the loop's own Bcall already
+  enters on that answer alone (`enter_closure_frame'); the entry from
+  Rust tested `current && admits (0, entry_depth)' again.  It no longer
+  does (`run_entered_with's `setup_runs_lisp', false for pushed
+  arguments), a debug assertion states the claim in the gate's build,
+  and the dynamic-binding entry, whose argument bindings can run a
+  variable watcher, keeps the test.  **After**: the `mapc' callback
+  413.7 instructions (GNU 288.9) and 19.5 ns (13.7; 1.42 of GNU's);
+  from a byte-compiled caller, where no interpreter environment is
+  above the call, 394.5 against 286.5 (probe `mapc-bc-bc'); a callback
+  of `mapatoms' 403.1 (was 447.1, GNU 299), a closure there 501.0
+  (548.0, GNU 459), of `maphash' 415.9 (460.0, GNU 291).  The loop
+  itself does the same work: a lexical recursion runs 363 instructions
+  a level in both builds apart from alignment no-ops (callgrind reads
+  371.1 for 367.2, four no-ops more), a dynamic one 693.0, the suite's
+  byte-code calls 459.6, the interpreter's loops 3,181 and 4,403;
+  cg-call-loop reads 381 for 380 (one instruction of block layout),
+  get-loop 165 for 171, and six window accessors 341.9 each for 339.3
+  (in the loop, over the six: thirteen no-ops and three instructions
+  more).  The slot is the loop's first argument because
+  the pointer to the old in-memory result was: as its last, the loop's
+  register allocation moved and a recursion level cost seven
+  instructions more.  **What is left of D17** (the callback's 413.7
+  against 288.9): in `funcall_closure' (200) the nil interpreter
+  environment pushed and popped around the call when the caller's is
+  not nil (about 29, GNU's funcall_lambda binds nothing for lexical
+  byte code; about 11 from a compiled caller), the entry's marks read,
+  kept, compared and restored (about 28), the entry cache's lookup
+  (24), the frame (22), the arguments (14) and the loop's frame record
+  with its call (about 20); `run_verified' 60, of which its prologue
+  41.  Dropping the pushed environment needs every reader of the
+  environment that a subr can reach checked first (the evaluator's
+  entry points bind their own as GNU's do; Rust callers of the
+  evaluator were not audited), so it is not in this round.  The
+  profile-guided build was not rebuilt: the times above are the
+  release build's.  The independent review (the one question: does the
+  round cheat or break something) read every way out of the loop and
+  both callers and found nothing: the slot is written before each None
+  and read once after it, the top is stored where it was, a return with
+  frames or handlers above the activation still goes through
+  `run_loop's return with the debugger on exit, and the entry cache's
+  answer implies the dropped test (a code string leaves `Current' only
+  through a store, which counts a change, or the sweep, which forgets
+  it; `verify' starts from the entry's operand count).  It noted that
+  the release build now rests on that invariant at the entry from Rust
+  as it already did at Bcall's, which verify.rs's module comment now
+  says.  Validation (gate profile, one test thread a process): the
+  grouped gate 3,530 passed, 0 failed, 2 ignored; cli 30, cli_parity
+  173, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 1, package_lifecycle 5,
+  runtime_ownership 3; clippy `-D warnings' and rustfmt clean; the
+  round audit reports no hard finding (110 changed lines, one
+  assertion added, none removed).
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change

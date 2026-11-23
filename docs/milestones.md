@@ -101,12 +101,13 @@ a diagnostic run of the locked suite on the profile-guided build.
 - D13: looking-at ~250 instructions over GNU around the match (rounds 174-176,
   296)
 - D14: make-symbol ~690 instructions (round 173)
-- D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297)
+- D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297).
+  In progress (round 370: 414 against 289 a `mapc' callback, was 458).
 - D22: Building ucs-names costs 1,024M vs 818M instructions (round 162)
 - D23: Reading a large file still costs 85M vs 67M instructions (rounds 161,
   175). **Done** (baseline of 23 November 2026: 60.0M against 67.2M).
 - D25: Closure entry from Rust 807 vs 639 instructions per mapatoms callback
-  (rounds 159, 160)
+  (rounds 159, 160). In progress (round 370: 501 against 459, was 548).
 - D43: Library tests share one process heap and are not thread-safe (parallel
   runs crash)
 - D125: Interpreted code and the call from C to a Lisp function are slower

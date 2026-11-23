@@ -1830,20 +1830,35 @@ fn run_fast(
 /// collect nothing; a call, or an op whose full arm runs in place
 /// (`op_in_place'), may do both, and the loop then re-reads the frame's
 /// code and its verification, as after a frame switch.
+///
+/// The answer is the value the function returned to the loop's caller
+/// (exec_byte_code's `return val', which comes back in registers), or
+/// None with every other exit written to LEFT.  The stack's top is stored
+/// on each way out but a raised signal's and a frame to resume.  LEFT is
+/// the first argument, where the pointer to a result returned in memory
+/// was: the loop's values keep the registers they had.
 // The opcode match names its bytes one by one where a range would read
 // better: see the comment on its catch-all arm.
 #[allow(clippy::manual_range_patterns)]
 #[inline(never)]
 fn run_verified(
+    left: &mut std::mem::MaybeUninit<FastExit>,
     vm: &mut VmFrames<'_>,
     code: &[u8],
     words: *mut Value,
     top: usize,
     pc: &mut usize,
     quitcounter: &mut u8,
-) -> (FastExit, Option<usize>) {
+) -> Option<Value> {
     let mut code = code;
     let mut top = top;
+    // Every exit but the function's return: the exit written to LEFT.
+    macro_rules! leave {
+        ($exit:expr) => {{
+            left.write($exit);
+            return None;
+        }};
+    }
     // One pass of the inner loop runs one frame; a call or return that
     // switches frames starts the next pass on the new frame's program.
     loop {
@@ -2463,7 +2478,9 @@ fn run_verified(
                         *pc = resume;
                         break 'run FastExit::Switched(top, depth);
                     }
-                    break 'run FastExit::Return(value);
+                    // exec_byte_code's `return val' to its C caller: the
+                    // value in registers, the top stored above.
+                    return Some(value);
                 }
                 // Bnot.
                 0o077 => {
@@ -2945,7 +2962,7 @@ fn run_verified(
         }
         if let FastExit::Raised(..) = exit {
             // The call left the stack as its signal found it.
-            return (exit, None);
+            leave!(exit);
         }
         if let FastExit::Switched(new_top, depth) = exit {
             // The new frame's program, stack (DEPTH operands) and pc are in
@@ -2963,10 +2980,11 @@ fn run_verified(
                 top = new_top;
                 continue;
             }
-            return (FastExit::Resume, None);
+            leave!(FastExit::Resume);
         }
         // SAFETY: sp stayed within the active frame.
-        return (exit, Some(unsafe { sp.offset_from(words) as usize } + 1));
+        vm.interp.bc_stack.top = unsafe { sp.offset_from(words) as usize } + 1;
+        leave!(exit);
     }
 }
 
@@ -4168,7 +4186,7 @@ fn run_entered_inline(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    run_entered_with(interp, program, function, env, |interp, _| {
+    run_entered_with(interp, program, function, env, false, |interp, _| {
         // SAFETY: the caller's `takes' admits at most the list's ENTRY_DEPTH
         // arguments, which `entry_program' gives only a program whose
         // STACK_DEPTH holds them, and `enter_frame' has just put the frame's
@@ -4197,19 +4215,25 @@ fn run_dynamic(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let function = Value::Closure(closure);
-    run_entered_with(interp, program, function, env, |interp, env| {
+    run_entered_with(interp, program, function, env, true, |interp, env| {
         bind_dynamic_arguments(interp, function, arguments, args, env)
     })
 }
 
 /// `run_entered' with the frame's first slots set up by SETUP (the
 /// arguments pushed, or bound dynamically) in the entered frame.
+/// SETUP_RUNS_LISP says whether SETUP can run Lisp (a variable watcher of
+/// a bound argument), which may store into the code string: the code is
+/// then tested again, where otherwise it is as `entry_program' found it,
+/// current and verified with the entry's operands, and the verified loop
+/// takes it as its own call does (`enter_closure_frame').
 #[inline(always)]
 fn run_entered_with(
     interp: &mut Interpreter,
     program: super::verify::EntryProgram,
     function: Value,
     env: &mut Env,
+    setup_runs_lisp: bool,
     setup: impl FnOnce(&mut Interpreter, &mut Env) -> Result<(), LispError>,
 ) -> Result<Value, LispError> {
     let entry_depth = program.entry_depth;
@@ -4233,14 +4257,19 @@ fn run_entered_with(
         // SAFETY: as in `run_loop': the verified loop runs no Lisp, collects
         // nothing and stores into no string while it reads the bytes.
         let (code, current) = unsafe { program.code.bytes_unguarded() };
-        let exit = if current
-            && program
-                .verified
-                .is_some_and(|verified| verified.admits(0, entry_depth))
-        {
+        let admitted = || {
+            current
+                && program
+                    .verified
+                    .is_some_and(|verified| verified.admits(0, entry_depth))
+        };
+        debug_assert!(setup_runs_lisp || admitted());
+        let exit = if !setup_runs_lisp || admitted() {
             let words = interp.bc_stack.words.as_mut_ptr().cast::<Value>();
             let top = interp.bc_stack.top;
-            let (verified_exit, top) = run_verified(
+            let mut left = std::mem::MaybeUninit::uninit();
+            let returned = run_verified(
+                &mut left,
                 &mut VmFrames {
                     interp,
                     env,
@@ -4256,33 +4285,33 @@ fn run_entered_with(
                 &mut pc,
                 &mut quitcounter,
             );
-            if let Some(top) = top {
-                interp.bc_stack.top = top;
-            }
-            match verified_exit {
-                FastExit::Return(value)
+            match returned {
+                Some(value)
                     if interp.bc_frames.len() == frames_base
                         && interp.bc_handlers.len() == handlers_base =>
                 {
-                    // The return owns nothing to drop.
-                    std::mem::forget(verified_exit);
                     // Nothing recorded above the entry's marks: only the
                     // caller's frame to restore, as exec_byte_code's return
                     // to its caller restores bc->fp.
                     if interp.backtrace_frames_len() == marks.backtrace
                         && interp.specpdl_index() == marks.unwinds
                     {
+                        let state: &mut crate::lisp::eval::InterpreterState = interp;
                         (
-                            interp.bc_stack.frame,
-                            interp.bc_stack.base,
-                            interp.bc_stack.top,
+                            state.bc_stack.frame,
+                            state.bc_stack.base,
+                            state.bc_stack.top,
                         ) = marks.stack;
                         return Ok(value);
                     }
                     break 'entry Ok(value);
                 }
-                FastExit::Resume => None,
-                verified_exit => Some(verified_exit),
+                Some(value) => Some(FastExit::Return(value)),
+                // SAFETY: the loop answered None, having written its exit.
+                None => match unsafe { left.assume_init() } {
+                    FastExit::Resume => None,
+                    exit => Some(exit),
+                },
             }
         } else {
             None
@@ -4709,7 +4738,9 @@ fn run_loop(
                     Some(_) if verified_run => {
                         let words = interp.bc_stack.words.as_mut_ptr().cast::<Value>();
                         let top = interp.bc_stack.top;
-                        let (exit, top) = run_verified(
+                        let mut left = std::mem::MaybeUninit::uninit();
+                        let returned = run_verified(
+                            &mut left,
                             &mut VmFrames {
                                 interp,
                                 env,
@@ -4725,10 +4756,12 @@ fn run_loop(
                             &mut pc,
                             &mut quitcounter,
                         );
-                        if let Some(top) = top {
-                            interp.bc_stack.top = top;
+                        match returned {
+                            Some(value) => FastExit::Return(value),
+                            // SAFETY: the loop answered None, having
+                            // written its exit.
+                            None => unsafe { left.assume_init() },
                         }
-                        exit
                     }
                     _ => run_fast(
                         &program,

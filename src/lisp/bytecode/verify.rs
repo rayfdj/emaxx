@@ -17,7 +17,11 @@
 //! the fast loop: the code must still be current and the actual operand
 //! count must be the one verified for that instruction, so an op whose
 //! stack effect is modeled wrongly here costs only the fast loop, never
-//! safety.
+//! safety.  The one entry not checked again is a function's own, at pc 0
+//! with its arguments, taken at once on `entry_program's answer (the
+//! loop's Bcall, and a call from Rust that pushes the arguments): that
+//! answer is given only while the code is current and verified for those
+//! operands, and nothing runs between it and the loop.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
