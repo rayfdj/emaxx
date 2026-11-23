@@ -20,6 +20,20 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full
 scope; the [accounting continuation](docs/runtime-representation-accounting-draft.md)
 records the GNU counter contract.
 
+## Milestones — scope locked 23 November 2026
+
+The remaining work is fixed in [docs/milestones.md](docs/milestones.md): every
+open completion item is assigned to one of four milestones (M2 structure and
+performance, M3 the fix list, M4 freeze and certify on Linux, M5 the external
+runs), accepted as documented, or parked until the goal closes. Work proceeds
+one milestone at a time, in that order, and is reported as items done of the
+milestone's list. A finding made after the lock joins a milestone only if it is
+a regression of the round under review, or a crash, a hang or data loss;
+anything else is recorded among the findings as found after the lock and waits.
+A round's review answers whether the round cheats or breaks something; it does
+not survey the neighbourhood of the change. Current user instructions take
+precedence over this plan as over everything here.
+
 ## Where things stand — 15 October 2026
 
 | State | Contents |

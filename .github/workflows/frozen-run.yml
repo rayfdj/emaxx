@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, rust-exact-roots, rust-exact-census, gnu-census, gnu-census-trace, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples, core-runtime-pair]
+        options: [macos-build, prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, rust-exact-roots, rust-exact-census, gnu-census, gnu-census-trace, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples, core-runtime-pair]
         default: affected
       file:
         description: Upstream file/range, or retained artifact run ID for rust-exact-roots
@@ -36,7 +36,43 @@ permissions:
   contents: read
   actions: read
 jobs:
+  # The macOS build check: formatting, a check of every target and the
+  # lint on a hosted Apple-silicon runner, the target the committed
+  # aarch64-apple-darwin native-subr table is for.  Run on request only.
+  macos:
+    if: inputs.validation == 'macos-build'
+    runs-on: macos-15
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+        working-directory: emaxx
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: emaxx
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: emacs-mirror/emacs
+          ref: 636f166cfc86aa90d63f592fd99f3fdd9ef95ebd
+          path: emacs
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.100.0
+          rustc -vV
+          sw_vers
+          uname -m
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Check every target
+        run: cargo check --locked --all-targets --all-features
+      - name: Lint
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
   linux:
+    if: inputs.validation != 'macos-build'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     defaults:
