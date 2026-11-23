@@ -851,3 +851,105 @@ fn window_alone_holds_its_three_markers() {
     assert!(!markers.iter().any(|marker| is_live(*marker)));
     assert_eq!(chained(&interpreter), chained_before);
 }
+
+#[test]
+fn the_interpreters_window_holders_keep_their_windows() {
+    // window.c staticpros selected_window, old_selected_window and
+    // minibuf_selected_window, and minibuf.c minibuf_window: each holds
+    // its window as the object, which lives while it is held and goes
+    // when the holder lets go.
+    const HIDE: usize = 0x5555_5555_5555_5555;
+    const HOLDERS: usize = 4;
+
+    #[inline(never)]
+    fn allocate(interpreter: &mut crate::lisp::eval::Interpreter) -> [(usize, u64); HOLDERS] {
+        // A window nothing else holds in each holder: the frame keeps
+        // the window it had selected.
+        let windows: [_; HOLDERS] = std::array::from_fn(|_| interpreter.make_window(Vec::new()));
+        let frame_selected = interpreter.selected_frame_id.borrow().selected_window;
+        interpreter.set_selected_window(Some(windows[0]));
+        interpreter.selected_frame_id.borrow_mut().selected_window = frame_selected;
+        interpreter.old_selected_window = Some(windows[1]);
+        interpreter.replace_minibuffer_selected_window(Some(windows[2]));
+        let buffer = interpreter.current_buffer_id();
+        interpreter.begin_minibuffer_runtime(buffer, windows[3], String::new());
+        windows.map(|window| {
+            let Kind::Window(object) = window.value().kind() else {
+                panic!("a window is a window object")
+            };
+            (object.identity() ^ HIDE, window.id())
+        })
+    }
+    #[inline(never)]
+    fn is_live(hidden: usize) -> bool {
+        let address = hidden ^ HIDE;
+        matches!(unsafe { crate::lisp::alloc::mem_find(address) },
+            Some(crate::lisp::alloc::Found::Vectorlike(header))
+                if header as usize == address
+                    && unsafe { header_tag(header) } == VectorTag::Window)
+    }
+    // What each holder holds is the window made for it.
+    #[inline(never)]
+    fn check(interpreter: &crate::lisp::eval::Interpreter, held: &[(usize, u64)]) {
+        let holders = [
+            interpreter.selected_window(),
+            interpreter.old_selected_window,
+            interpreter.minibuffer_selected_window(),
+            interpreter
+                .active_minibuffer_window_value()
+                .as_ref()
+                .and_then(crate::lisp::primitives::WindowRef::from_value),
+        ];
+        for (holder, (hidden, id)) in holders.iter().skip(HOLDERS - held.len()).zip(held) {
+            let window = holder.expect("the holder's window");
+            let Kind::Window(object) = window.value().kind() else {
+                panic!("a window is a window object")
+            };
+            assert_eq!(object.identity() ^ HIDE, *hidden);
+            assert_eq!(window.id(), *id);
+            assert!(
+                interpreter
+                    .window_ref(*id)
+                    .is_some_and(|found| found == window)
+            );
+        }
+    }
+    // Holder INDEX lets go of its window.
+    #[inline(never)]
+    fn release(interpreter: &mut crate::lisp::eval::Interpreter, index: usize) {
+        match index {
+            0 => {
+                let frame_selected = interpreter.selected_frame_id.borrow().selected_window;
+                interpreter.set_selected_window(frame_selected);
+            }
+            1 => interpreter.old_selected_window = interpreter.selected_window(),
+            2 => {
+                interpreter.replace_minibuffer_selected_window(None);
+            }
+            _ => interpreter.restore_minibuffer_runtime(Default::default()),
+        }
+    }
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let environment = Env::new();
+    let windows_before = interpreter.record_ids_by_type("window");
+    let held = allocate(&mut interpreter);
+    for _ in 0..2 {
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        assert!(held.iter().all(|(window, _)| is_live(*window)));
+        check(&interpreter, &held);
+    }
+    for index in 0..HOLDERS {
+        release(&mut interpreter, index);
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        // The window let go of is collected and its id names nothing;
+        // the windows still held are as they were.
+        let (window, id) = held[index];
+        assert!(!is_live(window), "window of holder {index} retained");
+        assert!(interpreter.window_ref(id).is_none());
+        assert!(held[index + 1..].iter().all(|(window, _)| is_live(*window)));
+        check(&interpreter, &held[index + 1..]);
+    }
+    assert_eq!(interpreter.record_ids_by_type("window"), windows_before);
+}

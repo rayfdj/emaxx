@@ -115,7 +115,7 @@ impl Interpreter {
     pub(crate) fn begin_minibuffer_runtime(
         &mut self,
         buffer_id: u64,
-        window_id: u64,
+        window: primitives::WindowRef,
         prompt: String,
     ) -> MinibufferRuntimeState {
         let previous = self.minibuffer_runtime.clone();
@@ -125,7 +125,7 @@ impl Interpreter {
         command_loop_levels.push(self.command_loop_recursion_depth);
         self.minibuffer_runtime = MinibufferRuntimeState {
             active_buffer_id: Some(buffer_id),
-            active_window_id: Some(window_id),
+            active_window: Some(window),
             activation_id: Some(self.minibuffer_activation_count),
             depth: previous.depth.saturating_add(1),
             prompt: Some(prompt),
@@ -144,9 +144,8 @@ impl Interpreter {
 
     pub(crate) fn active_minibuffer_window_value(&self) -> Option<Value> {
         self.minibuffer_runtime
-            .active_window_id
-            .filter(|window_id| self.window_ref(*window_id).is_some())
-            .map(|id| self.window_value(id))
+            .active_window
+            .map(primitives::WindowRef::value)
     }
 
     pub(crate) fn active_minibuffer_activation_id(&self) -> Option<u64> {

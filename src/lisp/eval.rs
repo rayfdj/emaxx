@@ -3736,8 +3736,9 @@ pub(crate) struct WindowConfigurationSnapshot {
     selected_frame_id: crate::lisp::types::FrameRef,
     current_buffer_id: u64,
     /// data->current_window: FRAME_SELECTED_WINDOW of the frame.
-    selected_window_id: u64,
-    root_window_id: u64,
+    selected_window: Option<primitives::WindowRef>,
+    /// data->root_window: FRAME_ROOT_WINDOW of the frame.
+    root_window: Option<primitives::WindowRef>,
     frame_width: i64,
     frame_height: i64,
     /// window.c's saved_windows: one vector of `SAVED_WINDOW_SIZE' slots
@@ -4041,7 +4042,8 @@ type RecordIdsByType = HashMap<String, BTreeSet<u64>, crate::lisp::primitives::F
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MinibufferRuntimeState {
     active_buffer_id: Option<u64>,
-    active_window_id: Option<u64>,
+    /// minibuf.c's minibuf_window while the read is active.
+    active_window: Option<primitives::WindowRef>,
     activation_id: Option<u64>,
     depth: usize,
     prompt: Option<String>,
@@ -5651,31 +5653,30 @@ impl Interpreter {
         }
     }
 
-    /// The records this state's C-side structures hold by id and that
-    /// the other loops of `mark_static_roots_into' do not reach (those
-    /// mark the process list, the live threads, the standard obarray, the
+    /// The windows this state's C-side structures hold and that the
+    /// other loops of `mark_static_roots_into' do not reach (those mark
+    /// the process list, the live threads, the standard obarray, the
     /// selected window and each live frame's windows, as process.c,
     /// thread.c, lread.c and window.c mark theirs): the windows the
     /// minibuffer state remembers (`minibuf_selected_window',
-    /// `Vminibuf_scroll_window'), the previously selected window, the
-    /// windows. Native units are reached through actual Lisp roots, as the
-    /// loaded-units table has weak values in GNU.
+    /// `minibuf_window') and the previously selected window
+    /// (`old_selected_window'), each staticpro'd in C and held here as
+    /// the object. Native units are reached through actual Lisp roots,
+    /// as the loaded-units table has weak values in GNU.
     /// A mutex, a condition variable, a tree-sitter object or a module
     /// function is not held here: C collects them when nothing reaches
     /// them, and the side tables that know them by id are purged with
-    /// them.  An id the sweep already freed has no entry and is skipped.
+    /// them.
     fn mark_record_holders(&self, mark: &mut impl FnMut(&Value)) {
-        let mut hold = |id: u64| {
-            if let Some(window) = self.window_ref(id) {
-                mark(&window.value());
-            }
-        };
-        hold(self.old_selected_window_id);
-        if let Some(id) = self.minibuffer_selected_window_id {
-            hold(id);
-        }
-        if let Some(id) = self.minibuffer_runtime.active_window_id {
-            hold(id);
+        for window in [
+            self.old_selected_window,
+            self.minibuffer_selected_window,
+            self.minibuffer_runtime.active_window,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            mark(&window.value());
         }
     }
 
@@ -5983,7 +5984,9 @@ impl Interpreter {
             mark(buffer);
         }
         mark(&self.record_value(self.standard_obarray_id));
-        mark(&self.window_value(self.selected_window_id));
+        if let Some(window) = self.selected_window {
+            mark(&window.value());
+        }
         // The thread's Lisp values outside any interpreter (xdisp.c's
         // staticpro'd echo area; a tag cache).
         crate::lisp::primitives::mark_thread_local_roots(&mut mark);
@@ -6235,6 +6238,18 @@ impl Interpreter {
                     unreachable!()
                 };
                 *frame = copied;
+            }
+            // The windows the state holds as objects, each the copy's.
+            let clone_state = &mut *clone;
+            for window in [
+                &mut clone_state.selected_window,
+                &mut clone_state.minibuffer_selected_window,
+                &mut clone_state.old_selected_window,
+                &mut clone_state.minibuffer_runtime.active_window,
+            ] {
+                if let Some(source) = *window {
+                    *window = primitives::WindowRef::from_value(&c.copy(&source.value()));
+                }
             }
             for terminal in &mut clone.terminals {
                 let Kind::Terminal(copied) = c.copy(&Value::Terminal(*terminal)).kind() else {
@@ -6831,13 +6846,15 @@ pub struct InterpreterState {
     current_global_map: Option<Value>,
     /// The ID of the current buffer.
     current_buffer_id: u64,
-    /// The currently selected window record.
-    selected_window_id: u64,
-    /// Root and minibuffer window identities are interpreter/frame state,
-    /// never Lisp variables.
-    minibuffer_selected_window_id: Option<u64>,
-    /// Window selected when the last window-change cycle completed.
-    pub(crate) old_selected_window_id: u64,
+    /// window.c's selected_window: none only while the first frame's
+    /// windows are being made.
+    selected_window: Option<primitives::WindowRef>,
+    /// minibuf.c's minibuf_selected_window: the window selected when the
+    /// minibuffer was entered.
+    minibuffer_selected_window: Option<primitives::WindowRef>,
+    /// window.c's old_selected_window: the window selected when the last
+    /// window-change cycle completed.
+    pub(crate) old_selected_window: Option<primitives::WindowRef>,
     /// Per-frame old selected window.  GNU's initial batch frame leaves this
     /// unset until the first completed window-change cycle.
     /// Monotonic selection stamp used by `window-use-time'.
@@ -7635,9 +7652,9 @@ impl Interpreter {
             buffer: crate::lisp::types::BufferRef::new(0, crate::buffer::Buffer::new("*scratch*")),
             current_global_map: None,
             current_buffer_id: 0,
-            selected_window_id: 0,
-            minibuffer_selected_window_id: None,
-            old_selected_window_id: 0,
+            selected_window: None,
+            minibuffer_selected_window: None,
+            old_selected_window: None,
             window_select_count: 1,
             windows_or_buffers_changed: 1,
             update_mode_lines: 0,
@@ -9165,7 +9182,7 @@ impl Interpreter {
         );
         interp.set_selected_window_id(selected_window.id());
         interp.set_root_window_id(selected_window.id());
-        interp.old_selected_window_id = selected_window.id();
+        interp.old_selected_window = Some(selected_window);
         selected_window.set_use_time(1);
         // frame.c:make_frame shows the current buffer in the root window
         // through set_window_buffer, and the minibuffer in the minibuffer

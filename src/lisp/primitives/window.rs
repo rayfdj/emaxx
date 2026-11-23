@@ -371,6 +371,16 @@ pub(crate) fn slot_marker_position(value: Option<&Value>) -> Option<usize> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WindowRef(crate::lisp::types::WindowObjectRef);
 
+/// EQ of two windows: the same object.
+impl PartialEq for WindowRef {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+
+impl Eq for WindowRef {}
+
 impl WindowRef {
     /// decode_any_window's WINDOWP: the window VALUE is, live, internal
     /// or deleted.

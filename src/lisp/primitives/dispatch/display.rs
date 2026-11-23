@@ -4288,7 +4288,7 @@ fn window_change_record(interp: &mut Interpreter, record_frames: bool) {
             state.window_state_change = false;
         }
     }
-    interp.old_selected_window_id = interp.selected_window_id();
+    interp.old_selected_window = interp.selected_window();
     interp.old_selected_frame_id = interp.selected_frame_id;
 }
 
@@ -4372,7 +4372,7 @@ fn run_window_change_functions_body(
         {
             continue;
         }
-        let old_selected_window = interp.old_selected_window_id;
+        let old_selected_window = interp.old_selected_window.map_or(0, WindowRef::id);
         let selected_window = interp.selected_window_id();
         let mut frame_buffer_change = false;
         let mut frame_size_change = false;
@@ -8329,9 +8329,7 @@ define_dispatch!(
                 let selected = interp.selected_window_value();
                 let selected_is_mini = WindowRef::from_value(&selected)
                     .is_some_and(|window| window_is_minibuffer(interp, window.id()));
-                let remembered = interp
-                    .minibuffer_selected_window_id()
-                    .map(|id| interp.window_value(id));
+                let remembered = interp.minibuffer_selected_window().map(WindowRef::value);
                 Ok(match remembered {
                     Some(window)
                         if selected_is_mini

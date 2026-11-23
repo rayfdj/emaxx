@@ -78,7 +78,7 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "keyboard.c:syms_of_keyboard_for_pdumper resets pending_funcalls to nil",
     ),
     (
-        "selected_window_id",
+        "selected_window",
         "window.c:init_window_once_for_pdumper resets selected_window",
     ),
     (
@@ -298,11 +298,11 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "emacs.c:init_callproc_1 takes the umask of the new process",
     ),
     (
-        "minibuffer_selected_window_id",
+        "minibuffer_selected_window",
         "window.c:init_window_once_for_pdumper resets minibuf_selected_window",
     ),
     (
-        "old_selected_window_id",
+        "old_selected_window",
         "window.c:init_window_once_for_pdumper resets old_selected_window",
     ),
     (

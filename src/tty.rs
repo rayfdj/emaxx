@@ -8829,7 +8829,9 @@ fn redraw_with_echo_policy(
                 .symbol_value_key(cached_symbol!("mode-line-in-non-selected-windows"))
                 .is_some_and(|value| value.is_nil())
             || (interpreter.minibuffer_depth() > 0
-                && interpreter.minibuffer_selected_window_id() == Some(info.window_id)
+                && interpreter
+                    .minibuffer_selected_window()
+                    .is_some_and(|window| window.id() == info.window_id)
                 && interpreter.selected_window_id() == interpreter.minibuffer_window_id());
         mode_line_jobs.push(ModeLineJob {
             window_id: info.window_id,

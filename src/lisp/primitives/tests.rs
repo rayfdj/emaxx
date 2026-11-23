@@ -37450,6 +37450,144 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
 }
 
 #[test]
+fn a_window_configuration_holds_its_current_window() {
+    // window.c:Fcurrent_window_configuration: `data->current_window =
+    // FRAME_SELECTED_WINDOW (f)', the window itself, which
+    // Fset_window_configuration selects and compare_window_configurations
+    // tells from the saved windows by EQ.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"))
+    };
+    let handle = |value: Value| WindowRef::from_value(&value).expect("a window");
+    let first = handle(run(&mut interp, "(setq wc-first (selected-window))"));
+    let second = handle(run(
+        &mut interp,
+        "(progn (setq wc-second (split-window)) (select-window wc-second))",
+    ));
+    assert!(first != second && interp.selected_window() == Some(second));
+    let configuration = run(
+        &mut interp,
+        "(setq wc-saved (current-window-configuration))",
+    );
+    // The configuration's current window is the selected window, the
+    // object, beside its root window.
+    let slots = |interp: &Interpreter, configuration: Value| {
+        let Kind::Record(record) = configuration.kind() else {
+            panic!("a window configuration")
+        };
+        let record = interp.find_record(record).expect("its record");
+        assert_eq!(
+            record.kind,
+            crate::lisp::eval::RecordKind::WindowConfiguration
+        );
+        (record.slots[1], record.slots[5])
+    };
+    let (current, root) = slots(&interp, configuration);
+    assert!(current.eq_value(second.value()));
+    assert_eq!(
+        WindowRef::from_value(&root),
+        interp.selected_frame_id.borrow().root_window
+    );
+    // It compares equal to another taken now, and not to one taken with
+    // the other window current.
+    assert_eq!(
+        run(
+            &mut interp,
+            "(compare-window-configurations wc-saved (current-window-configuration))"
+        ),
+        Value::T
+    );
+    assert_eq!(
+        run(
+            &mut interp,
+            "(progn (select-window wc-first)
+                    (compare-window-configurations wc-saved (current-window-configuration)))"
+        ),
+        Value::Nil
+    );
+    assert_eq!(interp.selected_window(), Some(first));
+    // Restoring it selects its current window, in the interpreter and
+    // in the frame.
+    run(&mut interp, "(set-window-configuration wc-saved)");
+    assert_eq!(interp.selected_window(), Some(second));
+    assert_eq!(
+        interp.selected_frame_id.borrow().selected_window,
+        Some(second)
+    );
+    // The window deleted and nothing else naming it, the configuration
+    // still holds it across a collection, and restores and selects the
+    // same window.
+    let number = second.sequence_number();
+    run(
+        &mut interp,
+        "(progn (delete-window wc-second) (setq wc-second nil) (garbage-collect))",
+    );
+    assert_eq!(interp.selected_window(), Some(first));
+    assert!(!second.is_valid());
+    let (current, _) = slots(&interp, configuration);
+    assert!(current.eq_value(second.value()));
+    run(&mut interp, "(set-window-configuration wc-saved)");
+    assert_eq!(interp.selected_window(), Some(second));
+    assert!(second.is_valid() && second.sequence_number() == number);
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-live-p (selected-window)) (length (window-list)))"
+        ),
+        Value::list([Value::T, Value::Integer(2)])
+    );
+}
+
+#[test]
+fn a_copied_image_holds_its_own_windows() {
+    // The windows an interpreter holds as objects (selected_window,
+    // old_selected_window, minibuf_selected_window, minibuf_window) are
+    // the copy's own in a copied image, the ones its registry and its
+    // frame name.
+    let mut interp = Interpreter::new();
+    let selected = interp.selected_window_ref();
+    let mini = WindowRef::from_value(&interp.minibuffer_window_value()).expect("a mini window");
+    assert_eq!(interp.old_selected_window, Some(selected));
+    interp.replace_minibuffer_selected_window(Some(selected));
+    let buffer = interp.current_buffer_id();
+    interp.begin_minibuffer_runtime(buffer, mini, String::new());
+    let copy = interp.deep_clone_image();
+    let copied = copy.selected_window_ref();
+    let copied_mini =
+        WindowRef::from_value(&copy.minibuffer_window_value()).expect("a mini window");
+    assert!(copied != selected && copied_mini != mini);
+    assert_eq!((copied.id(), copied_mini.id()), (selected.id(), mini.id()));
+    assert_eq!(copy.window_ref(copied.id()), Some(copied));
+    assert_eq!(
+        copy.selected_frame_id.borrow().selected_window,
+        Some(copied)
+    );
+    assert_eq!(copy.old_selected_window, Some(copied));
+    assert_eq!(copy.minibuffer_selected_window(), Some(copied));
+    assert_eq!(
+        copy.active_minibuffer_window_value()
+            .as_ref()
+            .and_then(WindowRef::from_value),
+        Some(copied_mini)
+    );
+    // A store in the copy's window is not one in the original's.
+    copied.set_hscroll(7);
+    assert_eq!((copied.hscroll(), selected.hscroll()), (7, 0));
+    drop(copy);
+    interp.select_symbol_owner();
+    assert_eq!(interp.selected_window(), Some(selected));
+    assert_eq!(interp.minibuffer_selected_window(), Some(selected));
+}
+
+#[test]
 fn a_deleted_window_keeps_its_buffer_for_a_later_configuration() {
     // window.c:delete_all_child_windows leaves a leaf's buffer in its
     // combination limit, and any later Fset_window_configuration that
