@@ -3156,6 +3156,13 @@ impl Interpreter {
 /// already holds the state (the byte-code VM's call and return) pays
 /// the shell's parked test once.
 impl InterpreterState {
+    /// The index of the innermost backtrace record, the one the innermost
+    /// call made: bytecode.c's `specpdl_ptr - 1' at Breturn.
+    #[inline(always)]
+    pub(crate) fn innermost_backtrace_record(&self) -> usize {
+        self.backtrace_frames.len() - 1
+    }
+
     /// Whether SYMBOL is a forwarded variable `makunbound' detached from
     /// its C slot (data.c:set_internal).  The table is empty unless one
     /// was, so a store asks that first.

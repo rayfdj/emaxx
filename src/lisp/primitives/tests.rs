@@ -36415,6 +36415,208 @@ fn dynamic_binding_byte_code_arguments_as_funcall_lambda() {
 }
 
 #[test]
+fn dynamic_byte_code_returns_unbind_as_funcall_lambda_unbinds() {
+    // eval.c:funcall_lambda's unbind_to of a dynamic-binding byte-code
+    // function's argument bindings, called from byte code: undone at the
+    // return, the innermost first, a watched formal's `unlet' heard; a
+    // formal that gains a watcher or a buffer-local value during the call
+    // is restored as GNU restores it; a throw or a signal from 200 levels
+    // down unbinds every level.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dyn (lambda (form) (let ((lexical-binding nil)) (byte-compile form))))
+      log)
+  (defvar t376-a nil)
+  (defvar t376-b nil)
+  (defvar t376-s 'global)
+  (add-variable-watcher 't376-a (lambda (sym new op where) (push (list sym new op) log)))
+  (fset 't376-ab (funcall dyn '(lambda (t376-a t376-b) (list t376-a t376-b))))
+  (fset 't376-ba (funcall dyn '(lambda (t376-b t376-a) (list t376-a t376-b))))
+  (fset 't376-call (funcall dyn '(lambda ()
+                                   (list (t376-ab 1 2) t376-a t376-b
+                                         (t376-ba 3 4) t376-a t376-b))))
+  (fset 't376-deep (funcall dyn '(lambda (t376-s n)
+                                   (if (> n 0) (t376-deep (list n) (1- n))
+                                     (throw 't376 (list 'bottom t376-s))))))
+  (fset 't376-deep-sig (funcall dyn '(lambda (t376-s n)
+                                       (if (> n 0) (t376-deep-sig n (1- n))
+                                         (signal 'error (list t376-s))))))
+  (fset 't376-top (funcall dyn '(lambda ()
+                                  (list (catch 't376 (t376-deep 'top 200)) t376-s
+                                        (condition-case e (t376-deep-sig 'top 200)
+                                          (error (list e t376-s)))
+                                        t376-s))))
+  (list (t376-call) (prog1 (nreverse log) (setq log nil)) (t376-top) t376-s))"#,
+        r#"(((1 2) nil nil (4 3) nil nil) ((t376-a nil set) (t376-a nil set) (t376-a 1 let) (t376-a nil unlet) (t376-a 4 let) (t376-a nil unlet)) ((bottom (1)) global ((error 1) global) global) global)"#,
+        "dynamic byte-code returns",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dyn (lambda (form) (let ((lexical-binding nil)) (byte-compile form))))
+      log)
+  (defvar t376-p nil)
+  (defvar t376-q nil)
+  (defvar t376-r nil)
+  (let ((watch (lambda (sym new op where) (push (list sym new op (and where t)) log))))
+    (fset 't376-outer (funcall dyn `(lambda (t376-p t376-q)
+                                      (add-variable-watcher 't376-p ,watch)
+                                      (list t376-p t376-q))))
+    (fset 't376-inner (funcall dyn `(lambda (t376-q t376-r)
+                                      (add-variable-watcher 't376-r ,watch)
+                                      (list t376-q t376-r))))
+    (fset 't376-local (funcall dyn '(lambda (t376-q t376-r)
+                                      (set (make-local-variable 't376-r) 'here)
+                                      (list t376-q t376-r))))
+    (fset 't376-calls (funcall dyn '(lambda ()
+                                      (list (t376-outer 1 2) t376-p t376-q
+                                            (t376-inner 3 4) t376-q t376-r
+                                            (with-temp-buffer
+                                              (list (t376-local 5 6) t376-q t376-r
+                                                    (local-variable-p 't376-r)))
+                                            t376-r))))
+    (list (t376-calls) (nreverse log) t376-p t376-q t376-r)))"#,
+        r#"(((1 2) nil nil (3 4) nil nil ((5 here) nil here t) nil) ((t376-p nil unlet nil) (t376-r nil unlet nil) (t376-r 6 let nil) (t376-r here set t) (t376-r nil set nil)) nil nil nil)"#,
+        "bindings that stop being plain during the call",
+    );
+}
+
+#[test]
+fn a_signal_from_unbinding_a_byte_code_callee_comes_out_in_its_caller() {
+    // eval.c:funcall_lambda's unbind_to of a dynamic-binding byte-code
+    // function's arguments, called from byte code: a formal whose watcher
+    // signals or throws at `unlet' (given the watcher during the call, so
+    // the call took the frame entered in place) leaves the callee whole,
+    // its record gone and the caller's kept, and the signal or throw comes
+    // out in the caller as it comes out of Ffuncall into the Bcall; the
+    // return where every binding is undone quietly answers as GNU does;
+    // twelve such signals in a row leave the backtrace and the call depth
+    // as they found them.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defvar t376-u 'gu)
+  (defvar t376-x 'gx)
+  (fset 't376-bt (byte-compile '(lambda ()
+                                  (let (names)
+                                    (mapbacktrace
+                                     (lambda (_e fun _a _f)
+                                       (when (and (symbolp fun)
+                                                  (string-prefix-p "t376-" (symbol-name fun)))
+                                         (push fun names)))
+                                     #'t376-bt)
+                                    (nreverse names)))))
+  (fset 't376-refuse (lambda (sym _new op _where)
+                       (cond ((eq op 'unlet) (error "unlet %s" sym))
+                             ((eq op 'makunbound) (throw 't376-out sym)))))
+  (fset 't376-plain (let ((lexical-binding nil))
+                      (byte-compile '(lambda (t376-u t376-x) (list t376-u t376-x (t376-bt))))))
+  (fset 't376-sig (let ((lexical-binding nil))
+                    (byte-compile '(lambda (t376-u t376-x)
+                                     (add-variable-watcher 't376-u #'t376-refuse)
+                                     (list t376-u t376-x)))))
+  (fset 't376-thr (let ((lexical-binding nil))
+                    (byte-compile '(lambda (t376-x)
+                                     (add-variable-watcher 't376-x
+                                                           (lambda (sym _n op _w)
+                                                             (when (eq op 'unlet) (throw 't376-out sym))))
+                                     t376-x))))
+  (fset 't376-mid (byte-compile '(lambda ()
+                                   (list (t376-plain 1 2) t376-u t376-x
+                                         (condition-case e (t376-sig 3 4)
+                                           (error (list 'caught (cadr e) (t376-bt))))
+                                         (progn (remove-variable-watcher 't376-u #'t376-refuse)
+                                                t376-u)
+                                         (catch 't376-out (t376-thr 5))
+                                         (t376-bt)))))
+  (fset 't376-many (byte-compile '(lambda (n)
+                                    (let (out)
+                                      (dotimes (_ n)
+                                        (push (condition-case nil (t376-sig 6 7)
+                                                (error (length (t376-bt))))
+                                              out)
+                                        (remove-variable-watcher 't376-u #'t376-refuse))
+                                      (list (nreverse out) (t376-bt))))))
+  (list (t376-mid) (t376-many 12) t376-u t376-x))"#,
+        r#"(((1 2 (t376-bt t376-plain t376-mid)) gu gx (caught "unlet t376-u" (t376-bt t376-mid)) 3 t376-x (t376-bt t376-mid)) ((2 2 2 2 2 2 2 2 2 2 2 2) (t376-bt t376-many)) 6 7)"#,
+        "a signal from unbinding a byte-code callee",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (fset 't376-bt (byte-compile '(lambda ()
+                                  (let (names)
+                                    (mapbacktrace
+                                     (lambda (_e fun _a _f)
+                                       (when (and (symbolp fun)
+                                                  (string-prefix-p "t376-" (symbol-name fun)))
+                                         (push fun names)))
+                                     #'t376-bt)
+                                    (nreverse names)))))
+  (fset 't376-refuse (lambda (sym _new op _where) (when (eq op 'unlet) (error "unlet %s" sym))))
+  (let (calls)
+    (dotimes (i 12)
+      (let ((w (intern (format "t376-w%d" i)))
+            (f (intern (format "t376-f%d" i)))
+            (c (intern (format "t376-c%d" i))))
+        (eval `(defvar ,w nil))
+        (fset f (let ((lexical-binding nil))
+                  (byte-compile `(lambda (,w) (add-variable-watcher ',w #'t376-refuse) ,w))))
+        (fset c (byte-compile `(lambda () (list (,f 1) 'after))))
+        (push `(condition-case nil (,c) (error (t376-bt))) calls)))
+    (fset 't376-top5 (byte-compile `(lambda () (list ,@(nreverse calls) (t376-bt)))))
+    (list (t376-top5) (t376-bt))))"#,
+        r#"(((t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5)) (t376-bt))"#,
+        "twelve signals from unbinding byte-code callees",
+    );
+}
+
+#[test]
+fn byte_code_frames_leave_with_their_call_records_innermost() {
+    // bytecode.c's Breturn reads the callee's record as `specpdl_ptr - 1':
+    // after a byte op's signal caught in the frame (its record gone), in a
+    // handler-bind handler (the op's `aref' record innermost), in an
+    // unwind form of a frame a signal leaves, and on the exit of a frame
+    // `backtrace-debug' marked, the debugger's value returned.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defvar t376-log nil)
+  (fset 't376-frames (byte-compile '(lambda ()
+                                      (let (names)
+                                        (catch 'done
+                                          (mapbacktrace
+                                           (lambda (_evald fun args _flags)
+                                             (when (eq fun 't376-top2) (throw 'done nil))
+                                             (when (symbolp fun)
+                                               (push (list fun (mapcar (lambda (a) (if (functionp a) 'fn a)) args))
+                                                     names)))
+                                           #'t376-frames))
+                                        (nreverse names)))))
+  (fset 't376-callee (byte-compile '(lambda (x) (list x (t376-frames)))))
+  (fset 't376-catcher (byte-compile '(lambda (v)
+                                       (list (condition-case e (aref v 9) (error (car e)))
+                                             (condition-case e (nth 'x v) (error (car e)))
+                                             (condition-case e (setcar v 1) (error (car e)))
+                                             (t376-callee 'after)))))
+  (fset 't376-hb (byte-compile '(lambda (v)
+                                  (condition-case nil
+                                      (handler-bind ((error (lambda (_e) (push (t376-frames) t376-log))))
+                                        (aref v 2))
+                                    (error 'caught)))))
+  (fset 't376-up-inner (byte-compile '(lambda (v) (unwind-protect (aref v 3) (push (t376-frames) t376-log)))))
+  (fset 't376-up (byte-compile '(lambda (v) (condition-case nil (t376-up-inner v) (error 'left)))))
+  (fset 't376-mark (byte-compile '(lambda (n) (backtrace-debug 1 t) (list n (t376-frames)))))
+  (fset 't376-marker (byte-compile '(lambda () (list (t376-mark 7) (t376-frames)))))
+  (fset 't376-top2 (byte-compile '(lambda ()
+                                    (list (t376-catcher [1])
+                                          (t376-hb [1])
+                                          (t376-up [1])
+                                          (let ((debugger (lambda (&rest args)
+                                                            (push (list 'debugger args) t376-log)
+                                                            'from-debugger)))
+                                            (t376-marker))))))
+  (list (t376-top2) (nreverse t376-log)))"#,
+        r#"(((args-out-of-range wrong-type-argument wrong-type-argument (after ((t376-frames nil) (t376-callee (after)) (t376-catcher ([1]))))) caught left (from-debugger ((t376-frames nil) (t376-marker nil)))) (((t376-frames nil) (aref ([1] 2)) (handler-bind-1 (fn (error) fn)) (t376-hb ([1]))) ((t376-frames nil) (t376-up-inner ([1])) (t376-up ([1]))) (debugger (exit (7 ((t376-frames nil) (t376-mark (7)) (t376-marker nil)))))))"#,
+        "byte-code frames and their records",
+    );
+}
+
+#[test]
 fn backtrace_locals_as_eval_c() {
     // eval.c:Fbacktrace__locals: the bindings on the specpdl between a
     // frame's record and the next one's, oldest first, each with the value

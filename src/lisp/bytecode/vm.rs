@@ -487,14 +487,33 @@ pub(crate) struct BcFrame {
     base: usize,
     handlers_len: usize,
     unwinds_len: usize,
+    /// The index of the backtrace record the frame's call made, which is
+    /// the innermost whenever the frame is left, as bytecode.c's
+    /// `specpdl_ptr - 1' is at Breturn: kept where assertions are on, to
+    /// check that (`BcFrame::check_record').
+    #[cfg(debug_assertions)]
     backtrace_depth: usize,
-    op_error_frames: usize,
     /// `code_changes' when the verified loop called from the frame, which
     /// verification found the call's successor in with the operands the
     /// return leaves: while it is the same, the caller's code and its
     /// verification still hold and the return resumes without testing
     /// them.  `usize::MAX' for a call made anywhere else.
     code_changes: usize,
+}
+
+impl BcFrame {
+    /// Where assertions are on, that RECORD, the innermost backtrace record
+    /// when the frame is left, is the one the frame's call made.
+    #[inline(always)]
+    fn check_record(&self, record: usize) {
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            record, self.backtrace_depth,
+            "a frame left above its call's record"
+        );
+        #[cfg(not(debug_assertions))]
+        let _ = record;
+    }
 }
 
 /// What a frame switch in the dispatch loop changes: the thread's state
@@ -604,13 +623,15 @@ fn bytecode_call(
                     interp.bc_stack.len(),
                 ));
             }
+            // A signaling op's records are gone before the frame runs on.
+            debug_assert_eq!(**op_error_frames, 0);
             let frame = BcFrame {
                 program: std::mem::replace(*program, Running::of(&callee)),
                 base: args_start - 1,
                 handlers_len: interp.bc_handlers.len(),
                 unwinds_len: interp.specpdl_index(),
+                #[cfg(debug_assertions)]
                 backtrace_depth,
-                op_error_frames: std::mem::take(*op_error_frames),
                 code_changes: usize::MAX,
             };
             interp.bc_frames.push(frame);
@@ -930,6 +951,9 @@ fn enter_closure_frame(
         return None;
     }
     let backtrace_depth = state.enter_plain_funcall(func, call_args);
+    debug_assert_eq!(backtrace_depth, state.innermost_backtrace_record());
+    // A signaling op's records are gone before the frame runs on.
+    debug_assert_eq!(*vm.op_error_frames, 0);
     // The caller's program copied into the frame's slot, then the callee's
     // over it: `mem::replace' moved the caller's through a temporary.
     let frame = BcFrame {
@@ -937,8 +961,8 @@ fn enter_closure_frame(
         base: args_start - 1,
         handlers_len: state.bc_handlers.len(),
         unwinds_len: state.specpdl_index(),
+        #[cfg(debug_assertions)]
         backtrace_depth,
-        op_error_frames: std::mem::take(vm.op_error_frames),
         code_changes: if verified_return {
             crate::lisp::alloc::code_changes()
         } else {
@@ -965,7 +989,7 @@ fn enter_closure_frame(
 /// internal-interpreter-environment, the callee's frame is entered here
 /// as a lexical function's is (`enter_closure_frame'), its bindings on
 /// the specpdl above the frame's watermark, where Breturn
-/// (`return_unbinding') or the unwinding of a signal undoes them; the
+/// (`unbind_plain_to') or the unwinding of a signal undoes them; the
 /// backtrace record is below them, as record_in_backtrace leaves it.
 /// Otherwise None, with nothing changed but the stack's TOP, for the full
 /// Call arm to take.
@@ -1002,13 +1026,16 @@ fn enter_dynamic_frame(
         return None;
     }
     let backtrace_depth = state.enter_plain_funcall(func, call_args);
+    debug_assert_eq!(backtrace_depth, state.innermost_backtrace_record());
+    // A signaling op's records are gone before the frame runs on.
+    debug_assert_eq!(*vm.op_error_frames, 0);
     let frame = BcFrame {
         program: *vm.program,
         base: args_start - 1,
         handlers_len: state.bc_handlers.len(),
         unwinds_len: state.specpdl_index(),
+        #[cfg(debug_assertions)]
         backtrace_depth,
-        op_error_frames: std::mem::take(vm.op_error_frames),
         code_changes: if verified_return {
             crate::lisp::alloc::code_changes()
         } else {
@@ -1104,7 +1131,7 @@ fn plain_dynamic_bindings(
 /// not marked to enter the debugger on exit and the entries it left above
 /// its watermark (a dynamic-binding function's argument bindings,
 /// `enter_dynamic_frame') are undone by unbind_to without running
-/// anything (`return_unbinding'): the frame and its backtrace record are
+/// anything (`unbind_plain_to'): the frame and its backtrace record are
 /// popped and the caller gets VALUE; the answer is the pc it resumes at,
 /// the stack's top, the frame's depth and whether the verified loop's
 /// call is still current (`BcFrame::code_changes').  Otherwise the full
@@ -1123,23 +1150,25 @@ fn return_to_bytecode_frame(
     // frame moved out whole (`pop', an Option) was copied in pieces offset
     // by its argument list's tag byte, and the loop's next read of the
     // caller's constants spanned two of those stores.
-    let frame = state
-        .bc_frames
-        .last_above(vm.frames_base)
-        .filter(|frame| !state.frame_debug_on_exit(frame.backtrace_depth))?;
-    let unwinds_len = frame.unwinds_len;
-    if unwinds > unwinds_len {
-        return return_unbinding(vm, top, value, unwinds_len);
+    let frame = state.bc_frames.last_above(vm.frames_base)?;
+    // The callee's record is the innermost (`specpdl_ptr - 1').
+    let record = state.innermost_backtrace_record();
+    frame.check_record(record);
+    if state.frame_debug_on_exit(record) {
+        return None;
     }
-    let (backtrace_depth, base, program, op_error_frames, handlers_len, code_changes) = (
-        frame.backtrace_depth,
+    let (unwinds_len, base, program, handlers_len, code_changes) = (
+        frame.unwinds_len,
         frame.base,
         frame.program,
-        frame.op_error_frames,
         frame.handlers_len,
         frame.code_changes,
     );
-    state.leave_plain_funcall(backtrace_depth);
+    if unwinds > unwinds_len && !unbind_plain_to(vm.interp, unwinds_len) {
+        return None;
+    }
+    let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
+    state.leave_plain_funcall(record);
     // SAFETY: the frame's call entered the stack frame this leaves, and
     // the caller's function slot lies below the top the call found.
     let resume = unsafe {
@@ -1148,7 +1177,9 @@ fn return_to_bytecode_frame(
         resume
     };
     *vm.program = program;
-    *vm.op_error_frames = op_error_frames;
+    // The caller's records of signaling ops were gone at the call, and so
+    // are the callee's at its return.
+    debug_assert_eq!(*vm.op_error_frames, 0);
     state.bc_handlers.truncate(handlers_len);
     let unchanged = code_changes == crate::lisp::alloc::code_changes();
     // SAFETY: FRAME is the last, which needs no drop.
@@ -1156,24 +1187,20 @@ fn return_to_bytecode_frame(
     Some((resume, state.bc_stack.top, state.bc_stack.len(), unchanged))
 }
 
-/// `return_to_bytecode_frame' when the callee left entries above its
-/// watermark, UNWINDS_LEN: each undone in place while undoing it runs
-/// nothing (funcall_lambda's unbind_to of a dynamic-binding function's
-/// argument bindings), then the return; None, for the full return path
-/// to undo the rest, at the first that runs something.
+/// funcall_lambda's unbind_to (COUNT) of a dynamic-binding function's
+/// argument bindings, for `return_to_bytecode_frame': each entry above
+/// COUNT undone in place while undoing it runs nothing
+/// (`Interpreter::unbind_quiet_innermost'); true with all undone, false
+/// at the first that runs something, the ones above it undone, for the
+/// full return path to undo the rest.
 #[inline(never)]
-fn return_unbinding(
-    vm: &mut VmFrames<'_>,
-    top: usize,
-    value: Value,
-    unwinds_len: usize,
-) -> Option<(usize, usize, usize, bool)> {
-    while vm.interp.specpdl_index() > unwinds_len {
-        if !unbind_plain(vm.interp) {
-            return None;
+fn unbind_plain_to(interp: &mut Interpreter, count: usize) -> bool {
+    while interp.specpdl_index() > count {
+        if !interp.unbind_quiet_innermost() {
+            return false;
         }
     }
-    return_to_bytecode_frame(vm, top, value)
+    true
 }
 
 // A frame's slot is released by the length alone, and neither list's
@@ -1250,10 +1277,14 @@ impl<T> Suspended<T> {
 /// still run), so the last signal is the one that leaves.
 #[inline]
 fn leave_frame(interp: &mut Interpreter, env: &mut Env, frame: &BcFrame) -> Result<(), LispError> {
+    // The callee's record is the innermost (`specpdl_ptr - 1'), taken
+    // before an unwind form can run.
+    let record = interp.innermost_backtrace_record();
+    frame.check_record(record);
     if interp.specpdl_index() > frame.unwinds_len {
-        return leave_frame_unwinding(interp, env, frame);
+        return leave_frame_unwinding(interp, env, frame, record);
     }
-    interp.truncate_backtrace_frames(frame.backtrace_depth);
+    interp.truncate_backtrace_frames(record);
     interp.end_funcall();
     Ok(())
 }
@@ -1263,6 +1294,7 @@ fn leave_frame_unwinding(
     interp: &mut Interpreter,
     env: &mut Env,
     frame: &BcFrame,
+    record: usize,
 ) -> Result<(), LispError> {
     let mut last_error = None;
     while interp.specpdl_index() > frame.unwinds_len {
@@ -1273,7 +1305,7 @@ fn leave_frame_unwinding(
             last_error = Some(error);
         }
     }
-    interp.truncate_backtrace_frames(frame.backtrace_depth);
+    interp.truncate_backtrace_frames(record);
     interp.end_funcall();
     last_error.map_or(Ok(()), Err)
 }
@@ -4688,7 +4720,7 @@ fn run_loop(
                     // `if (backtrace_debug_on_exit (specpdl_ptr - 1)) val =
                     // call_debugger (list2 (Qexit, val))', the callee's
                     // frame still in place.
-                    let value = if interp.frame_debug_on_exit(frame.backtrace_depth) {
+                    let value = if interp.frame_debug_on_exit(interp.innermost_backtrace_record()) {
                         match interp.call_exit_debugger(value, env) {
                             Ok(value) => value,
                             Err(error) => {
@@ -4699,16 +4731,20 @@ fn run_loop(
                     } else {
                         value
                     };
-                    if let Err(error) = leave_frame(interp, env, &frame) {
-                        interp.bc_frames.push(frame);
-                        return Err(error);
-                    }
+                    let left = leave_frame(interp, env, &frame);
                     pc = interp.bc_stack.leave_frame();
                     interp.bc_stack.truncate(frame.base);
-                    push!(value);
                     program = frame.program;
-                    op_error_frames = frame.op_error_frames;
+                    debug_assert_eq!(op_error_frames, 0);
                     interp.bc_handlers.truncate(frame.handlers_len);
+                    // A signal or throw from undoing the callee's entries
+                    // (funcall_lambda's unbind_to: a watcher of a formal)
+                    // comes out of the call into the caller, as it comes
+                    // out of Ffuncall into the Bcall in GNU: the callee is
+                    // left whole by then, its entries undone, its record
+                    // and depth gone.
+                    left?;
+                    push!(value);
                     continue;
                 }
                 None => return Ok(value),
@@ -5033,7 +5069,6 @@ fn run_loop(
                             interp.bc_stack.truncate(frame.base);
                             push!(value);
                             program = frame.program;
-                            op_error_frames = frame.op_error_frames;
                             interp.bc_handlers.truncate(frame.handlers_len);
                             continue 'run;
                         }
@@ -5047,7 +5082,6 @@ fn run_loop(
                     pc = interp.bc_stack.leave_frame();
                     interp.bc_stack.truncate(frame.base);
                     program = frame.program;
-                    op_error_frames = frame.op_error_frames;
                 }
                 if !handled {
                     // Trace only genuine errors, and render them bounded: a
