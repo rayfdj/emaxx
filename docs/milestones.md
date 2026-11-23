@@ -102,7 +102,9 @@ a diagnostic run of the locked suite on the profile-guided build.
   round 375: holders and Rust signatures keep the window, not its id).
 - D4: Native code's calls into subrs cost ~65 vs 14 instructions (round 321).
   In progress (round 374: sixteen type predicates are their own entries, 78
-  against 73 for the probe; the general entry is unchanged).
+  against 73 for the probe; round 377: nineteen more subrs, the word-level
+  ones and the readers of the interpreter's state; the general entry is
+  unchanged).
 - D9: Dynamic-binding byte-code call from byte code ~80 instructions over GNU
   (rounds 289, 295)
   **Done** (round 376: 634.0 against 636.2 a level of the recursion).

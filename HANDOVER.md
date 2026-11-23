@@ -136,9 +136,12 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   the plan (docs/plans/d4-native-subrs.md) and its first two stages;
   sixteen type predicates of data.c are their own link-table entries,
   `bufferp' from native code 78.1 instructions an iteration of the
-  probe's loop against GNU's 73.0 (126.1 before).  The general entry,
-  which every other subr still takes, pays about 50 more than GNU's
-  call; the plan's later stages take it down by shape.
+  probe's loop against GNU's 73.0 (126.1 before).  Round 377: stages
+  S3 and S4, nineteen more subrs with their own entries (`bare-symbol'
+  64.1 against 60, `nth' of a variable index 84.1 against 101,
+  `point' 75.2 against 57).  The general entry, which every other
+  subr still takes, pays about 50 more than GNU's call; the plan's later
+  stages take it down by shape.
 - **Done: D9** (round 376).  A one-argument recursion of dynamic-binding
   byte code costs 634.0 instructions a level against GNU's 636.2 (693.0
   before); the lexical one 360.1 against 314.9, and the suite's
@@ -19851,6 +19854,76 @@ setup_process_coding_systems's check now refuses). A 13-form
   result dropped, the release build's `let _ = record' of the frame's
   check, which has nothing to check there, and 333 changed lines with
   three tests and thirteen assertions added, none removed.
+- **Round 377: native code calls nineteen more subrs itself (M2, D4;
+  not closed).**  The plan's stages S3 and S4
+  (docs/plans/d4-native-subrs.md).  **S3, the word-level subrs**:
+  `remove-pos-from-symbol', `bare-symbol', `symbol-with-pos-pos',
+  `keywordp', `nth' and `recordp' get their own link-table entries,
+  each a function of the argument words that answers where it can
+  (`nth' for a fixnum count the list's spine reaches within a small
+  bound, `keywordp' reading `symbols-with-pos-enabled' through the
+  active call only for a symbol with a position) and takes the general
+  entry for exactly the cases it does not answer, so a signal goes
+  through the handler sync and the error conversion as before.
+  `keywordp' tests the name's first byte before the obarray, as
+  Fkeywordp does, and `recordp' reads the reader's record form in place
+  where it collected the form's slots into a vector.  **S4, the readers
+  of the interpreter's state**: `point', `point-min', `point-max',
+  `bobp', `eobp', `bolp', `eolp', `following-char', `preceding-char',
+  `current-buffer', `selected-window', `selected-frame' and `purecopy'
+  are entries that read the active call's interpreter through a shared
+  reference and answer the reader's value, with no handler sync and no
+  Result, as GNU's freloc table holds functions that read the C
+  globals; a handler native code has popped stays registered until the
+  next general entry reconciles it, which nothing a reader does can
+  observe.  The generator asserts each hand-declared entry's arity
+  against GNU's table, both tables changed only in the nineteen entries
+  (fifteen retargeted and their wrappers removed, four wrappers'
+  bodies), no subr renumbered, and `src/anti_cheat.rs' gains the
+  nineteen exact fast-path contracts.  The entries' tests compare each
+  with its primitive over every sample under both settings of
+  `symbols-with-pos-enabled', with GNU 30.2's answers as literals (20
+  `keywordp' rows, 13 `recordp' rows, `nth' over 11 counts and 8
+  lists, the nine buffer readers at every position of an empty, a
+  multibyte, a narrowed and a unibyte buffer); the test helper that
+  compares condition data takes a fresh predicate list only where
+  GNU's Fbare_symbol makes one, which it had taken of any condition,
+  and every subr the generator selects is compared or listed with the
+  reason it cannot be.  **Counts** (instructions an iteration of the
+  probes' loops, before, after, GNU): `bare-symbol' 110.1, 64.1, 60;
+  `keywordp' 186.1, 96.1, 64; `nth' of a variable index 157.2, 84.1,
+  101; `point' 110.1, 75.2, 57; `recordp' 104.1, 63.1, 58; `purecopy'
+  130.1, 87.1, 57; `current-buffer' 96.1, 60.1, 56; the other probes
+  and the guards as before (the general entry's `bufferp' 78.1,
+  `lex-rec' 360.1, `dyn-rec' 634.0, `mapc-bc' 414.7, the window
+  accessors 319.9).  What is left over
+  GNU's in `keywordp' and `point' is the call to an out-of-line
+  `is_keyword', the buffer's borrow count and the fixnum range test.
+  The independent review (the one question: does the round cheat or
+  break something) ran each of the nineteen names interpreted,
+  byte-compiled and native-compiled over some fifty-five samples of
+  every type (keywords of the initial obarray, of `obarray-make' and
+  uninterned, symbols with positions under both settings, raw-byte and
+  unibyte names, records, reader forms, defstructs and oclosures, `nth'
+  over counts from -1 to both fixnum extremes, bignums and floats
+  against proper, dotted, circular and long lists, the readers at every
+  position of six kinds of buffer, after state changed inside native
+  code, a killed buffer and a Lisp thread, `purecopy' under three
+  values of `purify-flag'), confirmed with gdb that native code reaches
+  the new entries, and compared signals from them (`condition-case'
+  data, `handler-bind', a recording debugger, backtrace frames, a
+  pending quit): GNU, the build before and this one alike in every
+  cell.  It found no cheat and nothing broken.
+  Validation of the ten commits (gate profile, one test thread a
+  process): the grouped gate 3,555 passed, 0 failed, 2 ignored (four
+  library tests more); cli 30, cli_parity 174, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists
+  src/anti_cheat.rs as changed infrastructure (the nineteen contract
+  entries appended to the inventory, nothing else), one result dropped
+  where a moved line of `purecopy' already dropped it, and 2,263 changed
+  lines with four tests and twenty-eight assertions added, none removed.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23166,6 +23239,18 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (217) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 377 and its review), outside the
+  round and in no milestone.**  One line each: a symbol of the initial
+  obarray whose name holds byte 0x1E or 0x1F answers nil to `keywordp'
+  in Emaxx and t in GNU (the private-obarray marker of the symbols'
+  host text; the symbols' items D14 and its plan remove the marker),
+  and the round's test of `is_keyword' keeps today's answer; the
+  generator's arity assertion checks each entry's declared count
+  against GNU's table, while a direct target's own Rust signature is
+  tied to that count only by the runtime test that calls it; the
+  entries that read the interpreter's state do not bring the handler
+  lists up to date, so an internal failure of that sync would show at
+  the next general entry instead.
 - **Found after the scope lock (round 376 and its plan), outside the
   round and in no milestone.**  One line each: debug-on-exit of a
   dynamic-binding byte-code function called from byte code sees its
