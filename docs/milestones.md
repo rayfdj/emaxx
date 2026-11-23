@@ -93,7 +93,8 @@ a diagnostic run of the locked suite on the profile-guided build.
   (safe public APIs cannot race the allocator/symbol tables)
 - D2: tramp-tests body gap: pty read timing, 2.3x string consing (round 327)
 - D3: Windows as generic records rather than GNU's struct window pseudovector
-  (round 321)
+  (round 321). In progress (round 369: every access through one handle;
+  the representation is unchanged).
 - D4: Native code's calls into subrs cost ~65 vs 14 instructions (round 321)
 - D9: Dynamic-binding byte-code call from byte code ~80 instructions over GNU
   (rounds 289, 295)

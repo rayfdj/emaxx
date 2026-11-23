@@ -109,6 +109,12 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   in a source loop 0.98 of GNU's (1.37 when recorded), a print to an
   interpreted one-argument function 0.71 (1.08).  The loop's
   instruction count is still above GNU's, 2,712 against 2,218.
+- **In progress: D3 and A3.5** (windows).  Round 369 is the first
+  stage: every access to a window goes through one handle
+  (`WindowRef'), with the representation, the behaviour and the counts
+  unchanged (339 against 244 from byte code, 141 against 48 from native
+  code).  The stages that change the object follow; the item closes
+  when a window is GNU's `struct window' and the counts are GNU's.
 
 ## Where things stand — 15 October 2026
 
@@ -19168,13 +19174,57 @@ setup_process_coding_systems's check now refuses). A 13-form
   native_comp_identity 1, native_thread_continuations 1,
   package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
   rustfmt clean; the round audit reports no hard finding.
-- **Round 369 is unfinished: its draft is packaged in `wip/r369/`, and
-  `src/` is round 368's.**  The subject is the first stage of making a
-  window GNU's `struct window' (D3, A3.5): every access to a window's
-  state goes through one handle, with no behaviour meant to change.
-  `wip/r369/impl.patch` is the change as a diff against round 368 and
-  `wip/r369/README.md` its state.  Nothing under `wip/` is built or
-  tested by the gate.
+- **Round 369: a window is reached through one handle (M2, D3 and A3.5,
+  the first of the stages; neither item is closed).**  A window is still
+  a host record whose slots are a vector apart from it, found by id
+  through the record registry, and GNU's is one `struct window' reached
+  by its pointer.  Before the representation changes, every place that
+  touched one was brought to a single type: `WindowRef'
+  (primitives/window.rs: `from_value' for decode_any_window's WINDOWP,
+  `from_record_value' where any host record was taken, `slot',
+  `slot_opt', `set_slot', and `ensure_slot', `set_held_slot' and
+  `set_slot_if_held' for the three ways the old writers grew or indexed
+  the vector) and `Interpreter::{window_ref, window_value, make_window,
+  windows_where}'.  `window_record' is gone and the frame's root,
+  selected, minibuffer and old selected windows hold the handle.
+  Twenty-three files, 637 lines added and 624 removed, in three commits
+  by file group.  No window is reached through `find_record',
+  `find_record_mut', `record_ref' or `record_value' any more outside
+  the handle, the generic record code (collector, dumper and loader,
+  printer, equality, purecopy) and the tests.  **No behaviour changes
+  and nothing is faster:** the six window accessors from byte code cost
+  339 instructions each as before (GNU 244), a native call of one 140
+  (GNU 48), and the guard loops read what round 368's build reads
+  (lex-rec 367, mapc-bc 458, the `(ignore i)' loop 2,762, native-subr
+  126, cg-call-loop 380, cg-interp-lexical 4,403).  What the stage
+  found and left as it was: a new window holds 31 slots, the values
+  `window_record_slots' gives slots 31 to 54 being cut off at creation,
+  so `window-new-pixel', `window-new-total', `window-new-normal',
+  `window-normal-size', `window-cursor-type' and the character geometry
+  tell an absent slot from nil; the next stage, where all the fields
+  always exist, has to say what each of those reads then.  The
+  independent review (the one question: does the round cheat or break
+  something) read all twenty-three files and found neither; it noted
+  three textual differences that nothing observes (a cons allocated
+  before the slot vector grows in the window-parameter setter, a test's
+  index written as `slot()', FrameState's Debug text).  Validation
+  (gate profile, one test thread a process): the grouped gate 3,530
+  passed, 0 failed, 2 ignored; cli 30, cli_parity 173, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean; the round audit reports no hard finding, and lists one
+  assertion rewritten through the handle (the cloned interpreter's root
+  window in a native_comp test) and two lines of the handle matched by
+  their wording (`slot_opt' with a second slot to read, and with nil for
+  an absent one, both as the code they replace).  **Next, in
+  this order** (the plan's stages): the window becomes its own
+  vectorlike object with its fields inline (pseudovector type 11, 68
+  words with the header as GNU's, the collector, dumper, loader and
+  printer taking it as a window and not as a record), which is where
+  the accessor counts and the allocation counters of `split-window'
+  (63 vector cells against GNU's 185) can move; then GNU's field
+  semantics for the slots above, the holders keeping the object and not
+  an id, and the ids removed.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
