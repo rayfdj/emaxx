@@ -15,33 +15,23 @@ define_dispatch!(
             "numberp" => direct_numberp(interp, args, env),
             "number-or-marker-p" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if args[0].is_integer()
-                        || matches!(args[0].kind(), Kind::Float(_) | Kind::Marker(_))
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if number_or_marker_p(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "char-or-string-p" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    // data.c:Fchar_or_string_p uses character.h:MAX_CHAR,
-                    // not Unicode's scalar limit, and STRINGP reads a tag.
-                    if matches!(args[0].kind(), Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code))
-                        || args[0].is_string()
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if char_or_string_p(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "arrayp" => {
                 need_args(name, args, 1)?;
-                Ok(if args[0].is_string() || is_vector_like_value(&args[0]) {
+                Ok(if arrayp(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -62,7 +52,7 @@ define_dispatch!(
             }
             "vectorp" => {
                 need_args(name, args, 1)?;
-                Ok(if is_vector_value(&args[0]) {
+                Ok(if vectorp(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -70,16 +60,11 @@ define_dispatch!(
             }
             "integer-or-marker-p" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if matches!(
-                        args[0].kind(),
-                        Kind::Integer(_) | Kind::BigInteger(_) | Kind::Marker(_)
-                    ) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if integer_or_marker_p(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "vector-or-char-table-p" => {
                 need_args(name, args, 1)?;
@@ -105,7 +90,7 @@ define_dispatch!(
             }
             "floatp" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0].kind(), Kind::Float(_)) {
+                Ok(if floatp(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -150,15 +135,11 @@ define_dispatch!(
             }
             "byte-code-function-p" => {
                 need_args(name, args, 1)?;
-                // data.c:Fbyte_code_function_p checks CLOSUREP and the
-                // code slot's STRINGP tag, never names or parameter lists.
-                Ok(
-                    if matches!(args[0].kind(), Kind::Closure(closure) if closure.is_bytecode()) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if byte_code_function_p(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "module-function-p" => {
                 need_args(name, args, 1)?;
@@ -236,7 +217,7 @@ define_dispatch!(
             }
             "closurep" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0].kind(), Kind::Closure(_)) {
+                Ok(if closurep(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -244,22 +225,18 @@ define_dispatch!(
             }
             "interpreted-function-p" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if matches!(args[0].kind(), Kind::Closure(closure) if !closure.is_bytecode()) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if interpreted_function_p(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "subrp" => {
                 need_args(name, args, 1)?;
-                // GNU data.c: t exactly for subr objects.  A native builtin
-                // is a subr; disguising any as Lisp forged provenance.
-                Ok(match args[0].kind() {
-                    Kind::BuiltinFunc(_) => Value::T,
-                    Kind::NativeFunction(_) => Value::T,
-                    _ => Value::Nil,
+                Ok(if subrp(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
                 })
             }
             "keymapp" => {
@@ -427,7 +404,7 @@ define_dispatch!(
             }
             "symbol-with-pos-p" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0].kind(), Kind::SymbolWithPos(_)) {
+                Ok(if symbol_with_pos_p(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -495,7 +472,7 @@ define_dispatch!(
             }
             "bufferp" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0].kind(), Kind::Buffer(_)) {
+                Ok(if bufferp(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -660,10 +637,10 @@ define_dispatch!(
 
             "natnump" => {
                 need_args(name, args, 1)?;
-                Ok(match args[0].kind() {
-                    Kind::Integer(n) if n >= 0 => Value::T,
-                    Kind::BigInteger(n) if n.sign() != Sign::Minus => Value::T,
-                    _ => Value::Nil,
+                Ok(if natnump(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
                 })
             }
 
@@ -700,7 +677,7 @@ define_dispatch!(
             }
             "markerp" => {
                 need_args(name, args, 1)?;
-                Ok(if matches!(args[0].kind(), Kind::Marker(_)) {
+                Ok(if markerp(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -721,6 +698,120 @@ define_dispatch!(
         }
     }
 );
+
+// The type predicates of data.c whose answer is a function of the object
+// alone: each is the test its DEFUN makes, with no interpreter, no signal
+// and no allocation, so that the dispatch arm and the entry native code
+// calls (native_comp/runtime.rs) are one predicate.
+
+/// data.c:Fsymbol_with_pos_p: SYMBOL_WITH_POS_P, whatever
+/// `symbols-with-pos-enabled' is.
+#[inline]
+pub(crate) fn symbol_with_pos_p(value: &Value) -> bool {
+    matches!(value.kind(), Kind::SymbolWithPos(_))
+}
+
+/// data.c:Fvectorp: VECTORP.
+#[inline]
+pub(crate) fn vectorp(value: &Value) -> bool {
+    is_vector_value(value)
+}
+
+/// data.c:Fbufferp: BUFFERP.
+#[inline]
+pub(crate) fn bufferp(value: &Value) -> bool {
+    matches!(value.kind(), Kind::Buffer(_))
+}
+
+/// data.c:Fmarkerp: MARKERP.
+#[inline]
+pub(crate) fn markerp(value: &Value) -> bool {
+    matches!(value.kind(), Kind::Marker(_))
+}
+
+/// data.c:Fsubrp: t exactly for subr objects.  A native builtin is a
+/// subr; disguising any as Lisp forged provenance.
+#[inline]
+pub(crate) fn subrp(value: &Value) -> bool {
+    matches!(value.kind(), Kind::BuiltinFunc(_) | Kind::NativeFunction(_))
+}
+
+/// data.c:Fclosurep: CLOSUREP.
+#[inline]
+pub(crate) fn closurep(value: &Value) -> bool {
+    matches!(value.kind(), Kind::Closure(_))
+}
+
+/// data.c:Fbyte_code_function_p checks CLOSUREP and the code slot's
+/// STRINGP tag, never names or parameter lists.
+#[inline]
+pub(crate) fn byte_code_function_p(value: &Value) -> bool {
+    matches!(value.kind(), Kind::Closure(closure) if closure.is_bytecode())
+}
+
+/// data.c:Finterpreted_function_p: a closure whose code is no string.
+#[inline]
+pub(crate) fn interpreted_function_p(value: &Value) -> bool {
+    matches!(value.kind(), Kind::Closure(closure) if !closure.is_bytecode())
+}
+
+/// data.c:Ffloatp: FLOATP.
+#[inline]
+pub(crate) fn floatp(value: &Value) -> bool {
+    matches!(value.kind(), Kind::Float(_))
+}
+
+/// data.c:Fintegerp: INTEGERP, a fixnum or a bignum.
+#[inline]
+pub(crate) fn integerp(value: &Value) -> bool {
+    value.is_integer()
+}
+
+/// data.c:Fnumberp: NUMBERP.
+#[inline]
+pub(crate) fn numberp(value: &Value) -> bool {
+    value.is_integer() || matches!(value.kind(), Kind::Float(_))
+}
+
+/// data.c:Fnatnump: a fixnum or a bignum that is not negative.
+#[inline]
+pub(crate) fn natnump(value: &Value) -> bool {
+    match value.kind() {
+        Kind::Integer(n) if n >= 0 => true,
+        Kind::BigInteger(n) if n.sign() != Sign::Minus => true,
+        _ => false,
+    }
+}
+
+/// data.c:Finteger_or_marker_p: MARKERP or INTEGERP.
+#[inline]
+pub(crate) fn integer_or_marker_p(value: &Value) -> bool {
+    matches!(
+        value.kind(),
+        Kind::Integer(_) | Kind::BigInteger(_) | Kind::Marker(_)
+    )
+}
+
+/// data.c:Fnumber_or_marker_p: NUMBERP or MARKERP.
+#[inline]
+pub(crate) fn number_or_marker_p(value: &Value) -> bool {
+    value.is_integer() || matches!(value.kind(), Kind::Float(_) | Kind::Marker(_))
+}
+
+/// data.c:Fchar_or_string_p uses character.h:MAX_CHAR, not Unicode's
+/// scalar limit, and STRINGP reads a tag.
+#[inline]
+pub(crate) fn char_or_string_p(value: &Value) -> bool {
+    matches!(value.kind(), Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code))
+        || value.is_string()
+}
+
+/// data.c:Farrayp: ARRAYP, a string, a vector, a char-table or a
+/// bool-vector.
+#[inline]
+pub(crate) fn arrayp(value: &Value) -> bool {
+    value.is_string() || is_vector_like_value(value)
+}
 
 /// The `null' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_null(
@@ -745,7 +836,7 @@ pub(super) fn direct_integerp(
 ) -> Result<Value, LispError> {
     let name = "integerp";
     need_args(name, args, 1)?;
-    Ok(if args[0].is_integer() {
+    Ok(if integerp(&args[0]) {
         Value::T
     } else {
         Value::Nil
@@ -760,13 +851,11 @@ pub(super) fn direct_numberp(
 ) -> Result<Value, LispError> {
     let name = "numberp";
     need_args(name, args, 1)?;
-    Ok(
-        if args[0].is_integer() || matches!(args[0].kind(), Kind::Float(_)) {
-            Value::T
-        } else {
-            Value::Nil
-        },
-    )
+    Ok(if numberp(&args[0]) {
+        Value::T
+    } else {
+        Value::Nil
+    })
 }
 
 /// The `stringp' primitive, callable directly (a subr's function pointer).
