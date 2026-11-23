@@ -1478,6 +1478,11 @@ pub(super) fn delete_frame(
         if let Some(replacement) = replacement {
             select_frame(interp, replacement, false, env)?;
         }
+    } else {
+        // move_minibuffers_onto_frame (f, selected_frame, true): the
+        // selected frame's minibuffer window is minibuf_window.
+        let selected_mini = interp.minibuffer_window();
+        interp.set_minibuf_window(selected_mini);
     }
     interp.retire_frame(id);
     if !noelisp

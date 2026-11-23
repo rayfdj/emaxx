@@ -1196,6 +1196,9 @@ impl Interpreter {
         // old_selected_frame is window_change_record's alone.
         if id != self.selected_frame_id {
             self.selected_frame_id = id;
+            // do_switch_frame's move_minibuffers_onto_frame:
+            // `minibuf_window = f->minibuffer_window'.
+            self.minibuf_window = id.borrow().minibuffer_window;
         }
         let terminal = id.borrow().terminal.expect("live frame terminal");
         let mut state = terminal.borrow_mut();

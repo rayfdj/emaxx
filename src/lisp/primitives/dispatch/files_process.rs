@@ -3431,10 +3431,11 @@ define_dispatch!(
                     return Ok(Value::T);
                 }
                 let buffer = interp.buffer_value(id).expect("live buffer object");
+                // XWINDOW (minibuf_window)->contents.
                 let minibuffer_buffer = |interp: &Interpreter| {
                     crate::lisp::primitives::window::window_buffer_id(
                         interp,
-                        &interp.minibuffer_window_value(),
+                        &interp.minibuf_window_value(),
                     )
                 };
                 if minibuffer_buffer(interp) == Some(id) {

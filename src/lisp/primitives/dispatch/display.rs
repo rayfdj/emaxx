@@ -4795,7 +4795,9 @@ pub(crate) fn buffer_window(
     decode_live_window(interp, Some(&frame_selected_window(frame).value()))?;
     let selected = interp.selected_window_ref();
     let minibuffer_active = interp.active_minibuffer_buffer_id().is_some();
-    let minibuffer = interp.minibuffer_window();
+    // "Don't find any minibuffer window except the one that is currently
+    // in use": minibuf_window.
+    let minibuffer = interp.minibuf_window();
     let shows = |window: WindowRef| {
         (is_live_ordinary_window(interp, window)
             || (minibuffer_active && Some(window) == minibuffer))
@@ -8144,7 +8146,11 @@ define_dispatch!(
                         "Window is not a minibuffer window".into(),
                     ));
                 }
-                interp.set_minibuffer_window(Some(window));
+                // minibuf.c:Fset_minibuffer_window: `minibuf_window =
+                // window', which the next frame switch or read sets again
+                // from the selected frame; no frame's own minibuffer window
+                // changes.
+                interp.set_minibuf_window(Some(window));
                 Ok(args[0])
             }
             "minibuffer-selected-window" => {

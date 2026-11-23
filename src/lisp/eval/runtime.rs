@@ -840,6 +840,33 @@ impl Interpreter {
         self.selected_frame_id.borrow_mut().minibuffer_window = window;
     }
 
+    /// window.c's minibuf_window.
+    pub(crate) fn minibuf_window(&self) -> Option<primitives::WindowRef> {
+        self.minibuf_window
+    }
+
+    /// window.c's minibuf_window, nil before the first frame's windows.
+    pub(crate) fn minibuf_window_value(&self) -> Value {
+        self.minibuf_window
+            .map(primitives::WindowRef::value)
+            .unwrap_or(Value::Nil)
+    }
+
+    /// `minibuf_window = WINDOW'.
+    pub(crate) fn set_minibuf_window(&mut self, window: Option<primitives::WindowRef>) {
+        self.minibuf_window = window;
+    }
+
+    /// minibuf.c:choose_minibuf_frame: minibuf_window becomes the
+    /// selected frame's minibuffer window when that window is live, as
+    /// each read does when it starts and when it ends.
+    pub(crate) fn choose_minibuf_frame(&mut self) {
+        let mini = self.minibuffer_window();
+        if let Some(mini) = mini.filter(|mini| mini.live_buffer_id(self).is_some()) {
+            self.minibuf_window = Some(mini);
+        }
+    }
+
     /// minibuf.c's minibuf_selected_window.
     pub(crate) fn minibuffer_selected_window(&self) -> Option<primitives::WindowRef> {
         self.minibuffer_selected_window

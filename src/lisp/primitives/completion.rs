@@ -1537,10 +1537,12 @@ pub(crate) fn activate_minibuffer_with_history(
                     .filter(Value::is_string)
             })
         });
-    // read_minibuf: a minibuffer window showing an active minibuffer (a
-    // recursive read) pushes it onto its previous buffers, for
-    // minibuffer_unwind to show again when this read ends.
-    let minibuffer_window = interp.minibuffer_window_value();
+    // read_minibuf's choose_minibuf_frame, then: a minibuffer window
+    // showing an active minibuffer (a recursive read) pushes it onto its
+    // previous buffers, for minibuffer_unwind to show again when this read
+    // ends.
+    interp.choose_minibuf_frame();
+    let minibuffer_window = interp.minibuf_window_value();
     if let Some(shown) = super::window_buffer_id(interp, &minibuffer_window)
         .and_then(|id| interp.buffer_identity_value(id))
         && this_minibuffer_depth(interp, &shown) != 0
@@ -1802,8 +1804,8 @@ pub(crate) fn check_recursive_minibuffer(interp: &Interpreter) -> Result<(), Lis
         return Ok(());
     }
     let message = Value::string("Command attempted to use minibuffer while in minibuffer");
-    let in_minibuffer_window = super::WindowRef::from_value(&interp.minibuffer_window_value())
-        .is_some_and(|window| window == interp.selected_window_ref());
+    // `EQ (selected_window, minibuf_window)'.
+    let in_minibuffer_window = interp.minibuf_window() == Some(interp.selected_window_ref());
     if in_minibuffer_window {
         Err(LispError::SignalValue(Value::list([
             Value::symbol("user-error"),
@@ -2075,9 +2077,11 @@ fn read_minibuf_unwind(interp: &mut Interpreter, state: ActiveMinibuffer, env: &
     }
     interp.replace_minibuffer_selected_window(state.previous_minibuffer_selected_window);
     // "Switch the current windows away from the expired minibuffer
-    // window": unless the minibuffer window has an outer read's buffer to
-    // go back to, the calling window is Fselect_window'ed.
-    let minibuffer_window = interp.minibuffer_window_value();
+    // window" (choose_minibuf_frame): unless the minibuffer window has an
+    // outer read's buffer to go back to, the calling window is
+    // Fselect_window'ed.
+    interp.choose_minibuf_frame();
+    let minibuffer_window = interp.minibuf_window_value();
     let outer_reads = super::WindowRef::from_value(&minibuffer_window)
         .is_some_and(|window| !window.prev_buffers().is_nil());
     let calling_window = state.saved_selected_window.value();

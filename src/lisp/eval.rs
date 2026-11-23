@@ -5637,6 +5637,7 @@ impl Interpreter {
         for window in [
             self.old_selected_window,
             self.minibuffer_selected_window,
+            self.minibuf_window,
             self.minibuffer_runtime.active_window,
         ]
         .into_iter()
@@ -6210,6 +6211,7 @@ impl Interpreter {
             for window in [
                 &mut clone_state.selected_window,
                 &mut clone_state.minibuffer_selected_window,
+                &mut clone_state.minibuf_window,
                 &mut clone_state.old_selected_window,
                 &mut clone_state.minibuffer_runtime.active_window,
             ] {
@@ -6812,6 +6814,12 @@ pub struct InterpreterState {
     /// minibuf.c's minibuf_selected_window: the window selected when the
     /// minibuffer was entered.
     minibuffer_selected_window: Option<primitives::WindowRef>,
+    /// window.c's minibuf_window: the minibuffer window a read uses, the
+    /// selected frame's at each frame switch (move_minibuffers_onto_frame)
+    /// and at a read's start and end (choose_minibuf_frame), or the one
+    /// `set-minibuffer-window' named since.  None only while the first
+    /// frame's windows are being made.
+    minibuf_window: Option<primitives::WindowRef>,
     /// window.c's old_selected_window: the window selected when the last
     /// window-change cycle completed.
     pub(crate) old_selected_window: Option<primitives::WindowRef>,
@@ -7611,6 +7619,7 @@ impl Interpreter {
             current_buffer_id: 0,
             selected_window: None,
             minibuffer_selected_window: None,
+            minibuf_window: None,
             old_selected_window: None,
             window_select_count: 1,
             windows_or_buffers_changed: 1,
@@ -9165,6 +9174,8 @@ impl Interpreter {
             minibuffer_window_geometry,
         );
         interp.set_minibuffer_window(Some(minibuffer_window));
+        // init_window: `minibuf_window = f->minibuffer_window'.
+        interp.set_minibuf_window(Some(minibuffer_window));
         // The two windows show their buffers from the start.
         interp.recount_buffer_windows();
         // Interpreter::new also constructs several dumped values after the

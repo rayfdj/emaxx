@@ -10782,6 +10782,66 @@ fn vertical_motion_lends_its_window_the_current_buffer() {
 }
 
 #[test]
+fn set_minibuffer_window_leaves_each_frame_its_own_minibuffer_window() {
+    // minibuf.c:Fset_minibuffer_window stores the global minibuf_window
+    // only: a frame's own minibuffer window (FRAME_MINIBUF_WINDOW) stays
+    // its own, so deleting the frame deletes it, as delete_frame deletes
+    // the frame's windows, and the minibuffer buffer's window count
+    // drops with it.  kill-buffer does not kill the buffer minibuf_window
+    // shows, and a frame switch makes minibuf_window the frame's again
+    // (move_minibuffers_onto_frame).
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "smw.el",
+        r#"(defvar smw-stage 0)
+(defvar smw-res nil)
+(defvar f1 (selected-frame))
+(defvar f2 nil)
+(defvar m2 nil)
+(defun smw-q (tag)
+  (push (list tag
+              (condition-case e
+                  (list (length (frame-list))
+                        (and m2 (window-live-p m2))
+                        (and m2 (window-valid-p m2))
+                        (and f2 (frame-live-p f2) (eq (minibuffer-window f2) m2))
+                        (eq (minibuffer-window f1) (minibuffer-window))
+                        (length (get-buffer-window-list " *Minibuf-0*" t t)))
+                (error (list 'ERR e))))
+        smw-res))
+(defvar smw-stages
+  '((progn (setq f2 (make-frame)) (select-frame f2) (setq m2 (minibuffer-window f2)))
+    (progn (set-minibuffer-window (minibuffer-window f1)))
+    (progn (select-frame f1) (setq zz (get-buffer-create "zz"))
+           (set-window-buffer m2 zz) (set-minibuffer-window m2)
+           (push (list 'kill (kill-buffer zz) (buffer-live-p zz)) smw-res))
+    (progn (select-frame f2) (select-frame f1)
+           (push (list 'kill (kill-buffer zz) (buffer-live-p zz)) smw-res))
+    (progn (delete-frame f2) (garbage-collect))
+    (progn (push (condition-case e (progn (select-window m2) 'selected) (error (car e)))
+                 smw-res))))
+(defun smw-f5 () (interactive)
+  (when (> smw-stage 0) (smw-q smw-stage))
+  (let ((stage (nth smw-stage smw-stages)))
+    (setq smw-stage (1+ smw-stage))
+    (when stage (condition-case e (eval stage t) (error (push (list 'STAGE-ERR e) smw-res))))))
+(global-set-key [f5] #'smw-f5)
+(global-set-key [f8]
+  (lambda () (interactive)
+    (with-temp-file (expand-file-name "smw.out" command-line-default-directory)
+      (dolist (r (reverse smw-res)) (insert (format "%S\n" r))))
+    (kill-emacs 0)))"#,
+    );
+    let mut input: Vec<(f64, &[u8])> = vec![(0.5, b"\x1b[15~")];
+    input.extend(std::iter::repeat_n((1.5, &b"\x1b[15~"[..]), 6));
+    input.push((5.0, b"\x1b[19~"));
+    let expected = corpus.run_tty(&oracle(), &probe, "smw.out", "C.UTF-8", &input);
+    let actual = corpus.run_tty(emaxx(), &probe, "smw.out", "C.UTF-8", &input);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[test]
 fn windows_of_every_frame_count_for_their_buffers() {
     // window.c:Fforce_window_update of a buffer answers t when a window
     // shows it, on any visible frame of the terminal (buffer_window_count,

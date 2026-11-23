@@ -302,6 +302,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "window.c:init_window_once_for_pdumper resets minibuf_selected_window",
     ),
     (
+        "minibuf_window",
+        "window.c:init_window_once_for_pdumper resets minibuf_window, which init_window sets to the initial frame's minibuffer window",
+    ),
+    (
         "old_selected_window",
         "window.c:init_window_once_for_pdumper resets old_selected_window",
     ),
