@@ -3513,6 +3513,95 @@ pub(super) fn direct_native_nth(index: usize, n: NativeWord, list: NativeWord) -
     }
 }
 
+/// The entry of a subr whose answer READ makes of the interpreter's state
+/// and which, on this path, neither signals, allocates a Lisp object nor
+/// runs Lisp: the active call's interpreter, through a shared reference,
+/// as `direct_native_functionp' reads it, with no handler sync and no
+/// `Result'.  Nothing READ does can observe a handler native code popped,
+/// so the next general entry reconciles it, as it would have here.
+#[inline(always)]
+fn native_context_entry(read: impl FnOnce(&Interpreter) -> Value) -> NativeWord {
+    with_active(|active| read(unsafe { &*active.interpreter }).word())
+}
+
+/// editfns.c:Fpoint.
+pub(super) extern "C" fn direct_native_point() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::point)
+}
+
+/// editfns.c:Fpoint_min.
+pub(super) extern "C" fn direct_native_point_min() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::point_min)
+}
+
+/// editfns.c:Fpoint_max.
+pub(super) extern "C" fn direct_native_point_max() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::point_max)
+}
+
+/// editfns.c:Ffollowing_char.
+pub(super) extern "C" fn direct_native_following_char() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::following_char)
+}
+
+/// editfns.c:Fprevious_char, `preceding-char'.
+pub(super) extern "C" fn direct_native_preceding_char() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::preceding_char)
+}
+
+/// editfns.c:Fbolp.
+pub(super) extern "C" fn direct_native_bolp() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::bolp)
+}
+
+/// editfns.c:Feolp.
+pub(super) extern "C" fn direct_native_eolp() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::eolp)
+}
+
+/// editfns.c:Fbobp.
+pub(super) extern "C" fn direct_native_bobp() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::bobp)
+}
+
+/// editfns.c:Feobp.
+pub(super) extern "C" fn direct_native_eobp() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::eobp)
+}
+
+/// buffer.c:Fcurrent_buffer.
+pub(super) extern "C" fn direct_native_current_buffer() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::current_buffer)
+}
+
+/// window.c:Fselected_window: the interpreter's selected window, found
+/// in its registry of windows, which a lookup's cache aside it reads.
+pub(super) extern "C" fn direct_native_selected_window() -> NativeWord {
+    native_context_entry(Interpreter::selected_window_value)
+}
+
+/// frame.c:Fselected_frame.
+pub(super) extern "C" fn direct_native_selected_frame() -> NativeWord {
+    native_context_entry(Interpreter::selected_frame_value)
+}
+
+/// alloc.c:Fpurecopy for the subr at INDEX, as `direct_native_nth' is
+/// given its index.  While `purify-flag' is nil the DEFUN returns its
+/// argument before anything else, and so does this entry, having read
+/// the variable as `native_context_entry' reads; any other value is the
+/// subr's own call, as the generated entry made it of every argument.
+#[inline(always)]
+pub(super) fn direct_native_purecopy(index: usize, obj: NativeWord) -> NativeWord {
+    let unpurified = with_active(|active| {
+        crate::lisp::primitives::purify_flag(unsafe { &*active.interpreter }).is_nil()
+    });
+    if unpurified {
+        obj
+    } else {
+        invoke_subr(index, &[obj])
+    }
+}
+
 pub(super) extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
     if left == right {
         return native_boolean(true);
@@ -8052,12 +8141,13 @@ mod tests {
         let listed = WORD_LEVEL_ENTRIES
             .iter()
             .map(|entry| entry.name)
+            .chain(CONTEXT_ENTRIES.iter().copied())
             .chain(OTHER_DIRECT_ENTRIES.iter().copied())
             .map(str::to_owned)
             .collect::<BTreeSet<_>>();
         assert_eq!(
             listed.len(),
-            WORD_LEVEL_ENTRIES.len() + OTHER_DIRECT_ENTRIES.len(),
+            WORD_LEVEL_ENTRIES.len() + CONTEXT_ENTRIES.len() + OTHER_DIRECT_ENTRIES.len(),
             "an entry is listed once"
         );
         assert_eq!(selected, listed);
@@ -8711,6 +8801,262 @@ mod tests {
             ],
         ),
     ];
+
+    /// The link-table entries that read the interpreter's state and, on
+    /// the path they take, neither signal, allocate nor run Lisp: the nine
+    /// readers of GNU_CONTEXT_ANSWERS in its order, the three of the
+    /// current buffer, window and frame, and `purecopy', whose one
+    /// argument is answered while `purify-flag' is nil.
+    const CONTEXT_ENTRIES: &[&str] = &[
+        "point",
+        "point-min",
+        "point-max",
+        "following-char",
+        "preceding-char",
+        "bolp",
+        "eolp",
+        "bobp",
+        "eobp",
+        "current-buffer",
+        "selected-window",
+        "selected-frame",
+        "purecopy",
+    ];
+
+    /// GNU 30.2's answers of the first nine CONTEXT_ENTRIES: each row is a
+    /// form that makes a buffer and leaves it current, then for each
+    /// position from its point-min to its point-max the list of the nine
+    /// answers there, as `prin1-to-string' prints it.  The buffers are an
+    /// empty one, a multibyte one with newlines, characters of two and
+    /// three bytes and raw bytes, the same text narrowed, and a unibyte
+    /// one.  Every form uses C primitives alone.
+    const GNU_CONTEXT_ANSWERS: &[(&str, &[&str])] = &[
+        (
+            "(progn (set-buffer (get-buffer-create \"d4-context-empty\")) (erase-buffer))",
+            &["(1 1 1 0 0 t t t t)"],
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"d4-context-text\")) (erase-buffer) (insert \"ab\\nc\\351\\n\\n中d\") (insert (unibyte-string 233)) (insert \"\\n\"))",
+            &[
+                "(1 1 12 97 0 t nil t nil)",
+                "(2 1 12 98 97 nil nil nil nil)",
+                "(3 1 12 10 98 nil t nil nil)",
+                "(4 1 12 99 10 t nil nil nil)",
+                "(5 1 12 4194281 99 nil nil nil nil)",
+                "(6 1 12 10 4194281 nil t nil nil)",
+                "(7 1 12 10 10 t t nil nil)",
+                "(8 1 12 20013 10 t nil nil nil)",
+                "(9 1 12 100 20013 nil nil nil nil)",
+                "(10 1 12 4194281 100 nil nil nil nil)",
+                "(11 1 12 10 4194281 nil t nil nil)",
+                "(12 1 12 0 10 t t nil t)",
+            ],
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"d4-context-narrowed\")) (erase-buffer) (insert \"ab\\nc\\351\\n\\n中d\\n\") (narrow-to-region 3 8))",
+            &[
+                "(3 3 8 10 0 t t t nil)",
+                "(4 3 8 99 10 t nil nil nil)",
+                "(5 3 8 4194281 99 nil nil nil nil)",
+                "(6 3 8 10 4194281 nil t nil nil)",
+                "(7 3 8 10 10 t t nil nil)",
+                "(8 3 8 0 10 t t nil t)",
+            ],
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"d4-context-unibyte\")) (erase-buffer) (set-buffer-multibyte nil) (insert (unibyte-string 97 10 233 98 10)))",
+            &[
+                "(1 1 6 97 0 t nil t nil)",
+                "(2 1 6 10 97 nil t nil nil)",
+                "(3 1 6 233 10 t nil nil nil)",
+                "(4 1 6 98 233 nil nil nil nil)",
+                "(5 1 6 10 98 nil t nil nil)",
+                "(6 1 6 0 10 t t nil t)",
+            ],
+        ),
+    ];
+
+    /// Each of CONTEXT_ENTRIES that takes no argument, asked of the
+    /// interpreter as it is: its entry and its primitive answer alike,
+    /// and neither signals.  The answers, in CONTEXT_ENTRIES' order.
+    fn context_answers(
+        interpreter: &mut Interpreter,
+        runtime: &mut NativeRuntime,
+        environment: &mut Env,
+    ) -> Vec<Value> {
+        CONTEXT_ENTRIES
+            .iter()
+            .filter(|name| **name != "purecopy")
+            .map(|name| {
+                assert_entry_agrees(interpreter, runtime, environment, name, &[])
+                    .unwrap_or_else(|condition| panic!("{name} signals {condition:?}"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn context_entries_agree_with_their_primitives() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        // At each position of each buffer, the readers answer as their
+        // primitives and as GNU does, and the buffer entry answers the
+        // buffer the form made current: each form begins with `set-buffer'.
+        let mut buffers = crate::lisp::alloc::RootedVec::new();
+        for (form, rows) in GNU_CONTEXT_ANSWERS {
+            eval_form(&mut interpreter, &mut environment, form);
+            buffers.push(eval_form(
+                &mut interpreter,
+                &mut environment,
+                "(current-buffer)",
+            ));
+            let start = eval_form(&mut interpreter, &mut environment, "(point-min)")
+                .as_integer()
+                .expect("point-min");
+            let end = eval_form(&mut interpreter, &mut environment, "(point-max)")
+                .as_integer()
+                .expect("point-max");
+            assert_eq!(
+                rows.len() as i64,
+                end - start + 1,
+                "a row for each position of {form}"
+            );
+            for (position, expected) in (start..).zip(rows.iter()) {
+                eval_form(
+                    &mut interpreter,
+                    &mut environment,
+                    &format!("(goto-char {position})"),
+                );
+                let answers = context_answers(&mut interpreter, &mut runtime, &mut environment);
+                assert!(
+                    answers[9].eq_value(buffers[buffers.len() - 1]),
+                    "current-buffer of {form}"
+                );
+                // The collector scans the vector.
+                let mut readers = crate::lisp::alloc::RootedVec::new();
+                readers.push(Value::list(answers[..9].iter().copied()));
+                assert_eq!(
+                    printed(&mut interpreter, &mut environment, readers[0]),
+                    *expected,
+                    "{form} at {position}"
+                );
+            }
+        }
+        // Back in each buffer by `set-buffer', the entries follow it, at
+        // the point it kept.
+        for index in 0..buffers.len() {
+            let buffer = buffers[index];
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "set-buffer",
+                &[buffer],
+                &mut environment,
+            )
+            .expect("set-buffer");
+            let answers = context_answers(&mut interpreter, &mut runtime, &mut environment);
+            assert!(
+                answers[9].eq_value(buffer),
+                "current-buffer after set-buffer"
+            );
+        }
+
+        // `purecopy': with `purify-flag' nil the argument itself, the
+        // entry's own answer.  With an `equal' hash table there, the
+        // subr's own call, which copies the object once and finds that
+        // copy again in the table.
+        let mut objects = crate::lisp::alloc::RootedVec::new();
+        for form in [
+            "nil",
+            "5",
+            "'context-entry",
+            "(list 1 \"two\" (list 3))",
+            "\"text\"",
+            "1.5",
+            "(point-marker)",
+        ] {
+            objects.push(eval_form(&mut interpreter, &mut environment, form));
+        }
+        for flag in ["nil", "(make-hash-table :test 'equal)"] {
+            eval_form(
+                &mut interpreter,
+                &mut environment,
+                &format!("(setq purify-flag {flag})"),
+            );
+            for index in 0..objects.len() {
+                let object = objects[index];
+                let answer = assert_entry_agrees(
+                    &mut interpreter,
+                    &mut runtime,
+                    &mut environment,
+                    "purecopy",
+                    &[object],
+                )
+                .expect("purecopy does not signal");
+                assert!(
+                    flag != "nil" || answer.eq_value(object),
+                    "purecopy of {object:?} with purify-flag nil"
+                );
+            }
+        }
+        eval_form(&mut interpreter, &mut environment, "(setq purify-flag nil)");
+
+        // A handler native code pushed and then popped by its own store:
+        // its registration stays until a general entry reconciles it.  Each
+        // entry answers as its primitive does and leaves it so.
+        let frame = runtime.new_call_frame(std::ptr::null_mut(), &interpreter);
+        runtime.begin_call(&frame);
+        let condition = runtime
+            .heap
+            .encode(&Value::symbol("error"))
+            .expect("condition word");
+        let handler = with_active_call(&mut interpreter, &mut environment, &mut runtime, || {
+            runtime_push_handler(condition, 1)
+        });
+        assert!(!handler.is_null());
+        runtime.thread.set_handler(std::ptr::null_mut());
+        assert!(!runtime.handlers_in_sync());
+        let object = Value::symbol("context-entry");
+        for name in CONTEXT_ENTRIES {
+            let arguments: &[Value] = if *name == "purecopy" {
+                std::slice::from_ref(&object)
+            } else {
+                &[]
+            };
+            let ordinary =
+                crate::lisp::primitives::call(&mut interpreter, name, arguments, &mut environment)
+                    .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+            let index = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == *name)
+                .unwrap_or_else(|| panic!("{name} belongs to the native ABI"));
+            let words = arguments
+                .iter()
+                .map(|value| value.word())
+                .collect::<Vec<_>>();
+            let native = with_active_call(
+                &mut interpreter,
+                &mut environment,
+                &mut runtime,
+                || unsafe {
+                    call_word_target(
+                        native_subr_address(index).cast_const(),
+                        NativeCallingConvention::Fixed,
+                        &words,
+                    )
+                },
+            );
+            assert_eq!(native, ordinary.word(), "{name} with a popped handler");
+            assert!(
+                !runtime.handlers_in_sync() && runtime.handlers.len() == 1,
+                "{name} leaves the popped handler to the next general entry"
+            );
+        }
+        runtime
+            .finish_call(&mut interpreter, &frame)
+            .expect("the call reconciles the popped handler");
+        assert!(runtime.handlers.is_empty());
+    }
 
     /// The agreement of an entry with its primitive shows one function
     /// behind both; these rows show that the function is GNU's.

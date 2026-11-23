@@ -29,6 +29,7 @@ and for a subr called from native code, each at 100000:300000
     native-bare-symbol native-keywordp native-nth native-nth-var
     native-point native-plus native-max native-symbol-name native-delq
     native-assoc native-logand native-cons native-eqlsign native-geq
+    native-purecopy native-current-buffer
 """
 import concurrent.futures
 import os

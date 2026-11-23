@@ -774,6 +774,71 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         owner: "data.c:Frecordp",
         contract_test: "word_level_entries_answer_as_gnu_does",
     },
+    NativeCFastPathContract {
+        primitive: "point",
+        owner: "editfns.c:Fpoint",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "point-min",
+        owner: "editfns.c:Fpoint_min",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "point-max",
+        owner: "editfns.c:Fpoint_max",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "following-char",
+        owner: "editfns.c:Ffollowing_char",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "preceding-char",
+        owner: "editfns.c:Fprevious_char",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "bolp",
+        owner: "editfns.c:Fbolp",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "eolp",
+        owner: "editfns.c:Feolp",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "bobp",
+        owner: "editfns.c:Fbobp",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "eobp",
+        owner: "editfns.c:Feobp",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "current-buffer",
+        owner: "buffer.c:Fcurrent_buffer",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "selected-window",
+        owner: "window.c:Fselected_window",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "selected-frame",
+        owner: "frame.c:Fselected_frame",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "purecopy",
+        owner: "alloc.c:Fpurecopy",
+        contract_test: "context_entries_agree_with_their_primitives",
+    },
 ];
 
 /// Deliberate semantic differences from GNU C require Ray's explicit approval

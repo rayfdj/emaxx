@@ -1,8 +1,11 @@
 use super::*;
 
 mod buffer_edit;
-pub(crate) use buffer_edit::{current_column, insert_string};
+pub(crate) use buffer_edit::{
+    bobp, bolp, current_column, eobp, eolp, insert_string, point, point_max, point_min,
+};
 mod buffer_meta;
+pub(crate) use buffer_meta::current_buffer;
 mod coding_systems;
 mod collections;
 pub(super) use collections::map_char_table_with;
@@ -63,6 +66,7 @@ pub(crate) use display::{
     echo_area_print_logged, echo_area_print_logged_as, echo_display_message, set_echo_area_display,
     setup_echo_area_for_printing,
 };
+pub(crate) use display::{following_char, preceding_char};
 pub(crate) use lists::{
     event_array, next_kbd_macro_event, pop_kbd_macro, recursive_edit_exit_value,
 };
