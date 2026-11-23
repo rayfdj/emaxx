@@ -3745,9 +3745,31 @@ pub(crate) fn set_window_buffer(
     keep_margins_p: bool,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    let buffer = interp.buffer_value(buffer_id).unwrap_or(Value::Nil);
+    set_window_buffer_object(
+        interp,
+        window_id,
+        (buffer_id, buffer),
+        run_hooks_p,
+        keep_margins_p,
+        env,
+    )
+}
+
+/// `set_window_buffer' of BUFFER, the object and its id: Fset_window_buffer
+/// passes the buffer it tested for liveness before `record-window-buffer'
+/// ran, and the window shows that object even when the hook killed it.
+fn set_window_buffer_object(
+    interp: &mut Interpreter,
+    window_id: u64,
+    (buffer_id, buffer): (u64, Value),
+    run_hooks_p: bool,
+    keep_margins_p: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
     // samebuf = EQ (buffer, w->contents).
     let samebuf = interp.window_record_buffer_id(window_id) == Some(buffer_id);
-    interp.show_buffer_in_window(window_id, buffer_id, keep_margins_p && samebuf);
+    interp.show_buffer_object_in_window(window_id, buffer_id, buffer, keep_margins_p && samebuf);
     if !keep_margins_p {
         // set_window_margins (w, BVAR (b, left_margin_cols), BVAR (b,
         // right_margin_cols)).
@@ -7843,7 +7865,14 @@ define_dispatch!(
                 // set_window_buffer (window, buffer, true, !NILP
                 // (keep_margins)).
                 interp.unshow_window_buffer(window_id)?;
-                set_window_buffer(interp, window_id, buffer_id, true, keep_margins, env)?;
+                set_window_buffer_object(
+                    interp,
+                    window_id,
+                    (buffer_id, Value::Buffer(buffer)),
+                    true,
+                    keep_margins,
+                    env,
+                )?;
                 Ok(Value::Nil)
             }
             "window-list" => {

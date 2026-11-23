@@ -1354,11 +1354,28 @@ impl Interpreter {
         Ok(())
     }
 
-    /// window.c set_window_buffer's window state: WINDOW_ID shows
-    /// BUFFER_ID from the buffer's last window start, with the buffer's
-    /// point; KEEP (KEEP-MARGINS on the buffer the window already shows)
-    /// leaves the start, point and hscroll alone.
+    /// `show_buffer_object_in_window' of the live buffer BUFFER_ID, by
+    /// its object.
     pub(crate) fn show_buffer_in_window(&mut self, window_id: u64, buffer_id: u64, keep: bool) {
+        let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
+        self.show_buffer_object_in_window(window_id, buffer_id, buffer, keep);
+    }
+
+    /// window.c set_window_buffer's window state: WINDOW_ID shows BUFFER,
+    /// the buffer of BUFFER_ID, from the buffer's last window start, with
+    /// the buffer's point; KEEP (KEEP-MARGINS on the buffer the window
+    /// already shows) leaves the start, point and hscroll alone.  BUFFER
+    /// is the object the caller was given: `wset_buffer (w, buffer)'
+    /// stores it whether or not Lisp run since its liveness was tested
+    /// (Fset_window_buffer's `record-window-buffer') has killed it, and a
+    /// window whose contents are a killed buffer is still a leaf.
+    pub(crate) fn show_buffer_object_in_window(
+        &mut self,
+        window_id: u64,
+        buffer_id: u64,
+        buffer: Value,
+        keep: bool,
+    ) {
         let (point_min, point_max, point) = if buffer_id == self.current_buffer_id {
             let buffer = self.buffer.borrow();
             (buffer.point_min(), buffer.point_max(), buffer.point())
@@ -1372,7 +1389,6 @@ impl Interpreter {
             .map(|buffer| buffer.last_window_start())
             .unwrap_or(1)
             .clamp(point_min, point_max);
-        let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
         if let Some(window) = self.window_ref(window_id) {
             window.ensure_slot(self, primitives::WINDOW_START_AT_LINE_BEG_SLOT);
         }

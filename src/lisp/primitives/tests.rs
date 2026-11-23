@@ -36674,6 +36674,77 @@ fn buffers_count_the_windows_showing_them() {
 }
 
 #[test]
+fn a_window_keeps_the_buffer_killed_while_it_was_being_shown() {
+    // window.c:Fset_window_buffer tests the buffer's liveness, runs
+    // `record-window-buffer', whose `buffer-list-update-hook' can kill
+    // the buffer, and then calls set_window_buffer, whose `wset_buffer
+    // (w, buffer)' stores the object it was given before Fset_buffer
+    // signals for the killed buffer.  The window is left with a killed
+    // buffer as its contents: BUFFERP, so still a leaf and a valid
+    // window, the root of its frame as before.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        let value = interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"));
+        interp.check_window_counts();
+        value
+    };
+    // FORM wrapped so that its value comes back as `%S' prints it.
+    let shown = |form: &str| format!("(format \"%S\" {form})");
+    let printed = |value: Value| string_like(&value).expect("a string").text;
+
+    let window = WindowRef::from_value(&run(&mut interp, "(setq wk-w (selected-window))"))
+        .expect("a window");
+    let height = printed(run(&mut interp, &shown("(window-total-height wk-w)")));
+    let killed = run(
+        &mut interp,
+        r#"(setq wk-b (get-buffer-create "wk-killed"))"#,
+    );
+    run(
+        &mut interp,
+        "(add-hook 'buffer-list-update-hook
+                   (lambda () (when (buffer-live-p wk-b) (kill-buffer wk-b))))",
+    );
+    // The hook kills the buffer between the liveness test and the store;
+    // Fset_buffer then signals.
+    let outcome = run(
+        &mut interp,
+        &shown(
+            "(condition-case nil (progn (set-window-buffer wk-w wk-b) 'shown) (error 'signaled))",
+        ),
+    );
+    assert_eq!(printed(outcome), "signaled");
+    run(&mut interp, "(setq buffer-list-update-hook nil)");
+    assert_eq!(
+        printed(run(&mut interp, &shown("(buffer-live-p wk-b)"))),
+        "nil"
+    );
+
+    // w->contents is the killed buffer itself.
+    assert_eq!(window.contents(), killed);
+    assert!(window.is_valid() && window.is_leaf() && !window.is_internal());
+    assert_eq!(window.live_buffer_id(&interp), None);
+    // What window.c answers for a window whose contents are not nil.
+    for (form, expected) in [
+        ("(window-valid-p wk-w)", "t"),
+        ("(window-parent wk-w)", "nil"),
+        ("(eq (frame-root-window) wk-w)", "t"),
+        ("(eq (selected-window) wk-w)", "t"),
+        ("(window-minibuffer-p wk-w)", "nil"),
+        ("(length (window-tree))", "2"),
+        ("(window-total-height wk-w)", height.as_str()),
+    ] {
+        assert_eq!(printed(run(&mut interp, &shown(form))), expected, "{form}");
+    }
+}
+
+#[test]
 fn window_contents_and_bits_say_what_a_window_is() {
     // window.h: w->contents is a leaf's buffer, an internal window's
     // first child and nil for a deleted window (WINDOW_VALID_P,
