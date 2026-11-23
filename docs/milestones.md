@@ -94,7 +94,7 @@ a diagnostic run of the locked suite on the profile-guided build.
 - D2: tramp-tests body gap: pty read timing, 2.3x string consing (round 327)
 - D3: Windows as generic records rather than GNU's struct window pseudovector
   (round 321). In progress (round 369: every access through one handle;
-  the representation is unchanged).
+  round 371: the window is its own PVEC_WINDOW object with its slots in it).
 - D4: Native code's calls into subrs cost ~65 vs 14 instructions (round 321)
 - D9: Dynamic-binding byte-code call from byte code ~80 instructions over GNU
   (rounds 289, 295)
@@ -116,7 +116,7 @@ a diagnostic run of the locked suite on the profile-guided build.
   **Done** (round 368: 0.98 and 0.71 of GNU's time on the profile-guided
   build).
 
-## M3. Fix list (54 items)
+## M3. Fix list (54 items; 1 done)
 
 Exit test: every item below is fixed, or verified against its own recorded
 cases and closed. D119's panic comes first. Instruction counts of the call and
@@ -188,6 +188,8 @@ reason.
 - D119: Found by round 363's second review outside the round: a window of the
   dumped session held by a variable of a user's dump panics window-list-1
   after th…
+  **Done** (round 371: a loaded window is a deleted window under an id of
+  its own; the dump starts and answers as GNU's).
 - D120: noninteractive is two things in GNU and one in Emaxx (round 364's
   first review): GNU's C reads a flag set once from the command line; Emaxx
   reads the …

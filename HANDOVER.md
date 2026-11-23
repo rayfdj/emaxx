@@ -113,8 +113,16 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   stage: every access to a window goes through one handle
   (`WindowRef'), with the representation, the behaviour and the counts
   unchanged (339 against 244 from byte code, 141 against 48 from native
-  code).  The stages that change the object follow; the item closes
-  when a window is GNU's `struct window' and the counts are GNU's.
+  code).  Round 371 is the second: a window is an object of its own
+  kind (tag 11, GNU's PVEC_WINDOW) with its slots in it; six accessors
+  from byte code cost 336.1 each (GNU 244.2), a native call of one
+  137.7 (GNU 48.0), one `split-window-internal' counts 129 vector cells
+  (GNU 149; 27 before).  The stages that give the object window.h's
+  fields and take the ids away follow; the item closes when a window
+  is GNU's `struct window' and the counts are GNU's.
+- **Done ahead of its milestone: D119** (M3's first item; round 371).
+  A dump made with a variable holding one of the session's windows
+  starts again, and the loaded window answers as GNU's nilled one.
 - **In progress: D17 and D25** (C calling byte code).  Round 370: a
   byte-compiled callback of `mapc' costs 413.7 instructions against
   GNU's 288.9 (was 457.7) and 19.5 ns against 13.7 (was 25.7) on the
@@ -19314,6 +19322,82 @@ setup_process_coding_systems's check now refuses). A 13-form
   runtime_ownership 3; clippy `-D warnings' and rustfmt clean; the
   round audit reports no hard finding (110 changed lines, one
   assertion added, none removed).
+- **Round 371: a window is an object of its own kind (M2, D3 and A3.5,
+  the second stage, neither closed; M3's D119 closed).**  window.h's
+  struct window is a pseudovector with its fields in it.  A window was
+  a host record whose slots were a vector beside it.  It is now a
+  vectorlike object of tag 11, GNU's PVEC_WINDOW
+  (alloc/vectors/windows.rs): the 55 slots the `WINDOW_*_SLOT'
+  constants number are the object's own Lisp words, followed by its id,
+  its owner and the number of slots it holds, which is what the
+  vector's length was (a slot past it reads as absent, a store that
+  needs it raises it).  `Kind::Window' and `Value::Window' name it,
+  `WindowRef' wraps it, `RecordKind::Window' is gone.  The collector
+  traces every slot; the sweep notes a freed window's id and its
+  interpreter drops it from the windows' registry (weak, as the
+  records' is) and the "window" type index; `type-of', `cl-type-of',
+  the printer, `equal', `value<', `sxhash', purecopy, the reader's
+  substitution, the image copier, the native runtime's checked decode
+  and the census (66 words a window, as before) answer as they did.
+  `window-live-p', `window-buffer' and `window-parameter' decode their
+  argument once and read the window's own words, where they went back
+  through its id.  **D119.**  pdumper.c writes a window with
+  dump_nilled_pseudovec, so in the process started from a dump it is a
+  window with no contents: WINDOWP holds, WINDOW_VALID_P and
+  WINDOW_LIVE_P do not, it prints as `#<window 0>'.  Emaxx's loader
+  installed the dumped window under the dumping process's id, where it
+  took the place of the loading process's own window of that id; a
+  dump made with a variable holding the session's selected, root or
+  minibuffer window then aborted the process started from it at once
+  ("window stores its owning frame", status 134; checked again on
+  round 369's build).  The dumper now writes a window under a type of
+  its own and the loader makes it, once every record of the image has
+  its id, as a deleted window under a fresh id that names nothing
+  else.  For such a dump Emaxx's output is GNU's on both streams:
+  about thirty forms on each of the three loaded windows
+  (`window-live-p', `window-buffer', `window-frame', `window-list-1',
+  `select-window', `delete-window', printing and the rest), their
+  sharing, and the new process's own windows, a test of tests/cli_parity.rs
+  that runs both editors.  **Two other differences from before, both
+  towards GNU**: `next-frame' and `previous-frame' given a MINIFRAME
+  that is a host record but no window (a mutex, say) took it for a
+  window and now take candidate_frame's last branch, which only two
+  frames on one terminal can show; and `vector-cells-consed' counts
+  the window's own 57 words where it counted the record's 6, so one
+  `split-window-internal' reads 129 against GNU's 149 (27 before).
+  **Counts**: six window accessors from byte code 336.1 instructions
+  each (341.9 before; GNU 244.2), a native call of one 137.7 (140.4;
+  GNU 48.0); the byte-code recursion (371.1), the suite's byte-code
+  calls (459.6), the `mapc' callback (413.7) and the interpreted
+  `(ignore i)' loop (2,762) are what round 370 left.  The gain is small because the accessors still pay
+  what they paid around the read (the lifted primitive's dispatch,
+  `valid_window_or_selected', `window-start', `window-point' and
+  others turning the decoded window into an id and back), and the
+  allocation still differs because the object is 58 words where GNU's
+  is 66 and the slots are not yet window.h's fields: the next stages.
+  Six tests are new (four of the object, its held slots, its tracing
+  and its collection in alloc/vectors/tests.rs, one of the loader in
+  pdumper/tests.rs, the parity test); seven that built a window record
+  by hand, matched `Kind::Record' on a window or indexed its slot
+  vector assert the same facts through `make_window', `Kind::Window'
+  and the handle.  The independent review (the one question: does the
+  round cheat or break something) read all 27 files and found neither:
+  the roots that held a window still do (a frame's four windows, the
+  selected window, the id holders), the registry was weak before too,
+  the held count maps one to one onto the old vector's length, a
+  dumped window has no outgoing reference and a loaded one cannot take
+  a live window's place, and each rewritten assertion states the same
+  fact.  Validation (gate profile, one test thread a process): the
+  grouped gate 3,535 passed, 0 failed, 2 ignored (five library tests
+  more); cli 30, cli_parity 174 (one more), ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists the
+  four assertions of the rewritten tests (the type index's, the cloned
+  interpreter's root window, the selected window's kind, a split
+  window's id), three reads of an absent slot or name as nil that are
+  the code they replace, and 1,358 changed lines with six tests and 92
+  assertions added.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -22536,6 +22620,25 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (216) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 371 and its review), outside the
+  round and in no milestone.**  One line each:
+  `lread--substitute-object-in-subtree' walks and rewrites the slots of
+  a window, as of any host record, where GNU signals `sequencep'
+  (completion.rs); the side tables of a window's sequence number and
+  cursor visibility are never purged of a freed window's id (the
+  windows' next stage moves both into the object); purecopy of a window
+  reports `record<ID> (Window, ...)' where GNU prints the object;
+  `install_record' carries a `cfg_attr(not(test), allow(dead_code))'
+  that no longer applies, the loader using it in every build; a window
+  loaded from a dump has no frame, and `split-window-internal' and
+  `format-mode-line' given one panic on the missing frame where GNU
+  dereferences nil and dies of the signal (both end the process, with
+  different statuses); the GNU-oracle assertions of two print tests
+  (`print_prunes_charset_properties_like_print_prune_string_charset',
+  `prin1_and_error_message_strings_print_into_the_hidden_prin1_buffer')
+  depend on the locale the test runs in, and
+  `process_tls_state_survives_collection_before_and_after_async_handshake'
+  fails at its oracle assertion on a loaded host.
 - **Found after the scope lock (round 368's review), outside the round
   and in no milestone.**  One line each, as the rules of
   docs/milestones.md leave them: a fixed-arity native function's cell
