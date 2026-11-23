@@ -23149,6 +23149,22 @@ ert-tests as a whole 26,307 ms against 27,211.
   passed: 3,555 library tests, the seven integration targets (217) and
   the binaries' tests (61), none failed.
 
+**On `e887f38`** (round 376): the frozen run's first attempt (run
+  45244158444) matched 7,927 of 7,928 outcomes: the one that differed
+  is `eglot-test-rust-completion-exit-function', which failed in GNU
+  with `jsonrpc-error' (the language server's answer not arriving in
+  time) and passed in Emaxx (setup 1.164, test bodies 1.017, in all
+  1.042; GNU's suite 282 s).  The one re-run the rule allows (run
+  45256044587, on the same commit) matched all 7,928 outcomes with no
+  unsuccessful execution: setup 61.5 s against 46.8 s (1.313), test
+  bodies 237.0 s against 223.6 s (1.060), in all 1.104 (GNU's suite
+  270 s).  The widest body gaps are comp-tests (12.7 s against 10.4 s),
+  tramp-tests (15.1 against 13.6), simple-tests (3.32 against 2.33),
+  process-tests (2.29 against 1.47), semantic-utest-ia (2.71 against
+  1.97) and mule-tests (1.94 against 1.35).  The Rust gate (run
+  45244153458) passed: 3,558 library tests, the seven integration
+  targets (217) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 376 and its plan), outside the
   round and in no milestone.**  One line each: debug-on-exit of a
