@@ -5228,9 +5228,10 @@ type WalkLayoutKey = (
 thread_local! {
     /// The display lines the walks of one window's redisplay lay out,
     /// while no Lisp runs between them: each walk takes the window's
-    /// lines from here rather than laying them out again.  No Lisp, so
-    /// no collection: a window that keys a layout is the one redisplay
-    /// holds, and the table is emptied before Lisp runs again.
+    /// lines from here rather than laying them out again.  A window that
+    /// keys a layout is one in redisplay's layout, which holds it for the
+    /// whole redisplay, and a key is compared by its address, never
+    /// followed.
     static WALK_LAYOUTS: std::cell::RefCell<
         Option<std::collections::HashMap<WalkLayoutKey, std::rc::Rc<ScreenLineLayout>>>,
     > = const { std::cell::RefCell::new(None) };
