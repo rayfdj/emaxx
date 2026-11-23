@@ -9,10 +9,7 @@ use crate::lisp::types::{Env, Kind, LispError, Value};
 /// A C integer variable's value in the current buffer, 0 when it holds
 /// no fixnum.
 fn int_variable(interp: &Interpreter, key: crate::lisp::types::symbols::SymbolKey) -> i64 {
-    match interp
-        .lookup_var_key(key, &Env::new())
-        .map(|value| value.kind())
-    {
+    match interp.symbol_value_key(key).map(|value| value.kind()) {
         Some(Kind::Integer(value)) => value,
         _ => 0,
     }

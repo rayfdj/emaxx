@@ -709,17 +709,13 @@ pub(crate) fn scroll_margin_lines(
 }
 
 /// The selected window's scroll margin in lines, for commands.
-pub(crate) fn selected_scroll_margin(
-    interp: &Interpreter,
-    env: &Env,
-    window_lines: usize,
-) -> usize {
+pub(crate) fn selected_scroll_margin(interp: &Interpreter, window_lines: usize) -> usize {
     let scroll_margin = interp
-        .lookup_var_key(cached_symbol!("scroll-margin"), env)
+        .symbol_value_key(cached_symbol!("scroll-margin"))
         .and_then(|value| value.integer_value())
         .unwrap_or(0);
     let maximum = interp
-        .lookup_var_key(cached_symbol!("maximum-scroll-margin"), env)
+        .symbol_value_key(cached_symbol!("maximum-scroll-margin"))
         .unwrap_or(Value::Nil);
     scroll_margin_lines(scroll_margin, maximum, window_lines)
 }
@@ -761,7 +757,7 @@ pub(crate) fn recenter_selected_window(
         // which redisplay then considers whole.
         if redisplay
             && interp
-                .lookup_var_key(cached_symbol!("recenter-redisplay"), env)
+                .symbol_value_key(cached_symbol!("recenter-redisplay"))
                 .is_some_and(|value| value.is_truthy())
         {
             // redraw_frame: fset_redisplay (f).
@@ -775,7 +771,7 @@ pub(crate) fn recenter_selected_window(
         iarg = prefix_numeric_value(&arg)?.as_integer()?;
     }
     let ht = text_height.max(1) as i64;
-    let margin = selected_scroll_margin(interp, env, text_height) as i64;
+    let margin = selected_scroll_margin(interp, text_height) as i64;
     let point = interp.buffer.borrow().point();
     // The display code is not used for initial frames, whose data
     // structures may not be set up yet, nor for a buffer with very long
@@ -1026,7 +1022,7 @@ pub(crate) fn window_scroll(
     let long_lines = interp.buffer.borrow().long_line_optimizations_p();
     let mut long_lines_truncated = long_lines
         && interp
-            .lookup_var_key(cached_symbol!("truncate-lines"), env)
+            .symbol_value_key(cached_symbol!("truncate-lines"))
             .is_some_and(|value| !value.is_nil());
     let count = interp.specpdl_index();
     let n = n.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
@@ -1035,7 +1031,7 @@ pub(crate) fn window_scroll(
     let total_cols = window_char_geometry(interp, window_id).0;
     if long_lines && !long_lines_truncated && total_cols < interp.frame_width() {
         let partial = interp
-            .lookup_var_key(cached_symbol!("truncate-partial-width-windows"), env)
+            .symbol_value_key(cached_symbol!("truncate-partial-width-windows"))
             .unwrap_or(Value::Nil);
         if !partial.is_nil() {
             // XFIXNAT of a fixnum, a negative one included.
@@ -1046,7 +1042,7 @@ pub(crate) fn window_scroll(
         }
     }
     let fast = interp
-        .lookup_var_key(cached_symbol!("fast-but-imprecise-scrolling"), env)
+        .symbol_value_key(cached_symbol!("fast-but-imprecise-scrolling"))
         .is_some_and(|value| !value.is_nil());
     if whole && (fast || long_lines_truncated) {
         interp.specbind_symbol(
@@ -1098,7 +1094,7 @@ fn window_scroll_for_long_lines(
     };
     let mut startpos = interp.selected_window_start();
     let nscls = interp
-        .lookup_var_key(cached_symbol!("next-screen-context-lines"), env)
+        .symbol_value_key(cached_symbol!("next-screen-context-lines"))
         .and_then(|value| value.integer_value())
         .unwrap_or(2)
         .clamp(0, 1_000_000);
@@ -1199,20 +1195,20 @@ fn window_scroll_line_based(
     let mut n = n;
     if whole {
         let nscls = interp
-            .lookup_var_key(cached_symbol!("next-screen-context-lines"), env)
+            .symbol_value_key(cached_symbol!("next-screen-context-lines"))
             .and_then(|value| value.integer_value())
             .unwrap_or(2)
             .clamp(0, 1_000_000);
         n = n.saturating_mul((ht - nscls).max(1));
     }
     let preserve = interp
-        .lookup_var_key(cached_symbol!("scroll-preserve-screen-position"), env)
+        .symbol_value_key(cached_symbol!("scroll-preserve-screen-position"))
         .unwrap_or(Value::Nil);
     let mut original = (0i64, 0i64);
     if preserve.is_truthy() {
         let (hpos, vpos) = SCROLL_PRESERVE.with(|cell| cell.get());
         let last_command = interp
-            .lookup_var_key(cached_symbol!("last-command"), env)
+            .symbol_value_key(cached_symbol!("last-command"))
             .unwrap_or(Value::Nil);
         let scroll_command = matches!(last_command.kind(), Kind::Symbol(_) | Kind::Nil | Kind::T)
             && super::dispatch::call(
@@ -1266,7 +1262,7 @@ fn window_scroll_line_based(
             Err(signal_condition("end-of-buffer"))
         };
     }
-    let margin = selected_scroll_margin(interp, env, text_height) as i64;
+    let margin = selected_scroll_margin(interp, text_height) as i64;
     set_window_start_marker(interp, window_id, pos);
     set_window_flag(interp, window_id, WINDOW_START_AT_LINE_BEG_SLOT, bolp);
     interp.wset_update_mode_line(window_id);

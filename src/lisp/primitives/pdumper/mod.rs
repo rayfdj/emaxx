@@ -31,7 +31,7 @@ pub(crate) fn dump_emacs_portable(
 ) -> Result<Value, LispError> {
     // eassert (initialized): a primitive only runs in an initialized image.
     if !interp
-        .lookup_var_key(cached_symbol!("noninteractive"), env)
+        .symbol_value_key(cached_symbol!("noninteractive"))
         .is_some_and(|value| value.is_truthy())
     {
         return Err(LispError::Signal(

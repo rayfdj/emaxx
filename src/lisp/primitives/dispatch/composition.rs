@@ -306,7 +306,7 @@ fn composition_codes(
 
 /// composite.c's width of a key element: XFIXNUM of it into an int, TAB
 /// one column, else CHARACTER_WIDTH.
-fn component_width(interp: &Interpreter, env: &Env, component: &Value) -> i64 {
+fn component_width(interp: &Interpreter, component: &Value) -> i64 {
     let code = match component.kind() {
         Kind::Integer(code) => code as i32,
         _ => 0,
@@ -316,24 +316,24 @@ fn component_width(interp: &Interpreter, env: &Env, component: &Value) -> i64 {
     }
     // A negative code is a control character to CHARACTER_WIDTH.
     let code = u32::try_from(code).unwrap_or(0);
-    crate::lisp::primitives::character_width(interp, code, env) as i64
+    crate::lisp::primitives::character_width(interp, code) as i64
 }
 
 /// get_composition_id's width of a rule-based composition of KEY over
 /// its GLYPH_LEN glyphs; the loop bound is GNU's GLYPH_LEN, not the
 /// key's length.
-fn rule_composition_width(interp: &Interpreter, env: &Env, key: &[Value], glyph_len: usize) -> i64 {
+fn rule_composition_width(interp: &Interpreter, key: &[Value], glyph_len: usize) -> i64 {
     let mut leftmost = 0.0_f64;
-    let mut rightmost =
-        key.first()
-            .map_or(0, |component| component_width(interp, env, component)) as f64;
+    let mut rightmost = key
+        .first()
+        .map_or(0, |component| component_width(interp, component)) as f64;
     let mut index = 1;
     while index < glyph_len {
         let rule = match key[index].kind() {
             Kind::Integer(rule) => rule as i32,
             _ => 0,
         };
-        let this_width = component_width(interp, env, &key[index + 1]) as f64;
+        let this_width = component_width(interp, &key[index + 1]) as f64;
         // COMPOSITION_DECODE_REFS.
         let rule = rule & 0xFF;
         let mut global_reference = rule / 12;
@@ -401,7 +401,6 @@ fn lookup_composition(
 /// the key the table holds.  None for an invalid composition.
 fn get_composition_id(
     interp: &mut Interpreter,
-    env: &Env,
     charpos: usize,
     nchars: usize,
     prop: Value,
@@ -475,11 +474,11 @@ fn get_composition_id(
         Kind::Nil | Kind::Integer(_) | Kind::StringObject(_)
     );
     let width = if rule_based {
-        rule_composition_width(interp, env, &key_items, key_items.len().div_ceil(2))
+        rule_composition_width(interp, &key_items, key_items.len().div_ceil(2))
     } else {
         key_items
             .iter()
-            .map(|component| component_width(interp, env, component))
+            .map(|component| component_width(interp, component))
             .fold(0, i64::max)
     };
     interp
@@ -510,15 +509,13 @@ impl StringCompositions {
     pub(crate) fn at(
         &self,
         interp: &mut Interpreter,
-        env: &Env,
         string: &Value,
         position: usize,
     ) -> Result<Option<(usize, usize)>, LispError> {
         let Some((_, end, prop)) = find_composition(interp, position, None, string)? else {
             return Ok(None);
         };
-        let Some(id) = get_composition_id(interp, env, position, end - position, prop, string)?
-        else {
+        let Some(id) = get_composition_id(interp, position, end - position, prop, string)? else {
             return Ok(None);
         };
         Ok(Some((
@@ -599,7 +596,6 @@ impl CompositionIterator {
     pub(crate) fn compute_stop_pos(
         &mut self,
         interp: &Interpreter,
-        env: &Env,
         mut charpos: usize,
         mut endpos: usize,
     ) {
@@ -625,7 +621,7 @@ impl CompositionIterator {
             endpos = start;
             self.ch = -1;
         }
-        if !interp.buffer.borrow().is_multibyte() || inhibit_auto_composition(interp, env) {
+        if !interp.buffer.borrow().is_multibyte() || inhibit_auto_composition(interp) {
             return;
         }
         let start = charpos;
@@ -639,7 +635,7 @@ impl CompositionIterator {
                 self.ch = -2;
                 break;
             }
-            for (ridx, rule) in composition_rules_for_char(interp, env, c)
+            for (ridx, rule) in composition_rules_for_char(interp, c)
                 .into_iter()
                 .enumerate()
             {
@@ -683,7 +679,7 @@ impl CompositionIterator {
         endpos: usize,
     ) -> bool {
         if self.ch == -2 {
-            self.compute_stop_pos(interp, env, charpos, endpos);
+            self.compute_stop_pos(interp, charpos, endpos);
             if self.ch == -2 || self.stop_pos != charpos {
                 return false;
             }
@@ -694,8 +690,7 @@ impl CompositionIterator {
                 find_composition(interp, charpos, None, &Value::Nil)
             {
                 let nchars = end - start;
-                if let Ok(Some(id)) =
-                    get_composition_id(interp, env, charpos, nchars, prop, &Value::Nil)
+                if let Ok(Some(id)) = get_composition_id(interp, charpos, nchars, prop, &Value::Nil)
                 {
                     self.current = Some(CompositionStep::Static {
                         nchars,
@@ -709,7 +704,7 @@ impl CompositionIterator {
             && let Some(c) = char::from_u32(self.ch as u32)
         {
             let mut lgstring = Value::Nil;
-            for rule in composition_rules_for_char(interp, env, c)
+            for rule in composition_rules_for_char(interp, c)
                 .into_iter()
                 .skip(self.rule_idx)
             {
@@ -764,7 +759,7 @@ impl CompositionIterator {
         } else {
             charpos - 1
         };
-        self.compute_stop_pos(interp, env, next, endpos);
+        self.compute_stop_pos(interp, next, endpos);
         false
     }
 
@@ -772,7 +767,7 @@ impl CompositionIterator {
     /// to step over -- a static composition whole, an automatic one a
     /// glyph cluster (the glyphs from FROM sharing its first character) at
     /// a time, its width that of the characters it covers.
-    pub(crate) fn update(&mut self, interp: &Interpreter, env: &Env) {
+    pub(crate) fn update(&mut self, interp: &Interpreter) {
         match &mut self.current {
             Some(CompositionStep::Static { nchars, width }) => {
                 self.nchars = *nchars;
@@ -811,7 +806,7 @@ impl CompositionIterator {
                 self.nchars = (lglyph(*from, 1) + 1).saturating_sub(cluster);
                 self.width = (0..self.nchars)
                     .filter_map(|i| header.get(cluster + i + 1).and_then(|c| c.integer_value()))
-                    .map(|c| crate::lisp::primitives::character_width(interp, c as u32, env) as i64)
+                    .map(|c| crate::lisp::primitives::character_width(interp, c as u32) as i64)
                     .sum();
             }
             None => {}
@@ -821,13 +816,7 @@ impl CompositionIterator {
     /// After stepping over what update delivered: past the end of the
     /// composition (cmp_it.to == cmp_it.nglyphs) the next stop position is
     /// looked for from CHARPOS; else the next glyph cluster follows.
-    pub(crate) fn advance(
-        &mut self,
-        interp: &Interpreter,
-        env: &Env,
-        charpos: usize,
-        endpos: usize,
-    ) {
+    pub(crate) fn advance(&mut self, interp: &Interpreter, charpos: usize, endpos: usize) {
         let finished = match &mut self.current {
             Some(CompositionStep::Automatic {
                 nglyphs, from, to, ..
@@ -839,7 +828,7 @@ impl CompositionIterator {
         };
         if finished {
             self.current = None;
-            self.compute_stop_pos(interp, env, charpos, endpos);
+            self.compute_stop_pos(interp, charpos, endpos);
         }
     }
 }
@@ -1088,10 +1077,9 @@ pub(crate) fn update_compositions(
 
 fn char_table_id_from_var(
     interp: &Interpreter,
-    env: &Env,
     name: crate::lisp::types::symbols::SymbolKey,
 ) -> Option<crate::lisp::types::CharTableRef> {
-    match (interp.lookup_var_key(name, env)?).kind() {
+    match (interp.symbol_value_key(name)?).kind() {
         Kind::CharTable(id) => Some(id),
         _ => None,
     }
@@ -1102,7 +1090,7 @@ fn char_table_id_from_var(
 /// range, and Zs carved back in.  `unicode-category-table' stores the raw
 /// fixnum encoding of `enum unicode_category' (character.h); every
 /// composable category sorts at or before Zs, index 23.
-fn char_composable_p(interp: &Interpreter, env: &Env, c: char) -> bool {
+fn char_composable_p(interp: &Interpreter, c: char) -> bool {
     const ZERO_WIDTH_NON_JOINER: u32 = 0x200C;
     const ZERO_WIDTH_JOINER: u32 = 0x200D;
     const TAG_SPACE: u32 = 0xE0020;
@@ -1114,7 +1102,7 @@ fn char_composable_p(interp: &Interpreter, env: &Env, c: char) -> bool {
             || c == ZERO_WIDTH_JOINER
             || (TAG_SPACE..=CANCEL_TAG).contains(&c)
             || matches!(
-                char_table_id_from_var(interp, env, cached_symbol!("unicode-category-table"))
+                char_table_id_from_var(interp, cached_symbol!("unicode-category-table"))
                     .and_then(|id| interp.char_table_get(id, c)).map(|v| v.kind()),
                 Some(Kind::Integer(category)) if category <= UNICODE_CATEGORY_ZS
             ))
@@ -1123,8 +1111,8 @@ fn char_composable_p(interp: &Interpreter, env: &Env, c: char) -> bool {
 /// composite.c `inhibit_auto_composition': `auto-composition-mode' nil
 /// turns automatic composition off entirely; a string value turns it off
 /// only on the terminal type it names.
-fn inhibit_auto_composition(interp: &Interpreter, env: &Env) -> bool {
-    let Some(mode) = interp.lookup_var_key(cached_symbol!("auto-composition-mode"), env) else {
+fn inhibit_auto_composition(interp: &Interpreter) -> bool {
+    let Some(mode) = interp.symbol_value_key(cached_symbol!("auto-composition-mode")) else {
         return true;
     };
     if mode.is_nil() {
@@ -1149,9 +1137,9 @@ fn target_char_at(interp: &Interpreter, string: &Value, pos: usize) -> Option<ch
 /// `composition-function-table' holds, per character, a list of
 /// [PATTERN LOOKBACK FUNC] rules.  The C walks only a proper cons chain
 /// (`for (...; CONSP (val); val = XCDR (val))'); a bare vector is ignored.
-fn composition_rules_for_char(interp: &Interpreter, env: &Env, c: char) -> Vec<Value> {
+fn composition_rules_for_char(interp: &Interpreter, c: char) -> Vec<Value> {
     let Some(table_id) =
-        char_table_id_from_var(interp, env, cached_symbol!("composition-function-table"))
+        char_table_id_from_var(interp, cached_symbol!("composition-function-table"))
     else {
         return Vec::new();
     };
@@ -1234,7 +1222,6 @@ fn autocmp_chars_inner(
     // otherwise `auto-composition-function' composes them.
     let lgstring = get_glyph_string(
         interp,
-        env,
         &[
             Value::Integer(charpos as i64),
             Value::Integer(to as i64),
@@ -1250,7 +1237,7 @@ fn autocmp_chars_inner(
         return Ok(lgstring);
     }
     let function = interp
-        .lookup_var_key(cached_symbol!("auto-composition-function"), env)
+        .symbol_value_key(cached_symbol!("auto-composition-function"))
         .unwrap_or(Value::Nil);
     let call = interp.call_function_value(
         function,
@@ -1339,7 +1326,7 @@ fn find_automatic_composition(
     let mut cur = pos;
     loop {
         let composable =
-            target_char_at(interp, string, cur).is_some_and(|c| char_composable_p(interp, env, c));
+            target_char_at(interp, string, cur).is_some_and(|c| char_composable_p(interp, c));
         if !composable && limit_value <= pos {
             // Case (1): rewind to the previous composable character.
             loop {
@@ -1347,8 +1334,7 @@ fn find_automatic_composition(
                     return Ok(None);
                 }
                 cur -= 1;
-                if target_char_at(interp, string, cur)
-                    .is_some_and(|c| char_composable_p(interp, env, c))
+                if target_char_at(interp, string, cur).is_some_and(|c| char_composable_p(interp, c))
                 {
                     break;
                 }
@@ -1362,7 +1348,7 @@ fn find_automatic_composition(
                 let prev = cur;
                 cur -= 1;
                 if !target_char_at(interp, string, cur)
-                    .is_some_and(|c| char_composable_p(interp, env, c))
+                    .is_some_and(|c| char_composable_p(interp, c))
                 {
                     cur = prev;
                     break;
@@ -1378,7 +1364,7 @@ fn find_automatic_composition(
                 break;
             };
             let mut advanced = false;
-            for rule in composition_rules_for_char(interp, env, c) {
+            for rule in composition_rules_for_char(interp, c) {
                 let Ok(items) = vector_items(&rule) else {
                     continue;
                 };
@@ -1492,7 +1478,7 @@ pub(crate) fn composition_adjust_point(
         }
         return Ok(new_pt);
     }
-    if !interp.buffer.borrow().is_multibyte() || inhibit_auto_composition(interp, env) {
+    if !interp.buffer.borrow().is_multibyte() || inhibit_auto_composition(interp) {
         return Ok(new_pt);
     }
     // Next check the automatic composition.
@@ -1584,7 +1570,7 @@ fn find_composition_internal(
             string_like(&string).is_some_and(|text| text.multibyte)
         };
         if multibyte
-            && !inhibit_auto_composition(interp, env)
+            && !inhibit_auto_composition(interp)
             && let Some(found) = find_automatic_composition(interp, env, position, limit, &string)?
         {
             return Ok(Value::list([
@@ -1623,7 +1609,7 @@ fn find_composition_internal(
     }
     let id = match prop.cons_values().map(|(head, _)| head.kind()) {
         Some(Kind::Integer(id)) => usize::try_from(id).ok(),
-        _ => get_composition_id(interp, env, start, end - start, prop, &string)?,
+        _ => get_composition_id(interp, start, end - start, prop, &string)?,
     };
     let Some(state) = id.and_then(|id| interp.composition_states.get(id)).cloned() else {
         return Ok(Value::list(range));
@@ -1673,7 +1659,7 @@ fn fill_gstring_header(interp: &mut Interpreter, font_object: Value, codes: &[i6
 /// composite.c fill_gstring_body: a glyph of each character of GSTRING's
 /// header, the glyph vectors it holds reused, with no font a character's
 /// `char-width-table' width; the slots after them nil.
-fn fill_gstring_body(interp: &Interpreter, env: &Env, gstring: &Value, codes: &[i64]) {
+fn fill_gstring_body(interp: &Interpreter, gstring: &Value, codes: &[i64]) {
     let slots = vector_items(gstring).unwrap_or_default();
     for (i, code) in codes.iter().enumerate() {
         let mut glyph = slots.get(i + 2).copied().unwrap_or(Value::Nil);
@@ -1681,7 +1667,7 @@ fn fill_gstring_body(interp: &Interpreter, env: &Env, gstring: &Value, codes: &[
             glyph = nil_vector(10);
             aset(gstring, i + 2, glyph);
         }
-        let width = char_table_id_from_var(interp, env, cached_symbol!("char-width-table"))
+        let width = char_table_id_from_var(interp, cached_symbol!("char-width-table"))
             .and_then(|id| interp.char_table_get(id, *code as u32))
             .and_then(|value| value.integer_value())
             .unwrap_or(0);
@@ -1773,11 +1759,7 @@ pub(super) fn gstring_put_cache(
 /// its terminal's coding system): the one cached for that header, else
 /// gstring_work refilled -- the same vector each time, its glyph vectors
 /// reused, enlarged only when the characters outgrow it.
-fn get_glyph_string(
-    interp: &mut Interpreter,
-    env: &Env,
-    args: &[Value],
-) -> Result<Value, LispError> {
+fn get_glyph_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
     let font = terminal_font(interp, &args[2])?;
     let codes: Vec<i64> = if args[3].is_nil() {
         // composite.c: a unibyte buffer cannot be shaped, checked before
@@ -1821,7 +1803,7 @@ fn get_glyph_string(
     interp.gstrings.work = Some(work);
     aset(&work, 0, header);
     aset(&work, 1, Value::Nil);
-    fill_gstring_body(interp, env, &work, &codes);
+    fill_gstring_body(interp, &work, &codes);
     Ok(work)
 }
 
@@ -1886,7 +1868,7 @@ define_dispatch!(
             }
             "composition-get-gstring" => {
                 need_args(name, args, 4)?;
-                get_glyph_string(interp, env, args)
+                get_glyph_string(interp, args)
             }
             "composition-sort-rules" => {
                 need_args(name, args, 1)?;

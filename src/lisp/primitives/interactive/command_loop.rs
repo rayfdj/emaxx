@@ -106,14 +106,13 @@ pub(crate) fn command_loop(interp: &mut Interpreter, env: &mut Env) -> Result<Va
     interp.command_loops_entered += 1;
     let mut message = "Back to top level";
     let result = loop {
-        interp.set_variable_key(
+        interp.set_symbol_value_key(
             cached_symbol!("internal--top-level-message"),
             Value::string(message),
-            env,
         );
         match command_loop_body(interp, env) {
             Err(error) if is_c_stack_overflow_exit(&error) => {
-                init_eval_after_overflow(interp, env);
+                init_eval_after_overflow(interp);
                 message = "Re-entering top level after C stack overflow";
             }
             result => break result,
@@ -139,15 +138,14 @@ fn is_c_stack_overflow_exit(error: &LispError) -> bool {
 /// drop the outer recursive edits' entries too, so that their unbind_to
 /// later walks below the specpdl's start; there are none at the top
 /// level.)
-fn init_eval_after_overflow(interp: &mut Interpreter, env: &mut Env) {
+fn init_eval_after_overflow(interp: &mut Interpreter) {
     interp.c_stack_overflow_exit = false;
     interp.take_pending_termination();
     interp.clear_quit_flag_in_place();
     interp.clear_debug_on_next_call();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("internal-when-entered-debugger"),
         Value::Integer(-1),
-        env,
     );
 }
 
@@ -170,7 +168,7 @@ fn command_loop_body(interp: &mut Interpreter, env: &mut Env) -> Result<Value, L
         interp.executing_kbd_macro = false;
         // End of file in -batch run causes exit here.
         if interp
-            .forwarded_c_value("noninteractive", &Env::new())
+            .forwarded_c_value("noninteractive")
             .is_some_and(|value| value.is_truthy())
         {
             super::call(interp, "kill-emacs", &[Value::T, Value::Nil], env)?;
@@ -230,12 +228,10 @@ fn internal_catch(
 /// top level, which says it is back there when run again), its error
 /// reported by cmd_error; without one, that standard Lisp is missing.
 pub(crate) fn top_level_1(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
-    let form = interp
-        .forwarded_c_value("top-level", &Env::new())
-        .unwrap_or(Value::Nil);
+    let form = interp.forwarded_c_value("top-level").unwrap_or(Value::Nil);
     if form.is_nil() {
         let purify = interp
-            .forwarded_c_value("purify-flag", &Env::new())
+            .forwarded_c_value("purify-flag")
             .unwrap_or(Value::Nil);
         let message = if purify.is_nil() {
             "Bare Emacs (standard Lisp code not loaded)"
@@ -332,7 +328,7 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         // If minibuffer on and echo area in use, wait a short time and
         // redraw minibuffer.
         minibuffer_message_timeout(interp, env)?;
-        clear_this_command(interp, env);
+        clear_this_command(interp);
         // Read next key sequence; i gets its length.
         init_raw_keybuf_count(interp);
         let read =
@@ -349,7 +345,7 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         drop(read);
         // A filter may have run while we were reading the input.
         select_window_buffer(interp)?;
-        increment_num_input_keys(interp, env);
+        increment_num_input_keys(interp);
         // End of file -- happens only in a kbd macro, at the end.
         if end_of_input {
             return Ok(());
@@ -364,14 +360,14 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
             }
             continue;
         }
-        interp.set_variable_key(cached_symbol!("last-command-event"), roots[2], env);
+        interp.set_symbol_value_key(cached_symbol!("last-command-event"), roots[2]);
         if interp
-            .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+            .symbol_value_key(cached_symbol!("executing-kbd-macro"))
             .is_some_and(|value| value.is_truthy())
             && !interp.quit_flag_is_nil()
         {
             // Will return since macro now empty.
-            interp.set_variable_key(cached_symbol!("executing-kbd-macro"), Value::T, env);
+            interp.set_symbol_value_key(cached_symbol!("executing-kbd-macro"), Value::T);
             interp.maybe_quit(env)?;
         }
         // Do redisplay processing after this command except in special
@@ -380,19 +376,19 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         let prev_modiff = interp.buffer.borrow().modified_tick();
         let last_point_position = interp.buffer.borrow().point();
         carried = Some((prev_buffer, prev_modiff, last_point_position));
-        interp.set_variable_key(cached_symbol!("disable-point-adjustment"), Value::Nil, env);
+        interp.set_symbol_value_key(cached_symbol!("disable-point-adjustment"), Value::Nil);
         // Process filters and timers may have messed with
         // deactivate-mark; reset it before we execute the command.
         interp.set_c_variable("deactivate-mark", Value::Nil);
         // Remap command through active keymaps.
-        interp.set_variable_key(cached_symbol!("this-original-command"), roots[0], env);
+        interp.set_symbol_value_key(cached_symbol!("this-original-command"), roots[0]);
         if !roots[1].is_nil() {
             roots[0] = roots[1];
         }
         let cmd = roots[0];
         record_command_lossage(interp, cmd);
-        interp.set_variable_key(cached_symbol!("this-command"), cmd, env);
-        interp.set_variable_key(cached_symbol!("real-this-command"), cmd, env);
+        interp.set_symbol_value_key(cached_symbol!("this-command"), cmd);
+        interp.set_symbol_value_key(cached_symbol!("real-this-command"), cmd);
         drop(roots);
         crate::lisp::primitives::safe_run_hooks_maybe_narrowed(
             interp,
@@ -400,7 +396,7 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
             env,
         )?;
         let this_command = interp
-            .lookup_var_key(cached_symbol!("this-command"), env)
+            .symbol_value_key(cached_symbol!("this-command"))
             .unwrap_or(Value::Nil);
         if this_command.is_nil() {
             // nil means key is undefined.
@@ -418,9 +414,9 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
             )?;
         }
         let current_prefix_arg = interp
-            .lookup_var_key(cached_symbol!("current-prefix-arg"), env)
+            .symbol_value_key(cached_symbol!("current-prefix-arg"))
             .unwrap_or(Value::Nil);
-        interp.set_variable_key(cached_symbol!("last-prefix-arg"), current_prefix_arg, env);
+        interp.set_symbol_value_key(cached_symbol!("last-prefix-arg"), current_prefix_arg);
         crate::lisp::primitives::safe_run_hooks_maybe_narrowed(
             interp,
             &cached_symbol!("post-command-hook").symbol(),
@@ -433,7 +429,7 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         }
         // If there are warnings queued up, issue them.
         if interp
-            .lookup_var_key(cached_symbol!("delayed-warnings-list"), env)
+            .symbol_value_key(cached_symbol!("delayed-warnings-list"))
             .is_some_and(|value| value.is_truthy())
         {
             crate::lisp::primitives::safe_run_hooks(
@@ -443,22 +439,19 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
             )?;
         }
         let this_command = interp
-            .lookup_var_key(cached_symbol!("this-command"), env)
+            .symbol_value_key(cached_symbol!("this-command"))
             .unwrap_or(Value::Nil);
         let real_this_command = interp
-            .lookup_var_key(cached_symbol!("real-this-command"), env)
+            .symbol_value_key(cached_symbol!("real-this-command"))
             .unwrap_or(Value::Nil);
-        interp.set_variable_key(cached_symbol!("last-command"), this_command, env);
-        interp.set_variable_key(cached_symbol!("real-last-command"), real_this_command, env);
+        interp.set_symbol_value_key(cached_symbol!("last-command"), this_command);
+        interp.set_symbol_value_key(cached_symbol!("real-last-command"), real_this_command);
         let last_command_event = interp
-            .lookup_var_key(cached_symbol!("last-command-event"), env)
+            .symbol_value_key(cached_symbol!("last-command-event"))
             .unwrap_or(Value::Nil);
         if !last_command_event.is_cons() {
-            interp.set_variable_key(
-                cached_symbol!("last-repeatable-command"),
-                real_this_command,
-                env,
-            );
+            interp
+                .set_symbol_value_key(cached_symbol!("last-repeatable-command"), real_this_command);
         }
         clear_command_keys(interp);
         echo_after_command(interp, env)?;
@@ -486,15 +479,14 @@ pub(crate) fn select_window_buffer(interp: &mut Interpreter) -> Result<(), LispE
 }
 
 /// keyboard.c's ++num_input_keys after each key sequence read.
-fn increment_num_input_keys(interp: &mut Interpreter, env: &mut Env) {
+fn increment_num_input_keys(interp: &mut Interpreter) {
     let count = interp
-        .lookup_var_key(cached_symbol!("num-input-keys"), env)
+        .symbol_value_key(cached_symbol!("num-input-keys"))
         .and_then(|value| value.integer_value())
         .unwrap_or(0);
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("num-input-keys"),
         Value::Integer(count.saturating_add(1)),
-        env,
     );
 }
 
@@ -518,19 +510,18 @@ fn update_mark_after_command(
     prev_modiff: crate::buffer::ModCount,
 ) -> Result<(), LispError> {
     let transient = interp
-        .lookup_var_key(cached_symbol!("transient-mark-mode"), env)
+        .symbol_value_key(cached_symbol!("transient-mark-mode"))
         .unwrap_or(Value::Nil);
     if crate::lisp::types::eq_symbol_named(transient, "identity") {
-        interp.set_variable_key(cached_symbol!("transient-mark-mode"), Value::Nil, env);
+        interp.set_symbol_value_key(cached_symbol!("transient-mark-mode"), Value::Nil);
     } else if crate::lisp::types::eq_symbol_named(transient, "only") {
-        interp.set_variable_key(
+        interp.set_symbol_value_key(
             cached_symbol!("transient-mark-mode"),
             Value::symbol("identity"),
-            env,
         );
     }
     let deactivate = interp
-        .lookup_var_key(cached_symbol!("deactivate-mark"), env)
+        .symbol_value_key(cached_symbol!("deactivate-mark"))
         .is_some_and(|value| value.is_truthy());
     if deactivate {
         // With `select-active-regions', `deactivate-mark' also sets the
@@ -553,7 +544,7 @@ fn update_mark_after_command(
             )?;
         }
     }
-    interp.set_variable_key(cached_symbol!("saved-region-selection"), Value::Nil, env);
+    interp.set_symbol_value_key(cached_symbol!("saved-region-selection"), Value::Nil);
     Ok(())
 }
 
@@ -565,13 +556,13 @@ fn update_mark_after_command(
 /// `selection-inhibit-update-commands'; `post-select-region-hook' sees
 /// the text.
 fn set_primary_from_region(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
-    let truthy = |interp: &Interpreter, env: &Env, name: &str| {
+    let truthy = |interp: &Interpreter, name: &str| {
         interp
-            .lookup_var(name, env)
+            .symbol_value(name)
             .is_some_and(|value| value.is_truthy())
     };
     let window_system = super::call(interp, "window-system", &[Value::Nil], env)?;
-    let terminal_can_select = truthy(interp, env, "tty-select-active-regions")
+    let terminal_can_select = truthy(interp, "tty-select-active-regions")
         && super::call(
             interp,
             "terminal-parameter",
@@ -589,10 +580,10 @@ fn set_primary_from_region(interp: &mut Interpreter, env: &mut Env) -> Result<()
         return Ok(());
     }
     let select = interp
-        .lookup_var("select-active-regions", env)
+        .symbol_value("select-active-regions")
         .unwrap_or(Value::Nil);
     let transient = interp
-        .lookup_var_key(cached_symbol!("transient-mark-mode"), env)
+        .symbol_value_key(cached_symbol!("transient-mark-mode"))
         .unwrap_or(Value::Nil);
     let wanted = if crate::lisp::types::eq_symbol_named(select, "only") {
         transient
@@ -602,16 +593,16 @@ fn set_primary_from_region(interp: &mut Interpreter, env: &mut Env) -> Result<()
         select.is_truthy() && transient.is_truthy()
     };
     let this_command = interp
-        .lookup_var_key(cached_symbol!("this-command"), env)
+        .symbol_value_key(cached_symbol!("this-command"))
         .unwrap_or(Value::Nil);
     let inhibit = interp
-        .lookup_var("selection-inhibit-update-commands", env)
+        .symbol_value("selection-inhibit-update-commands")
         .unwrap_or(Value::Nil);
     if !wanted || super::call(interp, "memq", &[this_command, inhibit], env)?.is_truthy() {
         return Ok(());
     }
     let extract = interp
-        .lookup_var("region-extract-function", env)
+        .symbol_value("region-extract-function")
         .unwrap_or(Value::Nil);
     let txt = interp.call_function_value(extract, None, &[Value::Nil], env)?;
     let roots = [txt];
@@ -658,13 +649,13 @@ fn finalize_command(
     {
         let (begv, zv) = interp.buffer.borrow().accessible_bounds();
         if !interp
-            .lookup_var_key(cached_symbol!("disable-point-adjustment"), env)
+            .symbol_value_key(cached_symbol!("disable-point-adjustment"))
             .is_some_and(|value| value.is_truthy())
             && !interp
-                .lookup_var_key(cached_symbol!("global-disable-point-adjustment"), env)
+                .symbol_value_key(cached_symbol!("global-disable-point-adjustment"))
                 .is_some_and(|value| value.is_truthy())
             && !interp
-                .lookup_var("composition-break-at-point", env)
+                .symbol_value("composition-break-at-point")
                 .is_some_and(|value| value.is_truthy())
         {
             // The last point was set within a grapheme cluster to prevent
@@ -700,10 +691,10 @@ fn finalize_command(
         }
     }
     let defining = interp
-        .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("defining-kbd-macro"))
         .is_some_and(|value| value.is_truthy());
     let prefix_arg = interp
-        .lookup_var_key(cached_symbol!("prefix-arg"), env)
+        .symbol_value_key(cached_symbol!("prefix-arg"))
         .unwrap_or(Value::Nil);
     if defining && prefix_arg.is_nil() {
         interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
@@ -813,7 +804,7 @@ fn adjust_point_for_property(
         let pt = point(interp);
         if check_invisible && pt > begv && pt < zv {
             let spec = interp
-                .lookup_var_key(cached_symbol!("buffer-invisibility-spec"), env)
+                .symbol_value_key(cached_symbol!("buffer-invisibility-spec"))
                 .unwrap_or(Value::Nil);
             let mut ellipsis = false;
             let mut beg = pt;

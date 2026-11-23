@@ -3513,7 +3513,7 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             let value = pop!();
             let buffer = pop!();
             let show = interp
-                .lookup_var_key(cached_symbol!("temp-buffer-show-function"), env)
+                .symbol_value_key(cached_symbol!("temp-buffer-show-function"))
                 .unwrap_or(Value::Nil);
             interp.with_lisp_stack_roots(&value, |interp| {
                 if show.is_truthy() {
@@ -5202,13 +5202,13 @@ mod tests {
                 doomed.push(callee.closure_ref().expect("a closure").identity() ^ HIDE);
             }
             kept = Value::cons(closure(code, ones), kept);
-            interp.set_variable("emaxx-test-kept-closures", kept, env);
+            interp.set_symbol_value_cell("emaxx-test-kept-closures", kept);
             doomed
         }
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         let code = eval(&mut interp, &mut env, "(unibyte-string 192 135)");
-        interp.set_variable("emaxx-test-code", code, &mut env);
+        interp.set_symbol_value_cell("emaxx-test-code", code);
         let doomed = call_doomed(&mut interp, &mut env, code);
         crate::lisp::alloc::clobber_stack();
         crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)

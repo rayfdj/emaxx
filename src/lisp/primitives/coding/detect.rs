@@ -261,9 +261,9 @@ impl Categories {
     }
 }
 
-fn latin_extra_code_table(interp: &Interpreter, env: &Env) -> Option<Vec<Value>> {
+fn latin_extra_code_table(interp: &Interpreter) -> Option<Vec<Value>> {
     interp
-        .lookup_var_key(cached_symbol!("latin-extra-code-table"), env)
+        .symbol_value_key(cached_symbol!("latin-extra-code-table"))
         .and_then(|table| vector_items(&table).ok())
 }
 
@@ -274,13 +274,9 @@ fn latin_extra_code(table: &Option<Vec<Value>>, c: i32) -> bool {
         .is_some_and(Value::is_truthy)
 }
 
-fn truthy_var(
-    interp: &Interpreter,
-    name: crate::lisp::types::symbols::SymbolKey,
-    env: &Env,
-) -> bool {
+fn truthy_var(interp: &Interpreter, name: crate::lisp::types::symbols::SymbolKey) -> bool {
     interp
-        .lookup_var_key(name, env)
+        .symbol_value_key(name)
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -1071,7 +1067,7 @@ struct UndecidedSpec {
     prefer_utf_8: bool,
 }
 
-fn undecided_spec(interp: &Interpreter, coding: &str, env: &Env) -> UndecidedSpec {
+fn undecided_spec(interp: &Interpreter, coding: &str) -> UndecidedSpec {
     let args = interp
         .coding_system(coding)
         .map(|state| state.type_args.clone())
@@ -1079,11 +1075,11 @@ fn undecided_spec(interp: &Interpreter, coding: &str, env: &Env) -> UndecidedSpe
     UndecidedSpec {
         inhibit_nbd: inhibit_flag(
             args.first(),
-            truthy_var(interp, cached_symbol!("inhibit-null-byte-detection"), env),
+            truthy_var(interp, cached_symbol!("inhibit-null-byte-detection")),
         ),
         inhibit_ied: inhibit_flag(
             args.get(1),
-            truthy_var(interp, cached_symbol!("inhibit-iso-escape-detection"), env),
+            truthy_var(interp, cached_symbol!("inhibit-iso-escape-detection")),
         ),
         prefer_utf_8: args.get(2).is_some_and(Value::is_truthy),
     }
@@ -1106,18 +1102,17 @@ struct Detector<'a> {
 }
 
 impl<'a> Detector<'a> {
-    fn new(interp: &'a Interpreter, env: &'a Env) -> Self {
+    fn new(interp: &'a Interpreter) -> Self {
         let categories = Categories::new(interp);
         let iso = IsoCategories::new(interp, &categories);
         Detector {
             interp,
             categories,
             iso,
-            latin_extra: latin_extra_code_table(interp, env),
+            latin_extra: latin_extra_code_table(interp),
             inhibit_iso_escape_detection: truthy_var(
                 interp,
                 cached_symbol!("inhibit-iso-escape-detection"),
-                env,
             ),
         }
     }
@@ -1394,7 +1389,6 @@ pub(crate) fn detect_coding_system(
     src: &DetectSource,
     highest: bool,
     coding_system: Option<&str>,
-    env: &Env,
 ) -> Vec<String> {
     let requested = coding_system.unwrap_or("undecided");
     let canonical = interp
@@ -1405,7 +1399,7 @@ pub(crate) fn detect_coding_system(
         .as_ref()
         .map_or(CODING_CATEGORY_UNDECIDED, |state| state.category);
     let requested_eol = interp.coding_system_eol_type_value(&canonical);
-    let detector = Detector::new(interp, env);
+    let detector = Detector::new(interp);
     let categories = &detector.categories;
     let mut info = DetectInfo::default();
     let mut null_byte_found = false;
@@ -1413,7 +1407,7 @@ pub(crate) fn detect_coding_system(
     let mut val: Vec<(usize, String)> = Vec::new();
 
     if base_category == CODING_CATEGORY_UNDECIDED {
-        let spec = undecided_spec(interp, &canonical, env);
+        let spec = undecided_spec(interp, &canonical);
         let (head_ascii, null, eight_bit_found, _) =
             detector.head_scan(src, &spec, &mut info, false);
         null_byte_found = null;
@@ -1629,9 +1623,8 @@ pub(crate) fn detect_coding(
     interp: &Interpreter,
     src: &DetectSource,
     coding: &str,
-    env: &Env,
 ) -> Option<String> {
-    detect_coding_outcome(interp, src, coding, env).found
+    detect_coding_outcome(interp, src, coding).found
 }
 
 /// check_ascii's eol bits over the ASCII head of SRC: only LF when
@@ -1664,7 +1657,6 @@ pub(crate) fn detect_coding_outcome(
     interp: &Interpreter,
     src: &DetectSource,
     coding: &str,
-    env: &Env,
 ) -> DetectOutcome {
     let canonical = interp
         .coding_system_canonical_name(coding)
@@ -1672,7 +1664,7 @@ pub(crate) fn detect_coding_outcome(
     let Some(state) = interp.coding_system(&canonical) else {
         return DetectOutcome::default();
     };
-    let detector = Detector::new(interp, env);
+    let detector = Detector::new(interp);
     let categories = &detector.categories;
     match state.kind.as_str() {
         "undecided" => {}
@@ -1680,7 +1672,7 @@ pub(crate) fn detect_coding_outcome(
             // An auto-BOM utf-8: the BOM decides between the pair, after
             // check_ascii (whose eol bits the gap's fast path uses).
             let mut info = DetectInfo::default();
-            let inhibit = truthy_var(interp, cached_symbol!("inhibit-eol-conversion"), env)
+            let inhibit = truthy_var(interp, cached_symbol!("inhibit-eol-conversion"))
                 || interp.coding_system_eol_type_value(&canonical).is_some();
             let mut outcome = DetectOutcome {
                 eol_seen: Some(check_ascii_eol(src, inhibit)),
@@ -1739,10 +1731,10 @@ pub(crate) fn detect_coding_outcome(
         }
         _ => return DetectOutcome::default(),
     }
-    let spec = undecided_spec(interp, &canonical, env);
+    let spec = undecided_spec(interp, &canonical);
     let mut info = DetectInfo::default();
-    let track_eol = !truthy_var(interp, cached_symbol!("disable-ascii-optimization"), env)
-        && !truthy_var(interp, cached_symbol!("inhibit-eol-conversion"), env);
+    let track_eol = !truthy_var(interp, cached_symbol!("disable-ascii-optimization"))
+        && !truthy_var(interp, cached_symbol!("inhibit-eol-conversion"));
     let (head_ascii, null_byte_found, eight_bit_found, eol_seen) =
         detector.head_scan(src, &spec, &mut info, track_eol);
     let found = (|| {

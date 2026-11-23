@@ -97,10 +97,10 @@ define_dispatch!(
             "sqlite-rollback" => sqlite_rollback(interp, args),
             "sqlite-load-extension" => sqlite_load_extension(interp, args, env),
             "sqlite-next" => sqlite_next(interp, args, env),
-            "sqlite-columns" => sqlite_columns(interp, args, env),
+            "sqlite-columns" => sqlite_columns(interp, args),
             "sqlite-more-p" => sqlite_more_p(interp, args),
             "sqlite-finalize" => sqlite_finalize(interp, args),
-            "sqlite-version" => sqlite_version(interp, args, env),
+            "sqlite-version" => sqlite_version(interp, args),
             "sqlitep" => sqlitep(interp, args),
             "sqlite-pragma" => sqlite_pragma(interp, args),
             "sqlite-available-p" => sqlite_available_p(args),
@@ -128,10 +128,10 @@ fn sqlite_signal(condition: &str, data: Value) -> LispError {
 
 /// build_string: a C string's bytes, multibyte when they are multibyte
 /// text (make_string).
-fn build_string(interp: &mut Interpreter, env: &Env, bytes: &[u8]) -> Result<Value, LispError> {
+fn build_string(interp: &mut Interpreter, bytes: &[u8]) -> Result<Value, LispError> {
     StringObjectRef::from_c_bytes(bytes)
         .map(Value::StringObject)
-        .map_err(|error| string_storage_error(interp, env, error))
+        .map_err(|error| string_storage_error(interp, error))
 }
 
 /// The bytes of a C string SQLite returned; none for a null pointer.
@@ -148,10 +148,10 @@ unsafe fn c_bytes<'a>(pointer: *const c_char) -> &'a [u8] {
 }
 
 /// sqlite3_errmsg (DB) as build_string makes it.
-fn errmsg(interp: &mut Interpreter, env: &Env, db: *mut ffi::sqlite3) -> Result<Value, LispError> {
+fn errmsg(interp: &mut Interpreter, db: *mut ffi::sqlite3) -> Result<Value, LispError> {
     // SAFETY: DB is an open connection; its message lives until its next
     // call, and is copied here.
-    build_string(interp, env, unsafe { c_bytes(ffi::sqlite3_errmsg(db)) })
+    build_string(interp, unsafe { c_bytes(ffi::sqlite3_errmsg(db)) })
 }
 
 /// BYTES as a C string: up to their first NUL, terminated.
@@ -265,7 +265,7 @@ fn sqlite_open(
         // ENCODE_FILE (Fexpand_file_name (file, Qnil)).
         let expanded =
             super::primitives::call(interp, "expand-file-name", std::slice::from_ref(&file), env)?;
-        crate::lisp::primitives::encode_file_name(interp, env, &string_text(&expanded)?)?
+        crate::lisp::primitives::encode_file_name(interp, &string_text(&expanded)?)?
     } else {
         // In-memory databases have to have different names to refer to
         // different databases.
@@ -469,7 +469,6 @@ fn row_to_value(
 /// sqlite_prepare_errdata: (ERRSTR ERRMSG ERRCODE EXTENDED-ERRCODE).
 fn sqlite_prepare_errdata(
     interp: &mut Interpreter,
-    env: &Env,
     code: c_int,
     sdb: *mut ffi::sqlite3,
 ) -> Result<Value, LispError> {
@@ -479,9 +478,9 @@ fn sqlite_prepare_errdata(
         let lerrmsg = if message.is_null() {
             Value::Nil
         } else {
-            build_string(interp, env, c_bytes(message))?
+            build_string(interp, c_bytes(message))?
         };
-        let errstr = build_string(interp, env, c_bytes(ffi::sqlite3_errstr(code)))?;
+        let errstr = build_string(interp, c_bytes(ffi::sqlite3_errstr(code)))?;
         let ext_errcode = Value::Integer(i64::from(ffi::sqlite3_extended_errcode(sdb)));
         Ok(Value::list([
             errstr,
@@ -525,13 +524,13 @@ fn sqlite_execute(
             // SAFETY: finalizing what the failed prepare left, if anything.
             unsafe { ffi::sqlite3_finalize(stmt) };
             stmt = ptr::null_mut();
-            break 'exit sqlite_prepare_errdata(interp, env, ret, sdb)?;
+            break 'exit sqlite_prepare_errdata(interp, ret, sdb)?;
         }
         // Bind ? values.
         if !values.is_nil() {
             match bind_values(interp, env, sdb, stmt, &values) {
                 Ok(None) => {}
-                Ok(Some(error)) => break 'exit build_string(interp, env, &error)?,
+                Ok(Some(error)) => break 'exit build_string(interp, &error)?,
                 Err(error) => {
                     // SAFETY: the statement prepared above, finalized once.
                     unsafe { ffi::sqlite3_finalize(stmt) };
@@ -566,7 +565,7 @@ fn sqlite_execute(
             unsafe { ffi::sqlite3_finalize(stmt) };
             return Ok(rows);
         }
-        errmsg(interp, env, sdb)?
+        errmsg(interp, sdb)?
     };
     // SAFETY: the statement prepared above, or null.
     unsafe { ffi::sqlite3_finalize(stmt) };
@@ -581,7 +580,6 @@ fn sqlite_execute(
 /// column_names: STMT's column names, a list of strings.
 fn column_names(
     interp: &mut Interpreter,
-    env: &Env,
     stmt: *mut ffi::sqlite3_stmt,
 ) -> Result<Value, LispError> {
     // SAFETY: STMT is a prepared statement (or null, with no columns).
@@ -591,7 +589,6 @@ fn column_names(
         for i in 0..count {
             columns.push(build_string(
                 interp,
-                env,
                 c_bytes(ffi::sqlite3_column_name(stmt, i)),
             )?);
         }
@@ -632,7 +629,7 @@ fn sqlite_select(
     if ret != ffi::SQLITE_OK {
         // SAFETY: finalizing what the failed prepare left, if anything.
         unsafe { ffi::sqlite3_finalize(stmt) };
-        let errmsg = sqlite_prepare_errdata(interp, env, ret, sdb)?;
+        let errmsg = sqlite_prepare_errdata(interp, ret, sdb)?;
         return Err(sqlite_signal("sqlite-error", errmsg));
     }
     // Query with parameters.
@@ -647,10 +644,7 @@ fn sqlite_select(
             // SAFETY: the statement prepared above, finalized once.
             unsafe { ffi::sqlite3_finalize(stmt) };
             let error = error?;
-            return Err(sqlite_signal(
-                "sqlite-error",
-                build_string(interp, env, &error)?,
-            ));
+            return Err(sqlite_signal("sqlite-error", build_string(interp, &error)?));
         }
     }
     // Return a handle to get the data.
@@ -681,7 +675,7 @@ fn sqlite_select(
         }
         if crate::lisp::types::eq_symbol_named(return_type, "full") {
             Ok(Value::cons(
-                column_names(interp, env, stmt)?,
+                column_names(interp, stmt)?,
                 Value::list(std::mem::take(&mut data)),
             ))
         } else {
@@ -815,10 +809,7 @@ fn sqlite_next(
     // SAFETY: the set's live statement.
     let ret = unsafe { ffi::sqlite3_step(checked.stmt) };
     if ret != ffi::SQLITE_ROW && ret != ffi::SQLITE_OK && ret != ffi::SQLITE_DONE {
-        return Err(sqlite_signal(
-            "sqlite-error",
-            errmsg(interp, env, checked.db)?,
-        ));
+        return Err(sqlite_signal("sqlite-error", errmsg(interp, checked.db)?));
     }
     if ret == ffi::SQLITE_DONE {
         if let Some(state) = set_state(interp, &args[0]) {
@@ -829,14 +820,10 @@ fn sqlite_next(
     row_to_value(interp, env, checked.stmt)
 }
 
-fn sqlite_columns(
-    interp: &mut Interpreter,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
+fn sqlite_columns(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
     need_args("sqlite-columns", args, 1, 1)?;
     let checked = check_sqlite(interp, &args[0], true)?;
-    column_names(interp, env, checked.stmt)
+    column_names(interp, checked.stmt)
 }
 
 fn sqlite_more_p(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
@@ -862,14 +849,10 @@ fn sqlite_finalize(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Li
     Ok(Value::T)
 }
 
-fn sqlite_version(
-    interp: &mut Interpreter,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
+fn sqlite_version(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
     need_args("sqlite-version", args, 0, 0)?;
     // SAFETY: sqlite3_libversion returns a static string.
-    build_string(interp, env, unsafe { c_bytes(ffi::sqlite3_libversion()) })
+    build_string(interp, unsafe { c_bytes(ffi::sqlite3_libversion()) })
 }
 
 fn sqlitep(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {

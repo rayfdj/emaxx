@@ -104,7 +104,7 @@ impl Interpreter {
         // Past `undo-outer-limit' by the first boundary, the function is
         // offered the list.
         let outer = self
-            .lookup_var_key(cached_symbol!("undo-outer-limit"), env)
+            .symbol_value_key(cached_symbol!("undo-outer-limit"))
             .unwrap_or(Value::Nil);
         let past_outer = match outer.kind() {
             Kind::Integer(limit) => limit < size,
@@ -115,7 +115,7 @@ impl Interpreter {
             _ => false,
         };
         let function = self
-            .lookup_var_key(cached_symbol!("undo-outer-limit-function"), env)
+            .symbol_value_key(cached_symbol!("undo-outer-limit-function"))
             .unwrap_or(Value::Nil);
         if past_outer && !function.is_nil() {
             let handled = self.call_function_value(function, None, &[Value::Integer(size)], env)?;
@@ -126,7 +126,7 @@ impl Interpreter {
         let mut last_boundary = if next.is_cons() { prev } else { Value::Nil };
         let limit_of = |interp: &Self, name: crate::lisp::types::symbols::SymbolKey| {
             interp
-                .lookup_var_key(name, env)
+                .symbol_value_key(name)
                 .and_then(|value| value.integer_value())
                 .unwrap_or(0)
         };

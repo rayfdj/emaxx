@@ -178,7 +178,7 @@ pub(super) fn openp_search(
                 }
             } else {
                 // lread.c openp: the candidate ENCODE_FILE'd for the host.
-                let host = host_file_name(interp, env, &text)?;
+                let host = host_file_name(interp, &text)?;
                 let opened = if let Some(mask) = mask {
                     locate_file_access_probe(mask, &host).map(|()| None)
                 } else {

@@ -697,7 +697,7 @@ mod tests {
         fn nested(interpreter: &mut Interpreter) -> Result<Value, LispError> {
             let mut local = vec![Value::list([Value::Integer(11)])];
             let table = interpreter
-                .lookup_var("continuation-table", &Env::new())
+                .symbol_value("continuation-table")
                 .expect("weak table");
             crate::lisp::primitives::call(
                 interpreter,
@@ -711,7 +711,7 @@ mod tests {
             assert_eq!(local.as_ptr(), address);
             local.push(
                 interpreter
-                    .lookup_var("continuation-write", &Env::new())
+                    .symbol_value("continuation-write")
                     .expect("parent write"),
             );
             interpreter.with_lisp_stack_roots(&local, suspend)?;

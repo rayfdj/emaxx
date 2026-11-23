@@ -504,7 +504,7 @@ define_dispatch!(
                 }
                 if args.first().is_none_or(Value::is_nil) {
                     return Ok(interp
-                        .lookup_var_key(cached_symbol!("user-login-name"), env)
+                        .symbol_value_key(cached_symbol!("user-login-name"))
                         .unwrap_or_else(|| {
                             Value::String(
                                 current_user_login_name()
@@ -521,7 +521,7 @@ define_dispatch!(
             "user-real-login-name" => {
                 need_args(name, args, 0)?;
                 Ok(interp
-                    .lookup_var_key(cached_symbol!("user-real-login-name"), env)
+                    .symbol_value_key(cached_symbol!("user-real-login-name"))
                     .unwrap_or_else(|| {
                         Value::String(
                             current_real_user_login_name()
@@ -542,7 +542,7 @@ define_dispatch!(
                 }
                 let Some(requested) = args.first().filter(|value| !value.is_nil()) else {
                     return Ok(interp
-                        .lookup_var_key(cached_symbol!("user-full-name"), env)
+                        .symbol_value_key(cached_symbol!("user-full-name"))
                         .unwrap_or_else(|| {
                             Value::String(
                                 current_user_full_name()
@@ -633,15 +633,15 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let last_nonmenu_event = interp
-                    .lookup_var_key(cached_symbol!("last-nonmenu-event"), env)
+                    .symbol_value_key(cached_symbol!("last-nonmenu-event"))
                     .unwrap_or(Value::Nil);
                 let event_allows = last_nonmenu_event.is_nil()
                     || matches!(last_nonmenu_event.kind(), Kind::Cons(_));
                 let use_dialog = interp
-                    .lookup_var_key(cached_symbol!("use-dialog-box"), env)
+                    .symbol_value_key(cached_symbol!("use-dialog-box"))
                     .is_some_and(|value| value.is_truthy());
                 let use_file_dialog = interp
-                    .lookup_var_key(cached_symbol!("use-file-dialog"), env)
+                    .symbol_value_key(cached_symbol!("use-file-dialog"))
                     .is_some_and(|value| value.is_truthy());
                 let window_system =
                     crate::lisp::primitives::call(interp, "window-system", &[], env)?.is_truthy();
@@ -790,7 +790,7 @@ define_dispatch!(
                     }
                     index += 1;
                 }
-                hash_table_from_test(interp, env, descriptor, capacity, weak, purecopy)
+                hash_table_from_test(interp, descriptor, capacity, weak, purecopy)
             }
             "hash-table-p" => {
                 need_args(name, args, 1)?;
@@ -936,7 +936,7 @@ define_dispatch!(
             }
             "profiler-memory-start" => {
                 need_args(name, args, 0)?;
-                crate::lisp::primitives::profiler::profiler_memory_start(interp, env)
+                crate::lisp::primitives::profiler::profiler_memory_start(interp)
             }
             "profiler-memory-stop" => {
                 need_args(name, args, 0)?;
@@ -952,7 +952,7 @@ define_dispatch!(
             }
             "profiler-cpu-start" => {
                 need_args(name, args, 1)?;
-                crate::lisp::primitives::profiler::profiler_cpu_start(interp, args[0], env)
+                crate::lisp::primitives::profiler::profiler_cpu_start(interp, args[0])
             }
             "profiler-cpu-stop" => {
                 need_args(name, args, 0)?;
@@ -1244,7 +1244,7 @@ define_dispatch!(
                 };
                 StringObjectRef::from_storage(quoted, characters, multibyte)
                     .map(Value::StringObject)
-                    .map_err(|error| string_storage_error(interp, env, error))
+                    .map_err(|error| string_storage_error(interp, error))
             }
             "kill-all-local-variables" => {
                 need_arg_range(name, args, 0, 1)?;

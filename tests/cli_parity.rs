@@ -11098,3 +11098,1967 @@ fn a_restart_leaves_buffered_output_unwritten() {
     );
     assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
 }
+
+#[test]
+fn printed_text_reaches_its_output_as_the_walk_goes() {
+    // print.c writes while it walks: printchar hands the output a character
+    // and strout a block.  A function printed to is called where the walk
+    // stands, `print-unreadable-function' finds everything before its
+    // object written (on stdout, where it owes a message its newline; a
+    // buffer holds nothing before print_finish), an error in the middle of
+    // a print leaves what was written before it, and what Lisp changes
+    // meanwhile (the print variables, the object) is what the printer reads
+    // next: a list's first element after its parenthesis, a quoted object
+    // after the quote, a buffer's name after `#<buffer ', a label's table
+    // entry after its `=', a string's intervals after its text, a hash
+    // table's entries after `#s(hash-table', a symbol's name for each
+    // character, the string `princ' prints for each character with the
+    // sizes read at the start.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "walk-order.el",
+            r##";;; -*- lexical-binding: t -*-
+;; A function printed to is called where the walk stands, and
+;; `print-unreadable-function' finds everything before it written.
+(let* ((log nil)
+       (print-unreadable-function (lambda (_o _e) (push 'unreadable log) "R")))
+  (prin1 (list 1 "ab" (current-buffer) 'sym 2.5 [x "y"] (make-bool-vector 3 t))
+         (lambda (c) (push c log)))
+  (princ (format "%S\n" (reverse log))))
+;; What is on stdout when `print-unreadable-function' runs owes the
+;; message its newline.
+(let ((print-unreadable-function (lambda (_o _e) (message "in the middle") nil)))
+  (prin1 (list 1 (make-marker) 2))
+  (terpri))
+(let ((print-unreadable-function (lambda (_o _e) (message "at the start") nil)))
+  (prin1 (make-marker))
+  (terpri))
+(let ((print-unreadable-function (lambda (_o _e) (message "princ") "str")))
+  (princ (list "a" (make-marker) "b"))
+  (terpri))
+;; A buffer printed to holds nothing before print_finish.
+(with-temp-buffer
+  (let* ((seen nil)
+         (print-unreadable-function
+          (lambda (o _e) (push (buffer-string) seen) nil)))
+    (insert "old")
+    (prin1 (list 1 (current-buffer) 2 (make-marker)) (current-buffer))
+    (princ (format "%S %S\n" seen (buffer-string)))))"##,
+        ),
+        (
+            "walk-errors.el",
+            r##";;; -*- lexical-binding: t -*-
+;; An error in the middle of a print leaves what was written before it.
+(princ (format " -> %S\n"
+  (condition-case err
+      (let ((print-unreadable-function (lambda (_o _e) (error "stop"))))
+        (prin1 (list 'a "b" 3 (make-marker) 'never)))
+    (error err))))
+(princ (format " -> %S\n"
+  (condition-case err
+      (let ((n 0))
+        (prin1 '(a b c d) (lambda (c) (setq n (1+ n)) (when (= n 4) (error "fourth")) (write-char c))))
+    (error err))))
+;; Into a buffer nothing is inserted: print_finish is not reached.
+(with-temp-buffer
+  (princ (format "%S %S\n"
+    (condition-case err
+        (let ((print-unreadable-function (lambda (_o _e) (error "stop"))))
+          (prin1 (list 'a (make-marker)) (current-buffer)))
+      (error err))
+    (buffer-string))))
+;; The depth limit is reached after its two hundred parentheses.
+(let ((deep nil))
+  (dotimes (_ 250) (setq deep (list deep)))
+  (princ (format "\n -> %S\n" (condition-case err (prin1 deep) (error err)))))
+;; A throw out of the function printed to.
+(princ (format " -> %S\n"
+  (catch 'done
+    (prin1 '(1 2 3) (lambda (c) (write-char c) (when (= c ?2) (throw 'done 'thrown)))))))
+(message "end")"##,
+        ),
+        (
+            "walk-uncaught.el",
+            r##"(let ((print-unreadable-function (lambda (_o _e) (error "stop"))))
+  (prin1 (list 'a "b" 3 (make-marker) 'never)))"##,
+        ),
+        (
+            "walk-variables.el",
+            r##";;; -*- lexical-binding: t -*-
+;; The print variables are read where the printer needs them, after what
+;; it wrote before.
+(defun show (form) (princ (format "%S\n" form)))
+(show (let ((out nil) (print-length nil))
+        (prin1 '((1 2 3 4) (1 2 3 4) (1 2 3 4))
+               (lambda (c) (push c out) (when (eq c ?3) (setq print-length 2))))
+        (concat (reverse out))))
+(show (let ((out nil) (print-level nil))
+        (prin1 '(1 (2 (3 (4))) (5 (6 (7))))
+               (lambda (c) (push c out) (when (eq c ?4) (setq print-level 2))))
+        (concat (reverse out))))
+(show (let ((out nil) (print-quoted t))
+        (prin1 '('a 'b #'c) (lambda (c) (push c out) (when (eq c ?a) (setq print-quoted nil))))
+        (concat (reverse out))))
+(show (let ((out nil) (print-escape-newlines nil))
+        (prin1 "a\nb\nc" (lambda (c) (push c out) (when (eq c ?b) (setq print-escape-newlines t))))
+        (concat (reverse out))))
+(show (let ((out nil) (print-escape-control-characters nil))
+        (prin1 "a\1b\2c" (lambda (c) (push c out) (when (eq c ?b) (setq print-escape-control-characters t))))
+        (concat (reverse out))))
+(show (let ((out nil) (print-escape-multibyte nil))
+        (prin1 "a\u00e9b\u00e9c" (lambda (c) (push c out) (when (eq c ?b) (setq print-escape-multibyte t))))
+        (concat (reverse out))))
+(show (let ((out nil) (print-gensym nil))
+        (prin1 (list (make-symbol "g") (make-symbol "h")) (lambda (c) (push c out) (when (eq c ?g) (setq print-gensym t))))
+        (concat (reverse out))))
+(show (let ((out nil) (print-integers-as-characters nil))
+        (prin1 '(97 98 99) (lambda (c) (push c out) (when (eq c ?7) (setq print-integers-as-characters t))))
+        (concat (reverse out))))
+(show (let ((out nil) (float-output-format nil))
+        (prin1 '(1.5 2.5) (lambda (c) (push c out) (when (eq c ?1) (setq float-output-format "%.3f"))))
+        (concat (reverse out))))
+(show (let ((out nil) (print-circle nil) (x (list 1)))
+        (prin1 (list x x) (lambda (c) (push c out)))
+        (concat (reverse out))))
+(show (let* ((out nil) (print-unreadable-function nil) (m (make-marker)))
+        (prin1 (list m m) (lambda (c) (push c out)
+                            (when (eq c ?>) (setq print-unreadable-function (lambda (_o _e) "U")))))
+        (concat (reverse out))))
+;; And the objects: a vector's slots, a hash table's entries, a marker's
+;; buffer, a bool vector's bits.
+(show (let ((out nil) (v (vector 1 2 3)))
+        (prin1 v (lambda (c) (push c out) (when (eq c ?1) (aset v 2 'z))))
+        (concat (reverse out))))
+(show (let ((out nil) (l (list 1 2 3)))
+        (prin1 l (lambda (c) (push c out) (when (eq c ?1) (setcdr l '(x . y)))))
+        (concat (reverse out))))
+(show (let ((out nil) (b (make-bool-vector 16 nil)))
+        (prin1 b (lambda (c) (push c out) (when (eq c ?&) (aset b 0 t) (aset b 6 t) (aset b 8 t) (aset b 14 t))))
+        (concat (reverse out))))
+(show (with-temp-buffer
+        (let ((out nil) (m (point-marker)))
+          (prin1 m (lambda (c) (push c out) (when (eq c ?<) (set-marker m nil))))
+          (concat (reverse out)))))"##,
+        ),
+        (
+            "walk-objects.el",
+            r##";;; -*- lexical-binding: t -*-
+;; What a function printed to changes in the object is what the walk
+;; reads next.
+(defun show (form) (princ (format "%S\n" form)))
+(show (let ((l (list 'a 'b 'c)) (acc nil))
+        (prin1 l (lambda (c) (push c acc) (when (= c ?\() (setcar l 'z))))
+        (concat (nreverse acc))))
+(show (let ((l (list 'quote 'b)) (acc nil))
+        (prin1 l (lambda (c) (push c acc) (when (= c ?\') (setcar (cdr l) 'y))))
+        (concat (nreverse acc))))
+(show (let ((l (list 'function 'b)) (acc nil))
+        (prin1 l (lambda (c) (push c acc) (when (= c ?\') (setcar (cdr l) 'y))))
+        (concat (nreverse acc))))
+(show (let ((acc nil) (b (generate-new-buffer "bufname")))
+        (prin1 b (lambda (c) (push c acc) (when (= c ?<) (with-current-buffer b (rename-buffer "other")))))
+        (concat (nreverse acc))))
+(show (let ((print-circle t) (x (list 1)) (acc nil))
+        (prin1 (list x x x) (lambda (c) (push c acc) (when (= c ?=) (clrhash print-number-table))))
+        (concat (nreverse acc))))
+(show (let ((s (propertize "abcd" 'k 'v)) (acc nil) (print-charset-text-property t))
+        (prin1 s (lambda (c) (push c acc) (when (= c ?b) (set-text-properties 0 4 nil s))))
+        (concat (nreverse acc))))
+(show (let ((s (propertize "abcd" 'k 'v)) (acc nil))
+        (prin1 s (lambda (c) (push c acc) (when (= c ?b) (set-text-properties 0 4 nil s))))
+        (concat (nreverse acc))))
+(show (let ((acc nil) (h (make-hash-table)))
+        (puthash 'a 1 h) (puthash 'b 2 h)
+        (prin1 h (lambda (c) (push c acc) (when (= c ?#) (puthash 'c 3 h))))
+        (concat (nreverse acc))))
+(show (let ((acc nil) (s (make-symbol "abcdef")))
+        (prin1 s (lambda (c) (push c acc) (when (= c ?b) (aset (symbol-name s) 3 ?Z))))
+        (concat (nreverse acc))))
+(show (let ((s (make-symbol "abc"))) (aset (symbol-name s) 0 ?X) (prin1-to-string s)))
+;; `princ' reads its string again for each character, with the sizes it
+;; read at the start; `prin1' reads a copy, unless
+;; `print-charset-text-property' is t.
+(show (let ((s (copy-sequence "a\u00e9bcdef")) (acc nil))
+        (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 1 ?x))))
+        (nreverse acc)))
+(show (let ((s (copy-sequence "abcdef")) (out nil))
+        (prin1 s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+        (concat (reverse out))))
+(show (let ((s (copy-sequence "abcdef")) (out nil) (print-charset-text-property t))
+        (prin1 s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+        (concat (reverse out))))
+(show (let ((s (copy-sequence "a\u00e9bcdef")) (out nil) (print-charset-text-property t))
+        (prin1 s (lambda (c) (push c out) (when (eq c ?b) (aset s 1 ?x))))
+        (reverse out)))
+;; A string found in `print-number-table' is a strout of its data as it
+;; is: a unibyte one's bytes on stdout, each handed to a function as the
+;; C char it is.
+(let ((print-circle t) (print-continuous-numbering t)
+      (print-number-table (make-hash-table :test 'eq)) (y "str"))
+  (puthash y (string-to-unibyte "\351") print-number-table)
+  (prin1 (list y))
+  (prin1 (list y) (lambda (c) (princ (format " %d" c))))
+  (puthash y "multi\u00e9" print-number-table)
+  (prin1 (list y))
+  (prin1 (list y) (lambda (c) (princ (format " %d" c))))
+  (with-temp-buffer (prin1 (list y) (current-buffer)) (princ (format " %S" (append (buffer-string) nil))))
+  (terpri))"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[test]
+fn a_print_into_a_buffer_inside_another_shares_the_print_buffer() {
+    // print.c's print_buffer is one static.  A print into a buffer run from
+    // inside another (by `print-unreadable-function': `prin1-to-string',
+    // `format' with %S, `error-message-string', a print into a temporary
+    // buffer) sets the outer text aside, and print_unwind copies it back
+    // over what the inner print left but leaves `pos' and `pos_byte' where
+    // that print ended, so the outer print goes on from there.  A print to
+    // a function or to stdout leaves it alone, Fprinc's print_string of a
+    // plain string leaves the depth of a print under way alone too, and the
+    // print stack entries of an inner print left by an error are the outer
+    // print's to finish.  Of a multibyte text set aside print_unwind copies
+    // as many bytes as it had characters, and what the outer print then
+    // holds is counted as the inner print left it.  `print-level' is
+    // compared as any fixnum.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "nested.el",
+        r##";;; -*- lexical-binding: t -*-
+;; print.c's print_buffer is one static: a print into a buffer run from
+;; inside another sets the outer text aside, and print_unwind copies it
+;; back but leaves `pos' where the inner print ended.
+(defun show (form) (princ (format "%S\n" form)))
+(show (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'zz))))
+        (prin1-to-string (list 1 2 (current-buffer) 3))))
+(show (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'zz) nil)))
+        (prin1-to-string (list 1 2 (get-buffer-create "pb364") 3))))
+(show (let ((print-unreadable-function (lambda (_o _e) (format "%S" 'q))))
+        (prin1-to-string (list 1 2 (current-buffer) 3 4 5))))
+(show (let ((print-unreadable-function
+             (lambda (_o _e) (with-temp-buffer (prin1 'abcdefgh (current-buffer)) "R"))))
+        (prin1-to-string (list 1 2 (current-buffer) 3 4 5))))
+(show (let ((print-unreadable-function
+             (lambda (_o _e) (with-temp-buffer (prin1 'ab (current-buffer)) "R"))))
+        (with-temp-buffer
+          (prin1 (list 1 2 (current-buffer) 3 4 5) (current-buffer))
+          (buffer-string))))
+;; An inner print longer than the outer text so far.
+(show (let ((print-unreadable-function
+             (lambda (_o _e) (prin1-to-string '(a long inner list of symbols)) nil)))
+        (prin1-to-string (list 1 (make-marker) 2))))
+;; An inner print of nothing: `pos' is zero.
+(show (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string (intern "")) nil)))
+        (prin1-to-string (list 1 2 (make-marker) 3))))
+(show (let ((print-unreadable-function (lambda (_o _e) (with-temp-buffer (princ "" (current-buffer))) nil)))
+        (prin1-to-string (list 1 2 (make-marker) 3))))
+;; Multibyte text set aside: print_unwind copies as many bytes as it
+;; had characters, and `pos' stays the inner print's, so what the outer
+;; print inserts is counted a character a byte.
+(show (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'abcdef) nil)))
+        (prin1-to-string (list "\u00e9\u00e9\u00e9\u00e9" (make-marker) 3))))
+(show (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'abcdef) nil)))
+        (format "%S" (list "\u00e9\u00e9\u00e9\u00e9" (make-marker) 3))))
+(show (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'abcdefghijklmnopq) nil)))
+        (prin1-to-string (list "\u00e9\u00e9\u00e9\u00e9" (make-marker) 3))))
+(show (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'abc) nil)))
+        (prin1-to-string (list 'x "\u20ac" (make-marker) 3))))
+;; Two levels.
+(show (let ((print-unreadable-function
+             (lambda (_o _e)
+               (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'k) nil)))
+                 (prin1-to-string (list 'x (make-marker) 'y))))))
+        (prin1-to-string (list 1 2 3 4 5 (make-marker) 6))))
+;; `error-message-string', `format' and `message' print into
+;; print_buffer too.
+(show (let ((print-unreadable-function (lambda (_o _e) (error-message-string '(wrong-type-argument x 1)) nil)))
+        (prin1-to-string (list 1 2 (make-marker) 3))))
+(show (let ((print-unreadable-function (lambda (_o _e) (format "%s%S" "st" "r") nil)))
+        (prin1-to-string (list 1 2 (make-marker) 3))))
+(show (let ((print-unreadable-function (lambda (_o _e) (format "%d%s" 12 'sym) nil)))
+        (prin1-to-string (list 1 2 (make-marker) 3))))
+;; A print to a function or a string printed by `princ' leaves it alone.
+(show (let ((print-unreadable-function
+             (lambda (_o _e) (prin1 'inner #'ignore) (princ "plain" #'ignore) "R")))
+        (prin1-to-string (list 1 2 (current-buffer) 3))))
+;; A print to stdout in the middle of one into a buffer.
+(show (let ((print-unreadable-function (lambda (_o _e) (prin1 'to-stdout) (terpri) nil)))
+        (prin1-to-string (list 1 2 (make-marker) 3))))
+;; An inner print left by an error.
+(show (let ((print-unreadable-function
+             (lambda (_o _e)
+               (condition-case nil
+                   (let ((print-unreadable-function (lambda (_o _e) (error "x"))))
+                     (prin1-to-string (list 'p 'q (make-marker))))
+                 (error nil))
+               nil)))
+        (prin1-to-string (list 1 2 3 (make-marker) 4))))
+;; `princ' of a plain string is print_string alone: the depth of a print
+;; under way is not reset by it, as it is by any other print.
+(show (let ((print-level 3)
+            (print-unreadable-function (lambda (_o _e) (princ "s" #'ignore) "U")))
+        (prin1-to-string (list (current-buffer) '(1 (2 (3 (4))))))))
+(show (let ((print-level 3)
+            (print-unreadable-function (lambda (_o _e) (prin1 "s" #'ignore) "U")))
+        (prin1-to-string (list (current-buffer) '(1 (2 (3 (4))))))))
+(show (let ((print-level 3)
+            (print-unreadable-function (lambda (_o _e) (princ (propertize "s" 'a 'b) #'ignore) "U")))
+        (prin1-to-string (list (current-buffer) '(1 (2 (3 (4))))))))
+(show (let ((print-level 3) (print-continuous-numbering t)
+            (print-unreadable-function (lambda (_o _e) (princ "s" #'ignore) "U")))
+        (prin1-to-string (list (current-buffer) '(1 (2 (3 (4))))))))
+;; `print-level' is compared as any fixnum.
+(show (let ((print-level -1)) (list (prin1-to-string '(a)) (prin1-to-string [a (b)]) (prin1-to-string 5))))
+(show (let ((print-level 0)) (list (prin1-to-string '(a)) (prin1-to-string [a (b)]))))
+(show (let ((print-level 1.5)) (prin1-to-string '(a (b (c))))))
+(show (let ((print-length -1)) (prin1-to-string '(a b c))))
+(show (let ((print-length 0)) (list (prin1-to-string '(a b c)) (prin1-to-string [a b]) (prin1-to-string (make-bool-vector 20 t)))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn terpri_asks_what_printchar_last_wrote() {
+    // Fterpri with ENSURE in a batch session asks whether the last
+    // character printchar wrote on stdout was a newline
+    // (`printchar_stdout_last'), which strout leaves alone: after a newline
+    // from printchar, an object printed by strout alone (a fixnum, a float,
+    // `princ' of a string, `##', a killed buffer, a frame, an obarray, a
+    // truncated list's `...') leaves the line "begun", and one with a
+    // character from printchar (a symbol's name, a closing parenthesis,
+    // quote or `>') does not.  A function is an error, a symbol that is no
+    // function is asked like stdout, and a buffer or a marker for the
+    // beginning of its line.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "terpri.el",
+        r##";;; -*- lexical-binding: t -*-
+;; `terpri' with ENSURE asks for the last character printchar wrote
+;; (`printchar_stdout_last'), which strout leaves alone.
+(defvar n 0)
+(defmacro after (&rest body)
+  `(progn
+     (setq n (1+ n))
+     (write-char ?\n)
+     ,@body
+     (let ((r (terpri nil t)))
+       (princ (format "<%d %S>\n" n r)))))
+(after (prin1 5))
+(after (prin1 -17))
+(after (prin1 (expt 10 30)))
+(after (prin1 2.5))
+(after (prin1 1.0e+INF))
+(after (princ "str"))
+(after (prin1 "str"))
+(after (princ "line\n"))
+(after (prin1 "line\n"))
+(after (princ ""))
+(after (prin1 ""))
+(after (prin1 'sym))
+(after (princ 'sym))
+(after (prin1 nil))
+(after (prin1 t))
+(after (prin1 :key))
+(after (prin1 (intern "")))
+(after (let ((print-gensym t)) (prin1 (make-symbol ""))))
+(after (let ((print-gensym t)) (prin1 (make-symbol "g"))))
+(after (prin1 '(a b)))
+(after (prin1 '(a . b)))
+(after (prin1 []))
+(after (prin1 [a b]))
+(after (prin1 (record 'r 1)))
+(after (prin1 (make-hash-table)))
+(after (prin1 (let ((h (make-hash-table :test 'equal))) (puthash 1 2 h) h)))
+(after (prin1 (make-bool-vector 3 t)))
+(after (prin1 (make-bool-vector 0 t)))
+(after (prin1 (make-marker)))
+(after (prin1 (with-temp-buffer (rename-buffer "tb") (point-marker))))
+(after (prin1 (get-buffer-create "named")))
+(after (princ (get-buffer-create "named")))
+(after (prin1 (let ((b (generate-new-buffer "k"))) (kill-buffer b) b)))
+(after (prin1 (symbol-function 'car)))
+(after (prin1 (selected-window)))
+(after (prin1 (selected-frame)))
+(after (prin1 (frame-terminal)))
+(after (prin1 (current-window-configuration)))
+(after (prin1 (obarray-make)))
+(after (prin1 (with-temp-buffer (rename-buffer "ob") (insert "abc") (make-overlay 1 2))))
+(after (prin1 (let ((o (make-overlay 1 1))) (delete-overlay o) o)))
+(after (prin1 (make-finalizer #'ignore)))
+(after (prin1 (current-thread)))
+(after (prin1 (make-mutex "mx")))
+(after (prin1 (make-condition-variable (make-mutex "m2") "cv")))
+(after (prin1 (font-spec :family "Fam")))
+(after (let ((p (make-pipe-process :name "pp" :noquery t))) (prin1 p)))
+(after (let ((p (make-pipe-process :name "pq" :noquery t))) (princ p)))
+(after (let ((print-integers-as-characters t)) (prin1 ?a)))
+(after (let ((print-integers-as-characters t)) (prin1 ?\n)))
+(after (let ((print-integers-as-characters t)) (prin1 ?\()))
+(after (let ((print-integers-as-characters t)) (prin1 #x80)))
+(after (let ((print-length 1)) (prin1 '(a b c))))
+(after (let ((print-length 1)) (prin1 [a b c])))
+(after (let ((print-length 0)) (prin1 '(a b c))))
+(after (let ((print-level 0)) (prin1 '(a))))
+(after (let ((print-circle t) (x (list 'a))) (prin1 (list x x))))
+(after (let ((print-circle t) (x (list 'a))) (setcdr x x) (prin1 x)))
+(after (let ((x (list 'a))) (setcdr x x) (prin1 x)))
+(after (prin1 ''a))
+(after (prin1 '#'car))
+(after (prin1 '`(a ,b ,@c)))
+(after (prin1 (propertize "p" 'k 'v)))
+(after (let ((print-escape-multibyte t)) (prin1 "\u00e9")))
+(after (let ((print-escape-newlines t)) (prin1 "a\n")))
+(after (prin1 (string-to-unibyte "\351")))
+(after (princ (string-to-unibyte "\351")))
+(after (print 'x))
+(after (terpri))
+(after (write-char ?\n))
+(after (write-char ?z))
+(after (prin1 (read-positioning-symbols "foo")))
+(after (let ((print-symbols-bare t)) (prin1 (read-positioning-symbols "foo"))))
+(after (prin1 (make-char-table 'tst)))
+(after (prin1 (byte-compile (lambda (x) x))))
+(after (let ((print-circle t) (print-continuous-numbering t)
+             (print-number-table (make-hash-table :test 'eq)) (y "str"))
+         (puthash y "label\n" print-number-table)
+         (prin1 y)))
+;; A function is an error; a buffer asks for the beginning of its line.
+(princ (format "%S\n" (condition-case err (terpri #'ignore t) (error err))))
+(princ (format "%S\n" (condition-case err (terpri 'no-such-function-364 t) (error err))))
+(princ (format "%S\n" (condition-case err (terpri 'no-such-function-364) (error err))))
+(with-temp-buffer
+  (let ((standard-output (current-buffer)))
+    (princ (format "%S\n" (list (terpri nil t) (progn (princ "a") (terpri nil t)) (terpri nil t)
+                                (terpri) (buffer-string)))
+           t)))
+(with-temp-buffer
+  (insert "ab\ncd")
+  (let ((m (copy-marker 4)))
+    (princ (format "%S\n" (list (terpri m t) (progn (set-marker m 6) (terpri m t)) (buffer-string) m (point))))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn the_standard_display_table_shows_what_goes_to_stdout() {
+    // With `standard-display-table' a display table, printchar and strout
+    // hand stdout each character through printchar_to_stream: the
+    // characters among the elements of the character's vector in the
+    // table, each an ASCII byte or its multibyte form, encoded by itself
+    // with `coding-system-for-write'.  printchar notes its character
+    // before the write and owes the newline after it, strout owes it after
+    // its whole block, so a character whose coding system signals owes the
+    // session nothing, and what was written before it stays written.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "table.el",
+            r##";;; -*- lexical-binding: t -*-
+;; With `standard-display-table' a display table, printchar and strout
+;; hand stdout each character through printchar_to_stream: the
+;; characters among the elements of its vector in the table, or itself.
+(setq standard-display-table (make-display-table))
+(aset standard-display-table ?a (vector ?< ?A ?>))
+(aset standard-display-table ?b (vector))
+(aset standard-display-table ?c (vector ?c 'not-a-char ?c -1 #x400000 ?!))
+(aset standard-display-table ?d "string")
+(aset standard-display-table ?e ?E)
+(aset standard-display-table #xe9 (vector ?e ?'))
+(aset standard-display-table ?\n (vector ?$ ?\n))
+(aset standard-display-table ?\" (vector ?\' ?\'))
+(princ "abcde xyz\n")
+(prin1 "abcde")
+(terpri)
+(prin1 '(a b c d e 1 2.5 "a\u00e9"))
+(terpri)
+(print 'abc)
+(write-char ?a)
+(write-char ?\n)
+(write-char #xe9)
+(write-char #x3fffe9)
+(terpri)
+(princ (format "%S\n" (list (terpri nil t) (progn (write-char ?b) (terpri nil t)) (progn (princ "b") (terpri nil t)))))
+(prin1 (symbol-function 'car))
+(terpri)
+(let ((print-unreadable-function (lambda (_o _e) "a\u00e9b")))
+  (prin1 (list (make-marker))))
+(terpri)
+;; The element of an element is not looked up again; a function
+;; printed to and a buffer do not look at the table.
+(aset standard-display-table ?< (vector ?\[))
+(princ "a<\n")
+(prin1 'abc (lambda (c) (external-debugging-output c)))
+(external-debugging-output ?\n)
+(princ (format "%S\n" (with-temp-buffer (prin1 'abc (current-buffer)) (buffer-string))))
+(message "abc")
+;; With a coding system each character is encoded by itself.
+(let ((coding-system-for-write 'utf-8))
+  (princ "a\u00e9\u20ac\n")
+  (write-char #xe9)
+  (write-char #x3fffe9)
+  (terpri))
+(let ((coding-system-for-write 'latin-1))
+  (princ "a\u00e9\u20ac\n")
+  (write-char #xe9)
+  (terpri))
+(let ((coding-system-for-write 'utf-16))
+  (princ "e\u00e9\n"))
+;; A table that is no display table is none.
+(setq standard-display-table (make-char-table 'other))
+(aset standard-display-table ?a (vector ?Z))
+(princ "abc\n")
+(setq standard-display-table nil)
+(princ "abc\n")"##,
+        ),
+        (
+            "table-errors.el",
+            r##";; A character whose coding system signals owes the session no newline;
+;; what was written before it does.
+(setq standard-display-table (make-display-table))
+(message "%S" (condition-case err (let ((coding-system-for-write 'nosuch-coding-zz)) (princ "\u00e9a")) (error err)))
+(message "m1")
+(message "%S" (condition-case err (let ((coding-system-for-write 'nosuch-coding-zz)) (princ "a\u00e9b")) (error err)))
+(message "m2")
+(message "%S" (condition-case err (let ((coding-system-for-write 'nosuch-coding-zz)) (write-char #xe9)) (error err)))
+(message "m3")
+(message "%S" (condition-case err (let ((coding-system-for-write 'nosuch-coding-zz)) (prin1 '(a "\u00e9" b))) (error err)))
+(message "m4")
+(message "%S" (condition-case err (let ((coding-system-for-write 'nosuch-coding-zz)) (prin1 (intern "\u00e9"))) (error err)))
+(message "m5")
+(message "%S" (terpri nil t))"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[test]
+fn a_batch_error_is_printed_onto_the_debugging_output() {
+    // keyboard.c's Fcommand_error_default_function in a batch session is
+    // print_error_message onto `external-debugging-output' and Fterpri:
+    // the context by write_string (a C string to its first NUL, each byte
+    // handed over as a C char), the message by Fprinc and each datum by
+    // Fprin1, or Fprinc for a file-error, an end-of-file or a user-error,
+    // a character at a time through printchar_to_stream.  A unibyte
+    // string's bytes are the characters of those codes from `princ' and
+    // raw bytes from `prin1'; the print variables and
+    // `print-unreadable-function' are the session's (cmd_error's
+    // `print-level' and `print-length' aside); `standard-display-table'
+    // and the coding systems show the characters; the caller is logged.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        ("error1.el", r##"(error "plain %d" 1)"##),
+        (
+            "error2.el",
+            r##"(signal (quote wrong-type-argument) (list "str\351" (string-to-unibyte "raw\351") (quote sym) 1.5 (list "a\nb")))"##,
+        ),
+        (
+            "error3.el",
+            r##"(signal (quote file-error) (list "Opening \351" (string-to-unibyte "u\351") "/no/such"))"##,
+        ),
+        (
+            "error4.el",
+            r##"(user-error "user %s" (string-to-unibyte "\351"))"##,
+        ),
+        (
+            "error5.el",
+            r##"(signal (quote my-undefined-error) (list 1 "two"))"##,
+        ),
+        (
+            "error6.el",
+            r##"(signal (quote error) (list (string-to-unibyte "uni\351") "multi\351" (string-to-unibyte "\351")))"##,
+        ),
+        (
+            "error7.el",
+            r##"(princ "on stdout") (error "after stdout")"##,
+        ),
+        (
+            "error8.el",
+            r##"(let ((print-escape-nonascii t) (print-escape-newlines t)) (signal (quote wrong-type-argument) (list "a\nb\351" (string-to-unibyte "\351"))))"##,
+        ),
+        (
+            "error9.el",
+            r##"(setq standard-display-table (make-display-table)) (aset standard-display-table ?e (vector ?E ?E)) (error "defeated")"##,
+        ),
+        (
+            "error10.el",
+            r##"(signal (quote end-of-file) (list "eof \351" (quote x)))"##,
+        ),
+        ("error11.el", r##"(signal (quote error) nil)"##),
+        ("error12.el", r##"(signal (quote error) (list "" 1 2))"##),
+        ("error13.el", r##"(signal (quote quit) nil)"##),
+        (
+            "error14.el",
+            r##"(define-error (quote my-err) "My error: \351") (signal (quote my-err) (list (make-marker) (current-buffer) [1 "v"]))"##,
+        ),
+        (
+            "error15.el",
+            r##"(let ((print-unreadable-function (lambda (o e) "UNREADABLE"))) (signal (quote wrong-type-argument) (list (make-marker))))"##,
+        ),
+        (
+            "error16.el",
+            r##"(let ((print-length 2) (print-level 1)) (signal (quote wrong-type-argument) (list (list 1 2 3 4) (list (list 1)))))"##,
+        ),
+        (
+            "error17.el",
+            r##"(command-error-default-function (quote (error "msg" 1)) "\303\251 " nil)"##,
+        ),
+        (
+            "error18.el",
+            r##"(command-error-default-function (quote (error "msg" 1)) "ctx: " (quote some-caller))"##,
+        ),
+        (
+            "error19.el",
+            r##"(command-error-default-function (quote (wrong-type-argument listp 5)) (string-to-multibyte "c\351\0tail ") t)"##,
+        ),
+        (
+            "error20.el",
+            r##"(add-hook (quote kill-emacs-hook) (lambda () (princ (format "log=%S" (with-current-buffer "*Messages*" (buffer-string)))))) (command-error-default-function (quote (error "msg" 1)) "ctx: " (quote some-caller))"##,
+        ),
+        (
+            "error21.el",
+            r##"(let ((standard-output (lambda (c) (princ (string c ?.) (function external-debugging-output))))) (error "std %S" (quote out)))"##,
+        ),
+        (
+            "error22.el",
+            r##"(let ((coding-system-for-write (quote latin-1))) (error "caf\351 %s" (string 8364)))"##,
+        ),
+        ("error23.el", r##"(error "%s" (make-string 3 #x3fff80))"##),
+        (
+            "error24.el",
+            r##"(signal (quote wrong-type-argument) (list (symbol-function (quote car)) (make-bool-vector 9 t) (quote (quote q)) (make-symbol "") :k))"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[test]
+fn a_print_of_nothing_still_owes_the_batch_newline() {
+    // print.c's strout sets `noninteractive_need_newline' whatever it
+    // wrote, so a print of nothing to stdout through strout (`princ' of an
+    // empty string, an empty label from `print-number-table', an
+    // unreadable object printed as "") makes the next message begin with a
+    // newline; a print that reaches neither printchar nor strout for
+    // stdout (into a buffer, to a function, an unreadable object its
+    // function handled) does not.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "nothing.el",
+        r##";;; -*- lexical-binding: t -*-
+;; A strout of nothing still owes the batch session its newline before
+;; the next message (`noninteractive_need_newline'); a print that calls
+;; neither printchar nor strout for stdout owes none.
+(message "start")
+(princ "")
+(message "after princ of the empty string")
+(prin1 (intern ""))
+(message "after a symbol with no name")
+(princ (intern ""))
+(message "after princ of it")
+(princ (make-string 0 ?x))
+(message "after another empty string")
+(princ "" #'ignore)
+(message "after an empty string to a function")
+(with-temp-buffer (princ "" (current-buffer)))
+(message "after an empty string into a buffer")
+(let ((print-unreadable-function (lambda (_o _e) "")))
+  (prin1 (make-marker)))
+(message "after an unreadable object printed as nothing")
+(let ((print-unreadable-function (lambda (_o _e) t)))
+  (prin1 (make-marker)))
+(message "after an unreadable object not printed")
+(let ((print-circle t) (print-continuous-numbering t)
+      (print-number-table (make-hash-table :test 'eq)) (y "str"))
+  (puthash y "" print-number-table)
+  (prin1 y))
+(message "after an empty label")
+(princ (propertize "" 'a 'b))
+(message "after an empty string with properties")
+(terpri nil t)
+(message "after terpri")
+(terpri nil t)
+(message "after a terpri that printed nothing")
+(write-char ?a)
+(message "after a character")
+(message "and again")
+(princ "x")
+(message nil)
+(message "after a cleared message")
+(prin1-to-string 'x)
+(format "%S" 'x)
+(message "after prints into strings")"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn a_print_copies_its_text_once_the_change_hooks_have_run() {
+    // print.c:print_finish is `insert_1_both (print_buffer.buffer, pos,
+    // pos_byte, 0, 1, 0)' in the buffer current then, and
+    // `signal_after_change (PT - print_buffer.pos, 0, print_buffer.pos)'.
+    // insert_1_both copies out of print_buffer after
+    // prepare_to_modify_buffer, so a print its hooks run into a buffer
+    // (`format' with %S is one) writes over the waiting text and leaves
+    // `pos' where it ended: the after-change hooks are told of that many
+    // characters, and the text inserted is what the partial copies left.
+    // A print of no characters is no insertion (a read-only buffer takes
+    // it) and still the signal; no properties are inherited and no
+    // compositions updated; a hook that switches buffers moves the
+    // insertion; and a unibyte buffer takes a text with multibyte
+    // characters as copy_text made it before the hooks ran.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "g1.el",
+            r##"(let ((tb (generate-new-buffer "tb")) (l nil))
+  (with-temp-buffer
+    (add-hook 'before-change-functions (lambda (&rest _) (prin1 'hk tb)) nil t)
+    (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+    (prin1 'outer-text (current-buffer))
+    (prin1 l)))"##,
+        ),
+        (
+            "g2.el",
+            r##";; Two before-change functions each run a print into print_buffer.
+(let ((l nil))
+  (with-temp-buffer
+    (add-hook 'before-change-functions (lambda (&rest _) (format "%S" 'hk)) nil t)
+    (add-hook 'before-change-functions (lambda (&rest _) (format "%S" 'xyz1)) t t)
+    (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+    (prin1 'outer-text (current-buffer))
+    (prin1 (list l (buffer-string)))))"##,
+        ),
+        (
+            "g3.el",
+            r##";; The hook's print is longer than the text being inserted.
+(let ((l nil))
+  (with-temp-buffer
+    (add-hook 'before-change-functions (lambda (&rest _) (prin1-to-string '(a much longer piece of text))) nil t)
+    (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+    (prin1 'ab (current-buffer))
+    (prin1 (list l (buffer-string)))))"##,
+        ),
+        (
+            "g4.el",
+            r##";; first-change-hook and a print to a buffer from it.
+(let ((l nil) (tb (generate-new-buffer "tb")))
+  (with-temp-buffer
+    (add-hook 'first-change-hook (lambda () (princ "first" tb)) nil t)
+    (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+    (princ "some text" (current-buffer))
+    (princ "more" (current-buffer))
+    (prin1 (list l (buffer-string) (with-current-buffer tb (buffer-string))))))"##,
+        ),
+        (
+            "g5.el",
+            r##";; The after-change function prints: the insertion is done by then.
+(let ((l nil))
+  (with-temp-buffer
+    (add-hook 'after-change-functions (lambda (&rest a) (push (list a (format "%S" a)) l)) nil t)
+    (prin1 '(outer text) (current-buffer))
+    (terpri (current-buffer))
+    (prin1 (list l (buffer-string)))))"##,
+        ),
+        (
+            "g6.el",
+            r##";; A marker stream, hooks that print, point before and after the marker.
+(let ((l nil))
+  (with-temp-buffer
+    (insert "0123456789")
+    (let ((m (copy-marker 4)))
+      (goto-char 8)
+      (add-hook 'before-change-functions (lambda (&rest _) (format "%S" 'q)) nil t)
+      (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+      (prin1 'abc m)
+      (prin1 (list l (buffer-string) (point) m))
+      (goto-char 2)
+      (princ "XY" m)
+      (prin1 (list l (buffer-string) (point) m)))))"##,
+        ),
+        (
+            "g7.el",
+            r##";; Text properties' modification hooks and overlays' insertion hooks run a print.
+(let ((l nil))
+  (with-temp-buffer
+    (insert "0123456789")
+    (let ((o (make-overlay 3 7)))
+      (overlay-put o 'insert-in-front-hooks (list (lambda (&rest a) (push (cons 'front (cdr a)) l) (format "%S" a))))
+      (overlay-put o 'modification-hooks (list (lambda (&rest a) (push (cons 'mod (cdr a)) l) (format "%S" 'zz))))
+      (goto-char 5)
+      (prin1 'inside (current-buffer))
+      (goto-char 3)
+      (prin1 'front (current-buffer))
+      (prin1 (list (reverse l) (buffer-string))))))"##,
+        ),
+        (
+            "g8.el",
+            r##";; A read-only destination: the error comes from print_finish, after the walk.
+(let ((n 0))
+  (with-temp-buffer
+    (setq buffer-read-only t)
+    (let ((print-unreadable-function (lambda (_o _e) (setq n (1+ n)) nil)))
+      (prin1 (list (condition-case e (prin1 (list 1 (make-marker)) (current-buffer)) (error e)) n (buffer-string)
+                   (condition-case e (princ "" (current-buffer)) (error e))
+                   (prin1-to-string '(still works)))))))"##,
+        ),
+        (
+            "g9.el",
+            r##";; A hook that kills or switches the buffer while the text waits.
+(let ((ob (generate-new-buffer "ob")) (l nil))
+  (with-temp-buffer
+    (add-hook 'before-change-functions (lambda (&rest _) (set-buffer ob)) nil t)
+    (prin1 'moved (current-buffer))
+    (prin1 (list (buffer-name) (buffer-string) (with-current-buffer ob (buffer-string))))))"##,
+        ),
+        (
+            "g10.el",
+            r##";; Multibyte text waiting while a hook prints.
+(let ((l nil))
+  (with-temp-buffer
+    (add-hook 'before-change-functions (lambda (&rest _) (format "%S" 'h)) nil t)
+    (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+    (princ "aébc" (current-buffer))
+    (prin1 (list l (append (buffer-string) nil)))))"##,
+        ),
+        (
+            "g11.el",
+            r##";; Compositions at the border of what a print inserts are left alone.
+(with-temp-buffer
+  (insert "abcdef")
+  (compose-region 2 5)
+  (goto-char 3)
+  (prin1 'x (current-buffer))
+  (prin1 (list (buffer-string) (find-composition 2 nil nil t) (get-text-property 2 'composition)))
+  (goto-char 3)
+  (insert "y")
+  (prin1 (list (buffer-string) (find-composition 2 nil nil t))))"##,
+        ),
+        (
+            "g-unibyte.el",
+            r##";; A unibyte buffer takes a text with multibyte characters as copy_text
+;; made it before insert_1_both ran the hooks; `pos' is the hook's
+;; print's all the same.
+(let ((l nil))
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (add-hook 'before-change-functions (lambda (&rest _) (format "%S" 'hijkl)) nil t)
+    (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+    (princ "\u00e9\u00e9" (current-buffer))
+    (prin1 (list l (append (buffer-string) nil)))))
+(let ((l nil))
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (add-hook 'before-change-functions (lambda (&rest _) (format "%S" 'hijklmnop)) nil t)
+    (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+    (princ "ab\u00e9\u00e9\u00e9" (current-buffer))
+    (prin1 (list l (append (buffer-string) nil)))))
+(let ((l nil))
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (add-hook 'before-change-functions (lambda (&rest _) (format "%S" 'h)) nil t)
+    (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+    (princ "abc" (current-buffer))
+    (princ (string-to-unibyte "x\351y") (current-buffer))
+    (prin1 (string-to-unibyte "x\351y") (current-buffer))
+    (prin1 (list "\u00e9" 'abc) (current-buffer))
+    (prin1 (list l (append (buffer-string) nil)))))"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[test]
+fn a_code_that_is_no_character_is_written_as_char_string_stores_it() {
+    // Fwrite_char and Fexternal_debugging_output check for a fixnum and no
+    // more; printchar and printchar_to_stream take it as an unsigned int.
+    // A function is called with that number.  Any other output stores
+    // CHAR_STRING's bytes: char_string resolves a modifier bit and drops
+    // what is left of them, and signals for a code still past MAX_CHAR; a
+    // negative int is its low byte alone in printchar and the two-byte
+    // form's arithmetic in printchar_to_stream.  With
+    // `standard-display-table' each goes through printchar_to_stream, and a
+    // character whose coding system signals owes the session no newline.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "codes1.el",
+            r##"(dolist (n (list -1 -2 -129 -1000 -65536 #x400000 #x3fffff #x3fff80 #x8000041 #x4000041
+                 #x10000041 #x20000061 #x2000040 #x100000041 (1+ (ash 1 32)) (- (ash 1 31))
+                 #x7fffffff #xffffffff most-negative-fixnum))
+  (condition-case e (write-char n) (error (princ (format "E%S" e))))
+  (princ "|")
+  (condition-case e (write-char n 'external-debugging-output) (error (princ (format "E%S" e))))
+  (external-debugging-output ?|)
+  (condition-case e (write-char n (lambda (c) (princ (format "%S" c)))) (error (princ (format "E%S" e))))
+  (princ "|")
+  (condition-case e (external-debugging-output n) (error (princ (format "E%S" e))))
+  (external-debugging-output ?\n)
+  ;; In a buffer a negative code whose low byte is no ASCII character is
+  ;; a byte that is no character, and what is read back is past it.
+  (unless (and (>= (logand n #xffffffff) #x80000000) (>= (logand n #xff) #x80))
+    (with-temp-buffer
+      (condition-case e (write-char n (current-buffer)) (error (princ (format "E%S" e))))
+      (princ (format "%S" (append (buffer-string) nil)))))
+  (terpri))"##,
+        ),
+        (
+            "codes2.el",
+            r##"(setq standard-display-table (make-display-table))
+(aset standard-display-table ?| (vector ?! ?|))
+(dolist (n (list -1 -2 -129 -1000 -65536 #x400000 #x3fffff #x3fff80 #x8000041 #x4000041
+                 #x10000041 #x20000061 #x2000040 #x100000041 (1+ (ash 1 32)) (- (ash 1 31))
+                 #x7fffffff #xffffffff most-negative-fixnum))
+  (condition-case e (write-char n) (error (princ (format "E%S" e))))
+  (princ "|")
+  (condition-case e (write-char n 'external-debugging-output) (error (princ (format "E%S" e))))
+  (external-debugging-output ?|)
+  (condition-case e (write-char n (lambda (c) (princ (format "%S" c)))) (error (princ (format "E%S" e))))
+  (princ "|")
+  (condition-case e (external-debugging-output n) (error (princ (format "E%S" e))))
+  (external-debugging-output ?\n)
+  ;; In a buffer a negative code whose low byte is no ASCII character is
+  ;; a byte that is no character, and what is read back is past it.
+  (unless (and (>= (logand n #xffffffff) #x80000000) (>= (logand n #xff) #x80))
+    (with-temp-buffer
+      (condition-case e (write-char n (current-buffer)) (error (princ (format "E%S" e))))
+      (princ (format "%S" (append (buffer-string) nil)))))
+  (terpri))"##,
+        ),
+        (
+            "n1.el",
+            r##"(setq standard-display-table (make-display-table))
+(condition-case nil (let ((coding-system-for-write 'nosuch-coding-zz)) (princ "aé")) (error nil))
+(message "m")"##,
+        ),
+        ("p1.el", r##"(write-char -1 'external-debugging-output)"##),
+        ("p2.el", r##"(external-debugging-output #x400000)"##),
+        ("w1.el", r##"(write-char -1)"##),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[test]
+fn a_print_ends_in_the_buffer_it_began_in() {
+    // print_prepare's record_unwind_current_buffer: the buffer current
+    // when a print began is current when it ends, whatever a function
+    // printed to or `print-unreadable-function' selected (which
+    // print_vectorlike_unreadable undoes itself when the callback buffer
+    // lives).  print_finish works in the buffer current by then: the
+    // insertion and the marker printed to go where the hooks, or a
+    // destination killed during the walk, left the print; a marker outside
+    // its buffer's accessible part is the error's datum; a print of
+    // nothing still signals the change; the print stack keeps the entries
+    // of a print left by a throw or an error for the print it was run
+    // from; and `princ' reads a string the function printed to changes at
+    // the sizes it had.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "a1.el",
+            r##"(with-temp-buffer
+  (let ((b (get-buffer-create "other")))
+    (prin1 'x (lambda (c) (set-buffer b)))
+    (princ (buffer-name))))"##,
+        ),
+        (
+            "a2.el",
+            r##"(with-temp-buffer
+  (let* ((b (get-buffer-create "other"))
+         (print-unreadable-function (lambda (o e) (set-buffer b) nil)))
+    (prin1 (list 'a (make-marker)) (current-buffer))
+    (princ (format "%S %S" (buffer-string) (with-current-buffer b (buffer-string))))))"##,
+        ),
+        (
+            "a3.el",
+            r##"(with-temp-buffer
+  (let* ((b (get-buffer-create "other"))
+         (print-unreadable-function (lambda (o e) (set-buffer b) nil)))
+    (prin1 (make-marker))
+    (princ (buffer-name))))"##,
+        ),
+        (
+            "m1.el",
+            r##"(let ((ob (get-buffer-create "other")))
+  (with-temp-buffer
+    (rename-buffer "home")
+    (let ((m (point-marker)))
+      (add-hook 'after-change-functions (lambda (&rest _) (set-buffer ob)) nil t)
+      (prin1 'q m)
+      (prin1 (list m (with-current-buffer "home" (buffer-string)))))))"##,
+        ),
+        (
+            "m2.el",
+            r##"(with-temp-buffer
+  (let* ((cur (current-buffer)) (dest (generate-new-buffer "dst"))
+         (m (with-current-buffer dest (insert "abc") (copy-marker 2)))
+         (print-unreadable-function (lambda (o e) (kill-buffer dest) nil)))
+    (prin1 (list 'aa (make-marker)) m)
+    (prin1 (list m (buffer-string)))))"##,
+        ),
+        (
+            "e1.el",
+            r##"(with-temp-buffer
+  (insert "hello world")
+  (let ((m (copy-marker 8)))
+    (narrow-to-region 1 4)
+    (condition-case e (prin1 'x m) (error (prin1 e)))))"##,
+        ),
+        (
+            "d1.el",
+            r##"(with-temp-buffer
+  (insert "abcdef") (goto-char 4)
+  (let ((log nil))
+    (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+    (princ "" (current-buffer))
+    (terpri (point-min-marker) t)
+    (prin1 log)))"##,
+        ),
+        (
+            "f1.el",
+            r##"(let ((acc nil))
+  (prin1 '(a b c)
+         (lambda (c) (push c acc)
+           (when (= c ?b)
+             (catch 'k (prin1 '(x y z) (lambda (d) (when (= d ?y) (throw 'k nil))))))))
+  (princ (concat (nreverse acc))))"##,
+        ),
+        (
+            "f2.el",
+            r##"(let ((print-unreadable-function
+       (lambda (o e)
+         (condition-case nil
+             (let ((print-unreadable-function (lambda (o e) (error "x"))))
+               (prin1-to-string (list 1 (make-marker) 2)))
+           (error nil))
+         nil)))
+  (princ (prin1-to-string (list 'a (make-marker) 'c))))"##,
+        ),
+        (
+            "t3.el",
+            r##";; A string the function printed to makes shorter or longer.
+(let ((s (copy-sequence "aébcdef")) (acc nil))
+  (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 1 ?x))))
+  (prin1 (nreverse acc)))
+(let ((s (copy-sequence "aébcdef")) (acc nil))
+  (princ s (lambda (c) (push c acc) (when (= c ?a) (aset s 1 ?x))))
+  (prin1 (nreverse acc)))
+(let ((s (copy-sequence "axbcdéf")) (acc nil))
+  (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 1 ?é))))
+  (prin1 (nreverse acc)))
+(let ((s (copy-sequence "abcdef")) (acc nil))
+  (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 4 ?é))))
+  (prin1 (nreverse acc)))
+(let ((s (copy-sequence "abcdéf")) (acc nil))
+  (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 4 ?e))))
+  (prin1 (nreverse acc)))"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn printing_to_t_fills_the_echo_area_and_the_message_log() {
+    // In an interactive session a print to t is print_prepare's
+    // setup_echo_area_for_printing (a message that held the echo area
+    // since the last print ends the log's open line and the echo area
+    // starts empty) and then, for each printchar and strout, the text in
+    // the echo area and in the message log, its line left open.
+    // Fterpri with ENSURE asks for the beginning of a line in the echo
+    // area's text, `current-message' is nil while that text is empty,
+    // and print_error_message onto t (Fcommand_error_default_function)
+    // writes the context as the C string it is and logs a caller that
+    // is a symbol, t among them.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "echo364.el",
+        r##";; -*- lexical-binding: t -*-
+(defvar dump-log nil)
+(defun note (tag &rest extra) (push (list tag extra (current-message) (with-current-buffer (messages-buffer) (buffer-substring (max 1 (- (point-max) 120)) (point-max)))) dump-log))
+(defun finish ()
+  (with-temp-buffer
+    (dolist (e (reverse dump-log)) (insert (format "%S\n" e)))
+    (write-region (point-min) (point-max) (expand-file-name "echo364.out" command-line-default-directory) nil 'silent))
+  (kill-emacs 0))
+(condition-case err
+    (progn
+      (message "start")
+      (with-temp-buffer (insert "abc") (princ "x") (note 'te-1 (terpri nil t) (terpri nil t)))
+      (message "m") (with-temp-buffer (insert "abc") (note 'te-2 (terpri nil t) (terpri nil t)))
+      (message "m") (with-temp-buffer (princ "x\n") (note 'te-3 (terpri nil t) (terpri nil t)))
+      (message "m") (with-temp-buffer (insert "abc\n") (princ "x") (note 'te-4 (terpri nil t)))
+      (message "m") (with-temp-buffer (note 'te-5 (terpri nil t)))
+      (message "m") (with-temp-buffer (princ "a") (princ "") (note 'te-6 (terpri nil t)))
+      (message "m") (with-temp-buffer (princ "a") (let ((standard-output (current-buffer))) (note 'te-7 (terpri nil t) (terpri nil t) (buffer-string))))
+      (message "m") (with-temp-buffer (set-buffer-multibyte nil) (princ "\351") (prin1 "\351\u00e9") (write-char 233) (note 'unibyte-cur))
+      (message "m") (let ((print-unreadable-function (lambda (o e) (buffer-name)))) (with-temp-buffer (rename-buffer "cbuf") (prin1 (make-marker)) (note 'cb-buffer)))
+      (message "m") (prin1 (list (current-buffer) (buffer-name))) (note 'curbuf-print)
+      (message "m") (command-error-default-function '(error "msg" 1) "ctx " t) (note 'cedf-t)
+      (message "m") (command-error-default-function '(error "msg" 1) "ctx " nil) (note 'cedf-nil)
+      (message "m") (command-error-default-function '(error "msg" 1) "ctx " 'caller) (note 'cedf-sym)
+      (message "m") (command-error-default-function '(error "msg" 1) "ctx " "str") (note 'cedf-str)
+      (message "m") (command-error-default-function '(error "msg" 1) "ctx " :kw) (note 'cedf-kw)
+      (message "m") (command-error-default-function '(error "msg" 1) "\u00e9: " (intern "\u00e9")) (note 'cedf-mb)
+      (message "m") (command-error-default-function '(quit) "" 'x) (note 'cedf-quit)
+      (message "m") (command-error-default-function '(minibuffer-quit) "" 'minibuffer-quit) (note 'cedf-mbq)
+      (message "m") (command-error-default-function '(user-error "u" 1 "two") "" nil) (note 'cedf-user)
+      (message "m") (command-error-default-function '(file-error "Opening" "no such" "/x") "" 'f) (note 'cedf-file)
+      (message "m") (command-error-default-function '(my-undefined 1 "two") "" 'f) (note 'cedf-undef)
+      (message "m") (command-error-default-function '(error "") "" 'f) (note 'cedf-empty)
+      (message "m") (command-error-default-function '(error "") "" nil) (note 'cedf-empty-nil)
+      (message "m") (let ((print-unreadable-function (lambda (o e) (message "inner") nil))) (command-error-default-function (list 'wrong-type-argument 'x (make-marker)) "" 'f)) (note 'cedf-unread)
+      (message "m") (let ((standard-output (current-buffer))) (with-temp-buffer (command-error-default-function '(error "to-echo-not-buffer") "" nil) (note 'cedf-stdout (buffer-string))))
+      )
+  (error (push (list 'ERR err) dump-log)))
+(finish)"##,
+    );
+    let expected = corpus.run_tty(&oracle(), &probe, "echo364.out", "C.UTF-8", &[]);
+    let actual = corpus.run_tty(emaxx(), &probe, "echo364.out", "C.UTF-8", &[]);
+    assert!(expected.is_some(), "GNU's session wrote nothing");
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+}
+
+#[cfg(unix)]
+#[test]
+fn stdout_is_written_a_character_and_a_block_at_a_time() {
+    // print.c's printchar is `fwrite (str, 1, len, stdout)' and strout
+    // one fwrite of its block, so stdio decides what reaches the
+    // descriptor when: characters fill the stream's buffer and leave it
+    // a buffer at a time, where a block that does not fit fills the
+    // buffer and sends its whole blocks in one write.  Each editor is
+    // given a datagram socket for stdout, which keeps every write apart,
+    // and the sizes of the writes are compared one by one; what a print
+    // wrote before `print-unreadable-function' ran is there for its
+    // `flush-standard-output'.
+    use std::os::unix::net::UnixDatagram;
+    let corpus = Corpus::new();
+    let writes = |binary: &Path, form: &str| {
+        let (ours, theirs) = UnixDatagram::pair().expect("a datagram socket pair");
+        let mut child = Command::new(binary)
+            .args(["--batch", "-Q", "--eval", form])
+            .current_dir(&corpus.directory)
+            .env("HOME", &corpus.directory)
+            .env("LC_ALL", "C")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+                theirs,
+            )))
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("the editor starts");
+        ours.set_nonblocking(true)
+            .expect("a nonblocking datagram socket");
+        let mut sizes = Vec::new();
+        let mut datagram = vec![0u8; 1 << 20];
+        // The writes are taken as they come, so the editor never waits
+        // on a full socket; those left when it has exited are the last.
+        let status = loop {
+            let exited = child.try_wait().expect("the editor's status");
+            while let Ok(size) = ours.recv(&mut datagram) {
+                sizes.push(size);
+            }
+            match exited {
+                Some(status) => break status.code(),
+                None => std::thread::sleep(std::time::Duration::from_millis(2)),
+            }
+        };
+        (sizes, status)
+    };
+    for form in [
+        r##"(prin1 (make-string 20000 ?x))"##,
+        r##"(princ (make-string 20000 ?x))"##,
+        r##"(print (make-string 20000 ?x))"##,
+        r##"(progn (princ "ab") (princ (make-string 20000 ?x)) (prin1 (quote sym)))"##,
+        r##"(dotimes (i 3000) (prin1 (list i "str" (quote sym) 1.5)) (terpri))"##,
+        r##"(let ((print-unreadable-function (lambda (o e) (flush-standard-output) nil))) (prin1 (list (make-string 5000 ?a) (make-marker) (make-string 5000 ?b))))"##,
+        r##"(progn (prin1 (make-string 5000 233)) (princ (make-string 5000 233)) (prin1 (make-vector 3000 (quote abc))))"##,
+        r##"(progn (princ (make-string 4000 ?a)) (princ (make-string 4000 ?b)) (princ (make-string 4000 ?c)) (write-char ?d) (princ (make-string 9000 ?e)))"##,
+        r##"(progn (write-char ?a) (flush-standard-output) (princ "bcd") (flush-standard-output) (prin1 1234567) (terpri) (flush-standard-output))"##,
+        r##"(let ((standard-display-table (make-display-table))) (prin1 (make-string 10000 ?x)) (princ (make-string 10000 ?y)))"##,
+        r##"(progn (prin1 (make-string 6000 ?x)) (error "in the middle"))"##,
+    ] {
+        let expected = writes(&oracle(), form);
+        assert!(
+            !expected.0.is_empty(),
+            "GNU wrote nothing to its stdout for {form}"
+        );
+        assert_eq!(
+            writes(emaxx(), form),
+            expected,
+            "Emaxx (left) and GNU (right) differ for {form}"
+        );
+    }
+}
+
+#[test]
+fn the_printer_reads_its_variables_as_c_reads_them() {
+    // print.c reads Vstandard_output and its DEFVARs as C variables: the
+    // dynamic values.  An entry of one of those names in a lexical
+    // environment (the alist `eval' is given) is what a reference
+    // evaluates to and nothing the printer sees: the output still goes to
+    // stdout, and the limits and formats are the variables' own.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "lexenv.el",
+        r##";;; -*- lexical-binding: t -*-
+(eval '(princ "x1\n") '((standard-output . ignore)))
+(eval '(progn (princ standard-output) (terpri)) '((standard-output . ignore)))
+(eval '(print 'x2) '((standard-output . ignore)))
+(eval '(progn (terpri) (write-char ?w) (prin1 "s") (princ (prin1-to-string 'q)))
+      '((standard-output . ignore)))
+(eval '(princ (list print-length print-circle (prin1-to-string '(1 2 3))))
+      '((print-length . 1) (print-circle . t)))
+(eval '(princ (format "%S" '(1 2 3))) '((print-length . 1)))
+(eval '(princ (error-message-string '(error "a" (1 2 3))))
+      '((print-length . 1) (standard-output . ignore)))
+(eval '(message "%S" (list 1 2 3 float-output-format (prin1-to-string 1.5)))
+      '((float-output-format . "%.3f")))
+(terpri)
+(let ((acc nil))
+  (eval '(progn (princ "to stdout") (terpri)) (list (cons 'standard-output (lambda (c) (push c acc)))))
+  (princ (list 'collected acc))
+  (terpri))
+(let ((standard-output (lambda (_c) nil)))
+  (eval '(progn (princ "dropped") (princ standard-output)) '((standard-output . t))))
+(princ (condition-case err
+           (eval '(with-output-to-string (princ "kept") (princ standard-output))
+                 '((standard-output . t)))
+         (error (list 'signaled err))))
+(terpri)
+(eval '(princ (list noninteractive)) '((noninteractive . nil)))
+(terpri)"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn prin1_conses_the_copy_print_prune_string_charset_makes() {
+    // print.c's Lisp_String case prints `print_prune_string_charset
+    // (obj)' unless `print-charset-text-property' is t: Fcopy_sequence of
+    // the string, for a function, a buffer, a string or stdout alike.
+    // `memory-use-counts' shows the string and its characters consed, and
+    // none for `princ', a symbol, the empty string or the variable at t.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "consed.el",
+        r##";;; -*- lexical-binding: t -*-
+;; print_prune_string_charset copies each string `prin1' prints unless
+;; `print-charset-text-property' is t: a string and its characters
+;; consed, whatever the print goes to.
+(defun consed (thunk)
+  (let ((before (memory-use-counts)) after)
+    (dotimes (_ 100) (funcall thunk))
+    (setq after (memory-use-counts))
+    (list (- (nth 4 after) (nth 4 before)) (- (nth 6 after) (nth 6 before)))))
+(prin1-to-string "warm")
+(princ (list
+        'function (consed (lambda () (prin1 "beta" #'ignore)))
+        'princ (consed (lambda () (princ "beta" #'ignore)))
+        'buffer (with-temp-buffer (consed (lambda () (prin1 "beta" (current-buffer)))))
+        'string (consed (lambda () (prin1-to-string "beta")))
+        'format (consed (lambda () (format "%S" "beta")))
+        'list (consed (lambda () (prin1-to-string '("ab" sym "cde" 1.5))))
+        'kept (let ((print-charset-text-property t)) (consed (lambda () (prin1 "beta" #'ignore))))
+        'properties (let ((s (propertize "beta" 'face 'bold))) (consed (lambda () (prin1 s #'ignore))))
+        'multibyte (consed (lambda () (prin1 "é€" #'ignore)))
+        'empty (consed (lambda () (prin1 "" #'ignore)))
+        'symbol (consed (lambda () (prin1 'beta #'ignore)))))
+(terpri)
+(princ (list 'stdout (consed (lambda () (prin1 "b")))))
+(terpri)"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn what_lisp_changes_during_a_print_is_read_where_print_c_reads_it() {
+    // print.c reads what it prints when it gets there.  The string a
+    // `prin1' goes on with is print_prune_string_charset's copy, made
+    // before `#(' is written; a marker's and an overlay's buffer are read
+    // again for the name once the positions are written, a window's
+    // buffer after " on ", a frame's name before `#<frame ', a font
+    // spec's slots each at its turn; print_error_message reads a datum
+    // once its separator is written and the tail once the datum is
+    // printed; a label whose negation is no fixnum wraps as make_fixnum
+    // does; and signal_error makes a proper list the error's data.
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "copy.el",
+            r##";; print.c:2349 copies the string (print_prune_string_charset) before it writes "#(" (2352):
+;; what the function printed to does to the string from then on is not printed.
+(let* ((s (propertize (copy-sequence "abcd") 'face 'bold)) (acc nil))
+  (prin1 s (lambda (c) (push c acc) (when (= c ?#) (aset s 0 ?Z))))
+  (princ (concat (nreverse acc))) (terpri))
+(let* ((s (propertize (copy-sequence "abcd") 'face 'bold)) (acc nil))
+  (prin1 s (lambda (c) (push c acc) (when (= c ?\() (aset s 1 ?Y))))
+  (princ (concat (nreverse acc))) (terpri))"##,
+        ),
+        (
+            "unreadable.el",
+            r##";;; -*- lexical-binding: t -*-
+(defmacro try (&rest body) `(condition-case err (progn ,@body) (error (princ (format "[err %S]" err)))))
+;; ACT runs when the text printed so far ends with SUFFIX
+(defmacro collect-at (obj suffix &rest act)
+  `(let ((acc nil) (done nil))
+     (try (prin1 ,obj (lambda (c) (push c acc)
+                        (when (and (not done) (string-suffix-p ,suffix (concat (reverse acc)))) (setq done t) ,@act))))
+     (princ (concat (nreverse acc))) (terpri)))
+(defvar b1 (generate-new-buffer "first"))
+(defvar b2 (generate-new-buffer "second"))
+(with-current-buffer b1 (insert "0123456789"))
+(with-current-buffer b2 (insert "abcdefghij"))
+;; a marker's buffer is read again for its name
+(let ((m (with-current-buffer b1 (copy-marker 3))))
+  (collect-at m "at 3" (set-marker m 5 b2))
+  (set-marker m 3 b1)
+  (collect-at m "at 3 in" (set-marker m 5 b2))
+  (set-marker m 3 b1)
+  (collect-at m "#<marker" (set-marker m 5 b2))
+  (set-marker m 3 b1)
+  (collect-at m "in " (with-current-buffer b1 (rename-buffer "renamed-first")))
+  (with-current-buffer b1 (rename-buffer "first")))
+;; an overlay's buffer too
+(let ((o (with-current-buffer b1 (make-overlay 2 4))))
+  (collect-at o "from 2" (move-overlay o 6 7 b2))
+  (move-overlay o 2 4 b1)
+  (collect-at o "to 4 in" (move-overlay o 6 7 b2))
+  (move-overlay o 2 4 b1)
+  (collect-at o "#<overlay" (move-overlay o 6 7 b2))
+  (move-overlay o 2 4 b1)
+  (collect-at o "in " (with-current-buffer b1 (rename-buffer "renamed-first")))
+  (with-current-buffer b1 (rename-buffer "first")))
+;; a window's buffer and its name are read after " on "
+(set-window-buffer (selected-window) b1)
+(collect-at (selected-window) " o" (with-current-buffer b1 (rename-buffer "renamed-first")))
+(with-current-buffer b1 (rename-buffer "first"))
+(collect-at (selected-window) " on" (set-window-buffer (selected-window) b2))
+(set-window-buffer (selected-window) b1)
+(collect-at (selected-window) "#<window" (set-window-buffer (selected-window) b2))
+(set-window-buffer (selected-window) b1)
+(collect-at (selected-window) "#<window 1" (set-window-buffer (selected-window) b2))
+(set-window-buffer (selected-window) b1)
+;; a process's name
+(let ((p (make-pipe-process :name "pipe-one" :noquery t)))
+  (collect-at p "#<proc" (ignore))
+  (collect-at (list p) "(" (delete-process p))
+  (collect-at p "#" (ignore)))
+;; a frame's name is read before "#<frame "
+(let ((acc nil) (done nil) (f (selected-frame)))
+  (try (prin1 f (lambda (c) (push c acc) (when (and (not done) (= c ?#)) (setq done t) (try (modify-frame-parameters f '((name . "newname")))))))
+       (princ (replace-regexp-in-string "0x[0-9a-f]+" "PTR" (concat (nreverse acc)))) (terpri))
+  (princ (replace-regexp-in-string "0x[0-9a-f]+" "PTR" (prin1-to-string f))) (terpri))"##,
+        ),
+        (
+            "car.el",
+            r##";; the datum is read after its separator has been written (to a function here:
+;; Fcommand_error_default_function prints onto `external-debugging-output')
+(defvar acc nil)
+(defvar data (list 'foo 1 2 3))
+(defun external-debugging-output (c) (push c acc) (when (and (= c ?,) (eq (nth 2 data) 2)) (setcar (cddr data) 'changed)))
+(add-hook 'kill-emacs-hook (lambda () (princ (concat (reverse acc)))))
+(command-error-default-function data "" nil)"##,
+        ),
+        (
+            "tail.el",
+            r##";; print_error_message (print.c:1108-1119): FOR_EACH_TAIL reads XCDR (tail) after the datum
+;; is printed, and XCAR (tail) after the separator is written.
+(let* ((data (list 'foo 1 (make-marker) 2 3))
+       (print-unreadable-function (lambda (_o _e) (setcdr (cddr data) (list 'replaced)) nil)))
+  (princ (error-message-string data)) (terpri))"##,
+        ),
+        (
+            "font.el",
+            r##";; print.c:1913 reads each slot of a font spec when the walk reaches it.
+(let ((spec (font-spec :family "Foo" :size 12.5 :weight 'bold)) (acc nil) (done nil))
+  (prin1 spec (lambda (c) (push c acc)
+                (unless done (setq done t) (font-put spec :size 99.5) (font-put spec :family "Bar") (font-put spec :weight 'light))))
+  (princ (concat (nreverse acc))) (terpri))"##,
+        ),
+        (
+            "label.el",
+            r##";; print.c:2274: make_fixnum (- n) of the most negative fixnum is that fixnum again.
+(let ((x (list 'x)) (print-circle t) (print-continuous-numbering t) (print-number-table (make-hash-table :test 'eq)))
+  (puthash x most-negative-fixnum print-number-table)
+  (prin1 (list x x)) (terpri))"##,
+        ),
+        (
+            "list.el",
+            r##";; eval.c:2001 signal_error: a proper list ARG is the error's data itself.
+(princ (condition-case err (terpri '(lambda (c)) t) (error err))) (terpri)"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[test]
+fn a_print_keeps_what_it_reads_alive_and_no_longer() {
+    // The copy of a string a `prin1' reads and its intervals' plists
+    // live while the print runs, whatever Lisp it runs does to the string
+    // and however much it collects; and what a print left by a throw was
+    // printing is garbage once no print is running (print.c's stack is
+    // no root of its collector).
+    let corpus = Corpus::new();
+    for (name, text) in [
+        (
+            "plists.el",
+            r##";; the function printed to drops the string's properties and collects garbage
+;; while the string is printed: GNU prints the copy print_prune_string_charset made
+(defvar junk nil)
+(defun churn () (garbage-collect) (setq junk nil) (dotimes (i 300000) (setq junk (cons (list i 'junk "junk") junk))) (garbage-collect))
+(defun mk () (mapconcat (lambda (i) (propertize (string (+ ?a i)) 'face (list 'x i (list 'y 1.5 i) (format "str%d" i)))) (number-sequence 0 7) ""))
+(let* ((s (mk)) (acc nil) (done nil))
+  (prin1 s (lambda (c) (push c acc)
+             (when (and (= c ?\") (not done)) (setq done t) (set-text-properties 0 8 nil s) (churn))))
+  (princ (concat (nreverse acc))) (terpri))
+(let* ((s (mk)) (acc nil) (done nil))
+  (prin1 s (lambda (c) (push c acc)
+             (when (and (= c ?x) (not done)) (setq done t) (set-text-properties 0 8 nil s) (churn))))
+  (princ (concat (nreverse acc))) (terpri))"##,
+        ),
+        (
+            "unreadable.el",
+            r##";; same through print-unreadable-function on stdout, a buffer and prin1-to-string
+(defvar junk nil)
+(defun churn () (garbage-collect) (setq junk nil) (dotimes (i 300000) (setq junk (cons (list i 'junk "junk") junk))) (garbage-collect))
+(defun mk () (mapconcat (lambda (i) (propertize (string (+ ?a i)) 'face (list 'x i (if (= i 1) (make-marker) 0) (format "str%d" i)))) (number-sequence 0 7) ""))
+(let* ((s (mk)) (done nil)
+       (print-unreadable-function (lambda (_o _e) (unless done (setq done t) (set-text-properties 0 8 nil s) (churn)) nil)))
+  (prin1 s) (terpri))
+(let* ((s (mk)) (done nil)
+       (print-unreadable-function (lambda (_o _e) (unless done (setq done t) (set-text-properties 0 8 nil s) (churn)) nil)))
+  (princ (prin1-to-string s)) (terpri))
+(let* ((s (mk)) (done nil)
+       (print-unreadable-function (lambda (_o _e) (unless done (setq done t) (set-text-properties 0 8 nil s) (churn)) nil)))
+  (princ (format "%S" s)) (terpri))
+(let* ((s (mk)) (done nil)
+       (print-unreadable-function (lambda (_o _e) (unless done (setq done t) (set-text-properties 0 8 nil s) (churn)) nil)))
+  (with-temp-buffer (prin1 s (current-buffer)) (princ (buffer-string))) (terpri))"##,
+        ),
+        (
+            "left.el",
+            r##";;; -*- lexical-binding: t -*-
+;; every print left by a throw leaves its stack entries; what they point to
+(dotimes (i 3000)
+  (let ((big (list 1 (make-vector 100000 i))))
+    (catch 'out (prin1 big (lambda (c) (when (= c ?1) (throw 'out nil)))))))
+(garbage-collect)
+(princ (format "done %S\n" (let ((rss 0)) (with-temp-buffer (insert-file-contents "/proc/self/status") (when (re-search-forward "VmRSS:[ \t]*\\([0-9]+\\)" nil t) (setq rss (string-to-number (match-string 1))))) (if (> rss 1000000) 'rss-over-1GB 'rss-under-1GB))))"##,
+        ),
+    ] {
+        let program = corpus.write(name, text);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    }
+}
+
+#[test]
+fn the_standard_display_table_is_looked_up_as_disp_char_vector_does() {
+    // disptab.h: DISP_TABLE_P wants the purpose `display-table' and six
+    // extra slots; DISP_CHAR_VECTOR answers an ASCII character from the
+    // table's own ASCII slot (never its parent, the default only while
+    // no ASCII character has an entry) and any other with char_table_ref
+    // and then the default.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "lookup.el",
+        r##";;; -*- lexical-binding: t -*-
+;; DISP_CHAR_VECTOR: an ASCII character's entry is the table's own `ascii' slot (no parent; the
+;; default only when the table has no ASCII entry at all); any other character's is char_table_ref's.
+(defun show (tag) (princ (format "%s: " tag)) (princ "abé€") (write-char ?a) (write-char ?é) (prin1 'b)
+  (dolist (c (list ?a ?b #xe9 #x20ac)) (external-debugging-output c)) (external-debugging-output ?\n) (terpri))
+(let ((standard-display-table (make-display-table)) (parent (make-display-table)))
+  (aset parent ?a (vector ?P)) (aset parent #xe9 (vector ?Q))
+  (set-char-table-parent standard-display-table parent)
+  (show "parent only")
+  (aset standard-display-table ?b (vector ?B))
+  (show "parent, own ascii entry")
+  (aset standard-display-table #x20ac (vector ?E))
+  (show "parent, own entries"))
+(let ((standard-display-table (make-display-table)))
+  (set-char-table-range standard-display-table nil (vector ?D))
+  (show "default only")
+  (aset standard-display-table ?b (vector ?B))
+  (show "default, own ascii entry")
+  (aset standard-display-table #x20ac (vector ?E))
+  (show "default, own entries"))
+(let ((standard-display-table (make-display-table)))
+  (set-char-table-range standard-display-table t (vector ?T))
+  (show "range t")
+  (set-char-table-range standard-display-table '(0 . 127) (vector ?A))
+  (show "ascii range"))
+(put 'display-table 'char-table-extra-slots 3)
+(let ((standard-display-table (make-char-table 'display-table)))
+  (aset standard-display-table ?a (vector ?<)) (aset standard-display-table #xe9 (vector ?>))
+  (show "three extra slots"))
+(put 'display-table 'char-table-extra-slots 6)"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn primitives_read_and_store_variables_as_c_reads_and_stores_them() {
+    // GNU's C reads a variable as the C variable a DEFVAR forwards to or
+    // with Fsymbol_value (data.c:find_symbol_value), and stores one with
+    // an assignment or Fset (set_internal): always the dynamic binding,
+    // the buffer's where the variable is local.  Only eval_sub's own
+    // reference of a symbol form looks in the lexical environment (Fassq
+    // over Vinternal_interpreter_environment), with the forms that bind
+    // or assign there (`let', `setq', `condition-case', closures).  So
+    // an entry named like a special variable in the alist `eval' is given
+    // is what a reference in the form evaluates to and nothing a
+    // primitive, a hook run by name or a function called from the form
+    // sees: the reader, file names, searches, obarrays, columns, buffers
+    // and their hooks, text properties, processes, formats, times and
+    // timers, load, keymaps, the minibuffer, syntax scans, undo, case
+    // conversion and the command loop each keep the variables' own
+    // values, and what C stores (`features', `deactivate-mark',
+    // `last-coding-system-used') leaves the entry alone.
+    let corpus = Corpus::new();
+    corpus.write("zz-probe-lib.el", r##";;; -*- lexical-binding: t -*-
+(setq zz-probe-loaded (list load-in-progress (file-name-nondirectory load-file-name) lexical-binding))
+(provide 'zz-probe-lib)
+"##);
+    corpus.write(
+        "zz-probe-lib2.el",
+        r##"(setq zz-probe-lib2-count (1+ (if (boundp 'zz-probe-lib2-count) zz-probe-lib2-count 0)))
+(provide 'zz-probe-lib2)
+"##,
+    );
+    corpus.write("zz-probe-data.txt", "probe line\n");
+    let program = corpus.write(
+        "lexenv-c-reads.el",
+        r##";;; -*- lexical-binding: t -*-
+(defmacro zz (n form)
+  `(princ (format "%d: %S\n" ,n (condition-case err ,form (error (list 'ERR err))))))
+(defvar zz-here (symbol-value 'default-directory))
+;; --- the evaluator's own references see the lexical entry
+(zz 1 (eval 'tab-width '((tab-width . 2))))
+(zz 2 (eval '(list case-fold-search (symbol-value 'case-fold-search)) '((case-fold-search . lex))))
+(zz 3 (eval '(progn (setq tab-width 3) (list tab-width (symbol-value 'tab-width))) '((tab-width . 2))))
+(zz 4 (eval '(funcall (lambda () default-directory)) '((default-directory . "lex"))))
+(zz 5 (eval '(let ((fill-column 5)) (list fill-column (symbol-value 'fill-column))) '((fill-column . 9))))
+(zz 6 (eval '(condition-case tab-width (error "x") (error (car tab-width))) '((tab-width . 2))))
+(zz 7 (eval '(intern-soft "car" obarray) '((obarray . []))))
+(zz 8 (eval '(with-temp-buffer (insert "abc") buffer-read-only) '((buffer-read-only . t))))
+(zz 9 (eval '(with-temp-buffer (setq buffer-read-only t) (insert "x") (buffer-string)) '((buffer-read-only . nil))))
+(zz 10 (eval '(directory-file-name default-directory) '((default-directory . "/lex/"))))
+(zz 11 (eval '(progn (setq zz-cv-g 1) (list zz-cv-g (boundp 'zz-cv-g))) '((zz-cv-g . 0))))
+(zz 12 (eval '(progn (set 'zz-cv-h 1) (list zz-cv-h (symbol-value 'zz-cv-h))) '((zz-cv-h . 0))))
+(zz 13 (eval '(let ((case-fold-search nil)) (string-match "A" "a")) '((case-fold-search . t))))
+(zz 14 (eval '(let ((zz-cv-j 1)) (list zz-cv-j (boundp 'zz-cv-j))) '((zz-cv-j . 0))))
+(zz 15 (eval '(with-temp-buffer (insert "abc") (set-mark 3) (list mark-active (symbol-value 'mark-active))) '((mark-active . lex))))
+;; --- reader
+(zz 16 (eval '(read "#1=(a . #1#)") '((read-circle . nil))))
+(zz 17 (eval '(car (read-from-string "#1=(a #1#)")) '((read-circle . nil))))
+(zz 18 (eval '(read "zzs-foo") '((read-symbol-shorthands . (("zzs-" . "zzlong-"))))))
+(zz 19 (eval '(with-temp-buffer (insert "(a . b)") (goto-char 1) (read (current-buffer))) '((standard-input . nil) (read-circle . nil))))
+(zz 20 (eval '(symbol-name (read "zz-cv-fresh")) '((obarray . []))))
+(zz 21 (eval '(condition-case e (read) (error e)) '((standard-input . "(1 2)"))))
+zz-cv-read-by-the-form-above
+;; --- obarrays
+(zz 22 (eval '(intern-soft "car") '((obarray . []))))
+(zz 23 (eval '(intern "zz-cv-new-sym") '((obarray . []))))
+(zz 24 (eval '(let ((n 0)) (mapatoms (lambda (_) (setq n (1+ n)))) (> n 1000)) '((obarray . []))))
+(zz 25 (eval '(unintern "zz-cv-new-sym") '((obarray . []))))
+;; --- files
+(zz 26 (eval '(string= (expand-file-name "x") (expand-file-name "x" zz-here)) '((default-directory . "/nonexistent/"))))
+(zz 27 (eval '(file-exists-p "zz-probe-data.txt") '((default-directory . "/nonexistent/"))))
+(zz 28 (eval '(file-attribute-size (file-attributes "zz-probe-data.txt")) '((default-directory . "/nonexistent/"))))
+(zz 29 (eval '(with-temp-buffer (insert-file-contents (expand-file-name "zz-probe-data.txt" zz-here)) (buffer-string))
+             '((after-insert-file-functions . (zz-undefined-hook-fn)) (coding-system-for-read . utf-16) (inhibit-eol-conversion . t)
+               (file-name-handler-alist . ((".*" . zz-undefined-handler))) (set-auto-coding-function . zz-undefined-fn))))
+(zz 30 (eval '(find-file-name-handler "/:x" 'expand-file-name) '((file-name-handler-alist . nil))))
+(zz 31 (eval '(find-file-name-handler "/:x" 'expand-file-name)
+             '((inhibit-file-name-handlers . (file-name-non-special)) (inhibit-file-name-operation . expand-file-name))))
+(zz 32 (eval '(getenv "ZZ_CV_VAR") '((process-environment . ("ZZ_CV_VAR=lex")))))
+(zz 33 (eval '(file-relative-name (expand-file-name "sub/x")) '((default-directory . "/nonexistent/"))))
+(zz 34 (eval '(sort (directory-files "." nil "\\`zz-probe") 'string<) '((default-directory . "/nonexistent/"))))
+(zz 35 (eval '(file-name-completion "zz-probe-lib2" zz-here) '((completion-ignored-extensions . (".el")) (completion-regexp-list . ("zzz")))))
+(zz 36 (eval '(sort (file-name-all-completions "zz-probe-l" zz-here) 'string<) '((completion-regexp-list . ("zzz")) (completion-ignore-case . t))))
+(zz 37 (eval '(let ((f (make-temp-file "zz-cv-")))
+                (unwind-protect
+                    (with-temp-buffer (insert "a\nb") (write-region nil nil f nil 'silent)
+                                      (file-attribute-size (file-attributes f)))
+                  (delete-file f)))
+             '((coding-system-for-write . utf-16) (write-region-annotate-functions . (zz-undefined-hook-fn))
+               (temporary-file-directory . "/nonexistent/") (file-name-handler-alist . ((".*" . zz-undefined-handler))))))
+(zz 38 (eval '(equal (user-login-name) (symbol-value 'user-login-name)) '((user-login-name . "lex"))))
+(zz 39 (eval '(equal (user-full-name) (symbol-value 'user-full-name)) '((user-full-name . "lex"))))
+(zz 40 (eval '(equal (invocation-name) (symbol-value 'invocation-name)) '((invocation-name . "lex"))))
+(zz 41 (eval '(equal (invocation-directory) (symbol-value 'invocation-directory)) '((invocation-directory . "lex"))))
+;; --- search and case folding
+(zz 42 (eval '(string-match "A" "a") '((case-fold-search . nil))))
+(zz 43 (eval '(with-temp-buffer (insert "abc ABC") (goto-char 1) (search-forward "B" nil t)) '((case-fold-search . nil))))
+(zz 44 (eval '(with-temp-buffer (insert "abc") (goto-char 1) (re-search-forward "B" nil t)) '((case-fold-search . nil))))
+(zz 45 (eval '(with-temp-buffer (insert "abc") (goto-char 1) (looking-at "A")) '((case-fold-search . nil))))
+(zz 46 (eval '(with-temp-buffer (insert "a  b") (goto-char 1) (re-search-forward "a b" nil t)) '((search-spaces-regexp . "[ ]+"))))
+(zz 47 (eval '(char-equal ?a ?A) '((case-fold-search . nil))))
+(zz 48 (eval '(with-temp-buffer (insert "aA") (compare-buffer-substrings nil 1 2 nil 2 3)) '((case-fold-search . nil))))
+(zz 49 (eval '(replace-regexp-in-string "A" "x" "aAa") '((case-fold-search . nil))))
+(zz 50 (eval '(try-completion "A" '("abc" "abd")) '((completion-ignore-case . t))))
+(zz 51 (eval '(all-completions "a" '("abc" "axe")) '((completion-regexp-list . ("x")))))
+(zz 52 (eval '(test-completion "ABC" '("abc")) '((completion-ignore-case . t))))
+;; --- indentation and columns
+(zz 53 (eval '(with-temp-buffer (insert "a\tb") (current-column)) '((tab-width . 2))))
+(zz 54 (eval '(with-temp-buffer (indent-to 10) (buffer-string)) '((indent-tabs-mode . nil))))
+(zz 55 (eval '(with-temp-buffer (insert "\tx") (goto-char 1) (move-to-column 4 t) (buffer-string)) '((indent-tabs-mode . nil) (tab-width . 2))))
+(zz 56 (eval '(with-temp-buffer (insert "\^A\tb") (current-column)) '((ctl-arrow . nil) (tab-width . 3))))
+(zz 57 (eval '(with-temp-buffer (insert "\t x") (current-indentation)) '((tab-width . 1))))
+(zz 58 (eval '(string-width "a\tb") '((tab-width . 2))))
+(zz 59 (eval '(char-width ?\t) '((tab-width . 2))))
+(zz 60 (eval '(with-temp-buffer (insert "a\rb") (current-column)) '((selective-display . t))))
+(zz 61 (eval '(with-temp-buffer (insert (propertize "ab" 'invisible 'zz) "c") (current-column)) '((buffer-invisibility-spec . nil))))
+(zz 62 (eval '(with-temp-buffer (insert (propertize "ab" 'invisible t) "c") (invisible-p 1)) '((buffer-invisibility-spec . nil))))
+(zz 63 (eval '(string-width "日本") '((char-width-table . nil))))
+(zz 64 (eval '(with-temp-buffer (insert "ab\tcd") (goto-char 1) (move-to-column 5) (point)) '((tab-width . 2))))
+;; --- buffers and markers
+(zz 65 (eval '(with-temp-buffer (insert "abc") (buffer-string)) '((buffer-read-only . t))))
+(zz 66 (eval '(with-temp-buffer (set 'buffer-read-only t) (condition-case e (insert "x") (error (car e))))
+             '((buffer-read-only . nil) (inhibit-read-only . t))))
+(zz 67 (eval '(buffer-local-value 'tab-width (current-buffer)) '((tab-width . 2))))
+(zz 68 (eval '(list (symbol-value 'tab-width) (boundp 'zz-unbound-lex) (default-value 'fill-column))
+             '((tab-width . 2) (zz-unbound-lex . 1) (fill-column . 3))))
+(zz 69 (eval '(with-temp-buffer (insert 233) (list (multibyte-string-p (buffer-string)) (position-bytes 2))) '((enable-multibyte-characters . nil))))
+(zz 70 (eval '(with-temp-buffer (insert "x") (set-buffer-modified-p nil) (insert "y") (buffer-modified-p))
+             '((first-change-hook . (zz-undefined-hook-fn)) (before-change-functions . (zz-undefined-hook-fn))
+               (after-change-functions . (zz-undefined-hook-fn)))))
+(zz 71 (eval '(with-temp-buffer (let ((n 0)) (add-hook 'after-change-functions (lambda (&rest _) (setq n (1+ n))) nil t) (insert "a") n))
+             '((inhibit-modification-hooks . t))))
+(zz 72 (eval '(let ((b (generate-new-buffer "zz-cv"))) (kill-buffer b))
+             '((kill-buffer-hook . (zz-undefined-hook-fn)) (kill-buffer-query-functions . (ignore)) (buffer-list-update-hook . (zz-undefined-hook-fn)))))
+(zz 73 (eval '(with-temp-buffer (insert "abc") (goto-char 2) (let ((m (point-marker))) (insert "X") (list (marker-position m) (point) deactivate-mark (symbol-value 'deactivate-mark))))
+             '((deactivate-mark . lex))))
+(zz 74 (eval '(with-temp-buffer (insert "abc") (set-mark 1) (condition-case e (region-beginning) (error (car e))))
+             '((mark-even-if-inactive . nil) (mark-active . nil) (transient-mark-mode . t))))
+(zz 75 (eval '(with-temp-buffer (fundamental-mode) major-mode)
+             '((change-major-mode-hook . (zz-undefined-hook-fn)) (after-change-major-mode-hook . (zz-undefined-hook-fn)))))
+(zz 76 (eval '(with-temp-buffer (insert "abc") (buffer-substring 1 3))
+             '((buffer-access-fontify-functions . (zz-undefined-hook-fn)))))
+(zz 77 (eval '(with-temp-buffer (self-insert-command 2 ?x) (buffer-string))
+             '((auto-fill-function . zz-undefined-fn) (post-self-insert-hook . (zz-undefined-hook-fn)) (last-command-event . ?q))))
+(zz 78 (eval '(with-temp-buffer (insert "ab") (goto-char 1) (self-insert-command 1 ?x) (buffer-string)) '((overwrite-mode . overwrite-mode-textual))))
+;; --- text properties
+(zz 79 (eval '(with-temp-buffer (insert (propertize "abc" 'read-only t)) (condition-case e (progn (delete-region 1 2) 'deleted) (error (car e))))
+             '((inhibit-read-only . t))))
+(zz 80 (eval '(with-temp-buffer (insert (propertize "a" 'zzp 1)) (insert-and-inherit "b") (get-text-property 2 'zzp))
+             '((text-property-default-nonsticky . ((zzp . t))))))
+(zz 81 (eval '(with-temp-buffer (insert (propertize "a" 'zzalt 5)) (get-char-property 1 'zzmain)) '((char-property-alias-alist . ((zzmain zzalt))))))
+(zz 82 (eval '(with-temp-buffer (insert "a") (get-text-property 1 'zzq)) '((default-text-properties . (zzq 9)))))
+(zz 83 (eval '(with-temp-buffer (insert (propertize "ab" 'field 'x) "cd") (goto-char 4) (line-beginning-position)) '((inhibit-field-text-motion . t))))
+;; --- processes and coding variables
+(zz 84 (eval '(call-process "sh" nil nil nil "-c" "exit 3") '((exec-path . nil) (process-environment . nil))))
+(zz 85 (eval '(with-temp-buffer (list (call-process "sh" nil t nil "-c" "printf 'a\\r\\nb'") (buffer-string)))
+             '((coding-system-for-read . utf-8-dos) (default-process-coding-system . (utf-8-dos . utf-8-dos)))))
+(zz 86 (eval '(with-temp-buffer (insert "a\nb") (call-process-region 1 (point-max) "cat" t t) (buffer-string))
+             '((coding-system-for-write . utf-8-dos) (coding-system-for-read . no-conversion))))
+(zz 87 (eval '(decode-coding-string "a\r\nb" 'utf-8) '((inhibit-eol-conversion . t))))
+(zz 88 (eval '(progn (encode-coding-string "é" 'utf-8) (list last-coding-system-used (symbol-value 'last-coding-system-used)))
+             '((last-coding-system-used . zz-lex))))
+(zz 89 (eval '(list (check-coding-system 'utf-8) (coding-system-p 'utf-8)) '((coding-system-list . nil) (coding-system-alist . nil))))
+(zz 90 (eval '(find-operation-coding-system 'insert-file-contents "x.el") '((file-coding-system-alist . nil))))
+(zz 91 (eval '(find-operation-coding-system 'call-process "sh") '((process-coding-system-alist . (("sh" . latin-1))))))
+(zz 92 (eval '(detect-coding-string "abc" t) '((coding-category-list . nil))))
+(zz 93 (eval '(let ((p (make-pipe-process :name "zz-cv" :noquery t))) (prog1 (process-coding-system p) (delete-process p)))
+             '((coding-system-for-read . utf-16) (coding-system-for-write . utf-16))))
+;; --- numbers and formatting
+(zz 94 (eval '(format "%x" -255) '((binary-as-unsigned . t))))
+(zz 95 (eval '(list (number-to-string 1.5) (format "%s" 0.1) (prin1-to-string 2.5)) '((float-output-format . "%.3f"))))
+(zz 96 (eval '(expt 2 100) '((integer-width . 8))))
+(zz 97 (eval '(prin1-to-string '(1 2 3 4)) '((print-length . 2))))
+;; --- time and timers
+(zz 98 (eval '(length (current-time)) '((current-time-list . nil))))
+(zz 99 (eval '(time-add '(0 1 0 0) '(0 1 0 0)) '((current-time-list . nil))))
+(zz 100 (eval '(encode-time '(0 0 0 1 1 1970 nil nil t)) '((current-time-list . nil))))
+(zz 101 (eval '(let ((ran nil)) (run-at-time 0 nil (lambda () (setq ran t))) (sleep-for 0.1) ran) '((timer-list . nil))))
+(zz 102 (eval '(let ((tm (run-at-time 1000 nil (function ignore))))
+                (prog1 (list (and (memq tm (symbol-value 'timer-list)) t) timer-list) (cancel-timer tm)))
+             '((timer-list . lex) (timer-idle-list . nil))))
+;; --- load
+(zz 103 (eval '(load "zz-cv-nonexistent-lib" t t) '((load-path . ("/")))))
+(zz 104 (eval '(list (load (expand-file-name "zz-probe-lib" zz-here) nil t) (symbol-value 'zz-probe-loaded))
+              '((load-suffixes . (".zz")) (load-file-rep-suffixes . (".q")) (load-file-name . "lex") (load-in-progress . nil))))
+(zz 105 (eval '(file-name-nondirectory (locate-library "zz-probe-lib" nil (list zz-here)))
+              '((load-suffixes . (".zz")) (load-file-rep-suffixes . (".q")))))
+(zz 106 (eval '(member ".el" (get-load-suffixes)) '((load-suffixes . (".zz")) (load-file-rep-suffixes . ("")))))
+(zz 107 (eval '(list (featurep 'zz-probe-lib) features (featurep 'zz-lex-feature)) '((features . (zz-lex-feature)))))
+(zz 108 (eval '(list (require 'zz-probe-lib2 (expand-file-name "zz-probe-lib2.el" zz-here)) (boundp 'zz-probe-lib2-count))
+              '((features . (zz-probe-lib2)))))
+(zz 109 (eval '(progn (provide 'zz-cv-prov) (list features (featurep 'zz-cv-prov))) '((features . lex))))
+(zz 110 (eval '(load (expand-file-name "zz-probe-lib.el" zz-here) nil t)
+              '((load-source-file-function . zz-undefined-fn) (load-read-function . zz-undefined-fn) (load-prefer-newer . t))))
+(zz 111 (eval '(with-temp-buffer (insert "(setq zz-cv-eb 5)") (eval-buffer) (symbol-value 'zz-cv-eb))
+              '((load-read-function . zz-undefined-fn) (standard-output . zz-undefined-fn))))
+;; --- keymaps
+(zz 112 (eval '(key-binding "\C-x\C-f") '((overriding-local-map . (keymap (24 keymap (6 . zz-cmd)))) (overriding-terminal-local-map . nil))))
+(zz 113 (eval '(lookup-key (let ((m (make-sparse-keymap))) (define-key m "\M-a" 'zz) m) [27 97]) '((meta-prefix-char . 28))))
+(zz 114 (eval '(key-description "\M-a") '((meta-prefix-char . 28))))
+(zz 115 (eval '(command-remapping 'kill-line) '((overriding-local-map . (keymap (remap keymap (kill-line . zz-kill)))))))
+(zz 116 (eval '(where-is-internal 'find-file nil t) '((overriding-local-map . (keymap (97 . find-file))))))
+(zz 117 (eval '(keymapp minibuffer-local-map) '((minibuffer-local-map . 7))))
+(zz 118 (eval '(lookup-key (current-global-map) "\C-x\C-f") '((global-map . nil))))
+;; --- minibuffer
+(zz 119 (eval '(list (minibuffer-depth) (minibufferp) (minibuffer-prompt)) '((enable-recursive-minibuffers . t))))
+(zz 120 (eval '(condition-case e (read-string "zz-prompt: ") (error e)) '((minibuffer-history . lex) (history-add-new-input . nil))))
+(zz 121 (eval '(condition-case e (yes-or-no-p "zz-q ") (error e)) '((use-short-answers . t) (yes-or-no-prompt . "LEX"))))
+;; --- syntax tables
+(zz 122 (eval '(with-temp-buffer (set-syntax-table emacs-lisp-mode-syntax-table) (insert "(a ; )\n b)") (goto-char 1) (forward-sexp) (point))
+              '((parse-sexp-ignore-comments . t))))
+(zz 123 (eval '(with-temp-buffer (insert "a(b") (put-text-property 2 3 'syntax-table '(2)) (goto-char 1) (skip-syntax-forward "w") (point))
+              '((parse-sexp-lookup-properties . t))))
+(zz 124 (eval '(with-temp-buffer (insert "foo_bar baz") (goto-char 1) (forward-word) (point)) '((words-include-escapes . t))))
+(zz 125 (eval '(with-temp-buffer (insert "aéb c") (goto-char 1) (forward-word) (point)) '((multibyte-syntax-as-symbol . t))))
+(zz 126 (eval '(with-temp-buffer (set-syntax-table emacs-lisp-mode-syntax-table) (insert "; x\n(a") (nth 0 (parse-partial-sexp 1 (point-max))))
+              '((parse-sexp-ignore-comments . nil))))
+;; --- undo
+(zz 127 (eval '(with-temp-buffer (buffer-enable-undo) (insert "abc") (symbol-value 'buffer-undo-list)) '((buffer-undo-list . t))))
+(zz 128 (eval '(with-temp-buffer (buffer-enable-undo) (insert "abc") (undo-boundary) (insert "d") (list buffer-undo-list (length (symbol-value 'buffer-undo-list))))
+              '((buffer-undo-list . t))))
+(zz 129 (eval '(with-temp-buffer (buffer-enable-undo) (insert "abc") (undo-boundary) (delete-region 1 2) (undo-boundary)
+                                 (primitive-undo 1 (symbol-value 'buffer-undo-list)) (buffer-string))
+              '((buffer-undo-list . t) (inhibit-read-only . nil))))
+(zz 130 (eval '(with-temp-buffer (buffer-enable-undo) (insert (make-string 100 ?x)) (garbage-collect) (consp (symbol-value 'buffer-undo-list)))
+              '((undo-outer-limit . 1) (undo-limit . 1) (undo-strong-limit . 1) (undo-outer-limit-function . zz-undefined-fn)
+                (post-gc-hook . (zz-undefined-hook-fn)))))
+;; --- casefiddle
+(zz 131 (eval '(with-temp-buffer (insert "foo bar") (upcase-region 1 4) (buffer-string)) '((buffer-read-only . t))))
+(zz 132 (eval '(with-temp-buffer (insert "foo bar") (set-mark 1) (goto-char 4) (upcase-region 1 8 t) (buffer-string))
+              '((region-extract-function . zz-undefined-fn))))
+(zz 133 (eval '(with-temp-buffer (insert "foo-bar") (goto-char 1) (capitalize-word 1) (buffer-string)) '((case-symbols-as-words . t))))
+;; --- inhibit-* and friends
+(zz 134 (eval '(progn (message "zz-shown-%d" 1) nil) '((inhibit-message . t))))
+(zz 135 (eval '(progn (message "zz-batch-%d" 2) nil) '((noninteractive . nil))))
+(zz 136 (eval '(condition-case nil (progn (setq quit-flag t) (eval '(ignore)) 'no-quit) (quit 'quit)) '((inhibit-quit . t))))
+(zz 137 (eval '(catch 'zz-dbg (condition-case e (car 1) ((debug error) (car e))))
+              (list '(debug-on-error . t) (cons 'debugger (lambda (&rest _) (throw 'zz-dbg 'entered))))))
+(zz 138 (eval '(redisplay) '((inhibit-redisplay . t))))
+(zz 139 (eval '(funcall (lambda () (let ((f nil)) (setq f (lambda (n) (if (= n 0) 0 (1+ (funcall f (1- n)))))) (funcall f 200))))
+              '((max-lisp-eval-depth . 50))))
+;; --- hooks run by name
+(zz 140 (eval '(run-hooks 'zz-cv-hook) '((zz-cv-hook . (zz-undefined-hook-fn)))))
+(zz 141 (eval '(run-hook-with-args-until-success 'zz-cv-hook 1) '((zz-cv-hook . (identity)))))
+(zz 142 (eval '(progn (garbage-collect) 'gc-done) '((post-gc-hook . (zz-undefined-hook-fn)) (garbage-collection-messages . t))))
+;; --- display and command loop
+(zz 143 (eval '(call-interactively (lambda (n) (interactive "p") n)) '((current-prefix-arg . 5) (prefix-arg . 6))))
+(zz 144 (eval '(save-window-excursion (with-temp-buffer (switch-to-buffer (current-buffer)) (execute-kbd-macro "abc")
+                                                         (list (buffer-string) this-command last-command-event)))
+              '((executing-kbd-macro . nil) (last-command-event . 0) (this-command . lex) (unread-command-events . (120)))))
+(zz 145 (eval '(save-window-excursion (with-temp-buffer (switch-to-buffer (current-buffer)) (execute-kbd-macro (kbd "C-u 3 a")) (buffer-string)))
+              '((prefix-arg . 7) (current-prefix-arg . 9) (last-prefix-arg . 2))))
+(zz 146 (eval '(stringp (documentation 'car t)) '((internal-doc-file-name . "/nonexistent/DOC") (doc-directory . "/nonexistent/"))))
+(zz 147 (eval '(progn (with-output-to-temp-buffer "*zz-cv-out*" (princ "hi")) (with-current-buffer "*zz-cv-out*" (buffer-string)))
+              '((temp-buffer-show-function . zz-undefined-fn) (temp-buffer-setup-hook . (zz-undefined-hook-fn)) (temp-buffer-show-hook . (zz-undefined-hook-fn)))))
+(zz 148 (eval '(purecopy "abc") '((purify-flag . t))))
+;; --- `let' of a special variable binds it dynamically; a reference still finds the entry
+(zz 149 (eval '(let ((default-directory "/")) (expand-file-name "x")) '((default-directory . "/nonexistent/"))))
+(zz 150 (eval '(let ((tab-width 4)) (with-temp-buffer (insert "a\tb") (current-column))) '((tab-width . 2))))
+(zz 151 (eval '(let ((case-fold-search nil)) (list case-fold-search (string-match "A" "a"))) '((case-fold-search . lex))))
+(zz 152 (eval '(with-temp-buffer (insert "abc") (set-buffer-modified-p nil) (let ((buffer-read-only t)) (condition-case e (insert "x") (error (car e))))) '((buffer-read-only . nil))))
+(zz 153 (eval '(with-temp-buffer (insert "ab") (let ((inhibit-read-only t)) (setq buffer-read-only t) (insert "c") (buffer-string))) '((inhibit-read-only . nil))))
+(zz 154 (eval '(let ((standard-output (lambda (_c) nil))) (print 1) 'printed) '((standard-output . lex))))
+(zz 155 (eval '(with-output-to-string (prin1 '(1 2 3))) '((print-length . 1) (standard-output . lex))))
+(zz 156 (eval '(let ((print-escape-newlines t)) (prin1-to-string "a\nb")) '((print-escape-newlines . nil))))
+;; --- functions called with the entries in place
+(zz 157 (eval '(funcall 'symbol-value 'tab-width) '((tab-width . 2))))
+(zz 158 (eval '(mapcar #'symbol-value '(tab-width fill-column)) '((tab-width . 2) (fill-column . 3))))
+(zz 159 (eval '(local-variable-p 'tab-width) '((tab-width . 2))))
+(zz 160 (eval '(default-toplevel-value 'tab-width) '((tab-width . 2))))
+(zz 161 (eval '(run-hook-with-args 'zz-h 1) '((zz-h . (zz-undefined-hook-fn)))))
+(zz 162 (eval '(with-temp-buffer (insert "abc") (let ((o (make-overlay 1 3))) (overlay-put o 'modification-hooks '(zz-undefined-hook-fn)) (goto-char 2) (insert "x") (buffer-string))) '((inhibit-modification-hooks . t))))
+(zz 163 (eval '(with-temp-buffer (insert "abc def") (goto-char 1) (kill-word 1) (buffer-string)) '((kill-ring . nil) (interprogram-cut-function . zz-undefined-fn))))
+(zz 164 (eval '(with-temp-buffer (insert "abc") (copy-region-as-kill 1 3) (current-kill 0)) '((kill-ring . lex) (kill-ring-yank-pointer . lex))))
+(zz 165 (eval '(with-temp-buffer (insert "abc") (goto-char 1) (delete-char 1 t) (list (buffer-string) (car (symbol-value 'kill-ring)))) '((kill-ring . lex))))
+;; --- more searches, scans and motion
+(zz 166 (eval '(with-temp-buffer (insert "hello") (goto-char 1) (search-forward "L" nil t) ) '((case-fold-search . nil) (search-upper-case . nil))))
+(zz 167 (eval '(with-temp-buffer (insert "hello world") (goto-char 1) (word-search-forward "World" nil t)) '((case-fold-search . nil))))
+(zz 168 (eval '(with-temp-buffer (insert "hello world") (goto-char (point-max)) (search-backward "O" nil t)) '((case-fold-search . nil))))
+(zz 169 (eval '(with-temp-buffer (insert "Hello") (goto-char 1) (re-search-forward "h\\(e\\)" nil t) (replace-match "X\\1") (buffer-string)) '((case-fold-search . nil) (case-replace . nil))))
+(zz 170 (eval '(with-temp-buffer (insert "a.b") (goto-char 1) (list (progn (forward-sexp) (point)) (progn (backward-sexp) (point)))) '((parse-sexp-ignore-comments . t) (forward-sexp-function . zz-undefined-fn))))
+(zz 171 (eval '(with-temp-buffer (insert "(a (b) c)") (goto-char 2) (up-list) (point)) '((forward-sexp-function . zz-undefined-fn))))
+(zz 172 (eval '(with-temp-buffer (insert "(a (b) c)") (scan-lists 1 1 0)) '((parse-sexp-ignore-comments . t))))
+(zz 173 (eval '(with-temp-buffer (insert "abc\ndef") (goto-char 5) (list (line-beginning-position) (line-end-position) (pos-bol) (pos-eol))) '((inhibit-field-text-motion . t))))
+(zz 174 (eval '(with-temp-buffer (insert "abc") (add-text-properties 1 3 '(face bold)) (list (buffer-modified-p) (text-properties-at 1))) '((inhibit-modification-hooks . t) (buffer-read-only . t) (inhibit-read-only . nil))))
+;; --- more formats, numbers and times
+(zz 175 (eval '(current-time-string 0 t) '((current-time-list . nil))))
+(zz 176 (eval '(with-temp-buffer (insert "é") (set-buffer-multibyte nil) (buffer-string)) '((enable-multibyte-characters . t))))
+(zz 177 (eval '(string-to-multibyte "\351") '((enable-multibyte-characters . nil))))
+(zz 178 (eval '(char-charset ?a) '((charset-list . nil))))
+(zz 179 (eval '(mapcar (lambda (s) (string-to-number s)) '("1e3" "0x10" "1.5")) '((read-integer-overflow-as-float . t))))
+(zz 180 (eval '(list (format "%.2f" 1.005) (format "%e" 12345.678) (format "%g" 0.0001) (format "%5.1f|%-6d|%06d" 2.25 7 -7)) '((float-output-format . "%.1f"))))
+(zz 181 (eval '(list (truncate 1e10) (ash 1 70) (logand -1 255) (* 1.0 most-positive-fixnum)) '((integer-width . 4))))
+(zz 182 (eval '(format-time-string "%Y-%m-%d %H:%M:%S %Z" 86400 t) '((current-time-list . nil) (system-time-locale . "zz"))))
+(zz 183 (eval '(decode-time 3600 t) '((current-time-list . nil))))
+(zz 184 (eval '(time-convert 1.5 'list) '((current-time-list . nil))))
+(zz 185 (eval '(time-less-p '(0 1) '(0 2)) '((current-time-list . nil))))
+(zz 186 (eval '(let ((tm (run-with-idle-timer 1000 nil (function ignore)))) (prog1 (and (memq tm (symbol-value 'timer-idle-list)) t) (cancel-timer tm))) '((timer-idle-list . lex))))
+(zz 187 (eval '(timerp (run-with-timer 1000 nil 'ignore)) '((timer-list . lex))))
+;; --- more keymaps
+(zz 188 (eval '(let ((m (make-sparse-keymap))) (define-key m [?\C-c ?a] 'zz) (list (lookup-key m [?\C-c ?a]) (key-description (where-is-internal 'zz m t)))) '((meta-prefix-char . 3))))
+(zz 189 (eval '(let ((m (make-sparse-keymap))) (define-key m (kbd "ESC a") 'zz) (lookup-key m "\M-a")) '((meta-prefix-char . 28))))
+(zz 190 (eval '(minor-mode-key-binding "\C-x\C-f") '((minor-mode-map-alist . ((t keymap (24 keymap (6 . zz-cmd))))) (minor-mode-overriding-map-alist . nil) (emulation-mode-map-alists . nil))))
+(zz 191 (eval '(key-binding "\C-x\C-f") '((minor-mode-map-alist . ((t keymap (24 keymap (6 . zz-cmd))))))))
+(zz 192 (eval '(current-minor-mode-maps) '((minor-mode-map-alist . ((t keymap (24 keymap (6 . zz-cmd))))))))
+(zz 193 (eval '(with-temp-buffer (use-local-map (let ((m (make-sparse-keymap))) (define-key m "a" 'zz-local) m)) (key-binding "a")) '((overriding-local-map . nil))))
+;; --- more of the minibuffer, the environment and the printer
+(zz 194 (eval '(input-pending-p) '((unread-command-events . (1)))))
+(zz 195 (eval '(sit-for 0) '((unread-command-events . (1)))))
+(zz 196 (eval '(prefix-numeric-value current-prefix-arg) '((current-prefix-arg . (4)))))
+(zz 197 (eval '(progn (setenv "ZZ_CV_SET" "1") (list (getenv "ZZ_CV_SET") process-environment)) '((process-environment . lex))))
+(zz 198 (eval '(with-temp-buffer (call-process "sh" nil t nil "-c" "echo $ZZ_CV_SET") (buffer-string)) '((process-environment . ("ZZ_CV_SET=lex")))))
+(zz 199 (eval '(abbreviate-file-name (expand-file-name "x")) '((abbreviated-home-dir . "zz") (directory-abbrev-alist . (("x" . "y"))))))
+(zz 200 (eval '(completing-read "zz-cr: " '("a")) '((completing-read-function . zz-undefined-fn))))
+(zz 201 (eval '(read-number "zz-n: " 5) '((read-number-history . lex))))
+(zz 202 (eval '(y-or-n-p "zz-y ") '((use-short-answers . nil) (y-or-n-p-use-read-key . t))))
+(zz 203 (eval '(read-file-name "zz-f: ") '((read-file-name-function . zz-undefined-fn))))
+(zz 204 (eval '(read-buffer "zz-b: ") '((read-buffer-function . zz-undefined-fn))))
+(zz 205 (eval '(read-coding-system "zz-cs: ") '((completion-ignore-case . nil))))
+(zz 206 (eval '(read-minibuffer "zz-m: ") '((minibuffer-local-map . lex))))
+(zz 207 (eval '(message "%S" '(1 2 3)) '((print-length . 1) (message-log-max . nil))))
+(zz 208 (eval '(format "%S" "a\nb") '((print-escape-newlines . t))))
+(zz 209 (eval '(error-message-string '(wrong-type-argument listp 1)) '((print-length . 0))))
+;; --- what C stores goes to the variable, not to the entry
+(zz 210 (eval '(progn (decode-coding-string "a" 'utf-8) (list last-coding-system-used (symbol-value 'last-coding-system-used))) '((last-coding-system-used . lex))))
+(zz 211 (eval '(with-temp-buffer (call-process "sh" nil t nil "-c" "echo a") (list last-coding-system-used (symbol-value 'last-coding-system-used))) '((last-coding-system-used . lex))))
+(zz 212 (eval '(progn (load (expand-file-name "zz-probe-lib" zz-here) nil t) (list load-history current-load-list)) '((load-history . lex) (current-load-list . lex2))))
+(zz 213 (eval '(with-temp-buffer (buffer-disable-undo) (list buffer-undo-list (symbol-value 'buffer-undo-list))) '((buffer-undo-list . lex))))
+(zz 214 (eval '(with-temp-buffer (buffer-disable-undo) (buffer-enable-undo) (list buffer-undo-list (symbol-value 'buffer-undo-list))) '((buffer-undo-list . lex))))
+(zz 215 (eval '(with-temp-buffer (insert-file-contents (expand-file-name "zz-probe-data.txt" zz-here)) (list last-coding-system-used (symbol-value 'last-coding-system-used) buffer-file-coding-system)) '((last-coding-system-used . lex) (buffer-file-coding-system . lex2))))
+(zz 216 (eval '(progn (call-interactively 'ignore) (list this-command last-command real-this-command)) '((this-command . lex) (last-command . lex2) (real-this-command . lex3))))
+(zz 217 (eval '(with-temp-buffer (set-buffer-multibyte nil) (list enable-multibyte-characters (symbol-value 'enable-multibyte-characters))) '((enable-multibyte-characters . lex))))
+(zz 218 (eval '(with-temp-buffer (insert "x") (set-buffer-modified-p nil) (list buffer-undo-list buffer-file-name default-directory)) '((buffer-undo-list . lex) (buffer-file-name . lex2) (default-directory . lex3))))
+(zz 219 (eval '(save-window-excursion (with-temp-buffer (switch-to-buffer (current-buffer)) (execute-kbd-macro "a") (list this-command last-command-event last-input-event deactivate-mark unread-command-events executing-kbd-macro)))
+             '((this-command . lex) (last-command-event . lex2) (last-input-event . lex3) (deactivate-mark . lex4) (unread-command-events . nil) (executing-kbd-macro . lex6))))
+(zz 220 (eval '(with-temp-buffer (insert "abc") (set-mark 1) (goto-char 3) (deactivate-mark) (list mark-active deactivate-mark)) '((mark-active . lex) (deactivate-mark . lex2))))
+(zz 221 (eval '(progn (define-coding-system-alias 'zz-cv-alias 'utf-8) (list coding-system-list coding-system-alist)) '((coding-system-list . lex) (coding-system-alist . lex2))))
+(zz 222 (eval '(with-temp-buffer (insert "ab") (goto-char 1) (list (progn (self-insert-command 1 ?x) last-command-event) (buffer-string))) '((last-command-event . lex))))
+(zz 223 (eval '(progn (set-coding-system-priority 'utf-8) (list coding-category-list (car (symbol-value 'coding-category-list)))) '((coding-category-list . lex))))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+    // Forms evaluated in another environment take that environment's
+    // dialect: a documentation property that is a form is `Feval (tem,
+    // Qnil)' and `backtrace-eval' is eval_sub under the frame's own
+    // environment, so a lambda's parameter named like a special variable
+    // is specbound there and the primitives it calls see it.  Flet's
+    // `Fmemq (var, Vinternal_interpreter_environment)' signals for an
+    // environment that is no list or is circular.  And a parameter of
+    // that name in a lexical lambda is a dynamic binding wherever it is.
+    let program = corpus.write(
+        "lexenv-dialect.el",
+        r##";;; -*- lexical-binding: t -*-
+(defmacro zz (n form)
+  `(princ (format "%d: %S\n" ,n (condition-case err ,form (error (list 'ERR err))))))
+(defun zz-lexdbg (n exp) (backtrace-eval exp n))
+;; --- a documentation property that is a form: Feval (tem, Qnil)
+(zz 1 (progn (put 'zz-v 'variable-documentation '(funcall (lambda (tab-width) (with-temp-buffer (insert "\t") (format "%d" (current-column)))) 3)) (documentation-property 'zz-v 'variable-documentation t)))
+(zz 2 (progn (put 'zz-v 'variable-documentation '(condition-case tab-width (signal 'error nil) (error (condition-case e2 (with-temp-buffer (insert "\t") (format "%d" (current-column))) (error (format "%S" e2)))))) (documentation-property 'zz-v 'variable-documentation t)))
+(zz 3 (progn (defun zz-fd () nil) (put 'zz-fd 'function-documentation '(funcall (lambda (case-fold-search) (format "%S" (string-match "A" "a"))) nil)) (documentation 'zz-fd t)))
+(zz 4 (progn (put 'zz-v 'variable-documentation '(funcall (lambda (print-length) (format "%S" '(1 2 3))) 1)) (documentation-property 'zz-v 'variable-documentation t)))
+(zz 5 (progn (put 'zz-v 'variable-documentation '(mapconcat (lambda (print-length) (prin1-to-string '(1 2 3))) '(1 2) " ")) (documentation-property 'zz-v 'variable-documentation t)))
+(zz 6 (progn (put 'zz-v 'variable-documentation '(let ((zz-undecl "dyn")) (if (boundp 'zz-undecl) (symbol-value 'zz-undecl) "lex"))) (documentation-property 'zz-v 'variable-documentation t)))
+(zz 7 (progn (put 'zz-v 'variable-documentation '(let ((zz-undecl 5)) (format "%S" (funcall (lambda () (boundp 'zz-undecl)))))) (documentation-property 'zz-v 'variable-documentation t)))
+(zz 8 (progn (put 'zz-v 'variable-documentation '(format "%S" (special-variable-p (progn (defvar zz-docdv) 'zz-docdv)))) (documentation-property 'zz-v 'variable-documentation t)))
+(zz 9 (progn (put 'zz-v 'variable-documentation '(format "%S" (list (functionp (lambda (x) x)) (interpreted-function-p (lambda (x) x)) (aref (lambda (x) x) 2)))) (documentation-property 'zz-v 'variable-documentation t)))
+(zz 10 (progn (defmacro zz-dm () (format "%S" lexical-binding)) (put 'zz-v 'variable-documentation '(zz-dm)) (documentation-property 'zz-v 'variable-documentation t)))
+(zz 11 (funcall (byte-compile (lambda () (put 'zz-v 'variable-documentation '(funcall (lambda (tab-width) (with-temp-buffer (insert "\t") (format "%d" (current-column)))) 3)) (documentation-property 'zz-v 'variable-documentation t)))))
+(zz 12 (eval '(progn (put 'zz-v 'variable-documentation '(funcall (lambda (tab-width) (with-temp-buffer (insert "\t") (format "%d" (current-column)))) 3)) (documentation-property 'zz-v 'variable-documentation t)) nil))
+;; --- backtrace-eval: eval_sub under the frame's environment
+(defvar zz-r nil)
+(zz 13 (funcall '(lambda () (zz-lexdbg 1 '(let ((zz-q 1)) (boundp 'zz-q))))))
+(zz 14 (funcall '(lambda () (zz-lexdbg 1 '(funcall (lambda (tab-width) (with-temp-buffer (insert "\t") (current-column))) 3)))))
+(zz 15 (funcall '(lambda () (zz-lexdbg 1 '(interpreted-function-p (lambda (x) x))))))
+(zz 16 (funcall '(lambda () (zz-lexdbg 1 '(aref (lambda (x) x) 2)))))
+(zz 17 (funcall (lambda () (zz-lexdbg 1 '(let ((zz-q 1)) (boundp 'zz-q))))))
+(zz 18 (let ((zz-lv 'lex)) (funcall (lambda () (zz-lexdbg 1 'zz-lv)))))
+(zz 19 (let ((zz-lv 'lex)) (funcall (lambda () (zz-lexdbg 1 '(setq zz-lv 'changed)) zz-lv))))
+(zz 20 (let ((zz-lv 'lex)) (funcall '(lambda () (zz-lexdbg 1 '(condition-case nil zz-lv (error 'void)))))))
+(zz 21 (let ((zz-lv 'lex)) (funcall '(lambda () (zz-lexdbg 2 '(condition-case nil zz-lv (error 'void)))))))
+(zz 22 (let ((zz-lv 'lex)) (funcall '(lambda () (zz-lexdbg 3 '(condition-case nil zz-lv (error 'void)))))))
+(zz 23 (eval '(funcall (lambda () (zz-lexdbg 1 '(let ((zz-q 1)) (boundp 'zz-q))))) nil))
+(zz 24 (eval '(let ((zz-dynv 5)) (zz-lexdbg 1 '(list zz-dynv (boundp 'zz-dynv)))) nil))
+(zz 25 (eval '(let ((tab-width 5)) (zz-lexdbg 2 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))) nil))
+(zz 26 (let ((tab-width 5)) (zz-lexdbg 2 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))))
+(zz 27 (let ((tab-width 5)) (funcall (lambda () (zz-lexdbg 3 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))))))
+(zz 28 (funcall (lambda (tab-width) (zz-lexdbg 1 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))) 3))
+(zz 29 (funcall '(lambda (tab-width) (zz-lexdbg 1 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))) 3))
+(zz 30 (funcall '(lambda (tab-width) (zz-lexdbg 2 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))) 3))
+(zz 31 (funcall '(lambda (tab-width) (zz-lexdbg 3 '(with-temp-buffer (insert "\t") (list tab-width (current-column))))) 3))
+(zz 32 (let ((zz-lv 'lex)) (funcall (lambda (a) (mapcar (lambda (x) (if (consp x) (car x) x)) (zz-lexdbg 1 '(backtrace--locals 1)))) 1)))
+(zz 33 (let ((zz-lv 'lex)) (funcall (lambda (a) (list zz-lv (backtrace--locals 1))) 1)))
+(zz 34 (let ((zz-lv 'lex)) (funcall (lambda (a) (list zz-lv (backtrace--locals 2))) 1)))
+(zz 35 (let ((zz-lv 'lex)) (funcall (lambda (a) (list zz-lv (backtrace--locals 3))) 1)))
+(zz 36 (let ((tab-width 3)) (funcall (lambda (a) (list (backtrace--locals 1) (backtrace--locals 2) (backtrace--locals 3))) 1)))
+(zz 37 (funcall '(lambda (zz-da) (list (backtrace--locals 1) (backtrace--locals 2))) 1))
+(zz 38 (funcall (lambda (zz-la) (let ((zz-l2 2) (tab-width 4)) (list zz-la (backtrace--locals 1) (backtrace--locals 2)))) 1))
+;; --- Flet's Fmemq over a lexical environment that is no list
+(zz 39 (eval '(let ((zz-x 3)) zz-x) '((zz-y . 1) . 2)))
+(zz 40 (let ((al (list (cons 'zz-y 1)))) (setcdr al al) (car (condition-case e (eval '(let ((zz-q 1)) (boundp 'zz-q)) al) (error e)))))
+(zz 41 (eval '(let* ((zz-x 3)) zz-x) '((zz-y . 1) . 2)))
+;; --- a lambda's parameter named like a special variable is specbound
+(defvar zz-r nil)
+(zz 42 (funcall (lambda (default-directory) (list default-directory (equal (expand-file-name "x") (expand-file-name "x" (symbol-value 'default-directory))) (file-relative-name "/zz/a"))) "/zz/"))
+(zz 43 (funcall (lambda (default-directory) (with-temp-buffer (list default-directory (equal (symbol-value 'default-directory) default-directory)))) "/zz/"))
+(zz 44 (funcall (lambda (default-directory) (with-temp-buffer (call-process "pwd" nil t) (equal (buffer-string) "/\n"))) "/"))
+(zz 45 (funcall (lambda (standard-output) (princ "to-stdout-or-lexical") (terpri) standard-output) 'ignore))
+(zz 46 (funcall (lambda (standard-output) (with-output-to-string (princ "inner"))) 'ignore))
+(zz 47 (funcall (lambda (buffer-file-name) (list buffer-file-name (buffer-file-name) (symbol-value 'buffer-file-name))) "/zz/f"))
+(zz 48 (funcall (lambda (buffer-read-only) (with-temp-buffer (insert "x") (list buffer-read-only (buffer-string)))) t))
+(zz 49 (funcall (lambda (inhibit-read-only) (with-temp-buffer (setq buffer-read-only t) (condition-case e (insert "x") (error (car e))))) t))
+(zz 50 (funcall (lambda (case-fold-search) (with-temp-buffer (insert "abc") (goto-char 1) (list (search-forward "B" nil t) (looking-back "A" 1) (char-equal ?a ?A)))) nil))
+(zz 51 (funcall (lambda (print-length print-level) (list (format "%S" '(1 2 3 (4 (5)))) (prin1-to-string '(1 2 3)) (with-output-to-string (print '(1 2 3))) (error-message-string '(error "x" (1 2 3))))) 1 1))
+(zz 52 (funcall (lambda (print-escape-newlines print-escape-nonascii print-escape-multibyte) (prin1-to-string "a\né")) t t t))
+(zz 53 (funcall (lambda (float-output-format) (list (format "%s" 1.5) (number-to-string 1.5) (prin1-to-string 1.5))) "%.3f"))
+(zz 54 (funcall (lambda (text-quoting-style) (list (format-message "`a'") (substitute-quotes "`a'") (error-message-string '(void-variable x)))) 'grave))
+(zz 55 (funcall (lambda (tab-width indent-tabs-mode) (with-temp-buffer (insert "\t") (indent-to 20) (list (current-column) (buffer-string) (current-indentation)))) 2 nil))
+(zz 56 (funcall (lambda (fill-column left-margin) (with-temp-buffer (insert "aaa bbb ccc ddd eee") (fill-region 1 (point-max)) (buffer-string))) 8 2))
+(zz 57 (funcall (lambda (major-mode mode-name) (with-temp-buffer (list major-mode mode-name (symbol-value 'major-mode)))) 'zz-mode "Zz"))
+(zz 58 (funcall (lambda (load-path) (list (length load-path) (stringp (locate-library "subr")))) nil))
+(zz 59 (funcall (lambda (features) (list features (featurep 'subr-x) (require 'subr-x))) nil))
+(zz 60 (funcall (lambda (obarray) (list (intern-soft "car") (symbolp (intern "zz-lam-new")) (read "car"))) (obarray-make)))
+(zz 61 (funcall (lambda (process-environment) (list (getenv "ZZ_LAM") (with-temp-buffer (call-process "sh" nil t nil "-c" "echo ${ZZ_LAM:-unset}") (buffer-string)))) '("ZZ_LAM=lex")))
+(zz 62 (funcall (lambda (exec-path) (stringp (executable-find "sh"))) nil))
+(zz 63 (funcall (lambda (coding-system-for-read coding-system-for-write) (let ((f (make-temp-file "zz"))) (unwind-protect (progn (with-temp-buffer (insert "é") (write-region nil nil f nil 'silent)) (list (file-attribute-size (file-attributes f)) (with-temp-buffer (insert-file-contents f) (buffer-string)))) (delete-file f)))) 'latin-1 'latin-1))
+(zz 64 (funcall (lambda (buffer-file-coding-system enable-multibyte-characters) (with-temp-buffer (list buffer-file-coding-system enable-multibyte-characters (multibyte-string-p (buffer-string)) (symbol-value 'enable-multibyte-characters)))) 'utf-16 nil))
+(zz 65 (funcall (lambda (system-time-locale) (format-time-string "%a %b" 0 t)) "fr_FR.UTF-8"))
+(zz 66 (funcall (lambda (completion-ignore-case completion-regexp-list) (list (try-completion "A" '("abc" "abd")) (all-completions "a" '("abc" "abd")) (test-completion "ABC" '("abc")))) t '("d$")))
+(zz 67 (funcall (lambda (inhibit-quit quit-flag) (list inhibit-quit quit-flag (symbol-value 'inhibit-quit) (symbol-value 'quit-flag))) t nil))
+(zz 68 (funcall (lambda (debug-on-error) (condition-case e (car 1) (error (car e)))) t))
+(zz 69 (funcall (lambda (gc-cons-threshold gc-cons-percentage) (garbage-collect) (list gc-cons-threshold (= gc-cons-threshold (symbol-value 'gc-cons-threshold)))) 1 0.9))
+(zz 70 (funcall (lambda (max-lisp-eval-depth) (list max-lisp-eval-depth (> (symbol-value 'max-lisp-eval-depth) 100))) 10))
+(zz 71 (funcall (lambda (last-command this-command) (call-interactively 'ignore) (list last-command this-command (symbol-value 'this-command))) 'lc 'tc))
+(zz 72 (funcall (lambda (unread-command-events) (list unread-command-events (input-pending-p))) '(?a)))
+(zz 73 (funcall (lambda (deactivate-mark mark-active) (with-temp-buffer (insert "x") (list deactivate-mark mark-active (symbol-value 'deactivate-mark)))) 'lex 'lex2))
+(zz 74 (funcall (lambda (buffer-undo-list) (with-temp-buffer (buffer-enable-undo) (insert "x") (list buffer-undo-list (consp (symbol-value 'buffer-undo-list))))) 'lex))
+(zz 75 (funcall (lambda (parse-sexp-ignore-comments parse-sexp-lookup-properties) (with-temp-buffer (emacs-lisp-mode) (insert "(a ; )\n b)") (goto-char 1) (condition-case nil (progn (forward-sexp) (point)) (error 'err)))) nil nil))
+(zz 76 (funcall (lambda (search-spaces-regexp) (list (string-match "a b" "a   b") (with-temp-buffer (insert "a   b") (goto-char 1) (re-search-forward "a b" nil t)))) "[ ]+"))
+(zz 77 (funcall (lambda (inhibit-changing-match-data) (string-match "a" "a") (match-data)) t))
+(zz 78 (funcall (lambda (data-directory doc-directory) (list (stringp (documentation 'car)) data-directory)) "/zz/" "/zz/"))
+(zz 79 (funcall (lambda (load-in-progress load-file-name) (list load-in-progress (symbol-value 'load-in-progress) (equal load-file-name (symbol-value 'load-file-name)))) 'lex "lexname"))
+(zz 80 (funcall (lambda (lexical-binding) (list lexical-binding (symbol-value 'lexical-binding) (eval '(let ((zz-q 1)) (boundp 'zz-q)) lexical-binding) (aref (lambda (x) x) 2))) nil))
+(zz 81 (funcall (lambda (lexical-binding) (with-temp-buffer (insert "(setq zz-r (let ((zz-q 1)) (boundp 'zz-q)))") (eval-buffer) (list lexical-binding zz-r))) nil))
+(zz 82 (funcall (lambda (noninteractive) (list noninteractive (symbol-value 'noninteractive))) nil))
+(zz 83 (funcall (lambda (features load-history) (provide 'zz-lam-feat) (list features load-history (featurep 'zz-lam-feat))) 'lex 'lex2))
+(zz 84 (funcall (lambda (values) (eval-expression 5) (list values (car (symbol-value 'values)))) 'lex))
+(zz 85 (funcall (lambda (temporary-file-directory) (let ((f (make-temp-file "zz"))) (prog1 (list temporary-file-directory (file-exists-p f)) (delete-file f)))) "/nonexistent-zz/"))
+(zz 86 (funcall (lambda (inhibit-message message-log-max) (message "zz-lam-msg") (current-message)) t nil))
+(zz 87 (funcall (lambda (window-system initial-window-system) (list window-system (display-graphic-p) (framep (selected-frame)))) 'x 'x))
+(zz 88 (funcall (lambda (kill-ring interprogram-cut-function) (with-temp-buffer (insert "abc") (kill-region 1 3) (list kill-ring (car (symbol-value 'kill-ring))))) 'lex nil))
+(zz 89 (funcall (lambda (minibuffer-history history-length) (condition-case e (read-string "p: ") (error (car e)))) 'lex 0))
+(zz 90 (funcall (lambda (auto-save-default make-backup-files create-lockfiles) (let ((f (make-temp-file "zz"))) (unwind-protect (with-current-buffer (find-file-noselect f) (insert "x") (let ((inhibit-message t)) (save-buffer)) (prog1 (list (buffer-modified-p) (file-exists-p (concat f "~"))) (kill-buffer))) (delete-file f) (ignore-errors (delete-file (concat f "~")))))) nil nil nil))"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}

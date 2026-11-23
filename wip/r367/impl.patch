@@ -1,0 +1,1019 @@
+diff --git a/src/lisp/eval/bindings.rs b/src/lisp/eval/bindings.rs
+index 2d7d06fc..d6f9bffd 100644
+--- a/src/lisp/eval/bindings.rs
++++ b/src/lisp/eval/bindings.rs
+@@ -58,11 +58,13 @@ impl InterpreterState {
+         env: &Env,
+     ) -> Option<Result<Value, LispError>> {
+         if let Some(environment) = current_environment(env) {
+-            // Fassq's EQ, with this editor's flag read once.
++            // Fassq's EQ, with this editor's flag read once.  NAME is a
++            // cell `symbol_cell' answered, so its word is the cell's.
++            let key = Value::symbol_of_cell(*name);
+             let found = if self.globals.symbols_with_pos_enabled().get() {
+-                crate::lisp::types::assq_binding_with_pos(environment, name)
++                crate::lisp::types::assq_binding_with_pos(environment, key)
+             } else {
+-                crate::lisp::types::assq_binding_bare(environment, name)
++                crate::lisp::types::assq_binding_bare(environment, key)
+             };
+             match found {
+                 Ok(Some(binding)) => return Some(Ok(binding.cdr.get())),
+@@ -77,6 +79,42 @@ impl InterpreterState {
+         }
+         None
+     }
++
++    /// eval_sub's reference of `nil' or `t' (FORM) while ENVIRONMENT, the
++    /// interpreter environment, is not nil: `Fassq (form,
++    /// Vinternal_interpreter_environment)', which finds the binding a
++    /// lambda list, a `condition-case' or `eval''s alist made of the
++    /// symbol and signals for an environment that is no list or is
++    /// circular, and else `Fsymbol_value (form)', the symbol itself (both
++    /// are constants).
++    #[inline(never)]
++    pub(crate) fn lookup_nil_or_t_lexical(
++        &self,
++        form: Value,
++        environment: &Value,
++    ) -> Result<Value, LispError> {
++        debug_assert!(form.is_nil_or_t());
++        // Fassq's EQ, with this editor's flag read once.
++        let found = if self.globals.symbols_with_pos_enabled().get() {
++            crate::lisp::types::assq_binding_with_pos(environment, form)?
++        } else {
++            crate::lisp::types::assq_binding_bare(environment, form)?
++        };
++        Ok(found.map_or(form, |binding| binding.cdr.get()))
++    }
++
++    /// eval_sub's `SYMBOLP (form)' branch for FORM, `nil' or `t': the
++    /// lexical binding of it when the interpreter environment has one
++    /// (`lookup_nil_or_t_lexical'), and with no environment (dynamic
++    /// binding, where Fassq walks nothing) or no binding the symbol's
++    /// value, itself.
++    #[inline(always)]
++    pub(crate) fn lookup_nil_or_t(&self, form: Value, env: &Env) -> Result<Value, LispError> {
++        match current_environment(env) {
++            Some(environment) => self.lookup_nil_or_t_lexical(form, environment),
++            None => Ok(form),
++        }
++    }
+ }
+ 
+ impl Interpreter {
+@@ -1125,11 +1163,13 @@ impl Interpreter {
+     }
+ 
+     /// Fsetq's `XSETCDR (lex_binding, val)' for the symbol in hand: the
+-    /// current environment's binding of SYMBOL assigned in place, false
+-    /// when there is none.  Fassq compares symbols by identity.
++    /// current environment's binding of SYMBOL, a bare symbol (`nil', `t'
++    /// and the keywords among them: Fsetq asks Fassq before Fset finds a
++    /// constant), assigned in place, false when there is none.  Fassq
++    /// compares symbols by identity.
+     pub(super) fn set_lexical_variable_checked_symbol(
+         &mut self,
+-        symbol: &SymbolName,
++        symbol: Value,
+         value: Value,
+         env: &mut Env,
+     ) -> Result<bool, LispError> {
+diff --git a/src/lisp/eval/control_forms.rs b/src/lisp/eval/control_forms.rs
+index 43252d8a..aabebcb8 100644
+--- a/src/lisp/eval/control_forms.rs
++++ b/src/lisp/eval/control_forms.rs
+@@ -26,7 +26,12 @@ impl Interpreter {
+         if cond.is_truthy() {
+             match list_next(&rest) {
+                 Some((then_form, _)) => self.eval(&then_form, env),
+-                None => Ok(Value::Nil),
++                // `eval_sub (Fcar (XCDR (args)))' past the list's end: a
++                // reference to `nil', as an omitted argument is.
++                None => {
++                    rest.car()?;
++                    self.eval_nil_form(env)
++                }
+             }
+         } else {
+             self.progn_list(&list_cdr(&rest), env)
+@@ -75,6 +80,17 @@ impl Interpreter {
+         Ok(Value::Nil)
+     }
+ 
++    /// `eval_sub (Fcar (TAIL))' where a special form's list has ended
++    /// (Fif's THEN, the value form of a `let' element `(VAR)'): Fcar of
++    /// nil is nil, and eval_sub of `nil' is a symbol's reference, its
++    /// lexical binding when the environment has one.  Out of line: the
++    /// forms' usual paths evaluate a form that is there.
++    #[cold]
++    #[inline(never)]
++    pub(super) fn eval_nil_form(&mut self, env: &mut Env) -> Result<Value, LispError> {
++        self.eval(&Value::Nil, env)
++    }
++
+     /// Fprogn over a body list: each form evaluated in place, the last
+     /// one's value returned.
+     pub(super) fn progn_list(&mut self, body: &Value, env: &mut Env) -> Result<Value, LispError> {
+@@ -243,9 +259,12 @@ impl Interpreter {
+                 *slot = if symbol {
+                     Value::Nil
+                 } else {
++                    // `eval_sub (Fcar (Fcdr (elt)))': an element `(VAR)'
++                    // without a value form evaluates `nil', a symbol the
++                    // lexical environment may bind; a bare VAR is Qnil.
+                     match Self::let_binding_parts(&binding)?.1 {
+                         Some(form) => self.eval(&form, env)?,
+-                        None => Value::Nil,
++                        None => self.eval_nil_form(env)?,
+                     }
+                 };
+                 initialized += 1;
+@@ -337,9 +356,13 @@ impl Interpreter {
+                 };
+                 // FletX reads the name before evaluating its initializer,
+                 // but validates that name only after evaluation succeeds.
++                // `eval_sub (Fcar (XCDR (elt)))': an element `(VAR)'
++                // without a value form evaluates `nil', a symbol the
++                // lexical environment may bind; a bare VAR is Qnil.
+                 let value = match init {
+                     Some(form) => self.eval(&form, env)?,
+-                    None => Value::Nil,
++                    None if symbol => Value::Nil,
++                    None => self.eval_nil_form(env)?,
+                 };
+                 let name =
+                     crate::lisp::primitives::checked_symbol_identity(self, &name_value, env)?;
+diff --git a/src/lisp/eval/core.rs b/src/lisp/eval/core.rs
+index 90e30faa..dc9c7c6d 100644
+--- a/src/lisp/eval/core.rs
++++ b/src/lisp/eval/core.rs
+@@ -287,7 +287,8 @@ impl Interpreter {
+     /// the quit, collection and depth steps; below the outermost
+     /// evaluation that test is inlined into every caller, so an argument
+     /// that is a variable or a constant costs its lookup alone and a form
+-    /// takes the out-of-line path.
++    /// takes the out-of-line path.  `nil' and `t' are symbols there:
++    /// eval_sub asks Fassq for their lexical binding before their value.
+     #[inline(always)]
+     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+         if self.lisp_eval_depth != 0 {
+@@ -309,9 +310,17 @@ impl Interpreter {
+                 }
+                 return self.lookup_symbol_global(&name);
+             }
+-            if expr.is_nil_t_or_fixnum() {
++            if expr.is_fixnum() {
+                 return Ok(*expr);
+             }
++            // eval_sub's SYMBOLP (form) for the two symbols whose words
++            // are no cell's: `Fassq (form,
++            // Vinternal_interpreter_environment)', which walks nothing
++            // while the environment is nil (dynamic binding), and then
++            // Fsymbol_value, the symbol itself.
++            if expr.is_nil_or_t() {
++                return state.lookup_nil_or_t(*expr, env);
++            }
+         }
+         self.eval_sub(expr, env)
+     }
+@@ -431,12 +440,14 @@ impl Interpreter {
+     #[inline(always)]
+     fn eval_inner(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+         match expr.kind() {
+-            Kind::Nil
+-            | Kind::T
+-            | Kind::Integer(_)
+-            | Kind::BigInteger(_)
+-            | Kind::Float(_)
+-            | Kind::StringObject(_) => Ok(*expr),
++            // eval_sub's SYMBOLP (form): `nil' and `t' are looked up in
++            // the lexical environment like any symbol, before their
++            // value, themselves.
++            Kind::Nil | Kind::T => self.lookup_nil_or_t(*expr, env),
++
++            Kind::Integer(_) | Kind::BigInteger(_) | Kind::Float(_) | Kind::StringObject(_) => {
++                Ok(*expr)
++            }
+ 
+             // lread.c constructs every nested object before eval_sub.
+             // A vector is self-evaluating and keeps its reader identity.
+@@ -452,15 +463,14 @@ impl Interpreter {
+                 else {
+                     return Ok(*expr);
+                 };
++                // SYMBOLP (form) with the positions enabled: Fassq's EQ
++                // takes the bare symbol, `nil' and `t' included.
++                if symbol.is_nil_or_t() {
++                    return self.lookup_nil_or_t(symbol, env);
++                }
+                 let name = symbol
+                     .as_symbol()
+                     .map_err(|_| LispError::WrongTypeArgument("symbolp".into(), *expr))?;
+-                if name == "t" {
+-                    return Ok(Value::T);
+-                }
+-                if name == "nil" {
+-                    return Ok(Value::Nil);
+-                }
+                 // Inspect the boxed error in place. Moving its large enum
+                 // through this inlined evaluator reserves inactive stack
+                 // payload words that can conservatively retain dead objects.
+@@ -609,9 +619,11 @@ impl Interpreter {
+     /// unevaluated form, the arguments counted and checked against both
+     /// bounds, and MAXIMUM positions evaluated in order into eight slots
+     /// (Fcar before and Fcdr after each evaluation, as eval_sub does, so
+-    /// a position past the list's end evaluates nil, and one the list
+-    /// grew to during an earlier argument's evaluation is evaluated too),
+-    /// and the subr called through its facts.
++    /// a position past the list's end evaluates `nil', a symbol whose
++    /// lexical binding, when the environment has one, is its value there
++    /// (`eval_omitted_arguments'), and one the list grew to during an
++    /// earlier argument's evaluation is evaluated too), and the subr
++    /// called through its facts.
+     #[inline(always)]
+     #[allow(clippy::too_many_arguments)]
+     fn eval_fixed_subr(
+@@ -648,23 +660,29 @@ impl Interpreter {
+         // word).
+         let mut argvals = [std::mem::MaybeUninit::<Value>::uninit(); 8];
+         let mut args_left = original_args;
++        let mut given = 0;
+         for slot in &mut argvals[..maximum] {
+-            let cell = args_left.cons_ref();
+-            let form = match cell {
+-                Some(cell) => cell.car.get(),
+-                None if args_left.is_nil() => Value::Nil,
+-                None => {
+-                    let error = LispError::WrongTypeArgument("listp".into(), args_left);
+-                    return self.eval_call_argument_error(depth, true, error, env);
+-                }
++            let Some(cell) = args_left.cons_ref() else {
++                break;
+             };
+-            slot.write(match self.eval_nested(&form, env) {
++            slot.write(match self.eval_nested(&cell.car.get(), env) {
+                 Ok(value) => value,
+                 Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+             });
+-            args_left = cell.map_or(Value::Nil, |cell| cell.cdr.get());
++            args_left = cell.cdr.get();
++            given += 1;
++        }
++        if given < maximum {
++            let omitted = match self.eval_omitted_arguments(args_left, env) {
++                Ok(value) => value,
++                Err(error) => return self.eval_call_argument_error(depth, true, error, env),
++            };
++            for slot in &mut argvals[given..maximum] {
++                slot.write(omitted);
++            }
+         }
+-        // SAFETY: the loop wrote the first MAXIMUM slots.
++        // SAFETY: the two loops wrote the first MAXIMUM slots, the
++        // positions the list gave and then the ones past its end.
+         let argvals: &[Value] =
+             unsafe { std::slice::from_raw_parts(argvals.as_ptr().cast::<Value>(), maximum) };
+         // The callee's symbol has a function, so it is no built-in nil or t.
+@@ -686,13 +704,32 @@ impl Interpreter {
+         result
+     }
+ 
++    /// eval_sub's `eval_sub (Fcar (args_left))' for every position of a
++    /// fixed-arity subr past the end of its argument list (ARGS_LEFT, no
++    /// cons): Fcar of nil is nil and Fcdr of nil is nil, so each of them
++    /// is a reference to `nil', looked up in the lexical environment like
++    /// any symbol's; nothing runs between two of them, so one lookup
++    /// answers them all.  A tail that is no list is Fcar's listp.
++    #[inline(always)]
++    fn eval_omitted_arguments(
++        &mut self,
++        args_left: Value,
++        env: &mut Env,
++    ) -> Result<Value, LispError> {
++        if !args_left.is_nil() {
++            return Err(LispError::WrongTypeArgument("listp".into(), args_left));
++        }
++        self.eval_nested(&Value::Nil, env)
++    }
++
+     /// `eval_fixed_subr' for NATIVE, a native-compiled function in NAME's
+     /// cell that takes its at most six fixed arguments in registers
+     /// (`register_counts'): eval_sub's SUBRP branch, which checks the
+     /// arity before any argument is evaluated, evaluates the maximum's
+     /// positions into the slots and calls the function with them all (a
+-    /// missing optional nil, as funcall_subr pads it), the frame showing
+-    /// the arguments given. Inline in `eval_cons_call', out of eval_sub.
++    /// missing optional the value of `nil' evaluated, as for a C subr),
++    /// the frame showing the arguments given. Inline in `eval_cons_call',
++    /// out of eval_sub.
+     #[inline(always)]
+     fn eval_fixed_native(
+         &mut self,
+@@ -726,23 +763,29 @@ impl Interpreter {
+         // As `eval_fixed_subr's slots.
+         let mut argvals = [std::mem::MaybeUninit::<Value>::uninit(); 8];
+         let mut args_left = original_args;
++        let mut given = 0;
+         for slot in &mut argvals[..maximum] {
+-            let cell = args_left.cons_ref();
+-            let form = match cell {
+-                Some(cell) => cell.car.get(),
+-                None if args_left.is_nil() => Value::Nil,
+-                None => {
+-                    let error = LispError::WrongTypeArgument("listp".into(), args_left);
+-                    return self.eval_call_argument_error(depth, true, error, env);
+-                }
++            let Some(cell) = args_left.cons_ref() else {
++                break;
+             };
+-            slot.write(match self.eval_nested(&form, env) {
++            slot.write(match self.eval_nested(&cell.car.get(), env) {
+                 Ok(value) => value,
+                 Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+             });
+-            args_left = cell.map_or(Value::Nil, |cell| cell.cdr.get());
++            args_left = cell.cdr.get();
++            given += 1;
+         }
+-        // SAFETY: the loop wrote the first MAXIMUM slots.
++        if given < maximum {
++            let omitted = match self.eval_omitted_arguments(args_left, env) {
++                Ok(value) => value,
++                Err(error) => return self.eval_call_argument_error(depth, true, error, env),
++            };
++            for slot in &mut argvals[given..maximum] {
++                slot.write(omitted);
++            }
++        }
++        // SAFETY: the two loops wrote the first MAXIMUM slots, the
++        // positions the list gave and then the ones past its end.
+         let argvals: &[Value] =
+             unsafe { std::slice::from_raw_parts(argvals.as_ptr().cast::<Value>(), maximum) };
+         // The callee's symbol has a function, so it is no built-in nil or t.
+@@ -1088,6 +1131,10 @@ impl Interpreter {
+             FunctionResolution::DirectBuiltin(subr) => Some(*subr),
+             FunctionResolution::Resolved(_) => None,
+         };
++        // A native-compiled function that is a subr to eval_sub (see
++        // below), and its maximum when that is a count of at most eight.
++        let mut native_subr = false;
++        let mut native_fixed_max = None;
+         // eval_sub checks both bounds before evaluating a subr's arguments.
+         if let Some(subr) = subr {
+             let descriptor = subr.descriptor();
+@@ -1129,11 +1176,22 @@ impl Interpreter {
+                 ]));
+                 return self.eval_call_argument_error(depth, unevald_frame, error, env);
+             }
++            // eval_sub's last branch, as for a C subr: a maximum of at
++            // most eight is that many positions evaluated, the ones past
++            // the list's end too (a larger one is MANY's vector of the
++            // arguments given).
++            native_subr = true;
++            if (0..=8).contains(&maximum) {
++                native_fixed_max = Some(maximum as u16);
++            }
+         }
+-        let fixed_max = subr.and_then(|subr| match subr.descriptor().max_args() {
+-            NativeMaxArgs::Fixed(maximum) if maximum <= 8 => Some(maximum),
+-            _ => None,
+-        });
++        let fixed_max = match subr {
++            Some(subr) => match subr.descriptor().max_args() {
++                NativeMaxArgs::Fixed(maximum) if maximum <= 8 => Some(maximum),
++                _ => None,
++            },
++            None => native_fixed_max,
++        };
+         if nargs > 8 {
+             return self.eval_call_rooted(depth, callable_name, prepared, args_list, nargs, env);
+         }
+@@ -1147,7 +1205,7 @@ impl Interpreter {
+         for slot in &mut argvals[..limit] {
+             let cell = match args_left.cons_ref() {
+                 Some(cell) => Some(cell),
+-                None if subr.is_some() && fixed_max.is_none() => break,
++                None if (subr.is_some() || native_subr) && fixed_max.is_none() => break,
+                 None if args_left.is_nil() => None,
+                 None => {
+                     let error = LispError::WrongTypeArgument("listp".into(), args_left);
+@@ -1184,7 +1242,10 @@ impl Interpreter {
+ 
+     /// `finish_eval_call' for a native-compiled function or a byte-code
+     /// function: the frame recorded for the call takes the evaluated
+-    /// arguments, the function runs under it, and the frame is popped.
++    /// arguments (the first BACKTRACE_ARGC of ARGS, the ones given: a
++    /// native-compiled function of fixed arity has its omitted positions
++    /// evaluated after them, as a C subr has), the function runs under it,
++    /// and the frame is popped.
+     #[inline(never)]
+     fn eval_call_compiled(
+         &mut self,
+@@ -1192,9 +1253,10 @@ impl Interpreter {
+         name: &SymbolName,
+         func: Value,
+         args: &[Value],
++        backtrace_argc: usize,
+         env: &mut Env,
+     ) -> Result<Value, LispError> {
+-        self.set_backtrace_args(Value::symbol_of_cell(*name), args);
++        self.set_backtrace_args(Value::symbol_of_cell(*name), &args[..backtrace_argc]);
+         self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+         // A native callee is tested first: the closure's test is not made
+         // for it, and its usual call is made here.
+@@ -1255,9 +1317,18 @@ impl Interpreter {
+         env: &mut Env,
+     ) -> Result<Value, LispError> {
+         let unevald_frame = callable_name.is_some();
++        // eval_sub's MANY branch stops at the list's end (`while (CONSP
++        // (args_left) && argnum < numargs)'): a C subr's, and that of a
++        // native-compiled function that is a subr there (SUBRP and not
++        // SUBR_NATIVE_COMPILED_DYNP).
+         let many = match &prepared {
+             FunctionResolution::DirectBuiltin(_) => true,
+-            FunctionResolution::Resolved(func) => matches!(func.kind(), Kind::BuiltinFunc(_)),
++            FunctionResolution::Resolved(func) => {
++                matches!(func.kind(), Kind::BuiltinFunc(_))
++                    || func
++                        .native_function_ref()
++                        .is_some_and(|native| !native.is_dynamic())
++            }
+         };
+         let mut args = crate::lisp::alloc::RootedVec::with_capacity(nargs);
+         let mut args_left = args_list.map_or(Value::Nil, Value::Cons);
+@@ -1375,7 +1446,7 @@ impl Interpreter {
+                     && self.pending_termination().is_none()
+                     && !profiling() =>
+             {
+-                self.eval_call_compiled(depth, name, func, args, env)
++                self.eval_call_compiled(depth, name, func, args, backtrace_argc, env)
+             }
+             (Some(name), FunctionResolution::Resolved(func)) => {
+                 // The call's own frame takes the place of eval_sub's, and
+diff --git a/src/lisp/eval/definitions.rs b/src/lisp/eval/definitions.rs
+index 6af9cbd7..61a21adf 100644
+--- a/src/lisp/eval/definitions.rs
++++ b/src/lisp/eval/definitions.rs
+@@ -20,28 +20,29 @@ impl Interpreter {
+             nargs += 2;
+             // The symbol itself, resolved and assigned by its id: SYMBOLP
+             // and XSYMBOL, a symbol with position its bare symbol while
+-            // `symbols-with-pos-enabled' is set.  Anything else is
+-            // Fset's CHECK_SYMBOL, after eval_sub of the value.
++            // `symbols-with-pos-enabled' is set.  `nil' and `t', whose
++            // words are no cell's, and anything that is no symbol take
++            // the general way, out of line.
+             let bare = crate::lisp::types::maybe_remove_pos(sym);
+-            let symbol = match bare.symbol_cell() {
+-                Some(symbol) => symbol,
+-                None if bare.is_nil() => crate::lisp::types::symbols::builtin_boolean(false),
+-                None if bare.word() == Value::T.word() => {
+-                    crate::lisp::types::symbols::builtin_boolean(true)
+-                }
+-                None => {
+-                    self.eval(&value_form, env)?;
+-                    return Err(LispError::WrongTypeArgument("symbolp".into(), sym));
+-                }
++            let Some(symbol) = bare.symbol_cell() else {
++                result = self.setq_nil_t_or_no_symbol(sym, bare, &value_form, env)?;
++                continue;
+             };
+-            // Fsetq: the value, then the lexical alist, then Fset -- for
+-            // a plain untrapped symbol (no alias, no constant: a constant
+-            // never learns the plain store) set_internal's store is the
+-            // whole of Fset.
++            // Fsetq: the value, then the lexical alist (Fassq of the
++            // symbol as written, a keyword too: a lexical binding of one
++            // is assigned, and only without one does Fset find the
++            // constant), then Fset -- for a plain untrapped symbol (no
++            // alias, no constant: a constant never learns the plain
++            // store) set_internal's store is the whole of Fset.  SYMBOL
++            // is a cell `symbol_cell' answered, so its word is the cell's.
+             if self.globals.plain_store(&symbol) {
+                 let val = self.eval(&value_form, env)?;
+                 result = val;
+-                if self.set_lexical_variable_checked_symbol(&symbol, val, env)? {
++                if self.set_lexical_variable_checked_symbol(
++                    Value::symbol_of_cell(symbol),
++                    val,
++                    env,
++                )? {
+                     continue;
+                 }
+                 if self.globals.replace_bound_value(&symbol, val) {
+@@ -51,7 +52,11 @@ impl Interpreter {
+                 continue;
+             }
+             let evaluated = self.eval(&value_form, env)?;
+-            if self.set_lexical_variable_checked_symbol(&symbol, evaluated, env)? {
++            if self.set_lexical_variable_checked_symbol(
++                Value::symbol_of_cell(symbol),
++                evaluated,
++                env,
++            )? {
+                 result = evaluated;
+                 continue;
+             }
+@@ -66,6 +71,40 @@ impl Interpreter {
+         Ok(result)
+     }
+ 
++    /// Fsetq's one pair for SYM whose bare symbol BARE is `nil' or `t',
++    /// or which is no symbol: VALUE_FORM evaluated, then `SYMBOLP (sym) ?
++    /// Fassq (sym, Vinternal_interpreter_environment) : Qnil' -- a lexical
++    /// binding of `nil' or `t' (a lambda list's, a `condition-case''s,
++    /// one in `eval''s alist) is assigned like any symbol's --, and
++    /// without one Fset, which signals `setting-constant' for the two
++    /// constants and `symbolp' for what is no symbol.  The value assigned.
++    #[cold]
++    #[inline(never)]
++    fn setq_nil_t_or_no_symbol(
++        &mut self,
++        sym: Value,
++        bare: Value,
++        value_form: &Value,
++        env: &mut Env,
++    ) -> Result<Value, LispError> {
++        let evaluated = self.eval(value_form, env)?;
++        if !bare.is_nil_or_t() {
++            // Fset's CHECK_SYMBOL, after eval_sub of the value.
++            return Err(LispError::WrongTypeArgument("symbolp".into(), sym));
++        }
++        if self.set_lexical_variable_checked_symbol(bare, evaluated, env)? {
++            return Ok(evaluated);
++        }
++        let symbol = crate::lisp::types::symbols::builtin_boolean(!bare.is_nil());
++        // set_internal's `setting-constant' names the object given.
++        if self.check_constant_assignment_given(&symbol, sym, evaluated)? {
++            return Ok(evaluated);
++        }
++        let resolved = self.resolve_variable_symbol(&symbol)?;
++        self.setq_variable_symbol(&resolved, evaluated, env)?;
++        Ok(evaluated)
++    }
++
+     pub(super) fn sf_defvar(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+         let nargs = list_cons_count(args);
+         if nargs < 1 {
+diff --git a/src/lisp/eval/tests/eval_05.rs b/src/lisp/eval/tests/eval_05.rs
+index f6f6035b..b8912a7e 100644
+--- a/src/lisp/eval/tests/eval_05.rs
++++ b/src/lisp/eval/tests/eval_05.rs
+@@ -9342,3 +9342,105 @@ fn c_reads_and_stores_of_a_variable_pass_over_the_lexical_environment() {
+         Some(Value::Integer(9))
+     );
+ }
++
++#[test]
++fn nil_and_t_are_symbols_the_lexical_environment_binds() {
++    // eval.c:eval_sub does `Fassq (form, Vinternal_interpreter_environment)'
++    // for any symbol form, `nil' and `t' among them, before
++    // Fsymbol_value; Fsetq asks the same Fassq before Fset; and a
++    // fixed-arity subr's positions past its argument list are `eval_sub
++    // (Fcar (args_left))', a reference to `nil'.  The two symbols' words
++    // are no cell's address (0 and 48), so the walk compares the words
++    // themselves and Fassq by the symbol in hand finds the same conses.
++    let mut interp = gnu_early_lisp_interpreter();
++    let read = |interp: &mut Interpreter, source: &str| {
++        let form = Reader::new(source)
++            .read()
++            .expect("the form reads")
++            .expect("one form");
++        interp.intern_symbols_in_value(&form);
++        form
++    };
++    let nil = crate::lisp::types::symbols::builtin_boolean(false);
++    let t = crate::lisp::types::symbols::builtin_boolean(true);
++    // funcall_lambda's and internal_lisp_condition_case's `Fcons (Fcons
++    // (var, val), lexenv)': `((nil . 3) (t . 4))'.
++    let mut env = Env::from_vec(vec![crate::lisp::types::EnvFrame::bindings(
++        [(t, Value::Integer(4)), (nil, Value::Integer(3))],
++        &Value::Nil,
++    )]);
++    let environment = crate::lisp::types::current_environment_value(&env);
++    assert_eq!(
++        interp.eval(&Value::Nil, &mut env).ok(),
++        Some(Value::Integer(3))
++    );
++    assert_eq!(
++        interp.eval(&Value::T, &mut env).ok(),
++        Some(Value::Integer(4))
++    );
++    for (symbol, value) in [(nil, 3), (t, 4)] {
++        let binding = crate::lisp::types::assq_binding(&environment, &symbol)
++            .expect("a proper environment")
++            .expect("the symbol is bound there");
++        assert_eq!(binding.cdr.get(), Value::Integer(value));
++    }
++    // With no environment (dynamic binding) Fassq walks nothing and the
++    // symbols are their values.
++    let mut dynamic = Env::new();
++    assert_eq!(
++        interp.eval(&Value::Nil, &mut dynamic).ok(),
++        Some(Value::Nil)
++    );
++    assert_eq!(interp.eval(&Value::T, &mut dynamic).ok(), Some(Value::T));
++    // An omitted argument is `nil' evaluated for a subr called from a
++    // form, and nothing evaluated where funcall_subr pads the call.
++    for (source, expected) in [
++        ("(substring \"abcdef\" 1)", "bc"),
++        ("(funcall 'substring \"abcdef\" 1)", "bcdef"),
++        ("(substring \"abcdef\" 1 nil)", "bc"),
++    ] {
++        let form = read(&mut interp, source);
++        let value = interp.eval(&form, &mut env).expect("the call evaluates");
++        assert_string_value(value, expected);
++    }
++    let form = read(&mut interp, "(substring \"abcdef\" 1)");
++    let value = interp
++        .eval(&form, &mut dynamic)
++        .expect("the call evaluates");
++    assert_string_value(value, "bcdef");
++    // Fsetq: XSETCDR on the lexical binding; only without one does Fset
++    // meet the constant.
++    let form = read(&mut interp, "(setq nil 7 t 8)");
++    assert_eq!(interp.eval(&form, &mut env).ok(), Some(Value::Integer(8)));
++    for (symbol, value) in [(nil, 7), (t, 8)] {
++        let binding = crate::lisp::types::assq_binding(&environment, &symbol)
++            .expect("a proper environment")
++            .expect("the symbol is bound there");
++        assert_eq!(binding.cdr.get(), Value::Integer(value));
++    }
++    let error = interp
++        .eval(&form, &mut dynamic)
++        .expect_err("Fset of a constant signals");
++    assert_eq!(error.condition_type(), "setting-constant");
++    // C reads the symbols themselves.
++    assert_eq!(interp.symbol_value("nil"), Some(Value::Nil));
++    assert_eq!(interp.symbol_value("t"), Some(Value::T));
++    // Fassq's CHECK_LIST_END: an environment that is no list signals for
++    // `nil' and `t' as for any symbol it does not find.
++    let mut improper = Env::from_vec(vec![crate::lisp::types::EnvFrame::from_alist(Value::cons(
++        Value::cons(Value::symbol("zz-improper"), Value::Integer(1)),
++        Value::Integer(5),
++    ))]);
++    for form in [Value::Nil, Value::T] {
++        let error = interp
++            .eval(&form, &mut improper)
++            .expect_err("Fassq signals listp");
++        assert_eq!(error.condition_type(), "wrong-type-argument");
++    }
++    assert_eq!(
++        interp
++            .eval(&Value::symbol("zz-improper"), &mut improper)
++            .ok(),
++        Some(Value::Integer(1))
++    );
++}
+diff --git a/src/lisp/types.rs b/src/lisp/types.rs
+index 78de4cc9..03d9dd1d 100644
+--- a/src/lisp/types.rs
++++ b/src/lisp/types.rs
+@@ -2332,37 +2332,40 @@ pub(crate) fn assq_binding(
+     environment: &Value,
+     symbol: &SymbolName,
+ ) -> Result<Option<SharedCons>, LispError> {
+-    // Fassq's EQ: the binding's car is the symbol's own word (its cell's
+-    // address with the symbol tag), or, while `symbols-with-pos-enabled'
+-    // is set, a symbol with position of it. nil and t, whose words are 0
+-    // and 48, are never bound, and their cells' addresses match no word.
++    // Fassq's EQ: the binding's car is the symbol's own word (nil's and
++    // t's, 0 and 48; any other symbol's, its cell's address with the
++    // symbol tag), or, while `symbols-with-pos-enabled' is set, a symbol
++    // with position of it.  nil and t are symbols to Fassq as any other:
++    // a lambda list, a `condition-case' or `eval''s alist binds them.
+     // The flag is read once: no Lisp runs in the walk.
++    let key = Value::Symbol(*symbol);
+     if symbols::symbols_with_pos_enabled() {
+-        return assq_binding_with_pos(environment, symbol);
++        return assq_binding_with_pos(environment, key);
+     }
+-    assq_binding_bare(environment, symbol)
++    assq_binding_bare(environment, key)
+ }
+ 
+ /// `assq_binding' while `symbols-with-pos-enabled' is nil, when EQ is
+-/// BASE_EQ: the binding whose car is the symbol's own word.
++/// BASE_EQ: the binding whose car is the word of SYMBOL, a bare symbol
++/// (nil and t among them).
+ #[inline(always)]
+ pub(crate) fn assq_binding_bare(
+     environment: &Value,
+-    symbol: &SymbolName,
++    symbol: Value,
+ ) -> Result<Option<SharedCons>, LispError> {
+-    let target = symbol.identity_ptr() | TAG_SYMBOL;
++    let target = symbol.word();
+     assq_environment(environment, |bound| bound.word() == target)
+ }
+ 
+ /// `assq_binding' while `symbols-with-pos-enabled' is set: a binding's car
+-/// may also be a symbol with position of the symbol whose word is TARGET.
++/// may also be a symbol with position of SYMBOL, a bare symbol.
+ #[cold]
+ #[inline(never)]
+ pub(crate) fn assq_binding_with_pos(
+     environment: &Value,
+-    symbol: &SymbolName,
++    symbol: Value,
+ ) -> Result<Option<SharedCons>, LispError> {
+-    let target = symbol.identity_ptr() | TAG_SYMBOL;
++    let target = symbol.word();
+     assq_environment(environment, |bound| {
+         bound.word() == target || (bound.is_vectorlike() && symbol_with_pos_is(bound, target))
+     })
+@@ -2812,10 +2815,11 @@ impl Value {
+         }
+     }
+ 
+-    /// nil, t or a fixnum: the immediates `eval' returns as they are.
++    /// The symbol `nil' or the symbol `t': the two symbols whose words
++    /// are no cell's address (`symbol_cell' answers neither).
+     #[inline(always)]
+-    pub(crate) fn is_nil_t_or_fixnum(self) -> bool {
+-        self.0 == 0 || self.0 == Value::T.0 || self.0 & 3 == TAG_INT0
++    pub(crate) fn is_nil_or_t(self) -> bool {
++        self.0 == 0 || self.0 == Value::T.0
+     }
+ 
+     /// lisp.h's XTYPE, with its two fixnum tags as one.
+diff --git a/tests/cli_parity.rs b/tests/cli_parity.rs
+index b47c815e..45a5d382 100644
+--- a/tests/cli_parity.rs
++++ b/tests/cli_parity.rs
+@@ -13062,3 +13062,274 @@ zz-cv-read-by-the-form-above
+     );
+     assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+ }
++
++#[test]
++fn nil_t_and_keywords_are_symbols_to_the_evaluator() {
++    // eval.c:eval_sub does `Fassq (form, Vinternal_interpreter_environment)'
++    // for any symbol form, `nil', `t' and the keywords among them, and only
++    // then Fsymbol_value; Fsetq asks the same Fassq before Fset finds a
++    // constant; funcall_lambda and internal_lisp_condition_case cons a
++    // binding of whatever symbol they are given onto a lexical environment
++    // (Flet and FletX specbind these three kinds, declared special, so
++    // they signal `setting-constant' in either dialect, as dynamic lambda
++    // lists and handlers do).  A subr of fixed arity called from a form has
++    // every position up to its maximum evaluated as `eval_sub (Fcar
++    // (args_left))', so an omitted argument is a reference to `nil' -- a
++    // C subr's, an alias's, a subr object's in the head, a native-compiled
++    // function's -- while MANY's vector, funcall_subr (`funcall', `apply',
++    // `mapcar', byte code) and funcall_lambda evaluate nothing for one.
++    // The same Fassq signals for an environment that is no list or is
++    // circular, where it does not find the symbol first.  C itself reads
++    // and stores the symbols (`symbol-value', `boundp', `set').
++    let corpus = Corpus::new();
++    let program = corpus.write(
++        "nil-t-symbols.el",
++        r##";;; -*- lexical-binding: t -*-
++(defmacro zz (n form)
++  `(princ (format "%d: %S\n" ,n (condition-case zz--err ,form (error (list 'ERR zz--err))))))
++(defvar zz-dv 0)
++(defvar zz-seen nil)
++;; --- eval_sub: `nil', `t' and keywords are symbols Fassq looks up
++(zz 1 (eval '(list nil t) '((nil . 3) (t . 4))))
++(zz 2 (eval '(list :k nil t) '((:k . 3))))
++(zz 3 (list (eval nil '((nil . 3))) (eval t '((t . 4))) (eval :k '((:k . 5))) (eval nil t) (eval t 7)))
++(zz 4 (eval '(list 'nil 't (quote nil) (eq nil 'nil) (eq t 't) (null nil) (not t)) '((nil . 3) (t . nil))))
++(zz 5 (eval '(list nil t) '((nil) (t))))
++(zz 6 (eval '(list nil t :k) '(nil t :k zz-a (zz-a . 1))))
++(zz 7 (eval '(list nil t) '((zz-a . 1) (nil . 3) (nil . 4) (t . 5) (t . 6))))
++(zz 8 (let ((s (make-symbol "nil")) (u (make-symbol "t")))
++        (list (eval (list 'list s u nil t) (list (cons s 1) (cons u 2)))
++              (condition-case e (eval s '((nil . 3))) (error e)))))
++;; --- the special forms evaluate their forms with eval_sub
++(zz 9 (eval '(list (if nil 1 2) (if t 1 2) (if nil 1)) '((nil . 3) (t . nil))))
++(zz 10 (eval '(list (cond (nil 1) (t 2)) (cond (t)) (cond (nil)) (cond)) '((nil . 3) (t . 4))))
++(zz 11 (eval '(list (and) (and t) (and t nil) (or) (or nil) (or nil t)) '((nil . nil) (t . 9))))
++(zz 12 (eval '(list (and t nil) (or nil t) (and nil t)) '((nil . 3) (t . nil))))
++(zz 13 (eval '(list (progn) (progn nil) (prog1 nil t) (prog1 t) (prog2 nil t)) '((nil . 3) (t . 4))))
++(zz 14 (eval '(let ((i 0)) (while t (setq i (1+ i))) i) '((t . nil))))
++(zz 15 (eval '(let ((i 0)) (while nil (setq i (1+ i)) (if (> i 3) (setq nil (ignore)))) (list i nil)) (list (cons nil 3))))
++(zz 16 (eval '(list (catch nil (throw 3 4)) (unwind-protect nil t) (save-excursion nil) (save-restriction t) (save-current-buffer nil t)) '((nil . 3) (t . 4))))
++(zz 17 (eval '(list (quote nil) (function nil) (function t) (interactive nil)) '((nil . 3) (t . 4))))
++(zz 18 (eval '(list (when nil 1) (unless t 2) (when t) (unless nil nil t)) '((nil . 3) (t . nil))))
++(zz 19 (eval '(list (condition-case nil nil (error 1)) (condition-case v nil (:success (list v nil))) (condition-case nil (signal 'error nil) (error nil))) '((nil . 3))))
++(zz 20 (list (eval '(defvar zz-dv2 nil) '((nil . 3))) (symbol-value 'zz-dv2) (eval '(defconst zz-dc2 t) '((t . 4))) (symbol-value 'zz-dc2)))
++(zz 21 (list (eval '(setq zz-dv nil) '((nil . 3))) zz-dv (eval '(setq zz-dv t) '((t . 4))) zz-dv (eval '(setq zz-dv :k) '((:k . 5))) zz-dv))
++;; --- let and let*: value forms evaluated, `(VAR)' evaluates nil, VAR is nil
++(zz 22 (eval '(let ((a nil) (b t) (c) d) (list a b c d)) '((nil . 3) (t . 4))))
++(zz 23 (eval '(let* ((a nil) (b t) (c) d) (list a b c d)) '((nil . 3) (t . 4))))
++(zz 24 (eval '(let ((zz-x 1)) (list nil t zz-x)) '((nil . 3) (t . 4))))
++(zz 25 (list (condition-case e (eval '(let ((nil 1)) nil) t) (error e))
++             (condition-case e (eval '(let ((t 1)) t) t) (error e))
++             (condition-case e (eval '(let ((:k 1)) :k) t) (error e))
++             (condition-case e (eval '(let ((:k :k)) :k) t) (error e))
++             (condition-case e (eval '(let (nil) nil) t) (error e))
++             (condition-case e (eval '(let (t) t) t) (error e))))
++(zz 26 (list (condition-case e (eval '(let* ((nil 1)) nil) t) (error e))
++             (condition-case e (eval '(let* ((t 1)) t) t) (error e))
++             (condition-case e (eval '(let* ((:k 1)) :k) t) (error e))
++             (condition-case e (eval '(let* ((:k :k)) :k) t) (error e))
++             (condition-case e (eval '(let* (nil) nil) t) (error e))
++             (condition-case e (eval '(let* ((nil nil)) nil) t) (error e))))
++(zz 27 (list (condition-case e (eval '(let ((nil 1)) nil) nil) (error e))
++             (condition-case e (eval '(let ((t 1)) t) nil) (error e))
++             (condition-case e (eval '(let ((t t)) t) nil) (error e))
++             (condition-case e (eval '(let* ((nil nil)) nil) nil) (error e))
++             (condition-case e (eval '(let ((:k 2)) :k) nil) (error e))
++             (condition-case e (eval '(let* ((:k :k)) :k) nil) (error e))))
++(zz 28 (list (condition-case e (eval '(let ((nil 5)) nil) '((nil . 3))) (error e))
++             (condition-case e (eval '(let* ((t 5)) t) '((t . 3))) (error e))
++             (condition-case e (eval '(let ((:k 5)) :k) '((:k . 3))) (error e))))
++;; --- lambda lists: funcall_lambda binds any symbol in a lexical closure
++(zz 29 (list (funcall (lambda (t) t) 1) (funcall (lambda (nil) nil) 2) (funcall (lambda (:k) :k) 3)))
++(zz 30 (list (funcall (lambda (&optional nil) nil)) (funcall (lambda (&optional nil) nil) 7)
++             (funcall (lambda (&optional t) (list t nil))) (funcall (lambda (&optional t) (list t nil)) 8)))
++(zz 31 (list (funcall (lambda (&rest nil) nil) 7 8) (funcall (lambda (&rest t) t) 7 8) (funcall (lambda (&rest t) t))
++             (funcall (lambda (nil &optional t &rest :k) (list nil t :k)) 1 2 3 4)))
++(zz 32 (list (funcall (lambda (t) (setq t (1+ t)) t) 1) (funcall (lambda (nil) (setq nil (list nil nil)) nil) 2)
++             (funcall (lambda (:k) (setq :k (list :k)) :k) 3)))
++(zz 33 (list (funcall (lambda (t) (if t 'yes 'no)) nil) (funcall (lambda (nil) (if nil 'yes 'no)) 5)
++             (funcall (lambda (t nil) (list (and t nil) (or nil t) (not t) (null nil))) nil 6)))
++(defun zz-f1 (t nil) (list t nil (symbol-value 't) (symbol-value 'nil)))
++(defun zz-f2 (&optional nil t) (list nil t))
++(zz 34 (list (zz-f1 1 2) (zz-f2) (zz-f2 1) (zz-f2 1 2)))
++(zz 35 (list (condition-case e (funcall '(lambda (nil) nil) 1) (error e))
++             (condition-case e (funcall '(lambda (t) t) 1) (error e))
++             (condition-case e (funcall '(lambda (:k) :k) 1) (error e))
++             (condition-case e (funcall '(lambda (:k) :k) :k) (error e))
++             (condition-case e (funcall '(lambda (&optional nil) nil)) (error e))
++             (condition-case e (funcall '(lambda (&rest t) t)) (error e))))
++(zz 36 (list (eval '(funcall (lambda (&optional x) x)) '((nil . 3)))
++             (eval '(funcall (lambda (x) x) nil) '((nil . 3)))
++             (eval '(funcall (lambda (&rest x) x) nil t) '((nil . 3) (t . 4)))
++             (eval '(apply (lambda (&rest x) x) nil) '((nil . (5 6))))))
++;; --- closures and the environments they are made with
++(zz 37 (list (funcall (funcall (lambda (t) (lambda () t)) 7))
++             (funcall (funcall (lambda (nil) (lambda () nil)) 8))
++             (funcall (funcall (lambda (:k) (lambda () :k)) 9))
++             (funcall (funcall (lambda (t nil) (lambda (x) (list t nil x))) 1 2) 3)))
++(zz 38 (list (eval '(funcall (lambda () nil)) '((nil . 3)))
++             (eval '(funcall (function (lambda () (list nil zz-q)))) '((nil . 3) (zz-q . 4)))
++             (eval '(funcall (function (lambda () (list t zz-q)))) '((t . 3) (zz-q . 4)))
++             (eval '(funcall (function (lambda () (list :k zz-q)))) '((:k . 3) (zz-q . 4)))))
++(zz 39 (list (eval '(function (lambda () (list nil t :k zz-q))) '((nil . 1) (t . 2) (:k . 3) (zz-q . 4)))
++             (eval '(function (lambda () (list nil t :k))) '((nil . 1) (t . 2) (:k . 3)))
++             (eval '(funcall (function (lambda () :closure-dont-trim-context (list nil t :k zz-q)))) '((nil . 1) (t . 2) (:k . 3) (zz-q . 4)))))
++(zz 40 (list (funcall (make-interpreted-closure nil '((list nil t :k)) '((nil . 1) (t . 2) (:k . 3))))
++             (funcall (make-interpreted-closure '(nil) '((list nil t)) '((nil . 1) (t . 2))) 9)
++             (funcall (make-interpreted-closure nil '((list nil t)) '(t)))
++             (funcall (make-interpreted-closure '(t) '((list nil t)) '(t)) 9)))
++(zz 41 (list (condition-case e (funcall (make-interpreted-closure nil '((list nil)) t)) (error e))
++             (condition-case e (funcall (make-interpreted-closure nil '((list 1 "a")) t)) (error e))
++             (condition-case e (funcall (make-interpreted-closure nil '((car '(1))) 5)) (error e))
++             (condition-case e (funcall (make-interpreted-closure nil '((point-min) (substring "abc" 1)) 5)) (error e))))
++(zz 42 (documentation (eval '(function (lambda () (:documentation) 1)) '((nil . "doc")))))
++;; --- condition-case's variable, dolist and dotimes
++(zz 43 (list (condition-case t (signal 'error '(1)) (error t))
++             (condition-case :k (signal 'error '(1)) (error :k))
++             (condition-case nil (signal 'error '(1)) (error nil))
++             (condition-case t 5 (:success (list t nil)))
++             (condition-case t (signal 'error '(1)) (error (list (car t) (cdr t) (if t 1 2) nil)))
++             (eval '(condition-case t (signal 'error '(1)) (error (setq t (cdr t)) t)) t)
++             (eval '(condition-case nil (signal 'error '(1)) (error (list nil t))) '((nil . 3)))))
++(zz 44 (list (condition-case e (eval '(condition-case t (signal 'error '(1)) (error t)) nil) (error e))
++             (condition-case e (eval '(condition-case :k (signal 'error '(1)) (error :k)) nil) (error e))
++             (condition-case e (eval '(condition-case nil (signal 'error '(1)) (error nil)) nil) (error e))
++             (condition-case e (eval '(condition-case t 5 (:success t)) nil) (error e))))
++(zz 45 (list (condition-case e (eval '(dolist (nil '(1 2)) (push nil zz-seen)) t) (error e))
++             (condition-case e (eval '(dolist (t '(1 2)) (push t zz-seen)) t) (error e))
++             (condition-case e (eval '(dotimes (t 2) (push t zz-seen)) t) (error e))
++             (condition-case e (eval '(dolist (:k '(1 2)) (push :k zz-seen)) t) (error e))
++             (condition-case e (eval '(dolist (t '(1 2)) (push t zz-seen)) nil) (error e))
++             (condition-case e (eval '(dotimes (nil 2) (push nil zz-seen)) nil) (error e))
++             zz-seen))
++(zz 46 (eval '(let ((r nil) (n 0)) (dolist (x '(1 2)) (push x r)) (dotimes (i 2) (setq n (+ n i))) (list r n)) '((nil . (9)))))
++;; --- setq: Fassq before Fset
++(zz 47 (list (eval '(progn (setq t 3) t) '((t . 5))) (eval '(progn (setq nil 3) nil) '((nil . 5)))
++             (eval '(progn (setq :k 3) :k) '((:k . 5)))))
++(zz 48 (let ((al (list (cons nil 1) (cons t 2) (cons :k 3)))) (list (eval '(setq nil 10 t 20 :k 30) al) al)))
++(zz 49 (list (condition-case e (eval '(setq nil 3) t) (error e)) (condition-case e (eval '(setq t 3) t) (error e))
++             (condition-case e (eval '(setq :k 3) t) (error e)) (condition-case e (eval '(setq :k :k) t) (error e))
++             (condition-case e (eval '(setq t t) t) (error e)) (condition-case e (eval '(setq nil nil) t) (error e))))
++(zz 50 (list (condition-case e (eval '(setq nil 3) nil) (error e)) (condition-case e (eval '(setq t 3) nil) (error e))
++             (condition-case e (eval '(setq :k 3) nil) (error e)) (condition-case e (eval '(setq :k :k) nil) (error e))))
++(zz 51 (list (condition-case e (eval '(setq nil 3) '((t . 1))) (error e)) (condition-case e (eval '(setq t 3) '((nil . 1))) (error e))))
++;; --- C reads and stores the symbols themselves
++(zz 52 (eval '(list (symbol-value 'nil) (symbol-value 't) (symbol-value :k) (boundp 'nil) (boundp 't) (default-value 'nil) (default-value 't) (keywordp :k))
++             '((nil . 3) (t . 4) (:k . :j))))
++(zz 53 (list (condition-case e (eval '(symbol-value nil) '((nil . 3))) (error e))
++             (condition-case e (eval '(set 'nil 4) '((nil . 3))) (error e))
++             (condition-case e (eval '(set 't 4) '((t . 3))) (error e))
++             (condition-case e (eval '(makunbound 't) '((t . 3))) (error e))
++             (eval '(set nil 4) '((nil . zz-dv))) zz-dv))
++(zz 54 (funcall (lambda (t nil) (list t nil (symbol-value 't) (symbol-value 'nil) (boundp 't) (funcall (lambda () (list t nil))))) 5 6))
++;; --- an omitted argument of a fixed-arity subr is `nil' evaluated
++(zz 55 (list (eval '(list (substring "abcdef" 1) (string-to-number "10") (gethash 'k (make-hash-table)) (number-to-string 5)) '((nil . 3)))
++             (condition-case e (eval '(prin1-to-string "a") '((nil . 3))) (error e))
++             (eval '(prin1-to-string "a") '((nil . ((length . 1)))))
++             (eval '(substring "abcdef") '((nil . 2)))))
++(zz 56 (list (condition-case e (eval '(intern-soft "car") '((nil . 5))) (error e))
++             (condition-case e (eval '(assoc "b" '(("a" . 1) ("b" . 2))) '((nil . 3))) (error e))
++             (condition-case e (eval '(mapconcat 'identity '("a" "b")) '((nil . 3))) (error e))
++             (condition-case e (eval '(read-from-string "(1 2)") '((nil . 1))) (error (car e)))
++             (condition-case e (eval '(read-from-string "(1 2) (3)") '((nil . 6))) (error (car e)))))
++(zz 57 (eval '(list (string-match "b" "abcb") (truncate 7.5) (floor 7) (ceiling 7) (round 7) (string-width "abc") (make-string 2 ?a) (string-to-char "b")) '((nil . 2))))
++(zz 58 (eval '(list (expand-file-name "a") (file-name-nondirectory (directory-file-name "/q/r/"))) '((nil . "/zz"))))
++(zz 59 (eval '(list (length nil) (car nil) (cons nil nil) (vector nil t) (make-list 2 nil) (list) (identity nil)) '((nil . (9)) (t . 4))))
++(zz 60 (with-temp-buffer
++         (insert "abcdef")
++         (goto-char 2)
++         (list (eval '(char-after) '((nil . 3))) (eval '(progn (forward-char) (point)) '((nil . 3)))
++               (eval '(progn (goto-char 1) (looking-at "ab")) '((nil . 3))) (eval '(bolp) '((nil . 3)))
++               (condition-case e (eval '(buffer-size) '((nil . 3))) (error e))
++               (eval '(buffer-size) (list (cons nil (current-buffer))))
++               (eval '(progn (forward-line) (point)) '((nil . 0)))
++               (eval '(buffer-substring (point-min) (point-max)) '((nil . 3))))))
++(zz 61 (eval '(list (compare-strings "abc" 0 3 "ABC" 0 3) (compare-strings "abc" 0 3 "ABC" 0 3 nil)) '((nil . 3))))
++(zz 62 (list (eval '(eval '(function (lambda (x) x))) '((nil . 3))) (eval '(eval '(function (lambda (x) x))) '((zz-q . 3)))))
++(zz 63 (eval '(list (funcall 'substring "abcdef" 1) (apply 'substring "abcdef" '(1)) (mapcar 'string-to-number '("10" "11")) (funcall (function intern-soft) "car")) '((nil . 3))))
++(zz 64 (list (condition-case e (eval '(apply 'substring "abcdef" 1 nil) '((nil . 3))) (error e))
++             (eval '(apply 'substring "abcdef" 1 nil) '((nil . (3))))
++             (eval '(apply 'substring "abcdef" 1 ()) '((zz-q . 3)))))
++(defalias 'zz-sub 'substring)
++(defalias 'zz-sub2 'zz-sub)
++(zz 65 (eval '(list (zz-sub "abcdef" 1) (zz-sub2 "abcdef" 1) (funcall 'zz-sub "abcdef" 1)) '((nil . 3))))
++(zz 66 (list (eval (list (symbol-function 'substring) "abcdef" 1) '((nil . 3)))
++             (eval (list 'funcall (symbol-function 'substring) "abcdef" 1) '((nil . 3)))))
++;; --- native-compiled functions are subrs to eval_sub
++(defalias 'zz-last 'last)
++(zz 67 (list (subr-native-elisp-p (symbol-function 'last)) (subr-native-elisp-p (symbol-function 'butlast))
++             (func-arity 'last) (func-arity 'replace-regexp-in-string) (func-arity 'apply-partially)))
++(zz 68 (eval '(list (last '(1 2 3 4 5)) (butlast '(1 2 3 4 5)) (zz-last '(1 2 3 4 5)) (funcall 'last '(1 2 3 4 5)) (apply 'butlast '((1 2 3 4 5)))) '((nil . 3))))
++(zz 69 (list (eval (list (symbol-function 'last) ''(1 2 3 4 5)) '((nil . 3)))
++             (eval '(replace-regexp-in-string "a" "\\&x" "aaa") '((nil . 0)))
++             (eval '(replace-regexp-in-string "a" "\\&x" "aaa") '((zz-q . 0)))))
++(zz 70 (let* ((form (list 'apply-partially ''list 2 3 4))
++              (cut (list 'progn (list 'setcdr (list 'quote (nthcdr 2 form)) nil) ''list)))
++         (setcar (cdr form) cut)
++         (list (funcall (eval form '((nil . 9)))) (safe-length form))))
++(zz 71 (let* ((form (list 'apply-partially ''list 2 3 4))
++              (cut (list 'progn (list 'setcdr (list 'quote (nthcdr 2 form)) '(ignore)) ''list)))
++         (setcar (cdr form) cut)
++         (list (funcall (eval form '((nil . 9)))) (safe-length form))))
++(zz 72 (let* ((form (list 'apply-partially ''list 1 2 3 4 5 6 7 8 9 10))
++              (cut (list 'progn (list 'setcdr (list 'quote (nthcdr 8 form)) '(ignore)) ''list)))
++         (setcar (cdr form) cut)
++         (list (funcall (eval form '((nil . 9)))) (safe-length form))))
++(zz 73 (let* ((form (list 'last ''(1 2 3 4 5) 2))
++              (cut (list 'progn (list 'setcdr (list 'quote (cdr form)) '(ignore)) ''(1 2 3 4 5))))
++         (setcar (cdr form) cut)
++         (list (eval form '((nil . 4))) (safe-length form))))
++(zz 74 (let* ((form (list 'substring "abcdef" 1 2))
++              (cut (list 'progn (list 'setcdr (list 'quote (cdr form)) '(ignore)) "abcdef")))
++         (setcar (cdr form) cut)
++         (list (eval form '((nil . 4))) (safe-length form))))
++;; --- byte code evaluates nothing for an omitted argument
++(defvar zz-bc (byte-compile '(lambda () (list (substring "abcdef" 1) (intern-soft "car") (string-to-number "10") (last '(1 2 3)) nil t :k))))
++(defvar zz-bc2 (byte-compile '(lambda (f) (list (funcall f) (funcall 'substring "abcdef" 1)))))
++(zz 75 (list (byte-code-function-p zz-bc) (eval '(funcall zz-bc) '((nil . 3) (t . 4) (:k . 5))) (eval '(funcall zz-bc) nil)))
++(zz 76 (eval '(funcall zz-bc2 (function (lambda () (list nil t (substring "abcdef" 1))))) '((nil . 3) (t . 4))))
++(zz 77 (eval '(funcall zz-bc2 (function (lambda () (list nil t zz-w (substring "abcdef" 1))))) '((nil . 3) (t . 4) (zz-w . 5))))
++;; --- environments that are no list, or circular: Fassq signals
++(zz 78 (let ((al (list (cons 'zz-y 1)))) (setcdr al al)
++         (list (condition-case e (eval '(string-match "A" "a") al) (error (car e)))
++               (condition-case e (eval '(list nil) al) (error (car e)))
++               (condition-case e (eval '(list t) al) (error (car e)))
++               (condition-case e (eval '(list zz-y 1 "a" (car '(2))) al) (error (car e)))
++               (condition-case e (eval '(if zz-y 1 2) al) (error (car e)))
++               (condition-case e (eval '(if zz-y (progn)) al) (error (car e)))
++               (condition-case e (eval '(let ((a)) a) al) (error (car e)))
++               (condition-case e (eval '(let (a) (point-min)) al) (error (car e))))))
++(zz 79 (let ((al (list (cons 'zz-y 1) (cons nil 3) (cons t 4)))) (setcdr (cddr al) al)
++         (list (eval '(list nil t zz-y (substring "abcdef" 1)) al)
++               (condition-case e (eval '(list :k) al) (error (car e))))))
++(zz 80 (list (condition-case e (eval '(list (intern-soft "car")) '((zz-y . 1) . tab-width)) (error e))
++             (condition-case e (eval '(list zz-y) '((zz-y . 1) . tab-width)) (error e))
++             (condition-case e (eval '(list t) '((zz-y . 1) . tab-width)) (error e))
++             (condition-case e (eval '(list (car '(1)) (point-min) "s" 2) '((zz-y . 1) . tab-width)) (error e))
++             (condition-case e (eval '(list nil t) '((nil . 3) (t . 4) . 5)) (error e))
++             (condition-case e (eval '(setq nil 7) '((nil . 3) . 5)) (error e))
++             (condition-case e (eval '(setq zz-dv 7) '((nil . 3) . 5)) (error e))
++             zz-dv))
++;; --- symbols with positions: EQ takes the bare symbol
++(zz 81 (let ((pn (position-symbol nil 5)) (pt (position-symbol t 6)))
++         (list (let ((symbols-with-pos-enabled t)) (eval pn '((nil . 3))))
++               (let ((symbols-with-pos-enabled t)) (eval (list 'list pn pt nil t) '((nil . 3) (t . 4))))
++               (let ((symbols-with-pos-enabled t)) (eval '(list nil t) (list (cons pn 3) (cons pt 4))))
++               (eval '(list nil t) (list (cons pn 3) (cons pt 4)))
++               (let ((symbols-with-pos-enabled t)) (eval (list 'progn (list 'setq pn 7) nil) '((nil . 3)))))))
++;; --- an environment belongs to the forms evaluated in it, not to their callees
++(defun zz-g () (list nil t (substring "abcdef" 1)))
++(zz 82 (eval '(list (zz-g) (funcall 'zz-g) (mapcar (lambda (x) (list x nil)) '(1 2)) (funcall (lambda (&optional nil) nil))) '((nil . 3) (t . 4))))
++(zz 83 (eval '(let ((a 1)) (let* ((b 2)) (funcall (lambda (c) (list nil t a b c (substring "abcdef" 1))) 3))) '((nil . 3) (t . 4))))
++(zz 84 (list (eval '(function (lambda (nil t :k) (list nil t :k))) t)
++             (eval '(ignore-errors nil) '((nil . 3)))
++             (eval '(catch 'zz-tag (throw 'zz-tag nil)) '((nil . 3)))
++             (eval '(funcall (lambda (nil) (setq nil (1+ nil)) (list nil (substring "abcdef" 1))) 2) t)))
++(defvar zz-m (let ((m (make-sparse-keymap))) (define-key m "a" 'ignore) m))
++(zz 85 (list (func-arity 'describe-map) (subr-native-elisp-p (symbol-function 'describe-map)) (func-arity 'comment-region-internal)
++             (condition-case e (with-temp-buffer (eval '(describe-map zz-m) '((nil . t))) (buffer-string)) (error e))
++             (with-temp-buffer (eval '(describe-map zz-m) '((zz-q . t))) (buffer-substring-no-properties (point-min) (point-max)))
++             (condition-case e (with-temp-buffer (insert "abc\ndef\n") (eval '(comment-region-internal 1 4 ";" "") '((nil . 3))) (buffer-string)) (error e))))"##,
++    );
++    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
++}

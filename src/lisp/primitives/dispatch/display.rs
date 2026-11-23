@@ -116,10 +116,10 @@ pub(crate) fn truncate_echo_area(
         return Ok(());
     }
     let noninteractive = interp
-        .forwarded_c_value("noninteractive", &Env::new())
+        .forwarded_c_value("noninteractive")
         .is_some_and(|value| value.is_truthy());
     let executing_macro = interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro"))
         .is_some_and(|value| value.is_truthy());
     let Some(message) = echo_area_message_value() else {
         return Ok(());
@@ -154,7 +154,7 @@ pub(crate) fn clear_message(
 ) -> Result<(), LispError> {
     if current {
         let function = interp
-            .forwarded_c_value("clear-message-function", &Env::new())
+            .forwarded_c_value("clear-message-function")
             .unwrap_or(Value::Nil);
         let preserve = if function_value_p(interp, &function, env)
             && !interp.garbage_collection_is_inhibited()
@@ -162,7 +162,7 @@ pub(crate) fn clear_message(
             let restore = interp.bind_special_dynamic("inhibit-quit", Value::T, env)?;
             // A specbind watcher may have changed Vclear_message_function.
             let function = interp
-                .forwarded_c_value("clear-message-function", &Env::new())
+                .forwarded_c_value("clear-message-function")
                 .unwrap_or(Value::Nil);
             let result = redisplay_safe_call(interp, function, &[], env);
             interp.restore_special_dynamic(restore, env)?;
@@ -192,10 +192,10 @@ pub(crate) fn redisplay_safe_call(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let with_backtrace = interp
-        .forwarded_c_value("backtrace-on-redisplay-error", &Env::new())
+        .forwarded_c_value("backtrace-on-redisplay-error")
         .is_some_and(|value| value.is_truthy());
     if interp
-        .forwarded_c_value("inhibit-eval-during-redisplay", &Env::new())
+        .forwarded_c_value("inhibit-eval-during-redisplay")
         .is_some_and(|value| value.is_truthy())
     {
         return Ok(Value::Nil);
@@ -289,7 +289,7 @@ pub(crate) fn message_to_stderr(
     // to stay in the echo area.
     let newline = message.is_some()
         || !interp
-            .forwarded_c_value("cursor-in-echo-area", &Env::new())
+            .forwarded_c_value("cursor-in-echo-area")
             .is_some_and(|value| value.is_truthy());
     errwrite(&bytes);
     if newline {
@@ -305,7 +305,7 @@ pub(crate) fn clear_message_nolog(
     env: &mut Env,
 ) -> Result<(), LispError> {
     if interp
-        .forwarded_c_value("noninteractive", &Env::new())
+        .forwarded_c_value("noninteractive")
         .is_some_and(|value| value.is_truthy())
     {
         return message_to_stderr(interp, None, env);
@@ -351,7 +351,7 @@ fn message_with_string_1(
         return Err(wrong_type_argument("stringp", argument));
     }
     let batch = interp
-        .forwarded_c_value("noninteractive", &Env::new())
+        .forwarded_c_value("noninteractive")
         .is_some_and(|v| v.is_truthy());
     if !batch && interactive_window_metrics().is_none() {
         return Ok(());
@@ -394,7 +394,7 @@ pub(crate) fn message3(
             log_message_text(interp, log, env);
         }
         if interp
-            .forwarded_c_value("inhibit-message", &Env::new())
+            .forwarded_c_value("inhibit-message")
             .is_some_and(|value| value.is_truthy())
         {
             return Ok(());
@@ -413,7 +413,7 @@ pub(crate) fn vmessage(
     env: &mut Env,
 ) -> Result<(), LispError> {
     if interp
-        .forwarded_c_value("noninteractive", &Env::new())
+        .forwarded_c_value("noninteractive")
         .is_some_and(|value| value.is_truthy())
     {
         // putc, vfprintf and putc to stderr, then its fflush.
@@ -424,7 +424,7 @@ pub(crate) fn vmessage(
         }
         stderr_write(&bytes);
         if !interp
-            .forwarded_c_value("cursor-in-echo-area", &Env::new())
+            .forwarded_c_value("cursor-in-echo-area")
             .is_some_and(|value| value.is_truthy())
         {
             stderr_write(b"\n");
@@ -432,7 +432,7 @@ pub(crate) fn vmessage(
         return Ok(());
     }
     let message = crate::lisp::primitives::strings::make_string(bytes)
-        .map_err(|error| crate::lisp::primitives::string_storage_error(interp, env, error))?;
+        .map_err(|error| crate::lisp::primitives::string_storage_error(interp, error))?;
     let log = crate::lisp::primitives::string_text(&message)?;
     message3(interp, message, Some(&log), env)
 }
@@ -446,14 +446,14 @@ pub(crate) fn message3_nolog(
     env: &mut Env,
 ) -> Result<(), LispError> {
     if interp
-        .forwarded_c_value("noninteractive", &Env::new())
+        .forwarded_c_value("noninteractive")
         .is_some_and(|value| value.is_truthy())
     {
         return message_to_stderr(interp, message.is_string().then_some(&message), env);
     }
     // INTERACTIVE: nothing is shown while a keyboard macro executes.
     if interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro"))
         .is_some_and(|value| value.is_truthy())
     {
         return Ok(());
@@ -506,14 +506,14 @@ fn echo_area_display(interp: &mut Interpreter, env: &mut Env) {
 fn set_message(interp: &mut Interpreter, message: Value, env: &mut Env) -> Result<(), LispError> {
     let mut displayed = message;
     if let Some(function) = interp
-        .forwarded_c_value("set-message-function", &Env::new())
+        .forwarded_c_value("set-message-function")
         .filter(|value| function_value_p(interp, value, env))
         && !interp.garbage_collection_is_inhibited()
     {
         let restore = interp.bind_special_dynamic("inhibit-quit", Value::T, env)?;
         // A binding watcher can change the C function cell.
         let function = interp
-            .forwarded_c_value("set-message-function", &Env::new())
+            .forwarded_c_value("set-message-function")
             .unwrap_or(function);
         let result = redisplay_safe_call(interp, function, &[message], env);
         interp.restore_special_dynamic(restore, env)?;
@@ -539,7 +539,7 @@ pub(crate) fn message1(
     env: &mut Env,
 ) -> Result<(), LispError> {
     let batch = interp
-        .forwarded_c_value("noninteractive", &Env::new())
+        .forwarded_c_value("noninteractive")
         .is_some_and(|v| v.is_truthy());
     if !batch {
         return message_with_string(interp, "%s", Value::string(text), env);
@@ -547,7 +547,7 @@ pub(crate) fn message1(
     message_log_maybe_newline(interp, env);
     log_message_text(interp, text, env);
     if interp
-        .forwarded_c_value("inhibit-message", &Env::new())
+        .forwarded_c_value("inhibit-message")
         .is_some_and(|value| value.is_truthy())
     {
         return Ok(());
@@ -598,11 +598,34 @@ pub(crate) fn log_message_partial(interp: &mut Interpreter, text: &str, env: &En
 /// left open when a message has held the echo area since, then
 /// message_dolog of TEXT, its line left open, and TEXT in the echo area.
 pub(crate) fn echo_area_print_logged(interp: &mut Interpreter, text: &str, env: &Env) {
+    echo_area_print_logged_as(interp, text, text, env);
+}
+
+/// `echo_area_print_logged' of a C string's bytes, which message_dolog
+/// takes as text (LOGGED) and the echo area a character each (SHOWN).
+pub(crate) fn echo_area_print_logged_as(
+    interp: &mut Interpreter,
+    logged: &str,
+    shown: &str,
+    env: &Env,
+) {
     if !ECHO_FROM_PRINT.with(std::cell::Cell::get) {
         message_log_maybe_newline(interp, env);
     }
-    log_message_partial(interp, text, env);
-    echo_area_print(text);
+    log_message_partial(interp, logged, env);
+    echo_area_print(shown);
+}
+
+/// xdisp.c setup_echo_area_for_printing, as print_prepare calls it for
+/// a print to t before anything is printed: when a message has held the
+/// echo area since the last print, the log line printing left open is
+/// ended and the echo area starts empty; otherwise the print goes on
+/// where the last one stopped.
+pub(crate) fn setup_echo_area_for_printing(interp: &mut Interpreter, env: &Env) {
+    if !ECHO_FROM_PRINT.with(std::cell::Cell::get) {
+        message_log_maybe_newline(interp, env);
+    }
+    echo_area_print("");
 }
 
 fn log_message_dolog(interp: &mut Interpreter, text: &str, nlflag: bool, _env: &Env) {
@@ -824,7 +847,7 @@ fn strtoimax(input: &[u8]) -> (i64, &[u8]) {
 /// the terminal's bell.
 pub(crate) fn ring_bell(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     let function = interp
-        .lookup_var_key(cached_symbol!("ring-bell-function"), env)
+        .symbol_value_key(cached_symbol!("ring-bell-function"))
         .unwrap_or(Value::Nil);
     if function.is_nil() {
         // FRAME_TERMINAL (f)->ring_bell_hook: the initial terminal (the
@@ -843,9 +866,9 @@ pub(crate) fn ring_bell(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             .and_then(|()| output.flush())
             .map_err(|error| LispError::Signal(error.to_string()));
     }
-    interp.set_variable_key(cached_symbol!("ring-bell-function"), Value::Nil, env);
+    interp.set_symbol_value_key(cached_symbol!("ring-bell-function"), Value::Nil);
     interp.call_function_value(function, None, &[], env)?;
-    interp.set_variable_key(cached_symbol!("ring-bell-function"), function, env);
+    interp.set_symbol_value_key(cached_symbol!("ring-bell-function"), function);
     Ok(())
 }
 
@@ -853,7 +876,7 @@ pub(crate) fn ring_bell(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
 /// macro runs, the user-error that ends it; else the bell.
 pub(crate) fn bitch_at_user(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     if interp
-        .forwarded_c_value("noninteractive", env)
+        .forwarded_c_value("noninteractive")
         .is_some_and(|value| value.is_truthy())
     {
         // putchar (07).
@@ -861,7 +884,7 @@ pub(crate) fn bitch_at_user(interp: &mut Interpreter, env: &mut Env) -> Result<(
         return Ok(());
     }
     if interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro"))
         .is_some_and(|value| value.is_truthy())
     {
         return Err(LispError::SignalValue(Value::list([
@@ -881,11 +904,16 @@ pub(crate) fn echo_area_print(text: &str) {
     });
     ECHO_AREA_LAST_DISPLAYED
         .with_borrow_mut(|slot| *slot = ECHO_AREA_MESSAGE.with_borrow(|current| current.clone()));
+    // xdisp.c current_message_1: the echo area buffer's text, or nil
+    // when it holds none.
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| {
         *slot = ECHO_AREA_MESSAGE.with_borrow(|current| {
-            current.as_ref().map(|(text, _)| {
-                crate::lisp::primitives::strings::string_like_value(text.clone(), None)
-            })
+            current
+                .as_ref()
+                .filter(|(text, _)| !text.is_empty())
+                .map(|(text, _)| {
+                    crate::lisp::primitives::strings::string_like_value(text.clone(), None)
+                })
         })
     });
     ECHO_FROM_PRINT.with(|flag| flag.set(true));
@@ -951,16 +979,16 @@ pub(crate) fn string_face_spans(value: &Value) -> EchoSpans {
         .collect()
 }
 
-fn current_bidi_paragraph_direction_value(interp: &Interpreter, env: &Env) -> Value {
+fn current_bidi_paragraph_direction_value(interp: &Interpreter) -> Value {
     if !interp.buffer.borrow().is_multibyte()
         || interp
-            .lookup_var_key(cached_symbol!("bidi-display-reordering"), env)
+            .symbol_value_key(cached_symbol!("bidi-display-reordering"))
             .is_some_and(|value| value.is_nil())
     {
         return Value::symbol("left-to-right");
     }
     if let Some(direction) = interp
-        .lookup_var_key(cached_symbol!("bidi-paragraph-direction"), env)
+        .symbol_value_key(cached_symbol!("bidi-paragraph-direction"))
         .filter(|value| !value.is_nil())
     {
         return direction;
@@ -1152,11 +1180,7 @@ fn lookup_image_map(map: &Value, x: i64, y: i64) -> Value {
 /// inaccurate (mark_window_display_accurate_1: no modification counts
 /// known, the star recorded as the buffer has it, the window to be
 /// redisplayed), and every overlay arrow drawn afresh.
-pub(crate) fn mark_window_display_inaccurate(
-    interp: &mut Interpreter,
-    env: &crate::lisp::types::Env,
-    window_id: u64,
-) {
+pub(crate) fn mark_window_display_inaccurate(interp: &mut Interpreter, window_id: u64) {
     fn walk(interp: &mut Interpreter, mut window: Option<u64>) {
         while let Some(id) = window {
             match window_link(interp, id, WINDOW_FIRST_CHILD_SLOT) {
@@ -1176,16 +1200,16 @@ pub(crate) fn mark_window_display_inaccurate(
         }
     }
     walk(interp, Some(window_id));
-    mark_overlay_arrows_inaccurate(interp, env);
+    mark_overlay_arrows_inaccurate(interp);
 }
 
 /// xdisp.c:update_overlay_arrows (-1), as mark_window_display_accurate
 /// calls it for a window made inaccurate: each symbol in
 /// `overlay-arrow-variable-list' gets t as its last arrow position and
 /// string, so the next redisplay draws its arrow afresh.
-fn mark_overlay_arrows_inaccurate(interp: &mut Interpreter, env: &crate::lisp::types::Env) {
+fn mark_overlay_arrows_inaccurate(interp: &mut Interpreter) {
     let mut list = interp
-        .lookup_var_key(cached_symbol!("overlay-arrow-variable-list"), env)
+        .symbol_value_key(cached_symbol!("overlay-arrow-variable-list"))
         .unwrap_or(Value::Nil);
     while let Some((variable, rest)) = list.cons_values() {
         if variable.as_symbol().is_ok() {
@@ -1597,8 +1621,8 @@ fn position_at_coordinates(
         // filling the window's width), ROW the line's row counted from
         // the first text row, DX and DY from the glyph, its pixel_width
         // 1 and ascent plus descent 0 (term.c).
-        let tab_line = window_line_height(interp, buffer, "tab-line-format", env);
-        let header_line = window_line_height(interp, buffer, "header-line-format", env);
+        let tab_line = window_line_height(interp, buffer, "tab-line-format");
+        let header_line = window_line_height(interp, buffer, "header-line-format");
         let row = if crate::lisp::types::eq_symbol_named(area, "tab-line") {
             Some(-(tab_line + header_line))
         } else if crate::lisp::types::eq_symbol_named(area, "header-line") {
@@ -1606,7 +1630,7 @@ fn position_at_coordinates(
         } else if crate::lisp::types::eq_symbol_named(area, "mode-line") {
             Some(
                 window_geometry(interp, window_id).1
-                    - window_non_body_height(interp, window_id, Some(buffer), env),
+                    - window_non_body_height(interp, window_id, Some(buffer)),
             )
         } else {
             None
@@ -1630,8 +1654,8 @@ fn position_at_coordinates(
     }
     let text_x = area.car()?.as_integer()?;
     let text_y = local_y
-        - window_line_height(interp, buffer, "tab-line-format", env)
-        - window_line_height(interp, buffer, "header-line-format", env);
+        - window_line_height(interp, buffer, "tab-line-format")
+        - window_line_height(interp, buffer, "header-line-format");
     let old_buffer = interp.current_buffer_id();
     interp.set_current_buffer_id(buffer)?;
     let result = (|| {
@@ -2143,7 +2167,7 @@ pub(crate) fn resolve_tty_face_attrs(
     face: &Value,
 ) -> TtyFaceAttrs {
     let remapping = interp
-        .lookup_var_key(cached_symbol!("face-remapping-alist"), env)
+        .symbol_value_key(cached_symbol!("face-remapping-alist"))
         .unwrap_or(Value::Nil);
     resolve_tty_face_attrs_remapped(interp, env, face, remapping)
 }
@@ -2259,7 +2283,7 @@ fn map_tty_color(
     let mut pixel = default_pixel;
     let frame = interp.selected_frame_value();
     let defined = interp
-        .lookup_var_key(cached_symbol!("tty-defined-color-alist"), env)
+        .symbol_value_key(cached_symbol!("tty-defined-color-alist"))
         .unwrap_or(Value::Nil);
     if string_text(value).is_ok_and(|text| !text.is_empty())
         && matches!(defined.kind(), Kind::Cons(_))
@@ -2457,7 +2481,6 @@ fn resolve_tty_face_attr_options(
 /// overlay wins over the region, which wins over font-lock properties).
 pub(crate) fn window_face_spans(
     interp: &mut Interpreter,
-    env: &mut Env,
     buffer_id: u64,
     from: usize,
     to: usize,
@@ -2506,7 +2529,7 @@ pub(crate) fn window_face_spans(
             && !(region_for_selected
                 && is_current
                 && interp
-                    .lookup_var_key(cached_symbol!("mark-active"), env)
+                    .symbol_value_key(cached_symbol!("mark-active"))
                     .is_some_and(|active| active.is_truthy()))
         {
             return spans;
@@ -2584,10 +2607,10 @@ pub(crate) fn window_face_spans(
     if region_for_selected
         && is_current
         && interp
-            .lookup_var_key(cached_symbol!("transient-mark-mode"), env)
+            .symbol_value_key(cached_symbol!("transient-mark-mode"))
             .is_some_and(|mode| mode.is_truthy())
         && interp
-            .lookup_var_key(cached_symbol!("mark-active"), env)
+            .symbol_value_key(cached_symbol!("mark-active"))
             .is_some_and(|active| active.is_truthy())
         // The buffer's mark marker is native buffer.c state; `mark' itself
         // is GNU simple.el's and must not enter the native dispatcher.
@@ -2715,9 +2738,7 @@ fn render_window_line_with_format(
         // format.
         let parameter = window_parameter_value(interp, window_id, &Value::symbol(format_variable));
         let format = if parameter.is_nil() {
-            interp
-                .lookup_var(format_variable, &Env::new())
-                .unwrap_or(Value::Nil)
+            interp.symbol_value(format_variable).unwrap_or(Value::Nil)
         } else {
             parameter
         };
@@ -2783,7 +2804,7 @@ pub(crate) fn render_mode_line_glass(
     }
     let window_id = interp.selected_window_id();
     let format = interp
-        .lookup_var_key(cached_symbol!("mode-line-format"), &Env::new())
+        .symbol_value_key(cached_symbol!("mode-line-format"))
         .unwrap_or(Value::Nil);
     let (text, _) =
         mode_line::display_mode_line(interp, env, window_id, format, 200, true, &UnitCells)?;
@@ -3499,7 +3520,7 @@ fn split_window_tree(
     let old_parent = window_link(interp, old_id, WINDOW_PARENT_SLOT);
     let limit_is_t = matches!(
         interp
-            .lookup_var_key(cached_symbol!("window-combination-limit"), env)
+            .symbol_value_key(cached_symbol!("window-combination-limit"))
             .map(|value| value.kind()),
         Some(Kind::T)
     );
@@ -3515,7 +3536,7 @@ fn split_window_tree(
         frame.borrow().selected_window_id()
     };
     let resize = interp
-        .lookup_var_key(cached_symbol!("window-combination-resize"), env)
+        .symbol_value_key(cached_symbol!("window-combination-resize"))
         .is_some_and(|value| value.is_truthy());
     if window_is_minibuffer(interp, old_id) {
         return Err(LispError::Signal(
@@ -4173,14 +4194,13 @@ fn window_change_safe_call(
     }
 }
 
-fn window_body_pixel_size(interp: &Interpreter, window: u64, env: &Env) -> (i64, i64) {
+fn window_body_pixel_size(interp: &Interpreter, window: u64) -> (i64, i64) {
     let (_, height, _, _) = window_geometry(interp, window);
     let body_height = height
         - window_non_body_height(
             interp,
             window,
             window_buffer_id(interp, &interp.record_value(window)),
-            env,
         );
     (window_text_width_columns(interp, window), body_height)
 }
@@ -4231,7 +4251,7 @@ fn run_window_change_functions_1(
 /// window, bumps its change stamp and stamps its live windows with their
 /// buffer and sizes; then the selected window and frame become the old
 /// ones.
-fn window_change_record(interp: &mut Interpreter, record_frames: bool, env: &Env) {
+fn window_change_record(interp: &mut Interpreter, record_frames: bool) {
     if record_frames {
         let frames: Vec<_> = interp
             .frame_states
@@ -4252,7 +4272,7 @@ fn window_change_record(interp: &mut Interpreter, record_frames: bool, env: &Env
                     .and_then(|buffer| interp.buffer_value(buffer))
                     .unwrap_or(Value::Nil);
                 let (width, height, _, _) = window_geometry(interp, window);
-                let (body_width, body_height) = window_body_pixel_size(interp, window, env);
+                let (body_width, body_height) = window_body_pixel_size(interp, window);
                 for (slot, value) in [
                     (WINDOW_CHANGE_STAMP_SLOT, Value::Integer(stamp)),
                     (WINDOW_OLD_BUFFER_SLOT, buffer),
@@ -4285,7 +4305,6 @@ fn frame_window_change(
     windows: &[u64],
     number_of_windows: usize,
     stamp: i64,
-    env: &Env,
 ) -> bool {
     windows.len() != number_of_windows
         || windows.iter().any(|&window| {
@@ -4293,7 +4312,7 @@ fn frame_window_change(
                 .and_then(|buffer| interp.buffer_value(buffer))
                 .unwrap_or(Value::Nil);
             let (width, height, _, _) = window_geometry(interp, window);
-            let (body_width, body_height) = window_body_pixel_size(interp, window, env);
+            let (body_width, body_height) = window_body_pixel_size(interp, window);
             window_integer_slot(interp, window, WINDOW_CHANGE_STAMP_SLOT) != stamp
                 || !buffer.eq_value(window_slot_value(interp, window, WINDOW_OLD_BUFFER_SLOT))
                 || width != window_integer_slot(interp, window, WINDOW_OLD_PIXEL_WIDTH_SLOT)
@@ -4319,7 +4338,7 @@ pub(crate) fn run_window_change_functions(
     let mut record_frames = false;
     let restore = interp.bind_special_dynamic("inhibit-redisplay", Value::T, env)?;
     let result = run_window_change_functions_body(interp, &mut record_frames, env);
-    window_change_record(interp, record_frames, env);
+    window_change_record(interp, record_frames);
     let restored = interp.restore_special_dynamic(restore, env);
     result.and(restored)
 }
@@ -4354,7 +4373,7 @@ fn run_window_change_functions_body(
             )
         };
         let windows = frame_window_tree_leaf_ids(interp, frame);
-        let window_change = frame_window_change(interp, &windows, number_of_windows, stamp, env);
+        let window_change = frame_window_change(interp, &windows, number_of_windows, stamp);
         let frame_selected_change =
             selected_frame_change && (frame == old_selected_frame || frame == selected_frame);
         let frame_selected_window_change = old_selected != Some(selected);
@@ -4381,7 +4400,7 @@ fn run_window_change_functions_body(
                 && (!buffer.eq_value(window_slot_value(interp, window, WINDOW_OLD_BUFFER_SLOT))
                     || window_integer_slot(interp, window, WINDOW_CHANGE_STAMP_SLOT) != stamp);
             let (width, height, _, _) = window_geometry(interp, window);
-            let (body_width, body_height) = window_body_pixel_size(interp, window, env);
+            let (body_width, body_height) = window_body_pixel_size(interp, window);
             let size_change = window_change
                 && (buffer_change
                     || width != window_integer_slot(interp, window, WINDOW_OLD_PIXEL_WIDTH_SLOT)
@@ -4530,12 +4549,7 @@ fn window_buffer_id_or_selected(
     }
 }
 
-fn window_line_height(
-    interp: &Interpreter,
-    buffer_id: u64,
-    format_variable: &str,
-    env: &Env,
-) -> i64 {
+fn window_line_height(interp: &Interpreter, buffer_id: u64, format_variable: &str) -> i64 {
     let format = if buffer_id == interp.current_buffer_id() {
         // BVAR (current_buffer, ...): the symbol's loaded binding.
         match format_variable {
@@ -4546,7 +4560,7 @@ fn window_line_height(
                 interp.local_variable_value_key(cached_symbol!("header-line-format"))
             }
             "tab-line-format" => interp.local_variable_value_key(cached_symbol!("tab-line-format")),
-            _ => interp.lookup_var(format_variable, env),
+            _ => interp.symbol_value(format_variable),
         }
     } else {
         interp
@@ -4564,12 +4578,7 @@ fn window_line_height(
 /// `none' and either it or the buffer's format is non-nil, and whose
 /// height holds it beside the lines wanted before it (the mode line
 /// prevails).
-fn window_non_body_height(
-    interp: &Interpreter,
-    window_id: u64,
-    buffer_id: Option<u64>,
-    env: &Env,
-) -> i64 {
+fn window_non_body_height(interp: &Interpreter, window_id: u64, buffer_id: Option<u64>) -> i64 {
     let kind = window_kind_of_id(interp, window_id);
     let Some(buffer_id) = buffer_id else {
         return 0;
@@ -4581,7 +4590,7 @@ fn window_non_body_height(
     let wants = |parameter: Value, variable: &str| {
         let format = window_parameter_value(interp, window_id, &parameter);
         !format.is_key(cached_symbol!("none"))
-            && (!format.is_nil() || window_line_height(interp, buffer_id, variable, env) != 0)
+            && (!format.is_nil() || window_line_height(interp, buffer_id, variable) != 0)
     };
     let mode = wants(
         Value::Symbol(cached_symbol!("mode-line-format").symbol()),
@@ -4603,12 +4612,11 @@ fn window_non_body_height(
 /// temporarily select the shrunken ordinary window and call `recenter'; the
 /// last published glyph metrics then belong to an earlier redisplay and can
 /// still describe the pre-minibuffer height.
-fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
+fn selected_command_text_height(interp: &Interpreter) -> usize {
     let window_id = interp.selected_window_id();
     let buffer_id = interp.selected_window_contents_buffer_id();
-    (window_geometry(interp, window_id).1
-        - window_non_body_height(interp, window_id, buffer_id, env))
-    .max(1) as usize
+    (window_geometry(interp, window_id).1 - window_non_body_height(interp, window_id, buffer_id))
+        .max(1) as usize
 }
 
 /// WINDOW_TOTAL_COLS of WINDOW.
@@ -4790,7 +4798,7 @@ pub(crate) fn window_line_number_layout(
     let width = needed.max(explicit);
     let tick = |name: crate::lisp::types::symbols::SymbolKey| {
         interp
-            .lookup_var_key(name, &crate::lisp::types::Env::new())
+            .symbol_value_key(name)
             .and_then(|value| value.integer_value())
             .unwrap_or(0)
     };
@@ -5022,13 +5030,12 @@ pub(crate) fn prin1_to_string_buffer(
             let previous = interp.current_buffer_id();
             interp.set_current_buffer_id(id)?;
             let made = (|| -> Result<(), LispError> {
-                interp.set_variable_key(cached_symbol!("default-directory"), Value::Nil, env);
+                interp.set_symbol_value_key(cached_symbol!("default-directory"), Value::Nil);
                 let fontify = Value::symbol("buffer-access-fontify-functions");
                 super::call(interp, "make-local-variable", &[fontify], env)?;
-                interp.set_variable_key(
+                interp.set_symbol_value_key(
                     cached_symbol!("buffer-access-fontify-functions"),
                     Value::Nil,
-                    env,
                 );
                 Ok(())
             })();
@@ -5118,6 +5125,140 @@ pub(crate) fn prin1_to_string(
     restored.and(result)
 }
 
+/// print.c:print_error_message: an error message for the error DATA
+/// onto the Lisp output stream STREAM (suitable for the print functions),
+/// each piece in a print_prepare and print_finish of its own.  CONTEXT,
+/// a C string describing the context of the error, is written first
+/// (write_string); CALLER, the Lisp function inside which the error was
+/// signaled, is shown in *Messages* when it is a symbol.
+pub(crate) fn print_error_message(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    data: Value,
+    stream: Value,
+    context: Option<&[u8]>,
+    caller: Value,
+) -> Result<(), LispError> {
+    use crate::lisp::primitives::file_io::{write_c_string, write_printer_output};
+    if let Some(context) = context {
+        write_c_string(interp, context, Some(&stream), env)?;
+    }
+    // If we know from where the error was signaled, show it in
+    // *Messages*.
+    match caller.kind() {
+        Kind::Symbol(caller) => {
+            log_message_partial(interp, &caller.name_text(), env);
+            log_message_partial(interp, ": ", env);
+        }
+        Kind::T => log_message_partial(interp, "t: ", env),
+        _ => {}
+    }
+    let error = Value::symbol("error");
+    let obj = data;
+    // Fcar (data).
+    let errname = match obj.cons_values() {
+        Some((head, _)) => head,
+        None if obj.is_nil() => Value::Nil,
+        None => return Err(LispError::WrongTypeArgument("listp".into(), obj)),
+    };
+    let (mut errmsg, file_error, data) = if crate::lisp::types::eq(errname, error) {
+        let data = obj.cons_values().map_or(Value::Nil, |(_, rest)| rest);
+        let data = if data.cons_values().is_some() {
+            data
+        } else {
+            Value::Nil
+        };
+        (
+            data.cons_values().map_or(Value::Nil, |(car, _)| car),
+            false,
+            data,
+        )
+    } else {
+        let conditions = super::call(
+            interp,
+            "get",
+            &[errname, Value::symbol("error-conditions")],
+            env,
+        )?;
+        let mut errmsg = super::call(
+            interp,
+            "get",
+            &[errname, Value::symbol("error-message")],
+            env,
+        )?;
+        // During loadup `substitute-command-keys' may be missing, and
+        // its errors are ignored (safe_calln).
+        let substitute = Value::symbol("substitute-command-keys");
+        if super::call(interp, "fboundp", &[substitute], env)?.is_truthy()
+            && let Ok(substituted) = interp.call_function_value(
+                substitute,
+                Some("substitute-command-keys"),
+                &[errmsg],
+                env,
+            )
+            && !substituted.is_nil()
+        {
+            errmsg = substituted;
+        }
+        let file_error = super::call(
+            interp,
+            "memq",
+            &[Value::symbol("file-error"), conditions],
+            env,
+        )?
+        .is_truthy();
+        (errmsg, file_error, obj)
+    };
+    let mut tail = data.cons_values().map_or(Value::Nil, |(_, rest)| rest);
+    // A file-error's message is its first datum.
+    if file_error && let Some((first, rest)) = tail.cons_values() {
+        errmsg = first;
+        tail = rest;
+    }
+    // Each piece goes onto the stream through a print_prepare and
+    // print_finish of its own (into the hidden prin1 buffer with
+    // modification hooks live: text already inserted stays there when a
+    // datum's printing or the tail's cycle escapes, for the next
+    // prin1-to-string to take).
+    let mut sep = Some(": ");
+    match errmsg.kind() {
+        Kind::StringObject(message) if message.borrow().len() == 0 => sep = None,
+        Kind::StringObject(_) => {
+            super::call(interp, "princ", &[errmsg, stream], env)?;
+        }
+        _ => write_printer_output(interp, "peculiar error", Some(&stream), env)?,
+    }
+    // princ for file-error, end-of-file and user-error data, prin1 for
+    // every other condition's: Magit's multi-part git errors keep their
+    // quotes and escapes.
+    let printer = if file_error
+        || crate::lisp::types::eq(errname, Value::symbol("end-of-file"))
+        || crate::lisp::types::eq(errname, Value::symbol("user-error"))
+    {
+        "princ"
+    } else {
+        "prin1"
+    };
+    let mut cycle = crate::lisp::primitives::values::ForEachTail::new(tail);
+    // FOR_EACH_TAIL: `XCAR (tail)' is read once the separator is
+    // written and `XCDR (tail)' once the datum is printed, so what the
+    // stream's function or `print-unreadable-function' stores in the
+    // list is what comes next.
+    while tail.cons_values().is_some() {
+        if let Some(sep) = sep {
+            write_printer_output(interp, sep, Some(&stream), env)?;
+        }
+        sep = Some(", ");
+        let datum = tail.cons_values().map_or(Value::Nil, |(datum, _)| datum);
+        super::call(interp, printer, &[datum, stream], env)?;
+        tail = tail.cons_values().map_or(Value::Nil, |(_, next)| next);
+        if cycle.step(tail) {
+            return Err(crate::lisp::types::circular_list(tail));
+        }
+    }
+    Ok(())
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -5171,10 +5312,10 @@ define_dispatch!(
                 // editfns.c:Fmessage_or_box: a dialog after a mouse event
                 // (or before any) while `use-dialog-box' is non-nil.
                 let last_nonmenu_event = interp
-                    .lookup_var_key(cached_symbol!("last-nonmenu-event"), env)
+                    .symbol_value_key(cached_symbol!("last-nonmenu-event"))
                     .unwrap_or(Value::Nil);
                 let use_dialog_box = interp
-                    .lookup_var_key(cached_symbol!("use-dialog-box"), env)
+                    .symbol_value_key(cached_symbol!("use-dialog-box"))
                     .is_some_and(|value| value.is_truthy());
                 let after_mouse = last_nonmenu_event.is_nil()
                     || matches!(last_nonmenu_event.kind(), Kind::Cons(_));
@@ -5189,7 +5330,7 @@ define_dispatch!(
                 need_args(name, args, 0)?;
                 // GNU batch mode has no echo area; `current-message' is nil.
                 if interp
-                    .lookup_var_key(cached_symbol!("noninteractive"), env)
+                    .symbol_value_key(cached_symbol!("noninteractive"))
                     .is_some_and(|value| value.is_truthy())
                 {
                     return Ok(Value::Nil);
@@ -5213,113 +5354,10 @@ define_dispatch!(
                 {
                     return Ok(message);
                 }
-                // print_error_message.
-                let errname = match obj.cons_values() {
-                    Some((head, _)) => head,
-                    None if obj.is_nil() => Value::Nil,
-                    None => return Err(LispError::WrongTypeArgument("listp".into(), obj)),
-                };
-                let (mut errmsg, file_error, data) = if crate::lisp::types::eq(errname, error) {
-                    let data = obj.cons_values().map_or(Value::Nil, |(_, rest)| rest);
-                    let data = if data.cons_values().is_some() {
-                        data
-                    } else {
-                        Value::Nil
-                    };
-                    (
-                        data.cons_values().map_or(Value::Nil, |(car, _)| car),
-                        false,
-                        data,
-                    )
-                } else {
-                    let conditions = super::call(
-                        interp,
-                        "get",
-                        &[errname, Value::symbol("error-conditions")],
-                        env,
-                    )?;
-                    let mut errmsg = super::call(
-                        interp,
-                        "get",
-                        &[errname, Value::symbol("error-message")],
-                        env,
-                    )?;
-                    // During loadup `substitute-command-keys' may be
-                    // missing, and its errors are ignored (safe_calln).
-                    let substitute = Value::symbol("substitute-command-keys");
-                    if super::call(interp, "fboundp", &[substitute], env)?.is_truthy()
-                        && let Ok(substituted) = interp.call_function_value(
-                            substitute,
-                            Some("substitute-command-keys"),
-                            &[errmsg],
-                            env,
-                        )
-                        && !substituted.is_nil()
-                    {
-                        errmsg = substituted;
-                    }
-                    let file_error = super::call(
-                        interp,
-                        "memq",
-                        &[Value::symbol("file-error"), conditions],
-                        env,
-                    )?
-                    .is_truthy();
-                    (errmsg, file_error, obj)
-                };
-                let mut tail = data.cons_values().map_or(Value::Nil, |(_, rest)| rest);
-                // A file-error's message is its first datum.
-                if file_error && let Some((first, rest)) = tail.cons_values() {
-                    errmsg = first;
-                    tail = rest;
-                }
-                // Each piece goes into the hidden prin1 buffer through a
-                // print_prepare/print_finish of its own, modification hooks
-                // live; text already inserted stays there when a datum's
-                // printing or the tail's cycle escapes, for the next
-                // prin1-to-string to take.
+                // print_error_message (obj, Vprin1_to_string_buffer, 0,
+                // Qnil), then that buffer's text.
                 let hidden = prin1_to_string_buffer(interp, env)?;
-                let mut sep = Some(": ");
-                match errmsg.kind() {
-                    Kind::StringObject(message) if message.borrow().len() == 0 => sep = None,
-                    Kind::StringObject(_) => {
-                        super::call(interp, "princ", &[errmsg, hidden], env)?;
-                    }
-                    _ => crate::lisp::primitives::file_io::write_printer_output(
-                        interp,
-                        "peculiar error",
-                        Some(&hidden),
-                        env,
-                    )?,
-                }
-                // princ for file-error, end-of-file and user-error data,
-                // prin1 for every other condition's: Magit's multi-part git
-                // errors keep their quotes and escapes.
-                let printer = if file_error
-                    || crate::lisp::types::eq(errname, Value::symbol("end-of-file"))
-                    || crate::lisp::types::eq(errname, Value::symbol("user-error"))
-                {
-                    "princ"
-                } else {
-                    "prin1"
-                };
-                let mut cycle = crate::lisp::primitives::values::ForEachTail::new(tail);
-                while let Some((datum, next)) = tail.cons_values() {
-                    if let Some(sep) = sep {
-                        crate::lisp::primitives::file_io::write_printer_output(
-                            interp,
-                            sep,
-                            Some(&hidden),
-                            env,
-                        )?;
-                    }
-                    sep = Some(", ");
-                    super::call(interp, printer, &[datum, hidden], env)?;
-                    tail = next;
-                    if cycle.step(tail) {
-                        return Err(crate::lisp::types::circular_list(tail));
-                    }
-                }
+                print_error_message(interp, env, obj, hidden, None, Value::Nil)?;
                 take_prin1_buffer_text(interp, env, &hidden, false)
             }
             "command-error-default-function" => {
@@ -5341,30 +5379,29 @@ define_dispatch!(
                         .any(|condition| {
                             crate::lisp::types::eq_symbol_named(condition, "minibuffer-quit")
                         });
-                let context = string_text(&args[1])?;
+                // CHECK_STRING (context), then its SSDATA.
+                string_text(&args[1])?;
+                let context = match args[1].kind() {
+                    Kind::StringObject(state) => state.borrow().bytes().to_vec(),
+                    _ => Vec::new(),
+                };
                 // keyboard.c command-error-default-function, noninteractive
                 // branch: print CONTEXT plus the error to stderr and
                 // kill-emacs -1.  The previous arm computed the message and
                 // discarded it, silently converting a should-fail batch run
                 // into a clean exit (2026-08-23 audit finding 80).
-                let message = super::call(interp, "error-message-string", &[args[0]], env)?;
-                let rendered = string_text(&message).unwrap_or_default();
                 if !minibuffer_quit
                     && interp
-                        .lookup_var_key(cached_symbol!("noninteractive"), env)
+                        .symbol_value_key(cached_symbol!("noninteractive"))
                         .is_some_and(|value| value.is_truthy())
                 {
                     // print_error_message and Fterpri with
                     // Qexternal_debugging_output as the stream: printchar
                     // hands it a character at a time, each its own write
                     // of the unbuffered stderr.
-                    for character in format!("{context}{rendered}\n").chars() {
-                        super::super::file_io::printchar_to_stderr(
-                            interp,
-                            u32::from(character),
-                            env,
-                        )?;
-                    }
+                    let stream = Value::symbol("external-debugging-output");
+                    print_error_message(interp, env, args[0], stream, Some(&context), args[2])?;
+                    super::call(interp, "terpri", &[stream], env)?;
                     return super::call(interp, "kill-emacs", &[Value::Integer(-1)], env);
                 }
                 // clear_message (1, 0), then bitch_at_user (or `ding' with
@@ -5380,15 +5417,8 @@ define_dispatch!(
                     super::call(interp, "discard-input", &[], env)?;
                     super::call(interp, "ding", &[], env)?;
                 }
-                // print_error_message (data, Qt, context, signal): printed
-                // to the echo area (CONTEXT, empty or not, first), the
-                // signalling function only logged.
-                echo_area_print_logged(interp, &context, env);
-                if let Kind::Symbol(caller) = args[2].kind() {
-                    log_message_partial(interp, caller.as_ref(), env);
-                    log_message_partial(interp, ": ", env);
-                }
-                echo_area_print_logged(interp, &rendered, env);
+                // print_error_message (data, Qt, context, signal).
+                print_error_message(interp, env, args[0], Value::T, Some(&context), args[2])?;
                 Ok(Value::Nil)
             }
             "ding" => {
@@ -5397,7 +5427,7 @@ define_dispatch!(
                 // ending a keyboard macro (a BEL on stdout in batch).
                 if args.first().is_some_and(Value::is_truthy) {
                     if interp
-                        .forwarded_c_value("noninteractive", env)
+                        .forwarded_c_value("noninteractive")
                         .is_some_and(|value| value.is_truthy())
                     {
                         crate::lisp::primitives::batch_stdout::write(b"\x07");
@@ -5547,14 +5577,14 @@ define_dispatch!(
                 // CONSP (Vunread_command_events) or either input-method
                 // queue non-nil, answers t.
                 if interp
-                    .lookup_var_key(cached_symbol!("unread-command-events"), env)
+                    .symbol_value_key(cached_symbol!("unread-command-events"))
                     .is_some_and(|events| events.is_cons())
                     || [
                         cached_symbol!("unread-post-input-method-events"),
                         cached_symbol!("unread-input-method-events"),
                     ]
                     .into_iter()
-                    .any(|key| interp.lookup_var_key(key, env).is_some_and(|v| !v.is_nil()))
+                    .any(|key| interp.symbol_value_key(key).is_some_and(|v| !v.is_nil()))
                 {
                     return Ok(Value::T);
                 }
@@ -5580,7 +5610,7 @@ define_dispatch!(
             "discard-input" => {
                 need_args(name, args, 0)?;
                 if interp
-                    .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
+                    .symbol_value_key(cached_symbol!("defining-kbd-macro"))
                     .is_some_and(|value| value.is_truthy())
                 {
                     // end_kbd_macro.
@@ -5592,17 +5622,17 @@ define_dispatch!(
                             .truncate(state.kbd_macro_committed_len);
                     }
                     let last_macro = Value::vector(interp.kbd_macro_definition.iter().cloned());
-                    interp.set_variable_key(cached_symbol!("last-kbd-macro"), last_macro, env);
+                    interp.set_symbol_value_key(cached_symbol!("last-kbd-macro"), last_macro);
                 }
-                interp.set_variable_key(cached_symbol!("unread-command-events"), Value::Nil, env);
-                interp.set_variable_key(cached_symbol!("defining-kbd-macro"), Value::Nil, env);
+                interp.set_symbol_value_key(cached_symbol!("unread-command-events"), Value::Nil);
+                interp.set_symbol_value_key(cached_symbol!("defining-kbd-macro"), Value::Nil);
                 crate::lisp::primitives::discard_tty_input();
                 Ok(Value::Nil)
             }
             "prin1" => {
                 need_arg_range(name, args, 1, 3)?;
                 with_print_overrides(interp, env, args.get(2), |interp, env| {
-                    let stream = printer_stream_value(interp, env, args.get(1));
+                    let stream = printer_stream_value(interp, args.get(1));
                     print_object_to_stream(interp, &args[0], stream, env, true, false)
                 })
             }
@@ -5610,48 +5640,93 @@ define_dispatch!(
                 if args.is_empty() {
                     return Ok(Value::Nil);
                 }
-                let stream = printer_stream_value(interp, env, args.get(1));
+                let stream = printer_stream_value(interp, args.get(1));
+                // Fprinc's fast path for plain strings: print_string
+                // alone, between print_prepare and print_finish; the
+                // depth and the numbering of a print under way are left
+                // as they are.
+                if let Kind::StringObject(string) = args[0].kind()
+                    && string.borrow().props.intervals().is_none()
+                    && interp
+                        .symbol_value_key(cached_symbol!("print-continuous-numbering"))
+                        .is_none_or(|value| value.is_nil())
+                {
+                    super::super::file_io::with_print_stream(
+                        interp,
+                        stream.as_ref(),
+                        env,
+                        |interp, env, sink| {
+                            super::super::print::print_string(interp, env, string, sink)
+                        },
+                    )?;
+                    return Ok(args[0]);
+                }
                 print_object_to_stream(interp, &args[0], stream, env, false, false)
             }
             "print" => {
                 if args.is_empty() {
                     return Ok(Value::Nil);
                 }
-                let stream = printer_stream_value(interp, env, args.get(1));
+                let stream = printer_stream_value(interp, args.get(1));
                 print_object_to_stream(interp, &args[0], stream, env, true, true)
             }
             "terpri" => {
                 need_arg_range(name, args, 0, 2)?;
-                let stream = printer_stream_value(interp, env, args.first());
-                if args.get(1).is_some_and(Value::is_truthy) {
-                    if let Some(function) = stream.as_ref()
-                        && super::call(interp, "functionp", std::slice::from_ref(function), env)?
-                            .is_truthy()
-                    {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("error".into()),
-                            Value::String("Unsupported function argument".into()),
-                            *function,
-                        ])));
-                    }
-                    let noninteractive_stdout = interp
-                        .lookup_var_key(cached_symbol!("noninteractive"), env)
-                        .is_some_and(|value| value.is_truthy())
-                        && stream
-                            .as_ref()
-                            .is_some_and(|value| matches!(value.kind(), Kind::T));
-                    let at_line_start = if noninteractive_stdout {
-                        interp.batch_standard_output_last_char == Some(u32::from(b'\n'))
-                    } else {
-                        printer_stream_at_line_start(interp, stream.as_ref())?
-                    };
-                    if at_line_start {
-                        return Ok(Value::Nil);
-                    }
-                }
-                write_printer_output(interp, "\n", stream.as_ref(), env)?;
-                record_batch_standard_output_char(interp, stream.as_ref(), env, u32::from(b'\n'));
-                Ok(Value::T)
+                let stream = printer_stream_value(interp, args.first());
+                let ensure = args.get(1).is_some_and(Value::is_truthy);
+                // print.c:Fterpri, between print_prepare and
+                // print_finish.
+                let printed = super::super::file_io::with_print_stream(
+                    interp,
+                    stream.as_ref(),
+                    env,
+                    |interp, env, sink| {
+                        let newline = if !ensure {
+                            true
+                        } else {
+                            // Difficult to check if at line beginning so
+                            // abort.
+                            if let PrintSink::Function(function) = sink
+                                && function_value_p(interp, &function, env)
+                            {
+                                // signal_error: a function that is a
+                                // proper list is the data's tail.
+                                return Err(super::super::values::signal_error(
+                                    "Unsupported function argument",
+                                    function,
+                                ));
+                            }
+                            let batch = matches!(sink, PrintSink::Stdout)
+                                || (matches!(sink, PrintSink::Function(_))
+                                    && interp
+                                        .symbol_value_key(cached_symbol!("noninteractive"))
+                                        .is_some_and(|value| value.is_truthy()));
+                            if batch {
+                                // `printchar_stdout_last == 10'.
+                                interp.batch_standard_output_last_char != Some(u32::from(b'\n'))
+                            } else if matches!(sink, PrintSink::Echo) {
+                                // NILP (Fbolp ()) in the echo area buffer,
+                                // which setup_echo_area_for_printing made
+                                // current: at the end of what is printed
+                                // there.
+                                echo_area_message()
+                                    .is_some_and(|text| !text.is_empty() && !text.ends_with('\n'))
+                            } else {
+                                // NILP (Fbolp ()).
+                                let buffer = interp.buffer.borrow();
+                                !super::super::file_io::buffer_position_at_line_start(
+                                    &buffer,
+                                    buffer.point(),
+                                )
+                            }
+                        };
+                        if newline {
+                            super::super::print::printchar(interp, env, sink, u32::from(b'\n'))?;
+                        }
+                        Ok(newline)
+                    },
+                )?;
+                Ok(if printed { Value::T } else { Value::Nil })
             }
             "prin1-to-string" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -5661,32 +5736,32 @@ define_dispatch!(
             "write-char" => {
                 need_arg_range(name, args, 1, 2)?;
                 // print.c Fwrite_char: CHECK_FIXNUM, then printchar of the
-                // code as an unsigned int.  A function stream is called
-                // with that number as it is; other output stores its
-                // CHAR_STRING form, whose modifier bits char_string
-                // resolves and whose code past MAX_CHAR is an error.
+                // code as an unsigned int, between print_prepare and
+                // print_finish.  A function stream is called with that
+                // number as it is; other output stores its CHAR_STRING
+                // form, whose modifier bits char_string resolves and
+                // whose code past MAX_CHAR is an error.
+                let stream = printer_stream_value(interp, args.get(1));
                 let Kind::Integer(code) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
                 let code = code as u32;
-                let stream = printer_stream_value(interp, env, args.get(1));
-                match stream.map(|stream| stream.kind()) {
-                    None | Some(Kind::T | Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
-                        let mut rendered = PrintOutput::default();
-                        rendered.push_code(super::super::ccl::written_character(code as i32)?);
-                        write_printer_output_codes(interp, &rendered, stream.as_ref(), env)?;
-                    }
-                    Some(_) => {
-                        let function = stream.expect("function stream");
-                        interp.call_function_value(
-                            function,
-                            None,
-                            &[Value::Integer(i64::from(code))],
-                            env,
-                        )?;
-                    }
-                }
-                record_batch_standard_output_char(interp, stream.as_ref(), env, code);
+                super::super::file_io::with_print_stream(
+                    interp,
+                    stream.as_ref(),
+                    env,
+                    |interp, env, sink| match sink {
+                        PrintSink::Function(function) => interp
+                            .call_function_value(
+                                function,
+                                None,
+                                &[Value::Integer(i64::from(code))],
+                                env,
+                            )
+                            .map(drop),
+                        _ => super::super::print::printchar_unsigned(interp, env, sink, code),
+                    },
+                )?;
                 Ok(args[0])
             }
             "redirect-debugging-output" => {
@@ -5707,7 +5782,7 @@ define_dispatch!(
                 let Kind::Integer(code) = args[0].kind() else {
                     return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
                 };
-                super::super::file_io::printchar_to_stderr(interp, code as u32, env)?;
+                super::super::file_io::printchar_to_stream(interp, code as u32, false, env)?;
                 Ok(args[0])
             }
             "print--preprocess" => {
@@ -5716,7 +5791,7 @@ define_dispatch!(
             }
             "yes-or-no-p" => {
                 need_args(name, args, 1)?;
-                ensure_interaction_allowed(interp, env)?;
+                ensure_interaction_allowed(interp)?;
                 // fns.c:3521 Fyes_or_no_p.  The old arm answered t whenever
                 // no unread event supplied a `y' or `n' -- silence became
                 // consent (finding 11).  GNU never invents an answer: it
@@ -5724,7 +5799,7 @@ define_dispatch!(
                 // and loops on `read-from-minibuffer' until the user types
                 // yes or no; in batch, EOF on stdin signals end-of-file.
                 if interp
-                    .lookup_var_key(cached_symbol!("use-short-answers"), env)
+                    .symbol_value_key(cached_symbol!("use-short-answers"))
                     .is_some_and(|value| value.is_truthy())
                 {
                     return crate::lisp::primitives::call_named_function(
@@ -5736,7 +5811,7 @@ define_dispatch!(
                     prompt.push(' ');
                 }
                 let suffix = interp
-                    .lookup_var_key(cached_symbol!("yes-or-no-prompt"), env)
+                    .symbol_value_key(cached_symbol!("yes-or-no-prompt"))
                     .and_then(|value| string_like(&value).map(|text| text.text))
                     .unwrap_or_else(|| "(yes or no) ".into());
                 prompt.push_str(&suffix);
@@ -5789,7 +5864,7 @@ define_dispatch!(
                     return Ok(Value::T);
                 }
                 if !interp
-                    .lookup_var_key(cached_symbol!("case-fold-search"), env)
+                    .symbol_value_key(cached_symbol!("case-fold-search"))
                     .is_some_and(|value| value.is_truthy())
                 {
                     return Ok(Value::Nil);
@@ -5832,7 +5907,7 @@ define_dispatch!(
             }
             "text-char-description" => {
                 need_args(name, args, 1)?;
-                text_char_description(interp, &args[0], env)
+                text_char_description(interp, &args[0])
             }
 
             // ── More buffer ops ──
@@ -6072,7 +6147,7 @@ define_dispatch!(
             }
             "imagep" => {
                 need_args(name, args, 1)?;
-                Ok(if valid_image_p(interp, &args[0], env) {
+                Ok(if valid_image_p(interp, &args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -6104,7 +6179,7 @@ define_dispatch!(
             }
             "image-flush" => {
                 need_arg_range(name, args, 1, 2)?;
-                if !valid_image_p(interp, &args[0], env) {
+                if !valid_image_p(interp, &args[0]) {
                     return Err(LispError::Signal("Invalid image specification".into()));
                 }
                 // FRAME t flushes the window system frames, none here.
@@ -6131,7 +6206,7 @@ define_dispatch!(
                 } else {
                     need_arg_range(name, args, 1, 2)?;
                 }
-                if valid_image_p(interp, &args[0], env) {
+                if valid_image_p(interp, &args[0]) {
                     let frame = if name == "image-size" {
                         args.get(2)
                     } else {
@@ -6193,14 +6268,14 @@ define_dispatch!(
                     && crate::tty::window_end_outdated(interp, window_id, buffer_id)
                     && interactive_window_metrics().is_some()
                     && !interp
-                        .lookup_var_key(cached_symbol!("noninteractive"), env)
+                        .symbol_value_key(cached_symbol!("noninteractive"))
                         .is_some_and(|value| value.is_truthy())
                 {
                     let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
                     let start = window_start_marker(interp, window_id, buffer_id)
                         .clamp(point_min, point_max);
                     let height = (window_geometry(interp, window_id).1
-                        - window_non_body_height(interp, window_id, Some(buffer_id), env))
+                        - window_non_body_height(interp, window_id, Some(buffer_id)))
                     .max(1) as usize;
                     let saved = interp.current_buffer_id();
                     interp.set_current_buffer_id(buffer_id)?;
@@ -6287,7 +6362,7 @@ define_dispatch!(
                 let selected_id = live_window_id_or_selected(interp, None)?;
                 let mut candidate = if window_is_minibuffer(interp, selected_id) {
                     interp
-                        .lookup_var_key(cached_symbol!("minibuffer-scroll-window"), env)
+                        .symbol_value_key(cached_symbol!("minibuffer-scroll-window"))
                         .filter(Value::is_truthy)
                 } else {
                     None
@@ -6295,7 +6370,7 @@ define_dispatch!(
 
                 if candidate.is_none()
                     && let Some(buffer @ Kind::Buffer(_)) = interp
-                        .lookup_var_key(cached_symbol!("other-window-scroll-buffer"), env)
+                        .symbol_value_key(cached_symbol!("other-window-scroll-buffer"))
                         .map(|v| v.kind())
                     && let Kind::Buffer(buffer_value) = buffer
                     && interp.has_buffer_id(buffer_value.id)
@@ -6319,7 +6394,7 @@ define_dispatch!(
 
                 if candidate.is_none()
                     && let Some(default) = interp
-                        .lookup_var_key(cached_symbol!("other-window-scroll-default"), env)
+                        .symbol_value_key(cached_symbol!("other-window-scroll-default"))
                         .filter(Value::is_truthy)
                     && crate::lisp::primitives::call(
                         interp,
@@ -6391,9 +6466,9 @@ define_dispatch!(
                 let local_y = y - top;
                 let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
                     .ok_or_else(|| wrong_type_argument("window-live-p", args[1]))?;
-                let tab_line = window_line_height(interp, buffer_id, "tab-line-format", env);
-                let header_line = window_line_height(interp, buffer_id, "header-line-format", env);
-                let mode_line = window_line_height(interp, buffer_id, "mode-line-format", env);
+                let tab_line = window_line_height(interp, buffer_id, "tab-line-format");
+                let header_line = window_line_height(interp, buffer_id, "header-line-format");
+                let mode_line = window_line_height(interp, buffer_id, "mode-line-format");
                 if tab_line > 0 && local_y < tab_line {
                     return Ok(Value::symbol("tab-line"));
                 }
@@ -6495,7 +6570,7 @@ define_dispatch!(
                 // window tree already owns the queried window's exact body
                 // height.
                 let limit = (window_geometry(interp, window_id).1
-                    - window_non_body_height(interp, window_id, Some(buffer_id), env))
+                    - window_non_body_height(interp, window_id, Some(buffer_id)))
                 .max(1) as usize;
                 // pos_visible_p: start_display at the window's start and
                 // move_it_to POS, in the window's buffer, as the window
@@ -6540,8 +6615,8 @@ define_dispatch!(
                 if partially {
                     // The iterator's y starts below the tab and header
                     // lines (start_display's current_y).
-                    let top = window_line_height(interp, buffer_id, "tab-line-format", env)
-                        + window_line_height(interp, buffer_id, "header-line-format", env);
+                    let top = window_line_height(interp, buffer_id, "tab-line-format")
+                        + window_line_height(interp, buffer_id, "header-line-format");
                     let mut answer = vec![Value::Integer(x), Value::Integer(y as i64 + top)];
                     if rbot > 0 {
                         // RTOP RBOT ROWH VPOS: the row lies wholly below
@@ -6599,7 +6674,7 @@ define_dispatch!(
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
                 Ok(Value::Integer(
                     window_geometry(interp, window_id).1
-                        - window_non_body_height(interp, window_id, buffer_id, env),
+                        - window_non_body_height(interp, window_id, buffer_id),
                 ))
             }
             "window-text-width" => {
@@ -6620,7 +6695,7 @@ define_dispatch!(
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
                 Ok(Value::Integer(
                     window_geometry(interp, window_id).1
-                        - window_non_body_height(interp, window_id, buffer_id, env),
+                        - window_non_body_height(interp, window_id, buffer_id),
                 ))
             }
             "window-line-height" => {
@@ -6810,7 +6885,6 @@ define_dispatch!(
                     interp,
                     buffer_id,
                     format_variable,
-                    env,
                 )))
             }
             "window-right-divider-width"
@@ -6837,7 +6911,7 @@ define_dispatch!(
                         "move-to-window-line called from unrelated buffer".into(),
                     ));
                 }
-                let height = selected_command_text_height(interp, env);
+                let height = selected_command_text_height(interp);
                 let (point_min, point_max) = {
                     let buffer = interp.buffer.borrow();
                     (buffer.point_min(), buffer.point_max())
@@ -6888,9 +6962,9 @@ define_dispatch!(
             }
             "recenter" => {
                 need_arg_range(name, args, 0, 2)?;
-                let height = selected_command_text_height(interp, env);
+                let height = selected_command_text_height(interp);
                 let interactive = !interp
-                    .lookup_var_key(cached_symbol!("noninteractive"), env)
+                    .symbol_value_key(cached_symbol!("noninteractive"))
                     .is_some_and(|value| value.is_truthy());
                 crate::lisp::primitives::window::recenter_selected_window(
                     interp,
@@ -6929,7 +7003,7 @@ define_dispatch!(
                             false,
                         ),
                     };
-                    let height = selected_command_text_height(interp, env);
+                    let height = selected_command_text_height(interp);
                     let window_id = interp.selected_window_id();
                     let total_lines = window_geometry(interp, window_id).1;
                     let hscroll = window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT)
@@ -6979,7 +7053,7 @@ define_dispatch!(
                 ] {
                     if matches!(mode_lines.kind(), Kind::T) || mode_lines.symbol_str() == Some(line)
                     {
-                        extra += window_line_height(interp, buffer_id, format_variable, env);
+                        extra += window_line_height(interp, buffer_id, format_variable);
                     }
                 }
                 if extra == 0 {
@@ -7137,7 +7211,7 @@ define_dispatch!(
                 interp.set_current_buffer_id(buffer_id)?;
                 let result = (|| {
                     if !interp
-                        .lookup_var_key(cached_symbol!("bidi-display-reordering"), env)
+                        .symbol_value_key(cached_symbol!("bidi-display-reordering"))
                         .is_some_and(|value| value.is_truthy())
                         || !interp.buffer.borrow().is_multibyte()
                     {
@@ -7170,7 +7244,7 @@ define_dispatch!(
             "current-bidi-paragraph-direction" => {
                 need_arg_range(name, args, 0, 1)?;
                 let Some(buffer) = args.first().filter(|value| !value.is_nil()) else {
-                    return Ok(current_bidi_paragraph_direction_value(interp, env));
+                    return Ok(current_bidi_paragraph_direction_value(interp));
                 };
                 let Kind::Buffer(buffer_value) = buffer.kind() else {
                     return Err(wrong_type_argument("bufferp", *buffer));
@@ -7186,7 +7260,7 @@ define_dispatch!(
                 }
                 let saved_buffer = interp.current_buffer_id();
                 interp.set_current_buffer_id(buffer_id)?;
-                let direction = current_bidi_paragraph_direction_value(interp, env);
+                let direction = current_bidi_paragraph_direction_value(interp);
                 interp.set_current_buffer_id(saved_buffer)?;
                 Ok(direction)
             }
@@ -7256,7 +7330,7 @@ define_dispatch!(
                     // bits, so most-positive-fixnum moves left.
                     let right = (direction as i32) > 0;
                     let right_to_left = matches!(
-                        current_bidi_paragraph_direction_value(interp, env).kind(),
+                        current_bidi_paragraph_direction_value(interp).kind(),
                         Kind::Symbol(ref direction) if direction.is_named("right-to-left")
                     );
                     let logical_forward = right != right_to_left;
@@ -7289,7 +7363,7 @@ define_dispatch!(
             "tool-bar-get-system-style" => {
                 need_args(name, args, 0)?;
                 let style = interp
-                    .lookup_var_key(cached_symbol!("tool-bar-style"), env)
+                    .symbol_value_key(cached_symbol!("tool-bar-style"))
                     .unwrap_or(Value::Nil);
                 let known = ["image", "text", "both", "both-horiz", "text-image-horiz"]
                     .iter()
@@ -7332,13 +7406,13 @@ define_dispatch!(
                 let force = args.first().copied().unwrap_or(Value::Nil);
                 crate::lisp::primitives::swallow_events(interp, env, true)?;
                 let dont_pause = interp
-                    .lookup_var_key(cached_symbol!("redisplay-dont-pause"), env)
+                    .symbol_value_key(cached_symbol!("redisplay-dont-pause"))
                     .is_some_and(|value| value.is_truthy());
                 if (crate::lisp::primitives::detect_input_pending_run_timers(interp, env, true)?
                     && force.is_nil()
                     && !dont_pause)
                     || interp
-                        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+                        .symbol_value_key(cached_symbol!("executing-kbd-macro"))
                         .is_some_and(|value| value.is_truthy())
                 {
                     return Ok(Value::Nil);
@@ -7370,7 +7444,7 @@ define_dispatch!(
                 // window's display inaccurate.
                 crate::lisp::primitives::set_frame_garbaged();
                 if let Kind::Frame(frame) = frame.kind() {
-                    redraw_frame_flags(interp, env, frame);
+                    redraw_frame_flags(interp, frame);
                 }
                 Ok(Value::Nil)
             }
@@ -7385,7 +7459,7 @@ define_dispatch!(
                     .filter(|frame| frame.is_live())
                     .collect();
                 for frame in frames {
-                    redraw_frame_flags(interp, env, frame);
+                    redraw_frame_flags(interp, frame);
                 }
                 Ok(Value::Nil)
             }
@@ -7625,7 +7699,7 @@ define_dispatch!(
                     return Ok(Value::T);
                 };
                 if let Ok(window_id) = live_window_id_or_selected(interp, Some(object)) {
-                    mark_window_display_inaccurate(interp, env, window_id);
+                    mark_window_display_inaccurate(interp, window_id);
                     set_window_flag(interp, window_id, WINDOW_UPDATE_MODE_LINE_SLOT, true);
                     if let Some(buffer_id) = window_buffer_id(interp, object) {
                         interp.prevent_redisplay_optimizations(buffer_id);
@@ -7662,7 +7736,7 @@ define_dispatch!(
                         })
                         .collect();
                 for window_id in &showing {
-                    mark_window_display_inaccurate(interp, env, *window_id);
+                    mark_window_display_inaccurate(interp, *window_id);
                     set_window_flag(interp, *window_id, WINDOW_UPDATE_MODE_LINE_SLOT, true);
                     interp.prevent_redisplay_optimizations(buffer_id);
                     interp.update_mode_lines = 27;
@@ -8426,7 +8500,7 @@ fn key_description(
     let nkeys = sequence_length_value(&keys)?;
     let nprefix = sequence_length_value(&prefix)?;
     let meta_prefix_char = interp
-        .lookup_var_key(cached_symbol!("meta-prefix-char"), env)
+        .symbol_value_key(cached_symbol!("meta-prefix-char"))
         .unwrap_or(Value::Integer(KEY_DESCRIPTION_META_PREFIX));
     let sep = Value::String(" ".into());
     let mut args = Vec::new();
@@ -8498,7 +8572,7 @@ fn key_description(
     }
     StringObjectRef::concatenate(&args)
         .map(Value::StringObject)
-        .map_err(|error| string_storage_error(interp, env, error))
+        .map_err(|error| string_storage_error(interp, error))
 }
 
 /// keymap.c Fsingle_key_description.
@@ -8521,7 +8595,7 @@ pub(crate) fn single_key_description(
         let end = single_key_description(interp, end, no_angles, env)?;
         return StringObjectRef::concatenate(&[start, Value::String("..".into()), end])
             .map(Value::StringObject)
-            .map_err(|error| string_storage_error(interp, env, error));
+            .map_err(|error| string_storage_error(interp, error));
     }
     // EVENT_HEAD.
     if matches!(key.kind(), Kind::Cons(_)) {
@@ -8535,8 +8609,7 @@ pub(crate) fn single_key_description(
         Kind::Integer(code) => {
             let mut bytes = Vec::new();
             push_key_description(code, &mut bytes);
-            make_specified_string(bytes, true)
-                .map_err(|error| string_storage_error(interp, env, error))
+            make_specified_string(bytes, true).map_err(|error| string_storage_error(interp, error))
         }
         // Function key or event-symbol.
         Kind::Nil | Kind::T | Kind::Symbol(_) => {
@@ -8569,7 +8642,7 @@ pub(crate) fn single_key_description(
             if let Some(nul) = buffer.iter().position(|&byte| byte == 0) {
                 buffer.truncate(nul);
             }
-            make_string(buffer).map_err(|error| string_storage_error(interp, env, error))
+            make_string(buffer).map_err(|error| string_storage_error(interp, error))
         }
         // Buffer names in the menubar.
         Kind::StringObject(_) => copy_sequence_value(interp, &key),
@@ -8581,11 +8654,7 @@ pub(crate) fn single_key_description(
 
 /// keymap.c Ftext_char_description: "^C" for a control character, the
 /// character itself otherwise.
-fn text_char_description(
-    interp: &mut Interpreter,
-    character: &Value,
-    env: &Env,
-) -> Result<Value, LispError> {
+fn text_char_description(interp: &mut Interpreter, character: &Value) -> Result<Value, LispError> {
     let code = match character.kind() {
         Kind::Integer(code)
             if (0..=i64::from(crate::lisp::primitives::coding::MAX_CHAR)).contains(&code) =>
@@ -8606,7 +8675,7 @@ fn text_char_description(
         };
         make_string(desc)
     };
-    result.map_err(|error| string_storage_error(interp, env, error))
+    result.map_err(|error| string_storage_error(interp, error))
 }
 
 /// Fbuffer_text_pixel_size's measurement of the current buffer's
@@ -8690,14 +8759,10 @@ fn norecord_marks_for_redisplay(norecord: Option<&Value>) -> bool {
 /// dispnew.c:redraw_frame's flags: `fset_redisplay (f)' and every window
 /// of the frame made inaccurate (mark_window_display_accurate of its root
 /// window with false).
-fn redraw_frame_flags(
-    interp: &mut Interpreter,
-    env: &crate::lisp::types::Env,
-    frame: crate::lisp::types::FrameRef,
-) {
+fn redraw_frame_flags(interp: &mut Interpreter, frame: crate::lisp::types::FrameRef) {
     interp.fset_redisplay(frame);
     let root = frame.borrow().root_window_id();
-    mark_window_display_inaccurate(interp, env, root);
+    mark_window_display_inaccurate(interp, root);
 }
 
 #[cfg(test)]
@@ -8753,9 +8818,9 @@ mod tests {
                 Value::symbol("dont-clear-message"),
             ],
         );
-        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
-        interp.set_variable_key(cached_symbol!("inhibit-quit"), Value::Nil, &mut env);
-        interp.set_variable_key(cached_symbol!("inhibit-redisplay"), Value::Nil, &mut env);
+        interp.set_symbol_value_key(cached_symbol!("clear-message-function"), callback);
+        interp.set_symbol_value_key(cached_symbol!("inhibit-quit"), Value::Nil);
+        interp.set_symbol_value_key(cached_symbol!("inhibit-redisplay"), Value::Nil);
         set_echo_area_message(Some("preserved".into()));
         let tick = echo_area_message_tick();
         clear_message(&mut interp, &mut env, true, true).expect("run preserving callback");
@@ -8768,11 +8833,11 @@ mod tests {
         .expect("inspect callback's recorded guards");
         assert_eq!(guards, Value::list([Value::T, Value::T]));
         assert_eq!(
-            interp.lookup_var_key(cached_symbol!("inhibit-quit"), &env),
+            interp.symbol_value_key(cached_symbol!("inhibit-quit")),
             Some(Value::Nil)
         );
         assert_eq!(
-            interp.lookup_var_key(cached_symbol!("inhibit-redisplay"), &env),
+            interp.symbol_value_key(cached_symbol!("inhibit-redisplay")),
             Some(Value::Nil)
         );
         assert_eq!(echo_area_message().as_deref(), Some("preserved"));
@@ -8790,16 +8855,15 @@ mod tests {
             &[192, 135],
             vec![Value::symbol("dont-clear-message")],
         );
-        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
+        interp.set_symbol_value_key(cached_symbol!("clear-message-function"), callback);
         for gc_inhibited in [true, false] {
             set_echo_area_message(Some("must clear".into()));
             if gc_inhibited {
                 interp.inhibit_garbage_collection();
             } else {
-                interp.set_variable_key(
+                interp.set_symbol_value_key(
                     cached_symbol!("inhibit-eval-during-redisplay"),
                     Value::T,
-                    &mut env,
                 );
             }
             let result = clear_message(&mut interp, &mut env, true, true);
@@ -8809,16 +8873,8 @@ mod tests {
             result.expect("inhibited callbacks do not preserve the message");
             assert!(echo_area_message().is_none());
         }
-        interp.set_variable_key(
-            cached_symbol!("inhibit-eval-during-redisplay"),
-            Value::Nil,
-            &mut env,
-        );
-        interp.set_variable_key(
-            cached_symbol!("clear-message-function"),
-            Value::Integer(42),
-            &mut env,
-        );
+        interp.set_symbol_value_key(cached_symbol!("inhibit-eval-during-redisplay"), Value::Nil);
+        interp.set_symbol_value_key(cached_symbol!("clear-message-function"), Value::Integer(42));
         set_echo_area_message(Some("nonfunction".into()));
         clear_message(&mut interp, &mut env, true, true).expect("FUNCTIONP rejects nonfunctions");
         assert!(echo_area_message().is_none());
@@ -8844,24 +8900,23 @@ mod tests {
             &mut env,
         )
         .expect("install a test-owned bytecode callback");
-        interp.set_variable_key(
+        interp.set_symbol_value_key(
             cached_symbol!("clear-message-function"),
             Value::symbol("ignore"),
-            &mut env,
         );
-        interp.set_variable_key(cached_symbol!("inhibit-quit"), Value::Nil, &mut env);
-        interp.set_variable_key(cached_symbol!("inhibit-redisplay"), Value::Nil, &mut env);
+        interp.set_symbol_value_key(cached_symbol!("inhibit-quit"), Value::Nil);
+        interp.set_symbol_value_key(cached_symbol!("inhibit-redisplay"), Value::Nil);
         set_echo_area_message(Some("old message".into()));
         let tick = echo_area_message_tick();
         clear_message(&mut interp, &mut env, true, true).expect("callback signal is caught");
         assert!(echo_area_message().is_none());
         assert_eq!(echo_area_message_tick(), tick);
         assert_eq!(
-            interp.lookup_var_key(cached_symbol!("inhibit-quit"), &env),
+            interp.symbol_value_key(cached_symbol!("inhibit-quit")),
             Some(Value::Nil)
         );
         assert_eq!(
-            interp.lookup_var_key(cached_symbol!("inhibit-redisplay"), &env),
+            interp.symbol_value_key(cached_symbol!("inhibit-redisplay")),
             Some(Value::Nil)
         );
         let (id, _) = interp.find_buffer("*Messages*").expect("error was logged");
@@ -8886,9 +8941,9 @@ mod tests {
             &[192, 193, 194, 34, 135],
             vec![Value::symbol("throw"), tag, Value::Integer(7)],
         );
-        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
-        interp.set_variable_key(cached_symbol!("inhibit-quit"), Value::Nil, &mut env);
-        interp.set_variable_key(cached_symbol!("inhibit-redisplay"), Value::Nil, &mut env);
+        interp.set_symbol_value_key(cached_symbol!("clear-message-function"), callback);
+        interp.set_symbol_value_key(cached_symbol!("inhibit-quit"), Value::Nil);
+        interp.set_symbol_value_key(cached_symbol!("inhibit-redisplay"), Value::Nil);
         set_echo_area_message(Some("not reached".into()));
         let catcher = interp.push_active_catch_tag(tag);
         let result = clear_message(&mut interp, &mut env, true, true);
@@ -8898,11 +8953,11 @@ mod tests {
             Err(LispErrorKind::Throw(actual, value)) if values_eql(actual, &tag) && *value == Value::Integer(7)
         ));
         assert_eq!(
-            interp.lookup_var_key(cached_symbol!("inhibit-quit"), &env),
+            interp.symbol_value_key(cached_symbol!("inhibit-quit")),
             Some(Value::Nil)
         );
         assert_eq!(
-            interp.lookup_var_key(cached_symbol!("inhibit-redisplay"), &env),
+            interp.symbol_value_key(cached_symbol!("inhibit-redisplay")),
             Some(Value::Nil)
         );
         assert_eq!(echo_area_message().as_deref(), Some("not reached"));
@@ -8926,7 +8981,7 @@ mod tests {
                 Value::symbol("current-local-map"),
             ],
         );
-        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
+        interp.set_symbol_value_key(cached_symbol!("clear-message-function"), callback);
         let map = super::super::call(&mut interp, "make-sparse-keymap", &[], &mut env)
             .expect("allocate the minibuffer keymap");
         let active = crate::lisp::primitives::activate_minibuffer(
@@ -8968,7 +9023,7 @@ mod tests {
             &[192, 193, 194, 34, 135],
             vec![Value::symbol("throw"), tag, Value::Integer(7)],
         );
-        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
+        interp.set_symbol_value_key(cached_symbol!("clear-message-function"), callback);
         let catcher = interp.push_active_catch_tag(tag);
         let result = crate::lisp::primitives::activate_minibuffer(
             &mut interp,
@@ -9003,7 +9058,7 @@ mod tests {
             &[192, 135],
             vec![Value::symbol("dont-clear-message")],
         );
-        interp.set_variable_key(cached_symbol!("clear-message-function"), callback, &mut env);
+        interp.set_symbol_value_key(cached_symbol!("clear-message-function"), callback);
         crate::lisp::eval::Interpreter::push_bindings(
             &mut env,
             vec![

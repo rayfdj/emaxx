@@ -1031,10 +1031,7 @@ impl Interpreter {
             name,
             kind,
             !self
-                .lookup_var_key(
-                    cached_symbol!("noninteractive"),
-                    &crate::lisp::types::Env::new(),
-                )
+                .symbol_value_key(cached_symbol!("noninteractive"))
                 .is_some_and(|value| value.is_truthy()),
         )?);
         #[cfg(not(unix))]
@@ -1066,7 +1063,7 @@ impl Interpreter {
             }
             let local = p::call(self, "make-sparse-keymap", &[], &mut env)?;
             let parent = self
-                .lookup_var_key(cached_symbol!("function-key-map"), &env)
+                .symbol_value_key(cached_symbol!("function-key-map"))
                 .unwrap_or(Value::Nil);
             p::call(self, "set-keymap-parent", &[local, parent], &mut env)?;
             keyboard.insert(cached_symbol!("input-decode-map").symbol(), decode);
@@ -1123,18 +1120,12 @@ impl Interpreter {
             .get_buffer_by_id(buffer_id)
             .map_or(1, |buffer| buffer.point());
         let menu = i64::from(
-            self.lookup_var_key(
-                cached_symbol!("menu-bar-mode"),
-                &crate::lisp::types::Env::new(),
-            )
-            .is_some_and(|value| value.is_truthy()),
+            self.symbol_value_key(cached_symbol!("menu-bar-mode"))
+                .is_some_and(|value| value.is_truthy()),
         );
         let tab = i64::from(
-            self.lookup_var_key(
-                cached_symbol!("tab-bar-mode"),
-                &crate::lisp::types::Env::new(),
-            )
-            .is_some_and(|value| value.is_truthy()),
+            self.symbol_value_key(cached_symbol!("tab-bar-mode"))
+                .is_some_and(|value| value.is_truthy()),
         );
         let margin = menu + tab;
         // frame.c:make_frame: the first of `minibuffer-list', which
@@ -1404,7 +1395,7 @@ impl Interpreter {
     ) -> Result<bool, LispError> {
         use std::io::Read;
         if self
-            .lookup_var_key(cached_symbol!("noninteractive"), env)
+            .symbol_value_key(cached_symbol!("noninteractive"))
             .is_some_and(|value| value.is_truthy())
         {
             return Ok(false);
@@ -1488,7 +1479,7 @@ impl Interpreter {
         if events.is_empty() {
             return Ok(!disconnected.is_empty());
         }
-        crate::lisp::primitives::append_unread_command_events(self, env, events);
+        crate::lisp::primitives::append_unread_command_events(self, events);
         Ok(true)
     }
 }

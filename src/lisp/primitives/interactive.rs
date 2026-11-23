@@ -733,7 +733,7 @@ pub(crate) fn run_one_special_event(
             None => return Ok(None),
         };
         let keymap = interp
-            .lookup_var_key(cached_symbol!("special-event-map"), env)
+            .symbol_value_key(cached_symbol!("special-event-map"))
             .unwrap_or(Value::Nil);
         // keyboard.c:read_char uses access_keymap on the actual event.
         // Filters may collect after a thread event leaves the pending queue,
@@ -745,11 +745,11 @@ pub(crate) fn run_one_special_event(
             tty_note_idle_end();
         }
         if binding.is_nil() {
-            append_unread_command_events(interp, env, [event]);
+            append_unread_command_events(interp, [event]);
             return Ok(Some(SpecialEvent::Unread));
         }
         let prev_buffer = interp.current_buffer_id();
-        interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
+        interp.set_symbol_value_key(cached_symbol!("last-input-event"), event);
         let keys = Value::vector([event]);
         interp.call_function_value(
             Value::Symbol("command-execute".into()),
@@ -762,7 +762,7 @@ pub(crate) fn run_one_special_event(
         // acting as a real input event (timer_resume_idle).
         if stop_idle && let Some((head, _)) = event.cons_values() {
             let ignored = interp
-                .lookup_var_key(cached_symbol!("while-no-input-ignore-events"), env)
+                .symbol_value_key(cached_symbol!("while-no-input-ignore-events"))
                 .unwrap_or(Value::Nil);
             if !super::dispatch::lists::direct_memq(interp, &[head, ignored], env)?.is_nil() {
                 tty_resume_idle();
@@ -830,18 +830,18 @@ pub(crate) fn init_raw_keybuf_count(interp: &mut Interpreter) {
     interp.keyboard_input.raw_keys.clear();
 }
 
-pub(crate) fn executing_kbd_macro_p(interp: &Interpreter, env: &Env) -> bool {
+pub(crate) fn executing_kbd_macro_p(interp: &Interpreter) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("executing-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("executing-kbd-macro"))
         .is_some_and(|value| value.is_truthy())
 }
 
 /// keyboard.c:record_char for an event read_char got: the lossage
 /// (`recent-keys'), the input counts and the dribble file.
-pub(crate) fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &Env) {
+pub(crate) fn record_external_input_event(interp: &mut Interpreter, event: &Value) {
     count_read_event(interp);
     READ_RECORDED.set(true);
-    record_char(interp, event, env);
+    record_char(interp, event);
 }
 
 /// read_char's `num_input_events++' for an event it returns, recorded or
@@ -855,16 +855,16 @@ pub(crate) fn count_read_event(interp: &mut Interpreter) {
 /// as the input method left it (record_char); a keyboard event was
 /// recorded as it was read, and one from `unread-post-input-method-events'
 /// or a `(no-record . EVENT)' never is.
-pub(crate) fn record_unrecorded_event(interp: &mut Interpreter, event: &Value, env: &Env) {
+pub(crate) fn record_unrecorded_event(interp: &mut Interpreter, event: &Value) {
     if !READ_RECORDED.replace(true) {
-        record_char(interp, event, env);
+        record_char(interp, event);
     }
 }
 
 /// keyboard.c:record_char: EVENT into `recent-keys', the dribble file and
 /// the keyboard macro being defined; nothing while a macro executes.
-fn record_char(interp: &mut Interpreter, event: &Value, env: &Env) {
-    if executing_kbd_macro_p(interp, env) {
+fn record_char(interp: &mut Interpreter, event: &Value) {
+    if executing_kbd_macro_p(interp) {
         return;
     }
     // record_char's `num_nonmacro_input_events++', which lets the
@@ -897,7 +897,7 @@ fn record_char(interp: &mut Interpreter, event: &Value, env: &Env) {
     // sequence, so a register name, query answer, or other nested input
     // must be appended here to make the macro self-contained on replay.
     if interp
-        .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("defining-kbd-macro"))
         .is_some_and(|value| value.is_truthy())
     {
         interp.kbd_macro_definition.push(*event);
@@ -1179,7 +1179,7 @@ pub(crate) fn parse_interactive_string(
     // command's keys), starting at the first with parameters unless
     // `inhibit-mouse-event-check' admits any event.
     let inhibit_mouse_event_check = interp
-        .lookup_var_key(cached_symbol!("inhibit-mouse-event-check"), env)
+        .symbol_value_key(cached_symbol!("inhibit-mouse-event-check"))
         .is_some_and(|value| value.is_truthy());
     let mut next_event = 0;
     if !inhibit_mouse_event_check {
@@ -1191,7 +1191,7 @@ pub(crate) fn parse_interactive_string(
     // The prefix argument as the call began: reading earlier arguments
     // through the minibuffer runs commands that reset it.
     let prefix_arg = interp
-        .lookup_var_key(cached_symbol!("current-prefix-arg"), env)
+        .symbol_value_key(cached_symbol!("current-prefix-arg"))
         .unwrap_or(Value::Nil);
     // callint.c's leading flag characters, handled once at the start of
     // the whole spec: `*' barfs on a read-only buffer, `^' runs the
@@ -1210,7 +1210,7 @@ pub(crate) fn parse_interactive_string(
             }
             Some('*') => {
                 if interp
-                    .lookup_var_key(cached_symbol!("buffer-read-only"), env)
+                    .symbol_value_key(cached_symbol!("buffer-read-only"))
                     .is_some_and(|value| value.is_truthy())
                 {
                     if record_flag {
@@ -1250,31 +1250,30 @@ pub(crate) fn parse_interactive_string(
     // callint.c's check_mark: the mark must exist in this buffer, and
     // under transient-mark-mode an inactive mark signals `mark-inactive'
     // unless mark-even-if-inactive overrides.
-    let check_mark =
-        |interp: &mut Interpreter, env: &mut Env, for_region: bool| -> Result<usize, LispError> {
-            let mark = interp.buffer.borrow().mark().ok_or_else(|| {
-                LispError::Signal(
-                    if for_region {
-                        "The mark is not set now, so there is no region"
-                    } else {
-                        "The mark is not set now"
-                    }
-                    .into(),
-                )
-            })?;
-            let transient = interp
-                .lookup_var_key(cached_symbol!("transient-mark-mode"), env)
-                .is_some_and(|value| value.is_truthy());
-            let even_if_inactive = interp
-                .lookup_var_key(cached_symbol!("mark-even-if-inactive"), env)
-                .is_some_and(|value| value.is_truthy());
-            if transient && !even_if_inactive && !interp.buffer.borrow().mark_active() {
-                return Err(LispError::SignalValue(Value::list([Value::Symbol(
-                    "mark-inactive".into(),
-                )])));
-            }
-            Ok(mark)
-        };
+    let check_mark = |interp: &mut Interpreter, for_region: bool| -> Result<usize, LispError> {
+        let mark = interp.buffer.borrow().mark().ok_or_else(|| {
+            LispError::Signal(
+                if for_region {
+                    "The mark is not set now, so there is no region"
+                } else {
+                    "The mark is not set now"
+                }
+                .into(),
+            )
+        })?;
+        let transient = interp
+            .symbol_value_key(cached_symbol!("transient-mark-mode"))
+            .is_some_and(|value| value.is_truthy());
+        let even_if_inactive = interp
+            .symbol_value_key(cached_symbol!("mark-even-if-inactive"))
+            .is_some_and(|value| value.is_truthy());
+        if transient && !even_if_inactive && !interp.buffer.borrow().mark_active() {
+            return Err(LispError::SignalValue(Value::list([Value::Symbol(
+                "mark-inactive".into(),
+            )])));
+        }
+        Ok(mark)
+    };
     let mut values = Vec::new();
     let mut varies: Vec<i8> = Vec::new();
     // The up-event a `k' or `K' sequence ending in a down-event left, for
@@ -1316,7 +1315,7 @@ pub(crate) fn parse_interactive_string(
             'a' | 'C' => {
                 let message = formatted_prompt(interp, env, &visible)?;
                 let obarray = interp
-                    .lookup_var_key(cached_symbol!("obarray"), env)
+                    .symbol_value_key(cached_symbol!("obarray"))
                     .unwrap_or(Value::Nil);
                 let predicate =
                     Value::Symbol(if code == 'a' { "fboundp" } else { "commandp" }.into());
@@ -1380,7 +1379,7 @@ pub(crate) fn parse_interactive_string(
                 let (default, mustmatch, initial, predicate) = match code {
                     'D' => (
                         interp
-                            .lookup_var_key(cached_symbol!("default-directory"), env)
+                            .symbol_value_key(cached_symbol!("default-directory"))
                             .unwrap_or(Value::Nil),
                         Value::Symbol("lambda".into()),
                         Value::Nil,
@@ -1472,7 +1471,7 @@ pub(crate) fn parse_interactive_string(
                 values.push(keys);
             }
             'm' => {
-                let mark = check_mark(interp, env, false)?;
+                let mark = check_mark(interp, false)?;
                 values.push(Value::Integer(mark as i64));
                 vary = 2;
             }
@@ -1508,7 +1507,7 @@ pub(crate) fn parse_interactive_string(
                 }
             }
             'r' => {
-                let mark = check_mark(interp, env, true)?;
+                let mark = check_mark(interp, true)?;
                 let point = interp.buffer.borrow().point();
                 values.push(Value::Integer(point.min(mark) as i64));
                 values.push(Value::Integer(point.max(mark) as i64));
@@ -1560,7 +1559,7 @@ pub(crate) fn parse_interactive_string(
                 let message = formatted_prompt(interp, env, &visible)?;
                 let variable = call1(interp, env, "read-variable", &[message])?;
                 seen = interp
-                    .lookup_var_key(cached_symbol!("minibuffer-history"), env)
+                    .symbol_value_key(cached_symbol!("minibuffer-history"))
                     .and_then(|history| history.car_if_list())
                     .unwrap_or(Value::Nil);
                 values.push(variable);
@@ -1923,17 +1922,17 @@ fn timer_check(
     // keyboard.c:timer_check keeps its copied lists reachable across
     // callbacks. A Rust heap Vec is outside the conservative stack:
     // cancel-timer followed by GC must not free its remaining entries.
-    let copy = |interp: &Interpreter, env: &Env, name: &str| {
+    let copy = |interp: &Interpreter, name: &str| {
         crate::lisp::alloc::RootedVec::from_vec(
             interp
-                .lookup_var(name, env)
+                .symbol_value(name)
                 .and_then(|value| value.to_vec().ok())
                 .unwrap_or_default(),
         )
     };
-    let timers = copy(interp, env, "timer-list");
+    let timers = copy(interp, "timer-list");
     let idle_timers = if idle_seconds.is_finite() {
-        copy(interp, env, "timer-idle-list")
+        copy(interp, "timer-idle-list")
     } else {
         crate::lisp::alloc::RootedVec::new()
     };
@@ -1984,7 +1983,7 @@ fn timer_check(
         *ran = true;
         super::call(interp, "aset", &[timer, Value::Integer(0), Value::T], env)?;
         let old_deactivate_mark = interp
-            .lookup_var_key(cached_symbol!("deactivate-mark"), env)
+            .symbol_value_key(cached_symbol!("deactivate-mark"))
             .unwrap_or(Value::Nil);
         let inhibit_quit =
             interp.bind_special_key(cached_symbol!("inhibit-quit"), Value::T, env)?;
@@ -2043,12 +2042,12 @@ pub(crate) fn run_tty_frame_redraw(interp: &mut Interpreter, env: &mut Env) {
 
 // read_char consumes the actual queue spine. Retaining its cdr preserves
 // sharing and lets a filter mutate the very next input event in place.
-fn pop_unread_event_cell(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
+fn pop_unread_event_cell(interp: &mut Interpreter) -> Option<Value> {
     let (event, tail) = interp
-        .lookup_var_key(cached_symbol!("unread-command-events"), env)?
+        .symbol_value_key(cached_symbol!("unread-command-events"))?
         .cons_values()?;
     interp.with_lisp_stack_roots(&event, |interp| {
-        interp.set_variable_key(cached_symbol!("unread-command-events"), tail, env);
+        interp.set_symbol_value_key(cached_symbol!("unread-command-events"), tail);
     });
     Some(event)
 }
@@ -2057,12 +2056,12 @@ pub(crate) fn pop_pending_input_event_value(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
-    if let Some(event) = take_unread_command_event(interp, env) {
+    if let Some(event) = take_unread_command_event(interp) {
         count_read_event(interp);
         return Ok(Some(event));
     }
     run_pending_user_signal_events(interp, env)?;
-    if let Some(event) = take_unread_command_event(interp, env) {
+    if let Some(event) = take_unread_command_event(interp) {
         count_read_event(interp);
         return Ok(Some(event));
     }
@@ -2191,14 +2190,14 @@ fn read_char_help_form(
     quit_char_is_event: bool,
     event: Value,
 ) -> Result<Value, LispError> {
-    if !help_form_applies(interp, event, env) {
+    if !help_form_applies(interp, event) {
         return Ok(event);
     }
     // read_char has made the help character part of the current key
     // (add_command_key, echo_update) and `last-input-event' before it
     // processes it.
     add_read_event_to_command_keys(interp, event, env)?;
-    interp.set_variable_key(cached_symbol!("last-input-event"), event, env);
+    interp.set_symbol_value_key(cached_symbol!("last-input-event"), event);
     run_help_form(interp, env, &mut |interp, env| {
         read_command_event(interp, env, 0, quit_char_is_event, Value::Nil, Value::Nil)
     })
@@ -2206,11 +2205,11 @@ fn read_char_help_form(
 
 /// Whether read_char processes EVENT as the help character: `help-form'
 /// is non-nil and EVENT is `help-char' or in `help-event-list'.
-pub(crate) fn help_form_applies(interp: &mut Interpreter, event: Value, env: &mut Env) -> bool {
+pub(crate) fn help_form_applies(interp: &mut Interpreter, event: Value) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("help-form"), env)
+        .symbol_value_key(cached_symbol!("help-form"))
         .is_some_and(|form| !form.is_nil())
-        && echo::help_char_p(interp, event, env)
+        && echo::help_char_p(interp, event)
 }
 
 /// read_char's processing of the help character it has just recorded:
@@ -2278,7 +2277,7 @@ fn read_command_event_1(
     // read_char: timer_start_idle, then kbd_buffer_get_event until an
     // event is in the keyboard buffer or `unread-command-events'.
     let cursor_in_echo_area = interp
-        .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
+        .symbol_value_key(cached_symbol!("cursor-in-echo-area"))
         .is_some_and(|value| value.is_truthy());
     // If redisplay was requested.
     if commandflag >= 0 {
@@ -2292,7 +2291,7 @@ fn read_command_event_1(
         return match read {
             Some(event) if event != Value::Integer(7) || quit_char_is_event => {
                 interp.keyboard_input.last_event_reread = false;
-                record_external_input_event(interp, &event, env);
+                record_external_input_event(interp, &event);
                 read_char_non_reread(interp, &event, env)?;
                 Ok(event)
             }
@@ -2310,14 +2309,14 @@ fn read_command_event_1(
     // thing if we are supposed to do menu prompting.  If
     // EVENT_HAS_PARAMETERS then we are reading after a mouse event so
     // don't try a minibuf menu.
-    let interactive = !executing_kbd_macro_p(interp, env)
+    let interactive = !executing_kbd_macro_p(interp)
         && !interp
-            .forwarded_c_value("noninteractive", &Env::new())
+            .forwarded_c_value("noninteractive")
             .is_some_and(|value| value.is_truthy());
     // EVENT_HAS_PARAMETERS: CONSP.
     let has_parameters = prev_event.is_cons();
     let unread_pending = interp
-        .lookup_var_key(cached_symbol!("unread-command-events"), env)
+        .symbol_value_key(cached_symbol!("unread-command-events"))
         .is_some_and(|value| value.is_cons());
     if keymapp(interp, map, env)
         && interactive
@@ -2350,7 +2349,7 @@ fn read_command_event_1(
     // be reread.
     if echo_timer(interp, env, prev_event)?.is_some() {
         let timeout = interp
-            .lookup_var_key(cached_symbol!("echo-keystrokes"), env)
+            .symbol_value_key(cached_symbol!("echo-keystrokes"))
             .unwrap_or(Value::Nil);
         if kbd_input::sit_for(interp, env, timeout, true, 1)? {
             echo_timer_expired(interp, env)?;
@@ -2359,10 +2358,10 @@ fn read_command_event_1(
     // Maybe auto save due to number of keystrokes.
     if commandflag != 0
         && commandflag != -2
-        && kbd_input::keystroke_auto_save_due(interp, env)
+        && kbd_input::keystroke_auto_save_due(interp)
         && !kbd_input::detect_input_pending_run_timers(interp, env, false)?
     {
-        let no_message = kbd_input::auto_save_no_message(interp, env);
+        let no_message = kbd_input::auto_save_no_message(interp);
         crate::lisp::primitives::file_io::do_auto_save(interp, env, no_message, Value::Nil)?;
         // Hooks can actually change some buffers in auto save.
         run_tty_frame_redraw(interp, env);
@@ -2404,14 +2403,14 @@ fn read_command_event_1(
     let result = (|| loop {
         // kbd_buffer_get_event: `unread-command-events' before the
         // keyboard buffer.
-        if let Some(event) = take_unread_command_event(interp, env) {
+        if let Some(event) = take_unread_command_event(interp) {
             count_read_event(interp);
             return Ok(event);
         }
         // Read something from current KBOARD's side queue, if possible.
-        if let Some(event) = take_kbd_queue_event(interp, env) {
+        if let Some(event) = take_kbd_queue_event(interp) {
             interp.keyboard_input.last_event_reread = false;
-            record_external_input_event(interp, &event, env);
+            record_external_input_event(interp, &event);
             read_char_non_reread(interp, &event, env)?;
             return Ok(event);
         }
@@ -2422,7 +2421,7 @@ fn read_command_event_1(
                 None => return Err(terminal_gone(interp, env)),
                 Some(Some(event)) => {
                     interp.keyboard_input.last_event_reread = false;
-                    record_external_input_event(interp, &event, env);
+                    record_external_input_event(interp, &event);
                     read_char_non_reread(interp, &event, env)?;
                     return Ok(event);
                 }
@@ -2468,7 +2467,7 @@ fn read_command_event_1(
 /// read_char's read from the kboard's side queue, kbd_queue: its first
 /// event while kbd_queue_has_data, a switch-frame event's frame becoming
 /// internal_last_event_frame, which `last-event-frame' is set to.
-fn take_kbd_queue_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
+fn take_kbd_queue_event(interp: &mut Interpreter) -> Option<Value> {
     let input = &mut interp.keyboard_input;
     if !input.kbd_queue_has_data || input.kbd_queue.is_empty() {
         return None;
@@ -2485,7 +2484,7 @@ fn take_kbd_queue_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value
         .keyboard_input
         .internal_last_event_frame
         .unwrap_or(Value::Nil);
-    interp.set_variable_key(cached_symbol!("last-event-frame"), frame, env);
+    interp.set_symbol_value_key(cached_symbol!("last-event-frame"), frame);
     Some(event)
 }
 
@@ -2505,7 +2504,7 @@ fn read_char_quit(interp: &mut Interpreter, env: &mut Env) -> Result<Option<Valu
     }
     interp.keyboard_input.last_event_reread = false;
     let event = Value::Integer(kbd_input::quit_char());
-    record_external_input_event(interp, &event, env);
+    record_external_input_event(interp, &event);
     // The quit character goes on as read_char's non_reread event.
     read_char_non_reread(interp, &event, env)?;
     Ok(Some(event))
@@ -2529,11 +2528,10 @@ pub(crate) fn normalize_input_event_value(event: Value) -> Result<Value, LispErr
 /// read_char's CONSP test reads it.
 pub(crate) fn append_unread_command_events(
     interp: &mut Interpreter,
-    env: &mut Env,
     events: impl IntoIterator<Item = Value>,
 ) {
     let current = interp
-        .lookup_var_key(cached_symbol!("unread-command-events"), env)
+        .symbol_value_key(cached_symbol!("unread-command-events"))
         .unwrap_or(Value::Nil);
     let mut unread = if current.is_cons() {
         current.to_vec().unwrap_or_default()
@@ -2541,36 +2539,25 @@ pub(crate) fn append_unread_command_events(
         Vec::new()
     };
     unread.extend(events);
-    interp.set_variable_key(
-        cached_symbol!("unread-command-events"),
-        Value::list(unread),
-        env,
-    );
+    interp.set_symbol_value_key(cached_symbol!("unread-command-events"), Value::list(unread));
 }
 
 /// EVENTS before `unread-command-events'' value, whatever it is:
 /// nconc2 (Flist (EVENTS), Vunread_command_events).
-pub(crate) fn prepend_unread_command_events(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    events: &[Value],
-) {
+pub(crate) fn prepend_unread_command_events(interp: &mut Interpreter, events: &[Value]) {
     let mut list = interp
-        .lookup_var_key(cached_symbol!("unread-command-events"), env)
+        .symbol_value_key(cached_symbol!("unread-command-events"))
         .unwrap_or(Value::Nil);
     for event in events.iter().rev() {
         list = Value::cons(*event, list);
     }
-    interp.set_variable_key(cached_symbol!("unread-command-events"), list, env);
+    interp.set_symbol_value_key(cached_symbol!("unread-command-events"), list);
 }
 
 #[cfg(test)]
-pub(crate) fn unread_command_events(
-    interp: &Interpreter,
-    env: &Env,
-) -> Result<Vec<Value>, LispError> {
+pub(crate) fn unread_command_events(interp: &Interpreter) -> Result<Vec<Value>, LispError> {
     interp
-        .lookup_var_key(cached_symbol!("unread-command-events"), env)
+        .symbol_value_key(cached_symbol!("unread-command-events"))
         .unwrap_or(Value::Nil)
         .to_vec()
 }
@@ -2693,13 +2680,11 @@ fn wrong_number_of_args(name: &str, count: usize) -> LispError {
 /// `unread-input-method-events', each reread; the source is noted (the
 /// keyboard's when none is there).  A one-element list (EVENT) from the
 /// input-method lists is EVENT (read_char_x_menu_prompt's unread keys).
-pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
-    let pop = |interp: &mut Interpreter,
-               env: &mut Env,
-               list: crate::lisp::types::symbols::SymbolKey| {
-        let (event, tail) = interp.lookup_var_key(list, env)?.cons_values()?;
+pub(crate) fn take_unread_command_event(interp: &mut Interpreter) -> Option<Value> {
+    let pop = |interp: &mut Interpreter, list: crate::lisp::types::symbols::SymbolKey| {
+        let (event, tail) = interp.symbol_value_key(list)?.cons_values()?;
         interp.with_lisp_stack_roots(&event, |interp| {
-            interp.set_variable_key(list, tail, env);
+            interp.set_symbol_value_key(list, tail);
         });
         Some(match event.cons_values() {
             Some((head, rest))
@@ -2715,22 +2700,18 @@ pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env)
     // read_char's `recorded' starts false at each read: a post-input-method
     // event goes past recording (reread_first), a `(no-record . EVENT)'
     // counts as recorded, the others are recorded after the input method.
-    if let Some(event) = pop(
-        interp,
-        env,
-        cached_symbol!("unread-post-input-method-events"),
-    ) {
+    if let Some(event) = pop(interp, cached_symbol!("unread-post-input-method-events")) {
         interp.keyboard_input.last_event_reread = true;
         note_event_source(EventSource::PostInputMethod);
         READ_RECORDED.set(true);
         return Some(event);
     }
-    if let Some((event, no_record)) = take_from_unread_command_events(interp, env) {
+    if let Some((event, no_record)) = take_from_unread_command_events(interp) {
         note_event_source(EventSource::Unread);
         READ_RECORDED.set(no_record);
         return Some(event);
     }
-    if let Some(event) = pop(interp, env, cached_symbol!("unread-input-method-events")) {
+    if let Some(event) = pop(interp, cached_symbol!("unread-input-method-events")) {
         interp.keyboard_input.last_event_reread = true;
         note_event_source(EventSource::Unread);
         READ_RECORDED.set(false);
@@ -2747,11 +2728,8 @@ pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env)
 /// (a symbol or fixnum the menu gave), which, like a menu-, tab- or
 /// tool-bar event, used the mouse.  The event and whether it counts as
 /// recorded.
-fn take_from_unread_command_events(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Option<(Value, bool)> {
-    let mut c = pop_unread_event_cell(interp, env)?;
+fn take_from_unread_command_events(interp: &mut Interpreter) -> Option<(Value, bool)> {
+    let mut c = pop_unread_event_cell(interp)?;
     let mut reread = false;
     let mut recorded = false;
     // Undo what sit-for did when it unread additional keys inside
@@ -2876,11 +2854,11 @@ pub(crate) fn input_method_for_last_event(
 /// the input method: a character from SPC to 255 but DEL, with a non-nil
 /// `input-method-function' (an event from `unread-post-input-method-events'
 /// excepted).
-pub(crate) fn input_method_takes(interp: &Interpreter, event: &Value, env: &Env) -> bool {
+pub(crate) fn input_method_takes(interp: &Interpreter, event: &Value) -> bool {
     matches!(event.kind(), Kind::Integer(code) if (0x20..0x100).contains(&code) && code != 0x7f)
         && last_event_source() != EventSource::PostInputMethod
         && interp
-            .lookup_var_key(cached_symbol!("input-method-function"), env)
+            .symbol_value_key(cached_symbol!("input-method-function"))
             .is_some_and(|function| !function.is_nil())
 }
 
@@ -2907,7 +2885,7 @@ pub(crate) fn minibuffer_message_timeout(
         return Ok(());
     }
     let timeout = interp
-        .lookup_var_key(cached_symbol!("minibuffer-message-timeout"), env)
+        .symbol_value_key(cached_symbol!("minibuffer-message-timeout"))
         .unwrap_or(Value::Nil);
     if !matches!(
         timeout.kind(),
@@ -2930,10 +2908,9 @@ pub(crate) fn minibuffer_message_timeout(
     result?;
     if !interp.quit_flag_is_nil() {
         interp.set_c_variable("quit-flag", Value::Nil);
-        interp.set_variable_key(
+        interp.set_symbol_value_key(
             cached_symbol!("unread-command-events"),
             Value::list([Value::Integer(quit_char())]),
-            env,
         );
     }
     Ok(())
@@ -2947,8 +2924,8 @@ fn read_char_non_reread(
     event: &Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if input_method_takes(interp, event, env) {
-        save_input_method_previous_message(interp, env);
+    if input_method_takes(interp, event) {
+        save_input_method_previous_message(interp);
     }
     read_char_wipe_echo_area(interp, event, env)
 }
@@ -2981,7 +2958,7 @@ pub(crate) fn read_char_wipe_echo_area(
         crate::lisp::primitives::dispatch::display::clear_message(interp, env, true, false)
     } else {
         let function = interp
-            .forwarded_c_value("clear-message-function", &Env::new())
+            .forwarded_c_value("clear-message-function")
             .unwrap_or(Value::Nil);
         if crate::lisp::primitives::function_value_p(interp, &function, env) {
             crate::lisp::primitives::dispatch::display::clear_message(interp, env, true, false)
@@ -2994,14 +2971,10 @@ pub(crate) fn read_char_wipe_echo_area(
 /// read_char for a keyboard character the input method will have:
 /// `Fcurrent_message' as `input-method-previous-message' (and its
 /// previous_echo_area_message) before the echo area is wiped.
-pub(crate) fn save_input_method_previous_message(interp: &mut Interpreter, env: &mut Env) {
+pub(crate) fn save_input_method_previous_message(interp: &mut Interpreter) {
     let message =
         crate::lisp::primitives::dispatch::display::echo_area_message_value().unwrap_or(Value::Nil);
-    interp.set_variable_key(
-        cached_symbol!("input-method-previous-message"),
-        message,
-        env,
-    );
+    interp.set_symbol_value_key(cached_symbol!("input-method-previous-message"), message);
     PREVIOUS_ECHO_AREA_MESSAGE.set(Some(message));
 }
 
@@ -3027,7 +3000,7 @@ pub(crate) fn read_char_input_method(
         return Ok(Some(c));
     }
     let function = interp
-        .lookup_var_key(cached_symbol!("input-method-function"), env)
+        .symbol_value_key(cached_symbol!("input-method-function"))
         .unwrap_or(Value::Nil);
     if function.is_nil() {
         return Ok(Some(c));
@@ -3040,11 +3013,8 @@ pub(crate) fn read_char_input_method(
             None => {
                 let message = crate::lisp::primitives::dispatch::display::echo_area_message_value()
                     .unwrap_or(Value::Nil);
-                interp.set_variable_key(
-                    cached_symbol!("input-method-previous-message"),
-                    message,
-                    env,
-                );
+                interp
+                    .set_symbol_value_key(cached_symbol!("input-method-previous-message"), message);
                 message
             }
         }
@@ -3112,7 +3082,7 @@ pub(crate) fn read_char_input_method(
     // nconc2 (XCDR (tem), Vunread_post_input_method_events).
     if rest.is_cons() {
         let post = interp
-            .lookup_var_key(cached_symbol!("unread-post-input-method-events"), env)
+            .symbol_value_key(cached_symbol!("unread-post-input-method-events"))
             .unwrap_or(Value::Nil);
         let mut last = rest;
         while let Some((_, next)) = last.cons_values() {
@@ -3122,7 +3092,7 @@ pub(crate) fn read_char_input_method(
             last = next;
         }
         last.set_cdr(post)?;
-        interp.set_variable_key(cached_symbol!("unread-post-input-method-events"), rest, env);
+        interp.set_symbol_value_key(cached_symbol!("unread-post-input-method-events"), rest);
     }
     Ok(Some(first))
 }
@@ -3188,7 +3158,7 @@ pub(crate) fn read_tty_event_with_timeout(
             echo_before_wait(interp, env)?;
         }
         let cursor_in_echo_area = interp
-            .lookup_var_key(cached_symbol!("cursor-in-echo-area"), env)
+            .symbol_value_key(cached_symbol!("cursor-in-echo-area"))
             .is_some_and(|value| value.is_truthy());
         if let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area, end_time) {
             match step {
@@ -3197,7 +3167,7 @@ pub(crate) fn read_tty_event_with_timeout(
                 None => return Err(terminal_gone(interp, env)),
                 Some(Some(event)) => {
                     interp.keyboard_input.last_event_reread = false;
-                    record_external_input_event(interp, &event, env);
+                    record_external_input_event(interp, &event);
                     read_char_non_reread(interp, &event, env)?;
                     return Ok(Some(event));
                 }
@@ -3237,7 +3207,7 @@ pub(crate) fn run_post_command_hooks(
 ) -> Result<(), LispError> {
     // Only while `memory-full' is nil; the hook only once Vrun_hooks is.
     if interp
-        .lookup_var_key(cached_symbol!("memory-full"), env)
+        .symbol_value_key(cached_symbol!("memory-full"))
         .is_some_and(|value| value.is_truthy())
     {
         return Ok(());
@@ -3255,7 +3225,7 @@ pub(crate) fn run_post_command_hooks(
         command_loop::resize_echo_area_exactly(interp, env);
     }
     if interp
-        .lookup_var_key(cached_symbol!("delayed-warnings-list"), env)
+        .symbol_value_key(cached_symbol!("delayed-warnings-list"))
         .is_some_and(|value| value.is_truthy())
     {
         crate::lisp::primitives::safe_run_hooks(
@@ -3275,8 +3245,8 @@ pub(crate) fn run_post_command_hooks(
 pub(crate) fn command_loop_entry(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     // No prefix argument, `deactivate-mark' nil, not waiting for input,
     // and this-command-keys empty.
-    interp.set_variable_key(cached_symbol!("prefix-arg"), Value::Nil, env);
-    interp.set_variable_key(cached_symbol!("last-prefix-arg"), Value::Nil, env);
+    interp.set_symbol_value_key(cached_symbol!("prefix-arg"), Value::Nil);
+    interp.set_symbol_value_key(cached_symbol!("last-prefix-arg"), Value::Nil);
     // Vdeactivate_mark = Qnil: the binding in place, never a new local
     // one (the variable is automatically buffer-local).
     interp.set_c_variable("deactivate-mark", Value::Nil);
@@ -3285,22 +3255,18 @@ pub(crate) fn command_loop_entry(interp: &mut Interpreter, env: &mut Env) -> Res
     clear_command_keys(interp);
     run_post_command_hooks(interp, env)?;
     let this_command = interp
-        .lookup_var_key(cached_symbol!("this-command"), env)
+        .symbol_value_key(cached_symbol!("this-command"))
         .unwrap_or(Value::Nil);
     let real_this_command = interp
-        .lookup_var_key(cached_symbol!("real-this-command"), env)
+        .symbol_value_key(cached_symbol!("real-this-command"))
         .unwrap_or(Value::Nil);
-    interp.set_variable_key(cached_symbol!("last-command"), this_command, env);
-    interp.set_variable_key(cached_symbol!("real-last-command"), real_this_command, env);
+    interp.set_symbol_value_key(cached_symbol!("last-command"), this_command);
+    interp.set_symbol_value_key(cached_symbol!("real-last-command"), real_this_command);
     let last_event_is_cons = interp
-        .lookup_var_key(cached_symbol!("last-command-event"), env)
+        .symbol_value_key(cached_symbol!("last-command-event"))
         .is_some_and(|event| event.cons_values().is_some());
     if !last_event_is_cons {
-        interp.set_variable_key(
-            cached_symbol!("last-repeatable-command"),
-            real_this_command,
-            env,
-        );
+        interp.set_symbol_value_key(cached_symbol!("last-repeatable-command"), real_this_command);
     }
     Ok(())
 }
@@ -3348,10 +3314,10 @@ pub(crate) fn cmd_error(
         String::new()
     };
     if !error_data_has_condition(interp, &data, "minibuffer-quit") {
-        interp.set_variable_key(cached_symbol!("executing-kbd-macro"), Value::Nil, env);
+        interp.set_symbol_value_key(cached_symbol!("executing-kbd-macro"), Value::Nil);
         interp.executing_kbd_macro = false;
     } else if interp
-        .lookup_var_key(cached_symbol!("defining-kbd-macro"), env)
+        .symbol_value_key(cached_symbol!("defining-kbd-macro"))
         .is_some_and(|value| value.is_truthy())
     {
         // An `M-x' command that signals a `minibuffer-quit' condition
@@ -3366,8 +3332,8 @@ pub(crate) fn cmd_error(
             return Err(error);
         }
     };
-    interp.set_variable_key(cached_symbol!("prefix-arg"), Value::Nil, env);
-    interp.set_variable_key(cached_symbol!("last-prefix-arg"), Value::Nil, env);
+    interp.set_symbol_value_key(cached_symbol!("prefix-arg"), Value::Nil);
+    interp.set_symbol_value_key(cached_symbol!("last-prefix-arg"), Value::Nil);
     cancel_echoing(interp);
     // Avoid unquittable loop if data contains a circular list.
     let reported = interp.with_lisp_stack_roots(&data, |interp| {
@@ -3403,7 +3369,7 @@ pub(crate) fn cmd_error_internal(
     interp.set_c_variable("inhibit-quit", Value::T);
     // Use user's specified output function if any.
     let function = interp
-        .lookup_var_key(cached_symbol!("command-error-function"), env)
+        .symbol_value_key(cached_symbol!("command-error-function"))
         .unwrap_or(Value::Nil);
     let result = if function.is_nil() {
         Ok(())
@@ -3424,13 +3390,13 @@ pub(crate) fn cmd_error_internal(
 
 /// keyboard.c command_loop_1 before read_key_sequence: no command is
 /// running while the next key sequence is read.
-pub(crate) fn clear_this_command(interp: &mut Interpreter, env: &mut Env) {
+pub(crate) fn clear_this_command(interp: &mut Interpreter) {
     for name in [
         "this-command",
         "real-this-command",
         "this-original-command",
         "this-command-keys-shift-translated",
     ] {
-        interp.set_variable(name, Value::Nil, env);
+        interp.set_symbol_value_cell(name, Value::Nil);
     }
 }

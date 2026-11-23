@@ -230,6 +230,38 @@ impl CharTableRef {
         true
     }
 
+    /// disptab.h:DISP_TABLE_P: the purpose `display-table' and
+    /// DISP_TABLE_EXTRA_SLOTS extra slots.
+    pub(crate) fn is_display_table(&self) -> bool {
+        const DISP_TABLE_EXTRA_SLOTS: usize = 6;
+        self.extra_count() == DISP_TABLE_EXTRA_SLOTS && self.has_purpose("display-table")
+    }
+
+    /// disptab.h:DISP_CHAR_VECTOR.  An ASCII character is answered by
+    /// this table's own ASCII slot and never its parent: the default
+    /// while that slot is nil, the bottom subtable's element (nil too)
+    /// once the slot holds one, else the slot's value.  Any other
+    /// character is xdisp.c:disp_char_vector's: char_table_ref, and the
+    /// default for nil.
+    pub(crate) fn disp_char_vector(&self, character: u32) -> Value {
+        if character < 128 {
+            let ascii = self.standard_slot(ASCII);
+            if ascii.is_nil() {
+                return self.default();
+            }
+            return match subtable(ascii) {
+                Some(sub) => sub.bottom_slot(character as usize),
+                None => ascii,
+            };
+        }
+        let value = self.get_non_ascii(character);
+        if value.is_nil() {
+            self.default()
+        } else {
+            value
+        }
+    }
+
     /// chartab.c's UNIPROP_TABLE_P: the purpose compared with the symbol
     /// itself, as EQ with Qchar_code_property_table.
     pub(crate) fn is_uniprop(&self) -> bool {

@@ -20,7 +20,7 @@ impl RandomState {
         };
         let mut word = if seed == 0 { 1 } else { seed } as i32;
         generator.state[0] = word;
-        for slot in 1..31 {
+        for slot in generator.state.iter_mut().skip(1) {
             // state[i] = (16807 * state[i - 1]) % 2147483647, without
             // overflowing 31 bits.
             let hi = i64::from(word) / 127_773;
@@ -29,7 +29,7 @@ impl RandomState {
             if word < 0 {
                 word = word.wrapping_add(2_147_483_647);
             }
-            generator.state[slot] = word;
+            *slot = word;
         }
         for _ in 0..310 {
             generator.next();

@@ -1478,6 +1478,274 @@ f\", (1 2 3 4)") ("bYc" (1 1 0)) ("str" "sym" "5" "z1.5") (nil nil t) buffer-rea
 }
 
 #[test]
+fn a_function_stream_is_called_as_the_printer_walks() {
+    // print.c writes while it walks: printchar hands a function each
+    // character where the walk stands, so what the function does is
+    // what the printer reads next, and an error it signals ends the
+    // print there.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ ;; Each character when the walk reaches it, the unreadable object's
+ ;; function in its place among them.
+ (let* ((log nil)
+        (print-unreadable-function (lambda (_o _e) (push 'unreadable log) "R")))
+   (prin1 (list 1 "ab" (current-buffer) 'sym 2.5) (lambda (c) (push c log)))
+   (concat (mapcar (lambda (c) (if (eq c 'unreadable) ?! c)) (reverse log))))
+ ;; A stream that signals at its third character: nothing after it is
+ ;; looked at.
+ (let ((n 0) (called nil))
+   (condition-case err
+       (let ((print-unreadable-function (lambda (_o _e) (setq called t) "R")))
+         (prin1 (list 1 2 (current-buffer))
+                (lambda (_c) (setq n (1+ n)) (when (= n 3) (error "third")))))
+     (error (list err n called))))
+ ;; What the stream changes is read for what is printed next: the print
+ ;; variables,
+ (let ((out nil) (print-length nil))
+   (prin1 '((1 2 3 4) (1 2 3 4) (1 2 3 4))
+          (lambda (c) (push c out) (when (eq c ?3) (setq print-length 2))))
+   (concat (reverse out)))
+ ;; the escape variables inside one string,
+ (let ((out nil) (print-escape-newlines nil))
+   (prin1 "a\nb\nc" (lambda (c) (push c out) (when (eq c ?b) (setq print-escape-newlines t))))
+   (concat (reverse out)))
+ ;; and the string `princ' is printing, but not the one `prin1' is, which
+ ;; prints a copy unless `print-charset-text-property' is t.
+ (let ((s (copy-sequence "abcdef")) (out nil))
+   (princ s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+   (concat (reverse out)))
+ (let ((s (copy-sequence "abcdef")) (out nil))
+   (prin1 s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+   (concat (reverse out)))
+ (let ((s (copy-sequence "abcdef")) (out nil) (print-charset-text-property t))
+   (prin1 s (lambda (c) (push c out) (when (eq c ?b) (aset s 4 ?X))))
+   (concat (reverse out)))
+ ;; `princ' reads the string's sizes once: one the function makes shorter
+ ;; is read at its terminating NUL, one it makes longer up to the bytes
+ ;; it had.
+ (let ((s (copy-sequence "a\351bcdef")) (acc nil))
+   (setq s (string-to-multibyte s))
+   (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 1 ?x))))
+   (nreverse acc))
+ (let ((s (string-to-multibyte "axbcd\351f")) (acc nil))
+   (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 1 #x3fffe9))))
+   (nreverse acc))
+ (let ((s (copy-sequence "abcdef")) (acc nil))
+   (princ s (lambda (c) (push c acc) (when (= c ?b) (aset s 4 #xe9))))
+   (nreverse acc))
+ ;; A unibyte string's bytes are characters for `princ', raw bytes for
+ ;; `prin1'.
+ (let ((out nil))
+   (princ (string-to-unibyte "a\377") (lambda (c) (push c out)))
+   (prin1 (string-to-unibyte "a\377") (lambda (c) (push c out)))
+   (prin1 (string-to-multibyte "a\377") (lambda (c) (push c out)))
+   (reverse out))
+ ;; A variable print.c reads after it has written something is read
+ ;; after the function has had that: `print-length' after a list's
+ ;; parenthesis, a vector's bracket and a hash table's " data (", the
+ ;; escape variables after a string's quote and for each byte of a bool
+ ;; vector.
+ (let ((out nil) (print-length nil))
+   (prin1 '(1 2 3) (lambda (c) (push c out) (when (eq c ?\() (setq print-length 1))))
+   (concat (reverse out)))
+ (let ((out nil) (print-length nil))
+   (prin1 [1 2 3] (lambda (c) (push c out) (when (eq c ?\[) (setq print-length 1))))
+   (concat (reverse out)))
+ (let ((out nil) (print-length nil) (h (make-hash-table)))
+   (puthash 1 2 h)
+   (puthash 3 4 h)
+   (prin1 h (lambda (c) (push c out) (when (eq c ?d) (setq print-length 1))))
+   (concat (reverse out)))
+ (let ((out nil) (print-escape-newlines nil))
+   (prin1 "\nx\n" (lambda (c) (push c out) (when (eq c ?\") (setq print-escape-newlines t))))
+   (concat (reverse out)))
+ (let ((out nil) (print-escape-newlines nil))
+   (prin1 (bool-vector nil t nil t nil nil nil nil nil t nil t nil nil nil nil)
+          (lambda (c) (push c out) (when (eq c ?\n) (setq print-escape-newlines t))))
+   (concat (reverse out)))
+ ;; `terpri', `write-char' and `print' call it too; `terpri' with ENSURE
+ ;; cannot tell where a function's line begins.
+ (let ((out nil))
+   (terpri (lambda (c) (push c out)))
+   (write-char ?x (lambda (c) (push c out)))
+   (print 'q (lambda (c) (push c out)))
+   (reverse out))
+ (condition-case err (terpri (lambda (c) c) t) (error (car err)))
+ (condition-case err (terpri 'car t) (error err)))"##,
+        r##"("(1 \"ab\" !R sym 2.5)" ((error "third") 3 nil) "((1 2 3 4) (1 2 ...) (1 2 ...))" "\"a
+b\\nc\"" "abcdXf" "\"abcdef\"" "\"abcdXf\"" (97 4194281 98 100 101 102 0) (97 120 98 98 99 100 4194281) (97 98 99 100 233 102) (97 255 34 97 4194303 34 34 97 92 51 55 55 34) "(1 ...)" "[1 ...]" "#s(hash-table data (1 2 ...))" "\"\\nx\\n\"" "#&16\"
+\\n\"" (10 120 10 113 10) error (error "Unsupported function argument" car))"##,
+        "a function stream is called as the printer walks",
+    );
+}
+
+#[test]
+fn prints_into_buffers_share_print_buffer() {
+    // print.c's print_buffer is one static: print_prepare sets the text
+    // of a print under way aside and print_unwind copies it back over
+    // what the print run inside it left, `pos' and `pos_byte' as that
+    // print left them.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ ;; print.c's print_buffer is one static: a print into a buffer run by
+ ;; `print-unreadable-function' sets the outer print's text aside, and
+ ;; print_unwind copies it back but leaves `pos' where the inner print
+ ;; ended, so the outer print goes on from there.
+ (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'zz))))
+   (prin1-to-string (list 1 2 (current-buffer) 3)))
+ (let ((print-unreadable-function (lambda (_o _e) (prin1-to-string 'zz) nil)))
+   (prin1-to-string (list 1 2 (get-buffer-create "pb364") 3)))
+ (let ((print-unreadable-function (lambda (_o _e) (format "%S" 'q))))
+   (prin1-to-string (list 1 2 (current-buffer) 3 4 5)))
+ (let ((print-unreadable-function
+        (lambda (_o _e) (with-temp-buffer (prin1 'abcdefgh (current-buffer)) "R"))))
+   (prin1-to-string (list 1 2 (current-buffer) 3 4 5)))
+ (let ((print-unreadable-function
+        (lambda (_o _e) (with-temp-buffer (prin1 'ab (current-buffer)) "R"))))
+   (with-temp-buffer
+     (prin1 (list 1 2 (current-buffer) 3 4 5) (current-buffer))
+     (buffer-string)))
+ ;; A print to a function or a string printed by `princ' leaves it alone.
+ (let ((print-unreadable-function
+        (lambda (_o _e) (prin1 'inner #'ignore) (princ "plain" #'ignore) "R")))
+   (prin1-to-string (list 1 2 (current-buffer) 3)))
+ ;; The function finds the destination as it was: nothing is inserted
+ ;; before print_finish.
+ (let* ((seen nil)
+        (print-unreadable-function (lambda (o _e) (push (with-current-buffer o (buffer-string)) seen) nil)))
+   (with-temp-buffer
+     (rename-buffer "pb364b")
+     (insert "old")
+     (prin1 (list 1 (current-buffer) 2) (current-buffer))
+     (list seen (buffer-string))))
+ ;; `princ' of a plain string is print_string alone: the depth of a print
+ ;; under way is not reset by it, as it is by any other print.
+ (let ((print-level 3)
+       (print-unreadable-function (lambda (_o _e) (princ "s" #'ignore) "U")))
+   (prin1-to-string (list (current-buffer) '(1 (2 (3 (4)))))))
+ (let ((print-level 3)
+       (print-unreadable-function (lambda (_o _e) (prin1 "s" #'ignore) "U")))
+   (prin1-to-string (list (current-buffer) '(1 (2 (3 (4)))))))
+ ;; `print-level' is compared as any fixnum.
+ (let ((print-level -1)) (list (prin1-to-string '(a)) (prin1-to-string [a (b)]) (prin1-to-string 5)))
+ (let ((print-level 0)) (list (prin1-to-string '(a)) (prin1-to-string [a (b)]))))"##,
+        r##"("(1zz 3)" "(1#<buffer pb364> 3)" "(q 3 4 5)" "(1 2 fghR 3 4 5)" "(1R 3 4 5)" "(1 2 R 3)" (("old") "old(1 #<buffer pb364b> 2)") "(U (1 (2 ...)))" "(U (1 (2 (3 (4)))))" ("..." "[a ...]" "5") ("..." "[a ...]"))"##,
+        "prints into buffers share print_buffer",
+    );
+}
+
+#[test]
+fn a_print_goes_on_from_what_lisp_left_it() {
+    // What Lisp run by a print changes is what the print goes on with:
+    // the object, the print stack (prstack, one static that a non-local
+    // exit does not unwind), the current buffer (restored when the print
+    // ends) and, at print_finish, the buffer the text is inserted in and
+    // print_buffer itself.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+ ;; What a function printed to changes in the object is what the walk
+ ;; reads next: a list's first element after its parenthesis, a quoted
+ ;; form's after the quote, a buffer's name after `#<', an object's
+ ;; label after its `=', a string's intervals after its text, a hash
+ ;; table's entries after `#s(' and a symbol's name for each character.
+ (let ((l (list 'a 'b 'c)) (acc nil))
+   (prin1 l (lambda (c) (push c acc) (when (= c ?\() (setcar l 'z))))
+   (concat (nreverse acc)))
+ (let ((l (list 'quote 'b)) (acc nil))
+   (prin1 l (lambda (c) (push c acc) (when (= c ?\') (setcar (cdr l) 'y))))
+   (concat (nreverse acc)))
+ (let ((acc nil) (b (generate-new-buffer "bufname364")))
+   (prin1 b (lambda (c) (push c acc) (when (= c ?<) (with-current-buffer b (rename-buffer "renamed364")))))
+   (kill-buffer b)
+   (concat (nreverse acc)))
+ (let ((print-circle t) (x (list 1)) (acc nil))
+   (prin1 (list x x x) (lambda (c) (push c acc) (when (= c ?=) (clrhash print-number-table))))
+   (concat (nreverse acc)))
+ (let ((s (propertize "abcd" 'k 'v)) (acc nil) (print-charset-text-property t))
+   (prin1 s (lambda (c) (push c acc) (when (= c ?b) (set-text-properties 0 4 nil s))))
+   (concat (nreverse acc)))
+ (let ((acc nil) (h (make-hash-table)))
+   (puthash 'a 1 h) (puthash 'b 2 h)
+   (prin1 h (lambda (c) (push c acc) (when (= c ?#) (puthash 'c 3 h))))
+   (concat (nreverse acc)))
+ (let ((acc nil) (s (make-symbol "abcdef")))
+   (prin1 s (lambda (c) (push c acc) (when (= c ?b) (aset (symbol-name s) 3 ?Z))))
+   (concat (nreverse acc)))
+ ;; print.c's prstack is one static that a non-local exit does not
+ ;; unwind: a print left by a throw or an error leaves its entries, and
+ ;; the print it was run from goes on with them.
+ (let ((acc nil))
+   (prin1 '(a b c)
+          (lambda (c) (push c acc)
+            (when (= c ?b)
+              (catch 'k (prin1 '(x y z) (lambda (d) (when (= d ?y) (throw 'k nil))))))))
+   (concat (nreverse acc)))
+ (let ((print-unreadable-function
+        (lambda (_o _e)
+          (condition-case nil
+              (let ((print-unreadable-function (lambda (_o _e) (error "x"))))
+                (prin1-to-string (list 1 (make-marker) 2)))
+            (error nil))
+          nil)))
+   (prin1-to-string (list 'a (make-marker) 'c)))
+ ;; print_prepare's record_unwind_current_buffer: the buffer current
+ ;; when a print began is current when it ends, whatever a function
+ ;; printed to or `print-unreadable-function' made current.
+ (with-temp-buffer
+   (let ((b (get-buffer-create "other364a")))
+     (prin1 'x (lambda (_c) (set-buffer b)))
+     (buffer-name)))
+ (with-temp-buffer
+   (let* ((b (get-buffer-create "other364b"))
+          (print-unreadable-function (lambda (_o _e) (set-buffer b) nil)))
+     (prin1 (list 'a (make-marker)) (current-buffer))
+     (list (buffer-string) (with-current-buffer b (buffer-string)))))
+ ;; print_finish sets the marker printed to in the buffer current after
+ ;; the insertion's hooks, and inserts where a destination killed
+ ;; meanwhile left it: in the buffer current then.
+ (let ((ob (get-buffer-create "other364c")))
+   (with-temp-buffer
+     (rename-buffer "home364")
+     (let ((m (point-marker)))
+       (add-hook 'after-change-functions (lambda (&rest _) (set-buffer ob)) nil t)
+       (prin1 'q m)
+       (list (buffer-name) (marker-position m) (buffer-name (marker-buffer m))
+             (with-current-buffer "home364" (buffer-string))))))
+ (with-temp-buffer
+   (let* ((dest (generate-new-buffer "dst364"))
+          (m (with-current-buffer dest (insert "abc") (copy-marker 2)))
+          (print-unreadable-function (lambda (_o _e) (kill-buffer dest) nil)))
+     (prin1 (list 'aa (make-marker)) m)
+     (list (marker-position m) (eq (marker-buffer m) (current-buffer)) (buffer-string))))
+ ;; A print of nothing into a buffer still runs `after-change-functions'
+ ;; (print_finish's `signal_after_change (PT, 0, 0)'); a print run by
+ ;; `before-change-functions' is over before the outer text is inserted,
+ ;; and leaves print_buffer's `pos' for the after-change hooks.
+ (with-temp-buffer
+   (insert "abcdef") (goto-char 4)
+   (let ((log nil))
+     (add-hook 'after-change-functions (lambda (b e l) (push (list b e l) log)) nil t)
+     (princ "" (current-buffer))
+     (terpri (point-min-marker) t)
+     log))
+ (let ((tb (generate-new-buffer "tb364")) (l nil))
+   (with-temp-buffer
+     (add-hook 'before-change-functions (lambda (&rest _) (prin1 'hk tb)) nil t)
+     (add-hook 'after-change-functions (lambda (&rest a) (push a l)) nil t)
+     (prin1 'outer-text (current-buffer))
+     (list l (buffer-string) (with-current-buffer tb (buffer-string)))))
+ ;; A marker outside its buffer's accessible part is the error's datum.
+ (with-temp-buffer
+   (insert "hello world")
+   (let ((m (copy-marker 8)))
+     (narrow-to-region 1 4)
+     (condition-case e (prin1 'x m) (error (list (car e) (cadr e) (eq (nth 2 e) m)))))))"##,
+        r##"("(z b c)" "'y" "#<buffer renamed364>" "(#1=(1) #1# #1#)" "#(\"abcd\"" "#s(hash-table data (a 1 b 2 c 3))" "abcZef" "(a b z) c)" "(a #<marker in no buffer> 2) c)" " *temp*" ("(a #<marker in no buffer>)" "") ("home364" 1 "other364c" "q") (28 t "(aa #<marker in no buffer>)") ((1 1 0) (4 4 0)) (((9 11 0)) "outer-text" "hk") (error "Marker is outside the accessible part of the buffer" t))"##,
+        "a print goes on from what Lisp left it",
+    );
+}
+
+#[test]
 fn undo_inhibit_record_point_turns_record_point_off() {
     // undo.c:record_point returns at once under undo_inhibit_record_point,
     // so an insertion or deletion records neither point before the last
@@ -3497,7 +3765,7 @@ fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
         })
     ));
     assert_eq!(
-        interp.lookup_var("emaxx-kill-seen", &crate::lisp::types::Env::new()),
+        interp.symbol_value("emaxx-kill-seen"),
         Some(Value::list([
             Value::symbol("third"),
             Value::symbol("first")
@@ -10826,10 +11094,9 @@ fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
         ])
     );
 
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("default-directory"),
         Value::String(format!("{}/", directory.display()).into()),
-        &mut env,
     );
     let relative_full = call(
         &mut interp,
@@ -12290,10 +12557,9 @@ fn process_lines_uses_default_directory_as_subprocess_cwd() {
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("default-directory"),
         Value::String(cwd.display().to_string().into()),
-        &mut env,
     );
 
     let result = call_via_lisp(
@@ -12515,10 +12781,9 @@ fn process_connection_probe_with_default(
     // GNU-Lisp runtime rather than the file-less host.
     let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("process-connection-type"),
         default_connection_type,
-        &mut env,
     );
     let (buffer_id, _) = interp.create_buffer(&format!("*{name}*"));
     let mut process_args =
@@ -12782,7 +13047,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
 fn signal_process_preserves_os_signal_status_and_sentinel_event() {
     let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable("captured-signal-event", Value::Nil, &mut env);
+    interp.set_symbol_value_cell("captured-signal-event", Value::Nil);
     let process = call_via_lisp(
         &mut interp,
         "start-process",
@@ -12860,7 +13125,7 @@ fn signal_process_preserves_os_signal_status_and_sentinel_event() {
         Value::Integer(libc::SIGPIPE.into())
     );
     let event = interp
-        .lookup_var("captured-signal-event", &env)
+        .symbol_value("captured-signal-event")
         .and_then(|value| string_like(&value).map(|string| string.text))
         .expect("captured signal sentinel event");
     assert!(
@@ -13016,12 +13281,12 @@ fn run_at_time_callbacks_fire_on_accept_process_output() {
         &mut env,
     )
     .expect("run-at-time should succeed");
-    assert_eq!(interp.lookup_var("timer-fired", &env), None);
+    assert_eq!(interp.symbol_value("timer-fired"), None);
 
     call(&mut interp, "accept-process-output", &[], &mut env)
         .expect("accept-process-output should succeed");
 
-    assert_eq!(interp.lookup_var("timer-fired", &env), Some(Value::T));
+    assert_eq!(interp.symbol_value("timer-fired"), Some(Value::T));
 }
 
 #[test]
@@ -13048,12 +13313,12 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
         &mut env,
     )
     .expect("run-with-timer should succeed");
-    assert_eq!(interp.lookup_var("timer-fired", &env), None);
+    assert_eq!(interp.symbol_value("timer-fired"), None);
 
     call(&mut interp, "accept-process-output", &[], &mut env)
         .expect("accept-process-output should succeed");
 
-    assert_eq!(interp.lookup_var("timer-fired", &env), Some(Value::T));
+    assert_eq!(interp.symbol_value("timer-fired"), Some(Value::T));
 }
 
 #[test]
@@ -13697,7 +13962,7 @@ fn make_network_process_nowait_opens_through_the_event_pump() {
         .expect("initial process status"),
         Value::Symbol("connect".into())
     );
-    assert_eq!(interp.lookup_var("nowait-event", &env), None);
+    assert_eq!(interp.symbol_value("nowait-event"), None);
 
     // The lookup is getaddrinfo_a's, which wait_reading_process_output
     // looks at only at the top of an iteration of its loop: a wait may end
@@ -13733,7 +13998,7 @@ fn make_network_process_nowait_opens_through_the_event_pump() {
         Value::Symbol("open".into())
     );
     assert_eq!(
-        interp.lookup_var("nowait-event", &env),
+        interp.symbol_value("nowait-event"),
         Some(Value::String("open\n".into()))
     );
 }
@@ -13834,8 +14099,8 @@ fn inhibit_read_only_allows_buffer_read_only_edits() {
         .buffer
         .replace_state(crate::buffer::Buffer::from_text("*test*", "abc"));
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("buffer-read-only"), Value::T, &mut env);
-    interp.set_variable_key(cached_symbol!("inhibit-read-only"), Value::T, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("buffer-read-only"), Value::T);
+    interp.set_symbol_value_key(cached_symbol!("inhibit-read-only"), Value::T);
     interp.buffer.borrow_mut().goto_char(1);
 
     call(&mut interp, "delete-char", &[Value::Integer(1)], &mut env)
@@ -13861,7 +14126,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
         .buffer
         .replace_state(crate::buffer::Buffer::from_text("*test*", ""));
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("buffer-read-only"), Value::T, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("buffer-read-only"), Value::T);
 
     assert!(matches!(
         call(&mut interp, "insert", &[Value::String("x".into())], &mut env).map_err(LispError::into_kind),
@@ -13872,7 +14137,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
             ]) if name.is_named("buffer-read-only"))
     ));
 
-    interp.set_variable_key(cached_symbol!("inhibit-read-only"), Value::T, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("inhibit-read-only"), Value::T);
     call(
         &mut interp,
         "insert",
@@ -24741,7 +25006,7 @@ fn native_minibuffer_runs_initial_post_command_hook_before_input() {
         Value::String("".into())
     );
     assert_eq!(
-        interp.lookup_var("emaxx-initial-post-command-count", &env),
+        interp.symbol_value("emaxx-initial-post-command-count"),
         Some(Value::Integer(1))
     );
 }
@@ -25477,7 +25742,7 @@ fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() 
 fn native_keyboard_macro_family_publishes_gnu_status_messages() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     crate::lisp::primitives::set_echo_area_message(None);
 
     call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
@@ -25515,7 +25780,7 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
     // C-f read by a recursive edit's command loop, which a timer ends with
     // a throw to `exit' once it waits for more input (without a keyboard
     // read_char waits, as GNU's does; GNU gives the same values).
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -25532,17 +25797,17 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
     .expect("record C-f");
 
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
+        interp.symbol_value_key(cached_symbol!("last-kbd-macro")),
         Some(Value::vector([Value::Integer(6),]))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-input-event"), &env),
+        interp.symbol_value_key(cached_symbol!("last-input-event")),
         Some(Value::Integer(6))
     );
     // The command saw C-f as read_key_sequence's last_nonmenu_event (the
     // next read's replay sets it nil again).
     assert_eq!(
-        interp.lookup_var("emaxx-test-nonmenu", &env),
+        interp.symbol_value("emaxx-test-nonmenu"),
         Some(Value::Integer(6))
     );
 }
@@ -25629,7 +25894,7 @@ fn keyboard_macro_records_input_read_inside_a_command() {
     // ends the recursive edit, a throw before finalize_kbd_macro_chars
     // gives the macro its keys (GNU records [3 114 97] too).  With no
     // keyboard, nothing else ends it: read_char would wait for input.
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -25641,7 +25906,7 @@ fn keyboard_macro_records_input_read_inside_a_command() {
     .expect("record a command that reads another event");
 
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
+        interp.symbol_value_key(cached_symbol!("last-kbd-macro")),
         Some(Value::vector([
             Value::Integer(3),
             Value::Integer(114),
@@ -25694,11 +25959,11 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
     recorded.expect("record a command and its minibuffer input");
 
     assert_eq!(
-        interp.lookup_var("emaxx-test-completion-value", &env),
+        interp.symbol_value("emaxx-test-completion-value"),
         Some(Value::String("banana".into()))
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-kbd-macro"), &env),
+        interp.symbol_value_key(cached_symbol!("last-kbd-macro")),
         Some(Value::vector([
             Value::Integer(3),
             Value::Integer(99),
@@ -27253,7 +27518,7 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
     )
     .expect("pump serial process input");
     assert_eq!(
-        interp.lookup_var("emaxx-test-serial-input", &env),
+        interp.symbol_value("emaxx-test-serial-input"),
         Some(Value::String("from-master".into()))
     );
 
@@ -28057,7 +28322,7 @@ fn native_process_window_and_foreground_queries_follow_pty_ownership() {
 fn tty_event_reader_feeds_interactive_event_reads() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(121)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
@@ -28071,7 +28336,7 @@ fn tty_event_reader_feeds_interactive_event_reads() {
 fn tty_event_reader_quit_signals_gnu_quit() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(7)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
     set_tty_event_reader(None);
@@ -28098,11 +28363,10 @@ fn tty_event_reader_quit_signals_gnu_quit() {
 fn tty_event_reader_does_not_preempt_queued_events() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
-    interp.set_variable_key(
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
+    interp.set_symbol_value_key(
         cached_symbol!("unread-command-events"),
         Value::list([Value::Integer(97)]),
-        &mut env,
     );
     set_tty_event_reader(Some(Box::new(|_| Some(Value::Integer(98)))));
     let event = call(&mut interp, "read-event", &[], &mut env);
@@ -28197,7 +28461,7 @@ impl Drop for PipeKeyboard {
 fn blocking_tty_event_read_redraws_after_a_due_timer() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -28212,9 +28476,9 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
         PipeKeyboard::install(Value::Integer(120), std::time::Duration::from_millis(200));
     let saw_timer = std::rc::Rc::new(std::cell::Cell::new(false));
     let observed = std::rc::Rc::clone(&saw_timer);
-    set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+    set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
         if interp
-            .lookup_var("emaxx-test-timer-fired", env)
+            .symbol_value("emaxx-test-timer-fired")
             .is_some_and(|value| value.is_truthy())
         {
             observed.set(true);
@@ -28238,7 +28502,7 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 fn blocking_tty_event_read_redraws_after_process_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     let process = crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -28259,9 +28523,9 @@ fn blocking_tty_event_read_redraws_after_process_output() {
     let keyboard =
         PipeKeyboard::install(Value::Integer(120), std::time::Duration::from_millis(1500));
     let redraw_observation = std::rc::Rc::clone(&saw_output);
-    set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+    set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
         if interp
-            .lookup_var("emaxx-test-process-output", env)
+            .symbol_value("emaxx-test-process-output")
             .is_some_and(|value| value.is_truthy())
         {
             redraw_observation.set(true);
@@ -28360,7 +28624,7 @@ fn delayed_tty_timer_uses_the_native_clock_when_float_time_is_redefined() {
         "redefining float-time must not make a future timer ripe"
     );
     assert_eq!(
-        interp.lookup_var("emaxx-test-timer-fired", &env),
+        interp.symbol_value("emaxx-test-timer-fired"),
         Some(Value::Nil)
     );
 }
@@ -28370,7 +28634,7 @@ fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
     crate::test_support::mark_process_test();
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     set_tty_event_poller(Some(Box::new(|_| Some(None))));
     let result = crate::test_support::eval_lisp(
         &mut interp,
@@ -28408,15 +28672,15 @@ fn live_minibuffer_leaves_its_last_command_and_call_interactively_restores() {
     // the minibuffer read through `executing-kbd-macro').
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
-    let outer = |interp: &mut Interpreter, env: &mut crate::lisp::types::Env| {
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
+    let outer = |interp: &mut Interpreter| {
         for (name, value) in [
             ("this-command", "outer-command"),
             ("real-this-command", "outer-real-command"),
             ("this-original-command", "outer-original-command"),
             ("last-command", "outer-last-command"),
         ] {
-            interp.set_variable(name, Value::symbol(value), env);
+            interp.set_symbol_value_cell(name, Value::symbol(value));
         }
     };
     let feed = |text: &str| {
@@ -28429,7 +28693,7 @@ fn live_minibuffer_leaves_its_last_command_and_call_interactively_restores() {
         set_tty_event_reader(Some(Box::new(move |_| script.borrow_mut().pop())));
     };
 
-    outer(&mut interp, &mut env);
+    outer(&mut interp);
     feed("answer\r");
     let result = call(
         &mut interp,
@@ -28444,13 +28708,13 @@ fn live_minibuffer_leaves_its_last_command_and_call_interactively_restores() {
     );
     for name in ["this-command", "real-this-command", "this-original-command"] {
         assert_eq!(
-            interp.lookup_var(name, &env),
+            interp.symbol_value(name),
             Some(Value::symbol("exit-minibuffer")),
             "{name}"
         );
     }
 
-    outer(&mut interp, &mut env);
+    outer(&mut interp);
     feed("a\rb\r");
     let seen = crate::test_support::eval_lisp(
         &mut interp,
@@ -28483,7 +28747,7 @@ fn write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events()
     // invalid. Preserve both the declining error and unchanged file bytes.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     let directory = std::env::temp_dir().join(format!(
         "emaxx-write-region-mustbenew-{}-{}",
         std::process::id(),
@@ -28565,7 +28829,7 @@ fn tty_events_answer_interactive_minibuffer_prompts() {
 fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     crate::test_support::eval_lisp(
         &mut interp,
         &mut env,
@@ -28603,7 +28867,7 @@ fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
         Value::String("alpha".into())
     );
     assert_eq!(
-        interp.lookup_var("issue22-initial-face", &env),
+        interp.symbol_value("issue22-initial-face"),
         Some(Value::Symbol("lsp-face-highlight-textual".into())),
         "read-string copies the suggested value's face into the minibuffer"
     );
@@ -28612,7 +28876,7 @@ fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
 #[test]
 fn live_read_string_records_an_accepted_default_in_history() {
     let (mut interp, mut env) = upstream_interactive_interpreter();
-    interp.set_variable("emaxx-default-history", Value::Nil, &mut env);
+    interp.set_symbol_value_cell("emaxx-default-history", Value::Nil);
     let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
     let feed = std::rc::Rc::clone(&script);
     set_tty_event_reader(Some(Box::new(move |_| feed.borrow_mut().pop())));
@@ -28635,7 +28899,7 @@ fn live_read_string_records_an_accepted_default_in_history() {
         Value::String("alpha".into())
     );
     assert_eq!(
-        interp.lookup_var("emaxx-default-history", &env),
+        interp.symbol_value("emaxx-default-history"),
         Some(Value::list([Value::String("alpha".into())]))
     );
 }
@@ -28643,10 +28907,9 @@ fn live_read_string_records_an_accepted_default_in_history() {
 #[test]
 fn tty_minibuffer_edits_complete_and_recall_history() {
     let (mut interp, mut env) = upstream_interactive_interpreter();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("minibuffer-history"),
         Value::list([Value::String("older-entry".into())]),
-        &mut env,
     );
     // Type "zebraX", delete the X, recall history with M-p, come back
     // with M-n, then submit the edited fresh input.
@@ -28679,7 +28942,7 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
     );
     // The submission lands at the head of the history variable.
     let history = interp
-        .lookup_var_key(cached_symbol!("minibuffer-history"), &env)
+        .symbol_value_key(cached_symbol!("minibuffer-history"))
         .expect("history variable");
     assert_eq!(
         history,
@@ -28693,10 +28956,9 @@ fn tty_minibuffer_edits_complete_and_recall_history() {
 #[test]
 fn tty_minibuffer_history_recall_submits_the_recalled_entry() {
     let (mut interp, mut env) = upstream_interactive_interpreter();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("minibuffer-history"),
         Value::list([Value::String("recalled".into())]),
-        &mut env,
     );
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
         std::rc::Rc::new(std::cell::RefCell::new(
@@ -28827,8 +29089,8 @@ fn upstream_interactive_interpreter() -> (Interpreter, Env) {
     };
     let mut interp =
         crate::batch::initialize_batch_interpreter(&options).expect("interpreter initializes");
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    let env = crate::lisp::types::Env::new();
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     interp
         .load_target("minibuffer")
         .expect("minibuffer.el loads");
@@ -28872,12 +29134,12 @@ fn tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands() {
         Value::String("alpha".into())
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("this-command"), &env),
+        interp.symbol_value_key(cached_symbol!("this-command")),
         Some(Value::Symbol("exit-minibuffer".into())),
         "RET must dispatch minibuffer.el's exit-minibuffer"
     );
     assert_eq!(
-        interp.lookup_var_key(cached_symbol!("last-command"), &env),
+        interp.symbol_value_key(cached_symbol!("last-command")),
         Some(Value::Symbol("completion-at-point".into()))
     );
 }
@@ -29331,7 +29593,7 @@ fn marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list() {
     )
     .expect("delete succeeds");
     let undo_list = interp
-        .lookup_var_key(cached_symbol!("buffer-undo-list"), &env)
+        .symbol_value_key(cached_symbol!("buffer-undo-list"))
         .expect("undo list")
         .to_vec()
         .expect("list entries");
@@ -29501,7 +29763,7 @@ fn recenter_counts_the_window_body_for_negative_lines() {
     // as well: (recenter -3) puts point 3 rows above the window's last.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::T, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::T);
     for n in 0..60 {
         call(
             &mut interp,
@@ -29537,7 +29799,7 @@ fn recenter_counts_the_window_body_for_negative_lines() {
 fn interactive_recenter_uses_the_live_shrunken_window_height() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     for n in 0..30 {
         call(
             &mut interp,
@@ -29640,7 +29902,7 @@ fn interactive_vertical_motion_and_recenter_reseat_past_what_a_line_start_hides(
     // reseat.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     insert_prefixed_lines(
         &mut interp,
         &mut env,
@@ -29729,7 +29991,7 @@ fn interactive_vertical_motion_walks_a_display_string_spanning_two_lines() {
     // string's first.  GNU 30.2's values.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     insert_prefixed_lines(
         &mut interp,
         &mut env,
@@ -29808,7 +30070,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     // Batch ignores the goal column, GNU's --batch behavior.  `noninteractive'
     // is emacs.c's DEFVAR: nil in the dumped default, flipped to t by a
     // batch startup, so state the batch session explicitly here.
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::T, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::T);
     call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
     call(
         &mut interp,
@@ -29826,7 +30088,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     // An interactive session moves to the goal column within the row,
     // line-move-visual's contract; a float goal (posn pixels divided by
     // the frame char width) works the same way.
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
     call(&mut interp, "vertical-motion", &[goal], &mut env).expect("vertical-motion");
     assert_eq!(
@@ -29849,7 +30111,7 @@ fn format_mode_line_follows_display_mode_element() {
     // Each expected value is GNU 30's on a terminal frame (tmux probe).
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     let setup = Reader::new(
         "(progn (switch-to-buffer (get-buffer-create \"probe-buf\"))
                 (insert \"line1\\nline2\\nline3\\n\")
@@ -29976,7 +30238,7 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     call(
         &mut interp,
         "insert",
@@ -30022,7 +30284,7 @@ fn mode_line_line_number_is_relative_to_the_accessible_region() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     call(
         &mut interp,
         "insert",
@@ -30073,7 +30335,7 @@ fn emaxx_batch_output(program: &str) -> String {
             .unwrap_or_else(|error| panic!("emaxx eval failed: {error:?}"));
     }
     let value = interp
-        .lookup_var("contract-out", &env)
+        .symbol_value("contract-out")
         .expect("program sets contract-out");
     let Kind::StringObject(text) = value.kind() else {
         let text = format!("{value}");
@@ -30162,7 +30424,7 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     for n in 0..60 {
         call(
             &mut interp,
@@ -30203,7 +30465,7 @@ fn glass_mode_line_honors_font_lock_face_string_properties() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
     call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     let form = Reader::new(
         "(setq mode-line-format
                (list (propertize \" git failed\"
@@ -30326,7 +30588,7 @@ fn interactive_undo_restores_the_unmodified_state() {
     let mut interp = crate::batch::initialize_batch_interpreter(&options)
         .expect("initialize GNU-compatible batch interpreter");
     let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     let directory = std::env::temp_dir().join(format!("emaxx-undo-clean-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test dir");
     let path = directory.join("clean.txt");
@@ -30819,7 +31081,7 @@ fn interactive_spec_i_passes_nil_without_reading_anything() {
     )
     .expect("call-interactively");
     let args = interp
-        .lookup_var("emaxx-test-spec-args", &env)
+        .symbol_value("emaxx-test-spec-args")
         .expect("args recorded");
     assert_eq!(format!("{args}"), "(nil 1)");
 }
@@ -31119,7 +31381,7 @@ fn eager_load_expansion_invokes_the_lisp_owner_for_both_phases() {
 
     assert_eq!(result, Value::Symbol("expanded-by-owner".into()));
     assert_eq!(
-        interp.lookup_var("eager-owner-calls", &env),
+        interp.symbol_value("eager-owner-calls"),
         Some(Value::list([Value::T, Value::Nil]))
     );
 }
@@ -32010,7 +32272,7 @@ fn assert_oracle_file_contract_with_observer(
         }
     }
     let result = interp
-        .lookup_var(result_variable, &Env::new())
+        .symbol_value(result_variable)
         .expect("fixture sets its result variable");
     fs::remove_file(&path).expect("remove owned contract fixture");
     assert_eq!(result.to_string(), expected);
@@ -32894,7 +33156,7 @@ fn assert_purecopy_callback_contract(program: &str, expected: &str) {
     // message_with_string's interactive callbacks require live window metrics.
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Env::new();
-    interp.set_variable_key(cached_symbol!("noninteractive"), Value::Nil, &mut env);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
     // Read as `load' reads: through the same symbols as the loaded Lisp
     // runtime, with its literals built.
     let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
@@ -33037,13 +33299,9 @@ fn text_conversion_c_store_does_not_localize_or_duplicate_the_field() {
     assert!(interp.symbol_value_cell("text-conversion-style").is_err());
     let replacement = Value::cons(Value::Integer(383), Value::Nil);
     interp.buffer.borrow_mut().text_conversion_style = replacement;
-    interp.set_variable_key(
-        cached_symbol!("text-conversion-style"),
-        Value::Integer(389),
-        &mut env,
-    );
+    interp.set_symbol_value_key(cached_symbol!("text-conversion-style"), Value::Integer(389));
     assert_eq!(
-        interp.forwarded_c_value("text-conversion-style", &env),
+        interp.forwarded_c_value("text-conversion-style"),
         Some(replacement)
     );
     assert_eq!(
@@ -36808,14 +37066,14 @@ fn rust_bindings_are_undone_by_unbind_to_their_depth() {
         .bind_special_dynamic("unbind-to-depth-test", Value::Integer(2), &mut env)
         .expect("inner binding");
     assert_eq!(
-        interp.lookup_var("unbind-to-depth-test", &env),
+        interp.symbol_value("unbind-to-depth-test"),
         Some(Value::Integer(2))
     );
     interp
         .restore_special_dynamic(outer, &mut env)
         .expect("outer restored first");
     assert_eq!(
-        interp.lookup_var("unbind-to-depth-test", &env),
+        interp.symbol_value("unbind-to-depth-test"),
         Some(Value::Integer(0))
     );
     assert_eq!(interp.specpdl_index(), base);
@@ -36823,7 +37081,7 @@ fn rust_bindings_are_undone_by_unbind_to_their_depth() {
         .restore_special_dynamic(inner, &mut env)
         .expect("inner restore after it was undone");
     assert_eq!(
-        interp.lookup_var("unbind-to-depth-test", &env),
+        interp.symbol_value("unbind-to-depth-test"),
         Some(Value::Integer(0))
     );
     assert_eq!(interp.specpdl_index(), base);

@@ -157,6 +157,16 @@ pub(crate) fn write(bytes: &[u8]) {
     let _ = with_stdout(|stdout| stdout.xsputn(bytes));
 }
 
+/// fwrite of each of CHARS's characters to stdout, one call a character:
+/// print.c:printchar's `fwrite (str, 1, len, stdout)'.  CHARS is text in
+/// the internal encoding.
+pub(crate) fn write_chars(chars: &[u8]) {
+    if chars.is_empty() {
+        return;
+    }
+    let _ = with_stdout(|stdout| stdout.xsputn_chars(chars));
+}
+
 /// `fflush (stdout)': hand the buffered bytes to the descriptor now.
 pub(crate) fn flush() {
     let mut guard = STDOUT
@@ -355,6 +365,53 @@ impl Stream {
         self.default_xsputn(bytes)
     }
 
+    /// `xsputn' of each of CHARS's characters (text in the internal
+    /// encoding), one call a character, as print.c's printchar writes a
+    /// stream.  A stream in put mode copies a character that fits its
+    /// buffer's free space whole and does no more, unless the stream is
+    /// line-buffered and the character a newline: a run of such
+    /// characters is copied at once, and every other character takes its
+    /// own call.  A call that fails drops its character; the calls after
+    /// it go on, and the first failure is answered.
+    fn xsputn_chars(&mut self, mut chars: &[u8]) -> std::io::Result<()> {
+        let mut result = Ok(());
+        while !chars.is_empty() {
+            if self.putting {
+                let space = self.capacity.saturating_sub(self.buffer.len());
+                let mut fit = space.min(chars.len());
+                // Not a part of a character: no trailing byte of a
+                // multibyte form begins what is left.
+                while fit > 0 && chars.get(fit).is_some_and(|byte| byte & 0xC0 == 0x80) {
+                    fit -= 1;
+                }
+                if self.line_buffered
+                    && let Some(newline) = chars[..fit].iter().position(|byte| *byte == b'\n')
+                {
+                    fit = newline;
+                }
+                self.buffer.extend_from_slice(&chars[..fit]);
+                chars = &chars[fit..];
+            }
+            let Some(&lead) = chars.first() else {
+                break;
+            };
+            let width = match lead {
+                0xC0..=0xDF => 2,
+                0xE0..=0xEF => 3,
+                0xF0..=0xF7 => 4,
+                0xF8 => 5,
+                _ => 1,
+            }
+            .min(chars.len());
+            let written = self.xsputn(&chars[..width]);
+            if result.is_ok() {
+                result = written;
+            }
+            chars = &chars[width..];
+        }
+        result
+    }
+
     /// glibc's `_IO_default_xsputn': the space before the stream's write
     /// end filled, then a character through `__overflow', and so on.  A
     /// line-buffered stream's write end is its write pointer, so every
@@ -530,6 +587,119 @@ mod tests {
         assert_eq!(written[2], "cc\n");
         assert_eq!(written[3], "dd\n");
         assert_eq!(stream.buffer, b"ee");
+    }
+
+    /// print.c's printchar is an fwrite a character and strout one of
+    /// its block: characters fill the buffer and leave it a buffer at a
+    /// time, where a block that does not fit fills the buffer and sends
+    /// its whole blocks in one write.
+    #[test]
+    fn characters_fill_the_buffer_where_a_block_is_written_whole() {
+        let lengths = |stream: &Stream| {
+            stream
+                .written
+                .as_ref()
+                .expect("a test's stream records its writes")
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>()
+        };
+        let text = vec![b'x'; 10000];
+        let mut chars = stream(4096, false);
+        chars.xsputn_chars(&text).expect("recorded");
+        assert_eq!(lengths(&chars), [4096, 4096]);
+        assert_eq!(chars.buffer.len(), 1808);
+
+        let mut block = stream(4096, false);
+        block.xsputn(&text).expect("recorded");
+        assert_eq!(lengths(&block), [8192]);
+        assert_eq!(block.buffer.len(), 1808);
+
+        // A quote printchar wrote, then the block: the quote waits in
+        // the buffer, which the block fills before its whole blocks go.
+        let mut mixed = stream(4096, false);
+        mixed.xsputn_chars(b"\"").expect("recorded");
+        mixed.xsputn(&text).expect("recorded");
+        assert_eq!(lengths(&mixed), [4096, 4096]);
+        assert_eq!(mixed.buffer.len(), 1809);
+
+        // On a terminal a newline printchar wrote goes out at once, and
+        // a block through its last newline.
+        let mut terminal = stream(4096, true);
+        terminal.xsputn_chars(b"ab\ncd").expect("recorded");
+        assert_eq!(writes(&terminal), ["ab\n"]);
+        terminal.xsputn(b"e\nf\ng").expect("recorded");
+        assert_eq!(writes(&terminal), ["ab\n", "cde\nf\n"]);
+        assert_eq!(terminal.buffer, b"g");
+    }
+
+    /// The copy of a run of characters leaves the stream as a call for
+    /// each character leaves it: whatever the buffer's size and mode,
+    /// wherever the text's newlines and multibyte characters fall, and
+    /// through writes that fail.
+    #[test]
+    fn a_run_of_characters_is_written_as_each_character_is() {
+        fn width(lead: u8) -> usize {
+            match lead {
+                0xC0..=0xDF => 2,
+                0xE0..=0xEF => 3,
+                0xF0..=0xF7 => 4,
+                0xF8 => 5,
+                _ => 1,
+            }
+        }
+        let mut text = Vec::new();
+        for index in 0..700usize {
+            match index % 13 {
+                0 => text.extend_from_slice("\u{e9}".as_bytes()),
+                3 => text.extend_from_slice("\u{20ac}".as_bytes()),
+                5 => text.push(b'\n'),
+                7 => text.extend_from_slice("\u{1f600}".as_bytes()),
+                // A raw byte and a character past Unicode, in the
+                // internal encoding.
+                9 => text.extend_from_slice(&[0xC1, 0xA9]),
+                11 => text.extend_from_slice(&[0xF8, 0x88, 0x80, 0x80, 0x80]),
+                _ => text.push(b'a' + (index % 26) as u8),
+            }
+        }
+        for capacity in [1, 2, 3, 5, 7, 64, 127, 128, 129, 500, 4096] {
+            for line_buffered in [false, true] {
+                for descriptor_fails in [false, true] {
+                    for first in [0, 1, 6, 200] {
+                        let make = || {
+                            let mut made = Stream::new(-1, capacity, line_buffered);
+                            if !descriptor_fails {
+                                made.written = Some(Vec::new());
+                            }
+                            made
+                        };
+                        let (head, tail) = text.split_at(first);
+                        let mut run = make();
+                        let mut each = make();
+                        // What a strout wrote before the characters.
+                        let _ = run.xsputn(head);
+                        let _ = each.xsputn(head);
+                        let ran = run.xsputn_chars(tail).is_ok();
+                        let mut rest = tail;
+                        let mut every = true;
+                        while let Some(&lead) = rest.first() {
+                            let (one, after) = rest.split_at(width(lead).min(rest.len()));
+                            every &= each.xsputn(one).is_ok();
+                            rest = after;
+                        }
+                        let context = format!(
+                            "capacity {capacity}, line-buffered {line_buffered}, \
+                             failing {descriptor_fails}, after {first} bytes"
+                        );
+                        assert_eq!(run.written, each.written, "{context}");
+                        assert_eq!(run.buffer, each.buffer, "{context}");
+                        assert_eq!(run.putting, each.putting, "{context}");
+                        assert_eq!(run.failed, each.failed, "{context}");
+                        assert_eq!(ran, every, "{context}");
+                    }
+                }
+            }
+        }
     }
 
     /// _IO_file_doallocate takes the descriptor's block size only when

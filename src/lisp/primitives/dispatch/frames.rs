@@ -753,7 +753,7 @@ pub(super) fn check_x_display_info(
             // x_display_info_for_name: no display has the name, so the
             // resource name is reset and the display opened afresh.
             let invocation_name = interp
-                .lookup_var_key(cached_symbol!("invocation-name"), env)
+                .symbol_value_key(cached_symbol!("invocation-name"))
                 .unwrap_or(Value::Nil);
             interp.set_c_variable("x-resource-name", invocation_name);
             if let Err(error) = validate_x_resource_name(interp, env) {
@@ -802,13 +802,13 @@ pub(super) fn validate_x_resource_name(
     const LONGEST_NAME: usize = 16 * 1024 - ".customization".len() - 1;
     let valid = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     if !interp
-        .lookup_var_key(cached_symbol!("x-resource-class"), env)
+        .symbol_value_key(cached_symbol!("x-resource-class"))
         .is_some_and(|class| class.is_string())
     {
         interp.set_c_variable("x-resource-class", Value::string("Emacs"));
     }
     let name = interp
-        .lookup_var_key(cached_symbol!("x-resource-name"), env)
+        .symbol_value_key(cached_symbol!("x-resource-name"))
         .unwrap_or(Value::Nil);
     let (good, bad, len) = if name.is_string() {
         let text = string_text(&name)?;

@@ -186,11 +186,11 @@ define_dispatch!(
                     // `display' parameter (gui_display_get_arg: PARMS, then
                     // `default-frame-alist'), checked as an X display.
                     let invocation_name = interp
-                        .lookup_var_key(cached_symbol!("invocation-name"), env)
+                        .symbol_value_key(cached_symbol!("invocation-name"))
                         .unwrap_or(Value::Nil);
                     interp.set_c_variable("x-resource-name", invocation_name);
                     let defaults = interp
-                        .lookup_var_key(cached_symbol!("default-frame-alist"), env)
+                        .symbol_value_key(cached_symbol!("default-frame-alist"))
                         .unwrap_or(Value::Nil);
                     let mut display = None;
                     for parameter in ["terminal", "display"] {

@@ -174,15 +174,14 @@ fn overlay_arrow_string(interp: &Interpreter, var: Value) -> Value {
     interp
         .get_property_of_symbol_value(var, "overlay-arrow-string")
         .filter(Value::is_string)
-        .or_else(|| interp.lookup_var_key(cached_symbol!("overlay-arrow-string"), &Env::new()))
+        .or_else(|| interp.symbol_value_key(cached_symbol!("overlay-arrow-string")))
         .unwrap_or(Value::Nil)
 }
 
 /// The symbols of `overlay-arrow-variable-list' with their values.
 fn overlay_arrow_variables(interp: &Interpreter) -> Vec<(Value, Option<Value>)> {
-    let env = Env::new();
     let mut list = interp
-        .lookup_var_key(cached_symbol!("overlay-arrow-variable-list"), &env)
+        .symbol_value_key(cached_symbol!("overlay-arrow-variable-list"))
         .unwrap_or(Value::Nil);
     let mut variables = Vec::new();
     while let Some((var, rest)) = list.cons_values() {
@@ -190,7 +189,7 @@ fn overlay_arrow_variables(interp: &Interpreter) -> Vec<(Value, Option<Value>)> 
         let Some(symbol) = var.symbol_cell() else {
             continue;
         };
-        variables.push((var, interp.lookup_var_symbol(&symbol, &env)));
+        variables.push((var, interp.symbol_value_symbol(&symbol)));
     }
     variables
 }
@@ -277,8 +276,7 @@ pub(super) fn count_redisplay_cause(
     variable: crate::lisp::types::symbols::SymbolKey,
     cause: i32,
 ) {
-    let Some(Kind::HashTable(table)) = interp.lookup_var_key(variable, env).map(|v| v.kind())
-    else {
+    let Some(Kind::HashTable(table)) = interp.symbol_value_key(variable).map(|v| v.kind()) else {
         return;
     };
     let key = Value::Integer(i64::from(cause));

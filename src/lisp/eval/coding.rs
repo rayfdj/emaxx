@@ -1049,7 +1049,6 @@ impl Interpreter {
     pub fn set_coding_system_categories_priority(
         &mut self,
         codings: &[SymbolName],
-        env: &mut Env,
     ) -> Result<(), LispError> {
         let mut changed = [false; CODING_CATEGORY_COUNT];
         let mut priorities = Vec::with_capacity(CODING_CATEGORY_COUNT);
@@ -1070,7 +1069,7 @@ impl Interpreter {
                 self.coding_category_representatives[category] =
                     self.coding_system_canonical_name_symbol(coding);
             }
-            self.set_variable(CODING_CATEGORY_NAMES[category], Value::Symbol(*coding), env);
+            self.set_symbol_value_cell(CODING_CATEGORY_NAMES[category], Value::Symbol(*coding));
         }
         for category in self.coding_category_priorities.clone() {
             if !changed[category] {
@@ -1083,7 +1082,7 @@ impl Interpreter {
                 .iter()
                 .map(|category| Value::Symbol(CODING_CATEGORY_NAMES[*category].into())),
         );
-        self.set_variable_key(cached_symbol!("coding-category-list"), list, env);
+        self.set_symbol_value_key(cached_symbol!("coding-category-list"), list);
         Ok(())
     }
 
@@ -1096,17 +1095,15 @@ impl Interpreter {
     /// and (SYMBOL-NAME) onto `coding-system-alist' unless a string of
     /// that name is a key there already (Fassoc).
     pub(crate) fn record_coding_system_name(&mut self, name: SymbolName) {
-        let mut env = Env::new();
         let list = self
-            .lookup_var_key(cached_symbol!("coding-system-list"), &env)
+            .symbol_value_key(cached_symbol!("coding-system-list"))
             .unwrap_or(Value::Nil);
-        self.set_variable_key(
+        self.set_symbol_value_key(
             cached_symbol!("coding-system-list"),
             Value::cons(Value::Symbol(name), list),
-            &mut env,
         );
         let alist = self
-            .lookup_var_key(cached_symbol!("coding-system-alist"), &env)
+            .symbol_value_key(cached_symbol!("coding-system-alist"))
             .unwrap_or(Value::Nil);
         let text = name.name_text();
         let mut tail = alist;
@@ -1120,10 +1117,9 @@ impl Interpreter {
             }
             tail = rest;
         }
-        self.set_variable_key(
+        self.set_symbol_value_key(
             cached_symbol!("coding-system-alist"),
             Value::cons(Value::list([name.lisp_name()]), alist),
-            &mut env,
         );
     }
 

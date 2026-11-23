@@ -465,7 +465,7 @@ mod tests {
             "shared editor state".len()
         );
         assert_eq!(
-            interpreter.lookup_var("state-shell-write", &Env::new()),
+            interpreter.symbol_value("state-shell-write"),
             Some(Value::Integer(23)),
         );
         assert_eq!(

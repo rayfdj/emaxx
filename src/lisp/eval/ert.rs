@@ -172,9 +172,9 @@ impl Interpreter {
                 .unwrap_or(Value::Nil);
             self.set_ert_test_most_recent_result(&test_struct, Value::Nil);
             let previous_running = self
-                .lookup_var("ert--running-tests", &env)
+                .symbol_value("ert--running-tests")
                 .unwrap_or(Value::Nil);
-            self.set_variable("ert--running-tests", Value::list([test_struct]), &mut env);
+            self.set_symbol_value_cell("ert--running-tests", Value::list([test_struct]));
             // GNU's ert--run-test-internal gives each test its own temp
             // buffer ("For now, each test gets its own temp buffer ...
             // just to be safe"); erc's helpers rely on starting in one.
@@ -256,7 +256,7 @@ impl Interpreter {
             {
                 result = Err(error);
             }
-            self.set_variable("ert--running-tests", previous_running, &mut env);
+            self.set_symbol_value_cell("ert--running-tests", previous_running);
             self.ert_test_source_file = previous;
             self.current_ert_test_name = previous_name;
             // GNU wraps each test body in (catch 'ert--pass ...); `ert-pass'

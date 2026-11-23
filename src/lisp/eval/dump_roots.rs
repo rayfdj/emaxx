@@ -442,7 +442,7 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     (
         "print_globals",
-        "print.c's print_depth, being_printed and new_backquote_output are per print",
+        "print.c's print_depth, being_printed, new_backquote_output and print_buffer are per print",
     ),
     (
         "window_sequence_number",

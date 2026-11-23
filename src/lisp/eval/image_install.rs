@@ -444,20 +444,14 @@ mod tests {
         }
         assert_eq!(interpreter.buffer.borrow().name_text(), "*scratch*");
         assert_eq!(
-            interpreter.lookup_var_key(
-                cached_symbol!("default-directory"),
-                &crate::lisp::types::Env::new()
-            ),
+            interpreter.symbol_value_key(cached_symbol!("default-directory")),
             Some(Value::string(&primitives::default_directory()))
         );
         interpreter
             .set_current_buffer_id(other)
             .expect("select the retained buffer");
         assert_eq!(
-            interpreter.lookup_var_key(
-                cached_symbol!("default-directory"),
-                &crate::lisp::types::Env::new()
-            ),
+            interpreter.symbol_value_key(cached_symbol!("default-directory")),
             Some(Value::string("/saved/"))
         );
     }

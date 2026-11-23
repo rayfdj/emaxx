@@ -6196,21 +6196,16 @@ fn gnu_batch_runtime_macroexp_file_name_does_not_leak_ert_source() {
     crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let test_file = "/tmp/emaxx-batch-runtime-resource-tests.el";
     interp.set_current_load_file(Some(test_file.into()));
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("current-load-list"),
         Value::list([Value::String(test_file.into())]),
-        &mut crate::lisp::types::Env::new(),
     );
     eval_str_with(
         &mut interp,
         "(ert-deftest batch-runtime-does-not-leak-ert-source ()
            (should-not (macroexp-file-name)))",
     );
-    interp.set_variable_key(
-        cached_symbol!("current-load-list"),
-        Value::Nil,
-        &mut crate::lisp::types::Env::new(),
-    );
+    interp.set_symbol_value_key(cached_symbol!("current-load-list"), Value::Nil);
     interp.set_current_load_file(None);
 
     assert_eq!(interp.run_ert_tests(), (1, 0, 1));
@@ -6564,13 +6559,12 @@ fn batch_startup_preloads_the_gnu_european_coding_owner() {
     };
     let mut interp =
         crate::batch::initialize_batch_interpreter(&options).expect("initialize batch interpreter");
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("data-directory"),
         Value::String(
             crate::lisp::primitives::path_to_directory_string(&upstream_emacs_repo().join("etc"))
                 .into(),
         ),
-        &mut crate::lisp::types::Env::new(),
     );
 
     assert_eq!(
@@ -6776,22 +6770,18 @@ fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
     // Match the compatibility runner's installation-directory boundary.
     // Source-aware upstream tests must not accidentally inspect the Emaxx
     // workspace just because this faster in-process harness started there.
-    let mut env = crate::lisp::types::Env::new();
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("source-directory"),
         Value::String(crate::lisp::primitives::path_to_directory_string(&emacs_repo).into()),
-        &mut env,
     );
     let data_directory = crate::lisp::primitives::path_to_directory_string(&emacs_repo.join("etc"));
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("data-directory"),
         Value::String(data_directory.clone().into()),
-        &mut env,
     );
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("doc-directory"),
         Value::String(data_directory.into()),
-        &mut env,
     );
     // GNU's test driver and the compat harness's isolated checkout both run
     // test files with a writable `default-directory'; eieio-test-persist,
@@ -6808,10 +6798,9 @@ fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
             .as_nanos()
     ));
     std::fs::create_dir_all(&scratch_directory).expect("create upstream test scratch directory");
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("default-directory"),
         Value::String(crate::lisp::primitives::path_to_directory_string(&scratch_directory).into()),
-        &mut env,
     );
     // The compatibility harness passes `-l ert' before loading every test
     // file.  Emaxx also has native bootstrap ERT forms, so relying on the
@@ -7925,20 +7914,12 @@ fn eshell_test_interpreter(test_file: &str) -> Interpreter {
     // false semantic failure.  The complete all-targets gate concurrently
     // runs another large-stack interpreter and native child-process probes;
     // focused stress runs stay green but can exceed one minute per wait.
-    interp.set_variable(
-        "eshell-test--max-wait-time",
-        Value::Integer(300),
-        &mut crate::lisp::types::Env::new(),
-    );
+    interp.set_symbol_value_cell("eshell-test--max-wait-time", Value::Integer(300));
     // `with-temp-eshell' expands `ert-with-temp-directory', whose suffix
     // generator needs a source file name that string evaluation lacks
     // (GNU --eval fails identically).  A non-nil `ert-temp-file-suffix'
     // short-circuits the generator at expansion time.
-    interp.set_variable(
-        "ert-temp-file-suffix",
-        Value::String("-emaxx".into()),
-        &mut crate::lisp::types::Env::new(),
-    );
+    interp.set_symbol_value_cell("ert-temp-file-suffix", Value::String("-emaxx".into()));
     interp
 }
 
@@ -8092,10 +8073,9 @@ fn todo_month_edits_observe_dynamic_prefix_argument() {
     // GNU's real `macroexp-file-name' reads the final file entry from
     // `current-load-list'.  Keep this direct (non-ERT-runner) probe in the
     // same macro-expansion context as the loaded upstream test body.
-    interp.set_variable_key(
+    interp.set_symbol_value_key(
         cached_symbol!("current-load-list"),
         Value::list([Value::String(test_file.into())]),
-        &mut crate::lisp::types::Env::new(),
     );
     let value = eval_str_with(
         &mut interp,
@@ -9245,5 +9225,120 @@ fn signals_inside_handler_bind_handlers_are_searched_past_skip_conditions() {
         printed.next().as_deref(),
         Some("(t (outer))"),
         "byte-compiled"
+    );
+}
+
+#[test]
+fn c_reads_and_stores_of_a_variable_pass_over_the_lexical_environment() {
+    // data.c:find_symbol_value and set_internal know no lexical
+    // environment.  Only eval_sub's reference of a symbol form (Fassq
+    // over Vinternal_interpreter_environment) and Fsetq's assignment see
+    // an entry of a variable's name there; a primitive called under it
+    // reads and stores the dynamic binding.
+    let mut interp = gnu_early_lisp_interpreter();
+    for (form, expected) in [
+        // The evaluator's own references.
+        ("(eval 'tab-width '((tab-width . 2)))", "2"),
+        (
+            "(eval '(progn (setq tab-width 3) (list tab-width (symbol-value 'tab-width)))
+                   '((tab-width . 2)))",
+            "(3 8)",
+        ),
+        // C reads: indent.c, lread.c, search.c, fns.c, editfns.c.
+        (
+            "(eval '(with-temp-buffer (insert \"a\\tb\") (current-column)) '((tab-width . 2)))",
+            "9",
+        ),
+        ("(eval '(intern-soft \"car\") '((obarray . [])))", "car"),
+        (
+            "(eval '(read \"#1=(a . #1#)\") '((read-circle . nil)))",
+            "(a . #0)",
+        ),
+        (
+            "(eval '(string-match \"A\" \"a\") '((case-fold-search . nil)))",
+            "0",
+        ),
+        (
+            "(eval '(try-completion \"A\" '(\"abc\" \"abd\")) '((completion-ignore-case . t)))",
+            "nil",
+        ),
+        (
+            "(eval '(format \"%x\" -255) '((binary-as-unsigned . t)))",
+            "\"-ff\"",
+        ),
+        // C stores: fns.c's Fprovide, insdel.c's Fset of `deactivate-mark'.
+        (
+            "(eval '(progn (provide 'zz-c-store) (list features (featurep 'zz-c-store)))
+                   '((features . lexical)))",
+            "(lexical t)",
+        ),
+        (
+            "(eval '(with-temp-buffer (insert \"a\")
+                      (list deactivate-mark (symbol-value 'deactivate-mark)))
+                   '((deactivate-mark . lexical)))",
+            "(lexical t)",
+        ),
+    ] {
+        let value = eval_str_with(&mut interp, form);
+        let printed = crate::lisp::primitives::call(
+            &mut interp,
+            "prin1-to-string",
+            &[value],
+            &mut Env::new(),
+        )
+        .expect("print the result");
+        assert_eq!(
+            crate::lisp::primitives::string_like(&printed)
+                .expect("a string")
+                .text,
+            expected,
+            "{form}"
+        );
+    }
+    // The same from Rust, under a caller's environment that binds the
+    // names: the evaluator finds the entries, the C read and store do not.
+    let mut env = Env::from_vec(vec![crate::lisp::types::EnvFrame::bindings(
+        [
+            ("tab-width".into(), Value::Integer(2)),
+            ("zz-lexical-only".into(), Value::Integer(5)),
+        ],
+        &Value::Nil,
+    )]);
+    assert_eq!(
+        interp.eval(&Value::symbol("tab-width"), &mut env).ok(),
+        Some(Value::Integer(2))
+    );
+    assert_eq!(
+        interp.symbol_value_key(cached_symbol!("tab-width")),
+        Some(Value::Integer(8))
+    );
+    assert_eq!(interp.symbol_value("tab-width"), Some(Value::Integer(8)));
+    assert_eq!(interp.symbol_value("zz-lexical-only"), None);
+    assert_eq!(
+        crate::lisp::primitives::call(
+            &mut interp,
+            "symbol-value",
+            &[Value::symbol("tab-width")],
+            &mut env
+        )
+        .ok(),
+        Some(Value::Integer(8))
+    );
+    interp.set_symbol_value_key(cached_symbol!("tab-width"), Value::Integer(4));
+    interp.set_symbol_value_cell("zz-lexical-only", Value::Integer(9));
+    assert_eq!(
+        interp.eval(&Value::symbol("tab-width"), &mut env).ok(),
+        Some(Value::Integer(2))
+    );
+    assert_eq!(
+        interp
+            .eval(&Value::symbol("zz-lexical-only"), &mut env)
+            .ok(),
+        Some(Value::Integer(5))
+    );
+    assert_eq!(interp.symbol_value("tab-width"), Some(Value::Integer(4)));
+    assert_eq!(
+        interp.symbol_value("zz-lexical-only"),
+        Some(Value::Integer(9))
     );
 }

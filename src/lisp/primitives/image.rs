@@ -424,12 +424,12 @@ fn xbm_scan(bytes: &[u8], pos: &mut usize, ident: &mut Vec<u8>, value: &mut i32)
 
 /// image.c:check_image_size with no frame: a positive size within
 /// `max-image-size', in pixels or as a scale of a 1024-pixel frame.
-fn check_image_size(interp: &Interpreter, env: &Env, width: i32, height: i32) -> bool {
+fn check_image_size(interp: &Interpreter, width: i32, height: i32) -> bool {
     if width <= 0 || height <= 0 {
         return false;
     }
     match interp
-        .lookup_var_key(cached_symbol!("max-image-size"), env)
+        .symbol_value_key(cached_symbol!("max-image-size"))
         .map(|value| value.kind())
     {
         Some(Kind::Integer(limit)) => i64::from(width) <= limit && i64::from(height) <= limit,
@@ -444,7 +444,7 @@ fn check_image_size(interp: &Interpreter, env: &Env, width: i32, height: i32) ->
 /// as xbm_read_bitmap_data reads it without its bits: `#define's of
 /// numbers, those ending in `width' and `height' giving a size
 /// check_image_size accepts.
-fn xbm_file_p(interp: &Interpreter, env: &Env, data: &Value) -> bool {
+fn xbm_file_p(interp: &Interpreter, data: &Value) -> bool {
     let Some(text) = string_like(data).filter(|_| data.is_string()) else {
         return false;
     };
@@ -481,13 +481,13 @@ fn xbm_file_p(interp: &Interpreter, env: &Env, data: &Value) -> bool {
         }
         token = xbm_scan(&bytes, &mut pos, &mut ident, &mut value);
     }
-    check_image_size(interp, env, width, height)
+    check_image_size(interp, width, height)
 }
 
 /// image.c:xbm_image_p: a file, the text of one, or bits as a vector of
 /// strings or bool-vectors, a string or a bool-vector, enough of them
 /// for its `:data-width', `:data-height' and `:stride'.
-fn xbm_image_p(interp: &Interpreter, env: &Env, object: &Value) -> bool {
+fn xbm_image_p(interp: &Interpreter, object: &Value) -> bool {
     // XBM_FILE, XBM_STRIDE, XBM_DATA, XBM_DATA_WIDTH and
     // XBM_DATA_HEIGHT: the bits' size is given by `:data-width' and
     // `:data-height', not the image's `:width' and `:height'.
@@ -503,7 +503,7 @@ fn xbm_image_p(interp: &Interpreter, env: &Env, object: &Value) -> bool {
         return kw[DATA].is_none();
     }
     if let Some(data) = kw[DATA]
-        && xbm_file_p(interp, env, &data)
+        && xbm_file_p(interp, &data)
     {
         return true;
     }
@@ -565,7 +565,7 @@ fn xpm_valid_color_symbols_p(mut symbols: Value) -> bool {
 
 /// image.c:valid_image_p: an `image' list whose `:type' names an image
 /// type its spec is valid for.
-pub(crate) fn valid_image_p(interp: &Interpreter, object: &Value, env: &Env) -> bool {
+pub(crate) fn valid_image_p(interp: &Interpreter, object: &Value) -> bool {
     if !imagep(object) {
         return false;
     }
@@ -586,7 +586,7 @@ pub(crate) fn valid_image_p(interp: &Interpreter, object: &Value, env: &Env) -> 
                 return false;
             };
             return match type_name {
-                "xbm" => xbm_image_p(interp, env, object),
+                "xbm" => xbm_image_p(interp, object),
                 "xpm" => parse_image_spec(object, format, type_name).is_some_and(|kw| {
                     // :file or :data, and no :color-symbols or a valid one.
                     usize::from(kw[1].is_some()) + usize::from(kw[2].is_some()) == 1

@@ -1858,7 +1858,7 @@ pub(crate) fn describe_buffer_bindings(
         buffer,
     ]);
     let translation = interp
-        .lookup_var_key(cached_symbol!("keyboard-translate-table"), env)
+        .symbol_value_key(cached_symbol!("keyboard-translate-table"))
         .unwrap_or(Value::Nil);
     if !prefix.is_nil()
         && let Some(table) = string_like(&translation)
@@ -1868,7 +1868,7 @@ pub(crate) fn describe_buffer_bindings(
         for index in 0..size {
             // GNU reacquires the table after insertions, which can run Lisp.
             let table = interp
-                .lookup_var_key(cached_symbol!("keyboard-translate-table"), env)
+                .symbol_value_key(cached_symbol!("keyboard-translate-table"))
                 .unwrap_or(Value::Nil);
             let Some(table) = string_like(&table) else {
                 break;
@@ -1903,7 +1903,7 @@ pub(crate) fn describe_buffer_bindings(
         call(interp, "insert", &[Value::String("\n".into())], env)?;
     }
     let translations = interp
-        .lookup_var_key(cached_symbol!("key-translation-map"), env)
+        .symbol_value_key(cached_symbol!("key-translation-map"))
         .unwrap_or(Value::Nil);
     if !translations.is_nil() {
         insert_keymap_description(
@@ -1917,7 +1917,7 @@ pub(crate) fn describe_buffer_bindings(
     description[1] = Value::T;
     description[6] = Value::Nil;
     let terminal = interp
-        .lookup_var_key(cached_symbol!("overriding-terminal-local-map"), env)
+        .symbol_value_key(cached_symbol!("overriding-terminal-local-map"))
         .unwrap_or(Value::Nil);
     let overriding = if !terminal.is_nil() {
         insert_keymap_description(
@@ -1931,7 +1931,7 @@ pub(crate) fn describe_buffer_bindings(
         Value::Nil
     } else {
         interp
-            .lookup_var_key(cached_symbol!("overriding-local-map"), env)
+            .symbol_value_key(cached_symbol!("overriding-local-map"))
             .unwrap_or(Value::Nil)
     };
     if !overriding.is_nil() {
@@ -1983,7 +1983,7 @@ pub(crate) fn describe_buffer_bindings(
                 let point = interp.buffer.borrow().point() as i64;
                 let local = get_local_map(interp, point, "local-map")?;
                 let major = interp
-                    .lookup_var_key(cached_symbol!("major-mode"), env)
+                    .symbol_value_key(cached_symbol!("major-mode"))
                     .unwrap_or(Value::Nil);
                 Ok((local, values_eq_in_env(interp, &local, &normal, env), major))
             })?;
@@ -2030,7 +2030,7 @@ pub(crate) fn describe_buffer_bindings(
             "\x0c\nInput decoding map translations",
         ),
     ] {
-        let map = interp.lookup_var_key(variable, env).unwrap_or(Value::Nil);
+        let map = interp.symbol_value_key(variable).unwrap_or(Value::Nil);
         if !map.is_nil() {
             insert_keymap_description(interp, &mut description, map, title.into(), env)?;
         }

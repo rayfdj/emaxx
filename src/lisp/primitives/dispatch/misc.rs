@@ -56,11 +56,7 @@ fn fringe_fixnum(value: &Value) -> Result<i64, LispError> {
     }
 }
 
-fn define_fringe_bitmap(
-    interp: &mut Interpreter,
-    args: &[Value],
-    env: &Env,
-) -> Result<Value, LispError> {
+fn define_fringe_bitmap(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
     let symbol = check_fringe_symbol(interp, &args[0])?;
     let bits_length = fringe_bits_length(&args[1])?;
     let height = match args.get(2).filter(|value| !value.is_nil()) {
@@ -111,7 +107,7 @@ fn define_fringe_bitmap(
         let mut bitmaps = vec![args[0]];
         bitmaps.extend(
             interp
-                .lookup_var_key(cached_symbol!("fringe-bitmaps"), env)
+                .symbol_value_key(cached_symbol!("fringe-bitmaps"))
                 .and_then(|value| value.to_vec().ok())
                 .unwrap_or_default(),
         );
@@ -175,7 +171,7 @@ fn destroy_fringe_bitmap(
             interp.put_symbol_property_on(&symbol, "fringe", Value::Nil);
         }
         let bitmaps = interp
-            .lookup_var_key(cached_symbol!("fringe-bitmaps"), env)
+            .symbol_value_key(cached_symbol!("fringe-bitmaps"))
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default()
             .into_iter()
@@ -472,7 +468,7 @@ define_dispatch!(
                     .first()
                     .filter(|source| !source.is_nil())
                     .cloned()
-                    .or_else(|| interp.lookup_var_key(cached_symbol!("standard-input"), env))
+                    .or_else(|| interp.symbol_value_key(cached_symbol!("standard-input")))
                     .unwrap_or(Value::Nil);
                 // lread.c:Fread and Fread_positioning_symbols share these
                 // defaults and resolve read-minibuffer through its cell.
@@ -596,7 +592,7 @@ define_dispatch!(
                 crate::lisp::primitives::interactive::shut_down_emacs(interp, env)?;
                 // The auto-save list goes, Emacs exiting deliberately.
                 if let Some(list_file) = interp
-                    .lookup_var_key(cached_symbol!("auto-save-list-file-name"), env)
+                    .symbol_value_key(cached_symbol!("auto-save-list-file-name"))
                     .filter(Value::is_string)
                 {
                     let list_file = crate::lisp::primitives::call(
@@ -607,7 +603,6 @@ define_dispatch!(
                     )?;
                     if let Ok(host) = crate::lisp::primitives::system::host_file_name(
                         interp,
-                        env,
                         &string_text(&list_file)?,
                     ) {
                         let _ = std::fs::remove_file(host);
@@ -706,7 +701,7 @@ define_dispatch!(
             }
             "define-fringe-bitmap" => {
                 need_arg_range(name, args, 2, 5)?;
-                define_fringe_bitmap(interp, args, env)
+                define_fringe_bitmap(interp, args)
             }
             "destroy-fringe-bitmap" => {
                 need_args(name, args, 1)?;
@@ -779,7 +774,7 @@ define_dispatch!(
                     .cloned()
                     .or_else(|| {
                         interp
-                            .lookup_var_key(cached_symbol!("obarray"), env)
+                            .symbol_value_key(cached_symbol!("obarray"))
                             .filter(|value| !value.is_nil())
                     })
                     .map(|obarray| coerce_legacy_vector_obarray(interp, &obarray))
@@ -792,7 +787,7 @@ define_dispatch!(
                 // lread.c:Fintern checks OBARRAY before STRING, then supplies
                 // the original string (or GNU's longhand/purecopy) on a miss.
                 let original_name = string_text(&args[0])?;
-                let symbol_name = apply_symbol_shorthands_in_env(interp, &original_name, env)?;
+                let symbol_name = apply_symbol_shorthands(interp, &original_name)?;
                 // Fintern's make_specified_string explicitly marks longhand
                 // as multibyte, including ASCII longhand; oblookup compares
                 // the longhand, or else STRING, by its bytes.
@@ -834,7 +829,7 @@ define_dispatch!(
                     .cloned()
                     .or_else(|| {
                         interp
-                            .lookup_var_key(cached_symbol!("obarray"), env)
+                            .symbol_value_key(cached_symbol!("obarray"))
                             .filter(|value| !value.is_nil())
                     });
                 // lread.c:Fintern_soft: check_obarray before NAME is looked
@@ -880,7 +875,7 @@ define_dispatch!(
                     return Ok(if present { args[0] } else { Value::Nil });
                 }
                 let original_name = string_text(&args[0])?;
-                let symbol_name = apply_symbol_shorthands_in_env(interp, &original_name, env)?;
+                let symbol_name = apply_symbol_shorthands(interp, &original_name)?;
                 if let Some(obarray) = obarray {
                     // lread.c:Fintern_soft only looks in the requested obarray.
                     // A function/value probe can intern a missing name and
@@ -904,7 +899,7 @@ define_dispatch!(
                     .cloned()
                     .or_else(|| {
                         interp
-                            .lookup_var_key(cached_symbol!("obarray"), env)
+                            .symbol_value_key(cached_symbol!("obarray"))
                             .filter(|value| !value.is_nil())
                     });
                 match obarray {
@@ -1108,7 +1103,7 @@ define_dispatch!(
                     ));
                 }
                 if interp
-                    .lookup_var_key(cached_symbol!("after-init-time"), env)
+                    .symbol_value_key(cached_symbol!("after-init-time"))
                     .is_none_or(|value| value.is_nil())
                 {
                     return Err(LispError::Signal(
@@ -1127,7 +1122,7 @@ define_dispatch!(
             }
             "invocation-name" | "invocation-directory" => {
                 need_args(name, args, 0)?;
-                let value = interp.lookup_var(name, env).unwrap_or(Value::Nil);
+                let value = interp.symbol_value(name).unwrap_or(Value::Nil);
                 Ok(string_like(&value)
                     .map(|string| Value::String(string.text.into()))
                     .unwrap_or(value))
@@ -1240,7 +1235,7 @@ define_dispatch!(
                         Value::Nil
                     } else {
                         interp
-                            .forwarded_c_value(symbol.as_str(), env)
+                            .forwarded_c_value(symbol.as_str())
                             .unwrap_or(Value::Nil)
                     };
                     interp.remove_global_binding_symbol(&symbol);
@@ -1482,11 +1477,11 @@ define_dispatch!(
                         None => None,
                     }
                 } else {
-                    getenv_internal(interp, env, &variable, &environment)?
+                    getenv_internal(interp, &variable, &environment)?
                 };
                 match value {
                     Some(value) => {
-                        make_string(value).map_err(|error| string_storage_error(interp, env, error))
+                        make_string(value).map_err(|error| string_storage_error(interp, error))
                     }
                     None => Ok(Value::Nil),
                 }
@@ -1653,7 +1648,7 @@ define_dispatch!(
                     .get(1)
                     .filter(|value| !value.is_nil())
                     .cloned()
-                    .or_else(|| interp.lookup_var_key(cached_symbol!("obarray"), env))
+                    .or_else(|| interp.symbol_value_key(cached_symbol!("obarray")))
                     .unwrap_or(Value::Nil);
                 let obarray = coerce_legacy_vector_obarray(interp, &obarray)?;
                 // The standard obarray: walk the shared enumeration in place
@@ -1827,12 +1822,12 @@ fn doc_path(directory: &Value, filename: &Value) -> Result<PathBuf, LispError> {
     })
 }
 
-fn standard_doc_path(interp: &Interpreter, env: &Env) -> Result<PathBuf, LispError> {
+fn standard_doc_path(interp: &Interpreter) -> Result<PathBuf, LispError> {
     let directory = interp
-        .lookup_var_key(cached_symbol!("doc-directory"), env)
+        .symbol_value_key(cached_symbol!("doc-directory"))
         .unwrap_or(Value::Nil);
     let filename = interp
-        .lookup_var_key(cached_symbol!("internal-doc-file-name"), env)
+        .symbol_value_key(cached_symbol!("internal-doc-file-name"))
         .unwrap_or(Value::Nil);
     doc_path(&directory, &filename)
 }
@@ -1947,7 +1942,6 @@ fn decode_doc_bytes(
 fn doc_reference_parts(
     interp: &Interpreter,
     value: &Value,
-    env: &Env,
 ) -> Result<Option<(PathBuf, i64)>, LispError> {
     // doc.c:get_doc_string pairs the position with a file and directory:
     // an integer FILEPOS reads `internal-doc-file-name' in `doc-directory',
@@ -1957,10 +1951,10 @@ fn doc_reference_parts(
     let (filename, directory, position) = if let Kind::Integer(position) = value.kind() {
         (
             interp
-                .lookup_var_key(cached_symbol!("internal-doc-file-name"), env)
+                .symbol_value_key(cached_symbol!("internal-doc-file-name"))
                 .unwrap_or(Value::Nil),
             interp
-                .lookup_var_key(cached_symbol!("doc-directory"), env)
+                .symbol_value_key(cached_symbol!("doc-directory"))
                 .unwrap_or(Value::Nil),
             position,
         )
@@ -1974,7 +1968,7 @@ fn doc_reference_parts(
         (
             filename,
             interp
-                .lookup_var_key(cached_symbol!("lisp-directory"), env)
+                .symbol_value_key(cached_symbol!("lisp-directory"))
                 .unwrap_or(Value::Nil),
             position,
         )
@@ -1985,23 +1979,15 @@ fn doc_reference_parts(
     Ok(Some((doc_path(&directory, &filename)?, position)))
 }
 
-fn resolve_doc_reference(
-    interp: &Interpreter,
-    value: &Value,
-    env: &Env,
-) -> Result<Option<Value>, LispError> {
-    get_doc_string(interp, value, env, false)
+fn resolve_doc_reference(interp: &Interpreter, value: &Value) -> Result<Option<Value>, LispError> {
+    get_doc_string(interp, value, false)
 }
 
 /// doc.c get_doc_string (FILEPOS, true), lread.c get_lazy_string's
 /// fallback: the unibyte doc string or byte-code a reference names, nil
 /// where GNU answers nil.
-pub(crate) fn unibyte_doc_string(
-    interp: &Interpreter,
-    value: &Value,
-    env: &Env,
-) -> Result<Value, LispError> {
-    Ok(get_doc_string(interp, value, env, true)?.unwrap_or(Value::Nil))
+pub(crate) fn unibyte_doc_string(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
+    Ok(get_doc_string(interp, value, true)?.unwrap_or(Value::Nil))
 }
 
 /// doc.c get_doc_string: the doc string an integer DOC position or a
@@ -2009,10 +1995,9 @@ pub(crate) fn unibyte_doc_string(
 fn get_doc_string(
     interp: &Interpreter,
     value: &Value,
-    env: &Env,
     unibyte: bool,
 ) -> Result<Option<Value>, LispError> {
-    let Some((path, position)) = doc_reference_parts(interp, value, env)? else {
+    let Some((path, position)) = doc_reference_parts(interp, value)? else {
         return Ok(None);
     };
     match read_doc_string_block(&path, position.unsigned_abs()) {
@@ -2109,7 +2094,7 @@ fn snarf_documentation(
         return Err(wrong_type_argument("stringp", *filename));
     }
     let directory = interp
-        .lookup_var_key(cached_symbol!("doc-directory"), env)
+        .symbol_value_key(cached_symbol!("doc-directory"))
         .unwrap_or(Value::Nil);
     // doc.c names the file by appending FILENAME's data to that of
     // `doc-directory' (stpcpy and lispstpcpy, each up to its NUL).
@@ -2133,13 +2118,12 @@ fn snarf_documentation(
     // doc.c: `build-files' is nil until the first snarf, which conses it
     // from buildobj.h before opening the file.
     let build_files_unset = interp
-        .lookup_var_key(cached_symbol!("build-files"), env)
+        .symbol_value_key(cached_symbol!("build-files"))
         .is_none_or(|value| value.is_nil());
     if build_files_unset && let Some(names) = crate::lisp::primitives::gnu_build_files() {
-        interp.set_variable_key(
+        interp.set_symbol_value_key(
             cached_symbol!("build-files"),
             Value::list(names.iter().map(|name| Value::String((*name).into()))),
-            env,
         );
     }
     // report_file_errno ("Opening doc string file", build_string (name)).
@@ -2153,11 +2137,11 @@ fn snarf_documentation(
         )
     })?;
     let entries = parse_doc_file_entries(&bytes)?;
-    interp.set_variable_key(cached_symbol!("internal-doc-file-name"), *filename, env);
+    interp.set_symbol_value_key(cached_symbol!("internal-doc-file-name"), *filename);
     if build_files_unset && crate::lisp::primitives::gnu_build_files().is_none() {
         // No oracle's buildobj.h is recorded for this platform: DOC's S
         // records, which name every file make-docfile read, stand in.
-        interp.set_variable_key(
+        interp.set_symbol_value_key(
             cached_symbol!("build-files"),
             Value::list(
                 entries
@@ -2165,11 +2149,10 @@ fn snarf_documentation(
                     .filter(|entry| entry.kind == b'S')
                     .map(|entry| Value::String(entry.name.clone().into())),
             ),
-            env,
         );
     }
     let delayed = interp
-        .lookup_var_key(cached_symbol!("custom-delayed-init-variables"), env)
+        .symbol_value_key(cached_symbol!("custom-delayed-init-variables"))
         .and_then(|value| value.to_vec().ok())
         .unwrap_or_default();
     for entry in entries {
@@ -2193,7 +2176,7 @@ fn snarf_documentation(
                         .insert(native_name.to_string(), entry.offset);
                 }
             }
-            b'V' if interp.lookup_var_symbol(&symbol, env).is_some()
+            b'V' if interp.symbol_value_symbol(&symbol).is_some()
                 || delayed
                     .iter()
                     .any(|value| matches!(value.kind(), Kind::Symbol(name) if name == symbol)) =>
@@ -2215,15 +2198,11 @@ fn snarf_documentation(
     Ok(Value::Nil)
 }
 
-fn ensure_builtin_doc_offset(
-    interp: &mut Interpreter,
-    name: &str,
-    env: &Env,
-) -> Result<i64, LispError> {
+fn ensure_builtin_doc_offset(interp: &mut Interpreter, name: &str) -> Result<i64, LispError> {
     if let Some(offset) = interp.builtin_doc_offsets.get(name) {
         return Ok(*offset);
     }
-    let path = standard_doc_path(interp, env)?;
+    let path = standard_doc_path(interp)?;
     let Ok(bytes) = std::fs::read(path) else {
         return Ok(0);
     };
@@ -2242,9 +2221,7 @@ fn internal_subr_documentation(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     match function.kind() {
-        Kind::BuiltinFunc(name) => Ok(Value::Integer(ensure_builtin_doc_offset(
-            interp, &name, env,
-        )?)),
+        Kind::BuiltinFunc(name) => Ok(Value::Integer(ensure_builtin_doc_offset(interp, &name)?)),
         Kind::NativeFunction(function) => {
             crate::lisp::native_comp::function_documentation(interp, env, function)
         }
@@ -2270,10 +2247,11 @@ fn documentation_property(
     if doc == Value::Integer(0) {
         doc = Value::Nil;
     } else if is_doc_reference(&doc) {
-        doc = resolve_doc_reference(interp, &doc, env)?.unwrap_or(Value::Nil);
+        doc = resolve_doc_reference(interp, &doc)?.unwrap_or(Value::Nil);
     } else if string_like(&doc).is_none() && !doc.is_nil() {
-        // Feval (tem, Qnil): dynamically, outside the caller's scope.
-        doc = interp.eval(&doc, &mut Env::new())?;
+        // Feval (tem, Qnil): with a nil lexical environment, so
+        // dynamically, whatever the caller is written in.
+        doc = crate::lisp::primitives::loading::eval_impl(interp, &[doc, Value::Nil], env)?;
     }
     substitute_doc_keys(interp, doc, args.get(2).is_some_and(Value::is_truthy), env)
 }
@@ -2333,14 +2311,13 @@ fn documentation(
     } else {
         match function.kind() {
             Kind::BuiltinFunc(name) => {
-                let offset = ensure_builtin_doc_offset(interp, &name, env)?;
+                let offset = ensure_builtin_doc_offset(interp, &name)?;
                 if offset == 0 {
                     fallback_function_documentation(interp, &name)
                         .map(|value| Value::String(value.into()))
                         .unwrap_or(Value::Nil)
                 } else {
-                    resolve_doc_reference(interp, &Value::Integer(offset), env)?
-                        .unwrap_or(Value::Nil)
+                    resolve_doc_reference(interp, &Value::Integer(offset))?.unwrap_or(Value::Nil)
                 }
             }
             _ => function_documentation(interp, &function, env).unwrap_or(Value::Nil),
@@ -2356,7 +2333,7 @@ fn documentation(
     if doc == Value::Integer(0) {
         doc = Value::Nil;
     } else if is_doc_reference(&doc) {
-        doc = resolve_doc_reference(interp, &doc, env)?.unwrap_or(Value::Nil);
+        doc = resolve_doc_reference(interp, &doc)?.unwrap_or(Value::Nil);
     }
     substitute_doc_keys(interp, doc, raw, env)
 }

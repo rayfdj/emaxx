@@ -188,11 +188,7 @@ fn check_load_path(
             );
             crate::errprint!("{text}");
             if initialized {
-                interpreter.append_message_capture(
-                    &text,
-                    false,
-                    &mut crate::lisp::types::Env::new(),
-                );
+                interpreter.append_message_capture(&text, false);
             }
         }
     }

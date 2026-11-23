@@ -197,7 +197,7 @@ fn get_lface_attributes(
     let face_name = resolve_face_name_1(interp, &face_name, signal)?;
     // assq_no_quit (FACE_NAME, Vface_remapping_alist).
     let mut tail = interp
-        .lookup_var_key(cached_symbol!("face-remapping-alist"), env)
+        .symbol_value_key(cached_symbol!("face-remapping-alist"))
         .unwrap_or(Value::Nil);
     let mut remapping = None;
     while let Some((element, rest)) = tail.cons_values() {
@@ -322,7 +322,7 @@ fn evaluate_face_filter(
         return Ok(true);
     }
     if interp
-        .lookup_var_key(cached_symbol!("face-filters-always-match"), env)
+        .symbol_value_key(cached_symbol!("face-filters-always-match"))
         .is_some_and(|value| value.is_truthy())
     {
         return Ok(true);
@@ -997,7 +997,7 @@ fn frame_parameter_of_face_change(
         None => {
             // store_in_alist (&Vdefault_frame_alist, param, value).
             let mut alist = interp
-                .lookup_var_key(cached_symbol!("default-frame-alist"), env)
+                .symbol_value_key(cached_symbol!("default-frame-alist"))
                 .unwrap_or(Value::Nil);
             let before = alist;
             super::frames::store_in_alist(&mut alist, param, value)?;
@@ -1496,7 +1496,7 @@ define_dispatch!(
                     // the frame's own definition.
                     let face = resolve_face_name(interp, &args[0])?;
                     let mut tail = interp
-                        .lookup_var_key(cached_symbol!("face-remapping-alist"), env)
+                        .symbol_value_key(cached_symbol!("face-remapping-alist"))
                         .unwrap_or(Value::Nil);
                     while let Some((element, rest)) = tail.cons_values() {
                         if element
@@ -1813,7 +1813,7 @@ fn tty_lookup_color(
         return Ok(true);
     }
     Ok(interp
-        .lookup_var_key(cached_symbol!("tty-defined-color-alist"), env)
+        .symbol_value_key(cached_symbol!("tty-defined-color-alist"))
         .is_none_or(|alist| alist.is_nil()))
 }
 
@@ -1874,7 +1874,7 @@ pub(crate) fn display_supports_face_attributes_p(
     display: Value,
 ) -> Result<Value, LispError> {
     if interp
-        .forwarded_c_value("noninteractive", env)
+        .forwarded_c_value("noninteractive")
         .is_some_and(|value| value.is_truthy())
     {
         return Ok(Value::Nil);

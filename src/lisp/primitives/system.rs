@@ -1496,9 +1496,9 @@ fn expand_file_name_handler(
 /// get_homedir: HOME from `process-environment', else the passwd entry of
 /// LOGNAME or USER, else of the uid, else ""; a relative one is put after
 /// the directory Emacs started in.
-fn get_homedir_bytes(interp: &Interpreter, env: &Env) -> Vec<u8> {
+fn get_homedir_bytes(interp: &Interpreter) -> Vec<u8> {
     let egetenv = |variable: &[u8]| {
-        crate::lisp::primitives::getenv_internal(interp, env, variable, &Value::Nil)
+        crate::lisp::primitives::getenv_internal(interp, variable, &Value::Nil)
             .ok()
             .flatten()
     };
@@ -1553,7 +1553,7 @@ pub(crate) fn fexpand_file_name(
     let mut default_directory = default_directory;
     if default_directory.is_nil() {
         let dir = interp
-            .lookup_var_key(cached_symbol!("default-directory"), env)
+            .symbol_value_key(cached_symbol!("default-directory"))
             .unwrap_or(Value::Nil);
         if let Some((dir_bytes, _)) = lisp_string_bytes(&dir) {
             if dir_bytes.first() == Some(&b'/') {
@@ -1561,7 +1561,7 @@ pub(crate) fn fexpand_file_name(
                 default_directory = dir;
             } else {
                 let absdir = interp
-                    .lookup_var_key(cached_symbol!("invocation-directory"), env)
+                    .symbol_value_key(cached_symbol!("invocation-directory"))
                     .filter(|value| {
                         lisp_string_bytes(value)
                             .is_some_and(|(bytes, _)| bytes.first() == Some(&b'/'))
@@ -1623,7 +1623,7 @@ pub(crate) fn fexpand_file_name(
         let tilde = tilde_prefix(
             &nm,
             || {
-                let home = get_homedir_bytes(interp, env);
+                let home = get_homedir_bytes(interp);
                 // build_string: multibyte when the bytes are valid
                 // multibyte text that is not all ASCII.
                 let tem = make_string(home.clone()).ok();
@@ -1632,7 +1632,7 @@ pub(crate) fn fexpand_file_name(
                     .and_then(lisp_string_bytes)
                     .is_some_and(|(_, multibyte)| multibyte);
                 if multibyte && !tem_multibyte {
-                    decode_file_name(interp, env, &home)
+                    decode_file_name(interp, &home)
                         .ok()
                         .and_then(|decoded| lisp_string_bytes(&decoded))
                         .map_or(home, |(bytes, _)| bytes)
@@ -1649,7 +1649,7 @@ pub(crate) fn fexpand_file_name(
                     .filter(|home| home.starts_with('/'))?
                     .into_bytes();
                 Some(if multibyte {
-                    decode_file_name(interp, env, &home)
+                    decode_file_name(interp, &home)
                         .ok()
                         .and_then(|decoded| lisp_string_bytes(&decoded))
                         .map_or(home, |(bytes, _)| bytes)
@@ -1696,7 +1696,7 @@ pub(crate) fn expand_file_name_runtime(
         Some(base) => Some(base),
         None => {
             current_directory = interp
-                .lookup_var_key(cached_symbol!("default-directory"), env)
+                .symbol_value_key(cached_symbol!("default-directory"))
                 .and_then(|value| string_like(&value).map(|string| string.text));
             current_directory.as_deref()
         }
@@ -1707,7 +1707,7 @@ pub(crate) fn expand_file_name_runtime(
     let mut resolved_base = base.map(str::to_string);
     if let Some(relative_base) = base.filter(|base| !file_name_absolute_p(base))
         && let Some(default_directory) = interp
-            .lookup_var_key(cached_symbol!("default-directory"), env)
+            .symbol_value_key(cached_symbol!("default-directory"))
             .and_then(|value| string_like(&value).map(|string| string.text))
         && default_directory != relative_base
     {
@@ -1739,7 +1739,7 @@ pub(crate) fn expand_file_name_runtime(
         )?;
         return string_text(&handled);
     }
-    Ok(expand_file_name_in_env(interp, env, path, base))
+    Ok(expand_file_name_in_env(interp, path, base))
 }
 
 /// The canonical name files.el records in `buffer-file-truename', for
@@ -1751,16 +1751,12 @@ pub(crate) fn expand_file_name_runtime(
 /// retain the expanded name, matching `file-truename' at our current host
 /// abstraction boundary.
 #[cfg(test)]
-pub(crate) fn canonical_file_name(
-    interp: &Interpreter,
-    env: &Env,
-    path: &str,
-) -> Result<String, LispError> {
+pub(crate) fn canonical_file_name(interp: &Interpreter, path: &str) -> Result<String, LispError> {
     let preserve_directory_syntax = path.ends_with(std::path::MAIN_SEPARATOR);
-    let mut candidate = normalize_path(&host_file_name(interp, env, path)?);
+    let mut candidate = normalize_path(&host_file_name(interp, path)?);
     // The resolved host name, DECODE_FILE'd back to its text.
     let render = |candidate: &Path| -> Result<String, LispError> {
-        let (text, _) = decode_host_file_name_text(interp, env, candidate.as_os_str())?;
+        let (text, _) = decode_host_file_name_text(interp, candidate.as_os_str())?;
         Ok(if preserve_directory_syntax {
             file_name_as_directory(&text)
         } else {
@@ -1819,7 +1815,6 @@ pub(crate) fn remove_slash_colon(name: &str) -> String {
 
 pub(crate) fn expand_file_name_in_env(
     interp: &Interpreter,
-    env: &Env,
     path: &str,
     base: Option<&str>,
 ) -> String {
@@ -1828,20 +1823,16 @@ pub(crate) fn expand_file_name_in_env(
     // walked and copied the whole list (45 us an `expand-file-name').
     let needs_home = path.starts_with('~') || base.is_some_and(|base| base.starts_with('~'));
     let home = if needs_home {
-        lisp_environment_string(interp, env, "HOME")
+        lisp_environment_string(interp, "HOME")
     } else {
         None
     };
     expand_file_name_with_home(path, base, home.as_deref())
 }
 
-pub(crate) fn lisp_environment_string(
-    interp: &Interpreter,
-    env: &Env,
-    variable: &str,
-) -> Option<String> {
+pub(crate) fn lisp_environment_string(interp: &Interpreter, variable: &str) -> Option<String> {
     // egetenv: getenv_internal's bytes, read back as make_string reads them.
-    let value = getenv_internal(interp, env, variable.as_bytes(), &Value::Nil)
+    let value = getenv_internal(interp, variable.as_bytes(), &Value::Nil)
         .ok()
         .flatten()?;
     make_string(value)
@@ -2099,13 +2090,13 @@ pub(crate) fn validate_file_name(path: &str) -> Result<(), LispError> {
 /// `file-name-coding-system', else `default-file-name-coding-system'
 /// (coding.c:encode_file_name_1 and decode_file_name), checked as
 /// code_convert_string checks it.
-fn file_name_coding(interp: &Interpreter, env: &Env) -> Result<Option<String>, LispError> {
+fn file_name_coding(interp: &Interpreter) -> Result<Option<String>, LispError> {
     for variable in [
         cached_symbol!("file-name-coding-system"),
         cached_symbol!("default-file-name-coding-system"),
     ] {
         if let Some(coding) = interp
-            .lookup_var_key(variable, env)
+            .symbol_value_key(variable)
             .filter(|value| !value.is_nil())
         {
             return super::checked_coding_name(interp, &coding);
@@ -2120,11 +2111,7 @@ fn file_name_coding(interp: &Interpreter, env: &Env) -> Result<Option<String>, L
 /// `file_name_coding', or with neither variable set is its internal
 /// representation.  A NUL in the result is a `filenamep' error, the
 /// datum the encoded name.
-pub(crate) fn encode_file_name(
-    interp: &Interpreter,
-    env: &Env,
-    name: &str,
-) -> Result<Vec<u8>, LispError> {
+pub(crate) fn encode_file_name(interp: &Interpreter, name: &str) -> Result<Vec<u8>, LispError> {
     let bytes = if name.is_ascii() {
         name.as_bytes().to_vec()
     } else if name
@@ -2135,7 +2122,7 @@ pub(crate) fn encode_file_name(
             .map(|ch| raw_byte_from_regex_char(ch).unwrap_or(ch as u8))
             .collect()
     } else {
-        match file_name_coding(interp, env)?.as_deref() {
+        match file_name_coding(interp)?.as_deref() {
             None => internal_multibyte_name_bytes(name),
             Some("utf-8" | "utf-8-unix") => super::encode_internal_multibyte_bytes(name)?,
             Some(coding) => super::encode_text_bytes(
@@ -2178,14 +2165,10 @@ fn internal_multibyte_name_bytes(name: &str) -> Vec<u8> {
 }
 
 /// ENCODE_FILE of NAME as a host path.
-pub(crate) fn host_file_name(
-    interp: &Interpreter,
-    env: &Env,
-    name: &str,
-) -> Result<PathBuf, LispError> {
+pub(crate) fn host_file_name(interp: &Interpreter, name: &str) -> Result<PathBuf, LispError> {
     use std::os::unix::ffi::OsStringExt;
     Ok(PathBuf::from(std::ffi::OsString::from_vec(
-        encode_file_name(interp, env, name)?,
+        encode_file_name(interp, name)?,
     )))
 }
 
@@ -2194,12 +2177,8 @@ pub(crate) fn host_file_name(
 /// ASCII bytes stay unibyte (code_convert_string's ASCII shortcut);
 /// anything else decoded into a multibyte string, an invalid byte a raw
 /// byte.
-pub(crate) fn decode_file_name(
-    interp: &Interpreter,
-    env: &Env,
-    bytes: &[u8],
-) -> Result<Value, LispError> {
-    let Some(coding) = file_name_coding(interp, env)? else {
+pub(crate) fn decode_file_name(interp: &Interpreter, bytes: &[u8]) -> Result<Value, LispError> {
+    let Some(coding) = file_name_coding(interp)? else {
         return Ok(super::bytes_to_unibyte_value(bytes));
     };
     let unix = coding.ends_with("-unix");
@@ -2218,14 +2197,9 @@ pub(crate) fn decode_file_name(
     }
     // decode_coding_object: a charset decoder's runs keep their
     // `charset' property.
-    let mut decoded = super::decode_coding_object(
-        interp,
-        env,
-        super::DecodeSource::Bytes(bytes),
-        &coding,
-        None,
-    )?
-    .decoded;
+    let mut decoded =
+        super::decode_coding_object(interp, super::DecodeSource::Bytes(bytes), &coding, None)?
+            .decoded;
     let props = super::decoded_annotation_props(&mut decoded);
     Ok(make_shared_string_value_with_extended_chars(
         decoded.text,
@@ -2238,23 +2212,18 @@ pub(crate) fn decode_file_name(
 /// DECODE_FILE of a host NAME as its text and whether it is multibyte.
 pub(crate) fn decode_host_file_name_text(
     interp: &Interpreter,
-    env: &Env,
     name: &std::ffi::OsStr,
 ) -> Result<(String, bool), LispError> {
     use std::os::unix::ffi::OsStrExt;
-    let value = decode_file_name(interp, env, name.as_bytes())?;
+    let value = decode_file_name(interp, name.as_bytes())?;
     let string = string_like(&value).expect("a decoded file name is a string");
     Ok((string.text, string.multibyte))
 }
 
 /// DECODE_FILE of a host path.
-pub(crate) fn decode_host_file_name(
-    interp: &Interpreter,
-    env: &Env,
-    path: &Path,
-) -> Result<Value, LispError> {
+pub(crate) fn decode_host_file_name(interp: &Interpreter, path: &Path) -> Result<Value, LispError> {
     use std::os::unix::ffi::OsStrExt;
-    decode_file_name(interp, env, path.as_os_str().as_bytes())
+    decode_file_name(interp, path.as_os_str().as_bytes())
 }
 
 /// `file_name_coding' after CHECK_CODING_SYSTEM's Fcheck_coding_system
@@ -2269,7 +2238,7 @@ fn loaded_file_name_coding(
         cached_symbol!("default-file-name-coding-system"),
     ] {
         if let Some(coding) = interp
-            .lookup_var_key(variable, env)
+            .symbol_value_key(variable)
             .filter(|value| !value.is_nil())
         {
             super::load_coding_system(interp, &coding, env)?;
@@ -2338,7 +2307,6 @@ pub(crate) fn decode_file_value(
 /// properties (make_specified_string), else NAME itself.
 pub(crate) fn remove_slash_colon_value(
     interp: &mut Interpreter,
-    env: &Env,
     name: Value,
 ) -> Result<Value, LispError> {
     let Kind::StringObject(state) = name.kind() else {
@@ -2352,7 +2320,7 @@ pub(crate) fn remove_slash_colon_value(
         }
     };
     super::make_specified_string(rest, multibyte)
-        .map_err(|error| super::string_storage_error(interp, env, error))
+        .map_err(|error| super::string_storage_error(interp, error))
 }
 
 /// SSDATA (NAME), a name ENCODE_FILE gave, as the host path C passes.
@@ -2379,17 +2347,17 @@ pub(crate) fn find_file_name_handler(
     // OPERATION; a handler `inhibit-file-name-handlers' names is passed
     // over while OPERATION is `inhibit-file-name-operation'.
     let inhibited_operation = interp
-        .lookup_var_key(cached_symbol!("inhibit-file-name-operation"), env)
+        .symbol_value_key(cached_symbol!("inhibit-file-name-operation"))
         .unwrap_or(Value::Nil);
     let inhibited = if values_eq_in_env(interp, &inhibited_operation, &operation, env) {
         interp
-            .lookup_var_key(cached_symbol!("inhibit-file-name-handlers"), env)
+            .symbol_value_key(cached_symbol!("inhibit-file-name-handlers"))
             .unwrap_or(Value::Nil)
     } else {
         Value::Nil
     };
     let mut chain = interp
-        .lookup_var_key(cached_symbol!("file-name-handler-alist"), env)
+        .symbol_value_key(cached_symbol!("file-name-handler-alist"))
         .unwrap_or(Value::Nil);
     let operations_property = cached_symbol!("operations").with(|symbol| Value::Symbol(*symbol));
     let mut pos = None;
@@ -2771,7 +2739,7 @@ fn file_primitive_preamble(
                 super::file_io::file_modtime_from_value(interp, timestamp)?;
             }
             let directory = interp
-                .lookup_var_key(cached_symbol!("default-directory"), env)
+                .symbol_value_key(cached_symbol!("default-directory"))
                 .unwrap_or(Value::Nil);
             args[0] = fexpand_file_name(interp, env, args[0], directory)?;
             let lookups = vec![args[0]];
@@ -2899,7 +2867,7 @@ fn file_primitive_preamble(
                 FilePreamble::new(operation, args, Vec::new())
             } else {
                 let file = interp
-                    .lookup_var_key(cached_symbol!("buffer-file-name"), env)
+                    .symbol_value_key(cached_symbol!("buffer-file-name"))
                     .unwrap_or(Value::Nil);
                 let filename = expand_file_name_nil(interp, env, file)?;
                 FilePreamble {
@@ -2945,7 +2913,7 @@ pub(crate) fn dispatch_file_name_handler(
     };
     let candidates = match &preamble {
         Some(preamble) => preamble.lookups.clone(),
-        None => file_name_handler_candidates(interp, env, specification, args),
+        None => file_name_handler_candidates(interp, specification, args),
     };
 
     for candidate in candidates {
@@ -3060,7 +3028,6 @@ pub(crate) fn dispatch_file_name_handler(
 /// file its specification names.
 fn file_name_handler_candidates(
     interp: &mut Interpreter,
-    env: &mut Env,
     specification: FileNameHandlerOperation,
     args: &[Value],
 ) -> Vec<Value> {
@@ -3078,7 +3045,7 @@ fn file_name_handler_candidates(
         DefaultDirectorySource::Always => true,
     };
     if uses_implicit_default_directory
-        && let Some(directory) = interp.lookup_var_key(cached_symbol!("default-directory"), env)
+        && let Some(directory) = interp.symbol_value_key(cached_symbol!("default-directory"))
         && string_like(&directory).is_some()
     {
         candidates.push(directory);
@@ -3191,7 +3158,7 @@ pub(crate) fn directory_files(
         return Err(LispError::WrongTypeArgument("stringp".into(), *matcher));
     }
     let dirfilename = super::call(interp, "directory-file-name", &[directory], env)?;
-    let host_directory = host_file_name(interp, env, &string_text(&dirfilename)?)?;
+    let host_directory = host_file_name(interp, &string_text(&dirfilename)?)?;
     let directory_text = string_text(&directory)?;
     let names = read_directory_names(&host_directory).map_err(|(step, error)| {
         let file = if step == "Opening directory" {
@@ -3212,7 +3179,7 @@ pub(crate) fn directory_files(
         if count.is_some_and(|count| entries.len() >= count) {
             break;
         }
-        let name = decode_file_name(interp, env, host_name.as_bytes())?;
+        let name = decode_file_name(interp, host_name.as_bytes())?;
         let text = string_text(&name)?;
         if let Some(matcher) = matcher
             && search::fast_text_match(

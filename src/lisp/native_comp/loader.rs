@@ -433,7 +433,7 @@ unsafe fn read_static_object(
     // allocation and converting the blob to lossy host UTF-8.
     let source = crate::lisp::types::StringObjectRef::from_c_bytes(bytes)
         .map(Value::StringObject)
-        .map_err(|error| string_storage_error(interpreter, environment, error))?;
+        .map_err(|error| string_storage_error(interpreter, error))?;
     read_from_lisp_source(interpreter, &source, environment)
 }
 
@@ -650,7 +650,7 @@ pub(super) fn load(
         let result = result?;
         // comp.c:register_native_comp_unit.
         let loaded_units = interpreter
-            .lookup_var_key(cached_symbol!("comp-loaded-comp-units-h"), environment)
+            .symbol_value_key(cached_symbol!("comp-loaded-comp-units-h"))
             .unwrap_or(Value::Nil);
         super::lisp::call_c_primitive(
             interpreter,
@@ -728,7 +728,7 @@ fn first_load(
         )?
     };
     let expected_hash = interpreter
-        .lookup_var_key(cached_symbol!("comp-abi-hash"), environment)
+        .symbol_value_key(cached_symbol!("comp-abi-hash"))
         .unwrap_or(Value::Nil);
     if !super::lisp::call_c_primitive(
         interpreter,
@@ -791,7 +791,7 @@ fn first_load(
     };
     unit.set_field(6, impure_data);
     if interpreter
-        .lookup_var_key(cached_symbol!("purify-flag"), environment)
+        .symbol_value_key(cached_symbol!("purify-flag"))
         .is_some_and(|value| value.is_truthy())
     {
         data = crate::lisp::primitives::purecopy_value(interpreter, &data, environment)?;
@@ -900,7 +900,7 @@ pub(super) fn register_with_state(
     }
     let late_pending_table = if matches!(kind, RegistrationKind::LateSubroutine) {
         let table = interpreter
-            .lookup_var_key(cached_symbol!("comp-deferred-pending-h"), environment)
+            .symbol_value_key(cached_symbol!("comp-deferred-pending-h"))
             .unwrap_or(Value::Nil);
         let pending = super::lisp::call_c_primitive(
             interpreter,
@@ -1480,7 +1480,7 @@ pub(super) fn load_dumped_unit(
         )?
     };
     let expected_hash = interpreter
-        .lookup_var_key(cached_symbol!("comp-abi-hash"), environment)
+        .symbol_value_key(cached_symbol!("comp-abi-hash"))
         .unwrap_or(Value::Nil);
     if !super::lisp::call_c_primitive(
         interpreter,
@@ -1521,7 +1521,7 @@ pub(super) fn load_dumped_unit(
     saved_unit_rollback.disarm();
     // comp.c:register_native_comp_unit.
     let loaded_units = interpreter
-        .lookup_var_key(cached_symbol!("comp-loaded-comp-units-h"), environment)
+        .symbol_value_key(cached_symbol!("comp-loaded-comp-units-h"))
         .unwrap_or(Value::Nil);
     super::lisp::call_c_primitive(
         interpreter,
@@ -1541,7 +1541,7 @@ fn fixup_eln_load_path(
     eln_filename: &str,
 ) -> Result<(), LispError> {
     let load_path = interpreter
-        .lookup_var_key(cached_symbol!("native-comp-eln-load-path"), environment)
+        .symbol_value_key(cached_symbol!("native-comp-eln-load-path"))
         .unwrap_or(Value::Nil);
     let mut last_cell = Value::Nil;
     let mut tail = load_path;

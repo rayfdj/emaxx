@@ -58,7 +58,8 @@ pub(crate) use display::{
 };
 pub(crate) use display::{
     clear_message, echo_area_message, echo_area_message_tick, echo_area_message_value,
-    echo_area_print_logged, echo_display_message, set_echo_area_display,
+    echo_area_print_logged, echo_area_print_logged_as, echo_display_message, set_echo_area_display,
+    setup_echo_area_for_printing,
 };
 pub(crate) use lists::{
     event_array, next_kbd_macro_event, pop_kbd_macro, recursive_edit_exit_value,

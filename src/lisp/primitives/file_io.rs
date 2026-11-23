@@ -6,10 +6,9 @@ use crate::lisp::types::LispErrorKind;
 /// `modtime_size', or the error the call failed with.
 pub(crate) fn stat_visited_modtime(
     interp: &Interpreter,
-    env: &Env,
     path: &str,
 ) -> Result<Result<crate::buffer::VisitedModtime, std::io::Error>, LispError> {
-    let host = host_file_name(interp, env, path)?;
+    let host = host_file_name(interp, path)?;
     Ok(fs::metadata(host).and_then(|metadata| {
         Ok(crate::buffer::VisitedModtime {
             stamp: crate::buffer::ModtimeStamp::Time(metadata.modified()?),
@@ -183,8 +182,7 @@ pub(crate) fn barf_or_query_if_file_exists(
     interactive: bool,
     quick: bool,
 ) -> Result<(), LispError> {
-    if !known_to_exist
-        && let Ok(metadata) = fs::symlink_metadata(host_file_name(interp, env, absname)?)
+    if !known_to_exist && let Ok(metadata) = fs::symlink_metadata(host_file_name(interp, absname)?)
     {
         if metadata.is_dir() {
             return Err(LispError::SignalValue(Value::list([
@@ -520,7 +518,7 @@ pub(crate) fn make_temp_file_internal(
     let file = gen_tempname(&mut template, start, kind)
         .map_err(|error| report_file_errno(interp, message, prefix, &error))?;
     let val = super::make_specified_string(template, false)
-        .map_err(|error| super::string_storage_error(interp, env, error))?;
+        .map_err(|error| super::string_storage_error(interp, error))?;
     let val = super::system::decode_file_value(interp, env, val)?;
     // gen_tempname's descriptor is 0 for GT_DIR and GT_NOCREATE, and
     // GNU's write_region of a TEXT then writes to the standard input (a
@@ -1026,14 +1024,14 @@ fn choose_write_coding(
         );
     }
     let mut coding = interp
-        .lookup_var_key(cached_symbol!("coding-system-for-write"), env)
+        .symbol_value_key(cached_symbol!("coding-system-for-write"))
         .unwrap_or(Value::Nil);
     if !coding.is_nil() {
         let selector = interp
-            .lookup_var_key(cached_symbol!("select-safe-coding-system-function"), env)
+            .symbol_value_key(cached_symbol!("select-safe-coding-system-function"))
             .unwrap_or(Value::Nil);
         if interp
-            .lookup_var_key(cached_symbol!("coding-system-require-warning"), env)
+            .symbol_value_key(cached_symbol!("coding-system-require-warning"))
             .is_some_and(|value| value.is_truthy())
             && call(interp, "fboundp", &[selector], env)?.is_truthy()
         {
@@ -1054,7 +1052,7 @@ fn choose_write_coding(
     }
 
     coding = interp
-        .lookup_var_key(cached_symbol!("buffer-file-coding-system"), env)
+        .symbol_value_key(cached_symbol!("buffer-file-coding-system"))
         .unwrap_or(Value::Nil);
     let local =
         interp.has_buffer_local_binding(interp.current_buffer_id(), "buffer-file-coding-system");
@@ -1087,7 +1085,7 @@ fn choose_write_coding(
     let using_default = coding.is_nil();
     if using_default {
         coding = interp
-            .lookup_var_key(cached_symbol!("buffer-file-coding-system"), env)
+            .symbol_value_key(cached_symbol!("buffer-file-coding-system"))
             .unwrap_or(Value::Nil);
     }
     if !coding.is_nil() && !force_raw {
@@ -1099,7 +1097,7 @@ fn choose_write_coding(
         );
     }
     let selector = interp
-        .lookup_var_key(cached_symbol!("select-safe-coding-system-function"), env)
+        .symbol_value_key(cached_symbol!("select-safe-coding-system-function"))
         .unwrap_or(Value::Nil);
     if !force_raw && call(interp, "fboundp", &[selector], env)?.is_truthy() {
         coding = interp.call_function_value(
@@ -1191,7 +1189,7 @@ pub(crate) fn write_region_value_with_logical_path(
     }
     // FILENAME, as the preamble expanded it.
     let path = string_text(&args[2])?;
-    let existed_before_write = fs::symlink_metadata(host_file_name(interp, env, &path)?).is_ok();
+    let existed_before_write = fs::symlink_metadata(host_file_name(interp, &path)?).is_ok();
     if normalized[6].is_truthy() && !normalized[6].is_key(cached_symbol!("excl")) {
         barf_or_query_if_file_exists(interp, env, logical_path, false, "overwrite", true, true)?;
     }
@@ -1275,7 +1273,7 @@ fn encode_region_for_write(
     crate::lisp::primitives::coding::set_last_coding_system_used_value(interp, coding, env);
     let selective_display = !args[0].is_string()
         && interp
-            .lookup_var_key(cached_symbol!("selective-display"), env)
+            .symbol_value_key(cached_symbol!("selective-display"))
             .is_some_and(|value| crate::lisp::types::eq(value, Value::T));
     let source = if let Some(string) = string_like(&args[0]) {
         string
@@ -1313,7 +1311,7 @@ fn encode_region_for_write(
         env,
     )?;
     let inhibit_eol_conversion = interp
-        .lookup_var_key(cached_symbol!("inhibit-eol-conversion"), env)
+        .symbol_value_key(cached_symbol!("inhibit-eol-conversion"))
         .is_some_and(|value| value.is_truthy());
     let translation = encode_translation_tables(interp, coding_name, env)?;
     super::coding::encode_text_bytes_for_write(
@@ -1361,7 +1359,7 @@ fn write_region_with_coding(
     // region whose `selective-display' is t.
     let selective_display = !selected_args[0].is_string()
         && interp
-            .lookup_var_key(cached_symbol!("selective-display"), env)
+            .symbol_value_key(cached_symbol!("selective-display"))
             .is_some_and(|value| crate::lisp::types::eq(value, Value::T));
     let source = if let Some(string) = string_like(&selected_args[0]) {
         string
@@ -1398,7 +1396,7 @@ fn write_region_with_coding(
         env,
     )?;
     let inhibit_eol_conversion = interp
-        .lookup_var_key(cached_symbol!("inhibit-eol-conversion"), env)
+        .symbol_value_key(cached_symbol!("inhibit-eol-conversion"))
         .is_some_and(|value| value.is_truthy());
     let translation = encode_translation_tables(interp, coding_name, env)?;
     let bytes = super::coding::encode_text_bytes_for_write(
@@ -1423,7 +1421,7 @@ fn write_region_with_coding(
     if open_and_close_file && !auto_saving {
         flock_file(interp, env, Value::String(lock_path.clone().into()))?;
     }
-    let host = host_file_name(interp, env, path)?;
+    let host = host_file_name(interp, path)?;
     // fileio.c:write_region's open, lseek and write, each failure
     // report_file_errno with its errno: "Opening output file", "Lseek
     // error", and "Write error" for the write or the close (once the
@@ -1499,7 +1497,7 @@ fn write_region_with_coding(
     if write_result.is_err()
         && opened
         && visiting
-        && let Ok(Ok(modtime)) = stat_visited_modtime(interp, env, path)
+        && let Ok(Ok(modtime)) = stat_visited_modtime(interp, path)
     {
         interp.buffer.borrow_mut().set_visited_file_modtime(modtime);
     }
@@ -1536,7 +1534,7 @@ fn write_region_with_coding(
         interp.update_mode_lines = 14;
         // The time and size the written file has, unless its status cannot
         // be read.
-        if let Ok(modtime) = stat_visited_modtime(interp, env, path)? {
+        if let Ok(modtime) = stat_visited_modtime(interp, path)? {
             interp.buffer.borrow_mut().set_visited_file_modtime(modtime);
         }
         record_visit_saved(interp);
@@ -1553,7 +1551,7 @@ fn write_region_with_coding(
     }
     if !auto_saving
         && interp
-            .lookup_var_key(cached_symbol!("noninteractive"), env)
+            .symbol_value_key(cached_symbol!("noninteractive"))
             .is_none_or(|value| value.is_nil())
     {
         // fileio.c write_region: the expanded VISIT name, else the
@@ -1578,14 +1576,16 @@ fn write_region_with_coding(
     Ok(Value::Nil)
 }
 
-/// print.c printchar_to_stream onto stderr: CH, or the characters among
-/// the elements of the vector `standard-display-table' shows it as; an
-/// ASCII character as its byte, any other as its multibyte form, encoded
-/// by `coding-system-for-write', else `locale-coding-system', when either
-/// is set (code_convert_string_norecord).
-pub(crate) fn printchar_to_stderr(
+/// print.c printchar_to_stream onto stdout (TO_STDOUT) or stderr: CH, or
+/// the characters among the elements of the vector
+/// `standard-display-table' shows it as; an ASCII character as its byte,
+/// any other as its multibyte form, encoded by `coding-system-for-write',
+/// else `locale-coding-system', when either is set
+/// (code_convert_string_norecord).
+pub(crate) fn printchar_to_stream(
     interp: &mut Interpreter,
     ch: u32,
+    to_stdout: bool,
     env: &mut Env,
 ) -> Result<(), LispError> {
     let mut chars = vec![ch];
@@ -1593,9 +1593,9 @@ pub(crate) fn printchar_to_stderr(
         && let Some(Kind::CharTable(table)) = interp
             .symbol_value_key(cached_symbol!("standard-display-table"))
             .map(|value| value.kind())
-        && table.has_purpose("display-table")
-        && let Some(entry) = interp.char_table_get(table, ch)
-        && crate::lisp::primitives::interactive::is_vector_value(&entry)
+        && table.is_display_table()
+        && let Some(entry) = Some(table.disp_char_vector(ch))
+            .filter(crate::lisp::primitives::interactive::is_vector_value)
     {
         chars = crate::lisp::primitives::buffers::vector_items(&entry)?
             .iter()
@@ -1606,32 +1606,61 @@ pub(crate) fn printchar_to_stderr(
             .collect();
     }
     let coding = interp
-        .forwarded_c_value("coding-system-for-write", env)
+        .forwarded_c_value("coding-system-for-write")
         .filter(|value| !value.is_nil())
-        .or_else(|| interp.forwarded_c_value("locale-coding-system", env))
+        .or_else(|| interp.forwarded_c_value("locale-coding-system"))
         .filter(|value| !value.is_nil());
     // putc for an ASCII character and fwrite for any other, each its own
-    // write of the stream; print.c reads neither's result.
-    use crate::lisp::primitives::batch_stdout::stderr_write;
+    // call on the stream (on the unbuffered stderr its own write);
+    // print.c reads neither's result.
+    let stream_write = |bytes: &[u8]| {
+        if to_stdout {
+            crate::lisp::primitives::batch_stdout::write(bytes)
+        } else {
+            crate::lisp::primitives::batch_stdout::stderr_write(bytes)
+        }
+    };
     for c in chars {
         if c < 0x80 {
-            stderr_write(&[c as u8]);
+            stream_write(&[c as u8]);
             continue;
         }
-        // CHAR_STRING's multibyte form.
+        let code = if (c as i32) < 0 {
+            // CHAR_STRING of a negative int, here where it is known to
+            // be no ASCII character: its two-byte form's arithmetic
+            // (`0xC0 | (c >> 6)', `0x80 | (c & 0x3F)').  That is some
+            // character's form when its first byte is a two-byte
+            // character's; otherwise the bytes are no character's and
+            // go out as they are.
+            let c = c as i32;
+            let form = [0xC0 | (c >> 6) as u8, 0x80 | (c & 0x3F) as u8];
+            match crate::lisp::types::string_data::decode_character(&form) {
+                Ok((code, 2)) if form[0] < 0xE0 => code,
+                _ => {
+                    stream_write(&form);
+                    continue;
+                }
+            }
+        } else {
+            // CHAR_STRING's multibyte form: char_string resolves the
+            // modifier bits of a code that has them and drops what is
+            // left of them, and a code past MAX_CHAR even so is an
+            // error.
+            crate::lisp::primitives::ccl::written_character(c as i32)?
+        };
         let mut one = PrintOutput::default();
-        one.push_code(c);
+        one.push_code(code);
         let Some(coding) = &coding else {
-            stderr_write(one.bytes());
+            stream_write(one.bytes());
             continue;
         };
-        let string = one.into_value(interp, env)?;
+        let string = one.into_value(interp)?;
         // The coding as given, or the one an alias no name names stands
         // for (`checked_coding_given').
         let given = crate::lisp::primitives::coding::checked_coding_given(interp, coding)?;
         let encoded =
             encode_coding_value_recording(interp, &string, given.as_deref(), true, false, env)?;
-        stderr_write(&crate::lisp::primitives::text::internal_string_bytes(
+        stream_write(&crate::lisp::primitives::text::internal_string_bytes(
             &string_like(&encoded).expect("an encoded string"),
         )?);
     }
@@ -1712,6 +1741,273 @@ pub(crate) fn redirect_debugging_output(
     Ok(())
 }
 
+/// print.c's print_prepare, BODY writing to the sink it resolves STREAM
+/// to, and print_finish.
+pub(crate) fn with_print_stream<T>(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env, PrintSink) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    print_prepared(interp, stream, env, body).map(|(value, _)| value)
+}
+
+/// `with_print_stream', with the octets of a text print_finish inserted
+/// in a multibyte buffer a character each (`print_object_to_buffer').
+fn print_prepared<T>(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env, PrintSink) -> Result<T, LispError>,
+) -> Result<(T, Option<Vec<u8>>), LispError> {
+    let sink = PrintSink::of(interp, stream);
+    with_printer_destination(interp, stream, env, |interp, env| {
+        if !matches!(sink, PrintSink::Buffer) {
+            if matches!(sink, PrintSink::Echo) {
+                crate::lisp::primitives::setup_echo_area_for_printing(interp, env);
+            }
+            return body(interp, env, sink).map(|value| (value, None));
+        }
+        let multibyte = interp.buffer.borrow().is_multibyte();
+        with_printer_buffer_escape(interp, env, Some(multibyte), |interp, env| {
+            // print_finish runs before the unwinding that gives
+            // print_buffer back.
+            with_print_buffer(interp, |interp| {
+                let value = body(interp, env, sink)?;
+                let octets = print_finish_insertion(interp, env)?;
+                Ok((value, octets))
+            })
+            .map(|(result, _)| result)
+        })
+    })
+}
+
+/// print.c:print_finish for a print into a buffer: `insert_1_both
+/// (print_buffer.buffer, pos, pos_byte, 0, 1, 0)' at point of the buffer
+/// current now, and `signal_after_change (PT - print_buffer.pos, 0,
+/// print_buffer.pos)'.  insert_1_both of no characters returns at once
+/// (no prepare_to_modify_buffer), and the signal still runs; otherwise
+/// the hooks of prepare_to_modify_buffer run before the text is copied
+/// out of print_buffer, so a print one of them runs into a buffer
+/// changes both the text and the `pos' the signal is given.  No
+/// update_compositions follows.  The octets of a text whose bytes
+/// strout counted a character each, when the buffer is multibyte.
+fn print_finish_insertion(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Option<Vec<u8>>, LispError> {
+    let (nbytes, was_multibyte) = interp
+        .print_globals
+        .buffer
+        .as_ref()
+        .map_or((0, false), |text| (text.len(), text.is_multibyte()));
+    if nbytes == 0 {
+        let point = interp.buffer.borrow().point();
+        super::insdel::signal_after_change(
+            interp,
+            super::insdel::AfterChange::new(point, 0, 0),
+            &super::hooks_overlays::OverlayHookCalls::none(),
+            env,
+        )?;
+        return Ok(None);
+    }
+    // `print_buffer.pos != print_buffer.pos_byte' in a unibyte buffer:
+    // copy_text makes the text unibyte in a block of its own before
+    // insert_1_both is called, which no print its hooks run writes over.
+    let unibyte_copy = {
+        let multibyte = interp.buffer.borrow().is_multibyte();
+        interp
+            .print_globals
+            .buffer
+            .as_ref()
+            .filter(|text| !multibyte && text.is_multibyte())
+            .cloned()
+    };
+    // The text waits on prepare_to_modify_buffer from here until
+    // insert_1_both copies it (the after-change hooks run later).  A
+    // print that is itself run by a hook of a waiting one has written
+    // its text over the start of print_buffer's memory.
+    interp.print_globals.inserting += 1;
+    let globals = &mut interp.print_globals;
+    if let (Some(memory), Some(text)) = (globals.memory.as_mut(), globals.buffer.as_ref()) {
+        if memory.len() < nbytes {
+            memory.resize(nbytes, 0);
+        }
+        memory[..nbytes].copy_from_slice(text.bytes());
+    }
+    let copied = |interp: &mut Interpreter| {
+        interp.print_globals.inserting -= 1;
+        if interp.print_globals.inserting == 0 {
+            interp.print_globals.memory = None;
+        }
+    };
+    let mut waiting = true;
+    let inserted = insert_print_buffer(interp, env, |interp| {
+        let multibyte = interp.buffer.borrow().is_multibyte();
+        let text = crate::lisp::primitives::print::print_finish_text(
+            interp,
+            nbytes,
+            was_multibyte,
+            |text, pos| {
+                let text = unibyte_copy.as_ref().unwrap_or(text);
+                // A text whose `pos' is its `pos_byte' though it holds
+                // multibyte characters (print_unwind left it counted
+                // so): insert_1_both is told of a character a byte.
+                if multibyte && text.bytes_counted_as_characters() {
+                    let octets = text.bytes().to_vec();
+                    let mut bytes = PrintOutput::plain();
+                    bytes.push_octets(&octets);
+                    let (parts, extended) = bytes.text_parts();
+                    return (parts, extended, pos, Some(octets));
+                }
+                let octets = (multibyte && !text.is_multibyte() && !text.bytes().is_ascii())
+                    .then(|| text.octets());
+                let (parts, extended) = text.text_parts();
+                (parts, extended, pos, octets)
+            },
+        );
+        waiting = false;
+        copied(interp);
+        text
+    });
+    if waiting {
+        // prepare_to_modify_buffer signaled.
+        copied(interp);
+    }
+    inserted
+}
+
+/// print.c:print_prepare binds print--unreadable-callback-buffer to the
+/// buffer current before it selects the output's, for BODY.
+pub(crate) fn with_printer_destination<T>(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let caller = interp.current_buffer_id();
+    let callback = interp.print_unreadable_callback_buffer.replace(caller);
+    let result = select_printer_destination(interp, stream, env, body);
+    interp.print_unreadable_callback_buffer = callback;
+    // record_unwind_current_buffer: whatever BODY (a function printed
+    // to, `print-unreadable-function') made current, the buffer current
+    // at print_prepare is current again, if it lives.
+    let restored = if interp.current_buffer_id() != caller && interp.has_buffer_id(caller) {
+        interp.set_current_buffer_id(caller)
+    } else {
+        Ok(())
+    };
+    match (result, restored) {
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+/// print.c:print_prepare selects the output's buffer (a buffer's own, or
+/// a marker's with point at the marker) before BODY, and print_finish
+/// sets the marker printed to and point after it, in the buffer current
+/// by then.
+fn select_printer_destination<T>(
+    interp: &mut Interpreter,
+    stream: Option<&Value>,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let (buffer_id, marker_position) = match stream.map(|value| value.kind()) {
+        Some(Kind::Buffer(buffer)) => (buffer.id, None),
+        Some(Kind::Marker(marker)) => {
+            let buffer = marker
+                .buffer()
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+            let position = marker
+                .position()
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+            (buffer.id, Some((marker, position)))
+        }
+        _ => return body(interp, env),
+    };
+    if interp.current_buffer_id() != buffer_id {
+        interp.set_current_buffer_id(buffer_id)?;
+    }
+    let marker_position = match marker_position {
+        Some((marker, position)) => {
+            let old_point = {
+                let state = interp.buffer.borrow();
+                if !(state.point_min()..=state.point_max()).contains(&position) {
+                    // signal_error (..., printcharfun).
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("error".into()),
+                        Value::String("Marker is outside the accessible part of the buffer".into()),
+                        *stream.expect("matched Some"),
+                    ])));
+                }
+                state.point()
+            };
+            interp.buffer.borrow_mut().goto_char(position);
+            Some((marker, position, old_point))
+        }
+        None => None,
+    };
+    let value = body(interp, env)?;
+    if let Some((marker, start, old_point)) = marker_position {
+        // print_finish: `set_marker_both (old_printcharfun, Qnil, PT,
+        // PT_BYTE)' and SET_PT_BOTH, in the buffer current now: the
+        // one the insertion's hooks left, or where a destination
+        // killed meanwhile left the print.
+        let end = interp.buffer.borrow().point();
+        let current = interp.current_buffer_id();
+        interp.set_marker(marker, Some(end), Some(current))?;
+        let restored_point = if old_point >= start {
+            old_point.saturating_add(end).saturating_sub(start)
+        } else {
+            old_point
+        };
+        interp.buffer.borrow_mut().goto_char(restored_point);
+    }
+    Ok(value)
+}
+
+/// print.c:write_string of the C string TEXT onto STREAM.
+pub(crate) fn write_printer_output(
+    interp: &mut Interpreter,
+    text: &str,
+    stream: Option<&Value>,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    write_c_string(interp, text.as_bytes(), stream, env)
+}
+
+/// print.c:write_string of the C string DATA, a Lisp string's SSDATA: to
+/// its first NUL, as strlen measures it, in one strout whose bytes are a
+/// character each, a function handed each as the C `char' it is; in a
+/// print_prepare and print_finish of its own.
+pub(crate) fn write_c_string(
+    interp: &mut Interpreter,
+    data: &[u8],
+    stream: Option<&Value>,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let data = &data[..data
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(data.len())];
+    with_print_stream(interp, stream, env, |interp, env, sink| {
+        let mut output = PrintOutput::default();
+        if matches!(sink, PrintSink::Function(_)) {
+            for &byte in data {
+                output.push_c_function_byte(byte);
+            }
+        } else {
+            output.push_octets(data);
+        }
+        deliver(interp, env, sink, &output)
+    })
+}
+
+/// print.c's Fprin1 (ESCAPE), Fprinc and Fprint (NEWLINES: a printchar
+/// of a newline before the object and one after) of VALUE onto STREAM,
+/// `standard-output' already put in a nil one's place: print_prepare,
+/// print and print_finish.
 pub(crate) fn print_object_to_stream(
     interp: &mut Interpreter,
     value: &Value,
@@ -1720,30 +2016,15 @@ pub(crate) fn print_object_to_stream(
     escape: bool,
     newlines: bool,
 ) -> Result<Value, LispError> {
-    with_printer_destination(interp, stream.as_ref(), env, |interp, env| {
-        let multibyte = match stream.map(|value| value.kind()) {
-            None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
-                Some(interp.buffer.borrow().is_multibyte())
-            }
-            _ => None,
-        };
-        let output_is_function =
-            multibyte.is_none() && stream.is_some_and(|value| !matches!(value.kind(), Kind::T));
-        with_printer_buffer_escape(interp, env, multibyte, |interp, env| {
-            let rendered = render_printer_output(interp, value, env, escape, output_is_function)?;
-            let rendered = if newlines {
-                rendered.enclosed("\n", "\n")
-            } else {
-                rendered
-            };
-            write_prepared_printer_output(interp, &rendered, stream.as_ref(), env)?;
-            if (newlines || native_print_updates_batch_last_char(interp, value, env, escape))
-                && let Some(last) = rendered.codes().last()
-            {
-                record_batch_standard_output_char(interp, stream.as_ref(), env, last);
-            }
-            Ok(*value)
-        })
+    with_print_stream(interp, stream.as_ref(), env, |interp, env, sink| {
+        if newlines {
+            printchar(interp, env, sink, u32::from(b'\n'))?;
+        }
+        print_to_sink(interp, env, value, escape, sink)?;
+        if newlines {
+            printchar(interp, env, sink, u32::from(b'\n'))?;
+        }
+        Ok(*value)
     })
 }
 
@@ -1760,201 +2041,22 @@ pub(crate) fn print_object_to_buffer(
     env: &mut Env,
     escape: bool,
 ) -> Result<Option<Vec<u8>>, LispError> {
-    with_printer_destination(interp, Some(&stream), env, |interp, env| {
-        let multibyte = interp.buffer.borrow().is_multibyte();
-        with_printer_buffer_escape(interp, env, Some(multibyte), |interp, env| {
-            let rendered = render_printer_output(interp, value, env, escape, false)?;
-            let octets = (multibyte && !rendered.is_multibyte() && !rendered.bytes().is_ascii())
-                .then(|| rendered.octets());
-            write_prepared_printer_output(interp, &rendered, Some(&stream), env)?;
-            Ok(octets)
-        })
+    print_prepared(interp, Some(&stream), env, |interp, env, sink| {
+        print_to_sink(interp, env, value, escape, sink)
     })
+    .map(|((), octets)| octets)
 }
 
-/// print.c:print_prepare binds print--unreadable-callback-buffer to the
-/// buffer current before it selects the output's, for BODY.
-pub(crate) fn with_printer_destination<T>(
-    interp: &mut Interpreter,
-    stream: Option<&Value>,
-    env: &mut Env,
-    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
-) -> Result<T, LispError> {
-    let caller = interp.current_buffer_id();
-    let callback = interp.print_unreadable_callback_buffer.replace(caller);
-    let result = select_printer_destination(interp, stream, env, body);
-    interp.print_unreadable_callback_buffer = callback;
-    result
-}
-
-/// print.c:print_prepare selects the output buffer before rendering, and
-/// print_finish moves a marker and restores point after successful insertion.
-/// The original current buffer is restored on either normal or error return.
-fn select_printer_destination<T>(
-    interp: &mut Interpreter,
-    stream: Option<&Value>,
-    env: &mut Env,
-    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
-) -> Result<T, LispError> {
-    let (buffer_id, marker_position) = match stream.map(|value| value.kind()) {
-        Some(Kind::Buffer(buffer)) => (buffer.id, None),
-        Some(Kind::Marker(marker)) => {
-            let buffer = marker
-                .buffer()
-                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
-            let position = marker
-                .position()
-                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
-            let state = buffer.borrow();
-            if !(state.point_min()..=state.point_max()).contains(&position) {
-                return Err(LispError::Signal(
-                    "Marker is outside the accessible part of the buffer".into(),
-                ));
-            }
-            (buffer.id, Some((marker, position, state.point())))
-        }
-        _ => return body(interp, env),
-    };
-    let saved_buffer = interp.current_buffer_id();
-    interp.set_current_buffer_id(buffer_id)?;
-    if let Some((_, position, _)) = marker_position {
-        interp.buffer.borrow_mut().goto_char(position);
-    }
-    let result = body(interp, env).and_then(|value| {
-        if let Some((marker, start, old_point)) = marker_position {
-            let end = interp.buffer.borrow().point();
-            interp.set_marker(marker, Some(end), Some(buffer_id))?;
-            let restored_point = if old_point >= start {
-                old_point.saturating_add(end).saturating_sub(start)
-            } else {
-                old_point
-            };
-            interp.buffer.borrow_mut().goto_char(restored_point);
-        }
-        Ok(value)
-    });
-    let restored = if interp.has_buffer_id(saved_buffer) {
-        interp.set_current_buffer_id(saved_buffer)
-    } else {
-        Ok(())
-    };
-    match (result, restored) {
-        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
-        (Ok(value), Ok(())) => Ok(value),
-    }
-}
-
-pub(crate) fn write_printer_output(
-    interp: &mut Interpreter,
-    text: &str,
-    stream: Option<&Value>,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    with_printer_destination(interp, stream, env, |interp, env| {
-        write_prepared_printer_output(interp, &PrintOutput::from(text), stream, env)
-    })
-}
-
-/// Write printer OUTPUT, already in the internal encoding, to STREAM.
-pub(crate) fn write_printer_output_codes(
-    interp: &mut Interpreter,
-    output: &PrintOutput,
-    stream: Option<&Value>,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    with_printer_destination(interp, stream, env, |interp, env| {
-        write_prepared_printer_output(interp, output, stream, env)
-    })
-}
-
-fn write_prepared_printer_output(
-    interp: &mut Interpreter,
-    output: &PrintOutput,
-    stream: Option<&Value>,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    match stream.map(|value| value.kind()) {
-        Some(Kind::T) => {
-            // Existing echo/message-capture APIs still accept host text.
-            // Actual batch output consumes the canonical bytes directly.
-            let text = output.host_text();
-            interp.append_message_capture(&text, false, env);
-            if interp
-                .lookup_var_key(cached_symbol!("noninteractive"), env)
-                .is_some_and(|value| value.is_truthy())
-            {
-                crate::lisp::primitives::batch_stdout::write(output.bytes());
-                interp.batch_stdout_need_newline = true;
-            } else {
-                crate::lisp::primitives::echo_area_print_logged(interp, &text, env);
-            }
-            Ok(())
-        }
-        None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
-            let (text, extended) = output.text_parts();
-            insert_text_with_hooks(interp, &text, None, &extended, false, false, env)
-        }
-        Some(_) => {
-            let function = *stream.expect("matched Some");
-            for code in output.codes() {
-                call_function_value(interp, &function, &[Value::Integer(i64::from(code))], env)?;
-            }
-            Ok(())
-        }
-    }
-}
-
-/// Record output that GNU's printer sends through `printchar'.
-///
-/// Its batch `terpri' state is deliberately narrower than the last byte
-/// written to stdout: bulk `strout' paths (notably plain strings and numbers)
-/// do not update it.  Callers therefore opt in only for character-wise paths.
-pub(crate) fn record_batch_standard_output_char(
-    interp: &mut Interpreter,
-    stream: Option<&Value>,
-    env: &Env,
-    ch: u32,
-) {
-    if stream.is_some_and(|value| matches!(value.kind(), Kind::T))
-        && interp
-            .lookup_var_key(cached_symbol!("noninteractive"), env)
-            .is_some_and(|value| value.is_truthy())
-    {
-        interp.batch_standard_output_last_char = Some(ch);
-    }
-}
-
-/// Whether native `print' emits the final character of VALUE through GNU's
-/// character-wise printer rather than its bulk string path.
-pub(crate) fn native_print_updates_batch_last_char(
-    interp: &Interpreter,
-    value: &Value,
-    env: &Env,
-    escaped: bool,
-) -> bool {
-    match value.kind() {
-        Kind::Integer(integer) => {
-            interp
-                .lookup_var_key(cached_symbol!("print-integers-as-characters"), env)
-                .is_some_and(|value| value.is_truthy())
-                && render_princ_integer_as_character(interp, &Value::Integer(integer)).is_some()
-        }
-        Kind::BigInteger(_) | Kind::Float(_) => false,
-        Kind::StringObject(_) => escaped,
-        Kind::Symbol(name) => !name.as_str().is_empty(),
-        _ => true,
-    }
-}
-
+/// The stream a print is given, `standard-output' in a nil one's place:
+/// print.c reads Vstandard_output, the variable's dynamic value, which a
+/// lexical environment's entry of that name does not change.
 pub(crate) fn printer_stream_value(
     interp: &Interpreter,
-    env: &Env,
     explicit: Option<&Value>,
 ) -> Option<Value> {
     let resolved = match explicit.map(|v| v.kind()) {
-        Some(Kind::Nil) => interp.lookup_var_key(cached_symbol!("standard-output"), env),
+        None | Some(Kind::Nil) => interp.symbol_value_key(cached_symbol!("standard-output")),
         Some(value) => Some(value.value()),
-        None => interp.lookup_var_key(cached_symbol!("standard-output"), env),
     };
     match resolved.map(|v| v.kind()) {
         // GNU's `print_prepare' turns a nil effective stream into t after
@@ -2102,44 +2204,6 @@ fn print_override_bindings(overrides: &Value) -> Result<Vec<(&'static str, Value
     }
 }
 
-pub(crate) fn printer_stream_at_line_start(
-    interp: &Interpreter,
-    stream: Option<&Value>,
-) -> Result<bool, LispError> {
-    match stream.map(|v| v.kind()) {
-        None | Some(Kind::Nil | Kind::T) => Ok(buffer_position_at_line_start(
-            &interp.buffer.borrow(),
-            interp.buffer.borrow().point(),
-        )),
-        Some(Kind::Buffer(_)) => {
-            let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
-            let buffer = interp
-                .get_buffer_by_id(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            Ok(buffer_position_at_line_start(&buffer, buffer.point()))
-        }
-        Some(Kind::Marker(id)) => {
-            let marker = id;
-            let buffer_id = marker
-                .buffer()
-                .map(|buffer| buffer.id)
-                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
-            let position = marker
-                .position()
-                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
-            let buffer = interp
-                .get_buffer_by_id(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            Ok(buffer_position_at_line_start(&buffer, position))
-        }
-        Some(Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Closure(_)) => Ok(false),
-        Some(other) => Err(LispError::TypeError(
-            "output-stream".into(),
-            other.value().type_name(),
-        )),
-    }
-}
-
 pub(crate) fn buffer_position_at_line_start(
     buffer: &crate::buffer::Buffer,
     position: usize,
@@ -2165,7 +2229,7 @@ fn auto_coding_for_file(
     decided_bytes: &mut Option<Vec<u8>>,
 ) -> Result<Option<String>, LispError> {
     let Some(function) = interp
-        .lookup_var_key(cached_symbol!("set-auto-coding-function"), env)
+        .symbol_value_key(cached_symbol!("set-auto-coding-function"))
         .filter(|value| !value.is_nil())
     else {
         return Ok(None);
@@ -2176,7 +2240,7 @@ fn auto_coding_for_file(
         }
         auto_coding_in_empty_buffer(interp, env, function, bytes, filename, decided_bytes)?
     } else {
-        let host = host_file_name(interp, env, filename)?;
+        let host = host_file_name(interp, filename)?;
         let Some(head_and_tail) = auto_coding_file_sample(interp, filename_value, &host)? else {
             return Ok(None);
         };
@@ -2244,7 +2308,7 @@ fn auto_coding_in_work_buffer(
     const WORK_BUFFER: &str = " *code-converting-work*";
     let saved_buffer_id = interp.current_buffer_id();
     let directory = interp
-        .lookup_var_key(cached_symbol!("default-directory"), env)
+        .symbol_value_key(cached_symbol!("default-directory"))
         .unwrap_or(Value::Nil);
     let work_id = match interp.find_buffer(WORK_BUFFER) {
         Some((id, _)) => id,
@@ -2258,22 +2322,10 @@ fn auto_coding_in_work_buffer(
     interp.set_current_buffer_id(work_id)?;
     let mut work_env = env.clone();
     let result = (|| {
-        interp.set_variable_key(
-            cached_symbol!("default-directory"),
-            directory,
-            &mut work_env,
-        );
-        interp.set_variable_key(
-            cached_symbol!("buffer-read-only"),
-            Value::Nil,
-            &mut work_env,
-        );
-        interp.set_variable_key(
-            cached_symbol!("buffer-file-name"),
-            Value::Nil,
-            &mut work_env,
-        );
-        interp.set_variable_key(cached_symbol!("buffer-undo-list"), Value::T, &mut work_env);
+        interp.set_symbol_value_key(cached_symbol!("default-directory"), directory);
+        interp.set_symbol_value_key(cached_symbol!("buffer-read-only"), Value::Nil);
+        interp.set_symbol_value_key(cached_symbol!("buffer-file-name"), Value::Nil);
+        interp.set_symbol_value_key(cached_symbol!("buffer-undo-list"), Value::T);
         call(interp, "erase-buffer", &[], &mut work_env)?;
         interp.buffer.borrow_mut().set_multibyte(false);
         interp.insert_current_buffer(&decode_raw_text_bytes(sample));
@@ -2316,7 +2368,7 @@ fn auto_coding_in_empty_buffer(
     let buffer_id = interp.current_buffer_id();
     let mut decide_env = env.clone();
     let undo_list = interp
-        .lookup_var_key(cached_symbol!("buffer-undo-list"), env)
+        .symbol_value_key(cached_symbol!("buffer-undo-list"))
         .unwrap_or(Value::Nil);
     let (multibyte, modiff, chars_modiff) = {
         let buffer = interp.buffer.borrow();
@@ -2327,11 +2379,7 @@ fn auto_coding_in_empty_buffer(
         )
     };
     interp.buffer.borrow_mut().set_multibyte(false);
-    interp.set_variable_key(
-        cached_symbol!("buffer-undo-list"),
-        Value::T,
-        &mut decide_env,
-    );
+    interp.set_symbol_value_key(cached_symbol!("buffer-undo-list"), Value::T);
     interp.insert_current_buffer_raw_bytes(bytes);
     let inserted_tick = {
         let mut buffer = interp.buffer.borrow_mut();
@@ -2373,11 +2421,7 @@ fn auto_coding_in_empty_buffer(
         buffer.set_modified_tick(modiff);
         buffer.set_chars_modified_tick(chars_modiff);
         drop(buffer);
-        interp.set_variable_key(
-            cached_symbol!("buffer-undo-list"),
-            undo_list,
-            &mut decide_env,
-        );
+        interp.set_symbol_value_key(cached_symbol!("buffer-undo-list"), undo_list);
     }
     result
 }
@@ -2421,7 +2465,6 @@ pub(crate) fn decode_file_contents(
         decide_file_coding(interp, env, bytes, literal, path, operation_args)?;
     decode_file_bytes(
         interp,
-        env,
         decided_bytes.unwrap_or_else(|| bytes.to_vec()),
         coding,
         make_unibyte,
@@ -2440,7 +2483,7 @@ pub(crate) fn decide_file_coding(
     operation_args: &[Value],
 ) -> Result<(String, Option<Vec<u8>>), LispError> {
     let request = interp
-        .lookup_var_key(cached_symbol!("coding-system-for-read"), env)
+        .symbol_value_key(cached_symbol!("coding-system-for-read"))
         .filter(|value| !value.is_nil());
     let mut coding = if literal {
         Some("no-conversion".to_string())
@@ -2496,7 +2539,6 @@ pub(crate) fn decide_file_coding(
 /// text).
 pub(crate) fn decode_file_bytes(
     interp: &mut Interpreter,
-    env: &Env,
     bytes: Vec<u8>,
     coding: String,
     make_unibyte: bool,
@@ -2520,7 +2562,7 @@ pub(crate) fn decode_file_bytes(
         });
     }
     let dst_multibyte = multibyte && !(make_unibyte && for_unibyte);
-    let mut outcome = decode_coding_gap(interp, env, bytes, &coding, dst_multibyte)?;
+    let mut outcome = decode_coding_gap(interp, bytes, &coding, dst_multibyte)?;
     let layout = outcome.decoded.take_layout();
     let charset_props = super::decoded_annotation_props(&mut outcome.decoded);
     Ok(FileDecode {
@@ -2553,7 +2595,7 @@ pub(crate) fn insert_file_contents_prologue(
         ));
     }
     if interp
-        .lookup_var_key(cached_symbol!("buffer-read-only"), env)
+        .symbol_value_key(cached_symbol!("buffer-read-only"))
         .is_some_and(|value| value.is_truthy())
     {
         super::call(interp, "barf-if-buffer-read-only", &[], env)?;
@@ -2600,7 +2642,7 @@ fn record_visit(
     interp.buffer.borrow_mut().set_file_name(filename);
     record_insert_visit_saved(interp);
     if let Some(truename) = interp
-        .lookup_var_key(cached_symbol!("buffer-file-truename"), env)
+        .symbol_value_key(cached_symbol!("buffer-file-truename"))
         .filter(|truename| !truename.is_nil())
     {
         super::call(interp, "unlock-file", &[truename], env)?;
@@ -2628,7 +2670,7 @@ pub(crate) fn insert_file_contents(
         ));
     }
     let old_deactivate_mark = interp
-        .lookup_var_key(cached_symbol!("deactivate-mark"), env)
+        .symbol_value_key(cached_symbol!("deactivate-mark"))
         .unwrap_or(Value::Nil);
     // The prologue ran before the file-name handler lookup; its value is
     // the same here.
@@ -2655,7 +2697,7 @@ pub(crate) fn insert_file_contents(
     }
     let beg = arg(2).as_ref().map(file_offset).transpose()?;
     let end = arg(3).as_ref().map(file_offset).transpose()?;
-    if let Some(coding) = interp.lookup_var_key(cached_symbol!("coding-system-for-read"), env)
+    if let Some(coding) = interp.symbol_value_key(cached_symbol!("coding-system-for-read"))
         && !coding.is_nil()
     {
         load_coding_system(interp, &coding, env)?;
@@ -2694,10 +2736,10 @@ pub(crate) fn insert_file_contents(
             // does not exist yet), with `coding-system-for-read' made the
             // buffer's coding and the coding decided for no text.
             if let Some(coding) = interp
-                .lookup_var_key(cached_symbol!("coding-system-for-read"), env)
+                .symbol_value_key(cached_symbol!("coding-system-for-read"))
                 .filter(|coding| !coding.is_nil())
             {
-                interp.set_variable_key(cached_symbol!("buffer-file-coding-system"), coding, env);
+                interp.set_symbol_value_key(cached_symbol!("buffer-file-coding-system"), coding);
             }
             let (coding, _) =
                 decide_file_coding(interp, env, &[], literal, &path, &operation_args)?;
@@ -2882,10 +2924,10 @@ fn insert_file_bytes(
         let modified = interp.buffer.borrow().is_modified();
         !modified
             && interp
-                .lookup_var_key(cached_symbol!("buffer-file-truename"), env)
+                .symbol_value_key(cached_symbol!("buffer-file-truename"))
                 .is_some_and(|value| value.is_truthy())
             && interp
-                .lookup_var_key(cached_symbol!("buffer-file-name"), env)
+                .symbol_value_key(cached_symbol!("buffer-file-name"))
                 .is_some_and(|value| value.is_truthy())
     };
     let (point, begv, zv) = {
@@ -2912,7 +2954,7 @@ fn insert_file_bytes(
         if read.bytes.is_empty() {
             if we_locked_file
                 && let Some(truename) =
-                    interp.lookup_var_key(cached_symbol!("buffer-file-truename"), env)
+                    interp.symbol_value_key(cached_symbol!("buffer-file-truename"))
             {
                 super::call(interp, "unlock-file", &[truename], env)?;
             }
@@ -2941,7 +2983,6 @@ fn insert_file_bytes(
             layout,
         } = decode_file_bytes(
             interp,
-            env,
             decided_bytes.unwrap_or(bytes),
             coding,
             visit && !replacing,
@@ -2986,16 +3027,16 @@ fn insert_file_bytes(
         {
             let prev_z = interp.buffer.borrow().size_total();
             let undo_list = interp
-                .lookup_var_key(cached_symbol!("buffer-undo-list"), env)
+                .symbol_value_key(cached_symbol!("buffer-undo-list"))
                 .unwrap_or(Value::Nil);
-            interp.set_variable_key(cached_symbol!("buffer-undo-list"), Value::T, env);
+            interp.set_symbol_value_key(cached_symbol!("buffer-undo-list"), Value::T);
             let result = interp.call_function_value(
                 function,
                 None,
                 &[Value::Integer(inserted_chars as i64)],
                 env,
             );
-            interp.set_variable_key(cached_symbol!("buffer-undo-list"), undo_list, env);
+            interp.set_symbol_value_key(cached_symbol!("buffer-undo-list"), undo_list);
             let value = result?;
             if value.integer_value().is_none_or(|count| count < 0) {
                 return Err(LispError::WrongTypeArgument("wholenump".into(), value));
@@ -3277,7 +3318,7 @@ pub(crate) fn finish_insert_file_contents(
             &mut inserted,
         )?;
         let hooks = interp
-            .lookup_var_key(cached_symbol!("after-insert-file-functions"), env)
+            .symbol_value_key(cached_symbol!("after-insert-file-functions"))
             .unwrap_or(Value::Nil);
         let mut tail = hooks;
         let mut cycle = super::values::ForEachTail::new(tail);
@@ -3379,7 +3420,7 @@ fn auto_save_1(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispErr
     let mut bits = 0o666;
     let file = interp.buffer.borrow().file_name_text();
     if let Some(file) = file {
-        match host_file_name(interp, env, &file)
+        match host_file_name(interp, &file)
             .ok()
             .and_then(|host| fs::metadata(host).ok())
         {
@@ -3405,7 +3446,7 @@ fn auto_save_1(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispErr
         .buffer_local_value_key(id, cached_symbol!("buffer-auto-save-file-name"))
         .unwrap_or(Value::Nil);
     let visit = if interp
-        .lookup_var_key(cached_symbol!("auto-save-visited-file-name"), env)
+        .symbol_value_key(cached_symbol!("auto-save-visited-file-name"))
         .is_some_and(|value| value.is_truthy())
     {
         Value::T
@@ -3480,9 +3521,9 @@ pub(crate) fn do_auto_save(
     let old_message_p = old_message.is_string();
     // Ordinarily don't quit within this function.
     let oquit = interp
-        .lookup_var_key(cached_symbol!("quit-flag"), env)
+        .symbol_value_key(cached_symbol!("quit-flag"))
         .unwrap_or(Value::Nil);
-    interp.set_variable_key(cached_symbol!("quit-flag"), Value::Nil, env);
+    interp.set_symbol_value_key(cached_symbol!("quit-flag"), Value::Nil);
     crate::lisp::primitives::safe_run_hooks(
         interp,
         &cached_symbol!("auto-save-hook").symbol(),
@@ -3490,7 +3531,7 @@ pub(crate) fn do_auto_save(
     )?;
     let mut stream = None;
     if let Some(list_file) = interp
-        .lookup_var_key(cached_symbol!("auto-save-list-file-name"), env)
+        .symbol_value_key(cached_symbol!("auto-save-list-file-name"))
         .filter(Value::is_string)
     {
         let list_file = call(interp, "expand-file-name", &[list_file, Value::Nil], env)?;
@@ -3515,14 +3556,14 @@ pub(crate) fn do_auto_save(
                 return Err(error);
             }
         }
-        stream = host_file_name(interp, env, &string_text(&list_file)?)
+        stream = host_file_name(interp, &string_text(&list_file)?)
             .ok()
             .and_then(|host| fs::File::create(host).ok());
     }
     let auto_raise = interp
-        .lookup_var_key(cached_symbol!("minibuffer-auto-raise"), env)
+        .symbol_value_key(cached_symbol!("minibuffer-auto-raise"))
         .unwrap_or(Value::Nil);
-    interp.set_variable_key(cached_symbol!("minibuffer-auto-raise"), Value::Nil, env);
+    interp.set_symbol_value_key(cached_symbol!("minibuffer-auto-raise"), Value::Nil);
     AUTO_SAVING.set(true);
     AUTO_SAVE_ERROR_OCCURRED.set(false);
     let result = (|| -> Result<bool, LispError> {
@@ -3593,7 +3634,7 @@ pub(crate) fn do_auto_save(
                 interp.set_current_buffer_id(id)?;
                 let size = interp.buffer.borrow().size_total() as i64;
                 if interp
-                    .lookup_var_key(cached_symbol!("auto-save-include-big-deletions"), env)
+                    .symbol_value_key(cached_symbol!("auto-save-include-big-deletions"))
                     .is_none_or(|value| value.is_nil())
                     && save_length > 5000
                     && GROWTH_FACTOR * size < (GROWTH_FACTOR - 1) * save_length
@@ -3601,11 +3642,8 @@ pub(crate) fn do_auto_save(
                     && !no_message
                 {
                     // It has shrunk too much; turn off auto-saving here.
-                    interp.set_variable_key(
-                        cached_symbol!("minibuffer-auto-raise"),
-                        auto_raise,
-                        env,
-                    );
+                    interp
+                        .set_symbol_value_key(cached_symbol!("minibuffer-auto-raise"), auto_raise);
                     let name = buffer.borrow().name();
                     super::dispatch::display::message_with_string(
                         interp,
@@ -3613,11 +3651,8 @@ pub(crate) fn do_auto_save(
                         name,
                         env,
                     )?;
-                    interp.set_variable_key(
-                        cached_symbol!("minibuffer-auto-raise"),
-                        Value::Nil,
-                        env,
-                    );
+                    interp
+                        .set_symbol_value_key(cached_symbol!("minibuffer-auto-raise"), Value::Nil);
                     interp.set_buffer_local_value_symbol(
                         id,
                         &cached_symbol!("buffer-saved-size").with(Clone::clone),
@@ -3669,7 +3704,7 @@ pub(crate) fn do_auto_save(
         Ok(auto_saved)
     })();
     // do_auto_save_unwind.
-    interp.set_variable_key(cached_symbol!("minibuffer-auto-raise"), auto_raise, env);
+    interp.set_symbol_value_key(cached_symbol!("minibuffer-auto-raise"), auto_raise);
     AUTO_SAVING.set(false);
     drop(stream);
     let auto_saved = result?;
@@ -3685,6 +3720,6 @@ pub(crate) fn do_auto_save(
             super::dispatch::display::message1(interp, "Auto-saving...done", env)?;
         }
     }
-    interp.set_variable_key(cached_symbol!("quit-flag"), oquit, env);
+    interp.set_symbol_value_key(cached_symbol!("quit-flag"), oquit);
     Ok(Value::Nil)
 }
