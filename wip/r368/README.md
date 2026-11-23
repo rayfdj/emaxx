@@ -18,8 +18,15 @@ checked before any argument is evaluated, the vector stopping where the
 list ends), and lets native code's own funcall call them directly.
 
 State on 23 November 2026: the release build passes
-`tests/cli_parity.rs`'s new test's program against GNU (50 forms), and
-an interpreted loop of four `(ignore i)` forms runs 2,877 instructions an
-iteration where it ran 4,502 (GNU 2,218; builds with line tables).  Not
-yet done: lint, the grouped gate, the integration targets, the review and
-the round audit on the final patch.
+`tests/cli_parity.rs`'s new test's program against GNU (54 forms), and
+an interpreted loop of four `(ignore i)` forms runs 2,762 instructions an
+iteration where it ran 4,486 (GNU 2,218), the other probes and the
+interpreter loops as before.  The evaluator's helpers take the form by
+value (`eval_sub', `eval_cons', `eval_cons_call' and the inlined call
+helpers), which the interpreter loops' counts needed once the compiler
+stopped promoting eval_sub's argument.  The independent review found no
+cheat and no memory or collector fault, and one regression, fixed in
+this patch: a call the debugger is to be entered at
+(`debug-on-next-call') reads the function cell after the debugger, so
+it takes the general call.  Not yet done: lint, the grouped gate and
+the integration targets on the final patch, and CI.

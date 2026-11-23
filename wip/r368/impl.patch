@@ -75,10 +75,76 @@ index e617992d..e17b6d89 100644
      pub(crate) fn doc_index(&self) -> isize {
          self.doc.get()
 diff --git a/src/lisp/eval/core.rs b/src/lisp/eval/core.rs
-index 90e30faa..f5047d36 100644
+index 90e30faa..79574fb0 100644
 --- a/src/lisp/eval/core.rs
 +++ b/src/lisp/eval/core.rs
-@@ -565,19 +565,23 @@ impl Interpreter {
+@@ -293,7 +293,7 @@ impl Interpreter {
+         if self.lisp_eval_depth != 0 {
+             return self.eval_nested(expr, env);
+         }
+-        self.eval_sub(expr, env)
++        self.eval_sub(*expr, env)
+     }
+ 
+     /// `eval' below the outermost evaluation (a form's argument, whose
+@@ -313,20 +313,27 @@ impl Interpreter {
+                 return Ok(*expr);
+             }
+         }
+-        self.eval_sub(expr, env)
++        self.eval_sub(*expr, env)
+     }
+ 
++    /// The form is taken, and handed to the helpers inlined here, as the
++    /// word it is (eval_sub's `Lisp_Object form'): by reference it stays
++    /// in a register only when the compiler promotes the argument for
++    /// every caller, and each evaluation stores and reloads it when it
++    /// does not.  The out-of-line entries are given a copy's address.
+     #[inline(never)]
+-    fn eval_sub(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
++    fn eval_sub(&mut self, expr: Value, env: &mut Env) -> Result<Value, LispError> {
+         // A form below the call gate (no termination or quit pending, the
+         // depth within its bound): the entry tests read the state through
+         // one borrow, and every other case takes the general entry.
+         let state: &mut InterpreterState = self;
+         if state.lisp_eval_depth as i64 >= state.call_depth_gate {
+-            return self.eval_sub_general(expr, env);
++            let form = expr;
++            return self.eval_sub_general(&form, env);
+         }
+         let Some(cell) = expr.cons_ref() else {
+-            return self.eval_inner(expr, env);
++            let form = expr;
++            return self.eval_inner(&form, env);
+         };
+         // eval.c:2502's maybe_gc, then the depth increment (see
+         // `eval_sub_general').
+@@ -496,7 +503,7 @@ impl Interpreter {
+ 
+             Kind::Symbol(name) => self.lookup_symbol(&name, env),
+ 
+-            Kind::Cons(cell) => self.eval_cons(expr, cell, env),
++            Kind::Cons(cell) => self.eval_cons(*expr, cell, env),
+         }
+     }
+ 
+@@ -504,7 +511,7 @@ impl Interpreter {
+     #[inline(always)]
+     fn eval_cons(
+         &mut self,
+-        expr: &Value,
++        expr: Value,
+         cell: SharedCons,
+         env: &mut Env,
+     ) -> Result<Value, LispError> {
+@@ -559,25 +566,35 @@ impl Interpreter {
+     #[inline(never)]
+     fn eval_cons_call(
+         &mut self,
+-        expr: &Value,
++        expr: Value,
+         head: Value,
+         args_cell: Option<SharedCons>,
          env: &mut Env,
      ) -> Result<Value, LispError> {
          let head_symbol = head.symbol_cell();
@@ -104,11 +170,80 @@ index 90e30faa..f5047d36 100644
 +                let tail = args_cell.map_or(Value::Nil, Value::Cons);
 +                return self.eval_fixed_native(expr, head, name, native, tail, env);
 +            }
-+            return self.eval_many_native(expr, head, name, native, args_cell, env);
++            // eval_sub reads the function cell after do_debug_on_call, so
++            // that the definition the debugger left is the one called: a
++            // call the debugger is to be entered at takes the general
++            // call below, which resolves the cell there.
++            if !self.debug_on_next_call() {
++                return self.eval_many_native(expr, head, name, native, args_cell, env);
++            }
          }
          // The head as a value of its own when it is no symbol.
          let head_value = if head_symbol.is_some() {
-@@ -832,6 +836,82 @@ impl Interpreter {
+@@ -595,7 +612,7 @@ impl Interpreter {
+         };
+         // Regular function call
+         self.eval_call(
+-            expr,
++            &expr,
+             head,
+             head_value.as_ref(),
+             callable_name,
+@@ -616,7 +633,7 @@ impl Interpreter {
+     #[allow(clippy::too_many_arguments)]
+     fn eval_fixed_subr(
+         &mut self,
+-        source_form: &Value,
++        source_form: Value,
+         original_function: Value,
+         name: SymbolName,
+         subr: crate::lisp::types::BuiltinRef,
+@@ -625,7 +642,7 @@ impl Interpreter {
+         env: &mut Env,
+     ) -> Result<Value, LispError> {
+         let depth = self.backtrace_frames.len();
+-        self.push_unevaluated_backtrace_frame(source_form);
++        self.push_unevaluated_backtrace_frame(&source_form);
+         // eval_sub's do_debug_on_call (Qt) once its frame is recorded.
+         if let Err(error) = self.debug_on_call_entry(false, depth, env) {
+             return self.eval_call_argument_error(depth, true, error, env);
+@@ -696,7 +713,7 @@ impl Interpreter {
+     #[inline(always)]
+     fn eval_fixed_native(
+         &mut self,
+-        source_form: &Value,
++        source_form: Value,
+         original_function: Value,
+         name: SymbolName,
+         native: crate::lisp::types::NativeFunctionRef,
+@@ -706,7 +723,7 @@ impl Interpreter {
+         // `register_counts' admits only an arity of zero to six.
+         let maximum = native.max_args_word() as usize;
+         let depth = self.backtrace_frames.len();
+-        self.push_unevaluated_backtrace_frame(source_form);
++        self.push_unevaluated_backtrace_frame(&source_form);
+         // eval_sub's do_debug_on_call (Qt) once its frame is recorded.
+         if let Err(error) = self.debug_on_call_entry(false, depth, env) {
+             return self.eval_call_argument_error(depth, true, error, env);
+@@ -766,7 +783,7 @@ impl Interpreter {
+     #[allow(clippy::too_many_arguments)]
+     fn eval_many_subr(
+         &mut self,
+-        source_form: &Value,
++        source_form: Value,
+         original_function: Value,
+         name: SymbolName,
+         subr: crate::lisp::types::BuiltinRef,
+@@ -775,7 +792,7 @@ impl Interpreter {
+         env: &mut Env,
+     ) -> Result<Value, LispError> {
+         let depth = self.backtrace_frames.len();
+-        self.push_unevaluated_backtrace_frame(source_form);
++        self.push_unevaluated_backtrace_frame(&source_form);
+         // eval_sub's do_debug_on_call (Qt) once its frame is recorded.
+         if let Err(error) = self.debug_on_call_entry(false, depth, env) {
+             return self.eval_call_argument_error(depth, true, error, env);
+@@ -832,13 +849,88 @@ impl Interpreter {
          result
      }
  
@@ -120,10 +255,12 @@ index 90e30faa..f5047d36 100644
 +    /// each evaluation, so a list an earlier argument's evaluation cut
 +    /// short ends the arguments there) and calls the function with those
 +    /// evaluated.  More than eight take the general call's rooted slots.
++    /// The caller found the debugger not due at this call
++    /// (debug_on_next_call), so the frame is recorded with no entry to it.
 +    #[inline(never)]
 +    fn eval_many_native(
 +        &mut self,
-+        source_form: &Value,
++        source_form: Value,
 +        original_function: Value,
 +        name: SymbolName,
 +        native: crate::lisp::types::NativeFunctionRef,
@@ -132,11 +269,8 @@ index 90e30faa..f5047d36 100644
 +    ) -> Result<Value, LispError> {
 +        let original_args = args_list.map_or(Value::Nil, Value::Cons);
 +        let depth = self.backtrace_frames.len();
-+        self.push_unevaluated_backtrace_frame(source_form);
-+        // eval_sub's do_debug_on_call (Qt) once its frame is recorded.
-+        if let Err(error) = self.debug_on_call_entry(false, depth, env) {
-+            return self.eval_call_argument_error(depth, true, error, env);
-+        }
++        debug_assert!(!self.debug_on_next_call());
++        self.push_unevaluated_backtrace_frame(&source_form);
 +        let nargs = match self.short_list_length(original_args, env) {
 +            Ok(count) => count,
 +            Err(error) => return self.eval_call_argument_error(depth, true, error, env),
@@ -191,7 +325,24 @@ index 90e30faa..f5047d36 100644
      /// `eval_call' for a form whose head holds SUBR, a special form with a
      /// native body: the frame recorded, the arguments counted and the
      /// minimum checked, and the body run on the unevaluated arguments.
-@@ -1255,9 +1335,18 @@ impl Interpreter {
+     #[inline(always)]
+     fn eval_special_form(
+         &mut self,
+-        source_form: &Value,
++        source_form: Value,
+         original_function: Value,
+         subr: crate::lisp::types::BuiltinRef,
+         native_form: NativeForm,
+@@ -860,7 +952,7 @@ impl Interpreter {
+             }
+         }
+         let depth = self.backtrace_frames.len();
+-        self.push_unevaluated_backtrace_frame(source_form);
++        self.push_unevaluated_backtrace_frame(&source_form);
+         // eval_sub's do_debug_on_call (Qt) once its frame is recorded.
+         if let Err(error) = self.debug_on_call_entry(false, depth, env) {
+             return self.eval_call_argument_error(depth, true, error, env);
+@@ -1255,9 +1347,18 @@ impl Interpreter {
          env: &mut Env,
      ) -> Result<Value, LispError> {
          let unevald_frame = callable_name.is_some();
@@ -784,10 +935,10 @@ index 1d095dbe..c6cfa383 100644
          native_funcall_exit_debugger(interpreter, runtime, environment, word)
      } else {
 diff --git a/tests/cli_parity.rs b/tests/cli_parity.rs
-index b47c815e..7d1175b1 100644
+index b47c815e..13d23905 100644
 --- a/tests/cli_parity.rs
 +++ b/tests/cli_parity.rs
-@@ -13062,3 +13062,132 @@ zz-cv-read-by-the-form-above
+@@ -13062,3 +13062,158 @@ zz-cv-read-by-the-form-above
      );
      assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
  }
@@ -806,8 +957,9 @@ index b47c815e..7d1175b1 100644
 +    // list cut short or grown while an argument evaluates, collections
 +    // while the vector waits and while the callee runs, signals and
 +    // throws through the call, the frame a handler sees, the debugger at
-+    // the call and at its exit, a thread's own first call, and the depth
-+    // limit met inside.
++    // the call and at its exit (the function cell read after it, so that
++    // a definition the debugger changes is the one called), a thread's own
++    // first call, and the depth limit met inside.
 +    let corpus = Corpus::new();
 +    let program = corpus.write(
 +        "many-native.el",
@@ -904,6 +1056,31 @@ index b47c815e..7d1175b1 100644
 +              (always 1 2))
 +            (setq debug-on-next-call nil)
 +            (nreverse seen)))
++;; The function cell is read after the debugger entered at the call
++;; (eval_sub's do_debug_on_call): the definition it left is the one called.
++(defun zz-many-new (&rest xs) (list 'new xs))
++(defmacro zz-many-redefined (form)
++  `(zz-many-probe (let ((orig (symbol-function ',(car form))))
++               (unwind-protect
++                   (let ((debugger (lambda (&rest args)
++                                     (if (eq (car args) 'exit) (cadr args)
++                                       (fset ',(car form) #'zz-many-new) nil))))
++                     (setq debug-on-next-call t)
++                     ,form)
++                 (setq debug-on-next-call nil)
++                 (fset ',(car form) orig)))))
++(zz-many-redefined (always 1 2))
++(zz-many-redefined (always 1 2 3 4 5 6 7 8 9))
++(zz-many-redefined (user-error "x %d" 1))
++(zz-many-probe (let ((orig (symbol-function 'always)))
++            (unwind-protect
++                (let ((debugger (lambda (&rest args)
++                                  (if (eq (car args) 'exit) (cadr args)
++                                    (fmakunbound 'always) nil))))
++                  (setq debug-on-next-call t)
++                  (always 1 2))
++              (setq debug-on-next-call nil)
++              (fset 'always orig))))
 +;; A thread's own outermost call.
 +(zz-many-probe (let ((r nil))
 +            (thread-join (make-thread (lambda () (setq r (list (ignore 1 2) (always 3)
