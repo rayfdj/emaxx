@@ -3382,6 +3382,11 @@ pub(super) extern "C" fn direct_native_markerp(value: NativeWord) -> NativeWord 
     native_type_predicate(predicates::markerp, value)
 }
 
+/// data.c:Frecordp.
+pub(super) extern "C" fn direct_native_recordp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::recordp, value)
+}
+
 /// data.c:Fsubrp.
 pub(super) extern "C" fn direct_native_subrp(value: NativeWord) -> NativeWord {
     native_type_predicate(predicates::subrp, value)
@@ -7727,6 +7732,12 @@ mod tests {
                 slots: vec![symbol, Value::T],
             })),
         );
+        s.add(
+            "a reader form of no record",
+            Value::ReaderForm(ReaderFormRef::allocate(ReaderForm::HashTable {
+                fields: vec![symbol, Value::T],
+            })),
+        );
         s.objects
     }
 
@@ -7982,6 +7993,7 @@ mod tests {
         word_entry("symbol-with-pos-pos", 1, false),
         word_entry("keywordp", 1, true),
         word_entry("nth", 2, false),
+        word_entry("recordp", 1, true),
     ];
 
     /// The generator's other targets, which read the interpreter, walk or
@@ -8381,6 +8393,29 @@ mod tests {
         ("keywordp", "(list 5)", "nil", "nil"),
         ("keywordp", "(list '(:foo))", "nil", "nil"),
         ("keywordp", "(list [:foo])", "nil", "nil"),
+        ("recordp", "(list (record 'foo 1))", "t", "t"),
+        ("recordp", "(list (make-record 'foo 0 nil))", "t", "t"),
+        ("recordp", "(list [foo 1])", "nil", "nil"),
+        ("recordp", "(list nil)", "nil", "nil"),
+        ("recordp", "(list 'foo)", "nil", "nil"),
+        ("recordp", "(list \"s\")", "nil", "nil"),
+        ("recordp", "(list '(foo 1))", "nil", "nil"),
+        ("recordp", "(list (make-bool-vector 2 nil))", "nil", "nil"),
+        ("recordp", "(list (make-char-table 'foo))", "nil", "nil"),
+        ("recordp", "(list (make-hash-table))", "nil", "nil"),
+        ("recordp", "(list (symbol-function 'car))", "nil", "nil"),
+        (
+            "recordp",
+            "(list (car (read-from-string \"#s(foo 1)\")))",
+            "t",
+            "t",
+        ),
+        (
+            "recordp",
+            "(list (car (read-from-string \"#s(hash-table data (a 1))\")))",
+            "nil",
+            "nil",
+        ),
     ];
 
     /// The counts of GNU_NTH_ANSWERS' columns, as forms.

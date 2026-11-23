@@ -368,6 +368,7 @@ fn direct_native_target(name: &str) -> Option<&'static str> {
         "vectorp" => "direct_native_vectorp",
         "bufferp" => "direct_native_bufferp",
         "markerp" => "direct_native_markerp",
+        "recordp" => "direct_native_recordp",
         "subrp" => "direct_native_subrp",
         "closurep" => "direct_native_closurep",
         "byte-code-function-p" => "direct_native_byte_code_function_p",

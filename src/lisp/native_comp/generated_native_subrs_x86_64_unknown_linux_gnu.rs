@@ -9388,7 +9388,7 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1455] = [
         c"recordp",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1339 as *const std::ffi::c_void,
+        super::runtime::direct_native_recordp as *const std::ffi::c_void,
         1339,
     ),
     NativeSubr::new(
@@ -17781,10 +17781,6 @@ extern "C" fn native_subr_1337(arg_0: super::runtime::NativeWord) -> super::runt
 
 extern "C" fn native_subr_1338(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
     super::runtime::invoke_subr(1338, &[arg_0])
-}
-
-extern "C" fn native_subr_1339(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1339, &[arg_0])
 }
 
 extern "C" fn native_subr_1341(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {

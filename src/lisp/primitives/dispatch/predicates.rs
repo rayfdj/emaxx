@@ -677,15 +677,11 @@ define_dispatch!(
             }
             "recordp" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if matches!(args[0].kind(), Kind::LispRecord(_))
-                        || record_literal_items(&args[0]).is_some()
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if recordp(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
         }
     }
@@ -739,6 +735,22 @@ pub(crate) fn bufferp(value: &Value) -> bool {
 #[inline]
 pub(crate) fn markerp(value: &Value) -> bool {
     matches!(value.kind(), Kind::Marker(_))
+}
+
+/// data.c:Frecordp: RECORDP.  The reader's record form, what a `#s(...)'
+/// read with no interpreter to build the record holds (lread.c's
+/// record_from_list before it is made), is a record too.  The form is
+/// read in place: `record_literal_items' answers Some of exactly these
+/// objects, but collects their slots to do it.
+#[inline]
+pub(crate) fn recordp(value: &Value) -> bool {
+    match value.kind() {
+        Kind::LispRecord(_) => true,
+        Kind::ReaderForm(form) => {
+            matches!(form.as_ref(), crate::lisp::types::ReaderForm::Record { .. })
+        }
+        _ => false,
+    }
 }
 
 /// data.c:Fsubrp: t exactly for subr objects.  A native builtin is a
