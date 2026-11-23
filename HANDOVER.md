@@ -128,10 +128,11 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   (GNU 149), the count following the object's interim size.  Round
   375 is the fifth: the interpreter, configurations, redisplay and every
   Rust signature hold the window itself, no id (an accessor 323.3, a
-  native call of one 117.7).  The stages that take the registry and the
-  ids away and give the object window.h's offsets and size follow; the
-  item closes when a window is GNU's `struct window' and the counts are
-  GNU's.
+  native call of one 117.7).  Round 378 is the last: no window has a
+  number, and a window is window.h's struct, 544 bytes, its census and
+  its cells consed GNU's (68 and 67).  D3 is done; what an accessor
+  still costs over GNU's (317.4 against 244.2) is the primitive's
+  dispatch.  A3.5 is not closed.
 - **In progress: D4** (native code calling a primitive).  Round 374:
   the plan (docs/plans/d4-native-subrs.md) and its first two stages;
   sixteen type predicates of data.c are their own link-table entries,
@@ -19924,6 +19925,76 @@ setup_process_coding_systems's check now refuses). A 13-form
   entries appended to the inventory, nothing else), one result dropped
   where a moved line of `purecopy' already dropped it, and 2,263 changed
   lines with four tests and twenty-eight assertions added, none removed.
+- **Round 378: a window is window.h's struct window, with no number
+  (M2, D3 done; A3.5 not closed).**  The last two stages of the
+  windows plan (docs/plans/d3-windows.md).  **No window has a number**:
+  the object's id and owner, the interpreter's weak registry of windows,
+  the sweep's note of a freed window and its purge are gone; the six
+  places that enumerated the registry in creation order walk the
+  frames' window trees as window.c does (each frame's tree and then its
+  own minibuffer window for the buffers' window counts, their check and
+  the markers rebound after an image's load; delete_all_child_windows'
+  order when a frame is deleted; `next-window' from the selected window
+  for `buffer-swap-text'), no order Lisp can see having changed; the
+  loader installs a dumped window as it installs a frame.  **The
+  window is GNU's struct**: the twenty-one Lisp slots the
+  `WINDOW_*_SLOT' numbers reached, with their count of held slots and
+  their absent state, are window.h's fields by name in GNU's order, each
+  present from make_window on with what make_window leaves in it; the
+  integers are C ints and the bits share one word; the base line is
+  window.h's two fields with GNU's resets and BASE_LINE_NUMBER_VALID_P;
+  the struct is 544 bytes with 25 Lisp words, asserted against GNU's
+  offsets, so the census counts 68 slots a window and making one conses
+  67 vector cells, as GNU's do (66 and 51 before; one
+  `split-window-internal' conses 149, GNU's 149, 117 before).  What
+  Emaxx alone keeps is nine `given' bits of the edges, sizes and window
+  end, in the four bytes GNU leaves unused after `total_lines'.  **Lisp
+  sees two changes, both GNU's**: `purecopy' of a window signals "Don't
+  know how to purify: #<window 1 on BUF>" (it named a record); the
+  parent a split makes on a frame that is not selected is that frame's
+  (it was the selected frame's, so deleting the selected frame emptied
+  the other frame's tree).  **Counts**: the six accessors from byte
+  code 317.4 instructions each (GNU 244.2), a native call of one
+  116.0 (GNU 48.0); what is left over GNU's there is the primitive's
+  dispatch, not the window.
+  The independent review (the one question: does the round cheat or
+  break something) read the six enumerations and their walks, the
+  marking and the loader, every converted reader and writer of the
+  twenty-one fields (gdb on the build confirming the size and the
+  offsets of GNU's struct), sampled some seventy of the rewritten
+  assertions against the status list, ran the window probes of every
+  stage, a multi-frame terminal probe that matched GNU line for line,
+  and a 29-step terminal session whose screens equal GNU's.  It found
+  one break, which the round fixes: Emaxx's `set-minibuffer-window'
+  stored the window as the selected frame's own minibuffer window
+  (older than the round; GNU's sets only the global minibuf_window), and
+  the walk of a deleted frame's windows reaches its minibuffer window
+  through the frame, so a frame given another frame's minibuffer window
+  kept its own alive when deleted and selecting it ended the process.
+  window.c's minibuf_window is now the interpreter's own: init_window
+  sets it to the initial frame's, a frame switch to that frame's
+  (move_minibuffers_onto_frame), deleting a frame that is not selected
+  to the selected frame's, a read's start and end to the selected
+  frame's (choose_minibuf_frame), `set-minibuffer-window' to the window
+  it names; `kill-buffer's two guards, `get-buffer-window's minibuffer
+  test and the refusal of a read inside a read read it, and no frame's
+  own minibuffer window changes.  A terminal test runs the case on GNU
+  and Emaxx (the build before ends the process at its fourth step) with
+  `kill-buffer' sparing the buffer the named window shows until a frame
+  switch; the review read the fix again and found nothing.
+  Validation of the three commits (gate profile, one test thread a
+  process): the grouped gate 3,556 passed, 0 failed, 2 ignored (one
+  library test more); cli 30, cli_parity 175 (the round's terminal test
+  among them), ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 1, package_lifecycle 5, runtime_ownership
+  3; clippy `-D warnings' and rustfmt clean.  The round audit reports no
+  hard finding; it lists 143 assertions changed (each window test that
+  named a slot number, the old size or an id, now stating the same fact
+  of the field, GNU's size or the object, listed old and new in the
+  windows work's status file), two results dropped (`minibuf_window'
+  read as nil before the first frame's windows exist, and an optional
+  argument's default moved with its line), and 4,314 changed lines with
+  two tests and 205 assertions added.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23239,6 +23310,20 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (217) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 378 and its review), outside the
+  round.**  One line each: the census sizes of a process (42 against
+  GNU's 45), a window configuration (13 against 14), a thread (63
+  against 65) and a mutex (9 against 10) are not GNU's (they belong to
+  B19's counters); `substitute-object-in-subtree' substitutes into a
+  window's fields where GNU signals; deleting a frame does not unshow
+  its windows' buffers or unchain their markers as
+  delete_all_child_windows does; the root window's link to the
+  minibuffer window is made when it is read rather than stored;
+  minibuffer_unwind takes the selected frame's minibuffer window where
+  GNU takes the expiring minibuffer's frame's; during a read,
+  `window-list-1' and `next-window' with a nil minibuffer argument
+  include another frame's inactive minibuffer window, which GNU's do not
+  (each alike before and after the round, in no milestone).
 - **Found after the scope lock (round 377 and its review), outside the
   round and in no milestone.**  One line each: a symbol of the initial
   obarray whose name holds byte 0x1E or 0x1F answers nil to `keywordp'

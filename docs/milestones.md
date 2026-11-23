@@ -43,7 +43,7 @@ unfinished work pushed as a packaged draft (wip/r367).
 
 This document.
 
-## M2. Structure and performance (30 items; 3 done)
+## M2. Structure and performance (30 items; 4 done)
 
 Exit test: the remaining representation, collector and ownership engineering
 is done, the recorded per-call excesses are removed where GNU does less, and
@@ -100,6 +100,8 @@ a diagnostic run of the locked suite on the profile-guided build.
   round 372: GNU's contents word and bits, its own number, use time and cursor
   bit; round 373: geometry and redisplay state as its own integers and bits;
   round 375: holders and Rust signatures keep the window, not its id).
+  **Done** (round 378: no window ids; window.h's struct window, its size and
+  census GNU's).
 - D4: Native code's calls into subrs cost ~65 vs 14 instructions (round 321).
   In progress (round 374: sixteen type predicates are their own entries, 78
   against 73 for the probe; round 377: nineteen more subrs, the word-level
