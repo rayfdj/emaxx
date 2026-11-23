@@ -42,55 +42,55 @@ pub(crate) const WINDOW_NEXT_SIBLING_SLOT: usize = 13;
 pub(crate) const WINDOW_NORMAL_WIDTH_SLOT: usize = 14;
 pub(crate) const WINDOW_NORMAL_HEIGHT_SLOT: usize = 15;
 pub(crate) const WINDOW_COMBINATION_LIMIT_SLOT: usize = 16;
-pub(crate) const WINDOW_HSCROLL_SLOT: usize = 17;
-pub(crate) const WINDOW_MIN_HSCROLL_SLOT: usize = 18;
-pub(crate) const WINDOW_SUSPEND_AUTO_HSCROLL_SLOT: usize = 19;
-pub(crate) const WINDOW_OLD_BUFFER_SLOT: usize = 20;
-pub(crate) const WINDOW_POINT_SLOT: usize = 21;
-pub(crate) const WINDOW_FRAME_SLOT: usize = 22;
-/// window.c's change_stamp: the frame's stamp when
-/// window_change_record_windows last recorded the window (absent, read
-/// as 0, for a window created since).
-pub(crate) const WINDOW_CHANGE_STAMP_SLOT: usize = 23;
+pub(crate) const WINDOW_OLD_BUFFER_SLOT: usize = 17;
+pub(crate) const WINDOW_POINT_SLOT: usize = 18;
+pub(crate) const WINDOW_FRAME_SLOT: usize = 19;
 /// window.h's base_line_number and base_line_pos for the mode line's
 /// %l, with the buffer and the state they were counted under (absent,
-/// read as no cache, for a window that has not shown a line number).
-pub(crate) const WINDOW_BASE_LINE_SLOT: usize = 24;
-/// window.h's window_end_pos: Z minus the end of the text the window's
-/// last redisplay showed (absent before one).
-pub(crate) const WINDOW_END_POS_SLOT: usize = 25;
-/// window.h's force_start, optional_new_start and start_at_line_beg:
-/// how redisplay_window treats the window's start (absent, read as
-/// false, until a command or redisplay sets them).
-pub(crate) const WINDOW_FORCE_START_SLOT: usize = 26;
-pub(crate) const WINDOW_OPTIONAL_NEW_START_SLOT: usize = 27;
-pub(crate) const WINDOW_START_AT_LINE_BEG_SLOT: usize = 28;
-/// window.h's redisplay and update_mode_line: the window must be
-/// redisplayed (wset_redisplay), and its mode line with it
-/// (wset_update_mode_line), until mark_window_display_accurate_1 clears
-/// them (absent, read as false).
-pub(crate) const WINDOW_REDISPLAY_SLOT: usize = 29;
-pub(crate) const WINDOW_UPDATE_MODE_LINE_SLOT: usize = 30;
-/// window.h's last_had_star: whether the buffer was modified when the
-/// window's mode line was last displayed.
-pub(crate) const WINDOW_LAST_HAD_STAR_SLOT: usize = 31;
-/// window.h's column_number_displayed: the column a `%c' or `%C' of the
-/// mode line last showed (absent or nil for -1, none).
-pub(crate) const WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT: usize = 32;
-/// window.h's last_point, last_modified and last_overlay_modified: point
-/// and the buffer's modification counts as the window's last complete
-/// redisplay left them (absent, read as 0).
-pub(crate) const WINDOW_LAST_POINT_SLOT: usize = 33;
-pub(crate) const WINDOW_LAST_MODIFIED_SLOT: usize = 34;
-pub(crate) const WINDOW_LAST_OVERLAY_MODIFIED_SLOT: usize = 35;
-/// window.h's window_end_valid: the window's last redisplay completed
-/// (mark_window_display_accurate_1) and nothing since asked for its
-/// display to be made anew; try_cursor_movement needs it.
-pub(crate) const WINDOW_END_VALID_SLOT: usize = 36;
+/// read as no cache, for a window that has not shown a line number): a
+/// list, where window.h has the two integers alone.
+pub(crate) const WINDOW_BASE_LINE_SLOT: usize = 20;
 
 /// `w->window_end_valid = false'.
 pub(crate) fn invalidate_window_end(interp: &mut Interpreter, window_id: u64) {
-    set_window_flag(interp, window_id, WINDOW_END_VALID_SLOT, false);
+    set_window_flag(interp, window_id, WindowRef::set_window_end_valid, false);
+}
+
+/// w->last_point of WINDOW_ID: point as the window's last complete
+/// redisplay left it, None where none has (the field is 0).
+pub(crate) fn window_last_point(interp: &Interpreter, window_id: u64) -> Option<i64> {
+    interp
+        .window_ref(window_id)
+        .map(WindowRef::last_point)
+        .filter(|point| *point != 0)
+}
+
+/// `w->last_point = POINT' for WINDOW_ID, 0 for none.
+pub(crate) fn set_window_last_point(interp: &Interpreter, window_id: u64, point: Option<i64>) {
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_last_point(point.unwrap_or(0));
+    }
+}
+
+/// w->column_number_displayed of WINDOW_ID: the column a `%c' or `%C' of
+/// its mode line last showed, None where none is displayed (the field is
+/// -1).
+pub(crate) fn window_column_number_displayed(interp: &Interpreter, window_id: u64) -> Option<i64> {
+    interp
+        .window_ref(window_id)
+        .map(WindowRef::column_number_displayed)
+        .filter(|column| *column != -1)
+}
+
+/// `w->column_number_displayed = COLUMN' for WINDOW_ID, -1 for none.
+pub(crate) fn set_window_column_number_displayed(
+    interp: &Interpreter,
+    window_id: u64,
+    column: Option<i64>,
+) {
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_column_number_displayed(column.unwrap_or(-1));
+    }
 }
 
 /// WINDOW_ID's character geometry as (total_cols, total_lines, left_col,
@@ -171,35 +171,26 @@ pub(crate) fn set_window_margin_cols(
     }
 }
 
-/// One of WINDOW_ID's redisplay flags (the slots above).
-pub(crate) fn window_flag(interp: &Interpreter, window_id: u64, slot: usize) -> bool {
-    interp
-        .window_ref(window_id)
-        .is_some_and(|window| window.slot(slot).is_truthy())
+/// One of WINDOW_ID's bits, BIT its reader (`WindowRef::force_start' for
+/// w->force_start); false for no window.
+pub(crate) fn window_flag(
+    interp: &Interpreter,
+    window_id: u64,
+    bit: fn(WindowRef) -> bool,
+) -> bool {
+    interp.window_ref(window_id).is_some_and(bit)
 }
 
-pub(crate) fn set_window_flag(interp: &mut Interpreter, window_id: u64, slot: usize, on: bool) {
-    if let Some(window) = interp.window_ref(window_id) {
-        window.set_slot(interp, slot, if on { Value::T } else { Value::Nil });
-    }
-}
-
-/// One of WINDOW_ID's integer redisplay fields (the slots above), or
-/// None where the window holds none.
-pub(crate) fn window_count_slot(interp: &Interpreter, window_id: u64, slot: usize) -> Option<i64> {
-    interp
-        .window_ref(window_id)
-        .and_then(|window| window.slot(slot).integer_value())
-}
-
-pub(crate) fn set_window_count_slot(
+/// `w->BIT = ON' for WINDOW_ID, SET the bit's store
+/// (`WindowRef::set_force_start' for w->force_start).
+pub(crate) fn set_window_flag(
     interp: &mut Interpreter,
     window_id: u64,
-    slot: usize,
-    value: Option<i64>,
+    set: fn(WindowRef, bool),
+    on: bool,
 ) {
     if let Some(window) = interp.window_ref(window_id) {
-        window.set_slot(interp, slot, value.map_or(Value::Nil, Value::Integer));
+        set(window, on);
     }
 }
 
@@ -374,8 +365,8 @@ pub(crate) fn slot_marker_position(value: Option<&Value>) -> Option<usize> {
 /// through, whatever holds it (a value, a frame's field, an id in the
 /// registry).  The state behind it is the window object's own
 /// (alloc/vectors/windows.rs): window.h's contents, its use_time and
-/// sequence_number, the integers of its geometry, its mini, horizontal
-/// and cursor_off_p bits, and the Lisp words laid out by the
+/// sequence_number, the integers of its geometry and of its scrolling
+/// and redisplay, its bits, and the Lisp words laid out by the
 /// `WINDOW_*_SLOT' constants above.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WindowRef(crate::lisp::types::WindowObjectRef);
@@ -686,6 +677,207 @@ impl WindowRef {
         self.0.set_right_margin_cols(value);
     }
 
+    /// w->change_stamp: the frame's stamp when window_change_record last
+    /// recorded the window, 0 for a window made since.
+    #[inline]
+    pub(crate) fn change_stamp(self) -> i64 {
+        self.0.change_stamp()
+    }
+
+    /// `w->change_stamp = VALUE'.
+    #[inline]
+    pub(crate) fn set_change_stamp(self, value: i64) {
+        self.0.set_change_stamp(value);
+    }
+
+    /// w->hscroll.
+    #[inline]
+    pub(crate) fn hscroll(self) -> i64 {
+        self.0.hscroll()
+    }
+
+    /// `w->hscroll = VALUE'.
+    #[inline]
+    pub(crate) fn set_hscroll(self, value: i64) {
+        self.0.set_hscroll(value);
+    }
+
+    /// w->min_hscroll.
+    #[inline]
+    pub(crate) fn min_hscroll(self) -> i64 {
+        self.0.min_hscroll()
+    }
+
+    /// `w->min_hscroll = VALUE'.
+    #[inline]
+    pub(crate) fn set_min_hscroll(self, value: i64) {
+        self.0.set_min_hscroll(value);
+    }
+
+    /// w->last_modified: the buffer's modification count as the window's
+    /// last complete redisplay left it.
+    #[inline]
+    pub(crate) fn last_modified(self) -> i64 {
+        self.0.last_modified()
+    }
+
+    /// `w->last_modified = VALUE'.
+    #[inline]
+    pub(crate) fn set_last_modified(self, value: i64) {
+        self.0.set_last_modified(value);
+    }
+
+    /// w->last_overlay_modified.
+    #[inline]
+    pub(crate) fn last_overlay_modified(self) -> i64 {
+        self.0.last_overlay_modified()
+    }
+
+    /// `w->last_overlay_modified = VALUE'.
+    #[inline]
+    pub(crate) fn set_last_overlay_modified(self, value: i64) {
+        self.0.set_last_overlay_modified(value);
+    }
+
+    /// w->last_point, 0 for none.
+    #[inline]
+    pub(crate) fn last_point(self) -> i64 {
+        self.0.last_point()
+    }
+
+    /// `w->last_point = VALUE'.
+    #[inline]
+    pub(crate) fn set_last_point(self, value: i64) {
+        self.0.set_last_point(value);
+    }
+
+    /// w->column_number_displayed, -1 for none.
+    #[inline]
+    pub(crate) fn column_number_displayed(self) -> i64 {
+        self.0.column_number_displayed()
+    }
+
+    /// `w->column_number_displayed = VALUE'.
+    #[inline]
+    pub(crate) fn set_column_number_displayed(self, value: i64) {
+        self.0.set_column_number_displayed(value);
+    }
+
+    /// w->window_end_pos: Z minus the end of the text the window's last
+    /// redisplay showed; None for a window no redisplay and no
+    /// set_window_buffer has given one.
+    #[inline]
+    pub(crate) fn window_end_pos(self) -> Option<i64> {
+        self.0.window_end_pos()
+    }
+
+    /// `w->window_end_pos = VALUE'; None takes it back.
+    #[inline]
+    pub(crate) fn set_window_end_pos(self, value: Option<i64>) {
+        self.0.set_window_end_pos(value);
+    }
+
+    /// w->update_mode_line: the window's mode line must be redisplayed
+    /// (wset_update_mode_line), until mark_window_display_accurate_1
+    /// clears it.
+    #[inline]
+    pub(crate) fn update_mode_line(self) -> bool {
+        self.0.update_mode_line()
+    }
+
+    /// `w->update_mode_line = ON'.
+    #[inline]
+    pub(crate) fn set_update_mode_line(self, on: bool) {
+        self.0.set_update_mode_line(on);
+    }
+
+    /// w->last_had_star: whether the buffer was modified when the
+    /// window's mode line was last displayed.
+    #[inline]
+    pub(crate) fn last_had_star(self) -> bool {
+        self.0.last_had_star()
+    }
+
+    /// `w->last_had_star = ON'.
+    #[inline]
+    pub(crate) fn set_last_had_star(self, on: bool) {
+        self.0.set_last_had_star(on);
+    }
+
+    /// w->start_at_line_beg.
+    #[inline]
+    pub(crate) fn start_at_line_beg(self) -> bool {
+        self.0.start_at_line_beg()
+    }
+
+    /// `w->start_at_line_beg = ON'.
+    #[inline]
+    pub(crate) fn set_start_at_line_beg(self, on: bool) {
+        self.0.set_start_at_line_beg(on);
+    }
+
+    /// w->force_start.
+    #[inline]
+    pub(crate) fn force_start(self) -> bool {
+        self.0.force_start()
+    }
+
+    /// `w->force_start = ON'.
+    #[inline]
+    pub(crate) fn set_force_start(self, on: bool) {
+        self.0.set_force_start(on);
+    }
+
+    /// w->optional_new_start.
+    #[inline]
+    pub(crate) fn optional_new_start(self) -> bool {
+        self.0.optional_new_start()
+    }
+
+    /// `w->optional_new_start = ON'.
+    #[inline]
+    pub(crate) fn set_optional_new_start(self, on: bool) {
+        self.0.set_optional_new_start(on);
+    }
+
+    /// w->window_end_valid: the window's last redisplay completed
+    /// (mark_window_display_accurate_1) and nothing since asked for its
+    /// display to be made anew; try_cursor_movement needs it.
+    #[inline]
+    pub(crate) fn window_end_valid(self) -> bool {
+        self.0.window_end_valid()
+    }
+
+    /// `w->window_end_valid = ON'.
+    #[inline]
+    pub(crate) fn set_window_end_valid(self, on: bool) {
+        self.0.set_window_end_valid(on);
+    }
+
+    /// w->redisplay: the window must be redisplayed (wset_redisplay).
+    #[inline]
+    pub(crate) fn redisplay(self) -> bool {
+        self.0.redisplay()
+    }
+
+    /// `w->redisplay = ON'.
+    #[inline]
+    pub(crate) fn set_redisplay(self, on: bool) {
+        self.0.set_redisplay(on);
+    }
+
+    /// w->suspend_auto_hscroll.
+    #[inline]
+    pub(crate) fn suspend_auto_hscroll(self) -> bool {
+        self.0.suspend_auto_hscroll()
+    }
+
+    /// `w->suspend_auto_hscroll = ON'.
+    #[inline]
+    pub(crate) fn set_suspend_auto_hscroll(self, on: bool) {
+        self.0.set_suspend_auto_hscroll(on);
+    }
+
     /// A copy of the slots the window holds, as make_parent_window's
     /// memcpy takes them.
     pub(crate) fn slots(self) -> Vec<Value> {
@@ -791,8 +983,6 @@ pub(crate) fn window_record_slots(
         (WINDOW_CURSOR_TYPE_SLOT, Value::T),
         (WINDOW_NORMAL_WIDTH_SLOT, Value::float(1.0)),
         (WINDOW_NORMAL_HEIGHT_SLOT, Value::float(1.0)),
-        (WINDOW_HSCROLL_SLOT, Value::Integer(0)),
-        (WINDOW_MIN_HSCROLL_SLOT, Value::Integer(0)),
         (WINDOW_POINT_SLOT, point_marker),
     ] {
         slots[slot] = value;
@@ -927,8 +1117,7 @@ pub(crate) fn record_window_display(
     let z = buffer_z(interp, buffer_id);
     set_window_marker(interp, window_id, WINDOW_POINT_SLOT, buffer_id, point);
     if let Some(window) = interp.window_ref(window_id) {
-        let end_pos = Value::Integer(z as i64 - window_end.min(z) as i64);
-        window.set_slot(interp, WINDOW_END_POS_SLOT, end_pos);
+        window.set_window_end_pos(Some(z as i64 - window_end.min(z) as i64));
     }
 }
 
@@ -948,11 +1137,11 @@ pub(crate) fn set_window_start_value(
     let buffer_id =
         window_buffer_id(interp, &interp.window_value(id)).unwrap_or(interp.current_buffer_id());
     set_window_marker_restricted_value(interp, id, WINDOW_START_SLOT, buffer_id, pos)?;
-    set_window_flag(interp, id, WINDOW_START_AT_LINE_BEG_SLOT, false);
+    set_window_flag(interp, id, WindowRef::set_start_at_line_beg, false);
     // Bug#15957.
     invalidate_window_end(interp, id);
     if !noforce {
-        set_window_flag(interp, id, WINDOW_FORCE_START_SLOT, true);
+        set_window_flag(interp, id, WindowRef::set_force_start, true);
     }
     interp.wset_update_mode_line(id);
     interp.wset_redisplay(id);
@@ -1094,7 +1283,7 @@ pub(crate) fn recenter_selected_window(
     };
     interp.set_selected_window_start(start);
     invalidate_window_end(interp, window_id);
-    set_window_flag(interp, window_id, WINDOW_OPTIONAL_NEW_START_SLOT, true);
+    set_window_flag(interp, window_id, WindowRef::set_optional_new_start, true);
     let at_line_beg = {
         let buffer = interp.buffer.borrow();
         start <= buffer.point_min() || buffer.char_at(start - 1) == Some('\n')
@@ -1102,7 +1291,7 @@ pub(crate) fn recenter_selected_window(
     set_window_flag(
         interp,
         window_id,
-        WINDOW_START_AT_LINE_BEG_SLOT,
+        WindowRef::set_start_at_line_beg,
         at_line_beg,
     );
     interp.wset_redisplay(window_id);
@@ -1409,11 +1598,11 @@ fn window_scroll_for_long_lines(
     };
     if pos < zv {
         set_window_start_marker(interp, window_id, pos);
-        set_window_flag(interp, window_id, WINDOW_START_AT_LINE_BEG_SLOT, bolp);
+        set_window_flag(interp, window_id, WindowRef::set_start_at_line_beg, bolp);
         interp.wset_update_mode_line(window_id);
         // force_start so that redisplay_window runs the
         // window-scroll-functions.
-        set_window_flag(interp, window_id, WINDOW_FORCE_START_SLOT, true);
+        set_window_flag(interp, window_id, WindowRef::set_force_start, true);
         interp.buffer.borrow_mut().goto_char(pos);
         let pos = if n > 0 {
             vmotion(interp, env, pos, ht / 2, win).bufpos
@@ -1536,10 +1725,10 @@ fn window_scroll_line_based(
     }
     let margin = selected_scroll_margin(interp, text_height) as i64;
     set_window_start_marker(interp, window_id, pos);
-    set_window_flag(interp, window_id, WINDOW_START_AT_LINE_BEG_SLOT, bolp);
+    set_window_flag(interp, window_id, WindowRef::set_start_at_line_beg, bolp);
     interp.wset_update_mode_line(window_id);
     // force_start so redisplay runs the window-scroll-functions.
-    set_window_flag(interp, window_id, WINDOW_FORCE_START_SLOT, true);
+    set_window_flag(interp, window_id, WindowRef::set_force_start, true);
     let (preserve_hpos, preserve_vpos) = original;
     let goto = |interp: &mut Interpreter, at: usize| interp.buffer.borrow_mut().goto_char(at);
     if preserve.is_truthy() && margin == 0 && (whole || !matches!(preserve.kind(), Kind::T)) {

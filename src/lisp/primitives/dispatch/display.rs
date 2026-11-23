@@ -1190,10 +1190,12 @@ pub(crate) fn mark_window_display_inaccurate(interp: &mut Interpreter, window_id
                     let star = buffer
                         .and_then(|buffer_id| interp.get_buffer_by_id(buffer_id))
                         .is_some_and(|buffer| buffer.is_modified());
-                    set_window_count_slot(interp, id, WINDOW_LAST_MODIFIED_SLOT, Some(0));
-                    set_window_count_slot(interp, id, WINDOW_LAST_OVERLAY_MODIFIED_SLOT, Some(0));
-                    set_window_flag(interp, id, WINDOW_LAST_HAD_STAR_SLOT, star);
-                    set_window_flag(interp, id, WINDOW_REDISPLAY_SLOT, true);
+                    if let Some(window) = interp.window_ref(id) {
+                        window.set_last_modified(0);
+                        window.set_last_overlay_modified(0);
+                    }
+                    set_window_flag(interp, id, WindowRef::set_last_had_star, star);
+                    set_window_flag(interp, id, WindowRef::set_redisplay, true);
                 }
             }
             window = window_link(interp, id, WINDOW_NEXT_SIBLING_SLOT);
@@ -3213,13 +3215,14 @@ fn make_parent_window(
     let original = interp.window_ref(window);
     let slots = original.map(WindowRef::slots).unwrap_or_default();
     let copy = interp.make_window(slots);
-    // The memcpy's contents, use time, pixel edges and sizes and bits,
-    // which are no slots; the copy has make_window's sequence number of
-    // its own (`p->sequence_number = ++sequence_number'), and its cursor
-    // is on, whatever the window's.  Its columns and lines replace_window
-    // gives it below; the sizes window_change_record recorded and the
-    // margins it starts without, as it did when those were slots past the
-    // ones a new window holds.
+    // The memcpy's contents, use time, pixel edges and sizes, hscroll and
+    // bits, which are no slots; the copy has make_window's sequence
+    // number of its own (`p->sequence_number = ++sequence_number'), and
+    // its cursor is on, whatever the window's.  Its columns and lines
+    // replace_window gives it below; the change stamp and sizes
+    // window_change_record recorded, the margins and what redisplay left
+    // in the window it starts without, as it did when those were slots
+    // past the ones a new window holds.
     if let Some(original) = original {
         copy.set_contents(original.contents());
         copy.set_use_time(original.use_time());
@@ -3227,8 +3230,11 @@ fn make_parent_window(
         copy.set_pixel_top(original.pixel_top());
         copy.set_pixel_width(original.pixel_width());
         copy.set_pixel_height(original.pixel_height());
+        copy.set_hscroll(original.hscroll());
+        copy.set_min_hscroll(original.min_hscroll());
         copy.set_mini(original.mini());
         copy.set_horizontal(original.horizontal());
+        copy.set_suspend_auto_hscroll(original.suspend_auto_hscroll());
     }
     let parent = copy.id();
     // make_parent_window's adjust_window_count (p, 1): P's contents,
@@ -4128,11 +4134,11 @@ fn delete_other_windows_from_tree(
             set_window_flag(
                 interp,
                 window_id,
-                WINDOW_START_AT_LINE_BEG_SLOT,
+                WindowRef::set_start_at_line_beg,
                 at_line_beg,
             );
             // So that redisplay runs the window-scroll-functions.
-            set_window_flag(interp, window_id, WINDOW_OPTIONAL_NEW_START_SLOT, true);
+            set_window_flag(interp, window_id, WindowRef::set_optional_new_start, true);
         }
     }
     Ok(Value::Nil)
@@ -4186,10 +4192,10 @@ fn window_body_pixel_size(interp: &Interpreter, window: u64) -> (i64, i64) {
     (window_text_width_columns(interp, window), body_height)
 }
 
-fn window_integer_slot(interp: &Interpreter, window: u64, slot: usize) -> i64 {
-    window_slot_value(interp, window, slot)
-        .as_integer()
-        .unwrap_or(0)
+/// WINDOW's change_stamp: its frame's stamp when window_change_record
+/// last recorded it, 0 for a window made since.
+fn window_change_stamp(interp: &Interpreter, window: u64) -> i64 {
+    interp.window_ref(window).map_or(0, WindowRef::change_stamp)
 }
 
 /// WINDOW's old_pixel_width, old_pixel_height, old_body_pixel_width and
@@ -4268,13 +4274,9 @@ fn window_change_record(interp: &mut Interpreter, record_frames: bool) {
                     .unwrap_or(Value::Nil);
                 let (width, height, _, _) = window_geometry(interp, window);
                 let (body_width, body_height) = window_body_pixel_size(interp, window);
-                for (slot, value) in [
-                    (WINDOW_CHANGE_STAMP_SLOT, Value::Integer(stamp)),
-                    (WINDOW_OLD_BUFFER_SLOT, buffer),
-                ] {
-                    let _ = set_window_slot_value(interp, window, slot, value);
-                }
+                let _ = set_window_slot_value(interp, window, WINDOW_OLD_BUFFER_SLOT, buffer);
                 if let Some(window) = interp.window_ref(window) {
+                    window.set_change_stamp(stamp);
                     window.set_old_pixel_width(width);
                     window.set_old_pixel_height(height);
                     window.set_old_body_pixel_width(body_width);
@@ -4307,7 +4309,7 @@ fn frame_window_change(
                 .unwrap_or(Value::Nil);
             let (width, height, _, _) = window_geometry(interp, window);
             let (body_width, body_height) = window_body_pixel_size(interp, window);
-            window_integer_slot(interp, window, WINDOW_CHANGE_STAMP_SLOT) != stamp
+            window_change_stamp(interp, window) != stamp
                 || !buffer.eq_value(window_slot_value(interp, window, WINDOW_OLD_BUFFER_SLOT))
                 || (width, height, body_width, body_height) != window_old_sizes(interp, window)
         })
@@ -4387,7 +4389,7 @@ fn run_window_change_functions_body(
                 .unwrap_or(Value::Nil);
             let buffer_change = window_change
                 && (!buffer.eq_value(window_slot_value(interp, window, WINDOW_OLD_BUFFER_SLOT))
-                    || window_integer_slot(interp, window, WINDOW_CHANGE_STAMP_SLOT) != stamp);
+                    || window_change_stamp(interp, window) != stamp);
             let (width, height, _, _) = window_geometry(interp, window);
             let (body_width, body_height) = window_body_pixel_size(interp, window);
             let size_change = window_change
@@ -4641,17 +4643,11 @@ pub(crate) struct WindowHscrollState {
 }
 
 pub(crate) fn window_hscroll_state(interp: &Interpreter, window_id: u64) -> WindowHscrollState {
+    let window = interp.window_ref(window_id);
     WindowHscrollState {
-        hscroll: window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT)
-            .as_integer()
-            .unwrap_or(0)
-            .max(0),
-        min_hscroll: window_slot_value(interp, window_id, WINDOW_MIN_HSCROLL_SLOT)
-            .as_integer()
-            .unwrap_or(0)
-            .max(0),
-        suspended: window_slot_value(interp, window_id, WINDOW_SUSPEND_AUTO_HSCROLL_SLOT)
-            .is_truthy(),
+        hscroll: window.map_or(0, WindowRef::hscroll).max(0),
+        min_hscroll: window.map_or(0, WindowRef::min_hscroll).max(0),
+        suspended: window.is_some_and(WindowRef::suspend_auto_hscroll),
         old_point: window_marker_position(interp, window_id, WINDOW_OLD_POINT_SLOT)
             .map(|point| point as i64),
     }
@@ -4666,18 +4662,10 @@ pub(crate) fn store_window_hscroll_state(
     suspended: bool,
     old_point: i64,
 ) {
-    let _ = set_window_slot_value(
-        interp,
-        window_id,
-        WINDOW_HSCROLL_SLOT,
-        Value::Integer(hscroll.max(0)),
-    );
-    let _ = set_window_slot_value(
-        interp,
-        window_id,
-        WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
-        if suspended { Value::T } else { Value::Nil },
-    );
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_hscroll(hscroll.max(0));
+        window.set_suspend_auto_hscroll(suspended);
+    }
     if let Some(buffer_id) = window_buffer_id(interp, &interp.window_value(window_id)) {
         set_window_marker(
             interp,
@@ -4803,7 +4791,8 @@ fn set_window_hscroll_value(
 ) -> Result<Value, LispError> {
     // clip_to_bounds (0, hscroll, min (MOST_POSITIVE_FIXNUM, PTRDIFF_MAX)).
     let hscroll = requested.clamp(0, (1_i64 << 61) - 1);
-    if window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT).integer_value() != Some(hscroll) {
+    let window = interp.window_ref(window_id);
+    if window.map(WindowRef::hscroll) != Some(hscroll) {
         // set_window_hscroll: a changed hscroll redisplays the window,
         // its buffer without the shortcuts.
         if let Some(buffer_id) = window_buffer_id(interp, &interp.window_value(window_id)) {
@@ -4811,18 +4800,11 @@ fn set_window_hscroll_value(
         }
         interp.wset_redisplay(window_id);
     }
-    set_window_slot_value(
-        interp,
-        window_id,
-        WINDOW_HSCROLL_SLOT,
-        Value::Integer(hscroll),
-    )?;
-    set_window_slot_value(
-        interp,
-        window_id,
-        WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
-        Value::T,
-    )?;
+    let Some(window) = window else {
+        return Err(LispError::TypeError("window".into(), "deleted".into()));
+    };
+    window.set_hscroll(hscroll);
+    window.set_suspend_auto_hscroll(true);
     Ok(Value::Integer(hscroll))
 }
 
@@ -6265,8 +6247,9 @@ define_dispatch!(
                     interp.set_current_buffer_id(saved)?;
                     return Ok(Value::Integer(end as i64));
                 }
-                let end_pos = window_slot_value(interp, window_id, WINDOW_END_POS_SLOT)
-                    .integer_value()
+                let end_pos = interp
+                    .window_ref(window_id)
+                    .and_then(WindowRef::window_end_pos)
                     .unwrap_or(0);
                 Ok(Value::Integer(z as i64 - end_pos))
             }
@@ -6297,10 +6280,9 @@ define_dispatch!(
             "window-hscroll" => {
                 need_arg_range(name, args, 0, 1)?;
                 let window_id = live_window_id_or_selected(interp, args.first())?;
-                Ok(window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT)
-                    .as_integer()
-                    .map(Value::Integer)
-                    .unwrap_or(Value::Integer(0)))
+                Ok(Value::Integer(
+                    interp.window_ref(window_id).map_or(0, WindowRef::hscroll),
+                ))
             }
             "window-vscroll" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -6325,17 +6307,18 @@ define_dispatch!(
                     None | Some(Kind::Nil) => window_text_width_columns(interp, window_id) - 2,
                     Some(value) => prefix_numeric_value(&value.value())?.as_integer()?,
                 };
-                let current = window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT)
-                    .as_integer()
-                    .unwrap_or(0);
+                let current = interp.window_ref(window_id).map_or(0, WindowRef::hscroll);
                 let requested = if name == "scroll-left" {
                     current.saturating_add(requested)
                 } else {
                     current.saturating_sub(requested)
                 };
                 let result = set_window_hscroll_value(interp, window_id, requested)?;
-                if args.get(1).is_some_and(Value::is_truthy) {
-                    set_window_slot_value(interp, window_id, WINDOW_MIN_HSCROLL_SLOT, result)?;
+                if args.get(1).is_some_and(Value::is_truthy)
+                    && let Some(window) = interp.window_ref(window_id)
+                {
+                    // w->min_hscroll = w->hscroll.
+                    window.set_min_hscroll(window.hscroll());
                 }
                 Ok(result)
             }
@@ -6903,8 +6886,8 @@ define_dispatch!(
                         )
                     };
                     interp.set_selected_window_start(start);
-                    set_window_flag(interp, window_id, WINDOW_START_AT_LINE_BEG_SLOT, bolp);
-                    set_window_flag(interp, window_id, WINDOW_FORCE_START_SLOT, true);
+                    set_window_flag(interp, window_id, WindowRef::set_start_at_line_beg, bolp);
+                    set_window_flag(interp, window_id, WindowRef::set_force_start, true);
                 } else {
                     interp.buffer.borrow_mut().goto_char(start);
                 }
@@ -6981,9 +6964,7 @@ define_dispatch!(
                     let height = selected_command_text_height(interp);
                     let window_id = interp.selected_window_id();
                     let total_lines = window_geometry(interp, window_id).1;
-                    let hscroll = window_slot_value(interp, window_id, WINDOW_HSCROLL_SLOT)
-                        .as_integer()
-                        .unwrap_or(0);
+                    let hscroll = interp.window_ref(window_id).map_or(0, WindowRef::hscroll);
                     crate::lisp::primitives::window::window_scroll(
                         interp,
                         env,
@@ -7675,7 +7656,7 @@ define_dispatch!(
                 };
                 if let Ok(window_id) = live_window_id_or_selected(interp, Some(object)) {
                     mark_window_display_inaccurate(interp, window_id);
-                    set_window_flag(interp, window_id, WINDOW_UPDATE_MODE_LINE_SLOT, true);
+                    set_window_flag(interp, window_id, WindowRef::set_update_mode_line, true);
                     if let Some(buffer_id) = window_buffer_id(interp, object) {
                         interp.prevent_redisplay_optimizations(buffer_id);
                     }
@@ -7712,7 +7693,7 @@ define_dispatch!(
                         .collect();
                 for window_id in &showing {
                     mark_window_display_inaccurate(interp, *window_id);
-                    set_window_flag(interp, *window_id, WINDOW_UPDATE_MODE_LINE_SLOT, true);
+                    set_window_flag(interp, *window_id, WindowRef::set_update_mode_line, true);
                     interp.prevent_redisplay_optimizations(buffer_id);
                     interp.update_mode_lines = 27;
                 }
@@ -7785,9 +7766,7 @@ define_dispatch!(
                     .expect("window stores its owning frame");
                 Ok(if old_buffer.is_nil() {
                     Value::Nil
-                } else if window_integer_slot(interp, window_id, WINDOW_CHANGE_STAMP_SLOT)
-                    != frame.borrow().change_stamp
-                {
+                } else if window_change_stamp(interp, window_id) != frame.borrow().change_stamp {
                     // A window restored from a configuration.
                     Value::T
                 } else {

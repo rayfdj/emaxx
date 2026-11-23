@@ -4841,7 +4841,7 @@ pub(crate) fn window_end_outdated(
         || !crate::lisp::primitives::window_flag(
             interpreter,
             window_id,
-            crate::lisp::primitives::WINDOW_END_VALID_SLOT,
+            crate::lisp::primitives::WindowRef::window_end_valid,
         )
         || interpreter
             .get_buffer_by_id(buffer_id)
@@ -6162,7 +6162,7 @@ fn cursor_movement_usable(
         && !crate::lisp::primitives::window_flag(
             interpreter,
             info.window_id,
-            crate::lisp::primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
+            crate::lisp::primitives::WindowRef::suspend_auto_hscroll,
         )
     {
         return false;
@@ -6228,10 +6228,7 @@ fn window_start_state(
     (usize, usize),
     crate::buffer::ModCount,
 ) {
-    use crate::lisp::primitives::{
-        WINDOW_FORCE_START_SLOT, WINDOW_OPTIONAL_NEW_START_SLOT, WINDOW_START_AT_LINE_BEG_SLOT,
-        window_flag,
-    };
+    use crate::lisp::primitives::{WindowRef, window_flag};
     let value = |name: &str| {
         interpreter
             .buffer_local_value(info.buffer_id, name)
@@ -6283,9 +6280,9 @@ fn window_start_state(
                 })
                 .unwrap_or((info.point, (1, 1), Default::default(), (1, 1)))
         };
-    let force_start = window_flag(interpreter, info.window_id, WINDOW_FORCE_START_SLOT);
+    let force_start = window_flag(interpreter, info.window_id, WindowRef::force_start);
     let optional_new_start =
-        window_flag(interpreter, info.window_id, WINDOW_OPTIONAL_NEW_START_SLOT);
+        window_flag(interpreter, info.window_id, WindowRef::optional_new_start);
     // window.c window_outdated: the text's or the overlays' count moved
     // since the window's last complete redisplay
     // (mark_window_display_accurate_1, at the end of redisplay_internal).
@@ -6310,7 +6307,7 @@ fn window_start_state(
         && window_flag(
             interpreter,
             info.window_id,
-            crate::lisp::primitives::WINDOW_END_VALID_SLOT,
+            crate::lisp::primitives::WindowRef::window_end_valid,
         )
         && !clip_changed
         && !prevent_optimizations
@@ -6324,7 +6321,7 @@ fn window_start_state(
         buffer_point,
         force_start,
         optional_new_start,
-        start_at_line_beg: window_flag(interpreter, info.window_id, WINDOW_START_AT_LINE_BEG_SLOT),
+        start_at_line_beg: window_flag(interpreter, info.window_id, WindowRef::start_at_line_beg),
         windows_or_buffers_changed,
         window_outdated,
         cursor_unmoved,
@@ -6355,17 +6352,15 @@ fn consume_window_start_flags(
     window_id: u64,
     consumed: redisplay_window::Consumed,
 ) {
-    use crate::lisp::primitives::{
-        WINDOW_FORCE_START_SLOT, WINDOW_OPTIONAL_NEW_START_SLOT, set_window_flag,
-    };
+    use crate::lisp::primitives::{WindowRef, set_window_flag};
     if consumed.force_start {
-        set_window_flag(interpreter, window_id, WINDOW_FORCE_START_SLOT, false);
+        set_window_flag(interpreter, window_id, WindowRef::set_force_start, false);
     }
     if consumed.optional_new_start {
         set_window_flag(
             interpreter,
             window_id,
-            WINDOW_OPTIONAL_NEW_START_SLOT,
+            WindowRef::set_optional_new_start,
             false,
         );
     }
@@ -6469,14 +6464,13 @@ fn publish_window_start(
     window_end: usize,
 ) -> crate::lisp::primitives::WindowRenderInfo {
     use crate::lisp::primitives::{
-        WINDOW_START_AT_LINE_BEG_SLOT, record_window_display, set_window_flag,
-        set_window_start_marker,
+        WindowRef, record_window_display, set_window_flag, set_window_start_marker,
     };
     set_window_start_marker(interpreter, info.window_id, chosen.start);
     set_window_flag(
         interpreter,
         info.window_id,
-        WINDOW_START_AT_LINE_BEG_SLOT,
+        WindowRef::set_start_at_line_beg,
         chosen.start_at_line_beg,
     );
     let point = chosen.point.unwrap_or(info.point);
@@ -9961,8 +9955,8 @@ fn rerun_pre_redisplay_function(
     window_id: u64,
     cursor_row: Option<usize>,
 ) -> bool {
-    use crate::lisp::primitives::{WINDOW_REDISPLAY_SLOT, set_window_flag, window_flag};
-    set_window_flag(interpreter, window_id, WINDOW_REDISPLAY_SLOT, false);
+    use crate::lisp::primitives::{WindowRef, set_window_flag, window_flag};
+    set_window_flag(interpreter, window_id, WindowRef::set_redisplay, false);
     let buffer_id = redisplay_flags::window_buffer(interpreter, window_id);
     if let Some(mut buffer) = buffer_id.and_then(|id| interpreter.get_buffer_by_id_mut(id)) {
         buffer.set_text_redisplay(false);
@@ -9975,7 +9969,7 @@ fn rerun_pre_redisplay_function(
             crate::lisp::types::eq_symbol_named(value, "relative")
                 || crate::lisp::types::eq_symbol_named(value, "visual")
         });
-    window_flag(interpreter, window_id, WINDOW_REDISPLAY_SLOT)
+    window_flag(interpreter, window_id, WindowRef::redisplay)
         || buffer_id
             .and_then(|id| interpreter.get_buffer_by_id(id))
             .is_some_and(|buffer| buffer.text_redisplay())
@@ -10031,7 +10025,7 @@ fn prepare_menu_bars(interpreter: &mut Interpreter, env: &mut Env) {
                 && !crate::lisp::primitives::window_flag(
                     interpreter,
                     window,
-                    crate::lisp::primitives::WINDOW_REDISPLAY_SLOT,
+                    crate::lisp::primitives::WindowRef::redisplay,
                 )
                 && !redisplay_flags::window_buffer(interpreter, window)
                     .and_then(|buffer| {
@@ -15351,7 +15345,7 @@ fn selected_window_mode_line_checks(
     env: &mut Env,
     state: &TtyState,
 ) {
-    use crate::lisp::primitives::{WINDOW_LAST_HAD_STAR_SLOT, WINDOW_UPDATE_MODE_LINE_SLOT};
+    use crate::lisp::primitives::WindowRef;
     let window = interpreter.selected_window_id();
     let Some(buffer_id) = redisplay_flags::window_buffer(interpreter, window) else {
         return;
@@ -15379,12 +15373,8 @@ fn selected_window_mode_line_checks(
             .get_buffer_by_id(buffer_id)
             .is_some_and(|buffer| !buffer.clip_changed())
     {
-        let last_point = crate::lisp::primitives::window_count_slot(
-            interpreter,
-            window,
-            crate::lisp::primitives::WINDOW_LAST_POINT_SLOT,
-        )
-        .and_then(|point| usize::try_from(point).ok());
+        let last_point = crate::lisp::primitives::window_last_point(interpreter, window)
+            .and_then(|point| usize::try_from(point).ok());
         let point = redisplay_flags::window_point(interpreter, window);
         if let (Some(last_point), Some(point)) = (last_point, point)
             && (shown_buffer != buffer_id || point != last_point)
@@ -15405,13 +15395,13 @@ fn selected_window_mode_line_checks(
     }
     let modified = interpreter.buffer.borrow().is_modified();
     if modified
-        != crate::lisp::primitives::window_flag(interpreter, window, WINDOW_LAST_HAD_STAR_SLOT)
+        != crate::lisp::primitives::window_flag(interpreter, window, WindowRef::last_had_star)
         || redisplay_flags::mode_line_update_needed(interpreter, env, window)
     {
         crate::lisp::primitives::set_window_flag(
             interpreter,
             window,
-            WINDOW_UPDATE_MODE_LINE_SLOT,
+            WindowRef::set_update_mode_line,
             true,
         );
     }
@@ -15463,7 +15453,7 @@ fn window_displays_mode_line(
         || crate::lisp::primitives::window_flag(
             interpreter,
             info.window_id,
-            crate::lisp::primitives::WINDOW_UPDATE_MODE_LINE_SLOT,
+            crate::lisp::primitives::WindowRef::update_mode_line,
         )
         || interpreter.update_mode_lines != 0
         || clip_changed
@@ -15471,15 +15461,11 @@ fn window_displays_mode_line(
     let full_width = info.left == 0 && info.width >= cols;
     let column_left = info.selected
         && info.buffer_id == interpreter.current_buffer_id()
-        && crate::lisp::primitives::window_count_slot(
-            interpreter,
-            info.window_id,
-            crate::lisp::primitives::WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT,
-        )
-        .is_some_and(|displayed| {
-            crate::lisp::primitives::current_column(interpreter, env)
-                .is_ok_and(|column| column as i64 != displayed)
-        });
+        && crate::lisp::primitives::window_column_number_displayed(interpreter, info.window_id)
+            .is_some_and(|displayed| {
+                crate::lisp::primitives::current_column(interpreter, env)
+                    .is_ok_and(|column| column as i64 != displayed)
+            });
     let mode_lines = update_mode_line
         || (consider_all_windows && !full_width)
         || crate::lisp::primitives::window_base_line_pos(interpreter, info.window_id) > 0
@@ -15515,7 +15501,7 @@ fn selected_mini_window_updates_menu_bar(
     crate::lisp::primitives::window_flag(
         interpreter,
         window,
-        crate::lisp::primitives::WINDOW_UPDATE_MODE_LINE_SLOT,
+        crate::lisp::primitives::WindowRef::update_mode_line,
     ) || interpreter.update_mode_lines != 0
         || buffer.0
         || buffer.1

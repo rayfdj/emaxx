@@ -979,12 +979,8 @@ impl Interpreter {
             buffer.adjust_window_count(shown);
         }
         if let Some(window) = self.window_ref(window_id) {
-            for (slot, value) in [
-                (primitives::WINDOW_END_VALID_SLOT, Value::Nil),
-                (primitives::WINDOW_BASE_LINE_SLOT, Value::Nil),
-            ] {
-                window.set_slot_if_held(self, slot, value);
-            }
+            window.set_window_end_valid(false);
+            window.set_slot_if_held(self, primitives::WINDOW_BASE_LINE_SLOT, Value::Nil);
         }
     }
 
@@ -1086,7 +1082,7 @@ impl Interpreter {
         if window_id != self.selected_window_id {
             self.redisplay_other_windows();
         }
-        primitives::set_window_flag(self, window_id, primitives::WINDOW_REDISPLAY_SLOT, true);
+        primitives::set_window_flag(self, window_id, primitives::WindowRef::set_redisplay, true);
     }
 
     /// xdisp.c wset_update_mode_line: the window's mode line is
@@ -1095,7 +1091,7 @@ impl Interpreter {
         primitives::set_window_flag(
             self,
             window_id,
-            primitives::WINDOW_UPDATE_MODE_LINE_SLOT,
+            primitives::WindowRef::set_update_mode_line,
             true,
         );
         self.wset_redisplay(window_id);
@@ -1390,23 +1386,19 @@ impl Interpreter {
             .unwrap_or(1)
             .clamp(point_min, point_max);
         if let Some(window) = self.window_ref(window_id) {
-            window.ensure_slot(self, primitives::WINDOW_START_AT_LINE_BEG_SLOT);
+            window.ensure_slot(self, primitives::WINDOW_BASE_LINE_SLOT);
         }
         // wset_buffer: w->contents is the buffer object.
         self.wset_buffer(window_id, buffer);
         if let Some(window) = self.window_ref(window_id) {
-            window.set_held_slot(self, primitives::WINDOW_END_POS_SLOT, Value::Integer(0));
+            window.set_window_end_pos(Some(0));
             if !keep {
-                for (slot, value) in [
-                    (primitives::WINDOW_HSCROLL_SLOT, Value::Integer(0)),
-                    (primitives::WINDOW_MIN_HSCROLL_SLOT, Value::Integer(0)),
-                    (primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT, Value::Nil),
-                    (primitives::WINDOW_START_AT_LINE_BEG_SLOT, Value::Nil),
-                    (primitives::WINDOW_FORCE_START_SLOT, Value::Nil),
-                    (primitives::WINDOW_BASE_LINE_SLOT, Value::Nil),
-                ] {
-                    window.set_held_slot(self, slot, value);
-                }
+                window.set_hscroll(0);
+                window.set_min_hscroll(0);
+                window.set_suspend_auto_hscroll(false);
+                window.set_start_at_line_beg(false);
+                window.set_force_start(false);
+                window.set_held_slot(self, primitives::WINDOW_BASE_LINE_SLOT, Value::Nil);
             }
         }
         if !keep {
@@ -1852,6 +1844,9 @@ impl Interpreter {
                 (SW_TOP_LINE, record.top_line()),
                 (SW_TOTAL_COLS, record.total_cols()),
                 (SW_TOTAL_LINES, record.total_lines()),
+                // The hscroll and its minimum.
+                (SW_HSCROLL, Some(record.hscroll())),
+                (SW_MIN_HSCROLL, Some(record.min_hscroll())),
                 // The margins, nil for none.
                 (
                     SW_LEFT_MARGIN_COLS,
@@ -1864,15 +1859,10 @@ impl Interpreter {
             ] {
                 p[field] = value.map_or(Value::Nil, Value::Integer);
             }
+            p[SW_SUSPEND_AUTO_HSCROLL] = Value::from_bool(record.suspend_auto_hscroll());
             for (field, index) in [
                 (SW_NORMAL_COLS, primitives::WINDOW_NORMAL_WIDTH_SLOT),
                 (SW_NORMAL_LINES, primitives::WINDOW_NORMAL_HEIGHT_SLOT),
-                (SW_HSCROLL, primitives::WINDOW_HSCROLL_SLOT),
-                (SW_MIN_HSCROLL, primitives::WINDOW_MIN_HSCROLL_SLOT),
-                (
-                    SW_SUSPEND_AUTO_HSCROLL,
-                    primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
-                ),
                 (SW_DISPLAY_TABLE, primitives::WINDOW_DISPLAY_TABLE_SLOT),
                 (SW_DEDICATED, primitives::WINDOW_DEDICATED_SLOT),
                 (
@@ -1936,8 +1926,7 @@ impl Interpreter {
                     copy.set_insertion_type(insertion_type && field != SW_START);
                     p[field] = Value::Marker(copy);
                 }
-                p[SW_START_AT_LINE_BEG] =
-                    Value::from_bool(slot(primitives::WINDOW_START_AT_LINE_BEG_SLOT).is_truthy());
+                p[SW_START_AT_LINE_BEG] = Value::from_bool(record.start_at_line_beg());
             }
             p[SW_PARENT] = temslot(order, link(primitives::WINDOW_PARENT_SLOT));
             p[SW_PREV] = temslot(order, link(primitives::WINDOW_PREV_SIBLING_SLOT));
@@ -2265,16 +2254,15 @@ impl Interpreter {
                 record.set_total_lines(integer(SW_TOTAL_LINES));
                 record.set_left_margin_cols(integer(SW_LEFT_MARGIN_COLS).unwrap_or(0));
                 record.set_right_margin_cols(integer(SW_RIGHT_MARGIN_COLS).unwrap_or(0));
+                record.set_hscroll(integer(SW_HSCROLL).unwrap_or(0));
+                record.set_suspend_auto_hscroll(
+                    saved_field(saved, SW_SUSPEND_AUTO_HSCROLL).is_truthy(),
+                );
+                record.set_min_hscroll(integer(SW_MIN_HSCROLL).unwrap_or(0));
             }
             for (field, index) in [
                 (SW_NORMAL_COLS, primitives::WINDOW_NORMAL_WIDTH_SLOT),
                 (SW_NORMAL_LINES, primitives::WINDOW_NORMAL_HEIGHT_SLOT),
-                (SW_HSCROLL, primitives::WINDOW_HSCROLL_SLOT),
-                (
-                    SW_SUSPEND_AUTO_HSCROLL,
-                    primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
-                ),
-                (SW_MIN_HSCROLL, primitives::WINDOW_MIN_HSCROLL_SLOT),
                 (SW_DISPLAY_TABLE, primitives::WINDOW_DISPLAY_TABLE_SLOT),
                 (SW_DEDICATED, primitives::WINDOW_DEDICATED_SLOT),
                 (
@@ -2370,10 +2358,11 @@ impl Interpreter {
                 // that points nowhere unchains the window's).
                 let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
                 self.wset_buffer(*window, object);
-                self.set_window_slot(
+                primitives::set_window_flag(
+                    self,
                     *window,
-                    primitives::WINDOW_START_AT_LINE_BEG_SLOT,
-                    Value::from_bool(saved_field(slots, SW_START_AT_LINE_BEG).is_truthy()),
+                    primitives::WindowRef::set_start_at_line_beg,
+                    saved_field(slots, SW_START_AT_LINE_BEG).is_truthy(),
                 );
                 for (slot, field) in [
                     (primitives::WINDOW_START_SLOT, SW_START),
@@ -2426,7 +2415,12 @@ impl Interpreter {
                         );
                     }
                 }
-                self.set_window_slot(*window, primitives::WINDOW_START_AT_LINE_BEG_SLOT, Value::T);
+                primitives::set_window_flag(
+                    self,
+                    *window,
+                    primitives::WindowRef::set_start_at_line_beg,
+                    true,
+                );
                 if restore_killed_function && !mini {
                     let entry = kept(self, true);
                     kept_windows.push(entry);
@@ -2442,7 +2436,12 @@ impl Interpreter {
                 for slot in primitives::WINDOW_MARKER_SLOTS {
                     primitives::set_window_marker_restricted(self, *window, slot, buffer, 0);
                 }
-                self.set_window_slot(*window, primitives::WINDOW_START_AT_LINE_BEG_SLOT, Value::T);
+                primitives::set_window_flag(
+                    self,
+                    *window,
+                    primitives::WindowRef::set_start_at_line_beg,
+                    true,
+                );
                 if !mini {
                     let dedicated = saved_field(slots, SW_DEDICATED);
                     if restore_killed_function {

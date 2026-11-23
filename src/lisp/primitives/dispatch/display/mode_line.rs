@@ -1394,10 +1394,9 @@ impl ModeLine<'_> {
                     .as_integer()
                     .unwrap_or(0);
                 // `w->column_number_displayed = col'.
-                crate::lisp::primitives::set_window_count_slot(
+                crate::lisp::primitives::set_window_column_number_displayed(
                     interp,
                     self.window_id,
-                    crate::lisp::primitives::WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT,
                     Some(column),
                 );
                 let shown = if c == 'C' { column + 1 } else { column };
@@ -1816,12 +1815,7 @@ thread_local! {
 /// set again while WINDOW_ID's formats are processed.
 pub(crate) fn begin_display_mode_lines(interp: &mut Interpreter, window_id: u64) {
     LINE_NUMBER_DISPLAYED.set(false);
-    crate::lisp::primitives::set_window_count_slot(
-        interp,
-        window_id,
-        crate::lisp::primitives::WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT,
-        None,
-    );
+    crate::lisp::primitives::set_window_column_number_displayed(interp, window_id, None);
 }
 
 /// redisplay_window after display_mode_lines: a window whose mode line
@@ -1893,7 +1887,10 @@ impl BaseLine {
 /// the live metrics answer while the window's lines are being drawn, 0
 /// (the end of the buffer) before any.
 fn window_end_pos(interp: &Interpreter, window_id: u64, z: i64) -> i64 {
-    if let Some(pos) = window_slot_value(interp, window_id, WINDOW_END_POS_SLOT).integer_value() {
+    if let Some(pos) = interp
+        .window_ref(window_id)
+        .and_then(WindowRef::window_end_pos)
+    {
         return pos;
     }
     match interactive_window_metrics() {
@@ -1909,12 +1906,9 @@ pub(super) fn record_window_end(interp: &mut Interpreter, window_id: u64, end: u
         let buffer = interp.buffer.borrow();
         buffer.size_total() + 1
     };
-    let _ = set_window_slot_value(
-        interp,
-        window_id,
-        WINDOW_END_POS_SLOT,
-        Value::Integer(z as i64 - end as i64),
-    );
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_window_end_pos(Some(z as i64 - end as i64));
+    }
 }
 
 // ── Entry points ───────────────────────────────────────────────────────

@@ -36630,16 +36630,15 @@ fn buffers_count_the_windows_showing_them() {
     // adjust_window_count, there and back, leaves the window's end and
     // base line to be found again.
     let selected = interp.selected_window_id();
-    for slot in [
-        crate::lisp::primitives::WINDOW_END_VALID_SLOT,
+    let window = interp.window_ref(selected).expect("the selected window");
+    // The window's end is valid, and its base line cached in a slot the
+    // window holds, as indexing the record's slots was.
+    window.set_window_end_valid(true);
+    window.set_held_slot(
+        &mut interp,
         crate::lisp::primitives::WINDOW_BASE_LINE_SLOT,
-    ] {
-        // A slot the window holds, as indexing the record's slots was.
-        interp
-            .window_ref(selected)
-            .expect("the selected window")
-            .set_held_slot(&mut interp, slot, Value::T);
-    }
+        Value::T,
+    );
     run(
         &mut interp,
         r#"(with-current-buffer "wc-a" (vertical-motion 0))"#,
@@ -36651,7 +36650,7 @@ fn buffers_count_the_windows_showing_them() {
             .slot_opt(slot)
             .expect("a slot the window holds")
     };
-    assert!(slot(&interp, crate::lisp::primitives::WINDOW_END_VALID_SLOT).is_truthy());
+    assert!(window.window_end_valid());
     run(
         &mut interp,
         r#"(setq wc-m (list (window-point)
@@ -36660,7 +36659,7 @@ fn buffers_count_the_windows_showing_them() {
                             (window-point)
                             (buffer-name (window-buffer))))"#,
     );
-    assert!(slot(&interp, crate::lisp::primitives::WINDOW_END_VALID_SLOT).is_nil());
+    assert!(!window.window_end_valid());
     assert!(slot(&interp, crate::lisp::primitives::WINDOW_BASE_LINE_SLOT).is_nil());
     assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (2, 0));
     run(
@@ -37234,6 +37233,220 @@ fn window_geometry_is_the_windows_own_integers() {
             ])
         );
     }
+}
+
+#[test]
+fn window_redisplay_bits_and_counters_are_the_windows_own() {
+    // window.h: change_stamp, hscroll, min_hscroll, last_modified,
+    // last_overlay_modified, last_point, column_number_displayed and
+    // window_end_pos are integers of the window, and update_mode_line,
+    // last_had_star, start_at_line_beg, force_start, optional_new_start,
+    // window_end_valid, redisplay and suspend_auto_hscroll its bits.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"))
+    };
+    let handle = |value: Value| WindowRef::from_value(&value).expect("a window");
+    let counters = |window: WindowRef| {
+        (
+            window.change_stamp(),
+            (window.hscroll(), window.min_hscroll()),
+            (window.last_modified(), window.last_overlay_modified()),
+            window.last_point(),
+            window.column_number_displayed(),
+            window.window_end_pos(),
+        )
+    };
+    let bits = |window: WindowRef| {
+        [
+            window.update_mode_line(),
+            window.last_had_star(),
+            window.start_at_line_beg(),
+            window.force_start(),
+            window.optional_new_start(),
+            window.window_end_valid(),
+            window.redisplay(),
+            window.suspend_auto_hscroll(),
+        ]
+    };
+    // The change stamp, hscroll and its minimum, the two modification
+    // counts, last point, column number displayed and window_end_pos.
+    type Counters = (i64, (i64, i64), (i64, i64), i64, i64, Option<i64>);
+    // A bit's store and its reader.
+    type Bit = (fn(WindowRef, bool), fn(WindowRef) -> bool);
+    const NEW: Counters = (0, (0, 0), (0, 0), 0, -1, None);
+
+    // make_window's window, and the dead window of a dump: the integers
+    // zero, no column number displayed (-1), no window_end_pos yet, the
+    // bits clear.
+    let id = interp.current_buffer_id();
+    let lone = make_leaf_window(&mut interp, id, 1, false, (80, 10, 0, 0));
+    interp.adjust_window_count(lone.id(), true);
+    let dead = interp.install_dead_window(3);
+    for window in [lone, dead] {
+        assert_eq!((counters(window), bits(window)), (NEW, [false; 8]));
+        assert_eq!(window_last_point(&interp, window.id()), None);
+        assert_eq!(window_column_number_displayed(&interp, window.id()), None);
+    }
+    // `w->last_point = 5' and `w->column_number_displayed = 0' are the
+    // window's integers; none is 0 of the one and -1 of the other.
+    set_window_last_point(&interp, lone.id(), Some(5));
+    set_window_column_number_displayed(&interp, lone.id(), Some(0));
+    assert_eq!((lone.last_point(), lone.column_number_displayed()), (5, 0));
+    assert_eq!(window_last_point(&interp, lone.id()), Some(5));
+    assert_eq!(window_column_number_displayed(&interp, lone.id()), Some(0));
+    set_window_last_point(&interp, lone.id(), None);
+    set_window_column_number_displayed(&interp, lone.id(), None);
+    assert_eq!((lone.last_point(), lone.column_number_displayed()), (0, -1));
+    // Each bit is stored and read by its own name, alone.
+    let stores: [Bit; 8] = [
+        (WindowRef::set_update_mode_line, WindowRef::update_mode_line),
+        (WindowRef::set_last_had_star, WindowRef::last_had_star),
+        (
+            WindowRef::set_start_at_line_beg,
+            WindowRef::start_at_line_beg,
+        ),
+        (WindowRef::set_force_start, WindowRef::force_start),
+        (
+            WindowRef::set_optional_new_start,
+            WindowRef::optional_new_start,
+        ),
+        (WindowRef::set_window_end_valid, WindowRef::window_end_valid),
+        (WindowRef::set_redisplay, WindowRef::redisplay),
+        (
+            WindowRef::set_suspend_auto_hscroll,
+            WindowRef::suspend_auto_hscroll,
+        ),
+    ];
+    for (index, (store, read)) in stores.into_iter().enumerate() {
+        set_window_flag(&mut interp, lone.id(), store, true);
+        let mut expected = [false; 8];
+        expected[index] = true;
+        assert_eq!(bits(lone), expected, "bit {index}");
+        assert!(window_flag(&interp, lone.id(), read));
+        set_window_flag(&mut interp, lone.id(), store, false);
+        assert!(!window_flag(&interp, lone.id(), read));
+    }
+    assert_eq!(bits(lone), [false; 8]);
+    // Nothing holds the two from here on: the lone window shows its
+    // buffer no longer.
+    interp.wset_buffer(lone.id(), Value::Nil);
+
+    // Fset_window_hscroll stores w->hscroll and suspends the automatic
+    // scrolling; Fscroll_left with SET-MINIMUM stores w->min_hscroll.
+    let top = handle(interp.selected_window_value());
+    run(
+        &mut interp,
+        r#"(progn (set-window-buffer nil (get-buffer-create "wr-a")) (set-buffer "wr-a") (insert "abcdef\nghi\n"))"#,
+    );
+    assert_eq!(
+        run(&mut interp, "(set-window-hscroll nil 7)"),
+        Value::Integer(7)
+    );
+    assert_eq!((top.hscroll(), top.min_hscroll()), (7, 0));
+    assert!(top.suspend_auto_hscroll());
+    assert_eq!(run(&mut interp, "(scroll-left 2 t)"), Value::Integer(9));
+    assert_eq!((top.hscroll(), top.min_hscroll()), (9, 9));
+    assert_eq!(run(&mut interp, "(window-hscroll)"), Value::Integer(9));
+
+    // Fset_window_start: the start is not known to begin a line, the
+    // window's end is not valid, redisplay must use the start unless
+    // NOFORCE, and the window and its mode line are to be redisplayed.
+    top.set_start_at_line_beg(true);
+    top.set_window_end_valid(true);
+    top.set_force_start(false);
+    top.set_update_mode_line(false);
+    top.set_redisplay(false);
+    run(&mut interp, "(set-window-start nil 1 t)");
+    assert_eq!(
+        (
+            top.start_at_line_beg(),
+            top.window_end_valid(),
+            top.force_start()
+        ),
+        (false, false, false)
+    );
+    assert!(top.update_mode_line() && top.redisplay());
+    run(&mut interp, "(set-window-start nil 1)");
+    assert!(top.force_start());
+    // Fwindow_end without a redisplay: Z less w->window_end_pos.
+    top.set_window_end_pos(Some(3));
+    assert_eq!(
+        run(&mut interp, "(- (1+ (buffer-size)) (window-end))"),
+        Value::Integer(3)
+    );
+
+    // A split's parent has the window's hscroll and suspension, as the
+    // memcpy gives it.
+    let bottom = handle(run(&mut interp, "(setq wr-bottom (split-window))"));
+    let column = handle(run(&mut interp, "(window-parent)"));
+    assert_eq!((column.hscroll(), column.min_hscroll()), (9, 9));
+    assert!(column.suspend_auto_hscroll());
+    assert_eq!((bottom.hscroll(), bottom.min_hscroll()), (0, 0));
+
+    // A copy of the image has the integers and the bits in its own
+    // windows.
+    top.set_change_stamp(41);
+    top.set_last_modified(42);
+    top.set_last_overlay_modified(43);
+    top.set_last_point(44);
+    top.set_column_number_displayed(45);
+    top.set_last_had_star(true);
+    top.set_optional_new_start(true);
+    let copy = interp.deep_clone_image();
+    for window in [top, bottom, column] {
+        let copied = copy.window_ref(window.id()).expect("the copied window");
+        assert_ne!(copied.value(), window.value());
+        assert_eq!(
+            (counters(copied), bits(copied)),
+            (counters(window), bits(window))
+        );
+    }
+    drop(copy);
+    interp.select_symbol_owner();
+
+    // A configuration saves hscroll, min_hscroll, the suspension and
+    // start_at_line_beg, and Fset_window_configuration stores them back;
+    // the other integers and bits are not its to restore.
+    top.set_start_at_line_beg(true);
+    run(&mut interp, "(setq wr-all (current-window-configuration))");
+    run(&mut interp, "(set-window-hscroll nil 1)");
+    top.set_min_hscroll(1);
+    top.set_start_at_line_beg(false);
+    top.set_suspend_auto_hscroll(false);
+    run(&mut interp, "(set-window-configuration wr-all)");
+    assert_eq!((top.hscroll(), top.min_hscroll()), (9, 9));
+    assert!(top.suspend_auto_hscroll() && top.start_at_line_beg());
+    assert_eq!(
+        (
+            top.change_stamp(),
+            top.last_modified(),
+            top.last_overlay_modified(),
+            top.last_point(),
+            top.column_number_displayed()
+        ),
+        (41, 42, 43, 44, 45)
+    );
+    assert!(top.last_had_star() && top.optional_new_start());
+
+    // set_window_buffer of another buffer: no hscroll, no suspension, a
+    // start not known to begin a line and not forced, and the window's
+    // end at the buffer's.
+    run(
+        &mut interp,
+        r#"(set-window-buffer nil (get-buffer-create "wr-b"))"#,
+    );
+    assert_eq!((top.hscroll(), top.min_hscroll()), (0, 0));
+    assert_eq!(top.window_end_pos(), Some(0));
+    assert!(!top.suspend_auto_hscroll() && !top.start_at_line_beg() && !top.force_start());
+    assert!(!top.window_end_valid());
 }
 
 #[test]

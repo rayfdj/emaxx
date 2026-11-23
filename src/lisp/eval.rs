@@ -4529,6 +4529,7 @@ impl ImageGraphCopier {
                 self.records.insert(key, copied);
                 copied_window.set_use_time(window.use_time());
                 copied_window.set_sequence_number(window.sequence_number());
+                copied_window.set_change_stamp(window.change_stamp());
                 copied_window.set_pixel_left(window.pixel_left());
                 copied_window.set_pixel_top(window.pixel_top());
                 copied_window.set_left_col(window.left_col());
@@ -4541,11 +4542,26 @@ impl ImageGraphCopier {
                 copied_window.set_old_body_pixel_height(window.old_body_pixel_height());
                 copied_window.set_total_cols(window.total_cols());
                 copied_window.set_total_lines(window.total_lines());
+                copied_window.set_hscroll(window.hscroll());
+                copied_window.set_min_hscroll(window.min_hscroll());
+                copied_window.set_last_modified(window.last_modified());
+                copied_window.set_last_overlay_modified(window.last_overlay_modified());
+                copied_window.set_last_point(window.last_point());
+                copied_window.set_column_number_displayed(window.column_number_displayed());
                 copied_window.set_left_margin_cols(window.left_margin_cols());
                 copied_window.set_right_margin_cols(window.right_margin_cols());
+                copied_window.set_window_end_pos(window.window_end_pos());
                 copied_window.set_mini(window.mini());
                 copied_window.set_horizontal(window.horizontal());
+                copied_window.set_update_mode_line(window.update_mode_line());
+                copied_window.set_last_had_star(window.last_had_star());
+                copied_window.set_start_at_line_beg(window.start_at_line_beg());
+                copied_window.set_force_start(window.force_start());
+                copied_window.set_optional_new_start(window.optional_new_start());
                 copied_window.set_cursor_off_p(window.cursor_off_p());
+                copied_window.set_window_end_valid(window.window_end_valid());
+                copied_window.set_redisplay(window.redisplay());
+                copied_window.set_suspend_auto_hscroll(window.suspend_auto_hscroll());
                 copied_window.set_contents(self.copy(&window.contents()));
                 for (index, slot) in window.held_values().enumerate() {
                     copied_window.set_held(index, self.copy(&slot));

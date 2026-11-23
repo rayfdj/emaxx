@@ -413,13 +413,12 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
     let header = object.0.as_ptr();
     // The real allocated header: lisp.h's PVEC_WINDOW, the Lisp words
     // first (the contents, then the slots) and the id, the owner and
-    // held count, the use time, the sequence number, the fourteen
-    // integers of the geometry and the bits in the twenty words after
-    // them.
+    // held count, window.h's twenty-four integers from the use time to
+    // window_end_pos and the bits in the twenty-nine words after them.
     unsafe {
         assert_eq!((*header).tag(), VectorTag::Window);
         assert_eq!(VectorTag::Window as usize, 11);
-        assert_eq!(WINDOW_REST_WORDS, 20);
+        assert_eq!((WINDOW_LISP_WORDS, WINDOW_REST_WORDS), (22, 29));
         assert_eq!(
             (*header).nbytes(),
             (1 + WINDOW_LISP_WORDS + WINDOW_REST_WORDS) * WORD_SIZE
@@ -460,28 +459,46 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
         assert_eq!(integers.read(), 41);
         assert_eq!(integers.add(1).read(), interpreter.window_sequence_number);
         assert_eq!(integers.add(1).read(), window.sequence_number());
-        // The fourteen integers of the geometry follow, in window.h's
-        // order: all zero in a window given no edge and no size.
-        let geometry = integers.add(2);
-        let read_geometry =
-            || std::array::from_fn::<i64, 14, _>(|index| geometry.add(index).read());
-        assert_eq!(read_geometry(), [0; 14]);
-        // The bits are bytes of the words after them: mini, horizontal
-        // and cursor_off_p, then one for each edge and size the window
-        // has been given.
+        // window.h's other integers follow, from change_stamp to
+        // window_end_pos in its order: all zero in a new window, but for
+        // the column number displayed, which is -1, none.
+        let fields = integers.add(2);
+        let read_fields = || std::array::from_fn::<i64, 22, _>(|index| fields.add(index).read());
+        let mut expected = [0; 22];
+        expected[18] = -1;
+        assert_eq!(read_fields(), expected);
+        assert_eq!(window.column_number_displayed(), -1);
+        // The bits are bytes of the words after them, in window.h's
+        // order from mini to suspend_auto_hscroll, then one for each
+        // edge and size and for the window_end_pos the window has been
+        // given.
         let bits = header
             .cast::<u8>()
-            .add((1 + WINDOW_LISP_WORDS + 18) * WORD_SIZE);
-        let read = || std::array::from_fn::<u8, 11, _>(|index| bits.add(index).read());
-        assert_eq!(read(), [0; 11]);
-        window.set_mini(true);
-        assert_eq!(read(), [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        window.set_horizontal(true);
-        assert_eq!(read(), [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        window.set_cursor_off_p(true);
-        assert_eq!(read(), [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+            .add((1 + WINDOW_LISP_WORDS + 26) * WORD_SIZE);
+        let read = || std::array::from_fn::<u8, 20, _>(|index| bits.add(index).read());
+        assert_eq!(read(), [0; 20]);
+        let stores: [fn(WindowRef, bool); 11] = [
+            WindowRef::set_mini,
+            WindowRef::set_horizontal,
+            WindowRef::set_update_mode_line,
+            WindowRef::set_last_had_star,
+            WindowRef::set_start_at_line_beg,
+            WindowRef::set_force_start,
+            WindowRef::set_optional_new_start,
+            WindowRef::set_cursor_off_p,
+            WindowRef::set_window_end_valid,
+            WindowRef::set_redisplay,
+            WindowRef::set_suspend_auto_hscroll,
+        ];
+        for (index, store) in stores.into_iter().enumerate() {
+            store(window, true);
+            let mut expected = [0; 20];
+            expected[..=index].fill(1);
+            assert_eq!(read(), expected, "bit {index}");
+        }
         // Each store through the handle is the object's own integer, and
-        // an edge or size given sets its bit.
+        // an edge, a size or a window_end_pos given sets its bit.
+        window.set_change_stamp(100);
         window.set_pixel_left(Some(101));
         window.set_pixel_top(Some(102));
         window.set_left_col(Some(103));
@@ -494,19 +511,28 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
         window.set_old_body_pixel_height(110);
         window.set_total_cols(Some(111));
         window.set_total_lines(Some(112));
-        window.set_left_margin_cols(113);
-        window.set_right_margin_cols(114);
+        window.set_hscroll(113);
+        window.set_min_hscroll(114);
+        window.set_last_modified(115);
+        window.set_last_overlay_modified(116);
+        window.set_last_point(117);
+        window.set_column_number_displayed(118);
+        window.set_left_margin_cols(119);
+        window.set_right_margin_cols(120);
+        window.set_window_end_pos(Some(121));
         assert_eq!(
-            read_geometry(),
-            [
-                101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114
-            ]
+            read_fields(),
+            std::array::from_fn::<i64, 22, _>(|index| 100 + index as i64)
         );
-        assert_eq!(read(), [1; 11]);
+        assert_eq!(read(), [1; 20]);
         // One taken back is zero again, its bit clear.
         window.set_total_cols(None);
-        assert_eq!(geometry.add(10).read(), 0);
-        assert_eq!(read(), [1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1]);
+        window.set_window_end_pos(None);
+        assert_eq!((fields.add(11).read(), fields.add(21).read()), (0, 0));
+        let mut expected = [1; 20];
+        expected[17] = 0;
+        expected[19] = 0;
+        assert_eq!(read(), expected);
         // No Lisp word of the object changed for any of them.
         for index in (2..WINDOW_SLOT_COUNT - 1).filter(|index| *index != WINDOW_FRAME_SLOT) {
             assert_eq!(words.add(2 + index).read(), Value::Nil.word());
@@ -516,7 +542,7 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
         std::mem::size_of::<windows::WindowState>(),
         (WINDOW_LISP_WORDS + WINDOW_REST_WORDS) * WORD_SIZE
     );
-    assert_eq!(std::mem::size_of::<windows::WindowState>(), 464);
+    assert_eq!(std::mem::size_of::<windows::WindowState>(), 408);
     assert_eq!(value.word(), object.identity() | 5);
     assert!(matches!(value.kind(), Kind::Window(same) if same.ptr_eq(&object)));
     assert!(WindowRef::from_value(&value).is_some_and(|same| same.id() == window.id()));
@@ -527,7 +553,7 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
 
 #[test]
 fn window_holds_its_first_slots_and_gains_the_rest_by_stores() {
-    use crate::lisp::primitives::{WINDOW_END_VALID_SLOT, WINDOW_FRAME_SLOT, WINDOW_START_SLOT};
+    use crate::lisp::primitives::{WINDOW_BASE_LINE_SLOT, WINDOW_FRAME_SLOT, WINDOW_START_SLOT};
     use windows::WINDOW_SLOT_COUNT;
 
     let mut interpreter = crate::lisp::eval::Interpreter::new();
@@ -539,27 +565,40 @@ fn window_holds_its_first_slots_and_gains_the_rest_by_stores() {
         window.slot_opt(WINDOW_FRAME_SLOT),
         Some(interpreter.selected_frame_value())
     );
-    // Absent, which reads as nil but is not a held nil.
-    assert_eq!(window.slot_opt(WINDOW_FRAME_SLOT + 1), None);
-    assert_eq!(window.slot(WINDOW_FRAME_SLOT + 1), Value::Nil);
+    // The one slot past the frame's, the base line's, is absent, which
+    // reads as nil but is not a held nil.
+    assert_eq!(WINDOW_BASE_LINE_SLOT, WINDOW_FRAME_SLOT + 1);
+    assert_eq!(WINDOW_SLOT_COUNT, WINDOW_BASE_LINE_SLOT + 1);
+    assert_eq!(window.slot_opt(WINDOW_BASE_LINE_SLOT), None);
+    assert_eq!(window.slot(WINDOW_BASE_LINE_SLOT), Value::Nil);
     // A store where the slot is held only: nothing for an absent one.
-    window.set_slot_if_held(&mut interpreter, WINDOW_FRAME_SLOT + 2, Value::T);
-    assert_eq!(window.slot_opt(WINDOW_FRAME_SLOT + 2), None);
+    window.set_slot_if_held(&mut interpreter, WINDOW_BASE_LINE_SLOT, Value::T);
+    assert_eq!(window.slot_opt(WINDOW_BASE_LINE_SLOT), None);
     assert_eq!(window.slots().len(), WINDOW_FRAME_SLOT + 1);
-    // ensure_slot and set_slot grow the held slots with nil.
-    window.ensure_slot(&mut interpreter, WINDOW_FRAME_SLOT + 2);
-    assert_eq!(window.slots().len(), WINDOW_FRAME_SLOT + 3);
-    assert_eq!(window.slot_opt(WINDOW_FRAME_SLOT + 1), Some(Value::Nil));
-    assert_eq!(window.slot_opt(WINDOW_FRAME_SLOT + 2), Some(Value::Nil));
-    window.set_slot_if_held(&mut interpreter, WINDOW_FRAME_SLOT + 2, Value::T);
-    assert_eq!(window.slot_opt(WINDOW_FRAME_SLOT + 2), Some(Value::T));
-    window.set_slot(&mut interpreter, WINDOW_END_VALID_SLOT, Value::Integer(5));
+    // ensure_slot grows the held slots with nil.
+    window.ensure_slot(&mut interpreter, WINDOW_BASE_LINE_SLOT);
     assert_eq!(window.slots().len(), WINDOW_SLOT_COUNT);
-    assert_eq!(
-        window.slot_opt(WINDOW_END_VALID_SLOT),
-        Some(Value::Integer(5))
-    );
-    assert_eq!(window.slot_opt(WINDOW_END_VALID_SLOT - 1), Some(Value::Nil));
+    assert_eq!(window.slot_opt(WINDOW_BASE_LINE_SLOT), Some(Value::Nil));
+    window.set_slot_if_held(&mut interpreter, WINDOW_BASE_LINE_SLOT, Value::T);
+    assert_eq!(window.slot_opt(WINDOW_BASE_LINE_SLOT), Some(Value::T));
+    // A window that holds fewer, as the dead window of a dump can: the
+    // slots between its last and one it gains are held nils.
+    let few = interpreter.install_dead_window(2);
+    assert_eq!(few.slots().len(), 2);
+    assert_eq!(few.slot_opt(2), None);
+    few.set_slot_if_held(&mut interpreter, 4, Value::T);
+    assert_eq!(few.slot_opt(4), None);
+    assert_eq!(few.slots().len(), 2);
+    few.ensure_slot(&mut interpreter, 4);
+    assert_eq!(few.slots().len(), 5);
+    assert_eq!(few.slot_opt(3), Some(Value::Nil));
+    assert_eq!(few.slot_opt(4), Some(Value::Nil));
+    few.set_slot_if_held(&mut interpreter, 4, Value::T);
+    assert_eq!(few.slot_opt(4), Some(Value::T));
+    few.set_slot(&mut interpreter, WINDOW_SLOT_COUNT - 1, Value::Integer(5));
+    assert_eq!(few.slots().len(), WINDOW_SLOT_COUNT);
+    assert_eq!(few.slot_opt(WINDOW_SLOT_COUNT - 1), Some(Value::Integer(5)));
+    assert_eq!(few.slot_opt(WINDOW_SLOT_COUNT - 2), Some(Value::Nil));
     // An ensure of a held slot changes nothing.
     window.ensure_slot(&mut interpreter, WINDOW_START_SLOT);
     assert_eq!(window.slots().len(), WINDOW_SLOT_COUNT);
