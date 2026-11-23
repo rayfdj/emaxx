@@ -25,58 +25,55 @@ pub(crate) fn interactive_window_metrics() -> Option<InteractiveWindowMetrics> {
     INTERACTIVE_WINDOW_METRICS.with(|cell| cell.get())
 }
 
-pub(crate) const WINDOW_BUFFER_SLOT: usize = 0;
-pub(crate) const WINDOW_START_SLOT: usize = 1;
-pub(crate) const WINDOW_OLD_POINT_SLOT: usize = 2;
-pub(crate) const WINDOW_KIND_SLOT: usize = 3;
-pub(crate) const WINDOW_PARAMETERS_SLOT: usize = 4;
-pub(crate) const WINDOW_PREV_BUFFERS_SLOT: usize = 5;
-pub(crate) const WINDOW_NEXT_BUFFERS_SLOT: usize = 6;
-pub(crate) const WINDOW_DEDICATED_SLOT: usize = 7;
-pub(crate) const WINDOW_NEW_PIXEL_SLOT: usize = 8;
-pub(crate) const WINDOW_NEW_TOTAL_SLOT: usize = 9;
-pub(crate) const WINDOW_NEW_NORMAL_SLOT: usize = 10;
-pub(crate) const WINDOW_DISPLAY_TABLE_SLOT: usize = 11;
-pub(crate) const WINDOW_CURSOR_TYPE_SLOT: usize = 12;
-pub(crate) const WINDOW_PARENT_SLOT: usize = 13;
-pub(crate) const WINDOW_PREV_SIBLING_SLOT: usize = 14;
-pub(crate) const WINDOW_NEXT_SIBLING_SLOT: usize = 15;
-pub(crate) const WINDOW_FIRST_CHILD_SLOT: usize = 16;
-pub(crate) const WINDOW_PIXEL_WIDTH_SLOT: usize = 17;
-pub(crate) const WINDOW_PIXEL_HEIGHT_SLOT: usize = 18;
-pub(crate) const WINDOW_PIXEL_LEFT_SLOT: usize = 19;
-pub(crate) const WINDOW_PIXEL_TOP_SLOT: usize = 20;
-pub(crate) const WINDOW_NORMAL_WIDTH_SLOT: usize = 21;
-pub(crate) const WINDOW_NORMAL_HEIGHT_SLOT: usize = 22;
-pub(crate) const WINDOW_COMBINATION_LIMIT_SLOT: usize = 23;
-pub(crate) const WINDOW_USE_TIME_SLOT: usize = 24;
-pub(crate) const WINDOW_HSCROLL_SLOT: usize = 25;
-pub(crate) const WINDOW_MIN_HSCROLL_SLOT: usize = 26;
-pub(crate) const WINDOW_SUSPEND_AUTO_HSCROLL_SLOT: usize = 27;
-pub(crate) const WINDOW_OLD_BUFFER_SLOT: usize = 28;
-pub(crate) const WINDOW_POINT_SLOT: usize = 29;
-pub(crate) const WINDOW_FRAME_SLOT: usize = 30;
+pub(crate) const WINDOW_START_SLOT: usize = 0;
+pub(crate) const WINDOW_OLD_POINT_SLOT: usize = 1;
+pub(crate) const WINDOW_PARAMETERS_SLOT: usize = 2;
+pub(crate) const WINDOW_PREV_BUFFERS_SLOT: usize = 3;
+pub(crate) const WINDOW_NEXT_BUFFERS_SLOT: usize = 4;
+pub(crate) const WINDOW_DEDICATED_SLOT: usize = 5;
+pub(crate) const WINDOW_NEW_PIXEL_SLOT: usize = 6;
+pub(crate) const WINDOW_NEW_TOTAL_SLOT: usize = 7;
+pub(crate) const WINDOW_NEW_NORMAL_SLOT: usize = 8;
+pub(crate) const WINDOW_DISPLAY_TABLE_SLOT: usize = 9;
+pub(crate) const WINDOW_CURSOR_TYPE_SLOT: usize = 10;
+pub(crate) const WINDOW_PARENT_SLOT: usize = 11;
+pub(crate) const WINDOW_PREV_SIBLING_SLOT: usize = 12;
+pub(crate) const WINDOW_NEXT_SIBLING_SLOT: usize = 13;
+pub(crate) const WINDOW_PIXEL_WIDTH_SLOT: usize = 14;
+pub(crate) const WINDOW_PIXEL_HEIGHT_SLOT: usize = 15;
+pub(crate) const WINDOW_PIXEL_LEFT_SLOT: usize = 16;
+pub(crate) const WINDOW_PIXEL_TOP_SLOT: usize = 17;
+pub(crate) const WINDOW_NORMAL_WIDTH_SLOT: usize = 18;
+pub(crate) const WINDOW_NORMAL_HEIGHT_SLOT: usize = 19;
+pub(crate) const WINDOW_COMBINATION_LIMIT_SLOT: usize = 20;
+pub(crate) const WINDOW_USE_TIME_SLOT: usize = 21;
+pub(crate) const WINDOW_HSCROLL_SLOT: usize = 22;
+pub(crate) const WINDOW_MIN_HSCROLL_SLOT: usize = 23;
+pub(crate) const WINDOW_SUSPEND_AUTO_HSCROLL_SLOT: usize = 24;
+pub(crate) const WINDOW_OLD_BUFFER_SLOT: usize = 25;
+pub(crate) const WINDOW_POINT_SLOT: usize = 26;
+pub(crate) const WINDOW_FRAME_SLOT: usize = 27;
 /// window.c's change_stamp and old pixel and body sizes: the state
 /// window_change_record_windows recorded when window change functions
 /// last ran (absent, read as 0, for a window created since).
-pub(crate) const WINDOW_CHANGE_STAMP_SLOT: usize = 31;
-pub(crate) const WINDOW_OLD_PIXEL_WIDTH_SLOT: usize = 32;
-pub(crate) const WINDOW_OLD_PIXEL_HEIGHT_SLOT: usize = 33;
-pub(crate) const WINDOW_OLD_BODY_PIXEL_WIDTH_SLOT: usize = 34;
-pub(crate) const WINDOW_OLD_BODY_PIXEL_HEIGHT_SLOT: usize = 35;
+pub(crate) const WINDOW_CHANGE_STAMP_SLOT: usize = 28;
+pub(crate) const WINDOW_OLD_PIXEL_WIDTH_SLOT: usize = 29;
+pub(crate) const WINDOW_OLD_PIXEL_HEIGHT_SLOT: usize = 30;
+pub(crate) const WINDOW_OLD_BODY_PIXEL_WIDTH_SLOT: usize = 31;
+pub(crate) const WINDOW_OLD_BODY_PIXEL_HEIGHT_SLOT: usize = 32;
 /// window.h's base_line_number and base_line_pos for the mode line's
 /// %l, with the buffer and the state they were counted under (absent,
 /// read as no cache, for a window that has not shown a line number).
-pub(crate) const WINDOW_BASE_LINE_SLOT: usize = 36;
+pub(crate) const WINDOW_BASE_LINE_SLOT: usize = 33;
 /// window.h's window_end_pos: Z minus the end of the text the window's
 /// last redisplay showed (absent before one).
-pub(crate) const WINDOW_END_POS_SLOT: usize = 37;
+pub(crate) const WINDOW_END_POS_SLOT: usize = 34;
 /// window.h's force_start, optional_new_start and start_at_line_beg:
 /// how redisplay_window treats the window's start (absent, read as
 /// false, until a command or redisplay sets them).
-pub(crate) const WINDOW_FORCE_START_SLOT: usize = 38;
-pub(crate) const WINDOW_OPTIONAL_NEW_START_SLOT: usize = 39;
-pub(crate) const WINDOW_START_AT_LINE_BEG_SLOT: usize = 40;
+pub(crate) const WINDOW_FORCE_START_SLOT: usize = 35;
+pub(crate) const WINDOW_OPTIONAL_NEW_START_SLOT: usize = 36;
+pub(crate) const WINDOW_START_AT_LINE_BEG_SLOT: usize = 37;
 /// window.h's left_col, top_line, total_cols and total_lines: the
 /// window's edges and sizes in frame columns and lines.  window.c keeps
 /// them apart from the pixel geometry and assigns them on its own
@@ -84,36 +81,36 @@ pub(crate) const WINDOW_START_AT_LINE_BEG_SLOT: usize = 40;
 /// resize_frame_windows), so the two can differ: a batch frame's root
 /// keeps pixel_top 0 while window-resize-apply-total puts its top_line
 /// below the menu bar.  A text frame's character cell is one pixel.
-pub(crate) const WINDOW_LEFT_COL_SLOT: usize = 41;
-pub(crate) const WINDOW_TOP_LINE_SLOT: usize = 42;
-pub(crate) const WINDOW_TOTAL_COLS_SLOT: usize = 43;
-pub(crate) const WINDOW_TOTAL_LINES_SLOT: usize = 44;
+pub(crate) const WINDOW_LEFT_COL_SLOT: usize = 38;
+pub(crate) const WINDOW_TOP_LINE_SLOT: usize = 39;
+pub(crate) const WINDOW_TOTAL_COLS_SLOT: usize = 40;
+pub(crate) const WINDOW_TOTAL_LINES_SLOT: usize = 41;
 /// window.h's left_margin_cols and right_margin_cols (nil for none,
 /// GNU's 0).
-pub(crate) const WINDOW_LEFT_MARGIN_COLS_SLOT: usize = 45;
-pub(crate) const WINDOW_RIGHT_MARGIN_COLS_SLOT: usize = 46;
+pub(crate) const WINDOW_LEFT_MARGIN_COLS_SLOT: usize = 42;
+pub(crate) const WINDOW_RIGHT_MARGIN_COLS_SLOT: usize = 43;
 /// window.h's redisplay and update_mode_line: the window must be
 /// redisplayed (wset_redisplay), and its mode line with it
 /// (wset_update_mode_line), until mark_window_display_accurate_1 clears
 /// them (absent, read as false).
-pub(crate) const WINDOW_REDISPLAY_SLOT: usize = 47;
-pub(crate) const WINDOW_UPDATE_MODE_LINE_SLOT: usize = 48;
+pub(crate) const WINDOW_REDISPLAY_SLOT: usize = 44;
+pub(crate) const WINDOW_UPDATE_MODE_LINE_SLOT: usize = 45;
 /// window.h's last_had_star: whether the buffer was modified when the
 /// window's mode line was last displayed.
-pub(crate) const WINDOW_LAST_HAD_STAR_SLOT: usize = 49;
+pub(crate) const WINDOW_LAST_HAD_STAR_SLOT: usize = 46;
 /// window.h's column_number_displayed: the column a `%c' or `%C' of the
 /// mode line last showed (absent or nil for -1, none).
-pub(crate) const WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT: usize = 50;
+pub(crate) const WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT: usize = 47;
 /// window.h's last_point, last_modified and last_overlay_modified: point
 /// and the buffer's modification counts as the window's last complete
 /// redisplay left them (absent, read as 0).
-pub(crate) const WINDOW_LAST_POINT_SLOT: usize = 51;
-pub(crate) const WINDOW_LAST_MODIFIED_SLOT: usize = 52;
-pub(crate) const WINDOW_LAST_OVERLAY_MODIFIED_SLOT: usize = 53;
+pub(crate) const WINDOW_LAST_POINT_SLOT: usize = 48;
+pub(crate) const WINDOW_LAST_MODIFIED_SLOT: usize = 49;
+pub(crate) const WINDOW_LAST_OVERLAY_MODIFIED_SLOT: usize = 50;
 /// window.h's window_end_valid: the window's last redisplay completed
 /// (mark_window_display_accurate_1) and nothing since asked for its
 /// display to be made anew; try_cursor_movement needs it.
-pub(crate) const WINDOW_END_VALID_SLOT: usize = 54;
+pub(crate) const WINDOW_END_VALID_SLOT: usize = 51;
 
 /// `w->window_end_valid = false'.
 pub(crate) fn invalidate_window_end(interp: &mut Interpreter, window_id: u64) {
@@ -390,65 +387,13 @@ pub(crate) fn slot_marker_position(value: Option<&Value>) -> Option<usize> {
         _ => None,
     }
 }
-/// What a window record is, held in its kind slot: what GNU's struct
-/// window tells apart by w->contents (a buffer for a leaf, the first
-/// child for an internal window, nil once deleted), w->horizontal and
-/// w->mini.  The slot holds nil for a leaf and a fixnum code otherwise, so
-/// no symbol stands for a kind and a test of one is a word compare.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum WindowKind {
-    Leaf,
-    Minibuffer,
-    InternalHorizontal,
-    InternalVertical,
-    Deleted,
-}
-
-impl WindowKind {
-    /// The kind slot's value for this kind.
-    pub(crate) fn value(self) -> Value {
-        match self {
-            WindowKind::Leaf => Value::Nil,
-            WindowKind::Minibuffer => Value::Integer(1),
-            WindowKind::InternalHorizontal => Value::Integer(2),
-            WindowKind::InternalVertical => Value::Integer(3),
-            WindowKind::Deleted => Value::Integer(4),
-        }
-    }
-
-    /// The kind a kind slot's value holds; a missing slot is a leaf's.
-    #[inline]
-    pub(crate) fn of_slot(slot: Option<&Value>) -> WindowKind {
-        match slot.and_then(Value::integer_value) {
-            Some(1) => WindowKind::Minibuffer,
-            Some(2) => WindowKind::InternalHorizontal,
-            Some(3) => WindowKind::InternalVertical,
-            Some(4) => WindowKind::Deleted,
-            _ => WindowKind::Leaf,
-        }
-    }
-
-    /// The kind of WINDOW.
-    #[inline]
-    pub(crate) fn of(window: WindowRef) -> WindowKind {
-        WindowKind::of_slot(window.slot_opt(WINDOW_KIND_SLOT).as_ref())
-    }
-
-    /// An internal window's (window_resize_check's !NILP (w->contents)
-    /// && !BUFFERP).
-    pub(crate) fn is_internal(self) -> bool {
-        matches!(
-            self,
-            WindowKind::InternalHorizontal | WindowKind::InternalVertical
-        )
-    }
-}
 
 /// A window object: the one handle a window's state is read and written
 /// through, whatever holds it (a value, a frame's field, an id in the
-/// registry).  The state behind it is the window object's own Lisp words
-/// (alloc/vectors/windows.rs), laid out by the `WINDOW_*_SLOT' constants
-/// above.
+/// registry).  The state behind it is the window object's own
+/// (alloc/vectors/windows.rs): window.h's contents and its mini and
+/// horizontal bits, and the Lisp words laid out by the `WINDOW_*_SLOT'
+/// constants above.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WindowRef(crate::lisp::types::WindowObjectRef);
 
@@ -481,10 +426,73 @@ impl WindowRef {
         Value::Window(self.0)
     }
 
-    /// What the window is (its kind slot).
+    /// w->contents: a leaf's buffer, an internal window's first child,
+    /// nil for a deleted window.  (A window `make_leaf_window' made
+    /// holds its buffer's id until wset_buffer first stores a buffer.)
     #[inline]
-    pub(crate) fn kind(self) -> WindowKind {
-        WindowKind::of(self)
+    pub(crate) fn contents(self) -> Value {
+        self.0.contents()
+    }
+
+    /// `w->contents = VALUE' and no more: the store of wset_buffer,
+    /// which counts the buffers' windows around it, and of
+    /// wset_combination.
+    #[inline]
+    pub(crate) fn set_contents(self, value: Value) {
+        self.0.set_contents(value);
+    }
+
+    /// window.h's WINDOW_VALID_P: `!NILP (w->contents)', a window of any
+    /// sort, leaf or internal, that is not deleted.
+    #[inline]
+    pub(crate) fn is_valid(self) -> bool {
+        !self.contents().is_nil()
+    }
+
+    /// window.h's WINDOW_LEAF_P, and WINDOW_LIVE_P: `BUFFERP
+    /// (w->contents)', the buffer live or not.
+    #[inline]
+    pub(crate) fn is_leaf(self) -> bool {
+        self.contents_buffer_id().is_some()
+    }
+
+    /// window.h's WINDOW_INTERNAL_P: `WINDOWP (w->contents)'.
+    #[inline]
+    pub(crate) fn is_internal(self) -> bool {
+        self.first_child().is_some()
+    }
+
+    /// An internal window's first child: w->contents where it is a
+    /// window.
+    #[inline]
+    pub(crate) fn first_child(self) -> Option<WindowRef> {
+        WindowRef::from_value(&self.contents())
+    }
+
+    /// window.h's MINI_WINDOW_P: w->mini, which a window keeps when it is
+    /// deleted.
+    #[inline]
+    pub(crate) fn mini(self) -> bool {
+        self.0.mini()
+    }
+
+    /// `w->mini = MINI'.
+    #[inline]
+    pub(crate) fn set_mini(self, mini: bool) {
+        self.0.set_mini(mini);
+    }
+
+    /// w->horizontal: an internal window's children are side by side
+    /// (WINDOW_HORIZONTAL_COMBINATION_P) or one above the other.
+    #[inline]
+    pub(crate) fn horizontal(self) -> bool {
+        self.0.horizontal()
+    }
+
+    /// `w->horizontal = HORIZONTAL'.
+    #[inline]
+    pub(crate) fn set_horizontal(self, horizontal: bool) {
+        self.0.set_horizontal(horizontal);
     }
 
     /// A copy of the slots the window holds, as make_parent_window's
@@ -494,24 +502,25 @@ impl WindowRef {
     }
 
     /// w->contents where it is a buffer, live or not
-    /// (`window_slot_buffer_id' of the buffer slot).
+    /// (`window_slot_buffer_id' of the contents).
     #[inline]
     pub(crate) fn contents_buffer_id(self) -> Option<u64> {
-        window_slot_buffer_id(self.slot_opt(WINDOW_BUFFER_SLOT).as_ref())
+        window_slot_buffer_id(Some(&self.contents()))
     }
 
     /// The live buffer the window shows (BUFFERP (w->contents) and
     /// BUFFER_LIVE_P of it), by its id.
     #[inline]
     pub(crate) fn live_buffer_id(self, interp: &Interpreter) -> Option<u64> {
-        match self.slot(WINDOW_BUFFER_SLOT).kind() {
+        match self.contents().kind() {
             // BUFFER_LIVE_P of the object itself.
             Kind::Buffer(buffer) => buffer.is_live().then_some(buffer.id),
             Kind::Integer(id) => {
                 let id = id.max(0) as u64;
                 interp.has_buffer_id(id).then_some(id)
             }
-            // w->contents nil: a deleted window, even the selected one.
+            // w->contents nil, a deleted window, even the selected one;
+            // or a window, the first child of an internal one.
             _ => None,
         }
     }
@@ -564,7 +573,6 @@ pub(crate) fn window_record_slots(
     interp: &Interpreter,
     buffer_id: Option<u64>,
     start: usize,
-    kind: Value,
     geometry: (i64, i64, i64, i64),
 ) -> Vec<Value> {
     let (width, height, left, top) = geometry;
@@ -580,50 +588,56 @@ pub(crate) fn window_record_slots(
         }
         Value::Marker(marker)
     };
-    let mut slots = vec![
-        buffer_id
-            .map(|id| Value::Integer(id as i64))
-            .unwrap_or(Value::Nil),
-        marker(false),
-        marker(true),
-        kind,
-        Value::Nil,
-        Value::Nil,
-        Value::Nil,
-        Value::Nil,
-        Value::Integer(0),
-        Value::Integer(0),
-        Value::Integer(0),
-        Value::Nil,
-        Value::T,
-        Value::Nil,
-        Value::Nil,
-        Value::Nil,
-        Value::Nil,
-        Value::Integer(width),
-        Value::Integer(height),
-        Value::Integer(left),
-        Value::Integer(top),
-        Value::float(1.0),
-        Value::float(1.0),
-        Value::Nil,
-        Value::Integer(0),
-        Value::Integer(0),
-        Value::Integer(0),
-        Value::Nil,
-        Value::Nil,
-        marker(true),
-    ];
-    slots.resize(WINDOW_SLOT_COUNT, Value::Nil);
+    // The three markers join the buffer's chain in this order.
+    let start_marker = marker(false);
+    let old_point_marker = marker(true);
+    let point_marker = marker(true);
+    let mut slots = vec![Value::Nil; WINDOW_SLOT_COUNT];
     for (slot, value) in [
-        (WINDOW_TOTAL_COLS_SLOT, width),
-        (WINDOW_TOTAL_LINES_SLOT, height),
-        (WINDOW_LEFT_COL_SLOT, left),
-        (WINDOW_TOP_LINE_SLOT, top),
+        (WINDOW_START_SLOT, start_marker),
+        (WINDOW_OLD_POINT_SLOT, old_point_marker),
+        (WINDOW_NEW_PIXEL_SLOT, Value::Integer(0)),
+        (WINDOW_NEW_TOTAL_SLOT, Value::Integer(0)),
+        (WINDOW_NEW_NORMAL_SLOT, Value::Integer(0)),
+        (WINDOW_CURSOR_TYPE_SLOT, Value::T),
+        (WINDOW_PIXEL_WIDTH_SLOT, Value::Integer(width)),
+        (WINDOW_PIXEL_HEIGHT_SLOT, Value::Integer(height)),
+        (WINDOW_PIXEL_LEFT_SLOT, Value::Integer(left)),
+        (WINDOW_PIXEL_TOP_SLOT, Value::Integer(top)),
+        (WINDOW_NORMAL_WIDTH_SLOT, Value::float(1.0)),
+        (WINDOW_NORMAL_HEIGHT_SLOT, Value::float(1.0)),
+        (WINDOW_USE_TIME_SLOT, Value::Integer(0)),
+        (WINDOW_HSCROLL_SLOT, Value::Integer(0)),
+        (WINDOW_MIN_HSCROLL_SLOT, Value::Integer(0)),
+        (WINDOW_POINT_SLOT, point_marker),
+        (WINDOW_TOTAL_COLS_SLOT, Value::Integer(width)),
+        (WINDOW_TOTAL_LINES_SLOT, Value::Integer(height)),
+        (WINDOW_LEFT_COL_SLOT, Value::Integer(left)),
+        (WINDOW_TOP_LINE_SLOT, Value::Integer(top)),
     ] {
-        slots[slot] = Value::Integer(value);
+        slots[slot] = value;
     }
     slots
+}
+
+/// window.c:make_window for a leaf that is to show BUFFER_ID from START
+/// (`window_record_slots'), a minibuffer window when MINI.  Its contents
+/// name the buffer by its id, as a new window's always have here: the
+/// buffer itself is stored by wset_buffer, when set_window_buffer first
+/// shows a buffer in the window.  The buffer's count of windows is the
+/// caller's to keep.
+pub(crate) fn make_leaf_window(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    start: usize,
+    mini: bool,
+    geometry: (i64, i64, i64, i64),
+) -> WindowRef {
+    let slots = window_record_slots(interp, Some(buffer_id), start, geometry);
+    let window = interp.make_window(slots);
+    window.set_contents(Value::Integer(buffer_id as i64));
+    window.set_mini(mini);
+    window
 }
 
 pub(crate) fn current_window_start(interp: &Interpreter) -> usize {
@@ -641,9 +655,9 @@ pub(crate) fn window_record_id_from_value(_interp: &Interpreter, value: &Value) 
     WindowRef::from_value(value).map(WindowRef::id)
 }
 
-/// w->contents of a window record's buffer slot, BUFFERP: the buffer
-/// object a leaf window shows (an id where a test built the record by
-/// hand), whether or not it is live.
+/// BUFFERP of a window's contents SLOT: the buffer a leaf window shows
+/// (by its id where `make_leaf_window' named it so), whether or not it
+/// is live.
 pub(crate) fn window_slot_buffer_id(slot: Option<&Value>) -> Option<u64> {
     match slot?.kind() {
         Kind::Buffer(buffer) => Some(buffer.id),

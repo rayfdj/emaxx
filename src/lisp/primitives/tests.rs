@@ -36674,6 +36674,146 @@ fn buffers_count_the_windows_showing_them() {
 }
 
 #[test]
+fn window_contents_and_bits_say_what_a_window_is() {
+    // window.h: w->contents is a leaf's buffer, an internal window's
+    // first child and nil for a deleted window (WINDOW_VALID_P,
+    // WINDOW_LEAF_P, WINDOW_INTERNAL_P), and w->mini and w->horizontal
+    // are bits of the window, which a deleted window keeps.
+    const LEAF: (bool, bool, bool) = (true, true, false);
+    const INTERNAL: (bool, bool, bool) = (true, false, true);
+    const DELETED: (bool, bool, bool) = (false, false, false);
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        let value = interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"));
+        interp.check_window_counts();
+        value
+    };
+    let handle = |value: Value| WindowRef::from_value(&value).expect("a window");
+    let shape = |window: WindowRef| (window.is_valid(), window.is_leaf(), window.is_internal());
+
+    // The frame's first windows: leaves, the minibuffer window with its
+    // bit, each naming its buffer.
+    let top = handle(interp.selected_window_value());
+    let mini = handle(interp.minibuffer_window_value());
+    assert_eq!((shape(top), top.mini()), (LEAF, false));
+    assert_eq!((shape(mini), mini.mini()), (LEAF, true));
+    assert_eq!(top.contents_buffer_id(), Some(interp.current_buffer_id()));
+    // wset_buffer stores the buffer itself.
+    run(
+        &mut interp,
+        r#"(set-window-buffer nil (get-buffer-create "wk-a"))"#,
+    );
+    let buffer = run(&mut interp, "(window-buffer)");
+    assert!(matches!(buffer.kind(), Kind::Buffer(_)));
+    assert_eq!(top.contents(), buffer);
+
+    // A split makes a parent, a vertical combination whose contents are
+    // its first child, and a leaf showing the old window's buffer.
+    let bottom = handle(run(&mut interp, "(setq wk-bottom (split-window))"));
+    let column = handle(run(&mut interp, "(setq wk-column (window-parent))"));
+    assert_eq!((shape(column), column.horizontal()), (INTERNAL, false));
+    assert_eq!(column.contents(), top.value());
+    assert_eq!(column.first_child().map(WindowRef::id), Some(top.id()));
+    assert!(!column.mini() && column.contents_buffer_id().is_none());
+    assert_eq!((shape(bottom), bottom.contents()), (LEAF, buffer));
+    // A split the other way makes a horizontal combination; a window
+    // put before the first child becomes the contents (wset_combination).
+    let right = handle(run(
+        &mut interp,
+        "(setq wk-right (split-window wk-bottom nil t))",
+    ));
+    let row = handle(run(&mut interp, "(setq wk-row (window-parent wk-bottom))"));
+    assert_eq!((shape(row), row.horizontal()), (INTERNAL, true));
+    assert_eq!(row.contents(), bottom.value());
+    let left = handle(run(
+        &mut interp,
+        "(setq wk-left (split-window wk-bottom nil 'left))",
+    ));
+    assert_eq!(row.contents(), left.value());
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (eq (window-top-child wk-column) (frame-first-window))
+                   (window-left-child wk-column)
+                   (eq (window-left-child wk-row) wk-left)
+                   (window-top-child wk-row)
+                   (window-buffer wk-row)
+                   (window-live-p wk-row) (window-valid-p wk-row))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T
+        ])
+    );
+
+    // Deleted windows have no contents, and that alone says so: the
+    // leaves, and the parents left with one child.  The bits stay.
+    run(&mut interp, "(setq wk-all (current-window-configuration))");
+    run(&mut interp, "(delete-window wk-left)");
+    assert_eq!((shape(left), left.contents()), (DELETED, Value::Nil));
+    assert_eq!(row.contents(), bottom.value());
+    run(&mut interp, "(delete-window wk-right)");
+    assert_eq!(shape(right), DELETED);
+    assert_eq!((shape(row), row.horizontal()), (DELETED, true));
+    assert_eq!(shape(bottom), LEAF);
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-valid-p wk-row) (window-live-p wk-left) (window-buffer wk-left)
+                   (equal (condition-case err (window-parent wk-row) (error err))
+                          (list 'wrong-type-argument 'window-valid-p wk-row)))"
+        ),
+        Value::list([Value::Nil, Value::Nil, Value::Nil, Value::T])
+    );
+
+    // Fset_window_configuration deletes the frame's windows and revives
+    // the saved ones: a leaf by its buffer, a parent by its first child
+    // and the direction its sizes give it.
+    run(&mut interp, "(delete-other-windows)");
+    assert_eq!((shape(column), column.horizontal()), (DELETED, false));
+    run(&mut interp, "(set-window-configuration wk-all)");
+    for leaf in [top, bottom, left, right] {
+        assert_eq!((shape(leaf), leaf.contents()), (LEAF, buffer));
+    }
+    assert_eq!((shape(column), column.horizontal()), (INTERNAL, false));
+    assert_eq!(column.contents(), top.value());
+    assert_eq!((shape(row), row.horizontal()), (INTERNAL, true));
+    assert_eq!(row.contents(), left.value());
+    assert_eq!((shape(mini), mini.mini()), (LEAF, true));
+
+    // window.c:wset_buffer and wset_combination on a window of no frame:
+    // a minibuffer window keeps its bit without contents, and a window
+    // that stops being a combination keeps its direction.
+    let id = interp.current_buffer_id();
+    let shown = interp.buffer_window_count(id);
+    let lone = make_leaf_window(&mut interp, id, 1, true, (80, 1, 0, 0));
+    interp.adjust_window_count(lone.id(), true);
+    assert_eq!(interp.buffer_window_count(id), shown + 1);
+    assert_eq!((shape(lone), lone.mini()), (LEAF, true));
+    interp.wset_buffer(lone.id(), Value::Nil);
+    assert_eq!(interp.buffer_window_count(id), shown);
+    assert_eq!((shape(lone), lone.mini()), (DELETED, true));
+    interp.wset_combination(lone.id(), true, top.value());
+    assert_eq!((shape(lone), lone.horizontal()), (INTERNAL, true));
+    assert_eq!(lone.contents(), top.value());
+    interp.wset_combination(lone.id(), false, Value::Nil);
+    assert_eq!((shape(lone), lone.horizontal()), (DELETED, true));
+    interp.check_window_counts();
+}
+
+#[test]
 fn a_deleted_window_keeps_its_buffer_for_a_later_configuration() {
     // window.c:delete_all_child_windows leaves a leaf's buffer in its
     // combination limit, and any later Fset_window_configuration that

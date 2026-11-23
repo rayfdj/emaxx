@@ -442,7 +442,7 @@ fn window_resize_apply_total(interp: &mut Interpreter, window: u64, horflag: boo
     let Some(horizontal) = window_combination(interp, window) else {
         return;
     };
-    let mut child = window_link(interp, window, WINDOW_FIRST_CHILD_SLOT);
+    let mut child = window_first_child(interp, window);
     while let Some(child_id) = child {
         set_window_char_slot(
             interp,

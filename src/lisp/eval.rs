@@ -4527,6 +4527,9 @@ impl ImageGraphCopier {
                 );
                 let copied = Value::Window(copied_window);
                 self.records.insert(key, copied);
+                copied_window.set_mini(window.mini());
+                copied_window.set_horizontal(window.horizontal());
+                copied_window.set_contents(self.copy(&window.contents()));
                 for (index, slot) in window.held_values().enumerate() {
                     copied_window.set_held(index, self.copy(&slot));
                 }
@@ -5452,19 +5455,14 @@ impl Interpreter {
     }
 
     /// A window the image held, which pdumper.c:dump_nilled_pseudovec
-    /// wrote with every Lisp field nil: a deleted window of the new
-    /// process (w->contents nil), holding HELD nil slots, on no frame and
-    /// with no sequence number.  Its id is this state's next, so it names
-    /// no window this process made and none it makes later: the dumping
-    /// process's id is not an identity here.
+    /// wrote with every Lisp field nil and the rest zero: a deleted
+    /// window of the new process (w->contents nil, its bits clear),
+    /// holding HELD nil slots, on no frame and with no sequence number.
+    /// Its id is this state's next, so it names no window this process
+    /// made and none it makes later: the dumping process's id is not an
+    /// identity here.
     pub(crate) fn install_dead_window(&mut self, held: usize) -> primitives::WindowRef {
-        let window = self.allocate_window(held.max(primitives::WINDOW_KIND_SLOT + 1));
-        // A nil kind slot is a leaf's; contents nil is a deleted window.
-        window.set_held(
-            primitives::WINDOW_KIND_SLOT,
-            primitives::WindowKind::Deleted.value(),
-        );
-        primitives::WindowRef::from_object(window)
+        primitives::WindowRef::from_object(self.allocate_window(held))
     }
 
     /// A terminal the image nilled: a dead terminal object of its own,
@@ -9124,19 +9122,20 @@ impl Interpreter {
             interp.define_special_variable(name, value);
         }
         let buffer_start = interp.buffer.borrow().point_min();
-        let selected_window_slots = primitives::window_record_slots(
-            &interp,
-            Some(interp.current_buffer_id),
-            buffer_start,
-            Value::Nil,
-            (
-                interp.frame_width(),
-                interp.frame_height().saturating_sub(1).max(1),
-                0,
-                0,
-            ),
+        let selected_window_geometry = (
+            interp.frame_width(),
+            interp.frame_height().saturating_sub(1).max(1),
+            0,
+            0,
         );
-        let selected_window = interp.make_window(selected_window_slots);
+        let selected_window_buffer = interp.current_buffer_id;
+        let selected_window = primitives::make_leaf_window(
+            &mut interp,
+            selected_window_buffer,
+            buffer_start,
+            false,
+            selected_window_geometry,
+        );
         interp.set_selected_window_id(selected_window.id());
         interp.set_root_window_id(selected_window.id());
         interp.old_selected_window_id = selected_window.id();
@@ -9155,19 +9154,20 @@ impl Interpreter {
             .buffer_object(1)
             .map_or(Value::Nil, |buffer| buffer.borrow().name());
         interp.buffer_list.push((1, messages_name));
-        let minibuffer_window_slots = primitives::window_record_slots(
-            &interp,
-            Some(minibuffer_buffer_id),
+        let minibuffer_window_geometry = (
+            interp.frame_width(),
             1,
-            primitives::WindowKind::Minibuffer.value(),
-            (
-                interp.frame_width(),
-                1,
-                0,
-                interp.frame_height().saturating_sub(1).max(1),
-            ),
+            0,
+            interp.frame_height().saturating_sub(1).max(1),
         );
-        let minibuffer_window = interp.make_window(minibuffer_window_slots);
+        // make_frame: `mw->mini = 1'.
+        let minibuffer_window = primitives::make_leaf_window(
+            &mut interp,
+            minibuffer_buffer_id,
+            1,
+            true,
+            minibuffer_window_geometry,
+        );
         interp.set_minibuffer_window_id(minibuffer_window.id());
         // The two windows show their buffers from the start.
         interp.recount_buffer_windows();

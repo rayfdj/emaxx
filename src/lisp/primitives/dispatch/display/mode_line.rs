@@ -1942,7 +1942,9 @@ pub(super) fn format_mode_line(
         match window_buffer_id(interp, &window) {
             Some(id) => interp.buffer_value(id).unwrap_or(Value::Nil),
             None => {
-                let contents = window_slot_value(interp, window_id, WINDOW_FIRST_CHILD_SLOT);
+                // An internal window's contents, its first child.
+                let contents = window_first_child(interp, window_id)
+                    .map_or(Value::Nil, |child| interp.window_value(child));
                 return Err(LispError::WrongTypeArgument("bufferp".into(), contents));
             }
         }

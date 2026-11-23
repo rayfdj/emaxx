@@ -1,20 +1,25 @@
 //! window.h:struct window, PVEC_WINDOW: a window's Lisp words in the
 //! object itself, traced as alloc.c:mark_window traces its Lisp fields.
 //!
-//! The words are still the slots the `WINDOW_*_SLOT' constants of
-//! primitives/window.rs number, not yet window.h's fields by name.  A
-//! window holds the first `held' of them: a slot past that count is one
-//! the window has never been given (it reads as absent, where a held
-//! slot reads as its value, nil included), and a store that needs it
-//! raises the count.  The id is the name the interpreter's side tables
-//! still know the window by, the owner whose id space it is in.
+//! `contents' is window.h's field of that name, and `mini' and
+//! `horizontal' its bits.  The other words are still the slots the
+//! `WINDOW_*_SLOT' constants of primitives/window.rs number, not yet
+//! window.h's fields by name.  A window holds the first `held' of them: a
+//! slot past that count is one the window has never been given (it reads
+//! as absent, where a held slot reads as its value, nil included), and a
+//! store that needs it raises the count.  The id is the name the
+//! interpreter's side tables still know the window by, the owner whose id
+//! space it is in.
 
 use super::{VectorTag, Vectorlike, VectorlikeRef};
 use crate::lisp::types::Value;
 use std::cell::Cell;
 
-/// How many Lisp slots a window has.
-pub(crate) const WINDOW_SLOT_COUNT: usize = 55;
+/// How many Lisp slots a window has, beside its contents.
+pub(crate) const WINDOW_SLOT_COUNT: usize = 52;
+
+/// The window's Lisp words: its contents and its slots.
+pub(crate) const WINDOW_LISP_WORDS: usize = 1 + WINDOW_SLOT_COUNT;
 
 /// window.c allocates struct window as a full pseudovector.  Its
 /// configured VECSIZE is 66 words, including the header word: what
@@ -26,44 +31,62 @@ pub(crate) const WINDOW_GNU_VECTOR_SLOTS: usize = 66;
 /// window is enumerated.
 pub(crate) const WINDOW_TYPE_NAME: &str = "window";
 
-/// The payload after the one-word vector header: the Lisp slots first,
+/// The payload after the one-word vector header: the Lisp words first,
 /// as a pseudovector's traced words are, then the fields that are not
 /// Lisp objects.
 #[repr(C)]
 pub struct WindowState {
+    /// window.h's contents: "For a leaf window or a tooltip window this
+    /// is the buffer shown in the window; for a combination window this
+    /// is the first of its child windows", a buffer for a minibuffer
+    /// window as well; nil for a deleted window.
+    contents: Cell<Value>,
     slots: [Cell<Value>; WINDOW_SLOT_COUNT],
     id: u64,
     owner: u32,
     /// How many of the slots the window holds, from the first.
     held: Cell<u32>,
+    /// window.h's mini: "True if this window is a minibuffer window."
+    mini: Cell<bool>,
+    /// window.h's horizontal: "Meaningful for internal windows only:
+    /// true if this window is a horizontal combination, false if it is a
+    /// vertical combination."
+    horizontal: Cell<bool>,
 }
 
 pub type WindowObjectRef = VectorlikeRef<WindowState>;
 
 const _: () = {
-    assert!(size_of::<WindowState>() == 8 * (WINDOW_SLOT_COUNT + 2));
-    assert!(std::mem::offset_of!(WindowState, slots) == 0);
-    assert!(std::mem::offset_of!(WindowState, id) == 8 * WINDOW_SLOT_COUNT);
-    assert!(std::mem::offset_of!(WindowState, owner) == 8 * WINDOW_SLOT_COUNT + 8);
-    assert!(std::mem::offset_of!(WindowState, held) == 8 * WINDOW_SLOT_COUNT + 12);
+    assert!(size_of::<WindowState>() == 8 * (WINDOW_LISP_WORDS + 3));
+    assert!(std::mem::offset_of!(WindowState, contents) == 0);
+    assert!(std::mem::offset_of!(WindowState, slots) == 8);
+    assert!(std::mem::offset_of!(WindowState, id) == 8 * WINDOW_LISP_WORDS);
+    assert!(std::mem::offset_of!(WindowState, owner) == 8 * WINDOW_LISP_WORDS + 8);
+    assert!(std::mem::offset_of!(WindowState, held) == 8 * WINDOW_LISP_WORDS + 12);
+    assert!(std::mem::offset_of!(WindowState, mini) == 8 * WINDOW_LISP_WORDS + 16);
+    assert!(std::mem::offset_of!(WindowState, horizontal) == 8 * WINDOW_LISP_WORDS + 17);
 };
 
 impl Vectorlike for WindowState {
     const TAG: VectorTag = VectorTag::Window;
-    const LISP_SLOTS: usize = WINDOW_SLOT_COUNT;
+    const LISP_SLOTS: usize = WINDOW_LISP_WORDS;
 }
 
 impl WindowObjectRef {
     /// window.c:make_window's allocate_window: a window of ID in OWNER's
-    /// id space that holds HELD slots, each nil.  The caller that makes
-    /// one for Lisp tallies its consing (`WINDOW_GNU_VECTOR_SLOTS').
+    /// id space that holds HELD slots, each nil, with no contents and
+    /// its bits clear.  The caller that makes one for Lisp tallies its
+    /// consing (`WINDOW_GNU_VECTOR_SLOTS').
     pub(crate) fn new(id: u64, owner: u32, held: usize) -> Self {
         assert!(held <= WINDOW_SLOT_COUNT, "a window holds its slots");
         Self::allocate(WindowState {
+            contents: Cell::new(Value::Nil),
             slots: [const { Cell::new(Value::Nil) }; WINDOW_SLOT_COUNT],
             id,
             owner,
             held: Cell::new(held as u32),
+            mini: Cell::new(false),
+            horizontal: Cell::new(false),
         })
     }
 }
@@ -79,6 +102,41 @@ impl WindowState {
     #[inline(always)]
     pub(crate) fn owner(&self) -> u32 {
         self.owner
+    }
+
+    /// w->contents.
+    #[inline(always)]
+    pub(crate) fn contents(&self) -> Value {
+        self.contents.get()
+    }
+
+    /// `w->contents = VALUE', the store of window.c's wset_buffer and
+    /// wset_combination.
+    #[inline(always)]
+    pub(crate) fn set_contents(&self, value: Value) {
+        self.contents.set(value);
+    }
+
+    /// w->mini.
+    #[inline(always)]
+    pub(crate) fn mini(&self) -> bool {
+        self.mini.get()
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_mini(&self, mini: bool) {
+        self.mini.set(mini);
+    }
+
+    /// w->horizontal.
+    #[inline(always)]
+    pub(crate) fn horizontal(&self) -> bool {
+        self.horizontal.get()
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_horizontal(&self, horizontal: bool) {
+        self.horizontal.set(horizontal);
     }
 
     /// How many slots the window holds.
@@ -135,8 +193,10 @@ impl WindowState {
     }
 
     /// alloc.c:mark_window's mark_vectorlike: every Lisp word of the
-    /// window, held or not (a slot the window does not hold is nil).
+    /// window, its contents and each slot, held or not (a slot the
+    /// window does not hold is nil).
     pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
+        visit(&self.contents.get());
         for slot in &self.slots {
             visit(&slot.get());
         }
@@ -149,6 +209,8 @@ impl std::fmt::Debug for WindowState {
             .field("id", &self.id)
             .field("owner", &self.owner)
             .field("held", &self.held.get())
+            .field("mini", &self.mini.get())
+            .field("horizontal", &self.horizontal.get())
             .finish_non_exhaustive()
     }
 }

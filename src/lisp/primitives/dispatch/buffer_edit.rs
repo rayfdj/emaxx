@@ -2440,18 +2440,8 @@ fn live_motion_window(interp: &Interpreter, value: &Value) -> Result<Value, Lisp
     } else {
         *value
     };
-    let Some(window_id) = window_record_id_from_value(interp, &window) else {
-        return Err(wrong_type_argument("window-live-p", window));
-    };
-    let kind = interp.window_ref(window_id).map_or(
-        crate::lisp::primitives::WindowKind::Leaf,
-        crate::lisp::primitives::WindowRef::kind,
-    );
-    if !matches!(
-        kind,
-        crate::lisp::primitives::WindowKind::Leaf | crate::lisp::primitives::WindowKind::Minibuffer
-    ) || window_buffer_id(interp, &window).is_none()
-    {
+    // WINDOW_LIVE_P: its contents a buffer, a live one.
+    if window_buffer_id(interp, &window).is_none() {
         return Err(wrong_type_argument("window-live-p", window));
     }
     Ok(window)
@@ -2960,7 +2950,7 @@ pub(crate) fn visual_vertical_motion_from(
     let current = interp.current_buffer_id();
     let shown = interp
         .window_ref(window_id)
-        .map_or(Value::Nil, |record| record.slot(WINDOW_BUFFER_SLOT));
+        .map_or(Value::Nil, crate::lisp::primitives::WindowRef::contents);
     if crate::lisp::primitives::window_slot_buffer_id(Some(&shown)) == Some(current) {
         return vertical_motion_in_window(interp, env, window_id, n, goal_col, start_x);
     }
