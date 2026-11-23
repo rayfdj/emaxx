@@ -157,6 +157,22 @@ impl StringObjectRef {
         (unsafe { state.bytes_unbounded() }, state.len())
     }
 
+    /// `SDATA', `SBYTES' and `STRING_MULTIBYTE' with no guard counted:
+    /// the bytes and whether they are the multibyte encoding, for a
+    /// reader that decodes them and runs no Lisp.
+    ///
+    /// # Safety
+    /// As `bytes_unguarded's.
+    #[inline]
+    pub(crate) unsafe fn bytes_and_multibyte_unguarded<'a>(&self) -> (&'a [u8], bool) {
+        let cell = self.cell();
+        assert!(cell.borrows.get() >= 0, "string already mutably borrowed");
+        // SAFETY: as the caller's contract.
+        let state = unsafe { &*cell.state.get() };
+        // SAFETY: as the caller's contract.
+        (unsafe { state.bytes_unbounded() }, state.is_multibyte())
+    }
+
     /// `bytes_unguarded' for code bytes that were current when
     /// `code_changes' last read what it reads now: no mutable guard on
     /// them has been taken since (taking one counts a change), and none

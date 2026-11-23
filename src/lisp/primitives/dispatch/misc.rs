@@ -911,11 +911,14 @@ define_dispatch!(
             }
             "make-symbol" => {
                 need_args(name, args, 1)?;
-                let base = string_text(&args[0])?;
-                let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-                Ok(Value::Symbol(
-                    crate::lisp::types::SymbolName::make_uninterned(args[0], &base, id),
-                ))
+                // alloc.c:Fmake_symbol: CHECK_STRING, then a symbol named
+                // by the string itself.
+                if !matches!(args[0].kind(), Kind::StringObject(_)) {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                }
+                Ok(Value::Symbol(crate::lisp::types::SymbolName::make_symbol(
+                    args[0],
+                )))
             }
             "autoload" => {
                 if args.len() < 2 || args.len() > 5 {

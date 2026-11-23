@@ -2085,11 +2085,9 @@ impl Loader<'_> {
         }
         let key = self.symbol_key(offset)?;
         if interned == SYMBOL_UNINTERNED {
-            return Ok(SymbolName::make_uninterned(
-                name,
-                key,
-                next_make_symbol_id(),
-            ));
+            // Fmake_symbol of the record's name, its key text built only
+            // if a reader asks for it.
+            return Ok(SymbolName::make_symbol(name));
         }
         if interned == SYMBOL_INTERNED {
             if !crate::lisp::types::is_private_obarray_symbol(key) {

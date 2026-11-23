@@ -658,34 +658,44 @@ impl SymbolName {
         Self::new_uninterned(name, make_uninterned_symbol_name(visible, id))
     }
 
-    /// Fmake_symbol under the private TEXT a caller marked
-    /// (`make_uninterned_symbol_name'), named LISP_NAME or, for none, a
-    /// string of TEXT's visible part.
-    pub(crate) fn make_uninterned_with_text(text: String, lisp_name: Option<Value>) -> Self {
-        let lisp_name = lisp_name
-            .unwrap_or_else(|| Value::String(SharedText::from(visible_symbol_name(&text))));
-        Self::new_uninterned(lisp_name, text)
-    }
-
     fn new_uninterned(lisp_name: Value, internal: String) -> Self {
         let name = Self::allocate(internal, lisp_name);
         name.cell().mark_uninterned();
         name
     }
 
-    /// The name's text; its lifetime is the symbol's, which the collector
-    /// keeps while the symbol is reachable (an interned one, always).
+    /// alloc.c:Fmake_symbol after its CHECK_STRING: a new uninterned
+    /// symbol whose name is the string NAME itself (init_symbol).  No host
+    /// text is made for it: `as_str' builds one if a reader asks.
+    pub(crate) fn make_symbol(name: Value) -> Self {
+        let symbol = Self::allocate_with_text(crate::lisp::alloc::SymbolText::pending(), name);
+        symbol.cell().mark_uninterned();
+        symbol
+    }
+
+    /// The host text; its lifetime is the symbol's, which the collector
+    /// keeps while the symbol is reachable (an interned one, always).  A
+    /// symbol of `make_symbol' gets its text at the first request.
+    #[inline]
     pub fn as_str(&self) -> &str {
-        self.0.internal.as_str()
+        host_text(self.cell())
+    }
+
+    /// The host text if the symbol has one yet: None for a symbol of
+    /// `make_symbol' whose text no reader has asked for.
+    #[inline(always)]
+    pub(crate) fn host_text_if_built(&self) -> Option<&str> {
+        self.0.internal.get()
     }
 
     /// EQ to the symbol named TEXT in the initial obarray, as C compares a
     /// symbol with its DEFSYM: the name alone does not make an uninterned
     /// symbol or a private obarray's one that symbol.  (Their host text
-    /// carries a marker, so it never equals a plain name.)
+    /// carries a marker, so it never equals a plain name; a pending text,
+    /// which would be built with the marker, is not built to say so.)
     #[inline]
     pub fn is_named(&self, text: &str) -> bool {
-        self.as_str() == text
+        self.0.internal.get() == Some(text)
     }
 
     pub(crate) fn identity_ptr(&self) -> usize {
@@ -2162,9 +2172,11 @@ impl Value {
         if self.0 & TAG_MASK == TAG_SYMBOL && !matches!(self.0, 0 | 48 | 96) {
             // SAFETY: a symbol-tagged word names a symbol cell; symbol
             // cells are swept after the vectors and the conses. Its host
-            // key is immutable and the borrow cannot outlive this handle.
+            // key, once written, is immutable and the borrow cannot
+            // outlive this handle.  A pending key is built from the name,
+            // a string, and strings are swept after the symbols.
             let cell = unsafe { &*(self.0 as *const crate::lisp::alloc::SymbolCell) };
-            Some(cell.internal.as_str())
+            Some(host_text(cell))
         } else {
             None
         }
@@ -2524,6 +2536,39 @@ fn memq_environment(
 
 pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
     marked_symbol_name(base, UNINTERNED_SYMBOL_MARKER, id)
+}
+
+/// CELL's host text, built first if it is pending.
+#[inline(always)]
+fn host_text(cell: &crate::lisp::alloc::SymbolCell) -> &str {
+    match cell.internal.get() {
+        Some(text) => text,
+        None => build_host_text(cell),
+    }
+}
+
+/// The host text of a pending symbol, one of `make_symbol': its name as
+/// the string holds it now, the marker and the next of `make-symbol''s
+/// ids (`make_uninterned_symbol_name').
+#[cold]
+#[inline(never)]
+fn build_host_text(cell: &crate::lisp::alloc::SymbolCell) -> &str {
+    let visible = match cell.lisp_name.get().kind() {
+        Kind::StringObject(name) => {
+            // SAFETY: the bytes are read and decoded here and now, a read
+            // like oblookup's: nothing stores into the name or collects
+            // while they are in use.
+            let (bytes, multibyte) = unsafe { name.bytes_and_multibyte_unguarded() };
+            string_data::decode_bytes(bytes, multibyte)
+                .expect("stored string bytes have the internal encoding")
+                .0
+        }
+        _ => String::new(),
+    };
+    cell.internal.install(make_uninterned_symbol_name(
+        &visible,
+        crate::lisp::primitives::next_make_symbol_id(),
+    ))
 }
 
 pub(crate) fn make_obarray_symbol_name(base: &str, obarray_id: u64) -> String {
@@ -4376,6 +4421,114 @@ mod tests {
             assert!(
                 census_live_uninterned_symbols() <= before,
                 "the unreached uninterned symbols are swept"
+            );
+        });
+    }
+
+    #[test]
+    fn make_symbol_builds_no_host_text_until_a_reader_asks_for_one() {
+        // alloc.c:Fmake_symbol: the symbol is named by the string itself,
+        // and its host text is built only when a reader asks for it.
+        let name = Value::string("pending");
+        let first = SymbolName::make_symbol(name);
+        let second = SymbolName::make_symbol(Value::string("pending"));
+        assert!(first.cell().is_uninterned());
+        assert!(first.host_text_if_built().is_none());
+        assert!(first.lisp_name().eq_value(name), "(eq (symbol-name s) str)");
+        // The pending text is no literal's: none is built to say so.
+        assert!(!first.is_named("pending"));
+        assert!(first.host_text_if_built().is_none());
+        // The text read from the word alone is built as `as_str' builds it.
+        let text = Value::Symbol(first)
+            .symbol_str()
+            .expect("a symbol's text")
+            .to_owned();
+        assert!(second.host_text_if_built().is_none());
+        // Built, each text is its own symbol's, and stays as it was built.
+        assert_eq!(first.host_text_if_built(), Some(text.as_str()));
+        assert_eq!(super::visible_symbol_name(&text), "pending");
+        assert_eq!(super::visible_symbol_name(second.as_str()), "pending");
+        assert_ne!(first.as_str(), second.as_str());
+        assert_ne!(first, second);
+        assert!(!first.is_named("pending") && !second.is_named("pending"));
+        assert_eq!(first.as_str(), text);
+    }
+
+    #[test]
+    fn a_pending_host_text_is_built_from_the_name_as_it_is_then() {
+        // GNU's symbol has the name its string has now: a text built after
+        // an `aset' of the name reads the new name, one built before keeps
+        // the old (until the host text goes).
+        crate::lisp::runtime::with_runtime(|| {
+            let mut interp = crate::lisp::eval::Interpreter::new();
+            let mut env = super::Env::new();
+            let mut call = |name: &str, args: &[Value]| {
+                crate::lisp::primitives::call(&mut interp, name, args, &mut env)
+                    .unwrap_or_else(|error| panic!("{name}: {error:?}"))
+            };
+            let renamed = call("copy-sequence", &[Value::string("abc")]);
+            let before = call("make-symbol", &[renamed]);
+            let built = call("copy-sequence", &[Value::string("abc")]);
+            let after = call("make-symbol", &[built]);
+            let (Kind::Symbol(before), Kind::Symbol(after)) = (before.kind(), after.kind()) else {
+                panic!("make-symbol makes symbols")
+            };
+            assert!(before.lisp_name().eq_value(renamed));
+            assert!(before.host_text_if_built().is_none());
+            assert_eq!(super::visible_symbol_name(after.as_str()), "abc");
+            for string in [renamed, built] {
+                call(
+                    "aset",
+                    &[string, Value::Integer(0), Value::Integer('z' as i64)],
+                );
+            }
+            assert_eq!(super::visible_symbol_name(before.as_str()), "zbc");
+            assert_eq!(super::visible_symbol_name(after.as_str()), "abc");
+            // CHECK_STRING, as before.
+            let error = crate::lisp::primitives::call(
+                &mut interp,
+                "make-symbol",
+                &[Value::symbol("abc")],
+                &mut env,
+            )
+            .expect_err("a symbol is no name");
+            assert!(matches!(
+                error.kind(),
+                crate::lisp::types::LispErrorKind::WrongTypeArgument(predicate, _)
+                    if predicate == "stringp"
+            ));
+        });
+    }
+
+    #[test]
+    fn pending_uninterned_symbols_remain_reclaimable() {
+        // As `uninterned_symbols_remain_reclaimable', for symbols of
+        // `make_symbol': those whose text was built, and those whose text
+        // never was (the sweep frees no text for them).
+        #[inline(never)]
+        fn make(count: usize) {
+            for index in 0..count {
+                let symbol = SymbolName::make_symbol(Value::string("temporary"));
+                assert!(symbol.cell().is_uninterned());
+                if index % 2 == 0 {
+                    assert_eq!(super::visible_symbol_name(symbol.as_str()), "temporary");
+                }
+            }
+        }
+        crate::lisp::runtime::with_runtime(|| {
+            let mut interp = crate::lisp::eval::Interpreter::new();
+            let mut env = super::Env::new();
+            crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+                .expect("collect");
+            let before = census_live_uninterned_symbols();
+            make(64);
+            assert_eq!(census_live_uninterned_symbols(), before + 64);
+            crate::lisp::alloc::clobber_stack();
+            crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+                .expect("collect");
+            assert!(
+                census_live_uninterned_symbols() <= before,
+                "the unreached pending symbols are swept"
             );
         });
     }

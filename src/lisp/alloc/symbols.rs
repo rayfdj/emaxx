@@ -21,55 +21,95 @@ use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 
-/// The immutable host text a symbol keeps beside its Lisp name: a box the
-/// cell owns and frees with it, or text of the permanent image, which
-/// lives as long as the process.  Two words: the text's address, and its
-/// length with the top bit set when the box is the cell's.
+/// The host text a symbol keeps beside its Lisp name, written once and
+/// never changed after: a box the cell owns and frees with it, text of
+/// the permanent image, which lives as long as the process, or none yet
+/// (`pending': a symbol of Fmake_symbol, whose text is built when a
+/// reader first asks for one).  Two words: the text's address, null
+/// while the text is pending, and its length with the top bit set when
+/// the box is the cell's.
+///
+/// The words are cells, so the one write of a pending text goes through
+/// a shared reference: symbols are read and written by the one Lisp
+/// thread that runs, as `ProcessTable's tables are, and no reference to
+/// a pending text exists (`get' gives none), so no reader sees the words
+/// change.
 #[repr(C)]
 pub(crate) struct SymbolText {
-    text: NonNull<u8>,
-    len: usize,
+    text: Cell<*const u8>,
+    len: Cell<usize>,
 }
 
 const OWNED_TEXT: usize = 1 << (usize::BITS - 1);
 
 impl SymbolText {
     pub(crate) fn owned(text: String) -> Self {
+        let (text, len) = Self::boxed(text);
+        Self {
+            text: Cell::new(text),
+            len: Cell::new(len),
+        }
+    }
+
+    /// TEXT in a box of its own, and the length word that says so.
+    fn boxed(text: String) -> (*const u8, usize) {
         let len = text.len();
         let text = Box::into_raw(text.into_boxed_str());
-        Self {
-            // SAFETY: a box's pointer is never null.
-            text: unsafe { NonNull::new_unchecked(text.cast::<u8>()) },
-            len: len | OWNED_TEXT,
-        }
+        (text.cast::<u8>().cast_const(), len | OWNED_TEXT)
     }
 
     /// TEXT of the permanent image.
     pub(crate) fn image(text: &'static str) -> Self {
         Self {
-            text: NonNull::from(text.as_bytes()).cast(),
-            len: text.len(),
+            text: Cell::new(text.as_ptr()),
+            len: Cell::new(text.len()),
         }
     }
 
-    #[inline(always)]
-    pub(crate) fn as_str(&self) -> &str {
-        // SAFETY: the text was a `str' and is never written.
-        unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                self.text.as_ptr(),
-                self.len & !OWNED_TEXT,
-            ))
+    /// No text yet: `install' writes it.
+    pub(crate) const fn pending() -> Self {
+        Self {
+            text: Cell::new(std::ptr::null()),
+            len: Cell::new(0),
         }
+    }
+
+    /// The text, or None while it is pending.
+    #[inline(always)]
+    pub(crate) fn get(&self) -> Option<&str> {
+        let text = self.text.get();
+        if text.is_null() {
+            return None;
+        }
+        // SAFETY: a written text was a `str' and is never written again;
+        // a box is freed only with the cell.
+        Some(unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                text,
+                self.len.get() & !OWNED_TEXT,
+            ))
+        })
+    }
+
+    /// Write TEXT as the text of a pending symbol, once (see the type).
+    pub(crate) fn install(&self, text: String) -> &str {
+        assert!(
+            self.text.get().is_null(),
+            "a symbol's host text written twice"
+        );
+        let (text, len) = Self::boxed(text);
+        self.len.set(len);
+        self.text.set(text);
+        self.get().expect("the text just written")
     }
 }
 
 impl Drop for SymbolText {
     fn drop(&mut self) {
-        if self.len & OWNED_TEXT != 0 {
-            let text =
-                std::ptr::slice_from_raw_parts_mut(self.text.as_ptr(), self.len & !OWNED_TEXT);
-            // SAFETY: the owned text is the box `owned' made.
+        let (text, len) = (self.text.get(), self.len.get());
+        if !text.is_null() && len & OWNED_TEXT != 0 {
+            let text = std::ptr::slice_from_raw_parts_mut(text.cast_mut(), len & !OWNED_TEXT);
+            // SAFETY: the owned text is the box `boxed' made.
             drop(unsafe { Box::from_raw(text as *mut str) });
         }
     }
@@ -479,7 +519,9 @@ impl SymbolCell {
     }
 
     pub(crate) fn set_c_slot(&self, present: bool) {
-        let name = self.internal.as_str();
+        // A pending text, an uninterned symbol's, names none of the C
+        // variables the tables list.
+        let name = self.internal.get().unwrap_or("");
         let kboard = if crate::lisp::types::symbols::KEYBOARD_VARIABLES.contains(&name) {
             KBOARD_FORWARD
         } else {

@@ -454,3 +454,24 @@ fn uninterned_lambda_list_keywords_and_heads_are_not_keywords() {
 fn uninterned_and_private_symbols_print_as_gnu_does() {
     assert_gnu_answers(PRINTED_ANSWERS);
 }
+
+/// The name of an uninterned symbol is its string as it is when it is
+/// read: the key `json-serialize' writes for one whose name `aset'
+/// changed after `make-symbol', and the name `#:' reads with a control
+/// character quoted in it.  Each answered otherwise while every such
+/// symbol was made with a host text of the name it had then.
+const NAMED_AS_THE_STRING_IS_ANSWERS: &[(&str, &str)] = &[
+    (
+        "(let* ((str (copy-sequence \"abc\")) (s (make-symbol str))) (aset str 0 ?z) (json-serialize (list (cons s 1))))",
+        "\"{\\\"zbc\\\":1}\"",
+    ),
+    (
+        "(let ((s (read (concat \"#:a\\\\\" (string #x1f) \"b\")))) (list (length (symbol-name s)) (symbol-name s)))",
+        "(3 \"a\u{1f}b\")",
+    ),
+];
+
+#[test]
+fn uninterned_symbols_are_named_as_their_strings_are() {
+    assert_gnu_answers(NAMED_AS_THE_STRING_IS_ANSWERS);
+}
