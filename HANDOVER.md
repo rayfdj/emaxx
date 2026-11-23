@@ -125,10 +125,13 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   redisplay counters and the redisplay bits are the window's own
   integers and bits, 21 numbered Lisp slots being left; the counts are
   unchanged, and one `split-window-internal' counts 117 vector cells
-  (GNU 149), the count following the object's interim size.  The
-  stages that give the object window.h's offsets and size and take the
-  ids away follow; the item closes when a window is GNU's `struct
-  window' and the counts are GNU's.
+  (GNU 149), the count following the object's interim size.  Round
+  375 is the fifth: the interpreter, configurations, redisplay and every
+  Rust signature hold the window itself, no id (an accessor 323.3, a
+  native call of one 117.7).  The stages that take the registry and the
+  ids away and give the object window.h's offsets and size follow; the
+  item closes when a window is GNU's `struct window' and the counts are
+  GNU's.
 - **In progress: D4** (native code calling a primitive).  Round 374:
   the plan (docs/plans/d4-native-subrs.md) and its first two stages;
   sixteen type predicates of data.c are their own link-table entries,
@@ -19672,6 +19675,95 @@ setup_process_coding_systems's check now refuses). A 13-form
   src/anti_cheat.rs as changed infrastructure (the sixteen contract
   entries appended to the inventory, nothing else), and 1,675 changed
   lines with two tests and twenty assertions added, none removed.
+- **Round 375: Rust code names a window by the window (M2, D3 and A3.5,
+  the fifth stage; neither is closed).**  GNU's C names a window by its
+  pointer or its Lisp object everywhere.  Emaxx's Rust code named one
+  by a number: the interpreter held the ids of the selected window,
+  the window selected before the minibuffer and the previously
+  selected one, the minibuffer's runtime the id of its window, a
+  configuration's snapshot those of its selected and root windows and a
+  configuration record the selected window as a fixnum; 163 parameters
+  and fields were `u64' ids, and each use found the object again in the
+  weak registry, a freed id answering none.  **Holders keep the
+  object**: `Interpreter::selected_window' (marked with the static
+  roots), `old_selected_window', `minibuffer_selected_window' and the
+  minibuffer's `active_window' (marked directly where they were marked
+  through the registry), the snapshot's two windows and the active
+  minibuffer's (locals on the Rust stack, scanned, the snapshot traced
+  as well), a configuration record's slot 1 (the window itself, traced
+  with the record, as `selected_window' of GNU's save_window_data is),
+  and the lists redisplay and the terminal keep (`WindowList', the
+  layout, `TtyState's views and last layout, rooted vectors).  **The
+  currency is the window**: the 163 ids in signatures and helper types
+  are 0, `selected_window_id' is gone (105 uses), a primitive decodes
+  its argument once (decode_live_window, decode_valid_window and
+  decode_any_window's shapes) and passes the handle, and the registry's
+  lookups by id went from 197 to 21, all in tests.  What still knows
+  an id is the registry itself, the object's id and owner, the sweep's
+  note of a freed window, the dumper's key and the loader: the next
+  stage.  **What may differ, each looked at**: a holder keeps its
+  window alive where the old code could find the id freed, and sees a
+  deleted window as it would have before any collection
+  (`active-minibuffer-window' answered the selected window for a freed
+  id and answers the window it holds); the terminal's views keep a
+  deleted window alive until the next redisplay, which only a weak
+  table or the collector's counts could show; a list walked while a
+  hook deletes its windows meets a deleted window where it met a
+  missing id; the paths for "no window at all" (a frame without a
+  root) changed shape where only a frame before the first one exists
+  could take them.  A window deleted and collected within one command
+  now stays reachable until the next redisplay drops it from the
+  terminal's views, as GNU's does (a finalizer on one of its parameters
+  and a weak table keyed by it answer GNU's before and after a first
+  `garbage-collect', where the previous build had already freed it).
+  Three paths of the old code that could panic on a freed id are gone
+  with the ids: the minibuffer's unwind found its calling window by an
+  unrooted id, the window selected before a minibuffer was restored by
+  one, and `window_at_frame_coordinates' could look up id 0, no
+  window.  **Counts**: six window accessors from byte code
+  323.3 instructions each (324.9 before; GNU 244.2), a native call of
+  one 117.7 (122.4; GNU 48.0); these accessors took no registry lookup
+  before either, so what separates them from GNU's is not the registry
+  (the lifted primitive's dispatch and the general native entry are).
+  For the probes of the earlier stages the output is GNU's or the
+  previous build's as before, and a new one of the holders (the
+  selected and minibuffer windows and configurations through deletions
+  and collections) reads alike in GNU, the previous build and this one.
+  Five tests are new (the lists and tables that hold windows survive
+  collections and deletions); 23 assertions state the same facts
+  through the window where they named an id.
+  The independent review (the one question: does the round cheat or
+  break something) read the whole diff, every removed lookup branch and
+  the marking code, listed every structure field holding a window (the
+  holders above and stack structures only), compared some thirty
+  converted functions old against new (the decoders, the tree and
+  configuration functions, the show and unshow paths, the mode line,
+  the motion and the frame-size code: no swapped window, no reordered
+  side effect, no changed error, no new unwrap where none was handled),
+  ran fifteen deletion and collection scenarios and a fuzz of every
+  window, frame, scroll, motion and minibuffer primitive with nine odd
+  arguments each (GNU, the build before and this one byte-identical,
+  the fuzz between the two builds), drove two terminal sessions of 59
+  screens through splits, deletion, resizing, completion, a recursive
+  minibuffer, `C-x 4' and `C-x 5' commands and configurations (every
+  screen alike before and after), and ran the dump and load pair.  It
+  found no cheat and nothing broken, and noted that the comment of the
+  redisplay walks' layout table rested its safety on no Lisp running
+  between the walks, which the code does not show; the comment now
+  gives the reason that holds (each key is a window redisplay's layout
+  keeps for the whole redisplay, and a key is compared by address,
+  never followed).
+  Validation of the six commits (gate profile, one test thread a
+  process): the grouped gate 3,548 passed, 0 failed, 2 ignored (five
+  library tests more); cli 30, cli_parity 174, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 1, package_lifecycle 5, runtime_ownership
+  3; clippy `-D warnings' and rustfmt clean.  The seventh commit changes
+  one comment, after the review: rustfmt and clippy `-D warnings' are
+  clean on it.  The round audit reports no hard finding; it lists 23
+  assertions changed (each states its fact through the window, where it
+  named an id), two results dropped where the old lines dropped them
+  (reformatted), and 5,236 changed lines with five tests and 72
+  assertions added.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -22960,6 +23052,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (217) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 375 and its review), outside the
+  round.**  One line each: with `minibuffer-setup-hook' deleting
+  `(minibuffer-selected-window)' and collecting, the keys typed to M-x
+  go into the buffer, where GNU reads them in the minibuffer (alike
+  before and after the round; in no milestone);
+  `delete-other-windows-vertically' given the minibuffer window loops
+  without end in GNU and Emaxx alike (window.el's own loop), and when
+  memory runs out GNU's lisp_align_malloc signals memory_full while
+  Emaxx's block allocator aborts: a crash, so it joins M3 as D133
+  (round 277 ported memory_full to the large allocations, not to the
+  blocks conses and the other small objects come from).
 - **Found after the scope lock (round 374 and its review), outside the
   round and in no milestone.**  One line each: the link-table entries
   of `symbolp' and `bare-symbol-p' answer t for the unbound marker
