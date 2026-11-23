@@ -19168,6 +19168,13 @@ setup_process_coding_systems's check now refuses). A 13-form
   native_comp_identity 1, native_thread_continuations 1,
   package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
   rustfmt clean; the round audit reports no hard finding.
+- **Round 369 is unfinished: its draft is packaged in `wip/r369/`, and
+  `src/` is round 368's.**  The subject is the first stage of making a
+  window GNU's `struct window' (D3, A3.5): every access to a window's
+  state goes through one handle, with no behaviour meant to change.
+  `wip/r369/impl.patch` is the change as a diff against round 368 and
+  `wip/r369/README.md` its state.  Nothing under `wip/` is built or
+  tested by the gate.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
