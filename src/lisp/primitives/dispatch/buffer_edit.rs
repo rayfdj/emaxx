@@ -707,7 +707,7 @@ define_dispatch!(
                 // init_iterator frees the frame's realized faces after a
                 // face change.
                 if crate::lisp::primitives::interactive_window_metrics().is_some() {
-                    interp.init_iterator_faces_window(w.id());
+                    interp.init_iterator_faces_window(w);
                 }
                 let moved = visual_vertical_motion_from(interp, env, w, n, goal_col, start_x)?;
                 Ok(Value::Integer(moved))
@@ -1885,7 +1885,7 @@ pub(crate) fn window_text_geometry(
 ) -> crate::tty::WindowTextGeometry {
     let lnum_cols = window_line_number_columns(interp, env, window);
     let truncate = crate::tty::window_truncates(interp, window, interp.current_buffer_id());
-    let state = crate::lisp::primitives::window_hscroll_state(interp, window);
+    let state = crate::lisp::primitives::window_hscroll_state(window);
     let hscroll = state.hscroll.max(0) as usize;
     let min_hscroll = state.min_hscroll.max(0) as usize;
     let current_line = auto_hscrolls_current_line(interp);
@@ -1919,7 +1919,7 @@ pub(crate) fn iterator_first_visible(
     window: WindowRef,
     truncate: bool,
 ) -> usize {
-    let state = crate::lisp::primitives::window_hscroll_state(interp, window);
+    let state = crate::lisp::primitives::window_hscroll_state(window);
     if truncate && auto_hscrolls_current_line(interp) && !state.suspended {
         state.min_hscroll.max(0) as usize
     } else {
@@ -2951,7 +2951,7 @@ pub(crate) fn visual_vertical_motion_from(
         return vertical_motion_in_window(interp, env, w, n, goal_col, start_x);
     }
     // marker_position (w->pointm), for restore_window_buffer.
-    let old_point = match window_marker(interp, w.id(), WINDOW_POINT_SLOT) {
+    let old_point = match window_marker(w, WINDOW_POINT_SLOT) {
         Some(marker) => Some(
             marker
                 .position()
@@ -2960,9 +2960,9 @@ pub(crate) fn visual_vertical_motion_from(
         None => None,
     };
     let object = interp.buffer_value(current).unwrap_or(Value::Nil);
-    interp.wset_buffer(w.id(), object);
+    interp.wset_buffer(w, object);
     let point = interp.buffer.borrow().point();
-    set_window_marker(interp, w.id(), WINDOW_POINT_SLOT, current, point);
+    set_window_marker(interp, w, WINDOW_POINT_SLOT, current, point);
     let result = vertical_motion_in_window(interp, env, w, n, goal_col, start_x);
     // restore_window_buffer, however the motion ended: its
     // decode_live_window first, then the window's buffer and its point
@@ -2972,14 +2972,14 @@ pub(crate) fn visual_vertical_motion_from(
     if window_buffer_id(interp, &window).is_none() {
         return Err(wrong_type_argument("window-live-p", window));
     }
-    interp.wset_buffer(w.id(), shown);
+    interp.wset_buffer(w, shown);
     if let (Some(buffer), Some(point)) = (
         crate::lisp::primitives::window_slot_buffer_id(Some(&shown)),
         old_point,
     ) {
         if interp.has_buffer_id(buffer) {
-            set_window_marker(interp, w.id(), WINDOW_POINT_SLOT, buffer, point);
-        } else if let Some(marker) = window_marker(interp, w.id(), WINDOW_POINT_SLOT) {
+            set_window_marker(interp, w, WINDOW_POINT_SLOT, buffer, point);
+        } else if let Some(marker) = window_marker(w, WINDOW_POINT_SLOT) {
             marker.detach();
         }
     }

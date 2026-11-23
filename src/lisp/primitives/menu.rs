@@ -1497,9 +1497,10 @@ fn sbytes(string: &Value) -> usize {
 }
 
 /// FRAME_HAS_MINIBUF_P: F has a minibuffer window of its own.
-fn frame_has_minibuffer(interp: &Interpreter, f: crate::lisp::types::FrameRef) -> bool {
-    let mini = f.borrow().minibuffer_window_id();
-    mini != 0 && interp.window_frame_id(mini) == Some(f)
+fn frame_has_minibuffer(f: crate::lisp::types::FrameRef) -> bool {
+    f.borrow()
+        .minibuffer_window
+        .is_some_and(|mini| mini.frame() == Some(f))
 }
 
 /// term.c:tty_menu_add_pane: a new pane, on the outer-most level.
@@ -1868,7 +1869,7 @@ fn tty_menu_show_1(
         y -= (uly + height) - dispheight;
         uly = dispheight - height;
     }
-    if frame_has_minibuffer(interp, f) && uly + height > dispheight - 2 {
+    if frame_has_minibuffer(f) && uly + height > dispheight - 2 {
         // Move the menu away of the echo area, to avoid overwriting the
         // menu with help echo messages or vice versa.
         if super::dispatch::display::echo_area_message_value().is_some() {
@@ -2004,9 +2005,11 @@ pub(crate) fn update_menu_bar(
     if frame.borrow().menu_bar_lines <= 0 || !changed {
         return Ok(hooks_run);
     }
-    let window = frame.borrow().selected_window_id();
-    let window_value = interp.window_value(window);
-    let buffer = super::window_buffer_id(interp, &window_value);
+    let window = frame
+        .borrow()
+        .selected_window
+        .expect("a live frame has a selected window");
+    let buffer = window.live_buffer_id(interp);
     let prev = interp.current_buffer_id();
     // record_unwind_save_match_data: here when SAVE_MATCH_DATA, around
     // the frame loop in prepare_menu_bars otherwise.
@@ -2060,7 +2063,7 @@ pub(crate) fn update_menu_bar(
         frame.borrow_mut().menu_bar_items = items;
         // On a terminal screen the menu bar is an ordinary screen line,
         // which this makes redisplay update.
-        super::set_window_flag(interp, window, super::WindowRef::set_update_mode_line, true);
+        window.set_update_mode_line(true);
         Ok(hooks_run)
     })();
     let unbound = match &result {

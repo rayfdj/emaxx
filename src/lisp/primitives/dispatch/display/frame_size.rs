@@ -22,12 +22,12 @@ pub(crate) fn frame_top_margin(frame: FrameRef) -> i64 {
 
 /// FRAME's minibuffer window when it shows one below its root window
 /// (FRAME_HAS_MINIBUF_P and not FRAME_MINIBUF_ONLY_P).
-fn frame_mini_window(interp: &Interpreter, frame: FrameRef) -> Option<WindowRef> {
+fn frame_mini_window(frame: FrameRef) -> Option<WindowRef> {
     let (root, mini) = {
         let frame = frame.borrow();
         (frame.root_window, frame.minibuffer_window)
     };
-    mini.filter(|mini| Some(*mini) != root && interp.window_frame_id(mini.id()) == Some(frame))
+    mini.filter(|mini| Some(*mini) != root && mini.frame() == Some(frame))
 }
 
 /// frame.c:set_menu_bar_lines: a text frame's menu bar takes VALUE's
@@ -223,7 +223,7 @@ pub(crate) fn adjust_frame_size(
     let Some(root) = root else {
         return Ok(());
     };
-    let mini = frame_mini_window(interp, frame);
+    let mini = frame_mini_window(frame);
     let old_inner_width = window_geometry(interp, root).0;
     let old_inner_height =
         window_geometry(interp, root).1 + mini.map_or(0, |mini| window_geometry(interp, mini).1);
@@ -362,7 +362,7 @@ fn resize_frame_windows(
         return Ok(());
     };
     let old_pixel_size = window_pixel_size(interp, root, horflag);
-    let mini = frame_mini_window(interp, frame);
+    let mini = frame_mini_window(frame);
     // unit + m->pixel_height - window_body_height (m): a mini window has
     // no mode, header or tab line, so one line.
     let mini_height = if mini.is_some() { 1 } else { 0 };
@@ -459,11 +459,7 @@ fn window_resize_apply_total(window: WindowRef, horflag: bool) {
 /// window.c:Fwindow_resize_apply_total: FRAME's windows take their new
 /// total sizes, the root window at column 0 below the bars and the mini
 /// window below it.
-pub(super) fn window_resize_apply_total_for_frame(
-    interp: &mut Interpreter,
-    frame: FrameRef,
-    horizontal: bool,
-) {
+pub(super) fn window_resize_apply_total_for_frame(frame: FrameRef, horizontal: bool) {
     let Some(root) = frame.borrow().root_window else {
         return;
     };
@@ -471,7 +467,7 @@ pub(super) fn window_resize_apply_total_for_frame(
     root.set_left_col(Some(0));
     root.set_top_line(Some(frame_top_margin(frame)));
     window_resize_apply_total(root, horizontal);
-    if let Some(mini) = frame_mini_window(interp, frame) {
+    if let Some(mini) = frame_mini_window(frame) {
         let new_total = mini
             .slot(WINDOW_NEW_TOTAL_SLOT)
             .integer_value()

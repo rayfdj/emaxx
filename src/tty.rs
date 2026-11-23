@@ -1369,7 +1369,7 @@ fn draw_echo_row_composed(
         if let Some(mini) = interpreter.minibuffer_window()
             && mini != interpreter.selected_window_ref()
         {
-            interpreter.wset_redisplay(mini.id());
+            interpreter.wset_redisplay(mini);
         }
         return;
     }
@@ -1481,7 +1481,7 @@ fn mark_mini_window_for_echo_cursor(interpreter: &mut Interpreter) {
         .is_some_and(|value| value.is_truthy())
         && let Some(mini) = interpreter.minibuffer_window()
     {
-        interpreter.wset_redisplay(mini.id());
+        interpreter.wset_redisplay(mini);
     }
 }
 
@@ -1786,7 +1786,7 @@ fn window_render_geometry(
             None => TRUNCATE_PARTIAL_WIDTH > info.width as i64,
         };
 
-    let state = crate::lisp::primitives::window_hscroll_state(interpreter, info.window);
+    let state = crate::lisp::primitives::window_hscroll_state(info.window);
     let mut hscroll = state.hscroll.max(0);
     let mut suspended = state.suspended;
     let point = info.point as i64;
@@ -2431,9 +2431,7 @@ impl<'a> CharacterDisplayContext<'a> {
             let mut align_to = -1i64;
             match self.pixel_width(&prop, Some(&mut align_to)) {
                 Some(target) => {
-                    let left = self
-                        .interpreter
-                        .window_margins(self.window.id())
+                    let left = crate::lisp::primitives::window_margin_cols(self.window)
                         .0
                         .unwrap_or(0)
                         .max(0);
@@ -5611,7 +5609,7 @@ pub(crate) fn window_truncates(
             .unwrap_or(Value::Nil)
     };
     if value("truncate-lines").is_truthy()
-        || crate::lisp::primitives::window_hscroll_state(interpreter, window).hscroll > 0
+        || crate::lisp::primitives::window_hscroll_state(window).hscroll > 0
     {
         return true;
     }
@@ -6457,7 +6455,6 @@ fn with_window_point<T>(
         let point = {
             let buffer = interpreter.buffer.borrow();
             let marker = crate::lisp::primitives::window_marker_position(
-                interpreter,
                 info.window,
                 crate::lisp::primitives::WINDOW_POINT_SLOT,
             )
@@ -6466,7 +6463,7 @@ fn with_window_point<T>(
         };
         crate::lisp::primitives::set_window_marker(
             interpreter,
-            info.window.id(),
+            info.window,
             crate::lisp::primitives::WINDOW_POINT_SLOT,
             info.buffer_id,
             point,
@@ -7694,7 +7691,6 @@ fn fontify_iterated_text(
         interpreter.buffer.borrow().point()
     } else {
         crate::lisp::primitives::window_marker_position(
-            interpreter,
             window,
             crate::lisp::primitives::WINDOW_POINT_SLOT,
         )
@@ -8356,7 +8352,7 @@ fn redraw_with_echo_policy(
         // window's start line, which planning itself may move
         // (recentering); iterate until the width the plan was laid out
         // with matches the width its final top line asks for.
-        let (left_margin, right_margin) = interpreter.window_margins(info.window.id());
+        let (left_margin, right_margin) = crate::lisp::primitives::window_margin_cols(info.window);
         let left_margin = left_margin.unwrap_or(0).max(0) as usize;
         let right_margin = right_margin.unwrap_or(0).max(0) as usize;
         let left_margin = left_margin.min(body_width.saturating_sub(1));

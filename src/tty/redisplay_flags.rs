@@ -32,7 +32,7 @@ pub(super) fn window_point(interp: &Interpreter, window: WindowRef) -> Option<us
         let buffer = window_buffer(interp, window)?;
         Some(interp.buffer_point_by_id(buffer))
     } else {
-        window_marker_position(interp, window, WINDOW_POINT_SLOT)
+        window_marker_position(window, WINDOW_POINT_SLOT)
     }
 }
 
@@ -93,7 +93,7 @@ pub(super) fn needs_no_redisplay(interp: &Interpreter, window: WindowRef) -> boo
     if !redisplay_some_p(interp) || window.redisplay() || window.update_mode_line() {
         return false;
     }
-    if interp.window_frame_id(window.id()).is_some_and(|frame| {
+    if window.frame().is_some_and(|frame| {
         let frame = frame.borrow();
         frame.face_change || frame.redisplay
     }) {

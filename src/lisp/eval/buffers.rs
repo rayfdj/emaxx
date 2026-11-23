@@ -362,7 +362,7 @@ impl Interpreter {
         if !window.suspend_auto_hscroll() || window.live_buffer_id(self) != Some(buffer_id) {
             return None;
         }
-        crate::lisp::primitives::window_marker_position(self, window, WINDOW_OLD_POINT_SLOT)
+        crate::lisp::primitives::window_marker_position(window, WINDOW_OLD_POINT_SLOT)
     }
 
     /// The selected window's w->suspend_auto_hscroll.

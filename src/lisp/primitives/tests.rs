@@ -30966,7 +30966,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     .expect("a form is present");
     interp.eval(&spec, &mut env).expect("spec installs");
 
-    let selected_before = interp.selected_window_id();
+    let selected_before = interp.selected_window_ref();
     let buffer_before = interp.current_buffer_id();
     let point_before = interp.buffer.borrow().point();
     let metrics = crate::lisp::primitives::InteractiveWindowMetrics { window_end: 14 };
@@ -30991,7 +30991,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         "L reflects the window's point, not the selected window's: {mode_line:?}"
     );
     assert_eq!(
-        interp.selected_window_id(),
+        interp.selected_window_ref(),
         selected_before,
         "selection restored"
     );
@@ -36632,8 +36632,7 @@ fn buffers_count_the_windows_showing_them() {
     // shows that buffer for as long as the motion takes, and
     // adjust_window_count, there and back, leaves the window's end and
     // base line to be found again.
-    let selected = interp.selected_window_id();
-    let window = interp.window_ref(selected).expect("the selected window");
+    let window = interp.selected_window_ref();
     // The window's end is valid, and its base line cached in a slot the
     // window holds, as indexing the record's slots was.
     window.set_window_end_valid(true);
@@ -36648,8 +36647,7 @@ fn buffers_count_the_windows_showing_them() {
     );
     let slot = |interp: &Interpreter, slot: usize| {
         interp
-            .window_ref(selected)
-            .expect("the selected window")
+            .selected_window_ref()
             .slot_opt(slot)
             .expect("a slot the window holds")
     };
@@ -36872,16 +36870,16 @@ fn window_contents_and_bits_say_what_a_window_is() {
     let id = interp.current_buffer_id();
     let shown = interp.buffer_window_count(id);
     let lone = make_leaf_window(&mut interp, id, 1, true, (80, 1, 0, 0));
-    interp.adjust_window_count(lone.id(), true);
+    interp.adjust_window_count(lone, true);
     assert_eq!(interp.buffer_window_count(id), shown + 1);
     assert_eq!((shape(lone), lone.mini()), (LEAF, true));
-    interp.wset_buffer(lone.id(), Value::Nil);
+    interp.wset_buffer(lone, Value::Nil);
     assert_eq!(interp.buffer_window_count(id), shown);
     assert_eq!((shape(lone), lone.mini()), (DELETED, true));
-    interp.wset_combination(lone.id(), true, top.value());
+    interp.wset_combination(lone, true, top.value());
     assert_eq!((shape(lone), lone.horizontal()), (INTERNAL, true));
     assert_eq!(lone.contents(), top.value());
-    interp.wset_combination(lone.id(), false, Value::Nil);
+    interp.wset_combination(lone, false, Value::Nil);
     assert_eq!((shape(lone), lone.horizontal()), (DELETED, true));
     interp.check_window_counts();
 }
@@ -37053,12 +37051,12 @@ fn window_geometry_is_the_windows_own_integers() {
     // old sizes and no margins.
     let id = interp.current_buffer_id();
     let lone = make_leaf_window(&mut interp, id, 1, false, (80, 10, 3, 4));
-    interp.adjust_window_count(lone.id(), true);
+    interp.adjust_window_count(lone, true);
     assert_eq!(pixels(lone), (Some(80), Some(10), Some(3), Some(4)));
     assert_eq!(chars(lone), (None, None, None, None));
     assert_eq!(window_char_geometry(lone), (80, 10, 3, 4));
     assert_eq!((old_sizes(lone), margins(lone)), ((0, 0, 0, 0), (0, 0)));
-    assert_eq!(window_margin_cols(&interp, lone.id()), (None, None));
+    assert_eq!(window_margin_cols(lone), (None, None));
     // `w->total_cols = 70' and `w->top_line = 6' are the window's own,
     // apart from its pixels; the others still read as those.
     lone.set_total_cols(Some(70));
@@ -37077,7 +37075,7 @@ fn window_geometry_is_the_windows_own_integers() {
     assert_eq!((old_sizes(dead), margins(dead)), ((0, 0, 0, 0), (0, 0)));
     // Nothing holds the two from here on: the lone window shows its
     // buffer no longer.
-    interp.wset_buffer(lone.id(), Value::Nil);
+    interp.wset_buffer(lone, Value::Nil);
 
     // The frame's windows: what Lisp reads is the window's integers.
     let top = handle(interp.selected_window_value());
@@ -37291,7 +37289,7 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
     // bits clear.
     let id = interp.current_buffer_id();
     let lone = make_leaf_window(&mut interp, id, 1, false, (80, 10, 0, 0));
-    interp.adjust_window_count(lone.id(), true);
+    interp.adjust_window_count(lone, true);
     let dead = interp.install_dead_window(3);
     for window in [lone, dead] {
         assert_eq!((counters(window), bits(window)), (NEW, [false; 8]));
@@ -37340,7 +37338,7 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
     assert_eq!(bits(lone), [false; 8]);
     // Nothing holds the two from here on: the lone window shows its
     // buffer no longer.
-    interp.wset_buffer(lone.id(), Value::Nil);
+    interp.wset_buffer(lone, Value::Nil);
 
     // Fset_window_hscroll stores w->hscroll and suspends the automatic
     // scrolling; Fscroll_left with SET-MINIMUM stores w->min_hscroll.

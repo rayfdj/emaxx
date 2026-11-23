@@ -997,19 +997,6 @@ impl Interpreter {
         };
         terminal.borrow().live.then_some(terminal)
     }
-
-    /// window.c stores the owning frame on every window, including internal
-    /// and deleted windows. It must survive a frame switch and frame deletion.
-    pub(crate) fn window_frame_id(&self, id: u64) -> Option<crate::lisp::types::FrameRef> {
-        match self
-            .window_ref(id)?
-            .slot(crate::lisp::primitives::WINDOW_FRAME_SLOT)
-            .kind()
-        {
-            Kind::Frame(id) => Some(id),
-            _ => None,
-        }
-    }
 }
 
 impl Interpreter {
@@ -1143,8 +1130,8 @@ impl Interpreter {
         let mini = p::make_leaf_window(self, mini_buffer_id, 1, true, (width, 1, 0, height - 1));
         // make_frame's set_window_buffer of each: their buffers are shown
         // in a window more.
-        self.adjust_window_count(root.id(), true);
-        self.adjust_window_count(mini.id(), true);
+        self.adjust_window_count(root, true);
+        self.adjust_window_count(mini, true);
         // make_terminal_frame's F<num>, from ++tty_frame_count.
         self.tty_frame_count += 1;
         let frame = crate::lisp::types::FrameRef::new(
@@ -1236,7 +1223,7 @@ impl Interpreter {
         for window in windows {
             // No contents, a leaf's buffer or an internal window's first
             // child: a deleted window.
-            self.wset_buffer(window.id(), Value::Nil);
+            self.wset_buffer(window, Value::Nil);
             for slot in [
                 p::WINDOW_PARENT_SLOT,
                 p::WINDOW_PREV_SIBLING_SLOT,

@@ -1325,7 +1325,7 @@ fn truncated_long_line_column(
         if !partial.is_nil()
             && let Some(window) = window
             && let Some(w) = super::window::WindowRef::from_value(&window)
-            && let Some(frame) = interp.window_frame_id(w.id())
+            && let Some(frame) = w.frame()
         {
             let total_cols = super::window::window_char_geometry(w).0;
             let frame_cols = frame.borrow().width;

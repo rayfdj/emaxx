@@ -1516,7 +1516,7 @@ impl ModeLine<'_> {
         let mut startpos = if window == interp.selected_window_ref() {
             current_window_start(interp)
         } else {
-            window_marker_position(interp, window, WINDOW_START_SLOT).unwrap_or(1)
+            window_marker_position(window, WINDOW_START_SLOT).unwrap_or(1)
         };
         let height = window_geometry(interp, window).1.max(1);
         if !own_buffer || !(begv <= startpos && startpos <= zv) {
@@ -1627,7 +1627,7 @@ impl ModeLine<'_> {
         let toppos = if window == interp.selected_window_ref() {
             current_window_start(interp) as i64
         } else {
-            window_marker_position(interp, window, WINDOW_START_SLOT).unwrap_or(1) as i64
+            window_marker_position(window, WINDOW_START_SLOT).unwrap_or(1) as i64
         };
         let window_end_pos = window_end_pos(interp, window, z);
         let botpos = z - window_end_pos;
@@ -1961,7 +1961,7 @@ pub(super) fn format_mode_line(
     }
     // init_iterator on WINDOW frees its frame's realized faces after a face
     // change.
-    interp.init_iterator_faces_window(w.id());
+    interp.init_iterator_faces_window(w);
     // format_mode_line_unwind_data (XFRAME (WINDOW_FRAME (w)), old_buffer,
     // selected_window, true), recorded before the window is selected: the
     // selected window, the buffer, the window frame's selected window, its
@@ -1972,9 +1972,7 @@ pub(super) fn format_mode_line(
     let old_selected = interp.selected_window_ref();
     let old_window = old_selected.value();
     let old_buffer = interp.current_buffer_id();
-    let target_frame = interp
-        .window_frame_id(w.id())
-        .expect("window stores its owning frame");
+    let target_frame = w.frame().expect("window stores its owning frame");
     let target_frame_window = target_frame.borrow().selected_window;
     let old_top_frame = target_frame
         .borrow()
@@ -2017,8 +2015,8 @@ pub(super) fn format_mode_line(
     if window_buffer(Some(old_selected)).is_some() {
         let target_live = window_buffer(target_frame_window).is_some();
         if target_live && let Some(target) = target_frame_window {
-            let frame = interp.window_frame_id(target.id());
-            if frame != interp.window_frame_id(old_selected.id()) {
+            let frame = target.frame();
+            if frame != old_selected.frame() {
                 restored = select_window_value(interp, &target.value(), true).map(drop);
             }
             if let Some(old_top_frame) = old_top_frame

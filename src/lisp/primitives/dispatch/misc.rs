@@ -737,8 +737,7 @@ define_dispatch!(
                 if args.first().is_none_or(Value::is_nil)
                     && w != interp.selected_window_ref()
                     && crate::lisp::primitives::window::window_marker(
-                        interp,
-                        w.id(),
+                        w,
                         crate::lisp::primitives::WINDOW_POINT_SLOT,
                     )
                     .is_some_and(|marker| marker.position().is_none())

@@ -1057,8 +1057,8 @@ define_dispatch!(
                             .is_nil()
                             && match args.get(1).and_then(WindowRef::from_value) {
                                 Some(window) => {
-                                    candidate.borrow().minibuffer_window_id() == window.id()
-                                        || interp.window_frame_id(window.id()) == Some(*candidate)
+                                    candidate.borrow().minibuffer_window == Some(window)
+                                        || window.frame() == Some(*candidate)
                                 }
                                 None => true,
                             }
@@ -1387,14 +1387,11 @@ pub(super) fn select_frame(
     if id == interp.selected_frame_id {
         return Ok(());
     }
-    let window = id.borrow().selected_window_id();
+    let window = super::display::frame_selected_window(id);
     super::call(
         interp,
         "select-window",
-        &[
-            interp.window_value(window),
-            if norecord { Value::T } else { Value::Nil },
-        ],
+        &[window.value(), if norecord { Value::T } else { Value::Nil }],
         env,
     )?;
     Ok(())

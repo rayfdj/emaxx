@@ -633,9 +633,9 @@ define_dispatch!(
                 // point and old point at the start of its buffer's
                 // accessible portion and its start at the buffer's
                 // last_window_start (Fset_marker, so within the buffer).
-                for window in interp.record_ids_by_type("window") {
-                    let Some(buffer) = interp
-                        .window_record_buffer_id(window)
+                for window in interp.windows_where(|_| true) {
+                    let Some(buffer) = window
+                        .contents_buffer_id()
                         .filter(|id| *id == current_id || *id == other_id)
                     else {
                         continue;

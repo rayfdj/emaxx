@@ -3970,20 +3970,6 @@ pub(crate) struct FrameState {
     pub(crate) realized_faces_epoch: u64,
 }
 
-impl FrameState {
-    pub(crate) fn root_window_id(&self) -> u64 {
-        self.root_window.map_or(0, primitives::WindowRef::id)
-    }
-
-    pub(crate) fn selected_window_id(&self) -> u64 {
-        self.selected_window.map_or(0, primitives::WindowRef::id)
-    }
-
-    pub(crate) fn minibuffer_window_id(&self) -> u64 {
-        self.minibuffer_window.map_or(0, primitives::WindowRef::id)
-    }
-}
-
 fn empty_lisp_face_vector() -> Value {
     Value::vector(
         std::iter::once(Value::symbol("face")).chain(std::iter::repeat_n(

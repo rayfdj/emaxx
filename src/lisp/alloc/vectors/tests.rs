@@ -722,6 +722,19 @@ fn window_number_use_time_and_cursor_bit_live_and_die_with_the_window() {
     // The window's address, its id and its sequence number.
     type Hidden = (usize, u64, i64);
 
+    // What the registry names under ID: its use time, 0 for no window,
+    // and whether its cursor is on, as it is for no window.
+    fn use_time(interpreter: &crate::lisp::eval::Interpreter, id: u64) -> i64 {
+        interpreter
+            .window_ref(id)
+            .map_or(0, crate::lisp::primitives::WindowRef::use_time)
+    }
+    fn cursor_visible(interpreter: &crate::lisp::eval::Interpreter, id: u64) -> bool {
+        interpreter
+            .window_ref(id)
+            .is_none_or(|window| !window.cursor_off_p())
+    }
+
     #[inline(never)]
     fn allocate(
         interpreter: &mut crate::lisp::eval::Interpreter,
@@ -734,15 +747,15 @@ fn window_number_use_time_and_cursor_bit_live_and_die_with_the_window() {
         assert_eq!(window.sequence_number(), last + 1);
         assert_eq!(interpreter.window_sequence_number, last + 1);
         assert_eq!((window.use_time(), window.cursor_off_p()), (0, false));
-        assert_eq!(interpreter.window_use_time(id), 0);
-        assert!(interpreter.window_cursor_visible(id));
+        assert_eq!(use_time(interpreter, id), 0);
+        assert!(cursor_visible(interpreter, id));
         // select_window's use time and Finternal_show_cursor's bit are
         // the window's own.
-        interpreter.record_window_selection(id);
-        interpreter.set_window_cursor_visible(id, false);
+        interpreter.record_window_selection(window);
+        window.set_cursor_off_p(true);
         assert!(window.use_time() > 0 && window.cursor_off_p());
-        assert_eq!(interpreter.window_use_time(id), window.use_time());
-        assert!(!interpreter.window_cursor_visible(id));
+        assert_eq!(use_time(interpreter, id), window.use_time());
+        assert!(!cursor_visible(interpreter, id));
         let value = window.value();
         let Kind::Window(object) = value.kind() else {
             panic!("a window is a window object")
@@ -767,7 +780,7 @@ fn window_number_use_time_and_cursor_bit_live_and_die_with_the_window() {
         let window = interpreter.window_ref(id).expect("a live window");
         assert_eq!(window.sequence_number(), number);
         assert!(window.use_time() > 0 && window.cursor_off_p());
-        assert!(!interpreter.window_cursor_visible(id));
+        assert!(!cursor_visible(interpreter, id));
     }
     let mut interpreter = crate::lisp::eval::Interpreter::new();
     let environment = Env::new();
@@ -785,8 +798,8 @@ fn window_number_use_time_and_cursor_bit_live_and_die_with_the_window() {
     // Nothing is kept under the freed window's id: no use time, and no
     // cursor turned off.
     assert!(interpreter.window_ref(id).is_none());
-    assert_eq!(interpreter.window_use_time(id), 0);
-    assert!(interpreter.window_cursor_visible(id));
+    assert_eq!(use_time(&interpreter, id), 0);
+    assert!(cursor_visible(&interpreter, id));
     // The counter is the interpreter's: the next window has the next
     // number, and starts as any new window does.
     assert_eq!(interpreter.window_sequence_number, number);

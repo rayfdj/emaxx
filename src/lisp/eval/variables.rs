@@ -3525,14 +3525,6 @@ impl Interpreter {
         crate::lisp::types::Env::from_vec(vec![EnvFrame::from_alist(environment)])
     }
 
-    pub fn set_window_margins(&mut self, window_id: u64, left: Option<i64>, right: Option<i64>) {
-        crate::lisp::primitives::set_window_margin_cols(self, window_id, left, right);
-    }
-
-    pub fn window_margins(&self, window_id: u64) -> (Option<i64>, Option<i64>) {
-        crate::lisp::primitives::window_margin_cols(self, window_id)
-    }
-
     /// Fhandler_bind_1's push_handler_bind of each CONDITIONS/HANDLER
     /// pair in BINDINGS, innermost last, each counting the pairs below it.
     pub fn push_handler_bindings(&mut self, bindings: &[(Value, Value)]) -> usize {

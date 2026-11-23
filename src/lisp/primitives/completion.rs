@@ -1677,7 +1677,7 @@ pub(crate) fn activate_minibuffer_with_history(
         // Fselect_window it: the read happens there, never in the entry
         // window.
         if let Some(shown_in) = super::WindowRef::from_value(&minibuffer_window) {
-            interp.show_buffer_in_window(shown_in.id(), buffer_id, false);
+            interp.show_buffer_in_window(shown_in, buffer_id, false);
             super::call(interp, "select-window", &[minibuffer_window], env)?;
         }
         // read_minibuf erases the buffer and inserts the prompt with
@@ -1824,17 +1824,14 @@ pub(crate) fn check_recursive_minibuffer(interp: &Interpreter) -> Result<(), Lis
 /// (popped, with its start and point), or else the null minibuffer.
 fn minibuffer_unwind(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     let window = interp.minibuffer_window_value();
-    let Some(window_id) = super::WindowRef::from_value(&window) else {
+    let Some(w) = super::WindowRef::from_value(&window) else {
         return Ok(());
     };
-    let window_id = window_id.id();
     // WINDOW_LIVE_P: a live window shows a buffer.
-    if super::window_buffer_id(interp, &window).is_none() {
+    if w.live_buffer_id(interp).is_none() {
         return Ok(());
     }
-    let previous = interp.window_ref(window_id).map_or(Value::Nil, |record| {
-        record.slot(super::WINDOW_PREV_BUFFERS_SLOT)
-    });
+    let previous = w.slot(super::WINDOW_PREV_BUFFERS_SLOT);
     if let Some(cell) = previous.cons_ref() {
         let entry = cell.car.get();
         if let Kind::Buffer(buffer) = entry.car()?.kind()
@@ -1842,10 +1839,8 @@ fn minibuffer_unwind(interp: &mut Interpreter, env: &mut Env) -> Result<(), Lisp
                 .buffer_object(buffer.id)
                 .is_some_and(|live| live.ptr_eq(&buffer))
         {
-            if let Some(record) = interp.window_ref(window_id) {
-                record.set_held_slot(interp, super::WINDOW_PREV_BUFFERS_SLOT, cell.cdr.get());
-            }
-            interp.show_buffer_in_window(window_id, buffer.id, false);
+            w.set_held_slot(interp, super::WINDOW_PREV_BUFFERS_SLOT, cell.cdr.get());
+            interp.show_buffer_in_window(w, buffer.id, false);
             let rest = entry.cdr()?;
             super::call(interp, "set-window-start", &[window, rest.car()?], env)?;
             super::call(
@@ -1861,7 +1856,7 @@ fn minibuffer_unwind(interp: &mut Interpreter, env: &mut Env) -> Result<(), Lisp
     if let Kind::Buffer(null) = nth_minibuffer(interp, 0).kind()
         && let Some(null) = interp.live_buffer_id(null)
     {
-        interp.show_buffer_in_window(window_id, null, false);
+        interp.show_buffer_in_window(w, null, false);
     }
     Ok(())
 }

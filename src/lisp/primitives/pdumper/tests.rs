@@ -2642,8 +2642,13 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
     // The live windows are the objects they were, under the ids they had.
     assert_eq!(target.selected_window_value(), live_selected);
     assert_eq!(target.minibuffer_window_value(), live_minibuffer);
-    assert_eq!(target.window_value(live_ids[0]), live_selected);
-    assert_eq!(target.window_value(live_ids[1]), live_minibuffer);
+    let registered = |target: &Interpreter, id: u64| {
+        target
+            .window_ref(id)
+            .map(crate::lisp::primitives::WindowRef::value)
+    };
+    assert_eq!(registered(&target, live_ids[0]), Some(live_selected));
+    assert_eq!(registered(&target, live_ids[1]), Some(live_minibuffer));
     assert_eq!(printed(&mut target, &live_selected), live_printed);
     target.set_global_binding("d3-live", live_selected);
     assert_eq!(
@@ -2666,7 +2671,7 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
         // An id of its own: no live window's, and not the dumped one's.
         assert!(!windows_before.contains(&window.id()));
         assert!(!dumped_ids.contains(&window.id()));
-        assert_eq!(target.window_value(window.id()), dead);
+        assert_eq!(registered(&target, window.id()), Some(dead));
         dead_ids.push(window.id());
         // Every Lisp field nil and the bits clear: no contents is what
         // says the window is deleted, the dumped minibuffer window's too.

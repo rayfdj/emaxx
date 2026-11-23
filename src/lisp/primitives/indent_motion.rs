@@ -612,7 +612,7 @@ pub(crate) fn vmotion(
     vtarget: i64,
     win: MotionWindow,
 ) -> Position {
-    let hscroll = super::dispatch::display::window_hscroll_state(interp, win.window).hscroll;
+    let hscroll = super::dispatch::display::window_hscroll_state(win.window).hscroll;
     let lmargin = if hscroll > 0 { 1 - hscroll } else { 0 };
     let selective = selective_display(interp).max(-1);
     let window = text_prop_window(interp, win);
