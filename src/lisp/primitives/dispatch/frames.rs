@@ -351,7 +351,7 @@ fn store_frame_parameter(
     if cached_symbol!("minibuffer").is(prop) {
         if is_window_record(interp, val) {
             let mini = id.borrow().minibuffer_window.map(WindowRef::value);
-            let Some(window) = WindowRef::from_record_value(&val) else {
+            let Some(window) = WindowRef::from_value(&val) else {
                 unreachable!()
             };
             if !super::display::window_is_minibuffer(interp, window.id()) {
@@ -1055,7 +1055,7 @@ define_dispatch!(
                     .find(|candidate| {
                         frame_parameter_value(interp, *candidate, cached_symbol!("no-other-frame"))
                             .is_nil()
-                            && match args.get(1).and_then(WindowRef::from_record_value) {
+                            && match args.get(1).and_then(WindowRef::from_value) {
                                 Some(window) => {
                                     candidate.borrow().minibuffer_window_id() == window.id()
                                         || interp.window_frame_id(window.id()) == Some(*candidate)

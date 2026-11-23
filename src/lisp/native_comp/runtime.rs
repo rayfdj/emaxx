@@ -6240,6 +6240,7 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::Buffer
                         | crate::lisp::alloc::VectorTag::Terminal
                         | crate::lisp::alloc::VectorTag::Frame
+                        | crate::lisp::alloc::VectorTag::Window
                         | crate::lisp::alloc::VectorTag::Overlay
                         | crate::lisp::alloc::VectorTag::CharTable
                         | crate::lisp::alloc::VectorTag::SubCharTable
@@ -15805,15 +15806,17 @@ mod tests {
             root.slot(crate::lisp::primitives::WINDOW_FRAME_SLOT),
             Value::Frame(copied)
         );
-        let record = |window: crate::lisp::primitives::WindowRef| match window.value().kind() {
-            Kind::Record(record) => record,
-            _ => unreachable!("a window is a host record"),
+        let object = |window: crate::lisp::primitives::WindowRef| match window.value().kind() {
+            Kind::Window(object) => object,
+            _ => unreachable!("a window is a window object"),
         };
         assert_ne!(
-            record(root).owner,
-            record(frame.borrow().root_window.expect("source root")).owner
+            object(root).owner(),
+            object(frame.borrow().root_window.expect("source root")).owner()
         );
-        assert!(record(root).ptr_eq(&cloned.record_ref(root.id()).expect("clone record index")));
+        assert!(object(root).ptr_eq(&object(
+            cloned.window_ref(root.id()).expect("clone window index")
+        )));
         assert_eq!(
             state
                 .selected_window

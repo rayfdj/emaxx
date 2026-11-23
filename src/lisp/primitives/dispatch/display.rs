@@ -1391,7 +1391,7 @@ fn window_link_value(
 ) -> Result<Value, LispError> {
     need_arg_range(name, args, 0, 1)?;
     let window = valid_window_or_selected(interp, args.first().unwrap_or(&Value::Nil))?;
-    if let Some(linked) = WindowRef::from_record_value(&window.slot(slot)) {
+    if let Some(linked) = WindowRef::from_value(&window.slot(slot)) {
         return Ok(linked.value());
     }
     // frame.c make_frame links a frame's root and its own minibuffer
@@ -1422,7 +1422,7 @@ fn window_child_value(
     need_arg_range(name, args, 0, 1)?;
     let window = valid_window_or_selected(interp, args.first().unwrap_or(&Value::Nil))?;
     Ok(
-        match WindowRef::from_record_value(&window.slot(WINDOW_FIRST_CHILD_SLOT)) {
+        match WindowRef::from_value(&window.slot(WINDOW_FIRST_CHILD_SLOT)) {
             Some(child) if window.kind() == orientation => child.value(),
             _ => Value::Nil,
         },
@@ -1511,7 +1511,7 @@ fn set_window_slot_value(
 }
 
 fn window_link(interp: &Interpreter, window_id: u64, slot: usize) -> Option<u64> {
-    WindowRef::from_record_value(&window_slot_value(interp, window_id, slot)).map(WindowRef::id)
+    WindowRef::from_value(&window_slot_value(interp, window_id, slot)).map(WindowRef::id)
 }
 
 fn window_geometry(interp: &Interpreter, window_id: u64) -> (i64, i64, i64, i64) {
@@ -4192,7 +4192,7 @@ fn run_window_change_functions_1(
     for function in functions {
         let live = match window_or_frame.kind() {
             Kind::Frame(frame) => interp.frame_is_live(frame),
-            _ => WindowRef::from_record_value(&window_or_frame)
+            _ => WindowRef::from_value(&window_or_frame)
                 .is_some_and(|window| is_live_ordinary_window(interp, window.id())),
         };
         if matches!(function.kind(), Kind::T) || !live {
@@ -4589,7 +4589,7 @@ pub(crate) fn window_text_area_columns(interp: &Interpreter, window_id: u64) -> 
 fn window_text_width_columns(interp: &Interpreter, window_id: u64) -> i64 {
     let (total, _, left, _) = window_geometry(interp, window_id);
     let root_id =
-        WindowRef::from_record_value(&interp.root_window_value()).map_or(window_id, WindowRef::id);
+        WindowRef::from_value(&interp.root_window_value()).map_or(window_id, WindowRef::id);
     let (root_width, _, root_left, _) = window_geometry(interp, root_id);
     // GNU reserves one terminal column for the vertical separator of every
     // live window whose right edge is not the root window's right edge.  The
@@ -7918,7 +7918,7 @@ define_dispatch!(
                     .root_window
                     .map(WindowRef::value)
                     .unwrap_or(Value::Nil);
-                while let Some(this) = WindowRef::from_record_value(&window) {
+                while let Some(this) = WindowRef::from_value(&window) {
                     let Some(child) = window_link(interp, this.id(), WINDOW_FIRST_CHILD_SLOT)
                     else {
                         return Ok(this.value());

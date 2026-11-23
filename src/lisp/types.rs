@@ -1201,7 +1201,9 @@ pub use crate::lisp::alloc::StringObjectRef;
 pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
 /// PVEC_RECORD's handle: the record's state in a vector block.
 pub type RecordRef = crate::lisp::alloc::VectorlikeRef<crate::lisp::eval::RecordState>;
-pub use crate::lisp::alloc::vectors::{BoolVectorRef, LispRecordRef, SymbolWithPosRef};
+pub use crate::lisp::alloc::vectors::{
+    BoolVectorRef, LispRecordRef, SymbolWithPosRef, WindowObjectRef,
+};
 
 /// lisp.h:struct Lisp_Cons. Interpreter, bytecode and generated code read and
 /// write these same two Lisp words. Allocator metadata is in the containing
@@ -1828,6 +1830,8 @@ pub enum Kind {
     Frame(FrameRef),
     /// An allocated terminal with address identity and directly owned state.
     Terminal(TerminalRef),
+    /// GNU PVEC_WINDOW: a window, its Lisp words in the object.
+    Window(WindowObjectRef),
     /// A record, or one of the pseudovector kinds this implementation
     /// keeps as records (alloc.c's PVEC_RECORD): the cell's address.
     Record(RecordRef),
@@ -1971,6 +1975,10 @@ impl Value {
         Value::from_bits(terminal.identity() | TAG_VECTORLIKE)
     }
     #[inline]
+    pub fn Window(window: WindowObjectRef) -> Value {
+        Value::from_bits(window.identity() | TAG_VECTORLIKE)
+    }
+    #[inline]
     pub fn LispRecord(record: LispRecordRef) -> Value {
         Value::from_bits(record.identity() | TAG_VECTORLIKE)
     }
@@ -2099,6 +2107,9 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Terminal => {
                             Kind::Terminal(crate::lisp::alloc::VectorlikeRef::from_raw(header))
                         }
+                        crate::lisp::alloc::VectorTag::Window => {
+                            Kind::Window(crate::lisp::alloc::VectorlikeRef::from_raw(header))
+                        }
                         crate::lisp::alloc::VectorTag::CharTable => {
                             Kind::CharTable(CharTableRef::from_raw(header))
                         }
@@ -2201,6 +2212,7 @@ impl Kind {
             Kind::SubCharTable(v) => Value::SubCharTable(v),
             Kind::Frame(v) => Value::Frame(v),
             Kind::Terminal(v) => Value::Terminal(v),
+            Kind::Window(v) => Value::Window(v),
             Kind::SymbolWithPos(v) => Value::SymbolWithPos(v),
             Kind::Record(v) => Value::Record(v),
             Kind::LispRecord(v) => Value::LispRecord(v),
@@ -3241,6 +3253,8 @@ impl Value {
             Kind::Terminal(terminal) => format!("terminal<{}>", terminal.id),
             Kind::SymbolWithPos(_) => "symbol-with-pos".into(),
             Kind::Record(record) => format!("record<{}>", record.id),
+            // A window's host-side name stays the one it had as a record.
+            Kind::Window(window) => format!("record<{}>", window.id()),
             Kind::LispRecord(record) => format!("record<{:x}>", record.identity()),
             Kind::BoolVector(vector) => format!("bool-vector<{:x}>", vector.identity()),
             Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
@@ -3359,6 +3373,7 @@ fn values_equal_recursive(
         (Kind::SymbolWithPos(a), Kind::SymbolWithPos(b)) => a.ptr_eq(&b),
         (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
         (Kind::Record(a), Kind::Record(b)) => a.ptr_eq(&b),
+        (Kind::Window(a), Kind::Window(b)) => a.ptr_eq(&b),
         (Kind::LispRecord(a), Kind::LispRecord(b)) => a.ptr_eq(&b),
         (Kind::BoolVector(a), Kind::BoolVector(b)) => a.identity() == b.identity(),
         (Kind::Finalizer(a), Kind::Finalizer(b)) => a == b,
@@ -3456,6 +3471,8 @@ fn format_value(
             write!(f, "#<symbol {} at {}>", object.symbol(), object.position())
         }
         Kind::Record(record) => write!(f, "#<record id:{}>", record.id),
+        // As `type_name': the host-side form a window had as a record.
+        Kind::Window(window) => write!(f, "#<record id:{}>", window.id()),
         Kind::LispRecord(record) => write!(f, "#<record {:x}>", record.identity()),
         // print.c's form of a bool vector: its length, then its bytes.
         Kind::BoolVector(vector) => {

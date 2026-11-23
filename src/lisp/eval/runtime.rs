@@ -778,12 +778,14 @@ impl Interpreter {
         Ok(())
     }
 
-    /// The window ID names, for the holders that still know a window by
-    /// its id: None once the sweep has freed it (`record_ref').
+    /// The window ID names in this state's id space, for the holders
+    /// that still know a window by its id: None once the sweep has freed
+    /// it.  The registry is not a root, as the records' is not
+    /// (`record_ref'): a freed window's entry is cleared after the sweep
+    /// (`purge_freed_records').
     #[inline]
     pub(crate) fn window_ref(&self, id: u64) -> Option<primitives::WindowRef> {
-        self.record_ref(id)
-            .map(primitives::WindowRef::from_registry)
+        self.windows.get(id).map(primitives::WindowRef::from_object)
     }
 
     /// The window ID names, as a value.  A holder of a window's id holds
@@ -1789,8 +1791,7 @@ impl Interpreter {
             };
             let slot = |index: usize| record.slot(index);
             let link = |index: usize| {
-                primitives::WindowRef::from_record_value(&slot(index))
-                    .map(primitives::WindowRef::id)
+                primitives::WindowRef::from_value(&slot(index)).map(primitives::WindowRef::id)
             };
             let temslot = |order: &[u64], linked: Option<u64>| {
                 linked
@@ -1995,7 +1996,7 @@ impl Interpreter {
             selected_window_id,
             root_window_id: slots
                 .get(5)
-                .and_then(primitives::WindowRef::from_record_value)
+                .and_then(primitives::WindowRef::from_value)
                 .map_or(selected_window_id, primitives::WindowRef::id),
             frame_width: slots
                 .get(3)
@@ -2087,7 +2088,7 @@ impl Interpreter {
         let saved_ids: Vec<Option<u64>> = saved_windows
             .iter()
             .map(|saved| {
-                primitives::WindowRef::from_record_value(&saved_field(saved, SW_WINDOW))
+                primitives::WindowRef::from_value(&saved_field(saved, SW_WINDOW))
                     .map(primitives::WindowRef::id)
             })
             .collect();
@@ -2597,7 +2598,7 @@ impl Interpreter {
         let link = |interp: &Self, slot: usize| {
             interp
                 .window_ref(window)
-                .and_then(|record| primitives::WindowRef::from_record_value(&record.slot(slot)))
+                .and_then(|record| primitives::WindowRef::from_value(&record.slot(slot)))
                 .map(primitives::WindowRef::id)
         };
         let next = link(self, primitives::WINDOW_NEXT_SIBLING_SLOT);
@@ -2659,8 +2660,7 @@ impl Interpreter {
     /// WINDOW_LIVE_P: a window that shows a buffer.
     fn window_is_live_record(&self, id: u64) -> bool {
         self.window_ref(id).is_some_and(|record| {
-            record.is_window()
-                && record.contents_buffer_id().is_some()
+            record.contents_buffer_id().is_some()
                 && record.kind() != primitives::WindowKind::Deleted
         })
     }
@@ -3187,35 +3187,42 @@ impl Interpreter {
         type_name: &str,
         slots: Vec<Value>,
     ) -> Value {
-        if kind == RecordKind::Window {
-            return self.make_window_of_type(type_name, slots).value();
-        }
         self.create_record_with_kind(Value::symbol(type_name), slots, kind)
     }
 
     /// window.c:make_window's allocation: a window holding SLOTS up to
     /// its frame slot, on the selected frame, next in sequence.
     pub(crate) fn make_window(&mut self, slots: Vec<Value>) -> primitives::WindowRef {
-        self.make_window_of_type("window", slots)
-    }
-
-    /// make_window under TYPE_NAME, the type index's name for it.
-    fn make_window_of_type(
-        &mut self,
-        type_name: &str,
-        mut slots: Vec<Value>,
-    ) -> primitives::WindowRef {
-        slots.resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
-        slots[primitives::WINDOW_FRAME_SLOT] = self.selected_frame_value();
-        let record =
-            self.create_record_with_kind(Value::symbol(type_name), slots, RecordKind::Window);
-        let Some(window) = primitives::WindowRef::from_value(&record) else {
-            unreachable!("window records use Value::Record");
-        };
+        // The slots up to the frame's, and no more: a slot past it is one
+        // the new window does not hold.
+        let held = primitives::WINDOW_FRAME_SLOT + 1;
+        // alloc.c:allocate_pseudovector's tally of window.c's struct.
+        crate::lisp::native_comp::note_lisp_allocation(
+            crate::lisp::alloc::vectors::windows::WINDOW_GNU_VECTOR_SLOTS * 8,
+        );
+        let window = self.allocate_window(held);
+        for (index, value) in slots.into_iter().take(held).enumerate() {
+            window.set_held(index, value);
+        }
+        window.set_held(primitives::WINDOW_FRAME_SLOT, self.selected_frame_value());
         // window.c:make_window and copy_window: `++sequence_number'.
         self.window_sequence_number += 1;
         let number = self.window_sequence_number;
         self.window_sequence_numbers.insert(window.id(), number);
+        primitives::WindowRef::from_object(window)
+    }
+
+    /// alloc.c's allocate_window: a window object holding HELD nil slots
+    /// under the next id, which the registry and the type index name it
+    /// by for the side tables.
+    pub(crate) fn allocate_window(&mut self, held: usize) -> crate::lisp::types::WindowObjectRef {
+        let id = self.alloc_record_id();
+        let window = crate::lisp::types::WindowObjectRef::new(id, self.record_owner, held);
+        self.windows.insert(id, window);
+        self.record_ids_by_type_index
+            .entry(crate::lisp::alloc::vectors::windows::WINDOW_TYPE_NAME.to_owned())
+            .or_default()
+            .insert(id);
         window
     }
 
@@ -3359,11 +3366,11 @@ impl Interpreter {
         &self,
         filter: impl Fn(primitives::WindowRef) -> bool,
     ) -> Vec<primitives::WindowRef> {
-        self.records
+        self.windows
             .values()
             .copied()
-            .map(primitives::WindowRef::from_registry)
-            .filter(|window| window.is_window() && filter(*window))
+            .map(primitives::WindowRef::from_object)
+            .filter(|window| filter(*window))
             .collect()
     }
 
@@ -3765,7 +3772,7 @@ fn saved_windows(
                     .filter(|value: &Value| !value.is_nil())
                     .unwrap_or_else(|| field(pixel))
             };
-            let current = primitives::WindowRef::from_record_value(&field(SW_WINDOW))
+            let current = primitives::WindowRef::from_value(&field(SW_WINDOW))
                 .is_some_and(|window| window.id() == snapshot.selected_window_id);
             (
                 current,
@@ -4148,16 +4155,20 @@ mod runtime_index_tests {
             before_records,
             "generic records allocate no host ids"
         );
+        // A host pseudovector is indexed under its type's name.
         let Kind::Record(host) = interp
-            .create_pseudovector(super::RecordKind::Window, "index-host-window", Vec::new())
+            .create_pseudovector(super::RecordKind::Mutex, "index-host-mutex", Vec::new())
             .kind()
         else {
-            unreachable!("host window")
+            unreachable!("host mutex")
         };
-        assert_eq!(
-            interp.record_ids_by_type("index-host-window"),
-            vec![host.id]
-        );
+        assert_eq!(interp.record_ids_by_type("index-host-mutex"), vec![host.id]);
+        // So is a window, an object of its own kind, under the windows'.
+        let windows_before = interp.record_ids_by_type("window");
+        let window = interp.make_window(Vec::new());
+        let mut windows = windows_before;
+        windows.push(window.id());
+        assert_eq!(interp.record_ids_by_type("window"), windows);
     }
 
     #[test]

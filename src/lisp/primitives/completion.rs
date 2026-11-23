@@ -440,6 +440,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Kind::CharTable(left_id), Kind::CharTable(right_id)) => left_id == right_id,
         (Kind::Finalizer(left_id), Kind::Finalizer(right_id)) => left_id == right_id,
         (Kind::Record(left), Kind::Record(right)) => left.ptr_eq(&right),
+        (Kind::Window(left), Kind::Window(right)) => left.ptr_eq(&right),
         (Kind::LispRecord(left), Kind::LispRecord(right)) => left.ptr_eq(&right),
         _ => false,
     }
@@ -451,6 +452,8 @@ pub(crate) fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
         Kind::Vector(vector) => Some((4, vector.identity())),
         Kind::StringObject(state) => Some((1, state.identity())),
         Kind::Record(id) => Some((2, id.identity())),
+        // A window is walked as the host record it was.
+        Kind::Window(window) => Some((2, window.identity())),
         Kind::LispRecord(record) => Some((4, record.identity())),
         Kind::CharTable(id) => Some((3, id.identity())),
         Kind::SubCharTable(id) => Some((5, id.identity())),
@@ -566,6 +569,16 @@ pub(crate) fn substitute_object_recurse(
                 {
                     *slot = updated;
                 }
+            }
+            Ok(*subtree)
+        }
+        // The slots a window holds, as those of the host record it was.
+        Kind::Window(window) => {
+            for index in 0..window.held() {
+                let current = window.slot(index).unwrap_or(Value::Nil);
+                let updated =
+                    substitute_object_recurse(interp, object, placeholder, &current, seen)?;
+                window.set_if_held(index, updated);
             }
             Ok(*subtree)
         }
@@ -1551,7 +1564,7 @@ pub(crate) fn activate_minibuffer_with_history(
     let saved_selected_window_id = interp.selected_window_id();
     // minibuf_level++ before the frame is chosen: (minibuffer-depth) is the
     // new level from here on, the mode hooks below included.
-    let minibuffer_window_id = super::WindowRef::from_record_value(&minibuffer_window)
+    let minibuffer_window_id = super::WindowRef::from_value(&minibuffer_window)
         .map_or(saved_selected_window_id, super::WindowRef::id);
     let previous_runtime =
         interp.begin_minibuffer_runtime(buffer_id, minibuffer_window_id, prompt_string.text);
@@ -1657,7 +1670,7 @@ pub(crate) fn activate_minibuffer_with_history(
         // its markers at the buffer's point before the erase) and
         // Fselect_window it: the read happens there, never in the entry
         // window.
-        if let Some(shown_in) = super::WindowRef::from_record_value(&minibuffer_window) {
+        if let Some(shown_in) = super::WindowRef::from_value(&minibuffer_window) {
             interp.show_buffer_in_window(shown_in.id(), buffer_id, false);
             super::call(interp, "select-window", &[minibuffer_window], env)?;
         }
@@ -1788,9 +1801,8 @@ pub(crate) fn check_recursive_minibuffer(interp: &Interpreter) -> Result<(), Lis
         return Ok(());
     }
     let message = Value::string("Command attempted to use minibuffer while in minibuffer");
-    let in_minibuffer_window =
-        super::WindowRef::from_record_value(&interp.minibuffer_window_value())
-            .is_some_and(|window| window.id() == interp.selected_window_id());
+    let in_minibuffer_window = super::WindowRef::from_value(&interp.minibuffer_window_value())
+        .is_some_and(|window| window.id() == interp.selected_window_id());
     if in_minibuffer_window {
         Err(LispError::SignalValue(Value::list([
             Value::symbol("user-error"),
@@ -1806,7 +1818,7 @@ pub(crate) fn check_recursive_minibuffer(interp: &Interpreter) -> Result<(), Lis
 /// (popped, with its start and point), or else the null minibuffer.
 fn minibuffer_unwind(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     let window = interp.minibuffer_window_value();
-    let Some(window_id) = super::WindowRef::from_record_value(&window) else {
+    let Some(window_id) = super::WindowRef::from_value(&window) else {
         return Ok(());
     };
     let window_id = window_id.id();
@@ -2070,7 +2082,7 @@ fn read_minibuf_unwind(interp: &mut Interpreter, state: ActiveMinibuffer, env: &
     // window": unless the minibuffer window has an outer read's buffer to
     // go back to, the calling window is Fselect_window'ed.
     let minibuffer_window = interp.minibuffer_window_value();
-    let outer_reads = super::WindowRef::from_record_value(&minibuffer_window)
+    let outer_reads = super::WindowRef::from_value(&minibuffer_window)
         .and_then(|window| interp.window_ref(window.id()))
         .is_some_and(|record| !record.slot(super::WINDOW_PREV_BUFFERS_SLOT).is_nil());
     let calling_window = interp.window_value(state.saved_selected_window_id);

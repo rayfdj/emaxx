@@ -1275,7 +1275,6 @@ pub(crate) enum RecordKind {
     Font,
     Process,
     Obarray,
-    Window,
     WindowConfiguration,
     Thread,
     Mutex,
@@ -1298,9 +1297,6 @@ impl RecordKind {
             Self::Process => 42,
             Self::ModuleFunction => 9,
             Self::UserPointer => 3,
-            // window.c allocates struct window as a full pseudovector.  Its
-            // configured VECSIZE is 66 words, including the header word.
-            Self::Window => 66,
             // window.c:struct save_window_data has eight Lisp fields and ten
             // trailing ints; VECSIZE is 13 words on the configured ABI.
             Self::WindowConfiguration => 13,
@@ -4196,7 +4192,7 @@ impl ImageGraphCopier {
                 ] {
                     if let Some(source) = *window {
                         let Some(copied) =
-                            primitives::WindowRef::from_record_value(&self.copy(&source.value()))
+                            primitives::WindowRef::from_value(&self.copy(&source.value()))
                         else {
                             unreachable!()
                         };
@@ -4515,6 +4511,27 @@ impl ImageGraphCopier {
                 state.slots = slots;
                 copied
             }
+            Kind::Window(window) => {
+                // The clone's own window under the same id, in its id
+                // space, holding as many slots; the slots copied after the
+                // window is on record (a window reaches itself through
+                // its frame and its siblings).
+                let key = window.identity();
+                if let Some(copied) = self.records.get(&key) {
+                    return *copied;
+                }
+                let copied_window = crate::lisp::types::WindowObjectRef::new(
+                    window.id(),
+                    self.record_owner,
+                    window.held(),
+                );
+                let copied = Value::Window(copied_window);
+                self.records.insert(key, copied);
+                for (index, slot) in window.held_values().enumerate() {
+                    copied_window.set_held(index, self.copy(&slot));
+                }
+                copied
+            }
             Kind::Closure(lambda) => {
                 let key = lambda.identity();
                 if let Some(copied) = self.lambdas.get(&key) {
@@ -4750,6 +4767,7 @@ impl LispReachability {
             Kind::SubCharTable(table) => table.mark_bit().is_marked(self.epoch),
             Kind::Frame(frame) => frame.mark_bit().is_marked(self.epoch),
             Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Window(window) => window.mark_bit().is_marked(self.epoch),
             Kind::SymbolWithPos(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
             Kind::LispRecord(record) => record.mark_bit().is_marked(self.epoch),
@@ -4843,6 +4861,7 @@ impl LispReachability {
             Kind::SubCharTable(table) => table.mark_bit().mark(self.epoch),
             Kind::Frame(frame) => frame.mark_bit().mark(self.epoch),
             Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
+            Kind::Window(window) => window.mark_bit().mark(self.epoch),
             Kind::SymbolWithPos(value) => value.mark_bit().mark(self.epoch),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
             Kind::LispRecord(record) => record.mark_bit().mark(self.epoch),
@@ -4919,6 +4938,11 @@ impl LispReachability {
             }
             Kind::Terminal(terminal) => {
                 terminal.visit_lisp_values(&mut |child| self.enqueue(child));
+            }
+            Kind::Window(window) => {
+                // alloc.c:mark_window: every Lisp word of the window, its
+                // three markers, which nothing else holds, among them.
+                window.visit_lisp_values(&mut |child| self.enqueue(child));
             }
             Kind::Overlay(overlay) => {
                 // alloc.c:mark_overlay traces only the strong plist slot.
@@ -5199,12 +5223,22 @@ impl Interpreter {
             let id = record.id;
             // The registry names the freed cell under this id, or it names
             // the record an image load put in its place (whose side tables
-            // are its own): only the former leaves.
-            match self.records.get(id) {
-                Some(held) if held.identity() == record.identity => {
-                    self.records.remove(id);
+            // are its own): only the former leaves.  A window leaves the
+            // windows' registry, where its id is.
+            if record.window {
+                match self.windows.get(id) {
+                    Some(held) if held.identity() == record.identity => {
+                        self.windows.remove(id);
+                    }
+                    _ => continue,
                 }
-                _ => continue,
+            } else {
+                match self.records.get(id) {
+                    Some(held) if held.identity() == record.identity => {
+                        self.records.remove(id);
+                    }
+                    _ => continue,
+                }
             }
             if let Some(type_name) = record.type_name.as_deref()
                 && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
@@ -5213,6 +5247,9 @@ impl Interpreter {
                 if ids.is_empty() {
                     self.record_ids_by_type_index.remove(type_name);
                 }
+            }
+            if record.window {
+                continue;
             }
             // The side tables that know an object by id go with it: the
             // sqlite handle (sqlite.c's finalizer closes the database),
@@ -5412,6 +5449,16 @@ impl Interpreter {
                 realized_faces_epoch: 0,
             },
         )
+    }
+
+    /// A window the image held, which pdumper.c:dump_nilled_pseudovec
+    /// wrote with every Lisp field nil: a window of the new process
+    /// holding HELD nil slots, on no frame and with no sequence number.
+    /// Its id is this state's next, so it names no window this process
+    /// made and none it makes later: the dumping process's id is not an
+    /// identity here.
+    pub(crate) fn install_dead_window(&mut self, held: usize) -> primitives::WindowRef {
+        primitives::WindowRef::from_object(self.allocate_window(held))
     }
 
     /// A terminal the image nilled: a dead terminal object of its own,
@@ -6205,6 +6252,12 @@ impl Interpreter {
                 };
                 *slot = copied;
             }
+            for slot in clone.windows.values_mut() {
+                let Kind::Window(copied) = c.copy(&Value::Window(*slot)).kind() else {
+                    unreachable!("a window copies to a window")
+                };
+                *slot = copied;
+            }
             for event in &mut clone.keyboard_input.command_keys {
                 *event = c.copy(event);
             }
@@ -6886,6 +6939,9 @@ pub struct InterpreterState {
     buffer_case_tables: coding::BufferCaseTables,
     /// Allocated record objects, by id (see `record_registry').
     records: record_registry::RecordRegistry,
+    /// The window objects, by id: as weak as `records', and purged with
+    /// it after a sweep.
+    windows: record_registry::WindowRegistry,
     /// This state's id space, for the records' `owner'.
     record_owner: u32,
     /// Host pseudovector IDs grouped by their fixed type tags, principally
@@ -7709,6 +7765,7 @@ impl Interpreter {
                 (main_thread_id, main_thread),
                 (standard_obarray_id, standard_obarray),
             ]),
+            windows: record_registry::WindowRegistry::default(),
             record_owner,
             record_ids_by_type_index: [
                 ("thread".into(), BTreeSet::from([main_thread_id])),

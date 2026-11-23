@@ -1,0 +1,154 @@
+//! window.h:struct window, PVEC_WINDOW: a window's Lisp words in the
+//! object itself, traced as alloc.c:mark_window traces its Lisp fields.
+//!
+//! The words are still the slots the `WINDOW_*_SLOT' constants of
+//! primitives/window.rs number, not yet window.h's fields by name.  A
+//! window holds the first `held' of them: a slot past that count is one
+//! the window has never been given (it reads as absent, where a held
+//! slot reads as its value, nil included), and a store that needs it
+//! raises the count.  The id is the name the interpreter's side tables
+//! still know the window by, the owner whose id space it is in.
+
+use super::{VectorTag, Vectorlike, VectorlikeRef};
+use crate::lisp::types::Value;
+use std::cell::Cell;
+
+/// How many Lisp slots a window has.
+pub(crate) const WINDOW_SLOT_COUNT: usize = 55;
+
+/// window.c allocates struct window as a full pseudovector.  Its
+/// configured VECSIZE is 66 words, including the header word: what
+/// alloc.c:sweep_vectors counts for a window, and what make_window
+/// tallies as consed for one.
+pub(crate) const WINDOW_GNU_VECTOR_SLOTS: usize = 66;
+
+/// The windows' name in the interpreter's type index, by which every
+/// window is enumerated.
+pub(crate) const WINDOW_TYPE_NAME: &str = "window";
+
+/// The payload after the one-word vector header: the Lisp slots first,
+/// as a pseudovector's traced words are, then the fields that are not
+/// Lisp objects.
+#[repr(C)]
+pub struct WindowState {
+    slots: [Cell<Value>; WINDOW_SLOT_COUNT],
+    id: u64,
+    owner: u32,
+    /// How many of the slots the window holds, from the first.
+    held: Cell<u32>,
+}
+
+pub type WindowObjectRef = VectorlikeRef<WindowState>;
+
+const _: () = {
+    assert!(size_of::<WindowState>() == 8 * (WINDOW_SLOT_COUNT + 2));
+    assert!(std::mem::offset_of!(WindowState, slots) == 0);
+    assert!(std::mem::offset_of!(WindowState, id) == 8 * WINDOW_SLOT_COUNT);
+    assert!(std::mem::offset_of!(WindowState, owner) == 8 * WINDOW_SLOT_COUNT + 8);
+    assert!(std::mem::offset_of!(WindowState, held) == 8 * WINDOW_SLOT_COUNT + 12);
+};
+
+impl Vectorlike for WindowState {
+    const TAG: VectorTag = VectorTag::Window;
+    const LISP_SLOTS: usize = WINDOW_SLOT_COUNT;
+}
+
+impl WindowObjectRef {
+    /// window.c:make_window's allocate_window: a window of ID in OWNER's
+    /// id space that holds HELD slots, each nil.  The caller that makes
+    /// one for Lisp tallies its consing (`WINDOW_GNU_VECTOR_SLOTS').
+    pub(crate) fn new(id: u64, owner: u32, held: usize) -> Self {
+        assert!(held <= WINDOW_SLOT_COUNT, "a window holds its slots");
+        Self::allocate(WindowState {
+            slots: [const { Cell::new(Value::Nil) }; WINDOW_SLOT_COUNT],
+            id,
+            owner,
+            held: Cell::new(held as u32),
+        })
+    }
+}
+
+impl WindowState {
+    /// The id the side tables know the window by.
+    #[inline(always)]
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The interpreter whose id space the id is in.
+    #[inline(always)]
+    pub(crate) fn owner(&self) -> u32 {
+        self.owner
+    }
+
+    /// How many slots the window holds.
+    #[inline(always)]
+    pub(crate) fn held(&self) -> usize {
+        self.held.get() as usize
+    }
+
+    /// The slots the window holds.
+    #[inline(always)]
+    fn held_cells(&self) -> &[Cell<Value>] {
+        &self.slots[..self.held()]
+    }
+
+    /// Slot INDEX, None where the window holds no such slot.
+    #[inline(always)]
+    pub(crate) fn slot(&self, index: usize) -> Option<Value> {
+        self.held_cells().get(index).map(Cell::get)
+    }
+
+    /// The window holds slot INDEX from here on: the slots it gains are
+    /// nil, as every slot it does not hold is.
+    #[inline(always)]
+    pub(crate) fn hold(&self, index: usize) {
+        assert!(index < WINDOW_SLOT_COUNT, "a window has slot {index}");
+        if self.held() <= index {
+            self.held.set(index as u32 + 1);
+        }
+    }
+
+    /// Store VALUE in slot INDEX of a window that holds it; one that
+    /// does not is a bug (the index is outside the held slots).
+    #[inline(always)]
+    pub(crate) fn set_held(&self, index: usize, value: Value) {
+        self.held_cells()[index].set(value);
+    }
+
+    /// Store VALUE in slot INDEX where the window holds that slot, and
+    /// nothing where it does not; whether it was stored.
+    #[inline(always)]
+    pub(crate) fn set_if_held(&self, index: usize, value: Value) -> bool {
+        match self.held_cells().get(index) {
+            Some(slot) => {
+                slot.set(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The held slots' values, in order.
+    pub(crate) fn held_values(&self) -> impl ExactSizeIterator<Item = Value> + '_ {
+        self.held_cells().iter().map(Cell::get)
+    }
+
+    /// alloc.c:mark_window's mark_vectorlike: every Lisp word of the
+    /// window, held or not (a slot the window does not hold is nil).
+    pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
+        for slot in &self.slots {
+            visit(&slot.get());
+        }
+    }
+}
+
+impl std::fmt::Debug for WindowState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowState")
+            .field("id", &self.id)
+            .field("owner", &self.owner)
+            .field("held", &self.held.get())
+            .finish_non_exhaustive()
+    }
+}

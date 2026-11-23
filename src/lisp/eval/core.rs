@@ -493,6 +493,7 @@ impl Interpreter {
             | Kind::SubCharTable(_)
             | Kind::Frame(_)
             | Kind::Terminal(_)
+            | Kind::Window(_)
             | Kind::SymbolWithPos(_)
             | Kind::NativeCompUnit(_)
             | Kind::Record(_)

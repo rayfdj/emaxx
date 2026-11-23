@@ -1,4 +1,5 @@
 use super::{prefix_numeric_value, signal_condition};
+use crate::lisp::alloc::vectors::windows::WINDOW_SLOT_COUNT;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::types::{Env, Kind, LispError, Value};
 
@@ -113,7 +114,6 @@ pub(crate) const WINDOW_LAST_OVERLAY_MODIFIED_SLOT: usize = 53;
 /// (mark_window_display_accurate_1) and nothing since asked for its
 /// display to be made anew; try_cursor_movement needs it.
 pub(crate) const WINDOW_END_VALID_SLOT: usize = 54;
-const WINDOW_SLOT_COUNT: usize = 55;
 
 /// `w->window_end_valid = false'.
 pub(crate) fn invalidate_window_end(interp: &mut Interpreter, window_id: u64) {
@@ -446,10 +446,11 @@ impl WindowKind {
 
 /// A window object: the one handle a window's state is read and written
 /// through, whatever holds it (a value, a frame's field, an id in the
-/// registry).  The state behind it is the host record's slot vector, laid
-/// out by the `WINDOW_*_SLOT' constants above.
+/// registry).  The state behind it is the window object's own Lisp words
+/// (alloc/vectors/windows.rs), laid out by the `WINDOW_*_SLOT' constants
+/// above.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct WindowRef(crate::lisp::types::RecordRef);
+pub(crate) struct WindowRef(crate::lisp::types::WindowObjectRef);
 
 impl WindowRef {
     /// decode_any_window's WINDOWP: the window VALUE is, live, internal
@@ -457,41 +458,27 @@ impl WindowRef {
     #[inline]
     pub(crate) fn from_value(value: &Value) -> Option<WindowRef> {
         match value.kind() {
-            Kind::Record(record) if record.kind == crate::lisp::eval::RecordKind::Window => {
-                Some(WindowRef(record))
-            }
+            Kind::Window(window) => Some(WindowRef(window)),
             _ => None,
         }
     }
 
-    /// The window VALUE is where nothing but a window is a host record (a
-    /// window's link slot, a frame's window, a value a caller made from a
-    /// window): any host record, its kind unchecked.
+    /// The window object WINDOW, as the handle.
     #[inline]
-    pub(crate) fn from_record_value(value: &Value) -> Option<WindowRef> {
-        match value.kind() {
-            Kind::Record(record) => Some(WindowRef(record)),
-            _ => None,
-        }
-    }
-
-    /// The registry's RECORD as a window, for an id a window holder kept
-    /// (`Interpreter::window_ref'): its kind unchecked.
-    #[inline]
-    pub(crate) fn from_registry(record: crate::lisp::types::RecordRef) -> WindowRef {
-        WindowRef(record)
+    pub(crate) fn from_object(window: crate::lisp::types::WindowObjectRef) -> WindowRef {
+        WindowRef(window)
     }
 
     /// The id the side tables still know the window by.
     #[inline]
     pub(crate) fn id(self) -> u64 {
-        self.0.id
+        self.0.id()
     }
 
     /// The window as a Lisp object.
     #[inline]
     pub(crate) fn value(self) -> Value {
-        Value::Record(self.0)
+        Value::Window(self.0)
     }
 
     /// What the window is (its kind slot).
@@ -500,30 +487,39 @@ impl WindowRef {
         WindowKind::of(self)
     }
 
-    /// A copy of the window's slots, as make_parent_window's memcpy
-    /// takes them.
+    /// A copy of the slots the window holds, as make_parent_window's
+    /// memcpy takes them.
     pub(crate) fn slots(self) -> Vec<Value> {
-        self.0.slots.clone()
+        self.0.held_values().collect()
     }
 
     /// w->contents where it is a buffer, live or not
     /// (`window_slot_buffer_id' of the buffer slot).
     #[inline]
     pub(crate) fn contents_buffer_id(self) -> Option<u64> {
-        window_slot_buffer_id(self.0.slots.get(WINDOW_BUFFER_SLOT))
+        window_slot_buffer_id(self.slot_opt(WINDOW_BUFFER_SLOT).as_ref())
     }
 
-    /// Whether the record behind the handle is a window: an id's lookup
-    /// (`Interpreter::window_ref') takes whatever record the id names.
+    /// The live buffer the window shows (BUFFERP (w->contents) and
+    /// BUFFER_LIVE_P of it), by its id.
     #[inline]
-    pub(crate) fn is_window(self) -> bool {
-        self.0.kind == crate::lisp::eval::RecordKind::Window
+    pub(crate) fn live_buffer_id(self, interp: &Interpreter) -> Option<u64> {
+        match self.slot(WINDOW_BUFFER_SLOT).kind() {
+            // BUFFER_LIVE_P of the object itself.
+            Kind::Buffer(buffer) => buffer.is_live().then_some(buffer.id),
+            Kind::Integer(id) => {
+                let id = id.max(0) as u64;
+                interp.has_buffer_id(id).then_some(id)
+            }
+            // w->contents nil: a deleted window, even the selected one.
+            _ => None,
+        }
     }
 
     /// Slot INDEX, None where the window holds no such slot.
     #[inline]
     pub(crate) fn slot_opt(self, index: usize) -> Option<Value> {
-        self.0.slots.get(index).copied()
+        self.0.slot(index)
     }
 
     /// Slot INDEX, nil where the window holds no such slot.
@@ -534,44 +530,30 @@ impl WindowRef {
 
     /// Grow the window's slots (with nil) to hold slot INDEX.
     #[inline]
-    pub(crate) fn ensure_slot(self, interp: &mut Interpreter, index: usize) {
-        if let Some(record) = interp.find_record_mut(self.0)
-            && record.slots.len() <= index
-        {
-            record.slots.resize(index + 1, Value::Nil);
-        }
+    pub(crate) fn ensure_slot(self, _interp: &mut Interpreter, index: usize) {
+        self.0.hold(index);
     }
 
     /// Store VALUE in slot INDEX, growing the window's slots (with nil)
     /// to hold it.
     #[inline]
-    pub(crate) fn set_slot(self, interp: &mut Interpreter, index: usize, value: Value) {
-        if let Some(record) = interp.find_record_mut(self.0) {
-            if record.slots.len() <= index {
-                record.slots.resize(index + 1, Value::Nil);
-            }
-            record.slots[index] = value;
-        }
+    pub(crate) fn set_slot(self, _interp: &mut Interpreter, index: usize, value: Value) {
+        self.0.hold(index);
+        self.0.set_held(index, value);
     }
 
     /// Store VALUE in slot INDEX of a window that holds it; one that does
     /// not is a bug (it panics, as indexing its slots does).
     #[inline]
-    pub(crate) fn set_held_slot(self, interp: &mut Interpreter, index: usize, value: Value) {
-        if let Some(record) = interp.find_record_mut(self.0) {
-            record.slots[index] = value;
-        }
+    pub(crate) fn set_held_slot(self, _interp: &mut Interpreter, index: usize, value: Value) {
+        self.0.set_held(index, value);
     }
 
     /// Store VALUE in slot INDEX where the window holds that slot, and
     /// nothing where it does not.
     #[inline]
-    pub(crate) fn set_slot_if_held(self, interp: &mut Interpreter, index: usize, value: Value) {
-        if let Some(record) = interp.find_record_mut(self.0)
-            && let Some(slot) = record.slots.get_mut(index)
-        {
-            *slot = value;
-        }
+    pub(crate) fn set_slot_if_held(self, _interp: &mut Interpreter, index: usize, value: Value) {
+        self.0.set_if_held(index, value);
     }
 }
 
@@ -673,17 +655,7 @@ pub(crate) fn window_slot_buffer_id(slot: Option<&Value>) -> Option<u64> {
 /// The live buffer the window VALUE shows (BUFFERP (w->contents)), read
 /// from the record itself.
 pub(crate) fn window_buffer_id(interp: &Interpreter, value: &Value) -> Option<u64> {
-    let window = WindowRef::from_value(value)?;
-    match window.slot(WINDOW_BUFFER_SLOT).kind() {
-        // BUFFER_LIVE_P of the object itself.
-        Kind::Buffer(buffer) => buffer.is_live().then_some(buffer.id),
-        Kind::Integer(id) => {
-            let id = id.max(0) as u64;
-            interp.has_buffer_id(id).then_some(id)
-        }
-        // w->contents nil: a deleted window, even the selected one.
-        _ => None,
-    }
+    WindowRef::from_value(value)?.live_buffer_id(interp)
 }
 
 pub(crate) fn window_start(

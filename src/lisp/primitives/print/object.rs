@@ -1828,6 +1828,27 @@ impl Printer {
                 self.printchar(interp, env, '>')?;
             }
             Kind::Record(id) => self.print_record_unreadable(interp, env, &obj, id, escape)?,
+            // print.c PVEC_WINDOW: `#<window N' and the buffer it shows.
+            Kind::Window(window) => {
+                let head = format!(
+                    "#<window {}",
+                    interp.window_sequence_number(window.id()).unwrap_or(0)
+                );
+                self.strout(interp, env, &head)?;
+                let buffer_name = |interp: &Interpreter| {
+                    crate::lisp::primitives::window_buffer_id(interp, &obj)
+                        .and_then(|buffer_id| interp.get_buffer_by_id(buffer_id))
+                        .map(|buffer| buffer.name())
+                };
+                // `BUFFERP (XWINDOW (obj)->contents)', then the name of
+                // the buffer the window shows once " on " is written.
+                if buffer_name(interp).is_some() {
+                    self.strout(interp, env, " on ")?;
+                    let name = buffer_name(interp).unwrap_or(Value::Nil);
+                    self.print_name(interp, env, name)?;
+                }
+                self.printchar(interp, env, '>')?;
+            }
             _ => self.strout(interp, env, &obj.to_string())?,
         }
         Ok(())
@@ -1906,26 +1927,6 @@ impl Printer {
                     .map(|symbols| symbols.len())
                     .unwrap_or(0);
                 self.strout(interp, env, &format!("#<obarray n={count}>"))
-            }
-            RecordKind::Window => {
-                let head = format!(
-                    "#<window {}",
-                    interp.window_sequence_number(id.id).unwrap_or(0)
-                );
-                self.strout(interp, env, &head)?;
-                let buffer_name = |interp: &Interpreter| {
-                    crate::lisp::primitives::window_buffer_id(interp, obj)
-                        .and_then(|buffer_id| interp.get_buffer_by_id(buffer_id))
-                        .map(|buffer| buffer.name())
-                };
-                // `BUFFERP (XWINDOW (obj)->contents)', then the name of
-                // the buffer the window shows once " on " is written.
-                if buffer_name(interp).is_some() {
-                    self.strout(interp, env, " on ")?;
-                    let name = buffer_name(interp).unwrap_or(Value::Nil);
-                    self.print_name(interp, env, name)?;
-                }
-                self.printchar(interp, env, '>')
             }
             RecordKind::WindowConfiguration => self.strout(interp, env, "#<window-configuration>"),
             RecordKind::Sqlite => {
