@@ -23051,6 +23051,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   45198225377) passed: 3,550 library tests, the seven integration
   targets (217) and the binaries' tests (61), none failed.
 
+**On `110e2a9`** (round 375): the frozen run (run 45222250596) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 65.0 s against 55.9 s (1.163), test bodies 262.4 s
+  against 252.0 s (1.041), in all 1.063 (GNU's suite took 308 s).  The
+  widest body gaps are comp-tests (15.4 s against 13.0 s), tramp-tests
+  (18.4 against 16.7), semantic-utest-ia (3.42 against 2.15),
+  process-tests (2.83 against 1.58), mule-tests (2.27 against 1.56) and
+  package-tests (6.41 against 5.77).  The Rust gate (run 45222243186)
+  passed: 3,555 library tests, the seven integration targets (217) and
+  the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 375 and its review), outside the
   round.**  One line each: with `minibuffer-setup-hook' deleting
