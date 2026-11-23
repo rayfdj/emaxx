@@ -315,6 +315,8 @@ pub(crate) enum DumpType {
     Frame = 26,
     /// A terminal, nilled likewise.
     Terminal = 27,
+    /// A window, nilled likewise: the number of slots it holds.
+    Window = 12,
 }
 
 impl DumpType {
@@ -363,6 +365,7 @@ impl DumpType {
             25 => Self::Finalizer,
             26 => Self::Frame,
             27 => Self::Terminal,
+            12 => Self::Window,
             _ => return None,
         })
     }

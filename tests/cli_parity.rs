@@ -13217,3 +13217,109 @@ fn a_native_function_that_takes_a_vector_is_called_as_funcall_subr_calls_it() {
     );
     assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
 }
+
+#[test]
+fn a_dumped_window_is_a_dead_window_of_the_process_that_loads_the_dump() {
+    // pdumper.c:dump_vectorlike writes PVEC_WINDOW with
+    // dump_nilled_pseudovec: every Lisp field nil and the rest zero.  A
+    // window that a variable of the dumped session held is therefore, in
+    // the process started from the dump, a deleted window on no frame,
+    // `#<window 0>', beside the windows window.c makes for that process's
+    // first frame.  It is none of those -- both processes number their
+    // first windows alike -- so the selected window of the new process
+    // stays live, and every primitive answers for the dumped one as
+    // window.c does for a window whose contents are nil: WINDOWP holds,
+    // WINDOW_VALID_P and WINDOW_LIVE_P do not, and decode_valid_window
+    // and decode_live_window signal.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "dumped-window-probe.el",
+        r#"(dolist (name '(zz-dumped-selected zz-dumped-root zz-dumped-mini))
+  (let ((w (symbol-value name)))
+    (princ (format "%s: %S\n" name
+                   (list (windowp w) (window-live-p w) (window-valid-p w)
+                         (type-of w) (cl-type-of w)
+                         (condition-case e (window-buffer w) (error e))
+                         (condition-case e (window-frame w) (error e))
+                         (condition-case e (window-parent w) (error e))
+                         (condition-case e (window-next-sibling w) (error e))
+                         (condition-case e (window-prev-sibling w) (error e))
+                         (condition-case e (window-top-child w) (error e))
+                         (condition-case e (window-left-child w) (error e))
+                         (condition-case e (window-parameter w 'x) (error e))
+                         (condition-case e (window-parameters w) (error e))
+                         (condition-case e (window-list-1 w t t) (error e))
+                         (condition-case e (window-list nil nil w) (error e))
+                         (condition-case e (next-window w) (error e))
+                         (condition-case e (window-start w) (error e))
+                         (condition-case e (window-point w) (error e))
+                         (condition-case e (window-prev-buffers w) (error e))
+                         (condition-case e (window-minibuffer-p w) (error e))
+                         (condition-case e (window-dedicated-p w) (error e))
+                         (condition-case e (select-window w) (error e))
+                         (condition-case e (set-window-buffer w (current-buffer)) (error e))
+                         (condition-case e (delete-window w) (error e))
+                         (eq w (selected-window)) (equal w (selected-window))
+                         (eq w (frame-root-window)) (eq w (minibuffer-window))
+                         (prin1-to-string w))))))
+(princ (format "shared: %S\n"
+               (list (eq (car zz-dumped-list) (cadr zz-dumped-list))
+                     (eq (car zz-dumped-list) zz-dumped-selected)
+                     (eq zz-dumped-selected zz-dumped-mini))))
+(garbage-collect)
+;; The windows of this process are its own, and live.
+(princ (format "live: %S\n"
+               (list (window-live-p (selected-window)) (window-valid-p (selected-window))
+                     (framep (window-frame)) (bufferp (window-buffer))
+                     (eq (selected-window) (frame-root-window))
+                     (window-live-p (minibuffer-window))
+                     (length (window-list-1 nil t t))
+                     (windowp (split-window))
+                     (length (window-list-1 nil t t))
+                     (windowp zz-dumped-selected) (window-live-p zz-dumped-selected)
+                     (prin1-to-string zz-dumped-selected))))
+"#,
+    );
+    let run = |binary: &Path, name: &str| {
+        let image = corpus
+            .directory
+            .join(format!("{name}-dumped-window.pdmp"))
+            .display()
+            .to_string();
+        // loadup.el's load--fixup-all-elns needs both directories to fix
+        // the session's native units up for the dump: it names each unit
+        // relative to the binary's directory, which the process started
+        // from the dump resolves physically, so both are given as their
+        // true names (the oracle is reached through a link here).
+        let dump = corpus.write(
+            &format!("{name}-dump-window.el"),
+            &format!(
+                r#"(setq zz-dumped-selected (selected-window)
+      zz-dumped-root (frame-root-window)
+      zz-dumped-mini (minibuffer-window)
+      zz-dumped-list (list (selected-window) (selected-window)))
+(let ((load--bin-dest-dir (file-truename invocation-directory))
+      (load--eln-dest-dir (file-truename source-directory)))
+  (dump-emacs-portable "{image}"))
+"#
+            ),
+        );
+        let dumped = corpus.run(binary, &["--batch", "-Q", "-l", &dump]);
+        assert_eq!(dumped.2, Some(0), "{name} did not dump: {dumped:?}");
+        corpus.run(
+            binary,
+            &["--dump-file", &image, "--batch", "-Q", "-l", &probe],
+        )
+    };
+    let expected = run(&oracle(), "gnu");
+    assert_eq!(expected.2, Some(0), "GNU's probe failed: {expected:?}");
+    assert!(
+        expected.0.contains("#<window 0>"),
+        "GNU prints the dumped window as nilled: {expected:?}"
+    );
+    assert_eq!(
+        run(emaxx(), "emaxx"),
+        expected,
+        "Emaxx (left) and GNU (right) differ for a dumped window"
+    );
+}

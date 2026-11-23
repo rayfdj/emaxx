@@ -93,19 +93,21 @@ a diagnostic run of the locked suite on the profile-guided build.
   (safe public APIs cannot race the allocator/symbol tables)
 - D2: tramp-tests body gap: pty read timing, 2.3x string consing (round 327)
 - D3: Windows as generic records rather than GNU's struct window pseudovector
-  (round 321)
+  (round 321). In progress (round 369: every access through one handle;
+  round 371: the window is its own PVEC_WINDOW object with its slots in it).
 - D4: Native code's calls into subrs cost ~65 vs 14 instructions (round 321)
 - D9: Dynamic-binding byte-code call from byte code ~80 instructions over GNU
   (rounds 289, 295)
 - D13: looking-at ~250 instructions over GNU around the match (rounds 174-176,
   296)
 - D14: make-symbol ~690 instructions (round 173)
-- D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297)
+- D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297).
+  In progress (round 370: 414 against 289 a `mapc' callback, was 458).
 - D22: Building ucs-names costs 1,024M vs 818M instructions (round 162)
 - D23: Reading a large file still costs 85M vs 67M instructions (rounds 161,
   175). **Done** (baseline of 23 November 2026: 60.0M against 67.2M).
 - D25: Closure entry from Rust 807 vs 639 instructions per mapatoms callback
-  (rounds 159, 160)
+  (rounds 159, 160). In progress (round 370: 501 against 459, was 548).
 - D43: Library tests share one process heap and are not thread-safe (parallel
   runs crash)
 - D125: Interpreted code and the call from C to a Lisp function are slower
@@ -114,7 +116,7 @@ a diagnostic run of the locked suite on the profile-guided build.
   **Done** (round 368: 0.98 and 0.71 of GNU's time on the profile-guided
   build).
 
-## M3. Fix list (54 items)
+## M3. Fix list (54 items; 1 done)
 
 Exit test: every item below is fixed, or verified against its own recorded
 cases and closed. D119's panic comes first. Instruction counts of the call and
@@ -186,6 +188,8 @@ reason.
 - D119: Found by round 363's second review outside the round: a window of the
   dumped session held by a variable of a user's dump panics window-list-1
   after th…
+  **Done** (round 371: a loaded window is a deleted window under an id of
+  its own; the dump starts and answers as GNU's).
 - D120: noninteractive is two things in GNU and one in Emaxx (round 364's
   first review): GNU's C reads a flag set once from the command line; Emaxx
   reads the …

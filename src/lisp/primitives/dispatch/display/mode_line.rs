@@ -1502,7 +1502,7 @@ impl ModeLine<'_> {
             text
         };
         let window_id = self.window_id;
-        let window = interp.record_value(window_id);
+        let window = interp.window_value(window_id);
         let window_buffer = window_buffer_id(interp, &window);
         let current = interp.current_buffer_id();
         let own_buffer = window_buffer == Some(current);
@@ -1979,13 +1979,7 @@ pub(super) fn format_mode_line(
     // tty's top frame, and that window's buffer's point in a marker.
     // (XBUFFER of a deleted frame-selected window's nil contents has no
     // answer; no point is kept for it.)
-    let window_buffer = |interp: &Interpreter, id: u64| {
-        window_slot_buffer_id(
-            interp
-                .find_record(id)
-                .and_then(|window| window.slots.get(WINDOW_BUFFER_SLOT)),
-        )
-    };
+    let window_buffer = |interp: &Interpreter, id: u64| interp.window_record_buffer_id(id);
     let old_window = interp.selected_window_value();
     let old_window_id = interp.selected_window_id();
     let old_buffer = interp.current_buffer_id();
@@ -2036,7 +2030,7 @@ pub(super) fn format_mode_line(
         if target_live {
             let frame = interp.window_frame_id(target_frame_window);
             if frame != interp.window_frame_id(old_window_id) {
-                let target = interp.record_value(target_frame_window);
+                let target = interp.window_value(target_frame_window);
                 restored = select_window_value(interp, &target, true).map(drop);
             }
             if let Some(old_top_frame) = old_top_frame

@@ -332,7 +332,7 @@ fn resize_root_window(
         interp,
         "window--resize-root-window",
         &[
-            interp.record_value(window),
+            interp.window_value(window),
             Value::Integer(delta),
             lisp_bool(horizontal),
             lisp_bool(ignore),

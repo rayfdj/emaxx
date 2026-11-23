@@ -25169,9 +25169,8 @@ fn native_fixed_pseudovectors_use_gnu_full_vector_footprints() {
     // mutex=9, and condition-variable=8 words.
     let mut interp = Interpreter::new();
     let before = interp.live_object_census();
-    let values = [
+    let mut values = [
         (crate::lisp::eval::RecordKind::Process, "process"),
-        (crate::lisp::eval::RecordKind::Window, "window"),
         (
             crate::lisp::eval::RecordKind::WindowConfiguration,
             "window-configuration",
@@ -25186,6 +25185,8 @@ fn native_fixed_pseudovectors_use_gnu_full_vector_footprints() {
     .into_iter()
     .map(|(kind, name)| interp.create_pseudovector(kind, name, Vec::new()))
     .collect::<Vec<_>>();
+    // A window is an object of its own kind, made by make_window.
+    values.push(interp.make_window(Vec::new()).value());
     let after = interp.live_object_census();
 
     assert_eq!(after.vectors - before.vectors, values.len());
@@ -30831,8 +30832,8 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
     // 22-line root splits 11/11.
     let lower = split_window_internal_staged(&mut interp, &mut env, upper, 11, Value::Nil, 0.5)
         .expect("split-window-internal");
-    let Kind::Record(lower_id) = lower.kind() else {
-        panic!("split answers the new window record");
+    let Kind::Window(lower_id) = lower.kind() else {
+        panic!("split answers the new window");
     };
 
     let layout = crate::lisp::primitives::window_render_layout(&interp);
@@ -30848,7 +30849,7 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
         (bottom.left, bottom.top, bottom.width, bottom.height),
         (0, 12, 80, 11)
     );
-    assert_eq!(bottom.window_id, lower_id.id);
+    assert_eq!(bottom.window_id, lower_id.id());
     assert!(!bottom.selected);
     assert_eq!(
         top.buffer_id, bottom.buffer_id,
@@ -30918,8 +30919,8 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let upper = interp.selected_window_value();
     let lower = split_window_internal_staged(&mut interp, &mut env, upper, 11, Value::Nil, 0.5)
         .expect("split");
-    let Kind::Record(lower_id) = lower.kind() else {
-        panic!("window record");
+    let Kind::Window(lower_id) = lower.kind() else {
+        panic!("window");
     };
     // The lower window shows a different buffer with its own point.
     let other = call(
@@ -30969,11 +30970,11 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let buffer_before = interp.current_buffer_id();
     let point_before = interp.buffer.borrow().point();
     let metrics = crate::lisp::primitives::InteractiveWindowMetrics { window_end: 14 };
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id);
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id());
     let (mode_line, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id.id,
+        lower_id.id(),
         9,
         metrics,
         80,
@@ -31023,11 +31024,11 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("dedicate softly");
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id);
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id());
     let (softly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id.id,
+        lower_id.id(),
         9,
         metrics,
         80,
@@ -31045,11 +31046,11 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("dedicate strongly");
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id);
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id());
     let (strongly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id.id,
+        lower_id.id(),
         9,
         metrics,
         80,
@@ -36633,10 +36634,11 @@ fn buffers_count_the_windows_showing_them() {
         crate::lisp::primitives::WINDOW_END_VALID_SLOT,
         crate::lisp::primitives::WINDOW_BASE_LINE_SLOT,
     ] {
+        // A slot the window holds, as indexing the record's slots was.
         interp
-            .find_record_mut(selected)
-            .expect("the selected window's record")
-            .slots[slot] = Value::T;
+            .window_ref(selected)
+            .expect("the selected window")
+            .set_held_slot(&mut interp, slot, Value::T);
     }
     run(
         &mut interp,
@@ -36644,9 +36646,10 @@ fn buffers_count_the_windows_showing_them() {
     );
     let slot = |interp: &Interpreter, slot: usize| {
         interp
-            .find_record(selected)
-            .expect("the selected window's record")
-            .slots[slot]
+            .window_ref(selected)
+            .expect("the selected window")
+            .slot_opt(slot)
+            .expect("a slot the window holds")
     };
     assert!(slot(&interp, crate::lisp::primitives::WINDOW_END_VALID_SLOT).is_truthy());
     run(

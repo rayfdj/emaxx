@@ -109,6 +109,27 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   in a source loop 0.98 of GNU's (1.37 when recorded), a print to an
   interpreted one-argument function 0.71 (1.08).  The loop's
   instruction count is still above GNU's, 2,712 against 2,218.
+- **In progress: D3 and A3.5** (windows).  Round 369 is the first
+  stage: every access to a window goes through one handle
+  (`WindowRef'), with the representation, the behaviour and the counts
+  unchanged (339 against 244 from byte code, 141 against 48 from native
+  code).  Round 371 is the second: a window is an object of its own
+  kind (tag 11, GNU's PVEC_WINDOW) with its slots in it; six accessors
+  from byte code cost 336.1 each (GNU 244.2), a native call of one
+  137.7 (GNU 48.0), one `split-window-internal' counts 129 vector cells
+  (GNU 149; 27 before).  The stages that give the object window.h's
+  fields and take the ids away follow; the item closes when a window
+  is GNU's `struct window' and the counts are GNU's.
+- **Done ahead of its milestone: D119** (M3's first item; round 371).
+  A dump made with a variable holding one of the session's windows
+  starts again, and the loaded window answers as GNU's nilled one.
+- **In progress: D17 and D25** (C calling byte code).  Round 370: a
+  byte-compiled callback of `mapc' costs 413.7 instructions against
+  GNU's 288.9 (was 457.7) and 19.5 ns against 13.7 (was 25.7) on the
+  release build; of `mapatoms' 403.1 against 299, a closure there 501.0
+  against 459, of `maphash' 415.9 against 291.  Ffuncall's part is
+  level with GNU's; what is left is in the frame entry (the round's
+  entry lists it by piece).
 
 ## Where things stand — 15 October 2026
 
@@ -19168,13 +19189,215 @@ setup_process_coding_systems's check now refuses). A 13-form
   native_comp_identity 1, native_thread_continuations 1,
   package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
   rustfmt clean; the round audit reports no hard finding.
-- **Round 369 is unfinished: its draft is packaged in `wip/r369/`, and
-  `src/` is round 368's.**  The subject is the first stage of making a
-  window GNU's `struct window' (D3, A3.5): every access to a window's
-  state goes through one handle, with no behaviour meant to change.
-  `wip/r369/impl.patch` is the change as a diff against round 368 and
-  `wip/r369/README.md` its state.  Nothing under `wip/` is built or
-  tested by the gate.
+- **Round 369: a window is reached through one handle (M2, D3 and A3.5,
+  the first of the stages; neither item is closed).**  A window is still
+  a host record whose slots are a vector apart from it, found by id
+  through the record registry, and GNU's is one `struct window' reached
+  by its pointer.  Before the representation changes, every place that
+  touched one was brought to a single type: `WindowRef'
+  (primitives/window.rs: `from_value' for decode_any_window's WINDOWP,
+  `from_record_value' where any host record was taken, `slot',
+  `slot_opt', `set_slot', and `ensure_slot', `set_held_slot' and
+  `set_slot_if_held' for the three ways the old writers grew or indexed
+  the vector) and `Interpreter::{window_ref, window_value, make_window,
+  windows_where}'.  `window_record' is gone and the frame's root,
+  selected, minibuffer and old selected windows hold the handle.
+  Twenty-three files, 637 lines added and 624 removed, in three commits
+  by file group.  No window is reached through `find_record',
+  `find_record_mut', `record_ref' or `record_value' any more outside
+  the handle, the generic record code (collector, dumper and loader,
+  printer, equality, purecopy) and the tests.  **No behaviour changes
+  and nothing is faster:** the six window accessors from byte code cost
+  339 instructions each as before (GNU 244), a native call of one 140
+  (GNU 48), and the guard loops read what round 368's build reads
+  (lex-rec 367, mapc-bc 458, the `(ignore i)' loop 2,762, native-subr
+  126, cg-call-loop 380, cg-interp-lexical 4,403).  What the stage
+  found and left as it was: a new window holds 31 slots, the values
+  `window_record_slots' gives slots 31 to 54 being cut off at creation,
+  so `window-new-pixel', `window-new-total', `window-new-normal',
+  `window-normal-size', `window-cursor-type' and the character geometry
+  tell an absent slot from nil; the next stage, where all the fields
+  always exist, has to say what each of those reads then.  The
+  independent review (the one question: does the round cheat or break
+  something) read all twenty-three files and found neither; it noted
+  three textual differences that nothing observes (a cons allocated
+  before the slot vector grows in the window-parameter setter, a test's
+  index written as `slot()', FrameState's Debug text).  Validation
+  (gate profile, one test thread a process): the grouped gate 3,530
+  passed, 0 failed, 2 ignored; cli 30, cli_parity 173, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean; the round audit reports no hard finding, and lists one
+  assertion rewritten through the handle (the cloned interpreter's root
+  window in a native_comp test) and two lines of the handle matched by
+  their wording (`slot_opt' with a second slot to read, and with nil for
+  an absent one, both as the code they replace).  **Next, in
+  this order** (the plan's stages): the window becomes its own
+  vectorlike object with its fields inline (pseudovector type 11, 68
+  words with the header as GNU's, the collector, dumper, loader and
+  printer taking it as a window and not as a record), which is where
+  the accessor counts and the allocation counters of `split-window'
+  (63 vector cells against GNU's 185) can move; then GNU's field
+  semantics for the slots above, the holders keeping the object and not
+  an id, and the ids removed.
+- **Round 370: the byte-code loop returns a function's value in
+  registers (M2, D17 and D25; neither is closed).**  A function called
+  from C that is byte code (`mapc', `mapatoms', `maphash', a hook, a
+  sort predicate, a call from the evaluator or from native code) is
+  entered by `funcall_closure', which sets up the frame and calls the
+  verified loop, `run_verified'.  Before the round a byte-compiled
+  one-argument callback of `mapc' cost 457.7 instructions a call
+  against GNU's 288.9, by function `funcall_closure' 222,
+  `call_function_value' 121, `run_verified' 80, `map_sequence_of' 22
+  and the length 10, against exec_byte_code 112, Ffuncall 61,
+  funcall_general 47, funcall_lambda 40, mapcar1 17 and list_length
+  9.5: Ffuncall's part is level (121 against 108) and the frame entry
+  is twice GNU's (302 against 152).  In time it was worse than in
+  instructions: 25.7 ns a call against 13.7, 1.88 of GNU's where the
+  instructions are 1.58 (the release build, the least of nine runs,
+  on a host with other load); the simulated branch predictor missed
+  alike in both.  Two causes are gone.  **The loop's answer came back
+  through memory**: `(FastExit, Option<usize>)', seven words that the
+  loop wrote a word at a time and its caller then read sixteen bytes at
+  a time (a load over two narrower stores, which the processor cannot
+  forward) before it matched on them and stored the stack's top a
+  second time.  `run_verified' now answers `Option<Value>': the value
+  the function returned to the loop's caller, in two registers as
+  exec_byte_code's `return val' is, or None with any other exit written
+  to a slot the caller passes (`left', read only after None), the top
+  stored by the loop on each way out that stored it before.  **The
+  plain entry tested the code twice**: `entry_program' answers only for
+  a closure whose code string is current and verified with the entry's
+  operands, nothing between that answer and the loop runs Lisp,
+  collects or stores into a string, and the loop's own Bcall already
+  enters on that answer alone (`enter_closure_frame'); the entry from
+  Rust tested `current && admits (0, entry_depth)' again.  It no longer
+  does (`run_entered_with's `setup_runs_lisp', false for pushed
+  arguments), a debug assertion states the claim in the gate's build,
+  and the dynamic-binding entry, whose argument bindings can run a
+  variable watcher, keeps the test.  **After**: the `mapc' callback
+  413.7 instructions (GNU 288.9) and 19.5 ns (13.7; 1.42 of GNU's);
+  from a byte-compiled caller, where no interpreter environment is
+  above the call, 394.5 against 286.5 (probe `mapc-bc-bc'); a callback
+  of `mapatoms' 403.1 (was 447.1, GNU 299), a closure there 501.0
+  (548.0, GNU 459), of `maphash' 415.9 (460.0, GNU 291).  The loop
+  itself does the same work: a lexical recursion runs 363 instructions
+  a level in both builds apart from alignment no-ops (callgrind reads
+  371.1 for 367.2, four no-ops more), a dynamic one 693.0, the suite's
+  byte-code calls 459.6, the interpreter's loops 3,181 and 4,403;
+  cg-call-loop reads 381 for 380 (one instruction of block layout),
+  get-loop 165 for 171, and six window accessors 341.9 each for 339.3
+  (in the loop, over the six: thirteen no-ops and three instructions
+  more).  The slot is the loop's first argument because
+  the pointer to the old in-memory result was: as its last, the loop's
+  register allocation moved and a recursion level cost seven
+  instructions more.  **What is left of D17** (the callback's 413.7
+  against 288.9): in `funcall_closure' (200) the nil interpreter
+  environment pushed and popped around the call when the caller's is
+  not nil (about 29, GNU's funcall_lambda binds nothing for lexical
+  byte code; about 11 from a compiled caller), the entry's marks read,
+  kept, compared and restored (about 28), the entry cache's lookup
+  (24), the frame (22), the arguments (14) and the loop's frame record
+  with its call (about 20); `run_verified' 60, of which its prologue
+  41.  Dropping the pushed environment needs every reader of the
+  environment that a subr can reach checked first (the evaluator's
+  entry points bind their own as GNU's do; Rust callers of the
+  evaluator were not audited), so it is not in this round.  The
+  profile-guided build was not rebuilt: the times above are the
+  release build's.  The independent review (the one question: does the
+  round cheat or break something) read every way out of the loop and
+  both callers and found nothing: the slot is written before each None
+  and read once after it, the top is stored where it was, a return with
+  frames or handlers above the activation still goes through
+  `run_loop's return with the debugger on exit, and the entry cache's
+  answer implies the dropped test (a code string leaves `Current' only
+  through a store, which counts a change, or the sweep, which forgets
+  it; `verify' starts from the entry's operand count).  It noted that
+  the release build now rests on that invariant at the entry from Rust
+  as it already did at Bcall's, which verify.rs's module comment now
+  says.  Validation (gate profile, one test thread a process): the
+  grouped gate 3,530 passed, 0 failed, 2 ignored; cli 30, cli_parity
+  173, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 1, package_lifecycle 5,
+  runtime_ownership 3; clippy `-D warnings' and rustfmt clean; the
+  round audit reports no hard finding (110 changed lines, one
+  assertion added, none removed).
+- **Round 371: a window is an object of its own kind (M2, D3 and A3.5,
+  the second stage, neither closed; M3's D119 closed).**  window.h's
+  struct window is a pseudovector with its fields in it.  A window was
+  a host record whose slots were a vector beside it.  It is now a
+  vectorlike object of tag 11, GNU's PVEC_WINDOW
+  (alloc/vectors/windows.rs): the 55 slots the `WINDOW_*_SLOT'
+  constants number are the object's own Lisp words, followed by its id,
+  its owner and the number of slots it holds, which is what the
+  vector's length was (a slot past it reads as absent, a store that
+  needs it raises it).  `Kind::Window' and `Value::Window' name it,
+  `WindowRef' wraps it, `RecordKind::Window' is gone.  The collector
+  traces every slot; the sweep notes a freed window's id and its
+  interpreter drops it from the windows' registry (weak, as the
+  records' is) and the "window" type index; `type-of', `cl-type-of',
+  the printer, `equal', `value<', `sxhash', purecopy, the reader's
+  substitution, the image copier, the native runtime's checked decode
+  and the census (66 words a window, as before) answer as they did.
+  `window-live-p', `window-buffer' and `window-parameter' decode their
+  argument once and read the window's own words, where they went back
+  through its id.  **D119.**  pdumper.c writes a window with
+  dump_nilled_pseudovec, so in the process started from a dump it is a
+  window with no contents: WINDOWP holds, WINDOW_VALID_P and
+  WINDOW_LIVE_P do not, it prints as `#<window 0>'.  Emaxx's loader
+  installed the dumped window under the dumping process's id, where it
+  took the place of the loading process's own window of that id; a
+  dump made with a variable holding the session's selected, root or
+  minibuffer window then aborted the process started from it at once
+  ("window stores its owning frame", status 134; checked again on
+  round 369's build).  The dumper now writes a window under a type of
+  its own and the loader makes it, once every record of the image has
+  its id, as a deleted window under a fresh id that names nothing
+  else.  For such a dump Emaxx's output is GNU's on both streams:
+  about thirty forms on each of the three loaded windows
+  (`window-live-p', `window-buffer', `window-frame', `window-list-1',
+  `select-window', `delete-window', printing and the rest), their
+  sharing, and the new process's own windows, a test of tests/cli_parity.rs
+  that runs both editors.  **Two other differences from before, both
+  towards GNU**: `next-frame' and `previous-frame' given a MINIFRAME
+  that is a host record but no window (a mutex, say) took it for a
+  window and now take candidate_frame's last branch, which only two
+  frames on one terminal can show; and `vector-cells-consed' counts
+  the window's own 57 words where it counted the record's 6, so one
+  `split-window-internal' reads 129 against GNU's 149 (27 before).
+  **Counts**: six window accessors from byte code 336.1 instructions
+  each (341.9 before; GNU 244.2), a native call of one 137.7 (140.4;
+  GNU 48.0); the byte-code recursion (371.1), the suite's byte-code
+  calls (459.6), the `mapc' callback (413.7) and the interpreted
+  `(ignore i)' loop (2,762) are what round 370 left.  The gain is small because the accessors still pay
+  what they paid around the read (the lifted primitive's dispatch,
+  `valid_window_or_selected', `window-start', `window-point' and
+  others turning the decoded window into an id and back), and the
+  allocation still differs because the object is 58 words where GNU's
+  is 66 and the slots are not yet window.h's fields: the next stages.
+  Six tests are new (four of the object, its held slots, its tracing
+  and its collection in alloc/vectors/tests.rs, one of the loader in
+  pdumper/tests.rs, the parity test); seven that built a window record
+  by hand, matched `Kind::Record' on a window or indexed its slot
+  vector assert the same facts through `make_window', `Kind::Window'
+  and the handle.  The independent review (the one question: does the
+  round cheat or break something) read all 27 files and found neither:
+  the roots that held a window still do (a frame's four windows, the
+  selected window, the id holders), the registry was weak before too,
+  the held count maps one to one onto the old vector's length, a
+  dumped window has no outgoing reference and a loaded one cannot take
+  a live window's place, and each rewritten assertion states the same
+  fact.  Validation (gate profile, one test thread a process): the
+  grouped gate 3,535 passed, 0 failed, 2 ignored (five library tests
+  more); cli 30, cli_parity 174 (one more), ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists the
+  four assertions of the rewritten tests (the type index's, the cloned
+  interpreter's root window, the selected window's kind, a split
+  window's id), three reads of an absent slot or name as nil that are
+  the code they replace, and 1,358 changed lines with six tests and 92
+  assertions added.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -22385,7 +22608,59 @@ ert-tests as a whole 26,307 ms against 27,211.
   45115035072) passed: 3,537 library tests, the seven integration
   targets (216) and the binaries' tests (61), none failed.
 
+**On `19ba90c`** (round 369): the frozen run (run 45132308404) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 55.0 s against 46.8 s (1.175), test bodies 236.6 s
+  against 223.5 s (1.059), in all 1.079, on a fast runner (GNU's suite
+  took 270 s).  The widest body gaps are tramp-tests (15.3 s against
+  13.7 s), comp-tests (12.5 against 11.1), semantic-utest-ia (2.75
+  against 1.92), process-tests (2.20 against 1.47), mule-tests (2.03
+  against 1.37) and package-tests (5.91 against 5.47).  The Rust gate
+  (run 45132304683) passed: 3,537 library tests, the seven integration
+  targets (216) and the binaries' tests (61), none failed.
+
+**On `0b7247a`** (round 370): the frozen run (run 45146517239) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 58.9 s against 49.9 s (1.180), test bodies 239.8 s
+  against 237.5 s (1.010), in all 1.039 (GNU's suite took 287 s).  The
+  widest body gaps are comp-tests (12.6 s against 11.1 s), tramp-tests
+  (15.6 against 14.1), semantic-utest-ia (3.02 against 2.23), mule-tests
+  (2.00 against 1.37), package-tests (6.03 against 5.56) and
+  electric-tests (0.77 against 0.46).  The Rust gate (run 45146512857)
+  passed: 3,537 library tests, the seven integration targets (216) and
+  the binaries' tests (61), none failed.
+
+**On `8bc81e3`** (round 371): the frozen run (run 45157213772) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 61.1 s against 53.2 s (1.148), test bodies 246.4 s
+  against 235.9 s (1.045), in all 1.064 (GNU's suite took 289 s).  The
+  widest body gaps are tramp-tests (20.3 s against 18.5 s),
+  icalendar-tests (1.89 against 0.35), comp-tests (14.3 against 13.3),
+  process-tests (2.58 against 1.83), mule-tests (1.77 against 1.09) and
+  semantic-utest-ia (2.64 against 2.05).  The Rust gate (run
+  45157208861) passed: 3,542 library tests, the seven integration
+  targets (217) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 371 and its review), outside the
+  round and in no milestone.**  One line each:
+  `lread--substitute-object-in-subtree' walks and rewrites the slots of
+  a window, as of any host record, where GNU signals `sequencep'
+  (completion.rs); the side tables of a window's sequence number and
+  cursor visibility are never purged of a freed window's id (the
+  windows' next stage moves both into the object); purecopy of a window
+  reports `record<ID> (Window, ...)' where GNU prints the object;
+  `install_record' carries a `cfg_attr(not(test), allow(dead_code))'
+  that no longer applies, the loader using it in every build; a window
+  loaded from a dump has no frame, and `split-window-internal' and
+  `format-mode-line' given one panic on the missing frame where GNU
+  dereferences nil and dies of the signal (both end the process, with
+  different statuses); the GNU-oracle assertions of two print tests
+  (`print_prunes_charset_properties_like_print_prune_string_charset',
+  `prin1_and_error_message_strings_print_into_the_hidden_prin1_buffer')
+  depend on the locale the test runs in, and
+  `process_tls_state_survives_collection_before_and_after_async_handshake'
+  fails at its oracle assertion on a loaded host.
 - **Found after the scope lock (round 368's review), outside the round
   and in no milestone.**  One line each, as the rules of
   docs/milestones.md leave them: a fixed-arity native function's cell

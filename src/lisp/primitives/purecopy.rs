@@ -135,6 +135,24 @@ fn purecopy_record(interp: &mut Interpreter, id: u64, env: &mut Env) -> Result<V
     )))
 }
 
+/// alloc.c:purecopy of a window, which it does not know how to purify:
+/// the hash-consing lookup first, then the error in the words it had
+/// while a window was a host record.
+fn purecopy_window(
+    interp: &mut Interpreter,
+    source: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if let Some(cached) = hash_cons_lookup(interp, source, env)? {
+        return Ok(cached);
+    }
+    Err(LispError::Signal(format!(
+        "Don't know how to purify: {} (Window, {:?})",
+        source.type_name(),
+        Value::symbol(crate::lisp::alloc::vectors::windows::WINDOW_TYPE_NAME),
+    )))
+}
+
 fn purecopy_inner(
     interp: &mut Interpreter,
     value: &Value,
@@ -213,6 +231,10 @@ fn purecopy_inner(
         Kind::Record(id) => {
             return interp
                 .with_lisp_stack_roots(value, |interp| purecopy_record(interp, id.id, env));
+        }
+        Kind::Window(_) => {
+            return interp
+                .with_lisp_stack_roots(value, |interp| purecopy_window(interp, value, env));
         }
         // alloc.c's last case: (error "Don't know how to purify: %S").
         Kind::NativeCompUnit(_)

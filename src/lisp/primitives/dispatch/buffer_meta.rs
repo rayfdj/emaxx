@@ -634,12 +634,10 @@ define_dispatch!(
                 // accessible portion and its start at the buffer's
                 // last_window_start (Fset_marker, so within the buffer).
                 for window in interp.record_ids_by_type("window") {
-                    let Some(buffer) = crate::lisp::primitives::window_slot_buffer_id(
-                        interp
-                            .find_record(window)
-                            .and_then(|record| record.slots.get(WINDOW_BUFFER_SLOT)),
-                    )
-                    .filter(|id| *id == current_id || *id == other_id) else {
+                    let Some(buffer) = interp
+                        .window_record_buffer_id(window)
+                        .filter(|id| *id == current_id || *id == other_id)
+                    else {
                         continue;
                     };
                     let Some((begv, start, size)) = interp.get_buffer_by_id(buffer).map(|state| {

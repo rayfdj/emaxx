@@ -1275,7 +1275,6 @@ pub(crate) enum RecordKind {
     Font,
     Process,
     Obarray,
-    Window,
     WindowConfiguration,
     Thread,
     Mutex,
@@ -1298,9 +1297,6 @@ impl RecordKind {
             Self::Process => 42,
             Self::ModuleFunction => 9,
             Self::UserPointer => 3,
-            // window.c allocates struct window as a full pseudovector.  Its
-            // configured VECSIZE is 66 words, including the header word.
-            Self::Window => 66,
             // window.c:struct save_window_data has eight Lisp fields and ten
             // trailing ints; VECSIZE is 13 words on the configured ABI.
             Self::WindowConfiguration => 13,
@@ -3913,10 +3909,10 @@ pub(crate) struct FrameState {
     /// frame.h's face_hash_table: the frame's own face definitions, an
     /// `eq' table of each face's symbol to its lface vector.
     pub(crate) face_hash_table: Option<Value>,
-    pub(crate) root_window: Option<crate::lisp::types::RecordRef>,
-    pub(crate) selected_window: Option<crate::lisp::types::RecordRef>,
-    pub(crate) minibuffer_window: Option<crate::lisp::types::RecordRef>,
-    pub(crate) old_selected_window: Option<crate::lisp::types::RecordRef>,
+    pub(crate) root_window: Option<primitives::WindowRef>,
+    pub(crate) selected_window: Option<primitives::WindowRef>,
+    pub(crate) minibuffer_window: Option<primitives::WindowRef>,
+    pub(crate) old_selected_window: Option<primitives::WindowRef>,
     pub(crate) tty_sized: bool,
     pub(crate) id: u64,
     /// frame.h's text_cols, total_cols and pixel_width, one value on a
@@ -3975,15 +3971,15 @@ pub(crate) struct FrameState {
 
 impl FrameState {
     pub(crate) fn root_window_id(&self) -> u64 {
-        self.root_window.map_or(0, |window| window.id)
+        self.root_window.map_or(0, primitives::WindowRef::id)
     }
 
     pub(crate) fn selected_window_id(&self) -> u64 {
-        self.selected_window.map_or(0, |window| window.id)
+        self.selected_window.map_or(0, primitives::WindowRef::id)
     }
 
     pub(crate) fn minibuffer_window_id(&self) -> u64 {
-        self.minibuffer_window.map_or(0, |window| window.id)
+        self.minibuffer_window.map_or(0, primitives::WindowRef::id)
     }
 }
 
@@ -4195,7 +4191,9 @@ impl ImageGraphCopier {
                     &mut state.old_selected_window,
                 ] {
                     if let Some(source) = *window {
-                        let Kind::Record(copied) = self.copy(&Value::Record(source)).kind() else {
+                        let Some(copied) =
+                            primitives::WindowRef::from_value(&self.copy(&source.value()))
+                        else {
                             unreachable!()
                         };
                         *window = Some(copied);
@@ -4513,6 +4511,27 @@ impl ImageGraphCopier {
                 state.slots = slots;
                 copied
             }
+            Kind::Window(window) => {
+                // The clone's own window under the same id, in its id
+                // space, holding as many slots; the slots copied after the
+                // window is on record (a window reaches itself through
+                // its frame and its siblings).
+                let key = window.identity();
+                if let Some(copied) = self.records.get(&key) {
+                    return *copied;
+                }
+                let copied_window = crate::lisp::types::WindowObjectRef::new(
+                    window.id(),
+                    self.record_owner,
+                    window.held(),
+                );
+                let copied = Value::Window(copied_window);
+                self.records.insert(key, copied);
+                for (index, slot) in window.held_values().enumerate() {
+                    copied_window.set_held(index, self.copy(&slot));
+                }
+                copied
+            }
             Kind::Closure(lambda) => {
                 let key = lambda.identity();
                 if let Some(copied) = self.lambdas.get(&key) {
@@ -4748,6 +4767,7 @@ impl LispReachability {
             Kind::SubCharTable(table) => table.mark_bit().is_marked(self.epoch),
             Kind::Frame(frame) => frame.mark_bit().is_marked(self.epoch),
             Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Window(window) => window.mark_bit().is_marked(self.epoch),
             Kind::SymbolWithPos(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
             Kind::LispRecord(record) => record.mark_bit().is_marked(self.epoch),
@@ -4841,6 +4861,7 @@ impl LispReachability {
             Kind::SubCharTable(table) => table.mark_bit().mark(self.epoch),
             Kind::Frame(frame) => frame.mark_bit().mark(self.epoch),
             Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
+            Kind::Window(window) => window.mark_bit().mark(self.epoch),
             Kind::SymbolWithPos(value) => value.mark_bit().mark(self.epoch),
             Kind::Record(record) => record.mark_bit().mark(self.epoch),
             Kind::LispRecord(record) => record.mark_bit().mark(self.epoch),
@@ -4918,6 +4939,11 @@ impl LispReachability {
             Kind::Terminal(terminal) => {
                 terminal.visit_lisp_values(&mut |child| self.enqueue(child));
             }
+            Kind::Window(window) => {
+                // alloc.c:mark_window: every Lisp word of the window, its
+                // three markers, which nothing else holds, among them.
+                window.visit_lisp_values(&mut |child| self.enqueue(child));
+            }
             Kind::Overlay(overlay) => {
                 // alloc.c:mark_overlay traces only the strong plist slot.
                 self.enqueue(&overlay.plist());
@@ -4945,7 +4971,7 @@ impl LispReachability {
                 .into_iter()
                 .flatten()
                 {
-                    self.enqueue(&Value::Record(window));
+                    self.enqueue(&window.value());
                 }
                 if let Some(target) = state.focus_frame_id {
                     self.enqueue(&Value::Frame(target));
@@ -5197,12 +5223,22 @@ impl Interpreter {
             let id = record.id;
             // The registry names the freed cell under this id, or it names
             // the record an image load put in its place (whose side tables
-            // are its own): only the former leaves.
-            match self.records.get(id) {
-                Some(held) if held.identity() == record.identity => {
-                    self.records.remove(id);
+            // are its own): only the former leaves.  A window leaves the
+            // windows' registry, where its id is.
+            if record.window {
+                match self.windows.get(id) {
+                    Some(held) if held.identity() == record.identity => {
+                        self.windows.remove(id);
+                    }
+                    _ => continue,
                 }
-                _ => continue,
+            } else {
+                match self.records.get(id) {
+                    Some(held) if held.identity() == record.identity => {
+                        self.records.remove(id);
+                    }
+                    _ => continue,
+                }
             }
             if let Some(type_name) = record.type_name.as_deref()
                 && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
@@ -5211,6 +5247,9 @@ impl Interpreter {
                 if ids.is_empty() {
                     self.record_ids_by_type_index.remove(type_name);
                 }
+            }
+            if record.window {
+                continue;
             }
             // The side tables that know an object by id go with it: the
             // sqlite handle (sqlite.c's finalizer closes the database),
@@ -5412,6 +5451,22 @@ impl Interpreter {
         )
     }
 
+    /// A window the image held, which pdumper.c:dump_nilled_pseudovec
+    /// wrote with every Lisp field nil: a deleted window of the new
+    /// process (w->contents nil), holding HELD nil slots, on no frame and
+    /// with no sequence number.  Its id is this state's next, so it names
+    /// no window this process made and none it makes later: the dumping
+    /// process's id is not an identity here.
+    pub(crate) fn install_dead_window(&mut self, held: usize) -> primitives::WindowRef {
+        let window = self.allocate_window(held.max(primitives::WINDOW_KIND_SLOT + 1));
+        // A nil kind slot is a leaf's; contents nil is a deleted window.
+        window.set_held(
+            primitives::WINDOW_KIND_SLOT,
+            primitives::WindowKind::Deleted.value(),
+        );
+        primitives::WindowRef::from_object(window)
+    }
+
     /// A terminal the image nilled: a dead terminal object of its own,
     /// beside the initial terminal init_tty made for the new process.
     pub(crate) fn install_dead_terminal(&mut self) -> crate::lisp::types::TerminalRef {
@@ -5580,8 +5635,8 @@ impl Interpreter {
     /// them.  An id the sweep already freed has no entry and is skipped.
     fn mark_record_holders(&self, mark: &mut impl FnMut(&Value)) {
         let mut hold = |id: u64| {
-            if let Some(record) = self.record_ref(id) {
-                mark(&Value::Record(record));
+            if let Some(window) = self.window_ref(id) {
+                mark(&window.value());
             }
         };
         hold(self.old_selected_window_id);
@@ -5896,9 +5951,8 @@ impl Interpreter {
         for buffer in &self.minibuffer_list {
             mark(buffer);
         }
-        for id in [self.standard_obarray_id, self.selected_window_id] {
-            mark(&self.record_value(id));
-        }
+        mark(&self.record_value(self.standard_obarray_id));
+        mark(&self.window_value(self.selected_window_id));
         // The thread's Lisp values outside any interpreter (xdisp.c's
         // staticpro'd echo area; a tag cache).
         crate::lisp::primitives::mark_thread_local_roots(&mut mark);
@@ -6201,6 +6255,12 @@ impl Interpreter {
             for slot in clone.records.values_mut() {
                 let Kind::Record(copied) = c.copy(&Value::Record(*slot)).kind() else {
                     unreachable!("a record copies to a record")
+                };
+                *slot = copied;
+            }
+            for slot in clone.windows.values_mut() {
+                let Kind::Window(copied) = c.copy(&Value::Window(*slot)).kind() else {
+                    unreachable!("a window copies to a window")
                 };
                 *slot = copied;
             }
@@ -6885,6 +6945,9 @@ pub struct InterpreterState {
     buffer_case_tables: coding::BufferCaseTables,
     /// Allocated record objects, by id (see `record_registry').
     records: record_registry::RecordRegistry,
+    /// The window objects, by id: as weak as `records', and purged with
+    /// it after a sweep.
+    windows: record_registry::WindowRegistry,
     /// This state's id space, for the records' `owner'.
     record_owner: u32,
     /// Host pseudovector IDs grouped by their fixed type tags, principally
@@ -7708,6 +7771,7 @@ impl Interpreter {
                 (main_thread_id, main_thread),
                 (standard_obarray_id, standard_obarray),
             ]),
+            windows: record_registry::WindowRegistry::default(),
             record_owner,
             record_ids_by_type_index: [
                 ("thread".into(), BTreeSet::from([main_thread_id])),
@@ -9060,31 +9124,27 @@ impl Interpreter {
             interp.define_special_variable(name, value);
         }
         let buffer_start = interp.buffer.borrow().point_min();
-        let selected_window = interp.create_pseudovector(
-            RecordKind::Window,
-            "window",
-            primitives::window_record_slots(
-                &interp,
-                Some(interp.current_buffer_id),
-                buffer_start,
-                Value::Nil,
-                (
-                    interp.frame_width(),
-                    interp.frame_height().saturating_sub(1).max(1),
-                    0,
-                    0,
-                ),
+        let selected_window_slots = primitives::window_record_slots(
+            &interp,
+            Some(interp.current_buffer_id),
+            buffer_start,
+            Value::Nil,
+            (
+                interp.frame_width(),
+                interp.frame_height().saturating_sub(1).max(1),
+                0,
+                0,
             ),
         );
-        let Kind::Record(selected_window_id) = selected_window.kind() else {
-            unreachable!("window records use Value::Record");
-        };
-        interp.set_selected_window_id(selected_window_id.id);
-        interp.set_root_window_id(selected_window_id.id);
-        interp.old_selected_window_id = selected_window_id.id;
-        if let Some(window) = interp.find_record_mut(selected_window_id) {
-            window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
-        }
+        let selected_window = interp.make_window(selected_window_slots);
+        interp.set_selected_window_id(selected_window.id());
+        interp.set_root_window_id(selected_window.id());
+        interp.old_selected_window_id = selected_window.id();
+        selected_window.set_held_slot(
+            &mut interp,
+            primitives::WINDOW_USE_TIME_SLOT,
+            Value::Integer(1),
+        );
         // frame.c:make_frame shows the current buffer in the root window
         // through set_window_buffer, and the minibuffer in the minibuffer
         // window.
@@ -9095,26 +9155,20 @@ impl Interpreter {
             .buffer_object(1)
             .map_or(Value::Nil, |buffer| buffer.borrow().name());
         interp.buffer_list.push((1, messages_name));
-        let minibuffer_window = interp.create_pseudovector(
-            RecordKind::Window,
-            "window",
-            primitives::window_record_slots(
-                &interp,
-                Some(minibuffer_buffer_id),
+        let minibuffer_window_slots = primitives::window_record_slots(
+            &interp,
+            Some(minibuffer_buffer_id),
+            1,
+            primitives::WindowKind::Minibuffer.value(),
+            (
+                interp.frame_width(),
                 1,
-                primitives::WindowKind::Minibuffer.value(),
-                (
-                    interp.frame_width(),
-                    1,
-                    0,
-                    interp.frame_height().saturating_sub(1).max(1),
-                ),
+                0,
+                interp.frame_height().saturating_sub(1).max(1),
             ),
         );
-        let Kind::Record(minibuffer_window_id) = minibuffer_window.kind() else {
-            unreachable!("window records use Value::Record");
-        };
-        interp.set_minibuffer_window_id(minibuffer_window_id.id);
+        let minibuffer_window = interp.make_window(minibuffer_window_slots);
+        interp.set_minibuffer_window_id(minibuffer_window.id());
         // The two windows show their buffers from the start.
         interp.recount_buffer_windows();
         // Interpreter::new also constructs several dumped values after the

@@ -24,7 +24,7 @@ pub(super) fn redisplay_some_p(interp: &Interpreter) -> bool {
 
 /// The buffer WINDOW_ID shows.
 pub(super) fn window_buffer(interp: &Interpreter, window_id: u64) -> Option<u64> {
-    crate::lisp::primitives::window_buffer_id(interp, &interp.record_value(window_id))
+    crate::lisp::primitives::window_buffer_id(interp, &interp.window_value(window_id))
 }
 
 /// window_point: the buffer's point for the selected window, else the

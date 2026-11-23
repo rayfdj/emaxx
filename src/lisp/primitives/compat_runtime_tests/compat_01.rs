@@ -1426,7 +1426,7 @@ fn selected_window_is_a_record_and_tracks_window_start() {
         .buffer
         .replace_state(crate::buffer::Buffer::from_text("*test*", "\n\n\n"));
     let window = call(&mut interp, "selected-window", &[], &mut env).expect("selected window");
-    assert!(matches!(window.kind(), Kind::Record(_)));
+    assert!(matches!(window.kind(), Kind::Window(_)));
 
     assert_eq!(
         call(

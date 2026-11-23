@@ -857,6 +857,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         Kind::SubCharTable(_) => cached_symbol!("sub-char-table"),
         Kind::Frame(_) => cached_symbol!("frame"),
         Kind::Terminal(_) => cached_symbol!("terminal"),
+        Kind::Window(_) => cached_symbol!("window"),
         Kind::SymbolWithPos(_) => cached_symbol!("symbol-with-pos"),
         Kind::BoolVector(_) => cached_symbol!("bool-vector"),
         Kind::LispRecord(record) => return Ok(record_type_of(record)),
@@ -872,7 +873,6 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
                 },
                 crate::lisp::eval::RecordKind::Process => cached_symbol!("process"),
                 crate::lisp::eval::RecordKind::Obarray => cached_symbol!("obarray"),
-                crate::lisp::eval::RecordKind::Window => cached_symbol!("window"),
                 crate::lisp::eval::RecordKind::WindowConfiguration => {
                     cached_symbol!("window-configuration")
                 }
@@ -1324,7 +1324,8 @@ fn truncated_long_line_column(
         // `w->total_cols < FRAME_COLS (XFRAME (WINDOW_FRAME (w)))'.
         if !partial.is_nil()
             && let Some(window) = window
-            && let Some(window_id) = super::window::window_record(&window).map(|record| record.id)
+            && let Some(window_id) =
+                super::window::WindowRef::from_value(&window).map(super::window::WindowRef::id)
             && let Some(frame) = interp.window_frame_id(window_id)
         {
             let total_cols = super::window::window_char_geometry(interp, window_id).0;

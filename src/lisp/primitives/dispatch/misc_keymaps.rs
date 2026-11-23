@@ -1458,6 +1458,7 @@ define_dispatch!(
                     Kind::SubCharTable(_) => cached_symbol!("sub-char-table"),
                     Kind::Frame(_) => cached_symbol!("frame"),
                     Kind::Terminal(_) => cached_symbol!("terminal"),
+                    Kind::Window(_) => cached_symbol!("window"),
                     Kind::LispRecord(_) => return cl_type_value(interp, &args[0]),
                     Kind::BoolVector(_) => cached_symbol!("bool-vector"),
                     Kind::NativeFunction(_) => cached_symbol!("subr"),

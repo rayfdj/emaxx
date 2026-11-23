@@ -48,6 +48,7 @@ pub(crate) enum ObjectKey {
     SubCharTable(usize),
     Frame(usize),
     Terminal(usize),
+    Window(usize),
     Record(u64),
     LispRecord(usize),
     BoolVector(usize),
@@ -90,6 +91,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::SubCharTable(table) => ObjectKey::SubCharTable(table.identity()),
         Kind::Frame(id) => ObjectKey::Frame(id.identity()),
         Kind::Terminal(terminal) => ObjectKey::Terminal(terminal.identity()),
+        Kind::Window(window) => ObjectKey::Window(window.identity()),
         Kind::Record(record) => ObjectKey::Record(record.id),
         Kind::LispRecord(record) => ObjectKey::LispRecord(record.identity()),
         Kind::BoolVector(vector) => ObjectKey::BoolVector(vector.identity()),
@@ -156,7 +158,6 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
         RecordKind::Font => 4,
         RecordKind::Process => 6,
         RecordKind::Obarray => 8,
-        RecordKind::Window => 9,
         RecordKind::WindowConfiguration => 10,
         RecordKind::Thread => 11,
         RecordKind::Mutex => 12,
@@ -180,7 +181,8 @@ pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
         // Former positioned-symbol records are not a supported dump object.
         6 => RecordKind::Process,
         8 => RecordKind::Obarray,
-        9 => RecordKind::Window,
+        // Former window record code 9: a window is an object of its own
+        // dump type (`DumpType::Window').
         10 => RecordKind::WindowConfiguration,
         11 => RecordKind::Thread,
         12 => RecordKind::Mutex,
@@ -656,6 +658,7 @@ impl DumpContext {
             Kind::Finalizer(_) => DumpType::Finalizer,
             Kind::Frame(_) => DumpType::Frame,
             Kind::Terminal(_) => DumpType::Terminal,
+            Kind::Window(_) => DumpType::Window,
             _ => panic!("no dump type recorded for {value:?}"),
         }
     }
@@ -1163,9 +1166,10 @@ impl DumpContext {
             Kind::Marker(marker) => (self.dump_marker(marker)?, DumpType::Marker),
             Kind::Overlay(overlay) => (self.dump_overlay(overlay)?, DumpType::Overlay),
             Kind::Finalizer(finalizer) => (self.dump_finalizer(finalizer)?, DumpType::Finalizer),
-            // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
+            // PVEC_FRAME, PVEC_TERMINAL, PVEC_WINDOW: dump_nilled_pseudovec.
             Kind::Frame(_) => (self.dump_nilled_pseudovec()?, DumpType::Frame),
             Kind::Terminal(_) => (self.dump_nilled_pseudovec()?, DumpType::Terminal),
+            Kind::Window(window) => (self.dump_nilled_window(window)?, DumpType::Window),
             // pdumper.c:dump_vectorlike rejects PVEC_SYMBOL_WITH_POS.
             Kind::SymbolWithPos(_) => return Err(self.unsupported(object, "pseudovector type 6")),
             Kind::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
@@ -1729,9 +1733,10 @@ impl DumpContext {
 
     /// dump_vectorlike for a record: the kinds that are plain slots are
     /// written with their id (the identity every `Value::Record' carries),
-    /// PVEC_FRAME/WINDOW/PROCESS/TERMINAL are nilled as
-    /// dump_nilled_pseudovec does, the obarray gets its symbol list, and
-    /// the rest is refused as GNU refuses it.
+    /// PVEC_PROCESS is nilled as dump_nilled_pseudovec does (as the
+    /// frames, terminals and windows are, objects of their own kinds),
+    /// the obarray gets its symbol list, and the rest is refused as GNU
+    /// refuses it.
     fn dump_record(
         &mut self,
         interp: &Interpreter,
@@ -1749,7 +1754,7 @@ impl DumpContext {
                 let offset = self.dump_record_slots(id, kind, &type_tag, &slots, false)?;
                 Ok((offset, DumpType::Record))
             }
-            RecordKind::Window | RecordKind::Process => {
+            RecordKind::Process => {
                 let offset = self.dump_record_slots(id, kind, &type_tag, &slots, true)?;
                 Ok((offset, DumpType::Record))
             }
@@ -2299,6 +2304,18 @@ impl DumpContext {
         // Identity is the dump object's offset. No address or process-local
         // label belongs in a frame/terminal whose state is nilled on load.
         self.object_finish(&[0])
+    }
+
+    /// dump_nilled_pseudovec of a window: every Lisp field nil, so the
+    /// loaded window is a deleted one of the new process.  The record is
+    /// the number of slots the window holds, which the loaded one holds
+    /// too; the dumping process's id for it is no identity in another.
+    fn dump_nilled_window(
+        &mut self,
+        window: crate::lisp::types::WindowObjectRef,
+    ) -> Result<u32, DumpError> {
+        self.object_start()?;
+        self.object_finish(&[window.held() as u64])
     }
 
     // ----- Queues -----

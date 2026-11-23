@@ -2229,11 +2229,8 @@ impl<'a> CharacterDisplayContext<'a> {
         // window.c:window_display_table selects one valid table.  An absent
         // character entry does not fall through to the next table.
         let display_table = [
-            interpreter.find_record(window_id).and_then(|window| {
-                window
-                    .slots
-                    .get(crate::lisp::primitives::WINDOW_DISPLAY_TABLE_SLOT)
-                    .copied()
+            interpreter.window_ref(window_id).and_then(|window| {
+                window.slot_opt(crate::lisp::primitives::WINDOW_DISPLAY_TABLE_SLOT)
             }),
             interpreter
                 .buffer_local_toplevel_value(buffer_id, "buffer-display-table")
@@ -3033,7 +3030,7 @@ impl ModeLineMeasure {
     pub(crate) fn for_window(interpreter: &Interpreter, window_id: u64) -> Self {
         let buffer_id = crate::lisp::primitives::window_buffer_id(
             interpreter,
-            &interpreter.record_value(window_id),
+            &interpreter.window_value(window_id),
         )
         .unwrap_or_else(|| interpreter.current_buffer_id());
         Self {
@@ -6389,7 +6386,7 @@ fn run_window_scroll_functions(
         return;
     }
     let _ = env;
-    let window = interpreter.record_value(info.window_id);
+    let window = interpreter.window_value(info.window_id);
     with_window_point(interpreter, info, |interpreter| {
         let _ = batch::safe_run_hooks_with_args(
             interpreter,
@@ -9970,7 +9967,7 @@ fn rerun_pre_redisplay_function(
     if let Some(mut buffer) = buffer_id.and_then(|id| interpreter.get_buffer_by_id_mut(id)) {
         buffer.set_text_redisplay(false);
     }
-    let window = Value::list([interpreter.record_value(window_id)]);
+    let window = Value::list([interpreter.window_value(window_id)]);
     run_pre_redisplay_function(interpreter, env, window);
     let relative_numbers = interpreter
         .symbol_value_key(cached_symbol!("display-line-numbers"))
@@ -10004,7 +10001,7 @@ fn prepare_menu_bars(interpreter: &mut Interpreter, env: &mut Env) {
         let mut windows = Value::Nil;
         for window_id in crate::lisp::primitives::frames_window_list(interpreter) {
             if !redisplay_flags::needs_no_redisplay(interpreter, window_id) {
-                windows = Value::cons(interpreter.record_value(window_id), windows);
+                windows = Value::cons(interpreter.window_value(window_id), windows);
             }
         }
         windows

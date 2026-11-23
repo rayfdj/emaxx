@@ -2173,6 +2173,7 @@ fn vectorlike_is_marked(value: &super::types::Value, epoch: u32) -> Option<bool>
         Kind::SubCharTable(table) => Some(table.mark_bit().is_marked(epoch)),
         Kind::Frame(frame) => Some(frame.mark_bit().is_marked(epoch)),
         Kind::Terminal(terminal) => Some(terminal.mark_bit().is_marked(epoch)),
+        Kind::Window(window) => Some(window.mark_bit().is_marked(epoch)),
         Kind::Record(record) => Some(record.mark_bit().is_marked(epoch)),
         Kind::LispRecord(record) => Some(record.mark_bit().is_marked(epoch)),
         Kind::Finalizer(finalizer) => Some(finalizer.mark_bit().is_marked(epoch)),

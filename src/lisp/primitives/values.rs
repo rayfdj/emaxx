@@ -331,7 +331,6 @@ fn equal_atoms(
                 // Pseudovectors below PVEC_CLOSURE: equal only when eq.
                 RecordKind::Process
                 | RecordKind::Obarray
-                | RecordKind::Window
                 | RecordKind::WindowConfiguration
                 | RecordKind::Thread
                 | RecordKind::Mutex
@@ -855,6 +854,13 @@ pub(crate) fn compare_record_values(
         _ => {}
     }
     match (left.kind(), right.kind()) {
+        // fns.c:value_cmp's default for a pseudovector it does not order:
+        // two windows are unordered, a window and anything else of
+        // different types.
+        (Kind::Window(_), Kind::Window(_)) => return Ok(Some(ValueOrder::Unordered)),
+        (Kind::Window(_), _) | (_, Kind::Window(_)) => {
+            return Err(type_mismatch_signal(left, right));
+        }
         (Kind::Record(_), _) | (_, Kind::Record(_)) => {}
         _ => return Ok(None),
     }
@@ -896,7 +902,6 @@ pub(crate) fn compare_record_values(
         )),
         crate::lisp::eval::RecordKind::Font
         | crate::lisp::eval::RecordKind::Obarray
-        | crate::lisp::eval::RecordKind::Window
         | crate::lisp::eval::RecordKind::WindowConfiguration
         | crate::lisp::eval::RecordKind::Thread
         | crate::lisp::eval::RecordKind::Mutex

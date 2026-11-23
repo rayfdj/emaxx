@@ -142,8 +142,8 @@ impl TraceLispRoots for WindowConfigurationSnapshot {
         // The windows by id (C's configuration holds the objects): a
         // window the sweep freed has no entry and is skipped.
         for id in [self.selected_window_id, self.root_window_id] {
-            if let Some(window) = marker.interpreter.record_ref(id) {
-                marker.value(&Value::Record(window));
+            if let Some(window) = marker.interpreter.window_ref(id) {
+                marker.value(&window.value());
             }
         }
         // Each saved window's vector holds its window and what it saved.
