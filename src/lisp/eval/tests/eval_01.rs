@@ -8925,8 +8925,8 @@ fn header_line_glass_honors_propertized_align_to_columns() {
            (set-window-buffer (selected-window) \"*Buffer List*\"))",
     );
     let mut env: Env = crate::lisp::types::Env::new();
-    let window_id = interp.selected_window_id();
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id);
+    let window_id = interp.selected_window_ref();
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id.id());
     let text = crate::lisp::primitives::render_window_header_line(
         &mut interp,
         &mut env,
@@ -8958,8 +8958,8 @@ fn header_line_glass_keeps_partial_sort_column_face() {
            (tabulated-list-init-header))",
     );
     let mut env: Env = crate::lisp::types::Env::new();
-    let window_id = interp.selected_window_id();
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id);
+    let window_id = interp.selected_window_ref();
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id.id());
     let (text, spans) = crate::lisp::primitives::render_window_header_line(
         &mut interp,
         &mut env,
@@ -8999,8 +8999,8 @@ fn tab_line_glass_evaluates_per_buffer_format() {
                                          'face 'bold)))",
     );
     let mut env: Env = crate::lisp::types::Env::new();
-    let window_id = interp.selected_window_id();
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id);
+    let window_id = interp.selected_window_ref();
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id.id());
     let (text, spans) = crate::lisp::primitives::render_window_tab_line(
         &mut interp,
         &mut env,

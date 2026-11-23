@@ -354,7 +354,7 @@ fn store_frame_parameter(
             let Some(window) = WindowRef::from_value(&val) else {
                 unreachable!()
             };
-            if !super::display::window_is_minibuffer(interp, window.id()) {
+            if !super::display::window_is_minibuffer(window) {
                 return Err(crate::lisp::primitives::values::doprnt_error(
                     interp,
                     "The `minibuffer' parameter does not specify a valid minibuffer window",

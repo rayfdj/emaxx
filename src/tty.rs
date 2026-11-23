@@ -8586,7 +8586,7 @@ fn redraw_with_echo_policy(
         if let Some((hscroll, suspended, old_point)) = geometry.store {
             crate::lisp::primitives::store_window_hscroll_state(
                 interpreter,
-                info.window.id(),
+                info.window,
                 hscroll,
                 suspended,
                 old_point,
@@ -9645,7 +9645,7 @@ fn redraw_with_echo_policy(
         if !job.display && keep_painted_cells(&mut frame, &state.painted_rows, job) {
             continue;
         }
-        crate::lisp::primitives::begin_display_mode_lines(interpreter, job.window.id());
+        crate::lisp::primitives::begin_display_mode_lines(interpreter, job.window);
         let remapping = face_remapping(interpreter, Some(job.buffer_id));
         let measure = ModeLineMeasure {
             buffer_id: job.buffer_id,
@@ -9656,7 +9656,7 @@ fn redraw_with_echo_policy(
             crate::lisp::primitives::render_window_mode_line(
                 interpreter,
                 env,
-                job.window.id(),
+                job.window,
                 job.point,
                 job.metrics,
                 job.body_width,
@@ -9710,7 +9710,7 @@ fn redraw_with_echo_policy(
             let to = job.left + to.min(shown);
             frame[job.row].overlay(from, to, attrs);
         }
-        crate::lisp::primitives::end_display_mode_lines(interpreter, job.window.id());
+        crate::lisp::primitives::end_display_mode_lines(interpreter, job.window);
     }
 
     // Tab lines sit above header lines and use the `tab-line' face.  A
@@ -9736,7 +9736,7 @@ fn redraw_with_echo_policy(
             let (mut tab, mut spans) = match crate::lisp::primitives::render_window_tab_line(
                 interpreter,
                 env,
-                job.window.id(),
+                job.window,
                 job.point,
                 job.metrics,
                 job.body_width,
@@ -9799,7 +9799,7 @@ fn redraw_with_echo_policy(
                 crate::lisp::primitives::render_window_header_line(
                     interpreter,
                     env,
-                    job.window.id(),
+                    job.window,
                     job.point,
                     job.metrics,
                     job.body_width,
@@ -15499,7 +15499,7 @@ fn window_displays_mode_line(
             });
     let mode_lines = update_mode_line
         || (consider_all_windows && !full_width)
-        || crate::lisp::primitives::window_base_line_pos(interpreter, info.window.id()) > 0
+        || crate::lisp::primitives::window_base_line_pos(info.window) > 0
         || column_left;
     ModeLineDecision {
         update_mode_line,

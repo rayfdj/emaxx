@@ -115,34 +115,6 @@ pub(crate) fn window_char_geometry(interp: &Interpreter, window_id: u64) -> (i64
     )
 }
 
-/// `w->left_col = COL' for WINDOW_ID.
-pub(crate) fn set_window_left_col(interp: &Interpreter, window_id: u64, col: i64) {
-    if let Some(window) = interp.window_ref(window_id) {
-        window.set_left_col(Some(col));
-    }
-}
-
-/// `w->top_line = LINE' for WINDOW_ID.
-pub(crate) fn set_window_top_line(interp: &Interpreter, window_id: u64, line: i64) {
-    if let Some(window) = interp.window_ref(window_id) {
-        window.set_top_line(Some(line));
-    }
-}
-
-/// `w->total_cols = COLS' for WINDOW_ID.
-pub(crate) fn set_window_total_cols(interp: &Interpreter, window_id: u64, cols: i64) {
-    if let Some(window) = interp.window_ref(window_id) {
-        window.set_total_cols(Some(cols));
-    }
-}
-
-/// `w->total_lines = LINES' for WINDOW_ID.
-pub(crate) fn set_window_total_lines(interp: &Interpreter, window_id: u64, lines: i64) {
-    if let Some(window) = interp.window_ref(window_id) {
-        window.set_total_lines(Some(lines));
-    }
-}
-
 /// WINDOW_ID's left_margin_cols and right_margin_cols (None for 0, no
 /// margin).
 pub(crate) fn window_margin_cols(

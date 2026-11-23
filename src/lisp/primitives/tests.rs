@@ -29742,10 +29742,10 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
     // A frontend publishing live geometry changes both answers: its
     // redisplay records the window's end (w->window_end_pos).
     set_interactive_window_metrics(Some(InteractiveWindowMetrics { window_end: 199 }));
-    let window_id = interp.selected_window_id();
+    let window_id = interp.selected_window_ref();
     let buffer_id = interp.current_buffer_id();
     let point = interp.buffer.borrow().point();
-    super::window::record_window_display(&mut interp, window_id, buffer_id, point, 199);
+    super::window::record_window_display(&mut interp, window_id.id(), buffer_id, point, 199);
     let end = call(&mut interp, "window-end", &[], &mut env).expect("window-end");
     assert_eq!(end, Value::Integer(199), "window-end reads the glass state");
 
@@ -30476,8 +30476,8 @@ fn glass_mode_line_honors_font_lock_face_string_properties() {
     .expect("mode-line form parses")
     .expect("mode-line form exists");
     interp.eval(&form, &mut env).expect("mode-line form runs");
-    let window_id = interp.selected_window_id();
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id);
+    let window_id = interp.selected_window_ref();
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id.id());
     let (_, spans) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
@@ -30974,7 +30974,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let (mode_line, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id.id(),
+        WindowRef::from_object(lower_id),
         9,
         metrics,
         80,
@@ -31028,7 +31028,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let (softly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id.id(),
+        WindowRef::from_object(lower_id),
         9,
         metrics,
         80,
@@ -31050,7 +31050,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let (strongly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id.id(),
+        WindowRef::from_object(lower_id),
         9,
         metrics,
         80,
@@ -37058,13 +37058,13 @@ fn window_geometry_is_the_windows_own_integers() {
     assert_eq!(window_margin_cols(&interp, lone.id()), (None, None));
     // `w->total_cols = 70' and `w->top_line = 6' are the window's own,
     // apart from its pixels; the others still read as those.
-    set_window_total_cols(&interp, lone.id(), 70);
-    set_window_top_line(&interp, lone.id(), 6);
+    lone.set_total_cols(Some(70));
+    lone.set_top_line(Some(6));
     assert_eq!(chars(lone), (Some(70), None, None, Some(6)));
     assert_eq!(pixels(lone), (Some(80), Some(10), Some(3), Some(4)));
     assert_eq!(window_char_geometry(&interp, lone.id()), (70, 10, 3, 6));
-    set_window_left_col(&interp, lone.id(), 0);
-    set_window_total_lines(&interp, lone.id(), 0);
+    lone.set_left_col(Some(0));
+    lone.set_total_lines(Some(0));
     assert_eq!(window_char_geometry(&interp, lone.id()), (70, 0, 0, 6));
     // The dead window of a dump is given nothing.
     let dead = interp.install_dead_window(3);

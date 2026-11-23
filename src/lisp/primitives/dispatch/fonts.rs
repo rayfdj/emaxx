@@ -181,8 +181,7 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 3)?;
                 let window = args.get(1).filter(|value| !value.is_nil());
                 // CHECK_LIVE_WINDOW, nil the selected window.
-                let window = interp
-                    .window_value(super::display::live_window_id_or_selected(interp, window)?);
+                let window = super::display::decode_live_window(interp, window)?.value();
                 if let Some(string) = args.get(2).filter(|value| !value.is_nil()) {
                     let Kind::Integer(position) = args[0].kind() else {
                         return Err(wrong_type_argument("fixnump", args[0]));

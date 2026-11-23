@@ -829,10 +829,6 @@ impl Interpreter {
         self.selected_frame_id.borrow_mut().selected_window = window;
     }
 
-    pub(crate) fn set_selected_window_id(&mut self, id: u64) {
-        self.set_selected_window(self.window_ref(id));
-    }
-
     pub(crate) fn root_window_value(&self) -> Value {
         self.selected_frame_id
             .borrow()
@@ -841,8 +837,9 @@ impl Interpreter {
             .unwrap_or(Value::Nil)
     }
 
-    pub(crate) fn set_root_window_id(&mut self, id: u64) {
-        self.selected_frame_id.borrow_mut().root_window = self.window_ref(id);
+    /// `fset_root_window (selected frame, WINDOW)'.
+    pub(crate) fn set_root_window(&mut self, window: Option<primitives::WindowRef>) {
+        self.selected_frame_id.borrow_mut().root_window = window;
     }
 
     pub(crate) fn minibuffer_window_id(&self) -> u64 {
@@ -862,8 +859,9 @@ impl Interpreter {
             .unwrap_or(Value::Nil)
     }
 
-    pub(crate) fn set_minibuffer_window_id(&mut self, id: u64) {
-        self.selected_frame_id.borrow_mut().minibuffer_window = self.window_ref(id);
+    /// `fset_minibuffer_window (selected frame, WINDOW)'.
+    pub(crate) fn set_minibuffer_window(&mut self, window: Option<primitives::WindowRef>) {
+        self.selected_frame_id.borrow_mut().minibuffer_window = window;
     }
 
     /// minibuf.c's minibuf_selected_window.
@@ -2580,8 +2578,8 @@ impl Interpreter {
         }
         if self.frame_is_live(snapshot.selected_frame_id) {
             self.note_selected_frame(snapshot.selected_frame_id);
-            let selected_window = self.selected_frame_id.borrow().selected_window_id();
-            self.set_selected_window_id(selected_window);
+            let selected_window = self.selected_frame_id.borrow().selected_window;
+            self.set_selected_window(selected_window);
         }
         if let Some(buffer) = new_current_buffer {
             self.set_current_buffer_id(buffer)?;

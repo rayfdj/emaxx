@@ -1195,8 +1195,8 @@ impl Interpreter {
         // minibuffer window's: the buffer's last window start, its point,
         // its margins and its display stamp, no hooks run.
         let mut env = crate::lisp::types::Env::new();
-        p::set_window_buffer(self, root.id(), buffer_id, false, false, &mut env)?;
-        p::set_window_buffer(self, mini.id(), mini_buffer_id, false, false, &mut env)?;
+        p::set_window_buffer(self, root, buffer_id, false, false, &mut env)?;
+        p::set_window_buffer(self, mini, mini_buffer_id, false, false, &mut env)?;
         self.copy_frame_faces(self.selected_frame_id, frame);
         object.borrow_mut().top_frame = Some(frame);
         if object.id == 0 && TTY_ROUTE_ACTIVE.get() {

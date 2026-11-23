@@ -9180,8 +9180,8 @@ impl Interpreter {
             false,
             selected_window_geometry,
         );
-        interp.set_selected_window_id(selected_window.id());
-        interp.set_root_window_id(selected_window.id());
+        interp.set_selected_window(Some(selected_window));
+        interp.set_root_window(Some(selected_window));
         interp.old_selected_window = Some(selected_window);
         selected_window.set_use_time(1);
         // frame.c:make_frame shows the current buffer in the root window
@@ -9208,7 +9208,7 @@ impl Interpreter {
             true,
             minibuffer_window_geometry,
         );
-        interp.set_minibuffer_window_id(minibuffer_window.id());
+        interp.set_minibuffer_window(Some(minibuffer_window));
         // The two windows show their buffers from the start.
         interp.recount_buffer_windows();
         // Interpreter::new also constructs several dumped values after the
