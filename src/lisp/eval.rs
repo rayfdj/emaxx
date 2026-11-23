@@ -5452,13 +5452,19 @@ impl Interpreter {
     }
 
     /// A window the image held, which pdumper.c:dump_nilled_pseudovec
-    /// wrote with every Lisp field nil: a window of the new process
-    /// holding HELD nil slots, on no frame and with no sequence number.
-    /// Its id is this state's next, so it names no window this process
-    /// made and none it makes later: the dumping process's id is not an
-    /// identity here.
+    /// wrote with every Lisp field nil: a deleted window of the new
+    /// process (w->contents nil), holding HELD nil slots, on no frame and
+    /// with no sequence number.  Its id is this state's next, so it names
+    /// no window this process made and none it makes later: the dumping
+    /// process's id is not an identity here.
     pub(crate) fn install_dead_window(&mut self, held: usize) -> primitives::WindowRef {
-        primitives::WindowRef::from_object(self.allocate_window(held))
+        let window = self.allocate_window(held.max(primitives::WINDOW_KIND_SLOT + 1));
+        // A nil kind slot is a leaf's; contents nil is a deleted window.
+        window.set_held(
+            primitives::WINDOW_KIND_SLOT,
+            primitives::WindowKind::Deleted.value(),
+        );
+        primitives::WindowRef::from_object(window)
     }
 
     /// A terminal the image nilled: a dead terminal object of its own,
