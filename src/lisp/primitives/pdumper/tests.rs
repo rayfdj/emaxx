@@ -2692,8 +2692,8 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
         // No sequence number and no use time: the dumping process's are
         // not the nilled window's.
         assert_eq!((handle.sequence_number(), handle.use_time()), (0, 0));
-        for (index, slot) in handle.slots().into_iter().enumerate() {
-            assert!(slot.is_nil(), "slot {index} of a nilled window");
+        for (index, field) in handle.lisp_values().into_iter().enumerate() {
+            assert!(field.is_nil(), "Lisp field {index} of a nilled window");
         }
         assert_eq!(printed(&mut target, &dead), "#<window 0>");
         target.set_global_binding("d3-dead", dead);

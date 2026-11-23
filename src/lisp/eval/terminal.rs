@@ -1176,7 +1176,7 @@ impl Interpreter {
         );
         self.frame_states.insert(0, frame);
         for window in [root, mini] {
-            window.set_held_slot(self, p::WINDOW_FRAME_SLOT, Value::Frame(frame));
+            window.set_frame(Value::Frame(frame));
         }
         // make_frame's set_window_buffer (root_window, buf, 0, 0), then the
         // minibuffer window's: the buffer's last window start, its point,
@@ -1222,13 +1222,9 @@ impl Interpreter {
             // No contents, a leaf's buffer or an internal window's first
             // child: a deleted window.
             self.wset_buffer(window, Value::Nil);
-            for slot in [
-                p::WINDOW_PARENT_SLOT,
-                p::WINDOW_PREV_SIBLING_SLOT,
-                p::WINDOW_NEXT_SIBLING_SLOT,
-            ] {
-                window.set_held_slot(self, slot, Value::Nil);
-            }
+            window.set_parent_window(None);
+            window.set_prev_sibling(None);
+            window.set_next_sibling(None);
         }
         let mut frame = id.borrow_mut();
         frame.root_window = None;

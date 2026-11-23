@@ -1504,41 +1504,32 @@ impl ModeLine<'_> {
         let window_buffer = window.live_buffer_id(interp);
         let current = interp.current_buffer_id();
         let own_buffer = window_buffer == Some(current);
-        let (begv, zv, pt, modiff) = {
+        let (begv, zv, pt) = {
             let buffer = interp.buffer.borrow();
-            (
-                buffer.point_min(),
-                buffer.point_max(),
-                buffer.point(),
-                buffer.modified_tick() as u64,
-            )
+            (buffer.point_min(), buffer.point_max(), buffer.point())
         };
         let mut startpos = if window == interp.selected_window_ref() {
             current_window_start(interp)
         } else {
-            window_marker_position(window, WINDOW_START_SLOT).unwrap_or(1)
+            window_marker_position(window, WindowMarker::Start).unwrap_or(1)
         };
         let height = window_geometry(interp, window).1.max(1);
         if !own_buffer || !(begv <= startpos && startpos <= zv) {
             startpos = begv;
         }
         let mut base = BaseLine::read(window);
-        // set_window_buffer resets the cache; one an edit or narrowing
-        // may have staled since it was made (BASE_LINE_NUMBER_VALID_P)
-        // keeps its position but no line number.
-        if base.buffer != window_buffer {
-            base = BaseLine {
-                buffer: window_buffer,
-                ..BaseLine::default()
-            };
-        }
-        if own_buffer && base.stamp != (modiff, begv, zv) {
+        // Fformat_mode_line's and redisplay_window's `if
+        // (!BASE_LINE_NUMBER_VALID_P (w)) w->base_line_number = 0': a
+        // base line an edit before it or a narrowing may have staled
+        // keeps its position but no line number.  (set_window_buffer and
+        // adjust_window_count flushed one of another buffer.)
+        if own_buffer && !base_line_number_valid_p(interp, window) {
             base.number = 0;
-            base.stamp = (modiff, begv, zv);
+            window.set_base_line_number(0);
         }
-        let store = |interp: &mut Interpreter, base: &BaseLine| {
+        let store = |base: &BaseLine| {
             if own_buffer {
-                base.write(interp, window);
+                base.write(window);
             }
         };
         if base.pos == -1 {
@@ -1551,7 +1542,7 @@ impl ModeLine<'_> {
             // If the buffer is very big, don't waste time.
             base.pos = 0;
             base.number = 0;
-            store(interp, &base);
+            store(&base);
             return no_value();
         }
         let selective = {
@@ -1597,7 +1588,7 @@ impl ModeLine<'_> {
                 base.pos = -1;
                 base.number = 0;
                 drop(buffer);
-                store(interp, &base);
+                store(&base);
                 return no_value();
             }
             base.number = topline - nlines as i64;
@@ -1605,7 +1596,7 @@ impl ModeLine<'_> {
         }
         let nlines = count_lines_forward(&buffer, startpos, pt, selective);
         drop(buffer);
-        store(interp, &base);
+        store(&base);
         line = topline + nlines;
         // Record that the line number was displayed.
         LINE_NUMBER_DISPLAYED.set(true);
@@ -1627,7 +1618,7 @@ impl ModeLine<'_> {
         let toppos = if window == interp.selected_window_ref() {
             current_window_start(interp) as i64
         } else {
-            window_marker_position(window, WINDOW_START_SLOT).unwrap_or(1) as i64
+            window_marker_position(window, WindowMarker::Start).unwrap_or(1) as i64
         };
         let window_end_pos = window_end_pos(interp, window, z);
         let botpos = z - window_end_pos;
@@ -1820,7 +1811,7 @@ pub(crate) fn begin_display_mode_lines(window: WindowRef) {
 /// redisplay_window after display_mode_lines: a window whose mode line
 /// showed no line number forgets its base line, unless it gave up on
 /// line numbers (base_line_pos -1).
-pub(crate) fn end_display_mode_lines(interp: &mut Interpreter, window: WindowRef) {
+pub(crate) fn end_display_mode_lines(window: WindowRef) {
     if LINE_NUMBER_DISPLAYED.get() {
         return;
     }
@@ -1828,7 +1819,7 @@ pub(crate) fn end_display_mode_lines(interp: &mut Interpreter, window: WindowRef
     if base.pos != -1 && (base.pos != 0 || base.number != 0) {
         base.pos = 0;
         base.number = 0;
-        base.write(interp, window);
+        base.write(window);
     }
 }
 
@@ -1838,47 +1829,34 @@ pub(crate) fn window_base_line_pos(window: WindowRef) -> i64 {
     BaseLine::read(window).pos
 }
 
-/// window.h's base_line_number and base_line_pos, with the buffer and
-/// the (modiff, begv, zv) they were computed under.
-#[derive(Default)]
+/// xdisp.c BASE_LINE_NUMBER_VALID_P for WINDOW, which shows the current
+/// buffer: "The freshness of the w->base_line_number cache is only
+/// ensured at every redisplay cycle, so the cache can be used only if
+/// there's been no relevant changes to the buffer since the last
+/// redisplay": no narrowing changed, and nothing before the base line.
+fn base_line_number_valid_p(interp: &Interpreter, window: WindowRef) -> bool {
+    let buffer = interp.buffer.borrow();
+    !buffer.clip_changed() && buffer.unchanged_extent().0 >= window.base_line_pos()
+}
+
+/// window.h's base_line_number and base_line_pos as `%l' works on them,
+/// read from the window and stored back.
 struct BaseLine {
     number: i64,
     pos: i64,
-    buffer: Option<u64>,
-    stamp: (u64, usize, usize),
 }
 
 impl BaseLine {
     fn read(window: WindowRef) -> Self {
-        let slot = window.slot(WINDOW_BASE_LINE_SLOT);
-        let items = slot.to_vec().unwrap_or_default();
-        let int = |index: usize| {
-            items
-                .get(index)
-                .and_then(|v| v.integer_value())
-                .unwrap_or(0)
-        };
-        if items.len() != 6 {
-            return Self::default();
-        }
         Self {
-            number: int(0),
-            pos: int(1),
-            buffer: Some(int(2) as u64),
-            stamp: (int(3) as u64, int(4) as usize, int(5) as usize),
+            number: window.base_line_number(),
+            pos: window.base_line_pos(),
         }
     }
 
-    fn write(&self, interp: &mut Interpreter, window: WindowRef) {
-        let value = Value::list([
-            Value::Integer(self.number),
-            Value::Integer(self.pos),
-            Value::Integer(self.buffer.unwrap_or(0) as i64),
-            Value::Integer(self.stamp.0 as i64),
-            Value::Integer(self.stamp.1 as i64),
-            Value::Integer(self.stamp.2 as i64),
-        ]);
-        window.set_slot(interp, WINDOW_BASE_LINE_SLOT, value);
+    fn write(&self, window: WindowRef) {
+        window.set_base_line_number(self.number);
+        window.set_base_line_pos(self.pos);
     }
 }
 

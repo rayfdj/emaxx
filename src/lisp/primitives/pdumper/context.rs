@@ -1169,7 +1169,7 @@ impl DumpContext {
             // PVEC_FRAME, PVEC_TERMINAL, PVEC_WINDOW: dump_nilled_pseudovec.
             Kind::Frame(_) => (self.dump_nilled_pseudovec()?, DumpType::Frame),
             Kind::Terminal(_) => (self.dump_nilled_pseudovec()?, DumpType::Terminal),
-            Kind::Window(window) => (self.dump_nilled_window(window)?, DumpType::Window),
+            Kind::Window(_) => (self.dump_nilled_pseudovec()?, DumpType::Window),
             // pdumper.c:dump_vectorlike rejects PVEC_SYMBOL_WITH_POS.
             Kind::SymbolWithPos(_) => return Err(self.unsupported(object, "pseudovector type 6")),
             Kind::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
@@ -2304,18 +2304,6 @@ impl DumpContext {
         // Identity is the dump object's offset. No address or process-local
         // label belongs in a frame/terminal whose state is nilled on load.
         self.object_finish(&[0])
-    }
-
-    /// dump_nilled_pseudovec of a window: every Lisp field nil, so the
-    /// loaded window is a deleted one of the new process.  The record is
-    /// the number of slots the window holds, which the loaded one holds
-    /// too.
-    fn dump_nilled_window(
-        &mut self,
-        window: crate::lisp::types::WindowObjectRef,
-    ) -> Result<u32, DumpError> {
-        self.object_start()?;
-        self.object_finish(&[window.held() as u64])
     }
 
     // ----- Queues -----

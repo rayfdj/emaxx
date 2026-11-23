@@ -17628,10 +17628,7 @@ mod tests {
             root.value(),
             frame.borrow().root_window.expect("source root").value()
         );
-        assert_eq!(
-            root.slot(crate::lisp::primitives::WINDOW_FRAME_SLOT),
-            Value::Frame(copied)
-        );
+        assert_eq!(root.frame(), Some(copied));
         // The copy's root window is the one the copy's frames walk to,
         // and none of the source's.
         assert!(crate::lisp::primitives::foreach_frame_window(&cloned).contains(&root));

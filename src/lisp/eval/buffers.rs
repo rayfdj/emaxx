@@ -357,12 +357,12 @@ impl Interpreter {
     /// `suspended_old_point' for a change made in BUFFER_ID as the
     /// current buffer.
     pub(crate) fn suspended_old_point_in(&self, buffer_id: u64) -> Option<usize> {
-        use crate::lisp::primitives::WINDOW_OLD_POINT_SLOT;
+        use crate::lisp::primitives::WindowMarker;
         let window = self.selected_window()?;
         if !window.suspend_auto_hscroll() || window.live_buffer_id(self) != Some(buffer_id) {
             return None;
         }
-        crate::lisp::primitives::window_marker_position(window, WINDOW_OLD_POINT_SLOT)
+        crate::lisp::primitives::window_marker_position(window, WindowMarker::OldPointm)
     }
 
     /// The selected window's w->suspend_auto_hscroll.

@@ -69,10 +69,7 @@ fn display_table_of(value: Value) -> Option<CharTableRef> {
 /// window.c window_display_table: WIN's own display table, else its
 /// buffer's `buffer-display-table', else `standard-display-table'.
 fn window_display_table(interp: &Interpreter, win: MotionWindow) -> Option<CharTableRef> {
-    let own = win
-        .window
-        .slot_opt(super::WINDOW_DISPLAY_TABLE_SLOT)
-        .and_then(display_table_of);
+    let own = display_table_of(win.window.display_table());
     if own.is_some() {
         return own;
     }

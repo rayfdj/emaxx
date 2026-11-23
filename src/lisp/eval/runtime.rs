@@ -915,7 +915,7 @@ impl Interpreter {
     pub(crate) fn selected_window_start_checked(&self) -> Result<usize, LispError> {
         match self
             .selected_window
-            .and_then(|window| primitives::window_marker(window, primitives::WINDOW_START_SLOT))
+            .and_then(|window| primitives::window_marker(window, primitives::WindowMarker::Start))
         {
             Some(marker) => marker
                 .position()
@@ -944,7 +944,9 @@ impl Interpreter {
     /// window.c adjust_window_count: the buffer WINDOW's contents are
     /// (its base buffer: the text an indirect family shares) is shown in
     /// one window more (SHOWN) or one less, and the window's end and base
-    /// line are to be found again by redisplay.
+    /// line are to be found again by redisplay ("These should be
+    /// recalculated by redisplay code": window_end_valid false and
+    /// base_line_pos 0).
     pub(crate) fn adjust_window_count(&mut self, window: primitives::WindowRef, shown: bool) {
         let Some(buffer_id) = window.contents_buffer_id() else {
             return;
@@ -953,7 +955,7 @@ impl Interpreter {
             buffer.adjust_window_count(shown);
         }
         window.set_window_end_valid(false);
-        window.set_slot_if_held(self, primitives::WINDOW_BASE_LINE_SLOT, Value::Nil);
+        window.set_base_line_pos(0);
     }
 
     /// window.c wset_buffer: WINDOW's contents become VALUE, the
@@ -1277,7 +1279,7 @@ impl Interpreter {
             primitives::set_window_marker_restricted(
                 self,
                 window,
-                primitives::WINDOW_START_SLOT,
+                primitives::WindowMarker::Start,
                 self.current_buffer_id,
                 start,
             );
@@ -1302,17 +1304,18 @@ impl Interpreter {
         if !self.has_buffer_id(buffer_id) {
             return Ok(());
         }
-        let marker_position = |slot: usize| -> Result<Option<usize>, LispError> {
-            match primitives::window_marker(window, slot) {
-                Some(marker) => marker
-                    .position()
-                    .map(Some)
-                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
-                None => Ok(None),
-            }
-        };
+        let marker_position =
+            |which: primitives::WindowMarker| -> Result<Option<usize>, LispError> {
+                match primitives::window_marker(window, which) {
+                    Some(marker) => marker
+                        .position()
+                        .map(Some)
+                        .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
+                    None => Ok(None),
+                }
+            };
         // b->last_window_start = marker_position (w->start).
-        if let Some(start) = marker_position(primitives::WINDOW_START_SLOT)?
+        if let Some(start) = marker_position(primitives::WindowMarker::Start)?
             && let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id)
         {
             buffer.set_last_window_start(start);
@@ -1327,7 +1330,7 @@ impl Interpreter {
             && !last_selected
                 .is_some_and(|last| last != window && last.contents_buffer_id() == Some(buffer_id))
         {
-            marker_position(primitives::WINDOW_POINT_SLOT)?
+            marker_position(primitives::WindowMarker::Pointm)?
         } else {
             None
         };
@@ -1383,7 +1386,6 @@ impl Interpreter {
             .map(|buffer| buffer.last_window_start())
             .unwrap_or(1)
             .clamp(point_min, point_max);
-        window.ensure_slot(self, primitives::WINDOW_BASE_LINE_SLOT);
         // wset_buffer: w->contents is the buffer object.
         self.wset_buffer(window, buffer);
         window.set_window_end_pos(Some(0));
@@ -1393,13 +1395,15 @@ impl Interpreter {
             window.set_suspend_auto_hscroll(false);
             window.set_start_at_line_beg(false);
             window.set_force_start(false);
-            window.set_held_slot(self, primitives::WINDOW_BASE_LINE_SLOT, Value::Nil);
-            for (slot, position) in [
-                (primitives::WINDOW_POINT_SLOT, point),
-                (primitives::WINDOW_OLD_POINT_SLOT, point),
-                (primitives::WINDOW_START_SLOT, start),
+            // "Flush the base_line cache since it applied to another
+            // buffer."
+            window.set_base_line_number(0);
+            for (which, position) in [
+                (primitives::WindowMarker::Pointm, point),
+                (primitives::WindowMarker::OldPointm, point),
+                (primitives::WindowMarker::Start, start),
             ] {
-                primitives::set_window_marker(self, window, slot, buffer_id, position);
+                primitives::set_window_marker(self, window, which, buffer_id, position);
             }
         }
         // The point markers take the buffer's `window-point-insertion-type'.
@@ -1797,8 +1801,6 @@ impl Interpreter {
         order: &mut Vec<primitives::WindowRef>,
     ) {
         while let Some(record) = window {
-            let slot = |index: usize| record.slot(index);
-            let link = |index: usize| primitives::WindowRef::from_value(&slot(index));
             let temslot = |order: &[primitives::WindowRef],
                            linked: Option<primitives::WindowRef>| {
                 linked
@@ -1842,34 +1844,23 @@ impl Interpreter {
                 p[field] = value.map_or(Value::Nil, Value::Integer);
             }
             p[SW_SUSPEND_AUTO_HSCROLL] = Value::from_bool(record.suspend_auto_hscroll());
-            for (field, index) in [
-                (SW_NORMAL_COLS, primitives::WINDOW_NORMAL_WIDTH_SLOT),
-                (SW_NORMAL_LINES, primitives::WINDOW_NORMAL_HEIGHT_SLOT),
-                (SW_DISPLAY_TABLE, primitives::WINDOW_DISPLAY_TABLE_SLOT),
-                (SW_DEDICATED, primitives::WINDOW_DEDICATED_SLOT),
-                (
-                    SW_COMBINATION_LIMIT,
-                    primitives::WINDOW_COMBINATION_LIMIT_SLOT,
-                ),
-            ] {
-                p[field] = slot(index);
-            }
-            // A window with its frame's fringes and scroll bars, scrolled
-            // by whole columns only.
-            p[SW_HSCROLL_WHOLE] = Value::Integer(0);
-            p[SW_VSCROLL] = Value::Integer(0);
-            for field in [
-                SW_LEFT_FRINGE_WIDTH,
-                SW_RIGHT_FRINGE_WIDTH,
-                SW_SCROLL_BAR_WIDTH,
-                SW_SCROLL_BAR_HEIGHT,
-            ] {
-                p[field] = Value::Integer(-1);
-            }
-            p[SW_VERTICAL_SCROLL_BAR_TYPE] = Value::T;
-            p[SW_HORIZONTAL_SCROLL_BAR_TYPE] = Value::T;
+            p[SW_NORMAL_COLS] = record.normal_cols();
+            p[SW_NORMAL_LINES] = record.normal_lines();
+            p[SW_DISPLAY_TABLE] = record.display_table();
+            p[SW_DEDICATED] = record.dedicated();
+            p[SW_COMBINATION_LIMIT] = record.combination_limit();
+            // The window's fringes, scroll bars and whole-column hscroll,
+            // as make_window gave them (nothing here changes them).
+            p[SW_HSCROLL_WHOLE] = Value::Integer(record.hscroll_whole());
+            p[SW_VSCROLL] = Value::Integer(record.vscroll());
+            p[SW_LEFT_FRINGE_WIDTH] = Value::Integer(record.left_fringe_width());
+            p[SW_RIGHT_FRINGE_WIDTH] = Value::Integer(record.right_fringe_width());
+            p[SW_SCROLL_BAR_WIDTH] = Value::Integer(record.scroll_bar_width());
+            p[SW_SCROLL_BAR_HEIGHT] = Value::Integer(record.scroll_bar_height());
+            p[SW_VERTICAL_SCROLL_BAR_TYPE] = record.vertical_scroll_bar_type();
+            p[SW_HORIZONTAL_SCROLL_BAR_TYPE] = record.horizontal_scroll_bar_type();
             // Only the persistent parameters, each with its value or nil.
-            let parameters = slot(primitives::WINDOW_PARAMETERS_SLOT);
+            let parameters = record.window_parameters();
             let mut saved_parameters = Value::Nil;
             let mut tail = *persistent;
             while let Some(cell) = tail.cons_ref() {
@@ -1890,17 +1881,17 @@ impl Interpreter {
                 // `window-point-insertion-type' in that buffer.
                 let insertion_type = primitives::window_point_insertion_type(self, buffer.id);
                 let selected = Some(record) == self.selected_window;
-                for (field, index) in [
-                    (SW_POINTM, primitives::WINDOW_POINT_SLOT),
-                    (SW_OLD_POINTM, primitives::WINDOW_OLD_POINT_SLOT),
-                    (SW_START, primitives::WINDOW_START_SLOT),
+                for (field, which) in [
+                    (SW_POINTM, primitives::WindowMarker::Pointm),
+                    (SW_OLD_POINTM, primitives::WindowMarker::OldPointm),
+                    (SW_START, primitives::WindowMarker::Start),
                 ] {
                     let copy = crate::lisp::types::MarkerRef::new();
-                    if index == primitives::WINDOW_POINT_SLOT && selected {
+                    if which == primitives::WindowMarker::Pointm && selected {
                         let state = buffer.borrow();
                         let point = state.point();
                         copy.attach(buffer, point, state.marker_byte_position(point));
-                    } else if let Kind::Marker(marker) = slot(index).kind()
+                    } else if let Kind::Marker(marker) = record.marker_field(which).kind()
                         && let Some(owner) = marker.buffer()
                     {
                         copy.attach(owner, marker.last_position(), marker.bytepos());
@@ -1910,12 +1901,12 @@ impl Interpreter {
                 }
                 p[SW_START_AT_LINE_BEG] = Value::from_bool(record.start_at_line_beg());
             }
-            p[SW_PARENT] = temslot(order, link(primitives::WINDOW_PARENT_SLOT));
-            p[SW_PREV] = temslot(order, link(primitives::WINDOW_PREV_SIBLING_SLOT));
+            p[SW_PARENT] = temslot(order, record.parent_window());
+            p[SW_PREV] = temslot(order, record.prev_sibling());
             order.push(record);
             // An internal window's contents, its first child.
             let child = record.first_child();
-            let next = link(primitives::WINDOW_NEXT_SIBLING_SLOT);
+            let next = record.next_sibling();
             saved.push(Value::vector(p));
             if child.is_some() {
                 self.save_window_save(child, persistent, saved, order);
@@ -2123,7 +2114,7 @@ impl Interpreter {
                 .then(|| {
                     primitives::window_marker_position(
                         current_window?,
-                        primitives::WINDOW_POINT_SLOT,
+                        primitives::WindowMarker::Pointm,
                     )
                 })
                 .flatten();
@@ -2158,7 +2149,7 @@ impl Interpreter {
             primitives::set_window_marker(
                 self,
                 selected,
-                primitives::WINDOW_POINT_SLOT,
+                primitives::WindowMarker::Pointm,
                 buffer,
                 point,
             );
@@ -2193,16 +2184,15 @@ impl Interpreter {
                 saved_index(saved, field)
                     .and_then(|index| saved_window_objects.get(index).copied().flatten())
             };
-            window.set_slot(self, primitives::WINDOW_NEXT_SIBLING_SLOT, Value::Nil);
+            window.set_next_sibling(None);
             let parent = link(SW_PARENT);
-            let parent_value = parent.map_or(Value::Nil, primitives::WindowRef::value);
-            window.set_slot(self, primitives::WINDOW_PARENT_SLOT, parent_value);
+            window.set_parent_window(parent);
             let this = window.value();
             if let Some(prev) = link(SW_PREV) {
-                window.set_slot(self, primitives::WINDOW_PREV_SIBLING_SLOT, prev.value());
-                prev.set_slot(self, primitives::WINDOW_NEXT_SIBLING_SLOT, this);
+                window.set_prev_sibling(Some(prev));
+                prev.set_next_sibling(Some(window));
             } else {
-                window.set_slot(self, primitives::WINDOW_PREV_SIBLING_SLOT, Value::Nil);
+                window.set_prev_sibling(None);
                 // wset_combination (XWINDOW (w->parent), XFIXNUM
                 // (p->total_cols) != XWINDOW (w->parent)->total_cols,
                 // window): the parent, restored before its children, has
@@ -2218,7 +2208,7 @@ impl Interpreter {
             // "If we squirreled away the buffer, restore it now": whichever
             // delete_all_child_windows left it there, this restore's or
             // an earlier deletion's.
-            let squirreled = window.slot(primitives::WINDOW_COMBINATION_LIMIT_SLOT);
+            let squirreled = window.combination_limit();
             if matches!(squirreled.kind(), Kind::Buffer(_)) {
                 self.wset_buffer(window, squirreled);
             }
@@ -2239,25 +2229,18 @@ impl Interpreter {
             window
                 .set_suspend_auto_hscroll(saved_field(saved, SW_SUSPEND_AUTO_HSCROLL).is_truthy());
             window.set_min_hscroll(integer(SW_MIN_HSCROLL).unwrap_or(0));
-            for (field, index) in [
-                (SW_NORMAL_COLS, primitives::WINDOW_NORMAL_WIDTH_SLOT),
-                (SW_NORMAL_LINES, primitives::WINDOW_NORMAL_HEIGHT_SLOT),
-                (SW_DISPLAY_TABLE, primitives::WINDOW_DISPLAY_TABLE_SLOT),
-                (SW_DEDICATED, primitives::WINDOW_DEDICATED_SLOT),
-                (
-                    SW_COMBINATION_LIMIT,
-                    primitives::WINDOW_COMBINATION_LIMIT_SLOT,
-                ),
-            ] {
-                window.set_slot(self, index, saved_field(saved, field));
-            }
+            window.set_normal_cols(saved_field(saved, SW_NORMAL_COLS));
+            window.set_normal_lines(saved_field(saved, SW_NORMAL_LINES));
+            window.set_display_table(saved_field(saved, SW_DISPLAY_TABLE));
+            window.set_dedicated(saved_field(saved, SW_DEDICATED));
+            window.set_combination_limit(saved_field(saved, SW_COMBINATION_LIMIT));
             // Only the saved parameters: a nil one resets a non-nil
             // association and makes none, any other is set.
             let mut tail = saved_field(saved, SW_WINDOW_PARAMETERS);
             while let Some(cell) = tail.cons_ref() {
                 if let Some(pers) = cell.car.get().cons_ref() {
                     let (name, value) = (pers.car.get(), pers.cdr.get());
-                    let parameters = window.slot(primitives::WINDOW_PARAMETERS_SLOT);
+                    let parameters = window.window_parameters();
                     let entry = {
                         let mut tail = parameters;
                         let mut walk = crate::lisp::types::TailWalk::new(tail);
@@ -2285,11 +2268,10 @@ impl Interpreter {
                         None if value.is_nil() => {}
                         // Fset_window_parameter.
                         Some(entry) => entry.cdr.set(value),
-                        None => window.set_slot(
-                            self,
-                            primitives::WINDOW_PARAMETERS_SLOT,
-                            Value::cons(Value::cons(name, value), parameters),
-                        ),
+                        None => window.set_window_parameters(Value::cons(
+                            Value::cons(name, value),
+                            parameters,
+                        )),
                     }
                 }
                 tail = cell.cdr.get();
@@ -2336,17 +2318,17 @@ impl Interpreter {
                 let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
                 self.wset_buffer(*window, object);
                 window.set_start_at_line_beg(saved_field(slots, SW_START_AT_LINE_BEG).is_truthy());
-                for (slot, field) in [
-                    (primitives::WINDOW_START_SLOT, SW_START),
-                    (primitives::WINDOW_POINT_SLOT, SW_POINTM),
-                    (primitives::WINDOW_OLD_POINT_SLOT, SW_OLD_POINTM),
+                for (which, field) in [
+                    (primitives::WindowMarker::Start, SW_START),
+                    (primitives::WindowMarker::Pointm, SW_POINTM),
+                    (primitives::WindowMarker::OldPointm, SW_OLD_POINTM),
                 ] {
                     match primitives::slot_marker_position(Some(&saved_field(slots, field))) {
                         Some(position) => primitives::set_window_marker_restricted(
-                            self, *window, slot, buffer, position,
+                            self, *window, which, buffer, position,
                         ),
                         None => {
-                            if let Some(marker) = primitives::window_marker(*window, slot) {
+                            if let Some(marker) = primitives::window_marker(*window, which) {
                                 marker.detach();
                             }
                         }
@@ -2356,8 +2338,10 @@ impl Interpreter {
                 // was saved is not restored.
                 if Some(buffer) != new_current_buffer
                     && buffer == self.current_buffer_id()
-                    && let Some(point) =
-                        primitives::window_marker_position(*window, primitives::WINDOW_POINT_SLOT)
+                    && let Some(point) = primitives::window_marker_position(
+                        *window,
+                        primitives::WindowMarker::Pointm,
+                    )
                 {
                     let mut state = self.buffer.borrow_mut();
                     let point = point.clamp(state.point_min(), state.point_max());
@@ -2371,16 +2355,16 @@ impl Interpreter {
                 // point nowhere, go to the start of the accessible portion
                 // and to the buffer's point.
                 let point = self.buffer_point_by_id(buffer_id);
-                for (slot, position) in [
-                    (primitives::WINDOW_START_SLOT, 0),
-                    (primitives::WINDOW_POINT_SLOT, point),
-                    (primitives::WINDOW_OLD_POINT_SLOT, point),
+                for (which, position) in [
+                    (primitives::WindowMarker::Start, 0),
+                    (primitives::WindowMarker::Pointm, point),
+                    (primitives::WindowMarker::OldPointm, point),
                 ] {
-                    if primitives::window_marker(*window, slot)
+                    if primitives::window_marker(*window, which)
                         .is_none_or(|marker| marker.buffer().is_none())
                     {
                         primitives::set_window_marker_restricted(
-                            self, *window, slot, buffer_id, position,
+                            self, *window, which, buffer_id, position,
                         );
                     }
                 }
@@ -2389,14 +2373,15 @@ impl Interpreter {
                     let entry = kept(self, true);
                     kept_windows.push(entry);
                 }
-            } else if primitives::window_marker(*window, primitives::WINDOW_START_SLOT).is_some() {
+            } else if primitives::window_marker(*window, primitives::WindowMarker::Start).is_some()
+            {
                 // A leaf window with no live buffer gets one, its markers
                 // at the start of the accessible portion.
                 let buffer = self.other_buffer_safely(self.current_buffer_id())?;
                 let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
                 self.wset_buffer(*window, object);
-                for slot in primitives::WINDOW_MARKER_SLOTS {
-                    primitives::set_window_marker_restricted(self, *window, slot, buffer, 0);
+                for which in primitives::WindowMarker::ALL {
+                    primitives::set_window_marker_restricted(self, *window, which, buffer, 0);
                 }
                 window.set_start_at_line_beg(true);
                 if !mini {
@@ -2411,7 +2396,7 @@ impl Interpreter {
                     {
                         dead_windows.push(*window);
                     }
-                    window.set_slot(self, primitives::WINDOW_DEDICATED_SLOT, Value::Nil);
+                    window.set_dedicated(Value::Nil);
                 }
             }
         }
@@ -2426,7 +2411,7 @@ impl Interpreter {
             primitives::set_window_marker_restricted(
                 self,
                 current_window,
-                primitives::WINDOW_POINT_SLOT,
+                primitives::WindowMarker::Pointm,
                 buffer,
                 point,
             );
@@ -2448,7 +2433,7 @@ impl Interpreter {
             // selected and its buffer current and the rest of the
             // restoring undone.
             if let Some(marker) =
-                primitives::window_marker(current_window, primitives::WINDOW_POINT_SLOT)
+                primitives::window_marker(current_window, primitives::WindowMarker::Pointm)
             {
                 let point = marker
                     .position()
@@ -2553,8 +2538,8 @@ impl Interpreter {
             let Some(buffer) = self.buffer_object(buffer_id) else {
                 continue;
             };
-            for slot in primitives::WINDOW_MARKER_SLOTS {
-                if let Some(marker) = primitives::window_marker(window, slot)
+            for which in primitives::WindowMarker::ALL {
+                if let Some(marker) = primitives::window_marker(window, which)
                     && marker.buffer().is_some_and(|owner| !owner.ptr_eq(&buffer))
                 {
                     let _ = self.set_marker(marker, Some(marker.last_position()), Some(buffer_id));
@@ -2576,8 +2561,7 @@ impl Interpreter {
         let Some(window) = window else {
             return Ok(());
         };
-        let next =
-            primitives::WindowRef::from_value(&window.slot(primitives::WINDOW_NEXT_SIBLING_SLOT));
+        let next = window.next_sibling();
         self.unshow_window_tree(next)?;
         if let Some(child) = window.first_child() {
             self.unshow_window_tree(Some(child))?;
@@ -2589,7 +2573,7 @@ impl Interpreter {
             primitives::unchain_window_markers(window);
             // wset_combination_limit (w, w->contents).
             let contents = window.contents();
-            window.set_slot(self, primitives::WINDOW_COMBINATION_LIMIT_SLOT, contents);
+            window.set_combination_limit(contents);
             // wset_buffer (w, Qnil): no contents, as above.
             self.wset_buffer(window, Value::Nil);
         }
@@ -3136,26 +3120,28 @@ impl Interpreter {
         self.create_record_with_kind(Value::symbol(type_name), slots, kind)
     }
 
-    /// window.c:make_window's allocation: a window holding SLOTS up to
-    /// its frame slot, on the selected frame, next in sequence.
-    pub(crate) fn make_window(&mut self, slots: Vec<Value>) -> primitives::WindowRef {
-        // The slots up to the frame's, and no more: a slot past it is one
-        // the new window does not hold.
-        let held = primitives::WINDOW_FRAME_SLOT + 1;
-        // alloc.c:allocate_pseudovector's tally of window.c's struct.
+    /// alloc.c:allocate_window, ALLOCATE_ZEROED_PSEUDOVECTOR (struct
+    /// window, mode_line_help_echo, PVEC_WINDOW): a window with its Lisp
+    /// fields nil and the rest zero, VECSIZE (struct window) words consed.
+    pub(crate) fn allocate_window(&mut self) -> primitives::WindowRef {
+        // allocate_vectorlike's tally_consing of the header and the words.
         crate::lisp::native_comp::note_lisp_allocation(
-            crate::lisp::alloc::vectors::windows::WINDOW_GNU_VECTOR_SLOTS * 8,
+            8 * (1 + crate::lisp::alloc::vectors::windows::WINDOW_VECTOR_WORDS),
         );
-        let window = crate::lisp::types::WindowObjectRef::new(held);
-        for (index, value) in slots.into_iter().take(held).enumerate() {
-            window.set_held(index, value);
-        }
-        window.set_held(primitives::WINDOW_FRAME_SLOT, self.selected_frame_value());
-        // window.c:make_window and make_parent_window:
+        primitives::WindowRef::from_object(crate::lisp::types::WindowObjectRef::new())
+    }
+
+    /// window.c:make_window: an allocate_window window given the values
+    /// make_window gives (its markers new ones that point nowhere), on the
+    /// selected frame, next in sequence.
+    pub(crate) fn make_window(&mut self) -> primitives::WindowRef {
+        let window = self.allocate_window();
+        window.initialize_as_make_window();
+        window.set_frame(self.selected_frame_value());
         // `w->sequence_number = ++sequence_number'.
         self.window_sequence_number += 1;
         window.set_sequence_number(self.window_sequence_number);
-        primitives::WindowRef::from_object(window)
+        window
     }
 
     /// alloc.c:Fmake_closure.  Both the ordinary primitive dispatcher and
@@ -4074,7 +4060,7 @@ mod runtime_index_tests {
         // A window, an object of its own kind that nothing names by
         // number, is in no index: the frames' window trees find it.
         assert!(interp.record_ids_by_type("window").is_empty());
-        let window = interp.make_window(Vec::new());
+        let window = interp.make_window();
         assert!(window.sequence_number() > 0);
         assert!(interp.record_ids_by_type("window").is_empty());
     }

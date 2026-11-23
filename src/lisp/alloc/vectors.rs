@@ -1415,6 +1415,7 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
             | VectorTag::SymbolWithPos
             | VectorTag::Frame
             | VectorTag::Terminal
+            | VectorTag::Window
             | VectorTag::Marker
             | VectorTag::Overlay
             | VectorTag::BoolVector
@@ -1441,12 +1442,6 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                     raise(&LIVE_RECORDS, 1);
                     raise(&LIVE_RECORD_SLOTS, slots);
                 }
-            }
-            // A window counts as window.c's whole struct window, among
-            // the records as it did while it was one.
-            VectorTag::Window => {
-                raise(&LIVE_RECORDS, 1);
-                raise(&LIVE_RECORD_SLOTS, windows::WINDOW_GNU_VECTOR_SLOTS);
             }
             VectorTag::Normal | VectorTag::Free | VectorTag::ReaderForm => {}
         }
@@ -1574,6 +1569,7 @@ impl SweepStats {
                 | VectorTag::SymbolWithPos
                 | VectorTag::Frame
                 | VectorTag::Terminal
+                | VectorTag::Window
                 | VectorTag::Marker
                 | VectorTag::Overlay
                 | VectorTag::BoolVector
@@ -1597,10 +1593,6 @@ impl SweepStats {
                         self.records += 1;
                         self.record_slots += slots;
                     }
-                }
-                VectorTag::Window => {
-                    self.records += 1;
-                    self.record_slots += windows::WINDOW_GNU_VECTOR_SLOTS;
                 }
                 VectorTag::Free | VectorTag::ReaderForm => {}
             }

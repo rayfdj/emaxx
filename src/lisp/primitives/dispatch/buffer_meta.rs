@@ -659,15 +659,15 @@ define_dispatch!(
                     }) else {
                         continue;
                     };
-                    for slot in [WINDOW_POINT_SLOT, WINDOW_OLD_POINT_SLOT] {
+                    for which in [WindowMarker::Pointm, WindowMarker::OldPointm] {
                         crate::lisp::primitives::set_window_marker(
-                            interp, window, slot, buffer, begv,
+                            interp, window, which, buffer, begv,
                         );
                     }
                     crate::lisp::primitives::set_window_marker(
                         interp,
                         window,
-                        WINDOW_START_SLOT,
+                        WindowMarker::Start,
                         buffer,
                         start.clamp(1, size + 1),
                     );

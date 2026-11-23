@@ -736,11 +736,8 @@ define_dispatch!(
                 // signals for a deleted window's unchained marker.
                 if args.first().is_none_or(Value::is_nil)
                     && w != interp.selected_window_ref()
-                    && crate::lisp::primitives::window::window_marker(
-                        w,
-                        crate::lisp::primitives::WINDOW_POINT_SLOT,
-                    )
-                    .is_some_and(|marker| marker.position().is_none())
+                    && crate::lisp::primitives::window::window_marker(w, WindowMarker::Pointm)
+                        .is_some_and(|marker| marker.position().is_none())
                 {
                     return Err(LispError::Signal("Marker does not point anywhere".into()));
                 }

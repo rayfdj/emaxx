@@ -572,18 +572,13 @@ pub(crate) fn substitute_object_recurse(
             }
             Ok(*subtree)
         }
-        // A window's contents and the slots it holds, as those of the
-        // host record it was.
+        // A window's Lisp fields, as those of the host record it was.
         Kind::Window(window) => {
-            let contents =
-                substitute_object_recurse(interp, object, placeholder, &window.contents(), seen)?;
-            window.set_contents(contents);
-            for index in 0..window.held() {
-                let current = window.slot(index).unwrap_or(Value::Nil);
-                let updated =
-                    substitute_object_recurse(interp, object, placeholder, &current, seen)?;
-                window.set_if_held(index, updated);
+            let mut fields = window.lisp_values();
+            for field in &mut fields {
+                *field = substitute_object_recurse(interp, object, placeholder, field, seen)?;
             }
+            window.set_lisp_values(fields);
             Ok(*subtree)
         }
         Kind::CharTable(table) => {
@@ -1831,7 +1826,7 @@ fn minibuffer_unwind(interp: &mut Interpreter, env: &mut Env) -> Result<(), Lisp
     if w.live_buffer_id(interp).is_none() {
         return Ok(());
     }
-    let previous = w.slot(super::WINDOW_PREV_BUFFERS_SLOT);
+    let previous = w.prev_buffers();
     if let Some(cell) = previous.cons_ref() {
         let entry = cell.car.get();
         if let Kind::Buffer(buffer) = entry.car()?.kind()
@@ -1839,7 +1834,7 @@ fn minibuffer_unwind(interp: &mut Interpreter, env: &mut Env) -> Result<(), Lisp
                 .buffer_object(buffer.id)
                 .is_some_and(|live| live.ptr_eq(&buffer))
         {
-            w.set_held_slot(interp, super::WINDOW_PREV_BUFFERS_SLOT, cell.cdr.get());
+            w.set_prev_buffers(cell.cdr.get());
             interp.show_buffer_in_window(w, buffer.id, false);
             let rest = entry.cdr()?;
             super::call(interp, "set-window-start", &[window, rest.car()?], env)?;
@@ -2084,7 +2079,7 @@ fn read_minibuf_unwind(interp: &mut Interpreter, state: ActiveMinibuffer, env: &
     // go back to, the calling window is Fselect_window'ed.
     let minibuffer_window = interp.minibuffer_window_value();
     let outer_reads = super::WindowRef::from_value(&minibuffer_window)
-        .is_some_and(|window| !window.slot(super::WINDOW_PREV_BUFFERS_SLOT).is_nil());
+        .is_some_and(|window| !window.prev_buffers().is_nil());
     let calling_window = state.saved_selected_window.value();
     if !outer_reads && super::window_buffer_id(interp, &calling_window).is_some() {
         let _ = super::call(interp, "select-window", &[calling_window], env);

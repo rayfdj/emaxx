@@ -2951,7 +2951,7 @@ pub(crate) fn visual_vertical_motion_from(
         return vertical_motion_in_window(interp, env, w, n, goal_col, start_x);
     }
     // marker_position (w->pointm), for restore_window_buffer.
-    let old_point = match window_marker(w, WINDOW_POINT_SLOT) {
+    let old_point = match window_marker(w, WindowMarker::Pointm) {
         Some(marker) => Some(
             marker
                 .position()
@@ -2962,7 +2962,7 @@ pub(crate) fn visual_vertical_motion_from(
     let object = interp.buffer_value(current).unwrap_or(Value::Nil);
     interp.wset_buffer(w, object);
     let point = interp.buffer.borrow().point();
-    set_window_marker(interp, w, WINDOW_POINT_SLOT, current, point);
+    set_window_marker(interp, w, WindowMarker::Pointm, current, point);
     let result = vertical_motion_in_window(interp, env, w, n, goal_col, start_x);
     // restore_window_buffer, however the motion ended: its
     // decode_live_window first, then the window's buffer and its point
@@ -2978,8 +2978,8 @@ pub(crate) fn visual_vertical_motion_from(
         old_point,
     ) {
         if interp.has_buffer_id(buffer) {
-            set_window_marker(interp, w, WINDOW_POINT_SLOT, buffer, point);
-        } else if let Some(marker) = window_marker(w, WINDOW_POINT_SLOT) {
+            set_window_marker(interp, w, WindowMarker::Pointm, buffer, point);
+        } else if let Some(marker) = window_marker(w, WindowMarker::Pointm) {
             marker.detach();
         }
     }

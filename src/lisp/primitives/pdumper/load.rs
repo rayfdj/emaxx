@@ -1064,13 +1064,7 @@ impl Loader<'_> {
                     self.objects[number] = Value::Terminal(id);
                 }
                 DumpType::Window => {
-                    let held = self.reader.word(offset)?;
-                    if held > crate::lisp::alloc::vectors::windows::WINDOW_SLOT_COUNT as u64 {
-                        return Err(LoadError::Error(format!(
-                            "the window at {offset} holds {held} slots"
-                        )));
-                    }
-                    self.objects[number] = self.interp.install_dead_window(held as usize).value();
+                    self.objects[number] = self.interp.install_dead_window().value();
                 }
                 _ => {}
             }

@@ -25165,8 +25165,10 @@ fn native_fixed_pseudovectors_use_gnu_full_vector_footprints() {
     // alloc.c:sweep_vectors accounts the complete VECSIZE of these
     // pseudovectors, not only the Lisp fields traced by the marker.  These
     // values come from the configured GNU headers:
-    // process=42, window=66, window-configuration=13, thread=63,
-    // mutex=9, and condition-variable=8 words.
+    // process=42, window-configuration=13, thread=63, mutex=9, and
+    // condition-variable=8 words; a window is 68 (sizeof (struct window)
+    // is 544 bytes, the header among them), and make_window makes its
+    // three markers, 6 words each (a struct Lisp_Marker is 48 bytes).
     let mut interp = Interpreter::new();
     let before = interp.live_object_census();
     let mut values = [
@@ -25186,13 +25188,13 @@ fn native_fixed_pseudovectors_use_gnu_full_vector_footprints() {
     .map(|(kind, name)| interp.create_pseudovector(kind, name, Vec::new()))
     .collect::<Vec<_>>();
     // A window is an object of its own kind, made by make_window.
-    values.push(interp.make_window(Vec::new()).value());
+    values.push(interp.make_window().value());
     let after = interp.live_object_census();
 
-    assert_eq!(after.vectors - before.vectors, values.len());
+    assert_eq!(after.vectors - before.vectors, values.len() + 3);
     assert_eq!(
         after.vector_slots - before.vector_slots,
-        42 + 66 + 13 + 63 + 9 + 8
+        42 + 68 + 3 * 6 + 13 + 63 + 9 + 8
     );
     assert_eq!(values.len(), 6);
 }
@@ -36896,25 +36898,16 @@ fn buffers_count_the_windows_showing_them() {
     // adjust_window_count, there and back, leaves the window's end and
     // base line to be found again.
     let window = interp.selected_window_ref();
-    // The window's end is valid, and its base line cached in a slot the
-    // window holds, as indexing the record's slots was.
+    // The window's end is valid, and its base line cached.
     window.set_window_end_valid(true);
-    window.set_held_slot(
-        &mut interp,
-        crate::lisp::primitives::WINDOW_BASE_LINE_SLOT,
-        Value::T,
-    );
+    window.set_base_line_number(3);
+    window.set_base_line_pos(5);
     run(
         &mut interp,
         r#"(with-current-buffer "wc-a" (vertical-motion 0))"#,
     );
-    let slot = |interp: &Interpreter, slot: usize| {
-        interp
-            .selected_window_ref()
-            .slot_opt(slot)
-            .expect("a slot the window holds")
-    };
     assert!(window.window_end_valid());
+    assert_eq!(window.base_line_pos(), 5);
     run(
         &mut interp,
         r#"(setq wc-m (list (window-point)
@@ -36924,7 +36917,9 @@ fn buffers_count_the_windows_showing_them() {
                             (buffer-name (window-buffer))))"#,
     );
     assert!(!window.window_end_valid());
-    assert!(slot(&interp, crate::lisp::primitives::WINDOW_BASE_LINE_SLOT).is_nil());
+    // adjust_window_count's `w->base_line_pos = 0': no base line.
+    assert_eq!(interp.selected_window_ref(), window);
+    assert_eq!(window.base_line_pos(), 0);
     assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (2, 0));
     run(
         &mut interp,
@@ -37164,11 +37159,11 @@ fn copied_window(interp: &Interpreter, copy: &Interpreter, window: WindowRef) ->
             .minibuffer_window
             .expect("the copy's minibuffer window");
     }
-    let next = |window: WindowRef| WindowRef::from_value(&window.slot(WINDOW_NEXT_SIBLING_SLOT));
+    let next = |window: WindowRef| window.next_sibling();
     // Which child of its parent each window is, from WINDOW up.
     let mut path = Vec::new();
     let mut node = window;
-    while let Some(parent) = WindowRef::from_value(&node.slot(WINDOW_PARENT_SLOT)) {
+    while let Some(parent) = node.parent_window() {
         let mut child = parent.first_child().expect("a parent's first child");
         let mut place = 0;
         while child != node {
@@ -37376,7 +37371,7 @@ fn window_geometry_is_the_windows_own_integers() {
     lone.set_total_lines(Some(0));
     assert_eq!(window_char_geometry(lone), (70, 0, 0, 6));
     // The dead window of a dump is given nothing.
-    let dead = interp.install_dead_window(3);
+    let dead = interp.install_dead_window();
     assert_eq!(pixels(dead), (None, None, None, None));
     assert_eq!(chars(dead), (None, None, None, None));
     assert_eq!(window_char_geometry(dead), (0, 0, 0, 0));
@@ -37598,7 +37593,7 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
     let id = interp.current_buffer_id();
     let lone = make_leaf_window(&mut interp, id, 1, false, (80, 10, 0, 0));
     interp.adjust_window_count(lone, true);
-    let dead = interp.install_dead_window(3);
+    let dead = interp.install_dead_window();
     for window in [lone, dead] {
         assert_eq!((counters(window), bits(window)), (NEW, [false; 8]));
         assert_eq!(window_last_point(window), None);

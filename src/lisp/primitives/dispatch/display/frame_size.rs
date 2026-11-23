@@ -425,10 +425,7 @@ fn resize_frame_windows(
 /// HORFLAG) becomes its new total, its children placed from its column
 /// or line, advancing across an iso-combination.
 fn window_resize_apply_total(window: WindowRef, horflag: bool) {
-    let new_total = window
-        .slot(WINDOW_NEW_TOTAL_SLOT)
-        .integer_value()
-        .unwrap_or(0);
+    let new_total = window.new_total().integer_value().unwrap_or(0);
     let (_, _, left_col, top_line) = window_char_geometry(window);
     let mut edge = if horflag {
         window.set_total_cols(Some(new_total));
@@ -452,7 +449,7 @@ fn window_resize_apply_total(window: WindowRef, horflag: bool) {
             let (cols, lines, _, _) = window_char_geometry(w);
             edge += if horflag { cols } else { lines };
         }
-        child = window_link(w, WINDOW_NEXT_SIBLING_SLOT);
+        child = w.next_sibling();
     }
 }
 
@@ -468,10 +465,7 @@ pub(super) fn window_resize_apply_total_for_frame(frame: FrameRef, horizontal: b
     root.set_top_line(Some(frame_top_margin(frame)));
     window_resize_apply_total(root, horizontal);
     if let Some(mini) = frame_mini_window(frame) {
-        let new_total = mini
-            .slot(WINDOW_NEW_TOTAL_SLOT)
-            .integer_value()
-            .unwrap_or(0);
+        let new_total = mini.new_total().integer_value().unwrap_or(0);
         if horizontal {
             mini.set_total_cols(Some(new_total));
         } else {

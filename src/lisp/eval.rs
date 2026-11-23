@@ -4500,14 +4500,14 @@ impl ImageGraphCopier {
                 copied
             }
             Kind::Window(window) => {
-                // The clone's own window, holding as many slots; the slots
-                // copied after the window is on record (a window reaches
-                // itself through its frame and its siblings).
+                // The clone's own window; its Lisp fields copied after the
+                // window is on record (a window reaches itself through its
+                // frame and its siblings).
                 let key = window.identity();
                 if let Some(copied) = self.records.get(&key) {
                     return *copied;
                 }
-                let copied_window = crate::lisp::types::WindowObjectRef::new(window.held());
+                let copied_window = crate::lisp::types::WindowObjectRef::new();
                 let copied = Value::Window(copied_window);
                 self.records.insert(key, copied);
                 copied_window.set_use_time(window.use_time());
@@ -4545,10 +4545,10 @@ impl ImageGraphCopier {
                 copied_window.set_window_end_valid(window.window_end_valid());
                 copied_window.set_redisplay(window.redisplay());
                 copied_window.set_suspend_auto_hscroll(window.suspend_auto_hscroll());
-                copied_window.set_contents(self.copy(&window.contents()));
-                for (index, slot) in window.held_values().enumerate() {
-                    copied_window.set_held(index, self.copy(&slot));
-                }
+                copied_window.set_base_line_number(window.base_line_number());
+                copied_window.set_base_line_pos(window.base_line_pos());
+                copied_window.copy_display_fields(&window);
+                copied_window.set_lisp_values(window.lisp_values().map(|value| self.copy(&value)));
                 copied
             }
             Kind::Closure(lambda) => {
@@ -5459,11 +5459,11 @@ impl Interpreter {
 
     /// A window the image held, which pdumper.c:dump_nilled_pseudovec
     /// wrote with every Lisp field nil and the rest zero: a deleted
-    /// window of the new process (w->contents nil, its bits clear),
-    /// holding HELD nil slots, on no frame and with no sequence number,
-    /// an object of its own beside the windows this process made.
-    pub(crate) fn install_dead_window(&mut self, held: usize) -> primitives::WindowRef {
-        primitives::WindowRef::from_object(crate::lisp::types::WindowObjectRef::new(held))
+    /// window of the new process (w->contents nil, its bits clear), on
+    /// no frame and with no sequence number, an object of its own beside
+    /// the windows this process made.
+    pub(crate) fn install_dead_window(&mut self) -> primitives::WindowRef {
+        primitives::WindowRef::from_object(crate::lisp::types::WindowObjectRef::new())
     }
 
     /// A terminal the image nilled: a dead terminal object of its own,

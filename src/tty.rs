@@ -2281,7 +2281,7 @@ impl<'a> CharacterDisplayContext<'a> {
         // window.c:window_display_table selects one valid table.  An absent
         // character entry does not fall through to the next table.
         let display_table = [
-            window.slot_opt(crate::lisp::primitives::WINDOW_DISPLAY_TABLE_SLOT),
+            Some(window.display_table()),
             interpreter
                 .buffer_local_toplevel_value(buffer_id, "buffer-display-table")
                 .or_else(|| interpreter.default_toplevel_value("buffer-display-table")),
@@ -6457,7 +6457,7 @@ fn with_window_point<T>(
             let buffer = interpreter.buffer.borrow();
             let marker = crate::lisp::primitives::window_marker_position(
                 info.window,
-                crate::lisp::primitives::WINDOW_POINT_SLOT,
+                crate::lisp::primitives::WindowMarker::Pointm,
             )
             .unwrap_or(info.point);
             marker.clamp(buffer.point_min(), buffer.point_max())
@@ -6465,7 +6465,7 @@ fn with_window_point<T>(
         crate::lisp::primitives::set_window_marker(
             interpreter,
             info.window,
-            crate::lisp::primitives::WINDOW_POINT_SLOT,
+            crate::lisp::primitives::WindowMarker::Pointm,
             info.buffer_id,
             point,
         );
@@ -7693,7 +7693,7 @@ fn fontify_iterated_text(
     } else {
         crate::lisp::primitives::window_marker_position(
             window,
-            crate::lisp::primitives::WINDOW_POINT_SLOT,
+            crate::lisp::primitives::WindowMarker::Pointm,
         )
         .unwrap_or_else(|| interpreter.buffer.borrow().point())
     };
@@ -9703,7 +9703,7 @@ fn redraw_with_echo_policy(
             let to = job.left + to.min(shown);
             frame[job.row].overlay(from, to, attrs);
         }
-        crate::lisp::primitives::end_display_mode_lines(interpreter, job.window);
+        crate::lisp::primitives::end_display_mode_lines(job.window);
     }
 
     // Tab lines sit above header lines and use the `tab-line' face.  A
@@ -11380,9 +11380,9 @@ mod tests {
         }
         #[inline(never)]
         fn shown(interpreter: &mut Interpreter, state: &mut TtyState) -> [usize; 2] {
-            let viewed = interpreter.make_window(Vec::new());
+            let viewed = interpreter.make_window();
             state.views.entry(viewed).top_line = 7;
-            let laid_out = interpreter.make_window(Vec::new());
+            let laid_out = interpreter.make_window();
             state.last_layout.push((laid_out, 0, 1, 80, 22));
             [hidden(viewed), hidden(laid_out)]
         }

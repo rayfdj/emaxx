@@ -8,7 +8,7 @@ use crate::lisp::cached_symbol;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::eval::runtime::REDISPLAY_SOME;
 use crate::lisp::primitives::{
-    WINDOW_POINT_SLOT, WindowRef, set_window_last_point, window_column_number_displayed,
+    WindowMarker, WindowRef, set_window_last_point, window_column_number_displayed,
     window_last_point, window_marker_position,
 };
 use crate::lisp::types::{Env, Kind, Value};
@@ -32,7 +32,7 @@ pub(super) fn window_point(interp: &Interpreter, window: WindowRef) -> Option<us
         let buffer = window_buffer(interp, window)?;
         Some(interp.buffer_point_by_id(buffer))
     } else {
-        window_marker_position(window, WINDOW_POINT_SLOT)
+        window_marker_position(window, WindowMarker::Pointm)
     }
 }
 
