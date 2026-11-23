@@ -22374,6 +22374,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   1.17) and process-tests (2.27 against 1.80).  The Rust gate (run
   43594994208) passed.
 
+**On `e20c9ed`** (round 368): the frozen run (run 45115037680) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 63.5 s against 54.2 s (1.172), test bodies 258.2 s
+  against 240.3 s (1.074), in all 1.092, on a slower runner (GNU's suite
+  took 294 s).  The widest body gaps are tramp-tests (17.8 s against
+  15.7 s), comp-tests (14.1 against 12.1), process-tests (2.75 against
+  1.84), semantic-utest-ia (3.09 against 2.19), mule-tests (2.31 against
+  1.52) and package-tests (6.37 against 5.78).  The Rust gate (run
+  45115035072) passed: 3,537 library tests, the seven integration
+  targets (216) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 368's review), outside the round
   and in no milestone.**  One line each, as the rules of
