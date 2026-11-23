@@ -20,6 +20,9 @@ pub struct NativeFunctionState {
     /// Whether the two names are the image's bytes (pdumper's subrs name
     /// their C strings in the dump), not this object's allocations.
     image_names: Cell<bool>,
+    /// Whether a call can pass its arguments as a count and their address
+    /// in registers (`many_registers'): in the same padding.
+    many_registers: Cell<bool>,
     symbol_name: Cell<*mut c_char>,
     interactive: Cell<Value>,
     command_modes: Cell<Value>,
@@ -50,6 +53,7 @@ const _: () = {
     assert!(std::mem::offset_of!(NativeFunctionState, max_args) == 10);
     assert!(std::mem::offset_of!(NativeFunctionState, register_counts) == 12);
     assert!(std::mem::offset_of!(NativeFunctionState, image_names) == 13);
+    assert!(std::mem::offset_of!(NativeFunctionState, many_registers) == 14);
     assert!(std::mem::offset_of!(NativeFunctionState, symbol_name) == 16);
     assert!(std::mem::offset_of!(NativeFunctionState, interactive) == 24);
     assert!(std::mem::offset_of!(NativeFunctionState, command_modes) == 32);
@@ -74,6 +78,7 @@ impl NativeFunctionRef {
             max_args: Cell::new(spec.max_args),
             register_counts: Cell::new(0),
             image_names: Cell::new(false),
+            many_registers: Cell::new(false),
             symbol_name: Cell::new(spec.name.into_raw()),
             interactive: Cell::new(spec.fields[0]),
             command_modes: Cell::new(spec.fields[1]),
@@ -96,6 +101,7 @@ impl NativeFunctionRef {
             max_args: Cell::new(0),
             register_counts: Cell::new(0),
             image_names: Cell::new(false),
+            many_registers: Cell::new(false),
             symbol_name: Cell::new(std::ptr::null_mut()),
             interactive: Cell::new(Value::Nil),
             command_modes: Cell::new(Value::Nil),
@@ -142,22 +148,30 @@ impl NativeFunctionState {
         self.register_counts.get()
     }
 
+    /// Whether the target is called as eval.c:funcall_subr calls a MANY
+    /// subr, `aMANY (numargs, args)': a target, lexical binding, and a
+    /// negative maximum (comp.c:make_subr stores MANY for an arity whose
+    /// maximum is no fixnum; a native function is never UNEVALLED).  The
+    /// caller tests the count against `min_args'.
+    #[inline(always)]
+    pub(crate) fn many_registers(&self) -> bool {
+        self.many_registers.get()
+    }
+
     fn refresh_register_counts(&self) {
         let minimum = self.min_args.get();
         let maximum = self.max_args.get();
         let mut counts = 0u8;
-        // MANY and UNEVALLED (negative) take no register call, and a
-        // negative minimum, which no fixed arity has, admits no count.
-        if !self.target.get().is_null()
-            && !self.is_dynamic()
-            && (0..=6).contains(&maximum)
-            && minimum >= 0
-        {
+        // A negative minimum, which no arity has, admits no count.
+        let lexical = !self.target.get().is_null() && !self.is_dynamic() && minimum >= 0;
+        // MANY (negative) takes no call with each argument in a register.
+        if lexical && (0..=6).contains(&maximum) {
             for count in minimum..=maximum {
                 counts |= 1 << count;
             }
         }
         self.register_counts.set(counts);
+        self.many_registers.set(lexical && maximum < 0);
     }
     pub(crate) fn doc_index(&self) -> isize {
         self.doc.get()

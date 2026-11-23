@@ -169,6 +169,35 @@ pub(crate) fn call_function_inline(
     call_function_general(interpreter, environment, function, arguments)
 }
 
+/// `call_function_inline' for a function that takes its arguments as a
+/// vector (MANY), called with the COUNT arguments its caller holds at
+/// ADDRESS in an array of its own (eval_sub's `vals'): the register call
+/// with that array, or the general entry with its copy of them.
+///
+/// # Safety
+///
+/// ADDRESS addresses COUNT initialized arguments that the callee may read
+/// and write until the call returns, no reference to them being used
+/// meanwhile.
+#[inline(always)]
+pub(crate) unsafe fn call_function_vector(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    function: crate::lisp::types::NativeFunctionRef,
+    (count, address): (usize, *mut Value),
+) -> Result<Value, LispError> {
+    // SAFETY: the caller's.
+    if let Some(result) =
+        unsafe { loader::call_many_vector(interpreter, environment, function, (count, address)) }
+    {
+        return result;
+    }
+    // SAFETY: the caller's: COUNT initialized arguments, which the general
+    // entry copies.
+    let arguments = unsafe { std::slice::from_raw_parts(address, count) };
+    call_function_general(interpreter, environment, function, arguments)
+}
+
 #[inline(never)]
 fn call_function_general(
     interpreter: &mut Interpreter,

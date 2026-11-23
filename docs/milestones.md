@@ -41,7 +41,7 @@ unfinished work pushed as a packaged draft (wip/r367).
 
 This document.
 
-## M2. Structure and performance (30 items; 1 done)
+## M2. Structure and performance (30 items; 2 done)
 
 Exit test: the remaining representation, collector and ownership engineering
 is done, the recorded per-call excesses are removed where GNU does less, and
@@ -111,6 +111,8 @@ a diagnostic run of the locked suite on the profile-guided build.
 - D125: Interpreted code and the call from C to a Lisp function are slower
   than GNU's (measured in round 364): four (ignore X) forms in a source loop
   take 1.3…
+  **Done** (round 368: 0.98 and 0.71 of GNU's time on the profile-guided
+  build).
 
 ## M3. Fix list (54 items)
 

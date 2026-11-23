@@ -13062,3 +13062,158 @@ zz-cv-read-by-the-form-above
     );
     assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
 }
+
+#[test]
+fn a_native_function_that_takes_a_vector_is_called_as_funcall_subr_calls_it() {
+    // A native-compiled function with lexical binding and `&rest' is a
+    // subr whose maximum is MANY (comp.c:make_subr): eval_sub's SUBRP
+    // branch checks its minimum before any argument is evaluated,
+    // evaluates the counted arguments into a vector that stops where the
+    // list ends, and calls `aMANY (argnum, vals)'; Ffuncall, Fapply and
+    // Bcall reach it through funcall_subr.  `ignore', `always',
+    // `apply-partially', `error' and `user-error' are such functions in
+    // the image.  The same forms through each entry, with every count up
+    // to and past the eight eval_sub keeps beside its frame, an argument
+    // list cut short or grown while an argument evaluates, collections
+    // while the vector waits and while the callee runs, signals and
+    // throws through the call, the frame a handler sees, the debugger at
+    // the call and at its exit (the function cell read after it, so that
+    // a definition the debugger changes is the one called), a thread's own
+    // first call, and the depth limit met inside.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "many-native.el",
+        r##";;; -*- lexical-binding: t -*-
+;; Calls of native-compiled functions that take their arguments as a
+;; vector (MANY): from the interpreter, funcall, apply, byte code and a
+;; thread, compared with GNU's answers.
+(defvar zz-many-n 0)
+(defmacro zz-many-probe (&rest body)
+  `(progn (setq zz-many-n (1+ zz-many-n))
+          (princ (format "%d: %S\n" zz-many-n
+                         (condition-case e (progn ,@body) (t (list 'signal e)))))))
+(zz-many-probe (list (subrp (symbol-function 'ignore)) (subr-arity (symbol-function 'ignore))
+                (subr-arity (symbol-function 'apply-partially))
+                (subr-arity (symbol-function 'user-error))
+                (subr-arity (symbol-function 'always))))
+(zz-many-probe (ignore))
+(zz-many-probe (ignore 1))
+(zz-many-probe (ignore 1 2 3 4 5 6 7 8))
+(zz-many-probe (ignore 1 2 3 4 5 6 7 8 9))
+(zz-many-probe (always))
+(zz-many-probe (always 1 2 3))
+(zz-many-probe (funcall (apply-partially 'list)))
+(zz-many-probe (funcall (apply-partially 'list 1)))
+(zz-many-probe (funcall (apply-partially 'list 1 2 3 4 5 6 7)))
+(zz-many-probe (funcall (apply-partially 'list 1 2 3 4 5 6 7 8)))
+(zz-many-probe (funcall (apply-partially 'list 1 2 3 4 5 6 7 8 9 10 11 12)))
+(zz-many-probe (apply-partially))
+(zz-many-probe (user-error))
+(zz-many-probe (user-error "boom %d" 7))
+(zz-many-probe (user-error "boom %d %S %S %S %S %S %S %S %S" 1 2 3 4 5 6 7 8 9))
+(zz-many-probe (error "plain %S" '(a b)))
+(zz-many-probe (ignore 1 (car 1) (setq zz-many-n (+ zz-many-n 100))))
+(zz-many-probe (apply-partially 'list 1 . 2))
+(zz-many-probe (funcall 'ignore 1 2))
+(zz-many-probe (funcall 'apply-partially))
+(zz-many-probe (funcall #'user-error))
+(zz-many-probe (apply 'ignore '(1 2 3)))
+(zz-many-probe (funcall (apply #'apply-partially 'list (number-sequence 1 20))))
+(zz-many-probe (apply #'user-error nil))
+(zz-many-probe (mapcar #'always '(1 2 3)))
+(zz-many-probe (mapcar (apply-partially #'apply-partially 'list 0) '(1 2)))
+;; From byte code.
+(zz-many-probe (funcall (funcall (byte-compile (lambda () (apply-partially 'list 1 2))))))
+(zz-many-probe (funcall (byte-compile (lambda () (list (ignore 1 2 3) (always) (always 1 2 3 4 5 6 7 8 9))))))
+(zz-many-probe (funcall (byte-compile (lambda () (user-error "from bc %d" 3)))))
+(zz-many-probe (funcall (byte-compile (lambda (f) (funcall f))) 'apply-partially))
+;; The argument list cut short while an argument evaluates: eval_sub's
+;; vector stops at the list's end.
+(defvar zz-many-form nil)
+(zz-many-probe (setq zz-many-form (list 'apply-partially ''list '(progn (setcdr (nthcdr 3 zz-many-form) nil) 1) 2 3))
+          (funcall (eval zz-many-form t)))
+(zz-many-probe (setq zz-many-form (list 'apply-partially ''list '(progn (setcdr (nthcdr 3 zz-many-form) nil) 1) 2 3 4 5 6 7 8 9 10))
+          (funcall (eval zz-many-form t)))
+(zz-many-probe (setq zz-many-form (list 'user-error '(progn (setcdr zz-many-form nil) "gone")))
+          (eval zz-many-form t))
+;; The list grown while an argument evaluates: the count was taken before.
+(zz-many-probe (setq zz-many-form (list 'apply-partially ''list '(progn (nconc zz-many-form (list 8 9)) 1) 2))
+          (funcall (eval zz-many-form t)))
+;; Collections while arguments wait and while the callee runs.
+(zz-many-probe (funcall (apply-partially 'list (copy-sequence "abc") (progn (garbage-collect) 1)
+                                    (make-list 3 'x) (progn (garbage-collect) 2))))
+(zz-many-probe (let ((r nil))
+            (dotimes (i 2000)
+              (setq r (funcall (apply-partially 'list (make-string 10 ?a) i (list i)))))
+            r))
+;; Nested: a native MANY function that calls the interpreter, which
+;; calls another.
+(zz-many-probe (funcall (apply-partially (lambda (&rest xs) (list (apply #'always xs) (ignore xs) xs)) 1 2)))
+;; Signals and throws through the call.
+(zz-many-probe (catch 'm2 (funcall (apply-partially (lambda (&rest xs) (throw 'm2 xs)) 1 2) 3)))
+(zz-many-probe (condition-case e (funcall (apply-partially #'user-error "in %s") 'callee) (user-error (list 'caught e))))
+;; The frame a handler sees: the function and its evaluated arguments.
+(zz-many-probe (let (frame)
+            (condition-case nil
+                (handler-bind ((error (lambda (_)
+                                        (setq frame (seq-find (lambda (f) (eq (nth 1 f) 'user-error))
+                                                              (backtrace-frames))))))
+                  (user-error "frame %d" (+ 1 2)))
+              (error nil))
+            frame))
+(zz-many-probe (let (frame)
+            (condition-case nil
+                (handler-bind ((error (lambda (_)
+                                        (setq frame (seq-find (lambda (f) (eq (nth 1 f) 'ignore))
+                                                              (backtrace-frames))))))
+                  (ignore 1 (car 2)))
+              (error nil))
+            frame))
+;; The debugger entered at the call (debug-on-next-call) and at its exit.
+(zz-many-probe (let ((seen nil))
+            (let ((debugger (lambda (&rest args) (push (list (car args) (cadr args)) seen) nil)))
+              (setq debug-on-next-call t)
+              (always 1 2))
+            (setq debug-on-next-call nil)
+            (nreverse seen)))
+;; The function cell is read after the debugger entered at the call
+;; (eval_sub's do_debug_on_call): the definition it left is the one called.
+(defun zz-many-new (&rest xs) (list 'new xs))
+(defmacro zz-many-redefined (form)
+  `(zz-many-probe (let ((orig (symbol-function ',(car form))))
+               (unwind-protect
+                   (let ((debugger (lambda (&rest args)
+                                     (if (eq (car args) 'exit) (cadr args)
+                                       (fset ',(car form) #'zz-many-new) nil))))
+                     (setq debug-on-next-call t)
+                     ,form)
+                 (setq debug-on-next-call nil)
+                 (fset ',(car form) orig)))))
+(zz-many-redefined (always 1 2))
+(zz-many-redefined (always 1 2 3 4 5 6 7 8 9))
+(zz-many-redefined (user-error "x %d" 1))
+(zz-many-probe (let ((orig (symbol-function 'always)))
+            (unwind-protect
+                (let ((debugger (lambda (&rest args)
+                                  (if (eq (car args) 'exit) (cadr args)
+                                    (fmakunbound 'always) nil))))
+                  (setq debug-on-next-call t)
+                  (always 1 2))
+              (setq debug-on-next-call nil)
+              (fset 'always orig))))
+;; A thread's own outermost call.
+(zz-many-probe (let ((r nil))
+            (thread-join (make-thread (lambda () (setq r (list (ignore 1 2) (always 3)
+                                                              (funcall (apply-partially 'list 4 5)))))))
+            r))
+;; Deep recursion through the call.
+(zz-many-probe (let ((max-lisp-eval-depth 400))
+            (defun zz-many-deep (n) (if (= n 0) 0 (1+ (funcall (apply-partially #'zz-many-deep (1- n))))))
+            (zz-many-deep 60)))
+(zz-many-probe (let ((max-lisp-eval-depth 100))
+            (defun zz-many-deeper (n) (always (zz-many-deeper (1+ n))))
+            (car (condition-case e (zz-many-deeper 0) (error e)))))
+"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}

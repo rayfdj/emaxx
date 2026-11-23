@@ -34,7 +34,7 @@ A round's review answers whether the round cheats or breaks something; it does
 not survey the neighbourhood of the change. Current user instructions take
 precedence over this plan as over everything here.
 
-### M2: structure and performance — 1 of 30 done
+### M2: structure and performance — 2 of 30 done
 
 **Baseline of 23 November 2026**, on `394d57de` (round 366's source) under
 Rust 1.100.0, with GNU 30.2 on this host as the oracle.
@@ -84,6 +84,31 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   than GNU's, but the first `char-from-name` still costs 106M more: the
   excess is in what the first call does once (the character-name
   property table's load and decoding), not in the table's loop.
+- **What the three workloads nearest the bound are made of** (23
+  November, the suite's own loops as probes `byte-calls', `conses' and
+  `conses-nogc').  Byte-code calls: 463 instructions an iteration in the
+  profile-guided build against GNU's 468, so its time ratio of 0.986 is
+  parity and a bound under 1.03 on a noisy host needs about 30 fewer.
+  Cons allocation: in the suite's timed samples GNU collects nothing and
+  Emaxx collects three times (0.035 s of its 0.206 s; GNU's body takes
+  0.211 s).  GNU's heap still holds the previous sample's list of two
+  million conses when the next begins (`heap_before' reads 2,016,296
+  conses after the explicit collection; nothing in the suite's Lisp
+  refers to the list by then, so the likely holder is a word left in
+  GNU's C stack, which was not traced further), so with
+  `gc-cons-percentage' 1.0 its threshold is past what the sample
+  allocates; Emaxx frees the list and starts each sample from a small
+  heap.  The two collect alike from equal heaps (three
+  times each in the warmup sample).  The mutator alone runs 2,174
+  instructions an iteration against GNU's 2,110: `setq', `while' and
+  `progn' with what they inline are where Emaxx spends more.  Undo: the
+  body takes 0.251 s against 0.239 s with four collections each (0.062 s
+  against 0.076 s), so the mutator is 1.16 of GNU's.
+- **Done: D125** (round 368).  Both of its measured cases are at or
+  under GNU's time on the profile-guided build: four `(ignore i)' forms
+  in a source loop 0.98 of GNU's (1.37 when recorded), a print to an
+  interpreted one-argument function 0.71 (1.08).  The loop's
+  instruction count is still above GNU's, 2,712 against 2,218.
 
 ## Where things stand — 15 October 2026
 
@@ -19074,13 +19099,75 @@ setup_process_coding_systems's check now refuses). A 13-form
   that unwraps the result Fmemq's walk now has), dropped results that
   are an unset variable read as nil, and src/anti_cheat.rs for two
   renamed calls and an import.
-- **Round 368 is unfinished: its draft is packaged in `wip/r368/`, and
-  `src/` is round 366's.**  The subject is the first of M2's call paths
-  (D125): a native-compiled function that takes its arguments as a
-  vector (MANY, a lexical function with `&rest') called as funcall_subr
-  calls it.  `wip/r368/impl.patch` is the change as a diff against round
-  366 and `wip/r368/README.md` its state.  Nothing under `wip/` is built
-  or tested by the gate.
+- **Round 368: a native function that takes a vector is called as
+  funcall_subr calls it (M2, D125).**  A native-compiled function with
+  lexical binding and `&rest' is a subr whose maximum is MANY
+  (comp.c:make_subr): eval_sub's SUBRP branch checks its minimum before
+  any argument is evaluated, evaluates the counted arguments into a
+  vector that stops where the list ends and calls `aMANY (argnum,
+  vals)'; Ffuncall, Fapply and Bcall reach it through funcall_subr.
+  `ignore', `always', `apply-partially', `error' and `user-error' are
+  such functions in the image.  Emaxx called them through the general
+  native entry (an invocation record, the trampoline, an encoded copy of
+  the arguments) and evaluated their arguments as apply_lambda does,
+  where a fixed-arity function already took a register call.  Now the
+  function object says whether it takes a vector (`many_registers', in
+  Lisp_Subr's padding beside the register counts); the register call
+  passes a count and the arguments' address (`call_many_registers', the
+  same escape record as `call_fixed_registers' through `register_call!',
+  the frame set up once for both by `invoke_registers' and
+  `invoke_nested' over the `RegisterCall' trait); `call_fixed_function'
+  hands such a function to `call_many_vector', nested in the active call
+  or outermost; a caller that holds the arguments in a shared slice (the
+  byte-code stack, a Rust caller's array) passes a copy of at most eight
+  beside its frame (`ManyArguments'), and a longer call takes the
+  general entry; native code's own funcall calls the target with its
+  own argument vector (`RegisteredNative::admits_many').  eval_sub has
+  the branch as `eval_many_native', which gives the function its own
+  `vals' and records the same array in the frame, and
+  `eval_call_rooted's vector past eight arguments stops where the list
+  ends for a lexical native function as for a subr.  A call the
+  debugger is to be entered at (debug_on_next_call) takes the general
+  call, which reads the function cell after the debugger as eval_sub
+  does.  The evaluator's helpers take the form as the word it is
+  (`eval_sub', `eval_cons', `eval_cons_call' and the inlined call
+  helpers; the out-of-line entries get a copy's address): with the form
+  by reference the compiler had been promoting eval_sub's argument to a
+  register for every caller, stopped doing so with this round's code,
+  and the interpreter loops rose by 3% (3,180 to 3,291 instructions an
+  iteration, 4,403 to 4,520) until the signature said it.  Where GNU
+  would call the function with fewer arguments than its minimum (a list
+  cut short below it while an argument evaluates; the function then
+  reads a slot nothing set), Emaxx signals
+  `wrong-number-of-arguments' from the general entry.  Measured on the
+  release build (`tools/perf/cg-table.py'): an interpreted loop of four
+  `(ignore i)' forms 2,762 instructions an iteration, from 4,486 (GNU
+  2,218); the other probes and the guards as they were (a character
+  printed to an interpreted function 2,292, `mapc' of an interpreted
+  closure 1,452, byte-code recursion 367, a byte-compiled callback 458,
+  the interpreter loops 3,181 and 4,403, the call loop 380, `get' 171).
+  By the clock (least CPU time of nine runs, the release build) the
+  `ignore' loop takes 1.03 of GNU's time, from 1.75, and a character
+  printed to an interpreted function 0.72.  On the profile-guided
+  build the loop takes 0.98 of GNU's time (0.356 s against 0.363 s for
+  three million iterations; 1.55 before the round), the print 0.71 and
+  `mapc' of an interpreted closure 0.70; the loop still runs 2,712
+  instructions an iteration to GNU's 2,218.
+  tests/cli_parity.rs's
+  `a_native_function_that_takes_a_vector_is_called_as_funcall_subr_calls_it'
+  runs 54 forms in both editors: every count through eval, funcall,
+  apply and byte code, lists cut and grown during evaluation (two of
+  which differed before the round), collections, signals and throws,
+  the frames a handler sees, the debugger at the call, a thread's first
+  call and the depth limit.  The independent review (the one question:
+  does the round cheat or break something) found no cheat and no memory
+  or collector fault, and the debugger regression above, fixed before
+  the commit.  Validation (gate
+  profile, one test thread a process): the grouped gate 3,530 passed, 0
+  failed, 2 ignored; cli 30, cli_parity 173, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean; the round audit reports no hard finding.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -22281,6 +22368,21 @@ ert-tests as a whole 26,307 ms against 27,211.
   43594994208) passed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 368's review), outside the round
+  and in no milestone.**  One line each, as the rules of
+  docs/milestones.md leave them: a fixed-arity native function's cell
+  is read before the debugger entered at the call (debug_on_next_call),
+  so a definition the debugger changes is not the one called
+  (`flatten-tree', `number-sequence'); through an alias head or with
+  the profiler on, a call of at most eight arguments to a lexical
+  native function pads a list cut short with nil, or signals `listp' on
+  a dotted cut, where GNU's vector stops; the unevaluated frame of
+  `(always 1 . 2)' shows `((1 . 2))' for GNU's `(1 . 2)';
+  `backtrace-frames' arguments of an unevaluated frame are not `eq' to
+  the form's cdr, and the frame's function follows a `setcar' of the
+  form's head where GNU keeps the original; the exit debugger sees an
+  `apply' frame after a one-element spread with the list where GNU
+  shows the element (`Fapply' stores it into its own argument array).
 - **`nil' and `t' are symbols to eval_sub (round 366's review).**  GNU's
   eval_sub does `Fassq (form, Vinternal_interpreter_environment)' for
   any symbol form, `nil' and `t' among them, and evaluates a fixed-arity
