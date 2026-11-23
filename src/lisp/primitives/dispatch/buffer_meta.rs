@@ -1,6 +1,14 @@
 use super::*;
 use crate::lisp::types::Kind;
 
+/// buffer.c:Fcurrent_buffer, a function of the interpreter, read through
+/// a shared reference, that the dispatch arm and native code's entry
+/// (native_comp/runtime.rs) both call: a copy of the current buffer's
+/// handle, with nothing signalled, run or made.
+pub(crate) fn current_buffer(interp: &Interpreter) -> Value {
+    Value::Buffer(interp.buffer)
+}
+
 /// One `compare-buffer-substrings' operand: its buffer and ordered bounds,
 /// nil bounds meaning the buffer's accessible region. editfns.c signals
 /// `args-out-of-range' with the original bounds for a range outside it.
@@ -228,7 +236,7 @@ define_dispatch!(
                     args.get(4).copied().unwrap_or(Value::Nil),
                 )?))
             }
-            "current-buffer" => Ok(Value::Buffer(interp.buffer)),
+            "current-buffer" => Ok(current_buffer(interp)),
             "get-buffer" => {
                 need_args(name, args, 1)?;
                 Ok(interp

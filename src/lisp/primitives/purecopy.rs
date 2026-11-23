@@ -269,6 +269,18 @@ fn purecopy_inner(
     hash_cons_insert(interp, copied, env)
 }
 
+/// alloc.c's Vpurify_flag, `purify-flag', read as Fpurecopy reads it
+/// first: its value, nil while it is void.  A function of the
+/// interpreter, read through a shared reference, that `purecopy_value'
+/// and native code's entry for `purecopy' (native_comp/runtime.rs) both
+/// call.  The read signals nothing, runs no Lisp and makes no Lisp
+/// object.
+pub(crate) fn purify_flag(interp: &Interpreter) -> Value {
+    interp
+        .symbol_value_key(cached_symbol!("purify-flag"))
+        .unwrap_or(Value::Nil)
+}
+
 /// alloc.c:Fpurecopy.  GNU enables this while constructing the dumped Lisp
 /// image and optionally supplies an `equal` hash table to deduplicate objects.
 pub(crate) fn purecopy_value(
@@ -276,10 +288,7 @@ pub(crate) fn purecopy_value(
     value: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let purify = interp
-        .symbol_value_key(cached_symbol!("purify-flag"))
-        .unwrap_or(Value::Nil);
-    if purify.is_nil() {
+    if purify_flag(interp).is_nil() {
         return Ok(*value);
     }
     // GNU reads Vpurify_flag again at each hash lookup and insertion. A

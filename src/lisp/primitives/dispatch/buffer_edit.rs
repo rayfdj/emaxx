@@ -3823,13 +3823,74 @@ pub(super) fn direct_buffer_substring_no_properties(
     buffer_substring_named(interp, "buffer-substring-no-properties", args, env)
 }
 
+// editfns.c's readers of the current buffer's point and restriction,
+// each a function of the interpreter, read through a shared reference,
+// that the subr's direct entry below and native code's entry
+// (native_comp/runtime.rs) both call.  Each reads the buffer's fields,
+// and its text for bolp and eolp, under a shared borrow it drops before
+// it returns; none signals, runs Lisp or makes a Lisp object.  A
+// position is at most the text's length plus one, far below
+// most-positive-fixnum, so `Value::Integer' (make_int) makes a fixnum of
+// it, as the DEFUN's XSETFASTINT does.
+
+/// editfns.c:Fpoint.
+pub(crate) fn point(interp: &Interpreter) -> Value {
+    Value::Integer(interp.buffer.borrow().point() as i64)
+}
+
+/// editfns.c:Fpoint_min.
+pub(crate) fn point_min(interp: &Interpreter) -> Value {
+    Value::Integer(interp.buffer.borrow().point_min() as i64)
+}
+
+/// editfns.c:Fpoint_max.
+pub(crate) fn point_max(interp: &Interpreter) -> Value {
+    Value::Integer(interp.buffer.borrow().point_max() as i64)
+}
+
+/// editfns.c:Fbolp.
+pub(crate) fn bolp(interp: &Interpreter) -> Value {
+    if interp.buffer.borrow().bolp() {
+        Value::T
+    } else {
+        Value::Nil
+    }
+}
+
+/// editfns.c:Feolp.
+pub(crate) fn eolp(interp: &Interpreter) -> Value {
+    if interp.buffer.borrow().eolp() {
+        Value::T
+    } else {
+        Value::Nil
+    }
+}
+
+/// editfns.c:Fbobp.
+pub(crate) fn bobp(interp: &Interpreter) -> Value {
+    if interp.buffer.borrow().bobp() {
+        Value::T
+    } else {
+        Value::Nil
+    }
+}
+
+/// editfns.c:Feobp.
+pub(crate) fn eobp(interp: &Interpreter) -> Value {
+    if interp.buffer.borrow().eobp() {
+        Value::T
+    } else {
+        Value::Nil
+    }
+}
+
 /// The `point' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_point(
     interp: &mut Interpreter,
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    Ok(Value::Integer(interp.buffer.borrow().point() as i64))
+    Ok(point(interp))
 }
 
 /// The `point-min' primitive, callable directly (a subr's function pointer).
@@ -3838,7 +3899,7 @@ pub(super) fn direct_point_min(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    Ok(Value::Integer(interp.buffer.borrow().point_min() as i64))
+    Ok(point_min(interp))
 }
 
 /// The `point-max' primitive, callable directly (a subr's function pointer).
@@ -3847,7 +3908,7 @@ pub(super) fn direct_point_max(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    Ok(Value::Integer(interp.buffer.borrow().point_max() as i64))
+    Ok(point_max(interp))
 }
 
 /// The `re-search-forward' primitive, callable directly (a subr's function pointer).
@@ -3883,11 +3944,7 @@ pub(super) fn direct_bolp(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    Ok(if interp.buffer.borrow().bolp() {
-        Value::T
-    } else {
-        Value::Nil
-    })
+    Ok(bolp(interp))
 }
 
 /// The `eolp' primitive, callable directly (a subr's function pointer).
@@ -3896,11 +3953,7 @@ pub(super) fn direct_eolp(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    Ok(if interp.buffer.borrow().eolp() {
-        Value::T
-    } else {
-        Value::Nil
-    })
+    Ok(eolp(interp))
 }
 
 /// The `bobp' primitive, callable directly (a subr's function pointer).
@@ -3909,11 +3962,7 @@ pub(super) fn direct_bobp(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    Ok(if interp.buffer.borrow().bobp() {
-        Value::T
-    } else {
-        Value::Nil
-    })
+    Ok(bobp(interp))
 }
 
 /// The `eobp' primitive, callable directly (a subr's function pointer).
@@ -3922,9 +3971,5 @@ pub(super) fn direct_eobp(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    Ok(if interp.buffer.borrow().eobp() {
-        Value::T
-    } else {
-        Value::Nil
-    })
+    Ok(eobp(interp))
 }

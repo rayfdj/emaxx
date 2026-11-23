@@ -8296,15 +8296,32 @@ define_dispatch!(
     }
 );
 
+// editfns.c:Ffollowing_char and Fprevious_char as functions of the
+// interpreter, read through a shared reference, that the direct entries
+// below and native code's entries (native_comp/runtime.rs) both call.
+// Each reads the current buffer's point, restriction and one character
+// under shared borrows; a read of multibyte text may fill the text's
+// own caches of characters and positions, which are host memory, and
+// none signals, runs Lisp or makes a Lisp object.  A character code is
+// at most MAX_CHAR, so `Value::Integer' makes a fixnum of it.
+
+/// editfns.c:Ffollowing_char.
+pub(crate) fn following_char(interp: &Interpreter) -> Value {
+    Value::Integer(crate::lisp::primitives::following_char_code(interp))
+}
+
+/// editfns.c:Fprevious_char, `preceding-char'.
+pub(crate) fn preceding_char(interp: &Interpreter) -> Value {
+    Value::Integer(crate::lisp::primitives::preceding_char_code(interp))
+}
+
 /// The `preceding-char' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_preceding_char(
     interp: &mut Interpreter,
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    Ok(Value::Integer(
-        crate::lisp::primitives::preceding_char_code(interp),
-    ))
+    Ok(preceding_char(interp))
 }
 
 /// The `following-char' primitive, callable directly (a subr's function
@@ -8314,9 +8331,7 @@ pub(super) fn direct_following_char(
     _args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    Ok(Value::Integer(
-        crate::lisp::primitives::following_char_code(interp),
-    ))
+    Ok(following_char(interp))
 }
 
 /// The echo area's Lisp value, a root of every collection (xdisp.c
