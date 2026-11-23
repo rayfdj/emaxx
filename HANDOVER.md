@@ -19009,6 +19009,13 @@ setup_process_coding_systems's check now refuses). A 13-form
   that unwraps the result Fmemq's walk now has), dropped results that
   are an unset variable read as nil, and src/anti_cheat.rs for two
   renamed calls and an import.
+- **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
+  `src/` is round 366's.**  The subject is the finding below that `nil'
+  and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
+  as a diff against round 366 and `wip/r367/README.md` says what is
+  known of it: its author was stopped before reporting, and nothing of
+  it has been reviewed.  Nothing under `wip/` is built or tested by the
+  gate.
 - **The frozen run's timings at round 97, and where the per-file cost
   goes.** Round 97's frozen run (gate profile; summary.json's
   `timings') puts the 519 files' summed wall time at 1.052 times GNU's
@@ -22190,6 +22197,16 @@ ert-tests as a whole 26,307 ms against 27,211.
   against 10.6 s), tramp-tests (15.2 against 13.2), simple-tests (3.31
   against 2.30), semantic-utest-ia (2.84 against 2.00), process-tests
   (2.27 against 1.56) and mule-tests (1.99 against 1.36).
+
+**On `dfb49da`** (round 366): the frozen run (run 43594991906) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 55.1 s against 48.0 s (1.149), test bodies 230.7 s
+  against 224.1 s (1.029), in all 1.050, on a fast runner (GNU's suite
+  took 272 s).  The widest body gaps are tramp-tests (15.2 s against
+  13.7 s), icalendar-tests (1.41 against 0.27), comp-tests (11.9 against
+  11.2), semantic-utest-ia (2.23 against 1.52), mule-tests (1.82 against
+  1.17) and process-tests (2.27 against 1.80).  The Rust gate (run
+  43594994208) passed.
 
 **Findings recorded, not fixed:**
 - **`nil' and `t' are symbols to eval_sub (round 366's review).**  GNU's

@@ -1,0 +1,33 @@
+wip: `nil' and `t' are symbols to eval_sub
+
+GNU's eval_sub does `Fassq (form, Vinternal_interpreter_environment)'
+for any symbol form, `nil' and `t' among them, before Fsymbol_value;
+Fsetq asks the same Fassq before Fset; funcall_lambda and
+internal_lisp_condition_case cons a binding of whatever symbol they are
+given onto a lexical environment; and a subr of fixed arity called from
+a form has every position up to its maximum evaluated as `eval_sub (Fcar
+(args_left))', so an omitted argument is a reference to `nil'.  Emaxx
+returned the two symbols unevaluated, its Fassq never found a binding
+of them (their words, 0 and 48, are no cell's address), and omitted
+arguments were nil.
+
+- eval: a `nil' or `t' form is looked up in the interpreter environment
+  when there is one (`lookup_nil_or_t'), else it is itself; a symbol
+  with position of either likewise.  The lookup is Fassq's walk, so an
+  environment that is no list or is circular signals for them too.
+- Fassq by the symbol's own word: `assq_binding' finds the built-in
+  symbols' bindings, and the walks take the bare symbol as a value.
+- setq: the lexical binding of `nil' or `t' is assigned; without one
+  Fset signals `setting-constant' as before.
+- Omitted arguments: a C subr of fixed arity, a native-compiled function
+  of at most eight arguments (the register call and the general call,
+  an alias or a function object in the head) evaluate `nil' once for
+  the positions past the list's end; MANY (a native-compiled function's
+  too) stops at the list's end; `funcall', `apply' and byte code
+  evaluate nothing, as funcall_subr pads.
+- let, let*: an element `(VAR)' evaluates `nil' (`eval_sub (Fcar (Fcdr
+  (elt)))'); a bare VAR is Qnil.  if: Fcar of an ended list likewise.
+
+Instructions an iteration (callgrind): the lexical interpreted loop
+4401 (4402 before), the dynamic one 3177 (3181), the byte-code call
+loop 380 and the get loop 171, both unchanged.
