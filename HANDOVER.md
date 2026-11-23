@@ -139,6 +139,11 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   probe's loop against GNU's 73.0 (126.1 before).  The general entry,
   which every other subr still takes, pays about 50 more than GNU's
   call; the plan's later stages take it down by shape.
+- **Done: D9** (round 376).  A one-argument recursion of dynamic-binding
+  byte code costs 634.0 instructions a level against GNU's 636.2 (693.0
+  before); the lexical one 360.1 against 314.9, and the suite's
+  byte-code-calls loop 447.1 against 467.8 (B4's bound is a timing and
+  is measured with the suite).
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -19764,6 +19769,88 @@ setup_process_coding_systems's check now refuses). A 13-form
   named an id), two results dropped where the old lines dropped them
   (reformatted), and 5,236 changed lines with five tests and 72
   assertions added.
+- **Round 376: a byte-code call's frame record keeps what GNU's frame
+  cannot give (M2, D9 done; B4 not yet measured).**  A function in byte
+  code that calls another in byte code pushes, besides the 4-word
+  frame header on the byte-code stack (bytecode.c's `bc_frame'), a
+  record of the caller's state on the thread's list of suspended frames
+  (`BcFrame').  Two of its nine words held what GNU derives, and a
+  dynamic-binding function's return ran twice.  Measured before the
+  round (instructions a level of the probe's recursion, GNU in
+  parentheses): `lex-rec' 371.1 (314.9), `dyn-rec' 693.0 (636.2),
+  `byte-calls' 460.1 (467.8); a lexical call and return 295 against
+  GNU's 180, of which the return 113 against 36.  **The callee's
+  backtrace record is the innermost one**, as Breturn's `specpdl_ptr -
+  1' is: the record no longer keeps its index, which the fast return,
+  the full return (with debug-on-exit's debugger called first), the
+  error path and the unwinding leave all read as the backtrace's length
+  less one, taken before any unwind form runs; in the gate's build,
+  where assertions are on, the record still keeps the index and each
+  leave asserts the two agree, so every library test checks the claim.
+  **A signaling op's records are counted per activation only**: a byte
+  op that signals records itself in the backtrace (record_in_backtrace)
+  and the activation counts it until a handler in the frame catches the
+  signal or the signal leaves the frame, both of which pop those
+  records first; the count is therefore 0 at every call and return,
+  which the record saved and restored, and which debug assertions now
+  state instead.  **A dynamic-binding function's return undoes its
+  argument bindings in one pass**: funcall_lambda's unbind_to of them
+  ran as one call to `unbind_plain' a binding followed by the whole
+  return a second time; one out-of-line loop now undoes the bindings
+  that run nothing (a plain value's restore, a saved current buffer's)
+  and the return goes on, the full path taking over, as before, at the
+  first binding that would run something (a formal given a watcher or
+  a buffer-local value during the call).  **After**: `dyn-rec' 634.0
+  (GNU 636.2), `lex-rec' 360.1, `byte-calls' 447.1, the call loop 370
+  (381 before), `mapc-bc' 414.7 (413.7), `get' 165, the interpreter's
+  loops 3,181 and 4,411, the window accessors 319.9 (323.3), the native
+  calls unchanged.  The lexical interpreter loop read 4,403 in the
+  entries of rounds 369 to 371 and reads 4,411 since: a rebuild of
+  round 371's source reads 4,411 too, with the same profile function
+  by function, so the 4,403 was that build's, not the code's.  Two
+  tests are new: dynamic-binding byte code called from byte code
+  (formals watched from the start or from inside the call, a
+  buffer-local value made during the call, a throw and a signal from
+  200 levels down) and the backtrace seen from byte code (after three
+  byte ops' signals caught in the frame, from a `handler-bind' handler
+  with the `aref' record innermost, from an unwind form of a frame a
+  signal leaves, and the debugger's value returned on the exit of a
+  frame `backtrace-debug' marked), each GNU's output; a third is the
+  review's (below).  The rest of the
+  plan (docs/plans/d9-bytecode-frames.md: the header's saved pc as the
+  test for a byte-code caller, GNU's saved top, handlers that record
+  their frame) is for B4 and D17 and is not done.
+  The independent review (the one question: does the round cheat or
+  break something) read every place a frame is left, every backtrace
+  push of the byte-code loop, the native runtime's non-local exits and
+  the thread exchange, and probed native callbacks that throw or
+  signal, `handler-bind' handlers that throw or call byte code, the
+  debugger on a signal and on exit throwing within the frame and past
+  it, `max-lisp-eval-depth', unwind forms that signal, a quit, threads,
+  `backtrace-frame', `backtrace-eval', `backtrace--locals', the profiler
+  and `defvaralias', `kill-buffer' and `set-buffer' inside dynamic
+  callees (GNU, the build before and this one alike).  It found one
+  break, fixed in the round: when undoing a byte-code callee's bindings
+  at its return signalled or threw (a formal given a watcher during the
+  call, which then refused the `unlet'), Breturn put the frame back and
+  the error path left it a second time, which with the record now taken
+  as the innermost dropped the caller's.  The second leave was older
+  than the round: before it, it ran Ffuncall's depth decrement twice,
+  so ten such signals in one session aborted the process (`Ffuncall
+  depth is balanced').  Breturn now finishes leaving the callee (its
+  stack frame, program and handlers) and the signal or throw comes out
+  in the caller, as it comes out of Ffuncall into the Bcall in GNU; a
+  third new test covers the signal, the throw, the quiet return and
+  twelve signals in a row, which the build before aborts on.
+  Validation of the round's commit (gate profile, one test thread a
+  process): the grouped gate 3,551 passed, 0 failed, 2 ignored (three
+  library tests more); cli 30, cli_parity 174, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists one
+  result dropped, the release build's `let _ = record' of the frame's
+  check, which has nothing to check there, and 333 changed lines with
+  three tests and thirteen assertions added, none removed.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23063,6 +23150,15 @@ ert-tests as a whole 26,307 ms against 27,211.
   the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 376 and its plan), outside the
+  round and in no milestone.**  One line each: debug-on-exit of a
+  dynamic-binding byte-code function called from byte code sees its
+  argument still bound (GNU's funcall_lambda unbinds before the Bcall
+  arm calls the debugger: `((exit global))' in GNU, `((exit bound))'
+  in Emaxx); the exit debugger runs with `lisp-eval-depth' one higher
+  than GNU's; a frame that returns with a handler still pushed (a
+  hand-made `make-byte-code') drops the handler without popping its
+  handler-bind registry entry.
 - **Found after the scope lock (round 375 and its review), outside the
   round.**  One line each: with `minibuffer-setup-hook' deleting
   `(minibuffer-selected-window)' and collecting, the keys typed to M-x

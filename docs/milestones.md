@@ -43,7 +43,7 @@ unfinished work pushed as a packaged draft (wip/r367).
 
 This document.
 
-## M2. Structure and performance (30 items; 2 done)
+## M2. Structure and performance (30 items; 3 done)
 
 Exit test: the remaining representation, collector and ownership engineering
 is done, the recorded per-call excesses are removed where GNU does less, and
@@ -105,6 +105,7 @@ a diagnostic run of the locked suite on the profile-guided build.
   against 73 for the probe; the general entry is unchanged).
 - D9: Dynamic-binding byte-code call from byte code ~80 instructions over GNU
   (rounds 289, 295)
+  **Done** (round 376: 634.0 against 636.2 a level of the recursion).
 - D13: looking-at ~250 instructions over GNU around the match (rounds 174-176,
   296)
 - D14: make-symbol ~690 instructions (round 173)
