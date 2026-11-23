@@ -2600,6 +2600,9 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
             .id()
     });
     assert_ne!(selected, minibuffer);
+    // The dumped selected window has a sequence number and a use time.
+    let dumped = crate::lisp::primitives::WindowRef::from_value(&selected).expect("a window");
+    assert!(dumped.sequence_number() > 0 && dumped.use_time() > 0);
     let bytes = dump(
         &mut source,
         vec![(
@@ -2670,7 +2673,10 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
         let handle = crate::lisp::primitives::WindowRef::from_value(&dead).expect("a window");
         assert!(handle.contents().is_nil());
         assert!(!handle.is_valid() && !handle.is_leaf() && !handle.is_internal());
-        assert!(!handle.mini() && !handle.horizontal());
+        assert!(!handle.mini() && !handle.horizontal() && !handle.cursor_off_p());
+        // No sequence number and no use time: the dumping process's are
+        // not the nilled window's.
+        assert_eq!((handle.sequence_number(), handle.use_time()), (0, 0));
         for (index, slot) in handle.slots().into_iter().enumerate() {
             assert!(slot.is_nil(), "slot {index} of a nilled window");
         }

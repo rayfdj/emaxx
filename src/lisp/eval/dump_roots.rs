@@ -302,10 +302,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "window.c:init_window_once_for_pdumper resets minibuf_selected_window",
     ),
     (
-        "window_cursor_visibility",
-        "window state re-created with the initial frame",
-    ),
-    (
         "old_selected_window_id",
         "window.c:init_window_once_for_pdumper resets old_selected_window",
     ),
@@ -450,10 +446,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     (
         "window_sequence_number",
-        "window.c's PDUMPER_IGNORE (sequence_number)",
-    ),
-    (
-        "window_sequence_numbers",
         "window.c's PDUMPER_IGNORE (sequence_number)",
     ),
     ("lossage_size", "carried in the remembered scalars"),

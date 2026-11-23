@@ -36814,6 +36814,122 @@ fn window_contents_and_bits_say_what_a_window_is() {
 }
 
 #[test]
+fn window_sequence_number_use_time_and_cursor_bit_are_the_windows_own() {
+    // window.h: sequence_number, use_time and cursor_off_p are fields of
+    // the window.  print.c prints the first, select_window and
+    // Fwindow_bump_use_time store the second, Finternal_show_cursor the
+    // third; make_parent_window's copy has the window's use time and a
+    // number of its own, and a configuration restores none of them.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"))
+    };
+    let handle = |value: Value| WindowRef::from_value(&value).expect("a window");
+    let text = |value: Value| string_like(&value).expect("a string").text;
+
+    let top = handle(interp.selected_window_value());
+    let mini = handle(interp.minibuffer_window_value());
+    // The frame's two windows are numbered as they were made.
+    assert!(top.sequence_number() > 0);
+    assert_eq!(mini.sequence_number(), top.sequence_number() + 1);
+    assert_eq!(
+        text(run(&mut interp, "(prin1-to-string (selected-window))")),
+        format!(
+            "#<window {} on {}>",
+            top.sequence_number(),
+            text(run(&mut interp, "(buffer-name)"))
+        )
+    );
+    // The selected window has the last use time given.
+    let selected_time = top.use_time();
+    assert!(selected_time > 0);
+    assert_eq!(
+        run(&mut interp, "(window-use-time)"),
+        Value::Integer(selected_time)
+    );
+
+    // A split: the parent is numbered first (make_parent_window's
+    // `++sequence_number') and has the window's use time, the new leaf
+    // is numbered next and has none.
+    let last = interp.window_sequence_number;
+    let bottom = handle(run(&mut interp, "(setq wn-bottom (split-window))"));
+    let column = handle(run(&mut interp, "(window-parent)"));
+    assert_eq!(column.sequence_number(), last + 1);
+    assert_eq!(bottom.sequence_number(), last + 2);
+    assert_eq!(interp.window_sequence_number, last + 2);
+    assert_eq!(column.use_time(), selected_time);
+    assert_eq!((top.use_time(), bottom.use_time()), (selected_time, 0));
+    assert_eq!(
+        text(run(&mut interp, "(prin1-to-string (window-parent))")),
+        format!("#<window {}>", column.sequence_number())
+    );
+
+    // Finternal_show_cursor turns one window's cursor off.
+    run(&mut interp, "(internal-show-cursor wn-bottom nil)");
+    assert!(bottom.cursor_off_p() && !top.cursor_off_p() && !column.cursor_off_p());
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (internal-show-cursor-p wn-bottom) (internal-show-cursor-p))"
+        ),
+        Value::list([Value::Nil, Value::T])
+    );
+
+    // select_window stores the next use time in the window selected;
+    // Fwindow_bump_use_time gives a window the selected one's and the
+    // selected one the next.
+    run(&mut interp, "(setq wn-all (current-window-configuration))");
+    run(&mut interp, "(select-window wn-bottom)");
+    assert_eq!(bottom.use_time(), selected_time + 1);
+    assert_eq!(top.use_time(), selected_time);
+    assert_eq!(
+        run(&mut interp, "(window-bump-use-time (frame-first-window))"),
+        Value::Integer(selected_time + 1)
+    );
+    assert_eq!(
+        (top.use_time(), bottom.use_time()),
+        (selected_time + 1, selected_time + 2)
+    );
+
+    // A copy of the image has the windows' numbers, use times and
+    // cursor bits in its own windows.
+    let copy = interp.deep_clone_image();
+    let copied = copy.window_ref(bottom.id()).expect("the copied window");
+    assert_ne!(copied.value(), bottom.value());
+    assert_eq!(
+        (
+            copied.sequence_number(),
+            copied.use_time(),
+            copied.cursor_off_p()
+        ),
+        (bottom.sequence_number(), selected_time + 2, true)
+    );
+    drop(copy);
+    interp.select_symbol_owner();
+
+    // Fset_window_configuration leaves the three alone in a window it
+    // deletes and in one it revives; the window it selects gets the next
+    // use time.
+    run(&mut interp, "(delete-other-windows wn-bottom)");
+    run(&mut interp, "(set-window-configuration wn-all)");
+    assert!(top.is_leaf() && bottom.is_leaf() && column.is_internal());
+    assert_eq!(column.sequence_number(), last + 1);
+    assert_eq!(bottom.sequence_number(), last + 2);
+    assert_eq!(column.use_time(), selected_time);
+    assert_eq!(bottom.use_time(), selected_time + 2);
+    assert_eq!(top.use_time(), selected_time + 3);
+    assert!(bottom.cursor_off_p() && !top.cursor_off_p());
+    assert_eq!(interp.window_sequence_number, last + 2);
+}
+
+#[test]
 fn a_deleted_window_keeps_its_buffer_for_a_later_configuration() {
     // window.c:delete_all_child_windows leaves a leaf's buffer in its
     // combination limit, and any later Fset_window_configuration that

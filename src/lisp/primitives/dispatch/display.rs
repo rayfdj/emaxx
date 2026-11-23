@@ -3229,9 +3229,12 @@ fn make_parent_window(
     let original = interp.window_ref(window);
     let slots = original.map(WindowRef::slots).unwrap_or_default();
     let copy = interp.make_window(slots);
-    // The memcpy's contents and bits, which are no slots.
+    // The memcpy's contents, use time and bits, which are no slots; the
+    // copy has make_window's sequence number of its own (`p->sequence_number
+    // = ++sequence_number'), and its cursor is on, whatever the window's.
     if let Some(original) = original {
         copy.set_contents(original.contents());
+        copy.set_use_time(original.use_time());
         copy.set_mini(original.mini());
         copy.set_horizontal(original.horizontal());
     }

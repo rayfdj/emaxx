@@ -411,15 +411,16 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
     let header = object.0.as_ptr();
     // The real allocated header: lisp.h's PVEC_WINDOW, the Lisp words
     // first (the contents, then the slots) and the id, the owner and
-    // held count, and the bits in the three words after them.
+    // held count, the use time, the sequence number and the bits in the
+    // five words after them.
     unsafe {
         assert_eq!((*header).tag(), VectorTag::Window);
         assert_eq!(VectorTag::Window as usize, 11);
-        assert_eq!((*header).nbytes(), (1 + WINDOW_LISP_WORDS + 3) * WORD_SIZE);
+        assert_eq!((*header).nbytes(), (1 + WINDOW_LISP_WORDS + 5) * WORD_SIZE);
         assert_eq!((*header).size & PSEUDOVECTOR_SIZE_MASK, WINDOW_LISP_WORDS);
         assert_eq!(
             ((*header).size >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK,
-            3
+            5
         );
         assert!(value_of(header).eq_value(value));
         let words = header.cast::<usize>();
@@ -444,17 +445,28 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
         );
         window.set_contents(Value::Integer(7));
         assert_eq!(words.add(1).read(), Value::Integer(7).word());
-        // The bits are bytes of the word after the owner and held count.
+        // The use time and the sequence number make_window gave it are
+        // the two words after the owner and held count.
+        let integers = words.add(1 + WINDOW_LISP_WORDS + 2).cast::<i64>();
+        assert_eq!(integers.read(), 0);
+        window.set_use_time(41);
+        assert_eq!(integers.read(), 41);
+        assert_eq!(integers.add(1).read(), interpreter.window_sequence_number);
+        assert_eq!(integers.add(1).read(), window.sequence_number());
+        // The bits are bytes of the word after them.
         let bits = header
             .cast::<u8>()
-            .add((1 + WINDOW_LISP_WORDS + 2) * WORD_SIZE);
-        assert_eq!((bits.read(), bits.add(1).read()), (0, 0));
+            .add((1 + WINDOW_LISP_WORDS + 4) * WORD_SIZE);
+        let read = || [bits.read(), bits.add(1).read(), bits.add(2).read()];
+        assert_eq!(read(), [0, 0, 0]);
         window.set_mini(true);
-        assert_eq!((bits.read(), bits.add(1).read()), (1, 0));
+        assert_eq!(read(), [1, 0, 0]);
         window.set_horizontal(true);
-        assert_eq!((bits.read(), bits.add(1).read()), (1, 1));
+        assert_eq!(read(), [1, 1, 0]);
+        window.set_cursor_off_p(true);
+        assert_eq!(read(), [1, 1, 1]);
     }
-    assert_eq!(std::mem::size_of::<windows::WindowState>(), 448);
+    assert_eq!(std::mem::size_of::<windows::WindowState>(), 456);
     assert_eq!(value.word(), object.identity() | 5);
     assert!(matches!(value.kind(), Kind::Window(same) if same.ptr_eq(&object)));
     assert!(WindowRef::from_value(&value).is_some_and(|same| same.id() == window.id()));
@@ -612,6 +624,86 @@ fn window_traces_every_slot_and_is_reclaimed_from_the_registry_and_type_index() 
     for id in windows_before {
         assert!(interpreter.window_ref(id).is_some());
     }
+}
+
+#[test]
+fn window_number_use_time_and_cursor_bit_live_and_die_with_the_window() {
+    const HIDE: usize = 0x5555_5555_5555_5555;
+
+    // The window's address, its id and its sequence number.
+    type Hidden = (usize, u64, i64);
+
+    #[inline(never)]
+    fn allocate(
+        interpreter: &mut crate::lisp::eval::Interpreter,
+    ) -> (crate::lisp::alloc::RootedVec<Value>, Hidden) {
+        // window.c:make_window's `w->sequence_number = ++sequence_number',
+        // a use time of zero and the cursor on.
+        let last = interpreter.window_sequence_number;
+        let window = interpreter.make_window(Vec::new());
+        let id = window.id();
+        assert_eq!(window.sequence_number(), last + 1);
+        assert_eq!(interpreter.window_sequence_number, last + 1);
+        assert_eq!((window.use_time(), window.cursor_off_p()), (0, false));
+        assert_eq!(interpreter.window_use_time(id), 0);
+        assert!(interpreter.window_cursor_visible(id));
+        // select_window's use time and Finternal_show_cursor's bit are
+        // the window's own.
+        interpreter.record_window_selection(id);
+        interpreter.set_window_cursor_visible(id, false);
+        assert!(window.use_time() > 0 && window.cursor_off_p());
+        assert_eq!(interpreter.window_use_time(id), window.use_time());
+        assert!(!interpreter.window_cursor_visible(id));
+        let value = window.value();
+        let Kind::Window(object) = value.kind() else {
+            panic!("a window is a window object")
+        };
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        roots.push(value);
+        (
+            roots,
+            (object.identity() ^ HIDE, id, window.sequence_number()),
+        )
+    }
+    #[inline(never)]
+    fn is_live(hidden: usize) -> bool {
+        let address = hidden ^ HIDE;
+        matches!(unsafe { crate::lisp::alloc::mem_find(address) },
+            Some(crate::lisp::alloc::Found::Vectorlike(header))
+                if header as usize == address
+                    && unsafe { header_tag(header) } == VectorTag::Window)
+    }
+    #[inline(never)]
+    fn check(interpreter: &crate::lisp::eval::Interpreter, id: u64, number: i64) {
+        let window = interpreter.window_ref(id).expect("a live window");
+        assert_eq!(window.sequence_number(), number);
+        assert!(window.use_time() > 0 && window.cursor_off_p());
+        assert!(!interpreter.window_cursor_visible(id));
+    }
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let environment = Env::new();
+    let (roots, (window, id, number)) = allocate(&mut interpreter);
+    for _ in 0..2 {
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        assert!(is_live(window));
+        check(&interpreter, id, number);
+    }
+    drop(roots);
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+    assert!(!is_live(window), "unreachable window retained");
+    // Nothing is kept under the freed window's id: no use time, and no
+    // cursor turned off.
+    assert!(interpreter.window_ref(id).is_none());
+    assert_eq!(interpreter.window_use_time(id), 0);
+    assert!(interpreter.window_cursor_visible(id));
+    // The counter is the interpreter's: the next window has the next
+    // number, and starts as any new window does.
+    assert_eq!(interpreter.window_sequence_number, number);
+    let next = interpreter.make_window(Vec::new());
+    assert_eq!(next.sequence_number(), number + 1);
+    assert_eq!((next.use_time(), next.cursor_off_p()), (0, false));
 }
 
 #[test]

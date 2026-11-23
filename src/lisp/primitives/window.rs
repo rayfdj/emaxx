@@ -46,34 +46,33 @@ pub(crate) const WINDOW_PIXEL_TOP_SLOT: usize = 17;
 pub(crate) const WINDOW_NORMAL_WIDTH_SLOT: usize = 18;
 pub(crate) const WINDOW_NORMAL_HEIGHT_SLOT: usize = 19;
 pub(crate) const WINDOW_COMBINATION_LIMIT_SLOT: usize = 20;
-pub(crate) const WINDOW_USE_TIME_SLOT: usize = 21;
-pub(crate) const WINDOW_HSCROLL_SLOT: usize = 22;
-pub(crate) const WINDOW_MIN_HSCROLL_SLOT: usize = 23;
-pub(crate) const WINDOW_SUSPEND_AUTO_HSCROLL_SLOT: usize = 24;
-pub(crate) const WINDOW_OLD_BUFFER_SLOT: usize = 25;
-pub(crate) const WINDOW_POINT_SLOT: usize = 26;
-pub(crate) const WINDOW_FRAME_SLOT: usize = 27;
+pub(crate) const WINDOW_HSCROLL_SLOT: usize = 21;
+pub(crate) const WINDOW_MIN_HSCROLL_SLOT: usize = 22;
+pub(crate) const WINDOW_SUSPEND_AUTO_HSCROLL_SLOT: usize = 23;
+pub(crate) const WINDOW_OLD_BUFFER_SLOT: usize = 24;
+pub(crate) const WINDOW_POINT_SLOT: usize = 25;
+pub(crate) const WINDOW_FRAME_SLOT: usize = 26;
 /// window.c's change_stamp and old pixel and body sizes: the state
 /// window_change_record_windows recorded when window change functions
 /// last ran (absent, read as 0, for a window created since).
-pub(crate) const WINDOW_CHANGE_STAMP_SLOT: usize = 28;
-pub(crate) const WINDOW_OLD_PIXEL_WIDTH_SLOT: usize = 29;
-pub(crate) const WINDOW_OLD_PIXEL_HEIGHT_SLOT: usize = 30;
-pub(crate) const WINDOW_OLD_BODY_PIXEL_WIDTH_SLOT: usize = 31;
-pub(crate) const WINDOW_OLD_BODY_PIXEL_HEIGHT_SLOT: usize = 32;
+pub(crate) const WINDOW_CHANGE_STAMP_SLOT: usize = 27;
+pub(crate) const WINDOW_OLD_PIXEL_WIDTH_SLOT: usize = 28;
+pub(crate) const WINDOW_OLD_PIXEL_HEIGHT_SLOT: usize = 29;
+pub(crate) const WINDOW_OLD_BODY_PIXEL_WIDTH_SLOT: usize = 30;
+pub(crate) const WINDOW_OLD_BODY_PIXEL_HEIGHT_SLOT: usize = 31;
 /// window.h's base_line_number and base_line_pos for the mode line's
 /// %l, with the buffer and the state they were counted under (absent,
 /// read as no cache, for a window that has not shown a line number).
-pub(crate) const WINDOW_BASE_LINE_SLOT: usize = 33;
+pub(crate) const WINDOW_BASE_LINE_SLOT: usize = 32;
 /// window.h's window_end_pos: Z minus the end of the text the window's
 /// last redisplay showed (absent before one).
-pub(crate) const WINDOW_END_POS_SLOT: usize = 34;
+pub(crate) const WINDOW_END_POS_SLOT: usize = 33;
 /// window.h's force_start, optional_new_start and start_at_line_beg:
 /// how redisplay_window treats the window's start (absent, read as
 /// false, until a command or redisplay sets them).
-pub(crate) const WINDOW_FORCE_START_SLOT: usize = 35;
-pub(crate) const WINDOW_OPTIONAL_NEW_START_SLOT: usize = 36;
-pub(crate) const WINDOW_START_AT_LINE_BEG_SLOT: usize = 37;
+pub(crate) const WINDOW_FORCE_START_SLOT: usize = 34;
+pub(crate) const WINDOW_OPTIONAL_NEW_START_SLOT: usize = 35;
+pub(crate) const WINDOW_START_AT_LINE_BEG_SLOT: usize = 36;
 /// window.h's left_col, top_line, total_cols and total_lines: the
 /// window's edges and sizes in frame columns and lines.  window.c keeps
 /// them apart from the pixel geometry and assigns them on its own
@@ -81,36 +80,36 @@ pub(crate) const WINDOW_START_AT_LINE_BEG_SLOT: usize = 37;
 /// resize_frame_windows), so the two can differ: a batch frame's root
 /// keeps pixel_top 0 while window-resize-apply-total puts its top_line
 /// below the menu bar.  A text frame's character cell is one pixel.
-pub(crate) const WINDOW_LEFT_COL_SLOT: usize = 38;
-pub(crate) const WINDOW_TOP_LINE_SLOT: usize = 39;
-pub(crate) const WINDOW_TOTAL_COLS_SLOT: usize = 40;
-pub(crate) const WINDOW_TOTAL_LINES_SLOT: usize = 41;
+pub(crate) const WINDOW_LEFT_COL_SLOT: usize = 37;
+pub(crate) const WINDOW_TOP_LINE_SLOT: usize = 38;
+pub(crate) const WINDOW_TOTAL_COLS_SLOT: usize = 39;
+pub(crate) const WINDOW_TOTAL_LINES_SLOT: usize = 40;
 /// window.h's left_margin_cols and right_margin_cols (nil for none,
 /// GNU's 0).
-pub(crate) const WINDOW_LEFT_MARGIN_COLS_SLOT: usize = 42;
-pub(crate) const WINDOW_RIGHT_MARGIN_COLS_SLOT: usize = 43;
+pub(crate) const WINDOW_LEFT_MARGIN_COLS_SLOT: usize = 41;
+pub(crate) const WINDOW_RIGHT_MARGIN_COLS_SLOT: usize = 42;
 /// window.h's redisplay and update_mode_line: the window must be
 /// redisplayed (wset_redisplay), and its mode line with it
 /// (wset_update_mode_line), until mark_window_display_accurate_1 clears
 /// them (absent, read as false).
-pub(crate) const WINDOW_REDISPLAY_SLOT: usize = 44;
-pub(crate) const WINDOW_UPDATE_MODE_LINE_SLOT: usize = 45;
+pub(crate) const WINDOW_REDISPLAY_SLOT: usize = 43;
+pub(crate) const WINDOW_UPDATE_MODE_LINE_SLOT: usize = 44;
 /// window.h's last_had_star: whether the buffer was modified when the
 /// window's mode line was last displayed.
-pub(crate) const WINDOW_LAST_HAD_STAR_SLOT: usize = 46;
+pub(crate) const WINDOW_LAST_HAD_STAR_SLOT: usize = 45;
 /// window.h's column_number_displayed: the column a `%c' or `%C' of the
 /// mode line last showed (absent or nil for -1, none).
-pub(crate) const WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT: usize = 47;
+pub(crate) const WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT: usize = 46;
 /// window.h's last_point, last_modified and last_overlay_modified: point
 /// and the buffer's modification counts as the window's last complete
 /// redisplay left them (absent, read as 0).
-pub(crate) const WINDOW_LAST_POINT_SLOT: usize = 48;
-pub(crate) const WINDOW_LAST_MODIFIED_SLOT: usize = 49;
-pub(crate) const WINDOW_LAST_OVERLAY_MODIFIED_SLOT: usize = 50;
+pub(crate) const WINDOW_LAST_POINT_SLOT: usize = 47;
+pub(crate) const WINDOW_LAST_MODIFIED_SLOT: usize = 48;
+pub(crate) const WINDOW_LAST_OVERLAY_MODIFIED_SLOT: usize = 49;
 /// window.h's window_end_valid: the window's last redisplay completed
 /// (mark_window_display_accurate_1) and nothing since asked for its
 /// display to be made anew; try_cursor_movement needs it.
-pub(crate) const WINDOW_END_VALID_SLOT: usize = 51;
+pub(crate) const WINDOW_END_VALID_SLOT: usize = 50;
 
 /// `w->window_end_valid = false'.
 pub(crate) fn invalidate_window_end(interp: &mut Interpreter, window_id: u64) {
@@ -391,9 +390,9 @@ pub(crate) fn slot_marker_position(value: Option<&Value>) -> Option<usize> {
 /// A window object: the one handle a window's state is read and written
 /// through, whatever holds it (a value, a frame's field, an id in the
 /// registry).  The state behind it is the window object's own
-/// (alloc/vectors/windows.rs): window.h's contents and its mini and
-/// horizontal bits, and the Lisp words laid out by the `WINDOW_*_SLOT'
-/// constants above.
+/// (alloc/vectors/windows.rs): window.h's contents, its use_time and
+/// sequence_number, its mini, horizontal and cursor_off_p bits, and the
+/// Lisp words laid out by the `WINDOW_*_SLOT' constants above.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WindowRef(crate::lisp::types::WindowObjectRef);
 
@@ -493,6 +492,38 @@ impl WindowRef {
     #[inline]
     pub(crate) fn set_horizontal(self, horizontal: bool) {
         self.0.set_horizontal(horizontal);
+    }
+
+    /// w->use_time: how recently the window was selected, by
+    /// window.c's window_select_count.
+    #[inline]
+    pub(crate) fn use_time(self) -> i64 {
+        self.0.use_time()
+    }
+
+    /// `w->use_time = USE_TIME'.
+    #[inline]
+    pub(crate) fn set_use_time(self, use_time: i64) {
+        self.0.set_use_time(use_time);
+    }
+
+    /// w->sequence_number, which print.c prints: the number make_window
+    /// gave the window, 0 for one it did not make.
+    #[inline]
+    pub(crate) fn sequence_number(self) -> i64 {
+        self.0.sequence_number()
+    }
+
+    /// w->cursor_off_p: the cursor is logically off.
+    #[inline]
+    pub(crate) fn cursor_off_p(self) -> bool {
+        self.0.cursor_off_p()
+    }
+
+    /// `w->cursor_off_p = OFF'.
+    #[inline]
+    pub(crate) fn set_cursor_off_p(self, off: bool) {
+        self.0.set_cursor_off_p(off);
     }
 
     /// A copy of the slots the window holds, as make_parent_window's
@@ -606,7 +637,6 @@ pub(crate) fn window_record_slots(
         (WINDOW_PIXEL_TOP_SLOT, Value::Integer(top)),
         (WINDOW_NORMAL_WIDTH_SLOT, Value::float(1.0)),
         (WINDOW_NORMAL_HEIGHT_SLOT, Value::float(1.0)),
-        (WINDOW_USE_TIME_SLOT, Value::Integer(0)),
         (WINDOW_HSCROLL_SLOT, Value::Integer(0)),
         (WINDOW_MIN_HSCROLL_SLOT, Value::Integer(0)),
         (WINDOW_POINT_SLOT, point_marker),

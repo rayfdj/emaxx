@@ -862,40 +862,35 @@ impl Interpreter {
         std::mem::replace(&mut self.minibuffer_selected_window_id, window_id)
     }
 
+    /// xdisp.c:Finternal_show_cursor_p: `!w->cursor_off_p' of window ID.
     pub(crate) fn window_cursor_visible(&self, id: u64) -> bool {
-        self.window_cursor_visibility
-            .get(&id)
-            .copied()
-            .unwrap_or(true)
+        self.window_ref(id)
+            .is_none_or(|window| !window.cursor_off_p())
     }
 
+    /// xdisp.c:Finternal_show_cursor: `w->cursor_off_p = !VISIBLE'.
     pub(crate) fn set_window_cursor_visible(&mut self, id: u64, visible: bool) {
-        self.window_cursor_visibility.insert(id, visible);
+        if let Some(window) = self.window_ref(id) {
+            window.set_cursor_off_p(!visible);
+        }
     }
 
     pub(crate) fn old_selected_window_value(&self) -> Value {
         self.window_value(self.old_selected_window_id)
     }
 
+    /// w->use_time of window ID.
     pub(crate) fn window_use_time(&self, id: u64) -> i64 {
         self.window_ref(id)
-            .and_then(|window| {
-                window
-                    .slot(primitives::WINDOW_USE_TIME_SLOT)
-                    .integer_value()
-            })
-            .unwrap_or_default()
+            .map_or(0, primitives::WindowRef::use_time)
     }
 
+    /// select_window's `w->use_time = ++window_select_count'.
     pub(crate) fn record_window_selection(&mut self, id: u64) {
         self.window_select_count = self.window_select_count.saturating_add(1);
         let use_time = self.window_select_count;
         if let Some(window) = self.window_ref(id) {
-            window.set_held_slot(
-                self,
-                primitives::WINDOW_USE_TIME_SLOT,
-                Value::Integer(use_time),
-            );
+            window.set_use_time(use_time);
         }
     }
 
@@ -907,20 +902,12 @@ impl Interpreter {
         }
         let bumped = self.window_select_count;
         if let Some(window) = self.window_ref(id) {
-            window.set_held_slot(
-                self,
-                primitives::WINDOW_USE_TIME_SLOT,
-                Value::Integer(bumped),
-            );
+            window.set_use_time(bumped);
         }
         self.window_select_count = self.window_select_count.saturating_add(1);
         let selected_time = self.window_select_count;
         if let Some(selected) = self.window_ref(self.selected_window_id) {
-            selected.set_held_slot(
-                self,
-                primitives::WINDOW_USE_TIME_SLOT,
-                Value::Integer(selected_time),
-            );
+            selected.set_use_time(selected_time);
         }
         Some(bumped)
     }
@@ -3198,10 +3185,10 @@ impl Interpreter {
             window.set_held(index, value);
         }
         window.set_held(primitives::WINDOW_FRAME_SLOT, self.selected_frame_value());
-        // window.c:make_window and copy_window: `++sequence_number'.
+        // window.c:make_window and make_parent_window:
+        // `w->sequence_number = ++sequence_number'.
         self.window_sequence_number += 1;
-        let number = self.window_sequence_number;
-        self.window_sequence_numbers.insert(window.id(), number);
+        window.set_sequence_number(self.window_sequence_number);
         primitives::WindowRef::from_object(window)
     }
 
@@ -3217,11 +3204,6 @@ impl Interpreter {
             .or_default()
             .insert(id);
         window
-    }
-
-    /// The window's `sequence_number', as print.c prints it.
-    pub(crate) fn window_sequence_number(&self, id: u64) -> Option<i64> {
-        self.window_sequence_numbers.get(&id).copied()
     }
 
     /// alloc.c:Fmake_closure.  Both the ordinary primitive dispatcher and

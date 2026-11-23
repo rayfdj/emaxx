@@ -4527,8 +4527,11 @@ impl ImageGraphCopier {
                 );
                 let copied = Value::Window(copied_window);
                 self.records.insert(key, copied);
+                copied_window.set_use_time(window.use_time());
+                copied_window.set_sequence_number(window.sequence_number());
                 copied_window.set_mini(window.mini());
                 copied_window.set_horizontal(window.horizontal());
+                copied_window.set_cursor_off_p(window.cursor_off_p());
                 copied_window.set_contents(self.copy(&window.contents()));
                 for (index, slot) in window.held_values().enumerate() {
                     copied_window.set_held(index, self.copy(&slot));
@@ -6803,9 +6806,6 @@ pub struct InterpreterState {
     /// Root and minibuffer window identities are interpreter/frame state,
     /// never Lisp variables.
     minibuffer_selected_window_id: Option<u64>,
-    /// Whether each window should display its cursor on the next redisplay.
-    /// Missing entries retain GNU's visible-by-default state.
-    window_cursor_visibility: HashMap<u64, bool>,
     /// Window selected when the last window-change cycle completed.
     pub(crate) old_selected_window_id: u64,
     /// Per-frame old selected window.  GNU's initial batch frame leaves this
@@ -7128,10 +7128,9 @@ pub struct InterpreterState {
     /// print.c's `print_depth', `being_printed', `new_backquote_output'
     /// and `print_buffer'.
     pub(crate) print_globals: crate::lisp::primitives::print::PrintGlobals,
-    /// window.c's `sequence_number': the last one given a window, and each
-    /// live window's (struct window's `sequence_number').
+    /// window.c's `sequence_number': the last one given a window, which
+    /// keeps its own (struct window's `sequence_number').
     pub(crate) window_sequence_number: i64,
-    pub(crate) window_sequence_numbers: HashMap<u64, i64>,
     pub lossage_size: i64,
     interactive_call_depth: usize,
     /// xfaces.c's lface_id_to_name: each Lisp face's symbol at its id.
@@ -7608,7 +7607,6 @@ impl Interpreter {
             current_buffer_id: 0,
             selected_window_id: 0,
             minibuffer_selected_window_id: None,
-            window_cursor_visibility: HashMap::new(),
             old_selected_window_id: 0,
             window_select_count: 1,
             windows_or_buffers_changed: 1,
@@ -7831,7 +7829,6 @@ impl Interpreter {
             print_number_index: 0,
             print_globals: Default::default(),
             window_sequence_number: 0,
-            window_sequence_numbers: HashMap::new(),
             lossage_size: 300,
             interactive_call_depth: 0,
             lface_id_to_name: Vec::new(),
@@ -9139,11 +9136,7 @@ impl Interpreter {
         interp.set_selected_window_id(selected_window.id());
         interp.set_root_window_id(selected_window.id());
         interp.old_selected_window_id = selected_window.id();
-        selected_window.set_held_slot(
-            &mut interp,
-            primitives::WINDOW_USE_TIME_SLOT,
-            Value::Integer(1),
-        );
+        selected_window.set_use_time(1);
         // frame.c:make_frame shows the current buffer in the root window
         // through set_window_buffer, and the minibuffer in the minibuffer
         // window.
