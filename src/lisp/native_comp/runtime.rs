@@ -7272,35 +7272,123 @@ mod tests {
         }
     }
 
+    /// The predicates of a wrong-type-argument that a subr of GNU's makes
+    /// anew at each signal, so that two signals of it hold two lists:
+    /// data.c:Fbare_symbol's list2 (Qsymbolp, Qsymbol_with_pos_p).  Every
+    /// other condition the compared entries signal holds a predicate
+    /// symbol and the argument complained of.
+    const FRESH_PREDICATE_LISTS: &[&[&str]] = &[&["symbolp", "symbol-with-pos-p"]];
+
     /// Whether two conditions are one signal: lists of the same objects,
-    /// the datum a subr complains of among them.  The predicate of a
-    /// wrong-type-argument, the second element, may be a list the subr
-    /// makes for the signal (Fbare_symbol's list2 of `symbolp' and
-    /// `symbol-with-pos-p'): two such are one when they list the same
-    /// symbols.
+    /// the datum a subr complains of among them.  The one exception is
+    /// the predicate of a wrong-type-argument, its second element, where
+    /// both are the same list of `FRESH_PREDICATE_LISTS'.
     fn same_condition(left: Value, right: Value) -> bool {
-        let same_symbols = |left: Value, right: Value| match (left.to_vec(), right.to_vec()) {
-            (Ok(left), Ok(right)) => {
-                left.len() == right.len()
-                    && left
+        let listed = |predicate: Value, names: &[&str]| {
+            predicate.to_vec().is_ok_and(|symbols| {
+                symbols.len() == names.len()
+                    && symbols
                         .iter()
-                        .zip(&right)
-                        .all(|(left, right)| left.is_symbol() && left.eq_value(*right))
-            }
-            _ => false,
+                        .zip(names)
+                        .all(|(symbol, name)| symbol.eq_value(Value::symbol(name)))
+            })
+        };
+        let fresh_predicates = |left: Value, right: Value| {
+            FRESH_PREDICATE_LISTS
+                .iter()
+                .any(|names| listed(left, names) && listed(right, names))
         };
         match (left.to_vec(), right.to_vec()) {
             (Ok(left), Ok(right)) => {
+                let wrong_type = left
+                    .first()
+                    .is_some_and(|symbol| symbol.eq_value(Value::symbol("wrong-type-argument")));
                 left.len() == right.len()
                     && left
                         .iter()
                         .zip(&right)
                         .enumerate()
                         .all(|(place, (left, right))| {
-                            left.eq_value(*right) || (place == 1 && same_symbols(*left, *right))
+                            left.eq_value(*right)
+                                || (place == 1 && wrong_type && fresh_predicates(*left, *right))
                         })
             }
             _ => left.eq_value(right),
+        }
+    }
+
+    #[test]
+    fn same_condition_takes_a_new_predicate_list_only_where_gnu_makes_one() {
+        let symbol = Value::symbol;
+        let datum = Value::Integer(5);
+        let condition =
+            |error: &str, predicate: Value| Value::list([symbol(error), predicate, datum]);
+        let bare_symbol = || Value::list([symbol("symbolp"), symbol("symbol-with-pos-p")]);
+        // Fbare_symbol's condition, its list made at each signal.
+        assert!(same_condition(
+            condition("wrong-type-argument", bare_symbol()),
+            condition("wrong-type-argument", bare_symbol()),
+        ));
+        // One list is one object.
+        let shared = Value::list([symbol("a"), symbol("b")]);
+        assert!(same_condition(
+            condition("wrong-type-argument", shared),
+            condition("wrong-type-argument", shared),
+        ));
+        // Lists GNU makes at no signal, the list of another condition, and
+        // the list in another place are each two objects.
+        let other = || Value::list([symbol("a"), symbol("b")]);
+        let reversed = || Value::list([symbol("symbol-with-pos-p"), symbol("symbolp")]);
+        let longer = || {
+            Value::list([
+                symbol("symbolp"),
+                symbol("symbol-with-pos-p"),
+                symbol("symbolp"),
+            ])
+        };
+        for (left, right) in [
+            (
+                condition("wrong-type-argument", other()),
+                condition("wrong-type-argument", other()),
+            ),
+            (
+                condition("wrong-type-argument", reversed()),
+                condition("wrong-type-argument", reversed()),
+            ),
+            (
+                condition("wrong-type-argument", longer()),
+                condition("wrong-type-argument", longer()),
+            ),
+            (
+                condition("wrong-type-argument", bare_symbol()),
+                condition("wrong-type-argument", symbol("symbolp")),
+            ),
+            (
+                condition("error", bare_symbol()),
+                condition("error", bare_symbol()),
+            ),
+            (
+                Value::list([
+                    symbol("wrong-type-argument"),
+                    symbol("symbolp"),
+                    bare_symbol(),
+                ]),
+                Value::list([
+                    symbol("wrong-type-argument"),
+                    symbol("symbolp"),
+                    bare_symbol(),
+                ]),
+            ),
+            (
+                condition("wrong-type-argument", bare_symbol()),
+                Value::list([
+                    symbol("wrong-type-argument"),
+                    bare_symbol(),
+                    Value::Integer(6),
+                ]),
+            ),
+        ] {
+            assert!(!same_condition(left, right), "{left:?} and {right:?}");
         }
     }
 
