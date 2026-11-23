@@ -22927,6 +22927,27 @@ ert-tests as a whole 26,307 ms against 27,211.
   45174246207) passed: 3,546 library tests, the seven integration
   targets (217) and the binaries' tests (61), none failed.
 
+**On `6376c5d`** (round 373): the frozen run's first attempt (run
+  45185894350) matched 7,927 of 7,928 outcomes: the one that differed
+  is `eglot-test-rust-completion-exit-function', which passed in GNU
+  and in Emaxx failed with `(jsonrpc-error "request id=2 failed:"
+  (jsonrpc-error-message . "Timed out"))' after 11.1 s, the language
+  server's answer not arriving in time on a slow runner (setup 1.281,
+  test bodies 1.138, in all 1.165; GNU's suite 312 s).  The one re-run
+  the rule allows (run 45193320123, on `a370032', the same source with
+  round 372's CI note) matched all 7,928 outcomes with no unsuccessful
+  execution: setup 73.6 s against 56.1 s (1.313), test bodies 266.0 s
+  against 246.1 s (1.081), in all 1.124 (GNU's suite 302 s).  The
+  widest body gaps are comp-tests (16.0 s against 12.5 s), tramp-tests
+  (18.2 against 16.0), icalendar-tests (1.87 against 0.35),
+  semantic-utest-ia (3.12 against 2.23), process-tests (2.62 against
+  1.77) and mule-tests (2.36 against 1.53).  The setup ratio of the
+  last three runs (1.224, 1.281, 1.313) is the runners': Emaxx's
+  startup executes 128.4 million instructions in the builds of rounds
+  371 to 374 alike (GNU 151.1 million).  The Rust gate (run
+  45185888428) passed: 3,548 library tests, the seven integration
+  targets (217) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 374 and its review), outside the
   round and in no milestone.**  One line each: the link-table entries
