@@ -428,6 +428,47 @@ const ESCAPED_WORD: NativeWord = 1;
 #[repr(C, align(16))]
 struct EscapeBuffer(MaybeUninit<[u8; 72]>);
 
+/// The call `call_fixed_registers' and `call_many_registers' make: the
+/// escape record written to BUFFER (r10), TARGET (r11) called with the
+/// named registers, and its word left in RESULT.
+///
+/// SAFETY: the stack pointer is aligned for a call at an asm block
+/// without `nostack'.  On an ordinary return the callee preserved the
+/// callee-saved registers; on an escape `emaxx_native_longjmp' restores
+/// the ones stored here, so both ways out leave them as the block found
+/// them, and only the caller-saved registers (`clobber_abi') change.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+macro_rules! register_call {
+    ($buffer:expr, $target:expr, $result:ident, $($register:tt = $value:expr),*) => {
+        std::arch::asm!(
+            "mov [r10], rbx",
+            "mov [r10 + 8], rbp",
+            "mov [r10 + 16], r12",
+            "mov [r10 + 24], r13",
+            "mov [r10 + 32], r14",
+            "mov [r10 + 40], r15",
+            "mov [r10 + 48], rsp",
+            "lea rax, [rip + 2f]",
+            "mov [r10 + 56], rax",
+            "mov dword ptr [r10 + 64], {marker}",
+            "call r11",
+            "3:",
+            ".pushsection .text.unlikely.emaxx_native_escape, \"ax\", @progbits",
+            "2:",
+            "mov eax, {escaped}",
+            "jmp 3b",
+            ".popsection",
+            marker = const NATIVE_ESCAPE_MARKER,
+            escaped = const ESCAPED_WORD,
+            in("r10") $buffer,
+            in("r11") $target,
+            $(in($register) $value,)*
+            lateout("rax") $result,
+            clobber_abi("C"),
+        )
+    };
+}
+
 /// The trampoline's call of a fixed-arity TARGET whose arguments all
 /// travel in registers (at most six), made from the calling frame itself:
 /// the same escape record (`emaxx_native_longjmp' restores the
@@ -462,45 +503,124 @@ unsafe fn call_fixed_registers(
         _ => (word(0), word(1), word(2), word(3), word(4), word(5)),
     };
     let result: NativeWord;
-    // SAFETY: the stack pointer is aligned for a call at an asm block
-    // without `nostack'.  On an ordinary return the callee preserved the
-    // callee-saved registers; on an escape `emaxx_native_longjmp' restores
-    // the ones stored here, so both ways out leave them as the block found
-    // them, and only the caller-saved registers (`clobber_abi') change.
+    // SAFETY: as `register_call's.
     unsafe {
-        std::arch::asm!(
-            "mov [r10], rbx",
-            "mov [r10 + 8], rbp",
-            "mov [r10 + 16], r12",
-            "mov [r10 + 24], r13",
-            "mov [r10 + 32], r14",
-            "mov [r10 + 40], r15",
-            "mov [r10 + 48], rsp",
-            "lea rax, [rip + 2f]",
-            "mov [r10 + 56], rax",
-            "mov dword ptr [r10 + 64], {marker}",
-            "call r11",
-            "3:",
-            ".pushsection .text.unlikely.emaxx_native_escape, \"ax\", @progbits",
-            "2:",
-            "mov eax, {escaped}",
-            "jmp 3b",
-            ".popsection",
-            marker = const NATIVE_ESCAPE_MARKER,
-            escaped = const ESCAPED_WORD,
-            in("r10") buffer,
-            in("r11") target,
-            in("rdi") a0,
-            in("rsi") a1,
-            in("rdx") a2,
-            in("rcx") a3,
-            in("r8") a4,
-            in("r9") a5,
-            lateout("rax") result,
-            clobber_abi("C"),
+        register_call!(
+            buffer,
+            target,
+            result,
+            "rdi" = a0,
+            "rsi" = a1,
+            "rdx" = a2,
+            "rcx" = a3,
+            "r8" = a4,
+            "r9" = a5
         );
     }
     (result, result == ESCAPED_WORD)
+}
+
+/// `call_fixed_registers' for a TARGET that takes its arguments as a
+/// vector (MANY, `Lisp_Object (*) (ptrdiff_t, Lisp_Object *)'): COUNT
+/// and the address of the first of them, two registers.
+///
+/// # Safety
+///
+/// TARGET is a generated function of that type, ARGUMENTS addresses
+/// COUNT arguments it may read and write until it returns, and BUFFER is
+/// the active call frame's escape buffer, live until this returns.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn call_many_registers(
+    target: *const c_void,
+    count: usize,
+    arguments: *mut Value,
+    buffer: *mut EscapeBuffer,
+) -> (NativeWord, bool) {
+    let result: NativeWord;
+    // SAFETY: as `register_call's.
+    unsafe {
+        register_call!(buffer, target, result, "rdi" = count, "rsi" = arguments);
+    }
+    (result, result == ESCAPED_WORD)
+}
+
+/// One register call (`call_fixed_registers' or `call_many_registers')
+/// for the frame setup the two share (`invoke_registers',
+/// `invoke_nested'), which is compiled once for each.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+trait RegisterCall {
+    /// The call, its escape record written to BUFFER.
+    ///
+    /// # Safety
+    ///
+    /// BUFFER is the active call frame's escape buffer, live until this
+    /// returns, and the record's target and arguments are as its maker
+    /// (`invoke_fixed_registers' and the rest) was promised.
+    unsafe fn call(self, buffer: *mut EscapeBuffer) -> (NativeWord, bool);
+}
+
+/// A fixed-arity target and its arguments, at most six.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+struct FixedRegisters<'a>(*const c_void, &'a [Value]);
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl RegisterCall for FixedRegisters<'_> {
+    #[inline(always)]
+    unsafe fn call(self, buffer: *mut EscapeBuffer) -> (NativeWord, bool) {
+        // SAFETY: the caller's.
+        unsafe { call_fixed_registers(self.0, self.1, buffer) }
+    }
+}
+
+/// A MANY target, the count of its arguments and their address.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+struct ManyRegisters(*const c_void, usize, *mut Value);
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl RegisterCall for ManyRegisters {
+    #[inline(always)]
+    unsafe fn call(self, buffer: *mut EscapeBuffer) -> (NativeWord, bool) {
+        // SAFETY: the caller's.
+        unsafe { call_many_registers(self.0, self.1, self.2, buffer) }
+    }
+}
+
+/// The most arguments a MANY call copies beside its frame
+/// (`ManyArguments'): eval_sub's eight slots.  A longer call takes the
+/// general entry.
+pub(crate) const MANY_REGISTER_ARGUMENTS: usize = 8;
+
+/// The argument vector of a MANY call whose caller holds its arguments
+/// in a shared slice (Ffuncall's `args + 1' on the byte-code stack or in
+/// a Rust caller's array): the call's own copy of them, so that the
+/// address the callee is given, through which C may also store, aliases
+/// no shared slice.  The copy lies in the calling frame, where the
+/// stack's scan finds the arguments while the callee runs.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) struct ManyArguments {
+    slots: [MaybeUninit<Value>; MANY_REGISTER_ARGUMENTS],
+    count: usize,
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl ManyArguments {
+    /// ARGUMENTS, at most `MANY_REGISTER_ARGUMENTS' of them.
+    #[inline(always)]
+    pub(crate) fn of(arguments: &[Value]) -> Self {
+        let mut slots = [MaybeUninit::uninit(); MANY_REGISTER_ARGUMENTS];
+        let count = arguments.len().min(MANY_REGISTER_ARGUMENTS);
+        for (slot, argument) in slots.iter_mut().zip(&arguments[..count]) {
+            slot.write(*argument);
+        }
+        Self { slots, count }
+    }
+
+    /// The count and the address of the first argument, for the callee.
+    #[inline(always)]
+    pub(crate) fn vector(&mut self) -> (usize, *mut Value) {
+        (self.count, self.slots.as_mut_ptr().cast())
+    }
 }
 
 // System V counterpart of alloc.c:flush_stack_call_func.  The generated
@@ -1777,6 +1897,57 @@ impl NativeRuntime {
         target: *const c_void,
         arguments: &[Value],
     ) -> Result<Value, LispError> {
+        // SAFETY: the caller's maximum is at most six, and the frame
+        // `invoke_registers' links holds the buffer until it is unlinked.
+        unsafe {
+            self.invoke_registers(interpreter, environment, FixedRegisters(target, arguments))
+        }
+    }
+
+    /// `invoke_fixed_registers' of a TARGET that takes its arguments as a
+    /// vector (MANY): eval.c:funcall_subr's `aMANY (numargs, args)', the
+    /// COUNT arguments at ADDRESS.
+    ///
+    /// # Safety
+    ///
+    /// TARGET is a generated function taking a count and a vector, and
+    /// ADDRESS addresses COUNT arguments that it may read and write until
+    /// the call returns, no reference to them being used meanwhile.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(never)]
+    pub(crate) unsafe fn invoke_many_registers(
+        &mut self,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        target: *const c_void,
+        count: usize,
+        address: *mut Value,
+    ) -> Result<Value, LispError> {
+        // SAFETY: the caller's; the buffer as in `invoke_fixed_registers'.
+        unsafe {
+            self.invoke_registers(
+                interpreter,
+                environment,
+                ManyRegisters(target, count, address),
+            )
+        }
+    }
+
+    /// The frame, the active call and the escape record around CALL,
+    /// one register call (`invoke_fixed_registers',
+    /// `invoke_many_registers').
+    ///
+    /// # Safety
+    ///
+    /// CALL's target and arguments are as `RegisterCall::call' requires.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
+    unsafe fn invoke_registers(
+        &mut self,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        call: impl RegisterCall,
+    ) -> Result<Value, LispError> {
         let mut escape = EscapeBuffer(MaybeUninit::uninit());
         let buffer = std::ptr::from_mut(&mut escape);
         let frame = self.new_call_frame(buffer.cast(), interpreter);
@@ -1789,15 +1960,15 @@ impl NativeRuntime {
                 runtime: self,
             };
             ACTIVE_CALL.set(&mut active);
-            // SAFETY: the caller's maximum is at most six, and the frame
-            // linked above holds BUFFER until it is unlinked below.
-            let answer = unsafe { call_fixed_registers(target, arguments, buffer) };
+            // SAFETY: the caller's, and the frame linked above holds
+            // BUFFER until it is unlinked below.
+            let answer = unsafe { call.call(buffer) };
             ACTIVE_CALL.set(previous);
             answer
         } else {
             // SAFETY: as in the nested case.
             with_active_call(interpreter, environment, self, || unsafe {
-                call_fixed_registers(target, arguments, buffer)
+                call.call(buffer)
             })
         };
         if escaped {
@@ -1833,6 +2004,69 @@ impl NativeRuntime {
         arguments: &[Value],
         depths: (usize, usize),
     ) -> Result<Value, LispError> {
+        // SAFETY: as the caller's; the frame `invoke_nested' links holds
+        // the buffer until it is unlinked.
+        unsafe {
+            self.invoke_nested(
+                nested,
+                interpreter,
+                environment,
+                depths,
+                FixedRegisters(target, arguments),
+            )
+        }
+    }
+
+    /// `invoke_nested_fixed' of a TARGET that takes its arguments as a
+    /// vector (MANY): the COUNT arguments at ADDRESS.
+    ///
+    /// # Safety
+    ///
+    /// As `invoke_nested_fixed's, TARGET a generated function taking a
+    /// count and a vector; ADDRESS addresses COUNT arguments that it may
+    /// read and write until the call returns, no reference to them being
+    /// used meanwhile.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
+    pub(crate) unsafe fn invoke_nested_many(
+        &mut self,
+        nested: NestedCall,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        target: *const c_void,
+        (count, address): (usize, *mut Value),
+        depths: (usize, usize),
+    ) -> Result<Value, LispError> {
+        // SAFETY: as the caller's.
+        unsafe {
+            self.invoke_nested(
+                nested,
+                interpreter,
+                environment,
+                depths,
+                ManyRegisters(target, count, address),
+            )
+        }
+    }
+
+    /// The frame and the active call's record around CALL, one register
+    /// call (`invoke_nested_fixed', `invoke_nested_many').
+    ///
+    /// # Safety
+    ///
+    /// NESTED is the active call of this runtime and INTERPRETER, DEPTHS
+    /// are INTERPRETER's Ffuncall depth and backtrace frame count, and
+    /// CALL's target and arguments are as `RegisterCall::call' requires.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
+    unsafe fn invoke_nested(
+        &mut self,
+        nested: NestedCall,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        depths: (usize, usize),
+        call: impl RegisterCall,
+    ) -> Result<Value, LispError> {
         let mut escape = EscapeBuffer(MaybeUninit::uninit());
         let buffer = std::ptr::from_mut(&mut escape);
         let frame = NativeCallFrame::new(self.call, buffer.cast(), depths.0, depths.1);
@@ -1843,9 +2077,9 @@ impl NativeRuntime {
         // SAFETY: as `NestedCall::of's read.
         let slot = unsafe { &(*nested.0).environment };
         let outer = slot.replace(environment);
-        // SAFETY: as the caller's; the frame linked above holds BUFFER
-        // until it is unlinked below.
-        let (word, escaped) = unsafe { call_fixed_registers(target, arguments, buffer) };
+        // SAFETY: the caller's; the frame linked above holds BUFFER until
+        // it is unlinked below.
+        let (word, escaped) = unsafe { call.call(buffer) };
         slot.set(outer);
         if escaped {
             return self.finish_escaped_frame(interpreter, &frame, false);
@@ -3728,6 +3962,12 @@ impl RegisteredNative {
         count <= 6 && self.0.register_counts() & (1 << count) != 0
     }
 
+    /// funcall_subr's test for a MANY function: at least its minimum.
+    #[inline(always)]
+    fn admits_many(self, count: usize) -> bool {
+        self.0.many_registers() && count >= self.0.min_args() as usize
+    }
+
     /// The target called with ARGUMENTS and nil for each omitted optional
     /// argument, as funcall_subr pads them.
     ///
@@ -3821,16 +4061,23 @@ fn invoke_plain_native_funcall(
         );
     };
     let native = RegisteredNative(native);
-    if !native.admits(arguments.len())
+    let fixed = native.admits(arguments.len());
+    if !(fixed || native.admits_many(arguments.len()))
         || !interpreter.plain_bcall_entry(name)
         || !runtime.heap.collection_cannot_be_due()
     {
         return None;
     }
     let depth = interpreter.enter_plain_native_funcall(function, arguments);
-    // SAFETY: the register counts admit this many arguments for the native
-    // function's fixed-arity target.
-    let word = unsafe { native.call(arguments) };
+    let word = if fixed {
+        // SAFETY: the register counts admit this many arguments for the
+        // native function's fixed-arity target.
+        unsafe { native.call(arguments) }
+    } else {
+        // SAFETY: a MANY target, given the calling native frame's own
+        // argument vector, as funcall_subr's `aMANY (numargs, args)'.
+        unsafe { call_word_target(native.0.target(), NativeCallingConvention::Many, arguments) }
+    };
     let result = if interpreter.current_backtrace_debug_on_exit() {
         native_funcall_exit_debugger(interpreter, runtime, environment, word)
     } else {

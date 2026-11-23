@@ -1099,6 +1099,10 @@ pub(crate) fn call_fixed_function(
             runtime.invoke_nested_fixed(nested, interpreter, environment, target, arguments, depths)
         });
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if native.many_registers() {
+        return call_many_function(interpreter, environment, native, arguments);
+    }
     // `descriptor' and `check_arity' for this case.
     let maximum = native.max_args_word();
     if native.is_dynamic()
@@ -1124,6 +1128,100 @@ pub(crate) fn call_fixed_function(
         return Some(runtime.invoke_fixed_registers(interpreter, environment, target, arguments));
     }
     Some(runtime.invoke_fixed(interpreter, environment, target, arguments))
+}
+
+/// `call_fixed_function' for a lexical function that takes its arguments
+/// as a vector (`many_registers': eval.c:funcall_subr's `aMANY (numargs,
+/// args)'), given at least its minimum and at most the eight this call
+/// copies beside its frame (`ManyArguments'), by `call_many_vector'.
+/// None for any other count, or with no runtime to lend, which the
+/// general path handles (and signals for).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(always)]
+fn call_many_function(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    native: NativeFunctionRef,
+    arguments: &[Value],
+) -> Option<Result<Value, LispError>> {
+    if arguments.len() > super::runtime::MANY_REGISTER_ARGUMENTS {
+        return None;
+    }
+    let mut copy = super::runtime::ManyArguments::of(arguments);
+    // SAFETY: the copy is this frame's, live and unshared until the call
+    // returns.
+    unsafe { call_many_vector(interpreter, environment, native, copy.vector()) }
+}
+
+/// The call of NATIVE, a lexical function that takes its arguments as a
+/// vector (`many_registers'), with the COUNT arguments at ADDRESS, at
+/// least its minimum: nested in the active call of this interpreter as
+/// `invoke_nested_many' makes it, else by `invoke_many_registers'.  None,
+/// with nothing done, for any other function or a count below the
+/// minimum, or with no runtime to lend; the general path handles those
+/// (and signals for them).
+///
+/// # Safety
+///
+/// ADDRESS addresses COUNT arguments that the callee may read and write
+/// until the call returns, no reference to them being used meanwhile.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(always)]
+pub(crate) unsafe fn call_many_vector(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    native: NativeFunctionRef,
+    (count, address): (usize, *mut Value),
+) -> Option<Result<Value, LispError>> {
+    if !native.many_registers() || count < native.min_args() as usize {
+        return None;
+    }
+    let target = native.target();
+    if let Some(nested) = super::runtime::NestedCall::of(interpreter) {
+        // SAFETY: as `call_fixed_function's nested call: the active call
+        // lends its runtime, NESTED is its call, and TARGET takes a count
+        // and a vector, the caller's.
+        let runtime = unsafe { &mut *nested.runtime() };
+        let depths = (
+            interpreter.lisp_eval_depth,
+            interpreter.backtrace_frames_len(),
+        );
+        return Some(unsafe {
+            runtime.invoke_nested_many(
+                nested,
+                interpreter,
+                environment,
+                target,
+                (count, address),
+                depths,
+            )
+        });
+    }
+    let runtime = super::runtime::current_runtime();
+    if runtime.is_null() {
+        return None;
+    }
+    // SAFETY: as `with_current_runtime's loan of the runtime, for this
+    // synchronous call; the vector is the caller's.
+    let runtime = unsafe { &mut *runtime };
+    Some(unsafe { runtime.invoke_many_registers(interpreter, environment, target, count, address) })
+}
+
+/// `call_many_vector' where native code makes no register call: None,
+/// for the general path.
+///
+/// # Safety
+///
+/// None of its own; the signature is the register call's.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[inline(always)]
+pub(crate) unsafe fn call_many_vector(
+    _interpreter: &mut Interpreter,
+    _environment: &mut Env,
+    _native: NativeFunctionRef,
+    _vector: (usize, *mut Value),
+) -> Option<Result<Value, LispError>> {
+    None
 }
 
 pub(crate) fn call_active_function(
