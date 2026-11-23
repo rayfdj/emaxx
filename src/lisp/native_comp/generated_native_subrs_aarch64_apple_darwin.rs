@@ -16847,7 +16847,7 @@ extern "C" fn native_subr_1175(
     arg_0: super::runtime::NativeWord,
     arg_1: super::runtime::NativeWord,
 ) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1175, &[arg_0, arg_1])
+    super::runtime::direct_native_nth(1175, arg_0, arg_1)
 }
 
 extern "C" fn native_subr_1176(

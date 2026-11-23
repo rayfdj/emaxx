@@ -417,6 +417,7 @@ fn indexed_native_target(name: &str) -> Option<&'static str> {
     Some(match name {
         "bare-symbol" => "direct_native_bare_symbol",
         "symbol-with-pos-pos" => "direct_native_symbol_with_pos_pos",
+        "nth" => "direct_native_nth",
         _ => return None,
     })
 }

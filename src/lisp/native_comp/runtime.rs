@@ -3492,6 +3492,22 @@ pub(super) extern "C" fn direct_native_keywordp(object: NativeWord) -> NativeWor
     }))
 }
 
+/// fns.c:Fnth for the subr at INDEX, as `direct_native_bare_symbol' is
+/// given its index.  A small count of a list that neither Fnthcdr nor
+/// Fcar complains of (`small_count_nth') answers from the words with no
+/// active call; any other N or LIST is the subr's own call, as the
+/// generated entry made it of every pair: a longer walk with its quit
+/// checks, or the signal with GNU's datum.
+#[inline(always)]
+pub(super) fn direct_native_nth(index: usize, n: NativeWord, list: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument words are live.
+    let (count, elements) = unsafe { (Value::from_word(n), Value::from_word(list)) };
+    match crate::lisp::primitives::small_count_nth(&count, &elements) {
+        Some(element) => element.word(),
+        None => invoke_subr(index, &[n, list]),
+    }
+}
+
 pub(super) extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
     if left == right {
         return native_boolean(true);
@@ -7965,6 +7981,7 @@ mod tests {
         word_entry("bare-symbol", 1, false),
         word_entry("symbol-with-pos-pos", 1, false),
         word_entry("keywordp", 1, true),
+        word_entry("nth", 2, false),
     ];
 
     /// The generator's other targets, which read the interpreter, walk or
@@ -8366,6 +8383,300 @@ mod tests {
         ("keywordp", "(list [:foo])", "nil", "nil"),
     ];
 
+    /// The counts of GNU_NTH_ANSWERS' columns, as forms.
+    const GNU_NTH_COUNTS: [&str; 11] = [
+        "-1",
+        "0",
+        "1",
+        "2",
+        "3",
+        "127",
+        "128",
+        "(1+ most-positive-fixnum)",
+        "(1- most-negative-fixnum)",
+        "1.0",
+        "nil",
+    ];
+
+    /// GNU 30.2's answers of `nth', as GNU_WORD_ENTRY_ANSWERS gives them:
+    /// each row is a form whose value is the list, then for each count of
+    /// GNU_NTH_COUNTS what `nth' answers of that count and the list with
+    /// `symbols-with-pos-enabled' nil and then t.
+    const GNU_NTH_ANSWERS: &[(&str, [(&str, &str); 11])] = &[
+        (
+            "nil",
+            [
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "'(a b c)",
+            [
+                ("a", "a"),
+                ("a", "a"),
+                ("b", "b"),
+                ("c", "c"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("a", "a"),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "'(a b . c)",
+            [
+                ("a", "a"),
+                ("a", "a"),
+                ("b", "b"),
+                (
+                    "signal: (wrong-type-argument listp c)",
+                    "signal: (wrong-type-argument listp c)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp (a b . c))",
+                    "signal: (wrong-type-argument listp (a b . c))",
+                ),
+                (
+                    "signal: (wrong-type-argument listp (a b . c))",
+                    "signal: (wrong-type-argument listp (a b . c))",
+                ),
+                (
+                    "signal: (wrong-type-argument listp (a b . c))",
+                    "signal: (wrong-type-argument listp (a b . c))",
+                ),
+                (
+                    "signal: (wrong-type-argument listp (a b . c))",
+                    "signal: (wrong-type-argument listp (a b . c))",
+                ),
+                ("a", "a"),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "'x",
+            [
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "5",
+            [
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "(position-symbol nil 3)",
+            [
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "(append (make-vector 127 'a) '(b c))",
+            [
+                ("a", "a"),
+                ("a", "a"),
+                ("a", "a"),
+                ("a", "a"),
+                ("a", "a"),
+                ("b", "b"),
+                ("c", "c"),
+                ("nil", "nil"),
+                ("a", "a"),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "(let ((ring (list 1 2 3))) (nconc ring ring))",
+            [
+                ("1", "1"),
+                ("1", "1"),
+                ("2", "2"),
+                ("3", "3"),
+                ("1", "1"),
+                ("2", "2"),
+                ("3", "3"),
+                ("3", "3"),
+                ("1", "1"),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+    ];
+
     /// The agreement of an entry with its primitive shows one function
     /// behind both; these rows show that the function is GNU's.
     #[test]
@@ -8384,6 +8695,22 @@ mod tests {
                     flag,
                     expected,
                 );
+            }
+        }
+        for (list, answers) in GNU_NTH_ANSWERS {
+            for (count, (disabled, enabled)) in GNU_NTH_COUNTS.iter().zip(answers) {
+                let arguments = format!("(list {count} {list})");
+                for (flag, expected) in [(false, disabled), (true, enabled)] {
+                    assert_printed_answer(
+                        &mut interpreter,
+                        &mut runtime,
+                        &mut environment,
+                        "nth",
+                        &arguments,
+                        flag,
+                        expected,
+                    );
+                }
             }
         }
     }
