@@ -641,7 +641,9 @@ define_dispatch!(
                 // point and old point at the start of its buffer's
                 // accessible portion and its start at the buffer's
                 // last_window_start (Fset_marker, so within the buffer).
-                for window in interp.windows_where(|_| true) {
+                // The windows are those Fnext_window (w, Qt, Qt) visits
+                // from the selected window round to it.
+                for window in crate::lisp::primitives::all_frames_window_cycle(interp) {
                     let Some(buffer) = window
                         .contents_buffer_id()
                         .filter(|id| *id == current_id || *id == other_id)

@@ -387,9 +387,8 @@ fn all_buffers() -> std::sync::MutexGuard<'static, BufferHeaders> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// A record or a window the sweep freed: whose id space, which id, and
-/// the symbol its type tag named (the type index's key), read before the
-/// drop.
+/// A record the sweep freed: whose id space, which id, and the symbol
+/// its type tag named (the type index's key), read before the drop.
 pub(crate) struct FreedRecord {
     pub(crate) owner: u32,
     pub(crate) id: u64,
@@ -398,8 +397,6 @@ pub(crate) struct FreedRecord {
     /// replaced the record) is left alone.
     pub(crate) identity: usize,
     pub(crate) type_name: Option<Box<str>>,
-    /// Whether the cell was a window, whose registry is the windows'.
-    pub(crate) window: bool,
 }
 
 fn note_freed_record(freed: FreedRecord) {
@@ -1524,25 +1521,14 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                     id: (*record).id,
                     identity: header as usize,
                     type_name: (*record).symbol_type_name_by_tag().map(Box::from),
-                    window: false,
                 });
                 std::ptr::drop_in_place(record);
             }
-            VectorTag::Window => {
-                // A window owns only inline Lisp words and plain fields,
-                // which have no Rust destructor; the three markers it
-                // alone holds are reclaimed by this sweep as any object
-                // nothing marked.  Its id leaves the owner's registry and
-                // type index after the sweep, as a record's does.
-                let window = body.cast::<windows::WindowState>();
-                note_freed_record(FreedRecord {
-                    owner: (*window).owner(),
-                    id: (*window).id(),
-                    identity: header as usize,
-                    type_name: Some(Box::from(windows::WINDOW_TYPE_NAME)),
-                    window: true,
-                });
-            }
+            // A window owns only inline Lisp words and plain fields,
+            // which have no Rust destructor; the three markers it alone
+            // holds are reclaimed by this sweep as any object nothing
+            // marked.
+            VectorTag::Window => {}
         }
         if cfg!(debug_assertions) {
             let nbytes = (*header).nbytes();

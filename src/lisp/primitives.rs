@@ -308,11 +308,14 @@ pub(crate) use dispatch::FnvBuildHasher;
 pub(crate) use dispatch::NameFacts;
 #[cfg(test)]
 pub(crate) use dispatch::WindowList;
+pub(crate) use dispatch::all_frames_window_cycle;
 pub(crate) use dispatch::check_point_in_composition;
 pub(crate) use dispatch::compute_name_facts;
 pub(crate) use dispatch::echo_area_message;
 #[cfg(test)]
 pub(crate) use dispatch::echo_area_message_with_spans;
+pub(crate) use dispatch::foreach_frame_window;
+pub(crate) use dispatch::frame_windows_for_deletion;
 pub(crate) use dispatch::frames_window_list;
 #[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;

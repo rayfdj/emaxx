@@ -905,7 +905,6 @@ impl Loader<'_> {
         let mut finalizers = Vec::new();
         let mut native_units = Vec::new();
         let mut native_function_records = Vec::new();
-        let mut dead_windows = Vec::new();
         // The native records' relocations, found in object order.
         let (mut native_subr_hint, mut native_unit_hint) = (0, 0);
         for &number in &other_objects {
@@ -1064,8 +1063,6 @@ impl Loader<'_> {
                     let id = self.interp.install_dead_terminal();
                     self.objects[number] = Value::Terminal(id);
                 }
-                // A nilled window is made once every record of the image
-                // has its id (below).
                 DumpType::Window => {
                     let held = self.reader.word(offset)?;
                     if held > crate::lisp::alloc::vectors::windows::WINDOW_SLOT_COUNT as u64 {
@@ -1073,19 +1070,10 @@ impl Loader<'_> {
                             "the window at {offset} holds {held} slots"
                         )));
                     }
-                    dead_windows.push((number, held as usize));
+                    self.objects[number] = self.interp.install_dead_window(held as usize).value();
                 }
                 _ => {}
             }
-        }
-        // The nilled windows: each a dead window of its own in the new
-        // process, as the frames and terminals above.  The ids the image's
-        // records keep are all taken by now (`install_record'), so the
-        // id each window gets here names nothing else: neither a window
-        // this process made for its first frame, which the dumping
-        // process's id for the dumped one would, nor a record.
-        for (number, held) in dead_windows {
-            self.objects[number] = self.interp.install_dead_window(held).value();
         }
 
         // Phase 3: relocate the fields of the published containers.

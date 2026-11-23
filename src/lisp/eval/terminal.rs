@@ -1215,12 +1215,10 @@ impl Interpreter {
 
     pub(crate) fn retire_frame(&mut self, id: crate::lisp::types::FrameRef) {
         use crate::lisp::primitives as p;
-        let windows = self.windows_where(|window| {
-            window
-                .slot_opt(p::WINDOW_FRAME_SLOT)
-                .is_some_and(|frame| frame.word() == Value::Frame(id).word())
-        });
-        for window in windows {
+        // frame.c:delete_frame's delete_all_child_windows of the root
+        // window: every window of the frame's tree and its own minibuffer
+        // window, in that function's order.
+        for window in p::frame_windows_for_deletion(id) {
             // No contents, a leaf's buffer or an internal window's first
             // child: a deleted window.
             self.wset_buffer(window, Value::Nil);

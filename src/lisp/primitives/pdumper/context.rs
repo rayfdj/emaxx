@@ -2309,7 +2309,7 @@ impl DumpContext {
     /// dump_nilled_pseudovec of a window: every Lisp field nil, so the
     /// loaded window is a deleted one of the new process.  The record is
     /// the number of slots the window holds, which the loaded one holds
-    /// too; the dumping process's id for it is no identity in another.
+    /// too.
     fn dump_nilled_window(
         &mut self,
         window: crate::lisp::types::WindowObjectRef,

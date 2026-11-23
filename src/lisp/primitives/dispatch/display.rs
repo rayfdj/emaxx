@@ -1505,7 +1505,7 @@ fn window_at_frame_coordinates(
     x: i64,
     y: i64,
 ) -> Option<WindowRef> {
-    frame_window_tree_leaves(interp, frame)
+    frame_window_tree_leaves(frame)
         .into_iter()
         .chain(frame.borrow().minibuffer_window)
         .find(|window| {
@@ -1852,13 +1852,10 @@ fn is_live_ordinary_window(interp: &Interpreter, window: WindowRef) -> bool {
 pub(crate) type WindowList = crate::lisp::alloc::RootedVec<WindowRef>;
 
 fn window_tree_leaves(interp: &Interpreter) -> WindowList {
-    frame_window_tree_leaves(interp, interp.selected_frame_id)
+    frame_window_tree_leaves(interp.selected_frame_id)
 }
 
-fn frame_window_tree_leaves(
-    interp: &Interpreter,
-    frame: crate::lisp::types::FrameRef,
-) -> WindowList {
+fn frame_window_tree_leaves(frame: crate::lisp::types::FrameRef) -> WindowList {
     let mut leaves = WindowList::new();
     let Some(root) = frame.borrow().root_window else {
         return leaves;
@@ -1868,27 +1865,16 @@ fn frame_window_tree_leaves(
         leaves.push(root);
         return leaves;
     }
-    // A malformed tree (stale sibling links) must not loop forever; no
-    // healthy tree revisits a window.
-    let budget = interp.record_count_by_type("window").saturating_add(1);
     // The walk's own stack and chain run no Lisp, and name windows the
     // tree holds.
     let mut stack: smallvec::SmallVec<[WindowRef; 8]> = smallvec::smallvec![root];
-    let mut visited = 0usize;
     while let Some(window) = stack.pop() {
-        visited += 1;
-        if visited > budget {
-            return WindowList::new();
-        }
         match window.first_child() {
             Some(child) => {
                 let mut chain: smallvec::SmallVec<[WindowRef; 8]> = smallvec::SmallVec::new();
                 let mut walk = Some(child);
                 while let Some(node) = walk {
                     chain.push(node);
-                    if chain.len() > budget {
-                        return WindowList::new();
-                    }
                     walk = window_link(node, WINDOW_NEXT_SIBLING_SLOT);
                 }
                 stack.extend(chain.into_iter().rev());
@@ -1897,6 +1883,68 @@ fn frame_window_tree_leaves(
         }
     }
     leaves
+}
+
+/// FRAME's own minibuffer window, which window.c links into the frame's
+/// tree as the root window's `next': none for a frame whose minibuffer
+/// window is another frame's, or whose root is its minibuffer window.
+fn frame_own_minibuffer_window(frame: crate::lisp::types::FrameRef) -> Option<WindowRef> {
+    let (root, mini) = {
+        let state = frame.borrow();
+        (state.root_window, state.minibuffer_window)
+    };
+    mini.filter(|mini| Some(*mini) != root && mini.frame() == Some(frame))
+}
+
+/// window.c:window_list's walk without its cache: FOR_EACH_FRAME over the
+/// frame list, and foreach_window over each frame, whose
+/// foreach_window_1 visits the leaves of the frame's window tree in
+/// canonical order and then, as the root window's `next', the frame's own
+/// minibuffer window.  Every leaf is listed, whatever its buffer.
+pub(crate) fn foreach_frame_window(interp: &Interpreter) -> WindowList {
+    let mut windows = WindowList::new();
+    for frame in interp
+        .frame_states
+        .iter()
+        .copied()
+        .filter(|frame| frame.is_live())
+    {
+        windows.extend(frame_window_tree_leaves(frame));
+        windows.extend(frame_own_minibuffer_window(frame));
+    }
+    windows
+}
+
+/// Every window of FRAME's tree, internal ones too, in the order of
+/// window.c:delete_all_child_windows on the frame's root window: for a
+/// window, the windows after it (its later siblings, and after the root
+/// the frame's own minibuffer window) first, then its children, then the
+/// window itself.
+pub(crate) fn frame_windows_for_deletion(frame: crate::lisp::types::FrameRef) -> WindowList {
+    fn walk(window: WindowRef, next: Option<WindowRef>, windows: &mut WindowList) {
+        if let Some(next) = next {
+            walk(next, window_link(next, WINDOW_NEXT_SIBLING_SLOT), windows);
+        }
+        if let Some(child) = window.first_child() {
+            walk(child, window_link(child, WINDOW_NEXT_SIBLING_SLOT), windows);
+        }
+        windows.push(window);
+    }
+    let mut windows = WindowList::new();
+    let root = frame.borrow().root_window;
+    if let Some(root) = root {
+        walk(root, frame_own_minibuffer_window(frame), &mut windows);
+    }
+    windows
+}
+
+/// window.c:window_list_1 (selected_window, Qt, Qt), the windows
+/// Fnext_window (w, Qt, Qt) visits from the selected window round to it:
+/// the live windows of every frame, the minibuffer windows included, in
+/// the cyclic order from the selected window.
+pub(crate) fn all_frames_window_cycle(interp: &Interpreter) -> WindowList {
+    let frames = window_list_frames(interp, interp.selected_frame_id, &Value::T);
+    window_list_windows(interp, Some(&Value::T), None, &frames)
 }
 
 /// window.c:window_list: the live windows of every live frame in
@@ -1910,38 +1958,22 @@ pub(crate) fn frames_window_list(interp: &Interpreter) -> WindowList {
         .filter(|frame| frame.is_live())
     {
         windows.extend(
-            frame_window_tree_leaves(interp, frame)
+            frame_window_tree_leaves(frame)
                 .into_iter()
                 .filter(|window| is_live_ordinary_window(interp, *window)),
         );
-        let (root, mini) = {
-            let state = frame.borrow();
-            (state.root_window, state.minibuffer_window)
-        };
-        if let Some(mini) = mini
-            && Some(mini) != root
-            && mini.frame() == Some(frame)
-        {
-            windows.push(mini);
-        }
+        windows.extend(frame_own_minibuffer_window(frame));
     }
     windows
 }
 
+/// The live windows of the selected frame's tree that are no minibuffer
+/// window, in canonical order.
 pub(crate) fn live_ordinary_windows(interp: &Interpreter) -> WindowList {
-    let from_tree: WindowList = window_tree_leaves(interp)
+    window_tree_leaves(interp)
         .into_iter()
         .filter(|window| is_live_ordinary_window(interp, *window))
-        .collect();
-    if !from_tree.is_empty() {
-        return from_tree;
-    }
-    // No usable tree (no root binding yet, or a degenerate walk): fall
-    // back to the order the windows were made in, which equals tree
-    // order for a lone window.
-    interp
-        .windows_where(|window| is_live_ordinary_window(interp, window))
-        .into()
+        .collect()
 }
 
 /// One live window as the terminal frontend renders it: its frame rect,
@@ -3887,7 +3919,7 @@ fn delete_window_from_tree(interp: &mut Interpreter, window: &Value) -> Result<V
 
     let selected = frame_selected_window(frame);
     if !is_live_ordinary_window(interp, selected) {
-        let first = frame_window_tree_leaves(interp, frame)
+        let first = frame_window_tree_leaves(frame)
             .into_iter()
             .next()
             .expect("a frame keeps a live window");
@@ -3972,7 +4004,7 @@ fn delete_other_windows_from_tree(
         // A selected window in WINDOW's subtree stays selected, else the
         // nearest one before it in the cyclic order.
         swindow = frame_selected_window(frame);
-        let leaves = frame_window_tree_leaves(interp, frame);
+        let leaves = frame_window_tree_leaves(frame);
         loop {
             let mut ancestor = Some(swindow);
             while let Some(id) = ancestor
@@ -4197,7 +4229,7 @@ fn window_change_record(interp: &mut Interpreter, record_frames: bool) {
                 state.change_stamp = state.change_stamp.wrapping_add(1).max(1);
                 state.change_stamp
             };
-            let windows = frame_window_tree_leaves(interp, frame);
+            let windows = frame_window_tree_leaves(frame);
             for &window in &windows {
                 let buffer = window
                     .live_buffer_id(interp)
@@ -4293,7 +4325,7 @@ fn run_window_change_functions_body(
                 state.window_state_change,
             )
         };
-        let windows = frame_window_tree_leaves(interp, frame);
+        let windows = frame_window_tree_leaves(frame);
         let window_change = frame_window_change(interp, &windows, number_of_windows, stamp);
         let frame_selected_change =
             selected_frame_change && (frame == old_selected_frame || frame == selected_frame);
@@ -4851,7 +4883,7 @@ fn window_list_windows(
 ) -> WindowList {
     let mut windows = WindowList::new();
     for frame in frames {
-        let mut leaves = frame_window_tree_leaves(interp, *frame);
+        let mut leaves = frame_window_tree_leaves(*frame);
         leaves.retain(|window| is_live_ordinary_window(interp, *window));
         if windows.is_empty() {
             windows = leaves;
@@ -6281,8 +6313,9 @@ define_dispatch!(
                         .iter()
                         .position(|window| *window == selected)
                         .unwrap_or(0);
-                    windows
-                        .get((index + 1) % windows.len())
+                    (index + 1)
+                        .checked_rem(windows.len())
+                        .and_then(|next| windows.get(next))
                         .copied()
                         .map(|id| id.value())
                         .unwrap_or_else(|| interp.selected_window_value())

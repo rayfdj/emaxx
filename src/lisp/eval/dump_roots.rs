@@ -344,10 +344,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("records", "installed per record"),
     (
-        "windows",
-        "the windows by id, a registry and not a root: window.c:init_window_once_for_pdumper makes the new process's windows anew, and each nilled image window is installed as a dead window under a fresh id",
-    ),
-    (
         "record_owner",
         "this state's id space for its records, a new state's own",
     ),

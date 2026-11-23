@@ -781,17 +781,6 @@ impl Interpreter {
         Ok(())
     }
 
-    /// The window ID names in this state's registry: None once the sweep
-    /// has freed it.  Nothing but the tests of the registry asks: the
-    /// code holds windows.  The registry is not a root, as the records'
-    /// is not (`record_ref'): a freed window's entry is cleared after
-    /// the sweep (`purge_freed_records').
-    #[cfg(test)]
-    #[inline]
-    pub(crate) fn window_ref(&self, id: u64) -> Option<primitives::WindowRef> {
-        self.windows.get(id).map(primitives::WindowRef::from_object)
-    }
-
     /// The selected window, as an object: its holder holds a live
     /// window, so a missing one is a bug (`window_value').
     #[inline]
@@ -973,7 +962,7 @@ impl Interpreter {
         self.adjust_window_count(window, false);
         window.set_contents(value);
         self.adjust_window_count(window, true);
-        self.check_window_counts();
+        self.check_window_counts_during_change();
     }
 
     /// window.c wset_combination: WINDOW becomes an internal window
@@ -996,12 +985,12 @@ impl Interpreter {
         }
     }
 
-    /// Each buffer's window count taken anew from the windows: for the
-    /// windows a frame is made with, which show their buffers from the
-    /// start, and after an image's buffers took the places of those the
-    /// first frame's windows were made for (pdumper.c dumps a base
-    /// buffer's window_count as 0; GNU's first frame is made after the
-    /// load).
+    /// Each buffer's window count taken anew from the frames' windows
+    /// (`foreach_frame_window'): for the windows a frame is made with,
+    /// which show their buffers from the start, and after an image's
+    /// buffers took the places of those the first frame's windows were
+    /// made for (pdumper.c dumps a base buffer's window_count as 0; GNU's
+    /// first frame is made after the load).
     pub(crate) fn recount_buffer_windows(&mut self) {
         let ids: Vec<u64> = std::iter::once(self.current_buffer_id)
             .chain(self.inactive_buffers.iter().map(|(id, _)| *id))
@@ -1011,7 +1000,7 @@ impl Interpreter {
                 buffer.set_window_count(0);
             }
         }
-        for window in self.windows_where(|_| true) {
+        for window in primitives::foreach_frame_window(self) {
             if let Some(buffer_id) = window.contents_buffer_id()
                 && let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id)
             {
@@ -1020,15 +1009,34 @@ impl Interpreter {
         }
     }
 
-    /// The counts adjust_window_count keeps against the windows
-    /// themselves, in builds with debug assertions: a write of a window's
-    /// contents that went around wset_buffer shows here.
+    /// The counts adjust_window_count keeps against the windows of the
+    /// frames (`foreach_frame_window'), in builds with debug assertions:
+    /// a write of a window's contents that went around wset_buffer shows
+    /// here.  Between window operations the frames' trees hold every
+    /// window that shows a buffer, and each count is the number of them
+    /// that show it.
+    #[cfg(test)]
     pub(crate) fn check_window_counts(&self) {
+        self.compare_window_counts(true);
+    }
+
+    /// `check_window_counts' where a window operation is under way, as it
+    /// is at each wset_buffer: a window window.c counts can be off every
+    /// frame's tree then (make_parent_window's window, until the copy
+    /// that took its place takes it as its child), so a buffer is shown
+    /// in no more of the trees' windows than it counts.
+    fn check_window_counts_during_change(&self) {
+        self.compare_window_counts(false);
+    }
+
+    /// The frames' windows showing each buffer against its count: equal
+    /// when WHOLE, else no more than it.
+    fn compare_window_counts(&self, whole: bool) {
         if !cfg!(debug_assertions) {
             return;
         }
         let mut shown: Vec<(usize, usize)> = Vec::new();
-        for window in self.windows_where(|_| true) {
+        for window in primitives::foreach_frame_window(self) {
             let Some(buffer) = window
                 .contents_buffer_id()
                 .and_then(|id| self.get_buffer_by_id(id))
@@ -1052,11 +1060,19 @@ impl Interpreter {
                 .iter()
                 .find(|(known, _)| *known == text)
                 .map_or(0, |(_, count)| *count);
-            debug_assert_eq!(
-                buffer.window_count(),
-                counted,
-                "window count of buffer {id} against its windows"
-            );
+            if whole {
+                debug_assert_eq!(
+                    buffer.window_count(),
+                    counted,
+                    "window count of buffer {id} against its windows"
+                );
+            } else {
+                debug_assert!(
+                    counted <= buffer.window_count(),
+                    "window count {} of buffer {id} below its {counted} windows",
+                    buffer.window_count()
+                );
+            }
         }
     }
 
@@ -2530,7 +2546,7 @@ impl Interpreter {
     /// make_frame would have set in those buffers.
     pub(crate) fn rebind_window_markers(&mut self) {
         self.recount_buffer_windows();
-        for window in self.windows_where(|_| true) {
+        for window in primitives::foreach_frame_window(self) {
             let Some(buffer_id) = window.contents_buffer_id() else {
                 continue;
             };
@@ -3130,7 +3146,7 @@ impl Interpreter {
         crate::lisp::native_comp::note_lisp_allocation(
             crate::lisp::alloc::vectors::windows::WINDOW_GNU_VECTOR_SLOTS * 8,
         );
-        let window = self.allocate_window(held);
+        let window = crate::lisp::types::WindowObjectRef::new(held);
         for (index, value) in slots.into_iter().take(held).enumerate() {
             window.set_held(index, value);
         }
@@ -3140,20 +3156,6 @@ impl Interpreter {
         self.window_sequence_number += 1;
         window.set_sequence_number(self.window_sequence_number);
         primitives::WindowRef::from_object(window)
-    }
-
-    /// alloc.c's allocate_window: a window object holding HELD nil slots
-    /// under the next id, which the registry and the type index name it
-    /// by for the side tables.
-    pub(crate) fn allocate_window(&mut self, held: usize) -> crate::lisp::types::WindowObjectRef {
-        let id = self.alloc_record_id();
-        let window = crate::lisp::types::WindowObjectRef::new(id, self.record_owner, held);
-        self.windows.insert(id, window);
-        self.record_ids_by_type_index
-            .entry(crate::lisp::alloc::vectors::windows::WINDOW_TYPE_NAME.to_owned())
-            .or_default()
-            .insert(id);
-        window
     }
 
     /// alloc.c:Fmake_closure.  Both the ordinary primitive dispatcher and
@@ -3286,32 +3288,12 @@ impl Interpreter {
             .query = Some(query);
     }
 
-    /// The windows of the registry that FILTER admits, as objects.
-    pub(crate) fn windows_where(
-        &self,
-        filter: impl Fn(primitives::WindowRef) -> bool,
-    ) -> Vec<primitives::WindowRef> {
-        self.windows
-            .values()
-            .copied()
-            .map(primitives::WindowRef::from_object)
-            .filter(|window| filter(*window))
-            .collect()
-    }
-
     #[cfg(test)]
     pub(crate) fn record_ids_by_type(&self, type_name: &str) -> Vec<u64> {
         self.record_ids_by_type_index
             .get(type_name)
             .map(|ids| ids.iter().copied().collect())
             .unwrap_or_default()
-    }
-
-    /// How many records `record_ids_by_type' would list, without them.
-    pub(crate) fn record_count_by_type(&self, type_name: &str) -> usize {
-        self.record_ids_by_type_index
-            .get(type_name)
-            .map_or(0, |ids| ids.len())
     }
 
     pub fn register_sqlite_handle(&mut self, id: u64, state: SqliteHandleState) {
@@ -4089,12 +4071,12 @@ mod runtime_index_tests {
             unreachable!("host mutex")
         };
         assert_eq!(interp.record_ids_by_type("index-host-mutex"), vec![host.id]);
-        // So is a window, an object of its own kind, under the windows'.
-        let windows_before = interp.record_ids_by_type("window");
+        // A window, an object of its own kind that nothing names by
+        // number, is in no index: the frames' window trees find it.
+        assert!(interp.record_ids_by_type("window").is_empty());
         let window = interp.make_window(Vec::new());
-        let mut windows = windows_before;
-        windows.push(window.id());
-        assert_eq!(interp.record_ids_by_type("window"), windows);
+        assert!(window.sequence_number() > 0);
+        assert!(interp.record_ids_by_type("window").is_empty());
     }
 
     #[test]

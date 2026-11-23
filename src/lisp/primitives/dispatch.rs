@@ -52,13 +52,14 @@ pub(crate) use display::set_echo_area_message;
 pub(crate) use display::{
     EchoSpans, FACE_NO_UNDERLINE, FACE_TTY_DEFAULT_BG_COLOR, FACE_TTY_DEFAULT_COLOR,
     FACE_TTY_DEFAULT_FG_COLOR, FACE_UNDERLINE_SINGLE, LineNumberLayout, LineNumberMode,
-    ModeLineCells, TtyFaceAttrs, WindowRenderInfo, adjust_frame_size,
+    ModeLineCells, TtyFaceAttrs, WindowRenderInfo, adjust_frame_size, all_frames_window_cycle,
     apply_staged_root_window_height, begin_display_mode_lines, change_frame_size,
-    do_pending_window_change, end_display_mode_lines, frame_top_margin, frames_window_list,
-    render_window_header_line, render_window_mode_line, render_window_tab_line,
-    replace_buffer_in_windows_safely, resolve_tty_face_attrs_remapped, run_window_change_functions,
-    set_window_buffer, store_window_hscroll_state, string_face_spans, window_base_line_pos,
-    window_face_spans, window_hscroll_state, window_line_number_layout, window_render_layout,
+    do_pending_window_change, end_display_mode_lines, foreach_frame_window, frame_top_margin,
+    frame_windows_for_deletion, frames_window_list, render_window_header_line,
+    render_window_mode_line, render_window_tab_line, replace_buffer_in_windows_safely,
+    resolve_tty_face_attrs_remapped, run_window_change_functions, set_window_buffer,
+    store_window_hscroll_state, string_face_spans, window_base_line_pos, window_face_spans,
+    window_hscroll_state, window_line_number_layout, window_render_layout,
     window_text_area_columns, window_total_columns,
 };
 pub(crate) use display::{

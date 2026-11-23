@@ -11,9 +11,10 @@
 //! number, not yet window.h's fields by name.  A window holds the first
 //! `held' of them: a slot past that count is one the window has never
 //! been given (it reads as absent, where a held slot reads as its value,
-//! nil included), and a store that needs it raises the count.  The id is
-//! the name the interpreter's side tables still know the window by, the
-//! owner whose id space it is in.
+//! nil included), and a store that needs it raises the count.  Like
+//! window.c's struct, the object is its own identity: nothing names a
+//! window by a number, and the windows are found as window.c finds them,
+//! from the frames' window trees.
 //!
 //! window.h's integers are C ints, which have no state for "never
 //! assigned": window.c assigns a window's edges and sizes where it makes
@@ -43,10 +44,6 @@ pub(crate) const WINDOW_LISP_WORDS: usize = 1 + WINDOW_SLOT_COUNT;
 /// tallies as consed for one.
 pub(crate) const WINDOW_GNU_VECTOR_SLOTS: usize = 66;
 
-/// The windows' name in the interpreter's type index, by which every
-/// window is enumerated.
-pub(crate) const WINDOW_TYPE_NAME: &str = "window";
-
 /// The payload after the one-word vector header: the Lisp words first,
 /// as a pseudovector's traced words are, then the fields that are not
 /// Lisp objects.
@@ -58,8 +55,6 @@ pub struct WindowState {
     /// window as well; nil for a deleted window.
     contents: Cell<Value>,
     slots: [Cell<Value>; WINDOW_SLOT_COUNT],
-    id: u64,
-    owner: u32,
     /// How many of the slots the window holds, from the first.
     held: Cell<u32>,
     /// window.h's use_time: "Number saying how recently window was
@@ -177,10 +172,10 @@ pub struct WindowState {
     window_end_pos_given: Cell<bool>,
 }
 
-/// How many words of a window follow its Lisp words: the id, the owner
-/// and held count, window.h's twenty-four integers from use_time to
-/// window_end_pos, and three words of bits.
-pub(crate) const WINDOW_REST_WORDS: usize = 29;
+/// How many words of a window follow its Lisp words: the held count,
+/// window.h's twenty-four integers from use_time to window_end_pos, and
+/// three words of bits.
+pub(crate) const WINDOW_REST_WORDS: usize = 28;
 
 pub type WindowObjectRef = VectorlikeRef<WindowState>;
 
@@ -189,49 +184,47 @@ const _: () = {
     assert!(size_of::<WindowState>() == rest + 8 * WINDOW_REST_WORDS);
     assert!(std::mem::offset_of!(WindowState, contents) == 0);
     assert!(std::mem::offset_of!(WindowState, slots) == 8);
-    assert!(std::mem::offset_of!(WindowState, id) == rest);
-    assert!(std::mem::offset_of!(WindowState, owner) == rest + 8);
-    assert!(std::mem::offset_of!(WindowState, held) == rest + 12);
-    assert!(std::mem::offset_of!(WindowState, use_time) == rest + 16);
-    assert!(std::mem::offset_of!(WindowState, sequence_number) == rest + 24);
+    assert!(std::mem::offset_of!(WindowState, held) == rest);
+    assert!(std::mem::offset_of!(WindowState, use_time) == rest + 8);
+    assert!(std::mem::offset_of!(WindowState, sequence_number) == rest + 16);
     // window.h's order, from change_stamp to window_end_pos.
-    assert!(std::mem::offset_of!(WindowState, change_stamp) == rest + 32);
-    assert!(std::mem::offset_of!(WindowState, pixel_left) == rest + 40);
-    assert!(std::mem::offset_of!(WindowState, pixel_top) == rest + 48);
-    assert!(std::mem::offset_of!(WindowState, left_col) == rest + 56);
-    assert!(std::mem::offset_of!(WindowState, top_line) == rest + 64);
-    assert!(std::mem::offset_of!(WindowState, pixel_width) == rest + 72);
-    assert!(std::mem::offset_of!(WindowState, pixel_height) == rest + 80);
-    assert!(std::mem::offset_of!(WindowState, old_pixel_width) == rest + 88);
-    assert!(std::mem::offset_of!(WindowState, old_pixel_height) == rest + 96);
-    assert!(std::mem::offset_of!(WindowState, old_body_pixel_width) == rest + 104);
-    assert!(std::mem::offset_of!(WindowState, old_body_pixel_height) == rest + 112);
-    assert!(std::mem::offset_of!(WindowState, total_cols) == rest + 120);
-    assert!(std::mem::offset_of!(WindowState, total_lines) == rest + 128);
-    assert!(std::mem::offset_of!(WindowState, hscroll) == rest + 136);
-    assert!(std::mem::offset_of!(WindowState, min_hscroll) == rest + 144);
-    assert!(std::mem::offset_of!(WindowState, last_modified) == rest + 152);
-    assert!(std::mem::offset_of!(WindowState, last_overlay_modified) == rest + 160);
-    assert!(std::mem::offset_of!(WindowState, last_point) == rest + 168);
-    assert!(std::mem::offset_of!(WindowState, column_number_displayed) == rest + 176);
-    assert!(std::mem::offset_of!(WindowState, left_margin_cols) == rest + 184);
-    assert!(std::mem::offset_of!(WindowState, right_margin_cols) == rest + 192);
-    assert!(std::mem::offset_of!(WindowState, window_end_pos) == rest + 200);
+    assert!(std::mem::offset_of!(WindowState, change_stamp) == rest + 24);
+    assert!(std::mem::offset_of!(WindowState, pixel_left) == rest + 32);
+    assert!(std::mem::offset_of!(WindowState, pixel_top) == rest + 40);
+    assert!(std::mem::offset_of!(WindowState, left_col) == rest + 48);
+    assert!(std::mem::offset_of!(WindowState, top_line) == rest + 56);
+    assert!(std::mem::offset_of!(WindowState, pixel_width) == rest + 64);
+    assert!(std::mem::offset_of!(WindowState, pixel_height) == rest + 72);
+    assert!(std::mem::offset_of!(WindowState, old_pixel_width) == rest + 80);
+    assert!(std::mem::offset_of!(WindowState, old_pixel_height) == rest + 88);
+    assert!(std::mem::offset_of!(WindowState, old_body_pixel_width) == rest + 96);
+    assert!(std::mem::offset_of!(WindowState, old_body_pixel_height) == rest + 104);
+    assert!(std::mem::offset_of!(WindowState, total_cols) == rest + 112);
+    assert!(std::mem::offset_of!(WindowState, total_lines) == rest + 120);
+    assert!(std::mem::offset_of!(WindowState, hscroll) == rest + 128);
+    assert!(std::mem::offset_of!(WindowState, min_hscroll) == rest + 136);
+    assert!(std::mem::offset_of!(WindowState, last_modified) == rest + 144);
+    assert!(std::mem::offset_of!(WindowState, last_overlay_modified) == rest + 152);
+    assert!(std::mem::offset_of!(WindowState, last_point) == rest + 160);
+    assert!(std::mem::offset_of!(WindowState, column_number_displayed) == rest + 168);
+    assert!(std::mem::offset_of!(WindowState, left_margin_cols) == rest + 176);
+    assert!(std::mem::offset_of!(WindowState, right_margin_cols) == rest + 184);
+    assert!(std::mem::offset_of!(WindowState, window_end_pos) == rest + 192);
     // The bits in window.h's order, then those of the given integers.
-    assert!(std::mem::offset_of!(WindowState, mini) == rest + 208);
-    assert!(std::mem::offset_of!(WindowState, horizontal) == rest + 209);
-    assert!(std::mem::offset_of!(WindowState, update_mode_line) == rest + 210);
-    assert!(std::mem::offset_of!(WindowState, last_had_star) == rest + 211);
-    assert!(std::mem::offset_of!(WindowState, start_at_line_beg) == rest + 212);
-    assert!(std::mem::offset_of!(WindowState, force_start) == rest + 213);
-    assert!(std::mem::offset_of!(WindowState, optional_new_start) == rest + 214);
-    assert!(std::mem::offset_of!(WindowState, cursor_off_p) == rest + 215);
-    assert!(std::mem::offset_of!(WindowState, window_end_valid) == rest + 216);
-    assert!(std::mem::offset_of!(WindowState, redisplay) == rest + 217);
-    assert!(std::mem::offset_of!(WindowState, suspend_auto_hscroll) == rest + 218);
-    assert!(std::mem::offset_of!(WindowState, pixel_left_given) == rest + 219);
-    assert!(std::mem::offset_of!(WindowState, total_lines_given) == rest + 226);
-    assert!(std::mem::offset_of!(WindowState, window_end_pos_given) == rest + 227);
+    assert!(std::mem::offset_of!(WindowState, mini) == rest + 200);
+    assert!(std::mem::offset_of!(WindowState, horizontal) == rest + 201);
+    assert!(std::mem::offset_of!(WindowState, update_mode_line) == rest + 202);
+    assert!(std::mem::offset_of!(WindowState, last_had_star) == rest + 203);
+    assert!(std::mem::offset_of!(WindowState, start_at_line_beg) == rest + 204);
+    assert!(std::mem::offset_of!(WindowState, force_start) == rest + 205);
+    assert!(std::mem::offset_of!(WindowState, optional_new_start) == rest + 206);
+    assert!(std::mem::offset_of!(WindowState, cursor_off_p) == rest + 207);
+    assert!(std::mem::offset_of!(WindowState, window_end_valid) == rest + 208);
+    assert!(std::mem::offset_of!(WindowState, redisplay) == rest + 209);
+    assert!(std::mem::offset_of!(WindowState, suspend_auto_hscroll) == rest + 210);
+    assert!(std::mem::offset_of!(WindowState, pixel_left_given) == rest + 211);
+    assert!(std::mem::offset_of!(WindowState, total_lines_given) == rest + 218);
+    assert!(std::mem::offset_of!(WindowState, window_end_pos_given) == rest + 219);
 };
 
 impl Vectorlike for WindowState {
@@ -240,20 +233,18 @@ impl Vectorlike for WindowState {
 }
 
 impl WindowObjectRef {
-    /// window.c:make_window's allocate_window: a window of ID in OWNER's
-    /// id space that holds HELD slots, each nil, with no contents, its
+    /// window.c:make_window's allocate_window: a window that holds HELD
+    /// slots, each nil, with no contents, its
     /// integers zero and its bits clear: a window given no edge and no
     /// size, with no column number displayed (make_window's
     /// `w->column_number_displayed = -1').  The caller that makes one
     /// for Lisp tallies its consing (`WINDOW_GNU_VECTOR_SLOTS') and
     /// gives it its sequence number.
-    pub(crate) fn new(id: u64, owner: u32, held: usize) -> Self {
+    pub(crate) fn new(held: usize) -> Self {
         assert!(held <= WINDOW_SLOT_COUNT, "a window holds its slots");
         Self::allocate(WindowState {
             contents: Cell::new(Value::Nil),
             slots: [const { Cell::new(Value::Nil) }; WINDOW_SLOT_COUNT],
-            id,
-            owner,
             held: Cell::new(held as u32),
             use_time: Cell::new(0),
             sequence_number: Cell::new(0),
@@ -304,18 +295,6 @@ impl WindowObjectRef {
 }
 
 impl WindowState {
-    /// The id the side tables know the window by.
-    #[inline(always)]
-    pub(crate) fn id(&self) -> u64 {
-        self.id
-    }
-
-    /// The interpreter whose id space the id is in.
-    #[inline(always)]
-    pub(crate) fn owner(&self) -> u32 {
-        self.owner
-    }
-
     /// w->contents.
     #[inline(always)]
     pub(crate) fn contents(&self) -> Value {
@@ -829,8 +808,6 @@ impl WindowState {
 impl std::fmt::Debug for WindowState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WindowState")
-            .field("id", &self.id)
-            .field("owner", &self.owner)
             .field("held", &self.held.get())
             .field("use_time", &self.use_time.get())
             .field("sequence_number", &self.sequence_number.get())

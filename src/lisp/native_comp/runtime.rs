@@ -17632,17 +17632,10 @@ mod tests {
             root.slot(crate::lisp::primitives::WINDOW_FRAME_SLOT),
             Value::Frame(copied)
         );
-        let object = |window: crate::lisp::primitives::WindowRef| match window.value().kind() {
-            Kind::Window(object) => object,
-            _ => unreachable!("a window is a window object"),
-        };
-        assert_ne!(
-            object(root).owner(),
-            object(frame.borrow().root_window.expect("source root")).owner()
-        );
-        assert!(object(root).ptr_eq(&object(
-            cloned.window_ref(root.id()).expect("clone window index")
-        )));
+        // The copy's root window is the one the copy's frames walk to,
+        // and none of the source's.
+        assert!(crate::lisp::primitives::foreach_frame_window(&cloned).contains(&root));
+        assert!(!crate::lisp::primitives::foreach_frame_window(&source).contains(&root));
         assert_eq!(
             state
                 .selected_window

@@ -313,14 +313,6 @@ impl WindowRef {
         WindowRef(window)
     }
 
-    /// The id the registry knows the window by, which only the tests of
-    /// the registry read: the code holds the window.
-    #[cfg(test)]
-    #[inline]
-    pub(crate) fn id(self) -> u64 {
-        self.0.id()
-    }
-
     /// The window as a Lisp object.
     #[inline]
     pub(crate) fn value(self) -> Value {

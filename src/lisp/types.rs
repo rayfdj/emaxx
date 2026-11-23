@@ -3260,8 +3260,7 @@ impl Value {
             Kind::Terminal(terminal) => format!("terminal<{}>", terminal.id),
             Kind::SymbolWithPos(_) => "symbol-with-pos".into(),
             Kind::Record(record) => format!("record<{}>", record.id),
-            // A window's host-side name stays the one it had as a record.
-            Kind::Window(window) => format!("record<{}>", window.id()),
+            Kind::Window(window) => format!("window<{:x}>", window.identity()),
             Kind::LispRecord(record) => format!("record<{:x}>", record.identity()),
             Kind::BoolVector(vector) => format!("bool-vector<{:x}>", vector.identity()),
             Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
@@ -3478,8 +3477,8 @@ fn format_value(
             write!(f, "#<symbol {} at {}>", object.symbol(), object.position())
         }
         Kind::Record(record) => write!(f, "#<record id:{}>", record.id),
-        // As `type_name': the host-side form a window had as a record.
-        Kind::Window(window) => write!(f, "#<record id:{}>", window.id()),
+        // print.c's `#<window N', by the window's sequence number.
+        Kind::Window(window) => write!(f, "#<window {}>", window.sequence_number()),
         Kind::LispRecord(record) => write!(f, "#<record {:x}>", record.identity()),
         // print.c's form of a bool vector: its length, then its bytes.
         Kind::BoolVector(vector) => {

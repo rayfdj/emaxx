@@ -4500,19 +4500,14 @@ impl ImageGraphCopier {
                 copied
             }
             Kind::Window(window) => {
-                // The clone's own window under the same id, in its id
-                // space, holding as many slots; the slots copied after the
-                // window is on record (a window reaches itself through
-                // its frame and its siblings).
+                // The clone's own window, holding as many slots; the slots
+                // copied after the window is on record (a window reaches
+                // itself through its frame and its siblings).
                 let key = window.identity();
                 if let Some(copied) = self.records.get(&key) {
                     return *copied;
                 }
-                let copied_window = crate::lisp::types::WindowObjectRef::new(
-                    window.id(),
-                    self.record_owner,
-                    window.held(),
-                );
+                let copied_window = crate::lisp::types::WindowObjectRef::new(window.held());
                 let copied = Value::Window(copied_window);
                 self.records.insert(key, copied);
                 copied_window.set_use_time(window.use_time());
@@ -5223,7 +5218,7 @@ impl Interpreter {
     }
 
     /// The record ID names, as a value: for the side tables that still
-    /// hold a record by id (a process's, a window's, a thread's) and hand
+    /// hold a record by id (a process's, a thread's) and hand
     /// it back to Lisp.  Such a table holds a live record (it is a root
     /// of it, or the record is reachable through the state), so a
     /// missing one is a bug.
@@ -5247,22 +5242,12 @@ impl Interpreter {
             let id = record.id;
             // The registry names the freed cell under this id, or it names
             // the record an image load put in its place (whose side tables
-            // are its own): only the former leaves.  A window leaves the
-            // windows' registry, where its id is.
-            if record.window {
-                match self.windows.get(id) {
-                    Some(held) if held.identity() == record.identity => {
-                        self.windows.remove(id);
-                    }
-                    _ => continue,
+            // are its own): only the former leaves.
+            match self.records.get(id) {
+                Some(held) if held.identity() == record.identity => {
+                    self.records.remove(id);
                 }
-            } else {
-                match self.records.get(id) {
-                    Some(held) if held.identity() == record.identity => {
-                        self.records.remove(id);
-                    }
-                    _ => continue,
-                }
+                _ => continue,
             }
             if let Some(type_name) = record.type_name.as_deref()
                 && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
@@ -5271,9 +5256,6 @@ impl Interpreter {
                 if ids.is_empty() {
                     self.record_ids_by_type_index.remove(type_name);
                 }
-            }
-            if record.window {
-                continue;
             }
             // The side tables that know an object by id go with it: the
             // sqlite handle (sqlite.c's finalizer closes the database),
@@ -5478,12 +5460,10 @@ impl Interpreter {
     /// A window the image held, which pdumper.c:dump_nilled_pseudovec
     /// wrote with every Lisp field nil and the rest zero: a deleted
     /// window of the new process (w->contents nil, its bits clear),
-    /// holding HELD nil slots, on no frame and with no sequence number.
-    /// Its id is this state's next, so it names no window this process
-    /// made and none it makes later: the dumping process's id is not an
-    /// identity here.
+    /// holding HELD nil slots, on no frame and with no sequence number,
+    /// an object of its own beside the windows this process made.
     pub(crate) fn install_dead_window(&mut self, held: usize) -> primitives::WindowRef {
-        primitives::WindowRef::from_object(self.allocate_window(held))
+        primitives::WindowRef::from_object(crate::lisp::types::WindowObjectRef::new(held))
     }
 
     /// A terminal the image nilled: a dead terminal object of its own,
@@ -6290,12 +6270,6 @@ impl Interpreter {
                 };
                 *slot = copied;
             }
-            for slot in clone.windows.values_mut() {
-                let Kind::Window(copied) = c.copy(&Value::Window(*slot)).kind() else {
-                    unreachable!("a window copies to a window")
-                };
-                *slot = copied;
-            }
             for event in &mut clone.keyboard_input.command_keys {
                 *event = c.copy(event);
             }
@@ -6976,14 +6950,11 @@ pub struct InterpreterState {
     buffer_case_tables: coding::BufferCaseTables,
     /// Allocated record objects, by id (see `record_registry').
     records: record_registry::RecordRegistry,
-    /// The window objects, by id: as weak as `records', and purged with
-    /// it after a sweep.
-    windows: record_registry::WindowRegistry,
     /// This state's id space, for the records' `owner'.
     record_owner: u32,
-    /// Host pseudovector IDs grouped by their fixed type tags, principally
-    /// for window enumeration during buffer teardown. Generic Lisp records
-    /// do not enter this registry and type-slot stores maintain no index.
+    /// Host pseudovector IDs grouped by their fixed type tags, for the
+    /// census of the obarrays. Generic Lisp records do not enter this
+    /// registry and type-slot stores maintain no index.
     record_ids_by_type_index: RecordIdsByType,
     /// Record mark bits from the most recent real reachability pass.  Dense
     /// host storage keeps IDs stable, but dead records must not contribute to
@@ -7800,7 +7771,6 @@ impl Interpreter {
                 (main_thread_id, main_thread),
                 (standard_obarray_id, standard_obarray),
             ]),
-            windows: record_registry::WindowRegistry::default(),
             record_owner,
             record_ids_by_type_index: [
                 ("thread".into(), BTreeSet::from([main_thread_id])),

@@ -36747,6 +36747,67 @@ fn window_motion_counts_the_window_body_as_window_c() {
 }
 
 #[test]
+fn the_frames_windows_are_found_as_window_c_walks_the_frames() {
+    // window.c finds a frame's windows from its tree: foreach_window's
+    // leaves in canonical order and then the root's `next', the
+    // minibuffer window; delete_all_child_windows' later siblings first,
+    // then children, then the window itself; Fnext_window (w, Qt, Qt)'s
+    // cycle from the selected window round to it.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        let value = interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"));
+        WindowRef::from_value(&value)
+    };
+    let a = run(&mut interp, "(setq wt-a (selected-window))").expect("a window");
+    let b = run(&mut interp, "(setq wt-b (split-window))").expect("a window");
+    let column = run(&mut interp, "(window-parent wt-a)").expect("a parent");
+    let c = run(&mut interp, "(setq wt-c (split-window wt-a nil t))").expect("a window");
+    let row = run(&mut interp, "(window-parent wt-a)").expect("a parent");
+    let mini = run(&mut interp, "(minibuffer-window)").expect("a minibuffer window");
+    // The tree: a column of a row (wt-a beside wt-c) above wt-b.
+    assert_eq!(interp.selected_frame_id.borrow().root_window, Some(column));
+    assert_eq!(column.first_child(), Some(row));
+    assert_eq!(row.first_child(), Some(a));
+    let listed = |windows: crate::lisp::primitives::WindowList| windows.to_vec();
+    assert_eq!(
+        listed(crate::lisp::primitives::foreach_frame_window(&interp)),
+        vec![a, c, b, mini]
+    );
+    assert_eq!(
+        listed(crate::lisp::primitives::frame_windows_for_deletion(
+            interp.selected_frame_id
+        )),
+        vec![mini, b, c, a, row, column]
+    );
+    assert_eq!(
+        listed(crate::lisp::primitives::all_frames_window_cycle(&interp)),
+        vec![a, c, b, mini]
+    );
+    run(&mut interp, "(select-window wt-c)");
+    assert_eq!(
+        listed(crate::lisp::primitives::all_frames_window_cycle(&interp)),
+        vec![c, b, mini, a]
+    );
+    // The cycle is next-window's.
+    assert_eq!(run(&mut interp, "(next-window wt-b t t)"), Some(mini));
+    assert_eq!(run(&mut interp, "(next-window nil t t)"), Some(b));
+    // A deleted window is on no frame's tree.
+    run(&mut interp, "(delete-window wt-b)");
+    assert!(!b.is_valid());
+    assert_eq!(
+        listed(crate::lisp::primitives::foreach_frame_window(&interp)),
+        vec![a, c, mini]
+    );
+}
+
+#[test]
 fn buffers_count_the_windows_showing_them() {
     // window.c:adjust_window_count keeps b->window_count, on the base
     // buffer of an indirect one, at each wset_buffer: set_window_buffer,
@@ -36993,7 +37054,7 @@ fn window_contents_and_bits_say_what_a_window_is() {
     let column = handle(run(&mut interp, "(setq wk-column (window-parent))"));
     assert_eq!((shape(column), column.horizontal()), (INTERNAL, false));
     assert_eq!(column.contents(), top.value());
-    assert_eq!(column.first_child().map(WindowRef::id), Some(top.id()));
+    assert_eq!(column.first_child(), Some(top));
     assert!(!column.mini() && column.contents_buffer_id().is_none());
     assert_eq!((shape(bottom), bottom.contents()), (LEAF, buffer));
     // A split the other way makes a horizontal combination; a window
@@ -37086,6 +37147,51 @@ fn window_contents_and_bits_say_what_a_window_is() {
     interp.check_window_counts();
 }
 
+/// The window of COPY, a deep_clone_image of INTERP, at WINDOW's place
+/// there: the minibuffer window of the same frame of the frame list, or
+/// the window the same children lead to from that frame's root window.
+fn copied_window(interp: &Interpreter, copy: &Interpreter, window: WindowRef) -> WindowRef {
+    let frame = window.frame().expect("a window of a frame");
+    let index = interp
+        .frame_states
+        .iter()
+        .position(|listed| *listed == frame)
+        .expect("a frame of the frame list");
+    let copied_frame = copy.frame_states[index];
+    if frame.borrow().minibuffer_window == Some(window) {
+        return copied_frame
+            .borrow()
+            .minibuffer_window
+            .expect("the copy's minibuffer window");
+    }
+    let next = |window: WindowRef| WindowRef::from_value(&window.slot(WINDOW_NEXT_SIBLING_SLOT));
+    // Which child of its parent each window is, from WINDOW up.
+    let mut path = Vec::new();
+    let mut node = window;
+    while let Some(parent) = WindowRef::from_value(&node.slot(WINDOW_PARENT_SLOT)) {
+        let mut child = parent.first_child().expect("a parent's first child");
+        let mut place = 0;
+        while child != node {
+            child = next(child).expect("a later sibling");
+            place += 1;
+        }
+        path.push(place);
+        node = parent;
+    }
+    assert_eq!(frame.borrow().root_window, Some(node));
+    let mut copied = copied_frame
+        .borrow()
+        .root_window
+        .expect("the copy's root window");
+    for place in path.into_iter().rev() {
+        copied = copied.first_child().expect("the copy's first child");
+        for _ in 0..place {
+            copied = next(copied).expect("the copy's later sibling");
+        }
+    }
+    copied
+}
+
 #[test]
 fn window_sequence_number_use_time_and_cursor_bit_are_the_windows_own() {
     // window.h: sequence_number, use_time and cursor_off_p are fields of
@@ -37174,7 +37280,7 @@ fn window_sequence_number_use_time_and_cursor_bit_are_the_windows_own() {
     // A copy of the image has the windows' numbers, use times and
     // cursor bits in its own windows.
     let copy = interp.deep_clone_image();
-    let copied = copy.window_ref(bottom.id()).expect("the copied window");
+    let copied = copied_window(&interp, &copy, bottom);
     assert_ne!(copied.value(), bottom.value());
     assert_eq!(
         (
@@ -37371,7 +37477,7 @@ fn window_geometry_is_the_windows_own_integers() {
     // been given, in its own windows.
     let copy = interp.deep_clone_image();
     for window in [top, bottom, column] {
-        let copied = copy.window_ref(window.id()).expect("the copied window");
+        let copied = copied_window(&interp, &copy, window);
         assert_ne!(copied.value(), window.value());
         assert_eq!(
             (
@@ -37605,7 +37711,7 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
     top.set_optional_new_start(true);
     let copy = interp.deep_clone_image();
     for window in [top, bottom, column] {
-        let copied = copy.window_ref(window.id()).expect("the copied window");
+        let copied = copied_window(&interp, &copy, window);
         assert_ne!(copied.value(), window.value());
         assert_eq!(
             (counters(copied), bits(copied)),
@@ -37753,8 +37859,7 @@ fn a_window_configuration_holds_its_current_window() {
 fn a_copied_image_holds_its_own_windows() {
     // The windows an interpreter holds as objects (selected_window,
     // old_selected_window, minibuf_selected_window, minibuf_window) are
-    // the copy's own in a copied image, the ones its registry and its
-    // frame name.
+    // the copy's own in a copied image, the ones its frame names.
     let mut interp = Interpreter::new();
     let selected = interp.selected_window_ref();
     let mini = WindowRef::from_value(&interp.minibuffer_window_value()).expect("a mini window");
@@ -37767,8 +37872,17 @@ fn a_copied_image_holds_its_own_windows() {
     let copied_mini =
         WindowRef::from_value(&copy.minibuffer_window_value()).expect("a mini window");
     assert!(copied != selected && copied_mini != mini);
-    assert_eq!((copied.id(), copied_mini.id()), (selected.id(), mini.id()));
-    assert_eq!(copy.window_ref(copied.id()), Some(copied));
+    assert_eq!(
+        (copied.sequence_number(), copied_mini.sequence_number()),
+        (selected.sequence_number(), mini.sequence_number())
+    );
+    assert_eq!(
+        (
+            copied_window(&interp, &copy, selected),
+            copied_window(&interp, &copy, mini)
+        ),
+        (copied, copied_mini)
+    );
     assert_eq!(
         copy.selected_frame_id.borrow().selected_window,
         Some(copied)

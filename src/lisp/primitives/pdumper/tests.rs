@@ -2591,13 +2591,20 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
         .unwrap_or_else(|error| panic!("prin1-to-string: {error:?}"));
         string_like(&value).expect("a string").text
     }
+    // The windows of the frames, as window.c walks them.
+    fn frame_windows(interp: &Interpreter) -> Vec<Value> {
+        crate::lisp::primitives::foreach_frame_window(interp)
+            .iter()
+            .map(|window| window.value())
+            .collect()
+    }
     let mut source = Interpreter::new();
     let selected = source.selected_window_value();
     let minibuffer = source.minibuffer_window_value();
-    let dumped_ids = [selected, minibuffer].map(|window| {
+    let dumped_numbers = [selected, minibuffer].map(|window| {
         crate::lisp::primitives::WindowRef::from_value(&window)
             .expect("a window of the dumping process")
-            .id()
+            .sequence_number()
     });
     assert_ne!(selected, minibuffer);
     // The dumped selected window has a sequence number and a use time.
@@ -2615,14 +2622,15 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
     // The loading process's own windows, numbered as the dumped ones.
     let live_selected = target.selected_window_value();
     let live_minibuffer = target.minibuffer_window_value();
-    let live_ids = [live_selected, live_minibuffer].map(|window| {
+    let live_numbers = [live_selected, live_minibuffer].map(|window| {
         crate::lisp::primitives::WindowRef::from_value(&window)
             .expect("a window of the loading process")
-            .id()
+            .sequence_number()
     });
-    assert_eq!(live_ids, dumped_ids, "both processes number alike");
+    assert_eq!(live_numbers, dumped_numbers, "both processes number alike");
     let live_printed = printed(&mut target, &live_selected);
-    let windows_before = target.record_ids_by_type("window");
+    let windows_before = frame_windows(&target);
+    assert_eq!(windows_before, vec![live_selected, live_minibuffer]);
 
     let image = load_image(&bytes, &mut target).expect("load nilled windows");
     let graph = image
@@ -2639,16 +2647,17 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
     assert_ne!(restored[0], restored[1]);
     assert_eq!(restored[0], restored[2], "one object for one window");
 
-    // The live windows are the objects they were, under the ids they had.
+    // The live windows are the objects they were, with the numbers they
+    // had, and the frame's windows still.
     assert_eq!(target.selected_window_value(), live_selected);
     assert_eq!(target.minibuffer_window_value(), live_minibuffer);
-    let registered = |target: &Interpreter, id: u64| {
-        target
-            .window_ref(id)
-            .map(crate::lisp::primitives::WindowRef::value)
-    };
-    assert_eq!(registered(&target, live_ids[0]), Some(live_selected));
-    assert_eq!(registered(&target, live_ids[1]), Some(live_minibuffer));
+    let numbers = [live_selected, live_minibuffer].map(|window| {
+        crate::lisp::primitives::WindowRef::from_value(&window)
+            .expect("a live window")
+            .sequence_number()
+    });
+    assert_eq!(numbers, live_numbers);
+    assert_eq!(frame_windows(&target), windows_before);
     assert_eq!(printed(&mut target, &live_selected), live_printed);
     target.set_global_binding("d3-live", live_selected);
     assert_eq!(
@@ -2661,18 +2670,19 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
         Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
     );
 
-    let mut dead_ids = Vec::new();
+    let mut dead_windows = Vec::new();
     for dead in [restored[0], restored[1]] {
         let Kind::Window(window) = dead.kind() else {
             panic!("a restored window is a window")
         };
         assert_ne!(dead, live_selected);
         assert_ne!(dead, live_minibuffer);
-        // An id of its own: no live window's, and not the dumped one's.
-        assert!(!windows_before.contains(&window.id()));
-        assert!(!dumped_ids.contains(&window.id()));
-        assert_eq!(registered(&target, window.id()), Some(dead));
-        dead_ids.push(window.id());
+        // An object of its own: no window of the frame's, and none the
+        // dumping process made.
+        assert!(!windows_before.contains(&dead));
+        assert!(dead != selected && dead != minibuffer);
+        assert!(frame_windows(&target).iter().all(|live| *live != dead));
+        dead_windows.push(window);
         // Every Lisp field nil and the bits clear: no contents is what
         // says the window is deleted, the dumped minibuffer window's too.
         let handle = crate::lisp::primitives::WindowRef::from_value(&dead).expect("a window");
@@ -2711,12 +2721,10 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
             )
         );
     }
-    assert_ne!(dead_ids[0], dead_ids[1]);
-    // The type index lists the two dead windows beside the live ones.
-    let mut windows = windows_before.clone();
-    windows.extend(dead_ids.iter().copied());
-    windows.sort_unstable();
-    assert_eq!(target.record_ids_by_type("window"), windows);
+    assert!(!dead_windows[0].ptr_eq(&dead_windows[1]));
+    // The frame's windows are the live ones alone, the two dead windows
+    // on no frame.
+    assert_eq!(frame_windows(&target), windows_before);
     assert_eq!(
         target.frame_states.len(),
         1,

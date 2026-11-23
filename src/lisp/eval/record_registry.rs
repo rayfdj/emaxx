@@ -1,9 +1,7 @@
 //! The records by id (`find_record'), a registry and not a root: a
 //! record the sweep frees leaves it (`purge_freed_records').  Ids are
 //! sparse (an image's records keep the ids of the dumping process), so
-//! the registry holds only the records.  The windows, which are objects
-//! of their own kind, have a registry of the same shape (`window_ref'),
-//! as weak and purged with the records'.
+//! the registry holds only the records.
 //!
 //! GNU code holds a window, a frame or a process as a Lisp_Object and
 //! reads its slots through the pointer (XWINDOW (w)->buffer); the side
@@ -13,25 +11,19 @@
 //! replaced or taken out, so that it never names a record the tree does
 //! not.
 
-use crate::lisp::types::{RecordRef, WindowObjectRef};
+use crate::lisp::types::RecordRef;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
 /// How many recent lookups the registry keeps.
 const RECENT: usize = 32;
 
-/// The objects of one kind by id, R their handle.
-pub(crate) struct Registry<R> {
-    records: BTreeMap<u64, R>,
-    recent: [Cell<Option<(u64, R)>>; RECENT],
+pub(crate) struct RecordRegistry {
+    records: BTreeMap<u64, RecordRef>,
+    recent: [Cell<Option<(u64, RecordRef)>>; RECENT],
 }
 
-/// The host records by id.
-pub(crate) type RecordRegistry = Registry<RecordRef>;
-/// The windows by id.
-pub(crate) type WindowRegistry = Registry<WindowObjectRef>;
-
-impl<R> Default for Registry<R> {
+impl Default for RecordRegistry {
     fn default() -> Self {
         Self {
             records: BTreeMap::new(),
@@ -42,7 +34,7 @@ impl<R> Default for Registry<R> {
 
 /// A copy keeps the records and none of the lookups (a copied state's
 /// records are replaced in place by its copier).
-impl<R: Copy> Clone for Registry<R> {
+impl Clone for RecordRegistry {
     fn clone(&self) -> Self {
         Self {
             records: self.records.clone(),
@@ -51,8 +43,8 @@ impl<R: Copy> Clone for Registry<R> {
     }
 }
 
-impl<R, const N: usize> From<[(u64, R); N]> for Registry<R> {
-    fn from(records: [(u64, R); N]) -> Self {
+impl<const N: usize> From<[(u64, RecordRef); N]> for RecordRegistry {
+    fn from(records: [(u64, RecordRef); N]) -> Self {
         Self {
             records: BTreeMap::from(records),
             ..Self::default()
@@ -60,15 +52,15 @@ impl<R, const N: usize> From<[(u64, R); N]> for Registry<R> {
     }
 }
 
-impl<R: Copy> Registry<R> {
+impl RecordRegistry {
     #[inline(always)]
-    fn slot(&self, id: u64) -> &Cell<Option<(u64, R)>> {
+    fn slot(&self, id: u64) -> &Cell<Option<(u64, RecordRef)>> {
         &self.recent[id as usize % RECENT]
     }
 
     /// The record ID names.
     #[inline]
-    pub(crate) fn get(&self, id: u64) -> Option<R> {
+    pub(crate) fn get(&self, id: u64) -> Option<RecordRef> {
         let slot = self.slot(id);
         if let Some((held, record)) = slot.get()
             && held == id
@@ -81,7 +73,7 @@ impl<R: Copy> Registry<R> {
     }
 
     /// RECORD under ID, in place of any record that had it.
-    pub(crate) fn insert(&mut self, id: u64, record: R) {
+    pub(crate) fn insert(&mut self, id: u64, record: RecordRef) {
         self.slot(id).set(None);
         self.records.insert(id, record);
     }
@@ -97,12 +89,12 @@ impl<R: Copy> Registry<R> {
         self.records.len()
     }
 
-    pub(crate) fn values(&self) -> impl Iterator<Item = &R> {
+    pub(crate) fn values(&self) -> impl Iterator<Item = &RecordRef> {
         self.records.values()
     }
 
     #[cfg(test)]
-    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut R> {
+    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut RecordRef> {
         for slot in &self.recent {
             slot.set(None);
         }
