@@ -3477,6 +3477,21 @@ pub(super) fn direct_native_symbol_with_pos_pos(index: usize, sympos: NativeWord
     }
 }
 
+/// data.c:Fkeywordp.  A bare symbol answers from its name and obarray,
+/// and any object that is no symbol answers nil, from the word alone.  A
+/// symbol with position is one only while symbols_with_pos_enabled is
+/// set (lisp.h:SYMBOLP), so for that object alone the variable is read,
+/// through the active call, as `direct_native_symbolp' reads it.
+/// Nothing here signals, allocates or runs Lisp, so the handlers stay as
+/// native code left them.
+pub(super) extern "C" fn direct_native_keywordp(object: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    let object = unsafe { Value::from_word(object) };
+    native_boolean(predicates::keywordp(&object, || {
+        with_active(|active| unsafe { &*active.interpreter }.symbols_with_positions_enabled())
+    }))
+}
+
 pub(super) extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
     if left == right {
         return native_boolean(true);
@@ -7949,6 +7964,7 @@ mod tests {
         word_entry("remove-pos-from-symbol", 1, false),
         word_entry("bare-symbol", 1, false),
         word_entry("symbol-with-pos-pos", 1, false),
+        word_entry("keywordp", 1, true),
     ];
 
     /// The generator's other targets, which read the interpreter, walk or

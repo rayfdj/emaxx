@@ -381,6 +381,7 @@ fn direct_native_target(name: &str) -> Option<&'static str> {
         "char-or-string-p" => "direct_native_char_or_string_p",
         "arrayp" => "direct_native_arrayp",
         "remove-pos-from-symbol" => "direct_native_remove_pos_from_symbol",
+        "keywordp" => "direct_native_keywordp",
         "eq" => "direct_native_eq",
         "eql" => "direct_native_eql",
         "type-of" => "direct_native_type_of",

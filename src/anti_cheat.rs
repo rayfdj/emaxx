@@ -759,6 +759,11 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         owner: "data.c:Fsymbol_with_pos_pos",
         contract_test: "word_level_entries_answer_as_gnu_does",
     },
+    NativeCFastPathContract {
+        primitive: "keywordp",
+        owner: "data.c:Fkeywordp",
+        contract_test: "word_level_entries_answer_as_gnu_does",
+    },
 ];
 
 /// Deliberate semantic differences from GNU C require Ray's explicit approval
