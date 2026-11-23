@@ -277,6 +277,17 @@ fn emit(table: &Table) -> String {
         if direct_native_target(&primitive.name).is_some() {
             continue;
         }
+        if let Some(target) = indexed_native_target(&primitive.name) {
+            assert!(
+                primitive.max_args >= 0,
+                "an entry that passes its index takes a fixed number of arguments"
+            );
+            let (parameters, arguments) = fixed_parameters(primitive.max_args);
+            generated.push_str(&format!(
+                "extern \"C\" fn native_subr_{index:04}({parameters}) -> super::runtime::NativeWord {{\n    super::runtime::{target}({index}, {arguments})\n}}\n\n"
+            ));
+            continue;
+        }
         if primitive.name == "cons" {
             assert_eq!(primitive.max_args, 2, "alloc.c:Fcons has fixed arity two");
             generated.push_str(&format!(
@@ -310,14 +321,7 @@ fn emit(table: &Table) -> String {
                 "extern \"C\" fn native_subr_{index:04}(args: super::runtime::NativeWord) -> super::runtime::NativeWord {{\n    super::runtime::invoke_subr({index}, &[args])\n}}\n\n"
             )),
             count => {
-                let parameters = (0..count)
-                    .map(|argument| format!("arg_{argument}: super::runtime::NativeWord"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let arguments = (0..count)
-                    .map(|argument| format!("arg_{argument}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let (parameters, arguments) = fixed_parameters(count);
                 generated.push_str(&format!(
                     "extern \"C\" fn native_subr_{index:04}({parameters}) -> super::runtime::NativeWord {{\n    super::runtime::invoke_subr({index}, &[{arguments}])\n}}\n\n"
                 ));
@@ -325,6 +329,20 @@ fn emit(table: &Table) -> String {
         }
     }
     generated
+}
+
+/// The parameter list of a generated entry of COUNT arguments, and the
+/// same arguments as it passes them on.
+fn fixed_parameters(count: i32) -> (String, String) {
+    let parameters = (0..count)
+        .map(|argument| format!("arg_{argument}: super::runtime::NativeWord"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let arguments = (0..count)
+        .map(|argument| format!("arg_{argument}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    (parameters, arguments)
 }
 
 // Store the chosen Rust implementation in the subr itself, as DEFUN stores
@@ -384,6 +402,20 @@ fn direct_native_target(name: &str) -> Option<&'static str> {
         "length" => "direct_native_length",
         "plist-member" => "direct_native_plist_member",
         "make-closure" => "direct_native_make_closure",
+        _ => return None,
+    })
+}
+
+// A subr whose runtime function answers from its argument words where the
+// subr does not signal, and makes the subr's own call of any other
+// arguments.  That call needs the subr, so the entry is generated: it
+// passes its index in the table with its arguments to the runtime
+// function, which is inlined into it, so that the index is a constant of
+// the entry and nothing is searched for at run time.
+fn indexed_native_target(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "bare-symbol" => "direct_native_bare_symbol",
+        "symbol-with-pos-pos" => "direct_native_symbol_with_pos_pos",
         _ => return None,
     })
 }

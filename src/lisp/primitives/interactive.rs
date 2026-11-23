@@ -999,6 +999,28 @@ pub(crate) fn remove_pos_from_symbol(value: &Value) -> Value {
     symbol_with_pos_words(value).map_or(*value, |(symbol, _)| symbol)
 }
 
+/// data.c:Fbare_symbol where it does not signal: a bare symbol itself
+/// (BARE_SYMBOL_P) and the symbol of a symbol with position, whatever
+/// `symbols-with-pos-enabled' is.  None of any other object, of which
+/// the subr signals.  A function of the object alone, as
+/// `remove_pos_from_symbol' is.
+#[inline]
+pub(crate) fn bare_symbol_of(value: &Value) -> Option<Value> {
+    if value.is_symbol() {
+        Some(*value)
+    } else {
+        symbol_with_pos_words(value).map(|(symbol, _)| symbol)
+    }
+}
+
+/// data.c:Fsymbol_with_pos_pos where it does not signal: the position of
+/// a symbol with position.  None of any other object, of which the subr
+/// signals.  A function of the object alone.
+#[inline]
+pub(crate) fn symbol_with_pos_pos(value: &Value) -> Option<Value> {
+    symbol_with_pos_words(value).map(|(_, position)| position)
+}
+
 #[cfg(test)]
 thread_local! {
     static SYMBOL_WITH_POS_FLAG_READ_COUNT: std::cell::Cell<usize> =

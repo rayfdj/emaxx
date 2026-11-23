@@ -749,6 +749,16 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         owner: "data.c:Fremove_pos_from_symbol",
         contract_test: "word_level_entries_answer_as_gnu_does",
     },
+    NativeCFastPathContract {
+        primitive: "bare-symbol",
+        owner: "data.c:Fbare_symbol",
+        contract_test: "word_level_entries_answer_as_gnu_does",
+    },
+    NativeCFastPathContract {
+        primitive: "symbol-with-pos-pos",
+        owner: "data.c:Fsymbol_with_pos_pos",
+        contract_test: "word_level_entries_answer_as_gnu_does",
+    },
 ];
 
 /// Deliberate semantic differences from GNU C require Ray's explicit approval

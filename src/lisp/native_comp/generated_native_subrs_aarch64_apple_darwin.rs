@@ -17549,11 +17549,11 @@ extern "C" fn native_subr_1298(
 }
 
 extern "C" fn native_subr_1300(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1300, &[arg_0])
+    super::runtime::direct_native_symbol_with_pos_pos(1300, arg_0)
 }
 
 extern "C" fn native_subr_1301(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1301, &[arg_0])
+    super::runtime::direct_native_bare_symbol(1301, arg_0)
 }
 
 extern "C" fn native_subr_1302(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {

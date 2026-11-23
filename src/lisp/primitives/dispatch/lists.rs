@@ -860,10 +860,9 @@ define_dispatch!(
             }
             "symbol-with-pos-pos" => {
                 need_args(name, args, 1)?;
-                let (_, position) = symbol_with_pos_parts(interp, &args[0]).ok_or_else(|| {
+                symbol_with_pos_pos(&args[0]).ok_or_else(|| {
                     LispError::WrongTypeArgument("symbol-with-pos-p".into(), args[0])
-                })?;
-                Ok(Value::Integer(position))
+                })
             }
             "remove-pos-from-symbol" => {
                 // data.c Fremove_pos_from_symbol: any non-symbol-with-pos
@@ -875,12 +874,7 @@ define_dispatch!(
                 // data.c Fbare_symbol: unlike remove-pos-from-symbol, a
                 // non-symbol argument signals wrong-type-argument.
                 need_args(name, args, 1)?;
-                match args[0].kind() {
-                    Kind::Symbol(_) | Kind::Nil | Kind::T => Ok(args[0]),
-                    other => symbol_with_pos_parts(interp, &other.value())
-                        .map(|(symbol, _)| symbol)
-                        .ok_or_else(|| bare_symbol_type_error(&args[0])),
-                }
+                bare_symbol_of(&args[0]).ok_or_else(|| bare_symbol_type_error(&args[0]))
             }
             "apply" => {
                 if args.is_empty() {

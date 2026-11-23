@@ -3450,6 +3450,33 @@ pub(super) extern "C" fn direct_native_remove_pos_from_symbol(value: NativeWord)
     crate::lisp::primitives::remove_pos_from_symbol(&unsafe { Value::from_word(value) }).word()
 }
 
+/// data.c:Fbare_symbol for the subr at INDEX of the ABI's table, a
+/// constant of the generated entry this is inlined into.  A bare symbol
+/// and a symbol with position answer from the word with no active call,
+/// as `direct_native_remove_pos_from_symbol' answers; any other argument
+/// is the subr's own call, as the generated entry made it of every
+/// argument, and that call signals.
+#[inline(always)]
+pub(super) fn direct_native_bare_symbol(index: usize, symbol: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    match crate::lisp::primitives::bare_symbol_of(&unsafe { Value::from_word(symbol) }) {
+        Some(bare) => bare.word(),
+        None => invoke_subr(index, &[symbol]),
+    }
+}
+
+/// data.c:Fsymbol_with_pos_pos, as `direct_native_bare_symbol' is: the
+/// position of a symbol with position from the word, the subr's own
+/// call, which signals, of any other argument.
+#[inline(always)]
+pub(super) fn direct_native_symbol_with_pos_pos(index: usize, sympos: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    match crate::lisp::primitives::symbol_with_pos_pos(&unsafe { Value::from_word(sympos) }) {
+        Some(position) => position.word(),
+        None => invoke_subr(index, &[sympos]),
+    }
+}
+
 pub(super) extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
     if left == right {
         return native_boolean(true);
@@ -7246,15 +7273,32 @@ mod tests {
     }
 
     /// Whether two conditions are one signal: lists of the same objects,
-    /// the datum a subr complains of among them.
+    /// the datum a subr complains of among them.  The predicate of a
+    /// wrong-type-argument, the second element, may be a list the subr
+    /// makes for the signal (Fbare_symbol's list2 of `symbolp' and
+    /// `symbol-with-pos-p'): two such are one when they list the same
+    /// symbols.
     fn same_condition(left: Value, right: Value) -> bool {
+        let same_symbols = |left: Value, right: Value| match (left.to_vec(), right.to_vec()) {
+            (Ok(left), Ok(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(&right)
+                        .all(|(left, right)| left.is_symbol() && left.eq_value(*right))
+            }
+            _ => false,
+        };
         match (left.to_vec(), right.to_vec()) {
             (Ok(left), Ok(right)) => {
                 left.len() == right.len()
                     && left
                         .iter()
                         .zip(&right)
-                        .all(|(left, right)| left.eq_value(*right))
+                        .enumerate()
+                        .all(|(place, (left, right))| {
+                            left.eq_value(*right) || (place == 1 && same_symbols(*left, *right))
+                        })
             }
             _ => left.eq_value(right),
         }
@@ -7815,6 +7859,8 @@ mod tests {
         word_entry("char-or-string-p", 1, true),
         word_entry("arrayp", 1, true),
         word_entry("remove-pos-from-symbol", 1, false),
+        word_entry("bare-symbol", 1, false),
+        word_entry("symbol-with-pos-pos", 1, false),
     ];
 
     /// The generator's other targets, which read the interpreter, walk or
@@ -8057,6 +8103,118 @@ mod tests {
             "(a . b)",
         ),
         ("remove-pos-from-symbol", "(list [a])", "[a]", "[a]"),
+        ("bare-symbol", "(list 'foo)", "foo", "foo"),
+        (
+            "bare-symbol",
+            "(list (position-symbol 'foo 7))",
+            "foo",
+            "foo",
+        ),
+        ("bare-symbol", "(list nil)", "nil", "nil"),
+        ("bare-symbol", "(list t)", "t", "t"),
+        (
+            "bare-symbol",
+            "(list (position-symbol nil 3))",
+            "nil",
+            "nil",
+        ),
+        ("bare-symbol", "(list :key)", ":key", ":key"),
+        (
+            "bare-symbol",
+            "(list (position-symbol :key 9))",
+            ":key",
+            ":key",
+        ),
+        (
+            "bare-symbol",
+            "(list 5)",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) 5)",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) 5)",
+        ),
+        (
+            "bare-symbol",
+            "(list \"s\")",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) \"s\")",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) \"s\")",
+        ),
+        (
+            "bare-symbol",
+            "(list '(a . b))",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) (a . b))",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) (a . b))",
+        ),
+        (
+            "bare-symbol",
+            "(list [a])",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) [a])",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) [a])",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list 'foo)",
+            "signal: (wrong-type-argument symbol-with-pos-p foo)",
+            "signal: (wrong-type-argument symbol-with-pos-p foo)",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list (position-symbol 'foo 7))",
+            "7",
+            "7",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list nil)",
+            "signal: (wrong-type-argument symbol-with-pos-p nil)",
+            "signal: (wrong-type-argument symbol-with-pos-p nil)",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list t)",
+            "signal: (wrong-type-argument symbol-with-pos-p t)",
+            "signal: (wrong-type-argument symbol-with-pos-p t)",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list (position-symbol nil 3))",
+            "3",
+            "3",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list :key)",
+            "signal: (wrong-type-argument symbol-with-pos-p :key)",
+            "signal: (wrong-type-argument symbol-with-pos-p :key)",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list (position-symbol :key 9))",
+            "9",
+            "9",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list 5)",
+            "signal: (wrong-type-argument symbol-with-pos-p 5)",
+            "signal: (wrong-type-argument symbol-with-pos-p 5)",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list \"s\")",
+            "signal: (wrong-type-argument symbol-with-pos-p \"s\")",
+            "signal: (wrong-type-argument symbol-with-pos-p \"s\")",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list '(a . b))",
+            "signal: (wrong-type-argument symbol-with-pos-p (a . b))",
+            "signal: (wrong-type-argument symbol-with-pos-p (a . b))",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list [a])",
+            "signal: (wrong-type-argument symbol-with-pos-p [a])",
+            "signal: (wrong-type-argument symbol-with-pos-p [a])",
+        ),
     ];
 
     /// The agreement of an entry with its primitive shows one function
