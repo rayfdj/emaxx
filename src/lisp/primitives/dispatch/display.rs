@@ -3171,7 +3171,7 @@ fn replace_window(
         .window_frame_id(old)
         .expect("window stores its owning frame");
     if frame.borrow().root_window_id() == old {
-        frame.borrow_mut().root_window = interp.record_ref(new);
+        frame.borrow_mut().root_window = interp.window_ref(new);
     }
     if setflag {
         set_window_geometry(interp, new, window_geometry(interp, old))?;
@@ -3359,7 +3359,7 @@ fn run_window_configuration_change_hook(
     };
     if result.is_ok() {
         result = (|| {
-            let start = frame.borrow().selected_window.map(Value::Record);
+            let start = frame.borrow().selected_window.map(WindowRef::value);
             let frames = [frame];
             let windows = window_list_ids(
                 interp,
@@ -3456,7 +3456,7 @@ fn select_window_for_frame(
     if frame == interp.selected_frame_id {
         select_window_value(interp, &interp.window_value(window), norecord)?;
     } else {
-        frame.borrow_mut().selected_window = interp.record_ref(window);
+        frame.borrow_mut().selected_window = interp.window_ref(window);
     }
     Ok(())
 }
@@ -3916,7 +3916,7 @@ fn delete_window_from_tree(interp: &mut Interpreter, window: &Value) -> Result<V
         if selected == interp.selected_window_id() {
             select_window_value(interp, &interp.window_value(first), true)?;
         } else {
-            frame.borrow_mut().selected_window = interp.record_ref(first);
+            frame.borrow_mut().selected_window = interp.window_ref(first);
         }
     }
     Ok(Value::Nil)
@@ -4324,7 +4324,7 @@ fn run_window_change_functions_body(
             (
                 state.change_stamp,
                 state.number_of_windows,
-                state.old_selected_window.map(|window| window.id),
+                state.old_selected_window.map(WindowRef::id),
                 state.selected_window_id(),
                 state.window_state_change,
             )
@@ -7541,7 +7541,7 @@ define_dispatch!(
                 Ok(id
                     .borrow()
                     .selected_window
-                    .map(Value::Record)
+                    .map(WindowRef::value)
                     .unwrap_or(Value::Nil))
             }
             "frame-old-selected-window" => {
@@ -7550,7 +7550,7 @@ define_dispatch!(
                 Ok(id
                     .borrow()
                     .old_selected_window
-                    .map(Value::Record)
+                    .map(WindowRef::value)
                     .unwrap_or(Value::Nil))
             }
             "set-frame-selected-window" => {
@@ -7573,7 +7573,7 @@ define_dispatch!(
                     }
                     Ok(selected)
                 } else {
-                    frame.borrow_mut().selected_window = interp.record_ref(window);
+                    frame.borrow_mut().selected_window = interp.window_ref(window);
                     Ok(args[1])
                 }
             }
@@ -7845,7 +7845,7 @@ define_dispatch!(
                         if let Kind::Frame(id) = frame.kind() {
                             id.borrow()
                                 .selected_window
-                                .map(Value::Record)
+                                .map(WindowRef::value)
                                 .unwrap_or(Value::Nil)
                         } else {
                             interp.selected_window_value()
@@ -7907,7 +7907,7 @@ define_dispatch!(
                 Ok(id
                     .borrow()
                     .root_window
-                    .map(Value::Record)
+                    .map(WindowRef::value)
                     .unwrap_or(Value::Nil))
             }
             "frame-first-window" => {
@@ -7916,7 +7916,7 @@ define_dispatch!(
                 let mut window = id
                     .borrow()
                     .root_window
-                    .map(Value::Record)
+                    .map(WindowRef::value)
                     .unwrap_or(Value::Nil);
                 while let Some(this) = WindowRef::from_record_value(&window) {
                     let Some(child) = window_link(interp, this.id(), WINDOW_FIRST_CHILD_SLOT)
@@ -8284,7 +8284,7 @@ define_dispatch!(
                 Ok(id
                     .borrow()
                     .minibuffer_window
-                    .map(Value::Record)
+                    .map(WindowRef::value)
                     .unwrap_or(Value::Nil))
             }
             "set-minibuffer-window" => {

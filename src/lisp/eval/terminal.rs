@@ -1001,16 +1001,14 @@ impl Interpreter {
     /// window.c stores the owning frame on every window, including internal
     /// and deleted windows. It must survive a frame switch and frame deletion.
     pub(crate) fn window_frame_id(&self, id: u64) -> Option<crate::lisp::types::FrameRef> {
-        self.find_record(id)?
-            .slots
-            .get(crate::lisp::primitives::WINDOW_FRAME_SLOT)
-            .and_then(|value| {
-                if let Kind::Frame(id) = value.kind() {
-                    Some(id)
-                } else {
-                    None
-                }
-            })
+        match self
+            .window_ref(id)?
+            .slot(crate::lisp::primitives::WINDOW_FRAME_SLOT)
+            .kind()
+        {
+            Kind::Frame(id) => Some(id),
+            _ => None,
+        }
     }
 }
 
@@ -1135,17 +1133,8 @@ impl Interpreter {
             _ => crate::lisp::primitives::get_minibuffer(self, 0),
         };
         let mut make_window = |buffer, point, kind, geometry| {
-            let Kind::Record(window_id) = self
-                .create_pseudovector(
-                    super::RecordKind::Window,
-                    "window",
-                    p::window_record_slots(self, Some(buffer), point, kind, geometry),
-                )
-                .kind()
-            else {
-                unreachable!()
-            };
-            window_id
+            let slots = p::window_record_slots(self, Some(buffer), point, kind, geometry);
+            self.make_window(slots)
         };
         let root = make_window(
             buffer_id,
@@ -1161,8 +1150,8 @@ impl Interpreter {
         );
         // make_frame's set_window_buffer of each: their buffers are shown
         // in a window more.
-        self.adjust_window_count(root.id, true);
-        self.adjust_window_count(mini.id, true);
+        self.adjust_window_count(root.id(), true);
+        self.adjust_window_count(mini.id(), true);
         // make_terminal_frame's F<num>, from ++tty_frame_count.
         self.tty_frame_count += 1;
         let frame = crate::lisp::types::FrameRef::new(
@@ -1207,16 +1196,14 @@ impl Interpreter {
         );
         self.frame_states.insert(0, frame);
         for window in [root, mini] {
-            self.find_record_mut(window)
-                .expect("allocated window has state")
-                .slots[p::WINDOW_FRAME_SLOT] = Value::Frame(frame);
+            window.set_held_slot(self, p::WINDOW_FRAME_SLOT, Value::Frame(frame));
         }
         // make_frame's set_window_buffer (root_window, buf, 0, 0), then the
         // minibuffer window's: the buffer's last window start, its point,
         // its margins and its display stamp, no hooks run.
         let mut env = crate::lisp::types::Env::new();
-        p::set_window_buffer(self, root.id, buffer_id, false, false, &mut env)?;
-        p::set_window_buffer(self, mini.id, mini_buffer_id, false, false, &mut env)?;
+        p::set_window_buffer(self, root.id(), buffer_id, false, false, &mut env)?;
+        p::set_window_buffer(self, mini.id(), mini_buffer_id, false, false, &mut env)?;
         self.copy_frame_faces(self.selected_frame_id, frame);
         object.borrow_mut().top_frame = Some(frame);
         if object.id == 0 && TTY_ROUTE_ACTIVE.get() {
@@ -1248,25 +1235,21 @@ impl Interpreter {
 
     pub(crate) fn retire_frame(&mut self, id: crate::lisp::types::FrameRef) {
         use crate::lisp::primitives as p;
-        let windows = self.records_of_kind(super::RecordKind::Window, |record| {
-            record
-                .slots
-                .get(p::WINDOW_FRAME_SLOT)
+        let windows = self.windows_where(|window| {
+            window
+                .slot_opt(p::WINDOW_FRAME_SLOT)
                 .is_some_and(|frame| frame.word() == Value::Frame(id).word())
         });
         for window in windows {
-            self.wset_buffer(window.id, Value::Nil);
-            let Some(record) = self.find_record_mut(window) else {
-                continue;
-            };
-            record.slots[p::WINDOW_KIND_SLOT] = p::WindowKind::Deleted.value();
+            self.wset_buffer(window.id(), Value::Nil);
+            window.set_held_slot(self, p::WINDOW_KIND_SLOT, p::WindowKind::Deleted.value());
             for slot in [
                 p::WINDOW_PARENT_SLOT,
                 p::WINDOW_PREV_SIBLING_SLOT,
                 p::WINDOW_NEXT_SIBLING_SLOT,
                 p::WINDOW_FIRST_CHILD_SLOT,
             ] {
-                record.slots[slot] = Value::Nil;
+                window.set_held_slot(self, slot, Value::Nil);
             }
         }
         let mut frame = id.borrow_mut();

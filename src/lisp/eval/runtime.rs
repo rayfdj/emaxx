@@ -761,10 +761,8 @@ impl Interpreter {
     /// Make ID current and show it in the selected window.
     fn show_buffer_in_selected_window(&mut self, id: u64) -> Result<(), LispError> {
         let current_id = self.current_buffer_id;
-        let selected_window_already_displays_target = primitives::window_slot_buffer_id(
-            self.find_record(self.selected_window_id)
-                .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT)),
-        ) == Some(id);
+        let selected_window_already_displays_target =
+            self.window_record_buffer_id(self.selected_window_id) == Some(id);
         if id == current_id && selected_window_already_displays_target {
             return Ok(());
         }
@@ -807,19 +805,19 @@ impl Interpreter {
 
     pub(crate) fn set_selected_window_id(&mut self, id: u64) {
         self.selected_window_id = id;
-        self.selected_frame_id.borrow_mut().selected_window = self.record_ref(id);
+        self.selected_frame_id.borrow_mut().selected_window = self.window_ref(id);
     }
 
     pub(crate) fn root_window_value(&self) -> Value {
         self.selected_frame_id
             .borrow()
             .root_window
-            .map(Value::Record)
+            .map(primitives::WindowRef::value)
             .unwrap_or(Value::Nil)
     }
 
     pub(crate) fn set_root_window_id(&mut self, id: u64) {
-        self.selected_frame_id.borrow_mut().root_window = self.record_ref(id);
+        self.selected_frame_id.borrow_mut().root_window = self.window_ref(id);
     }
 
     pub(crate) fn minibuffer_window_id(&self) -> u64 {
@@ -830,12 +828,12 @@ impl Interpreter {
         self.selected_frame_id
             .borrow()
             .minibuffer_window
-            .map(Value::Record)
+            .map(primitives::WindowRef::value)
             .unwrap_or(Value::Nil)
     }
 
     pub(crate) fn set_minibuffer_window_id(&mut self, id: u64) {
-        self.selected_frame_id.borrow_mut().minibuffer_window = self.record_ref(id);
+        self.selected_frame_id.borrow_mut().minibuffer_window = self.window_ref(id);
     }
 
     pub(crate) fn minibuffer_selected_window_id(&self) -> Option<u64> {
@@ -861,21 +859,28 @@ impl Interpreter {
     }
 
     pub(crate) fn old_selected_window_value(&self) -> Value {
-        self.record_value(self.old_selected_window_id)
+        self.window_value(self.old_selected_window_id)
     }
 
     pub(crate) fn window_use_time(&self, id: u64) -> i64 {
-        self.find_record(id)
-            .and_then(|record| record.slots.get(primitives::WINDOW_USE_TIME_SLOT))
-            .and_then(|value| value.integer_value())
+        self.window_ref(id)
+            .and_then(|window| {
+                window
+                    .slot(primitives::WINDOW_USE_TIME_SLOT)
+                    .integer_value()
+            })
             .unwrap_or_default()
     }
 
     pub(crate) fn record_window_selection(&mut self, id: u64) {
         self.window_select_count = self.window_select_count.saturating_add(1);
         let use_time = self.window_select_count;
-        if let Some(window) = self.find_record_mut(id) {
-            window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(use_time);
+        if let Some(window) = self.window_ref(id) {
+            window.set_held_slot(
+                self,
+                primitives::WINDOW_USE_TIME_SLOT,
+                Value::Integer(use_time),
+            );
         }
     }
 
@@ -886,13 +891,21 @@ impl Interpreter {
             return None;
         }
         let bumped = self.window_select_count;
-        if let Some(window) = self.find_record_mut(id) {
-            window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(bumped);
+        if let Some(window) = self.window_ref(id) {
+            window.set_held_slot(
+                self,
+                primitives::WINDOW_USE_TIME_SLOT,
+                Value::Integer(bumped),
+            );
         }
         self.window_select_count = self.window_select_count.saturating_add(1);
         let selected_time = self.window_select_count;
-        if let Some(selected) = self.find_record_mut(self.selected_window_id) {
-            selected.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(selected_time);
+        if let Some(selected) = self.window_ref(self.selected_window_id) {
+            selected.set_held_slot(
+                self,
+                primitives::WINDOW_USE_TIME_SLOT,
+                Value::Integer(selected_time),
+            );
         }
         Some(bumped)
     }
@@ -901,10 +914,7 @@ impl Interpreter {
     /// deleted selected window (a state a failed deletion can leave),
     /// whose contents are nil.
     pub(crate) fn selected_window_contents_buffer_id(&self) -> Option<u64> {
-        primitives::window_slot_buffer_id(
-            self.find_record(self.selected_window_id)
-                .and_then(|record| record.slots.get(primitives::WINDOW_BUFFER_SLOT)),
-        )
+        self.window_record_buffer_id(self.selected_window_id)
     }
 
     pub fn buffer_bounds_by_id(&self, id: u64) -> Option<(usize, usize)> {
@@ -966,14 +976,12 @@ impl Interpreter {
         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
             buffer.adjust_window_count(shown);
         }
-        if let Some(window) = self.find_record_mut(window_id) {
+        if let Some(window) = self.window_ref(window_id) {
             for (slot, value) in [
                 (primitives::WINDOW_END_VALID_SLOT, Value::Nil),
                 (primitives::WINDOW_BASE_LINE_SLOT, Value::Nil),
             ] {
-                if let Some(slot) = window.slots.get_mut(slot) {
-                    *slot = value;
-                }
+                window.set_slot_if_held(self, slot, value);
             }
         }
     }
@@ -982,11 +990,8 @@ impl Interpreter {
     /// windows showing the old buffer and the new one counted.
     pub(crate) fn wset_buffer(&mut self, window_id: u64, value: Value) {
         self.adjust_window_count(window_id, false);
-        if let Some(window) = self.find_record_mut(window_id) {
-            if window.slots.is_empty() {
-                window.slots.push(Value::Nil);
-            }
-            window.slots[primitives::WINDOW_BUFFER_SLOT] = value;
+        if let Some(window) = self.window_ref(window_id) {
+            window.set_slot(self, primitives::WINDOW_BUFFER_SLOT, value);
         }
         self.adjust_window_count(window_id, true);
         self.check_window_counts();
@@ -1349,24 +1354,24 @@ impl Interpreter {
             .unwrap_or(1)
             .clamp(point_min, point_max);
         let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
-        if let Some(window) = self.find_record_mut(window_id)
-            && window.slots.len() <= primitives::WINDOW_START_AT_LINE_BEG_SLOT
-        {
-            window
-                .slots
-                .resize(primitives::WINDOW_START_AT_LINE_BEG_SLOT + 1, Value::Nil);
+        if let Some(window) = self.window_ref(window_id) {
+            window.ensure_slot(self, primitives::WINDOW_START_AT_LINE_BEG_SLOT);
         }
         // wset_buffer: w->contents is the buffer object.
         self.wset_buffer(window_id, buffer);
-        if let Some(window) = self.find_record_mut(window_id) {
-            window.slots[primitives::WINDOW_END_POS_SLOT] = Value::Integer(0);
+        if let Some(window) = self.window_ref(window_id) {
+            window.set_held_slot(self, primitives::WINDOW_END_POS_SLOT, Value::Integer(0));
             if !keep {
-                window.slots[primitives::WINDOW_HSCROLL_SLOT] = Value::Integer(0);
-                window.slots[primitives::WINDOW_MIN_HSCROLL_SLOT] = Value::Integer(0);
-                window.slots[primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT] = Value::Nil;
-                window.slots[primitives::WINDOW_START_AT_LINE_BEG_SLOT] = Value::Nil;
-                window.slots[primitives::WINDOW_FORCE_START_SLOT] = Value::Nil;
-                window.slots[primitives::WINDOW_BASE_LINE_SLOT] = Value::Nil;
+                for (slot, value) in [
+                    (primitives::WINDOW_HSCROLL_SLOT, Value::Integer(0)),
+                    (primitives::WINDOW_MIN_HSCROLL_SLOT, Value::Integer(0)),
+                    (primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT, Value::Nil),
+                    (primitives::WINDOW_START_AT_LINE_BEG_SLOT, Value::Nil),
+                    (primitives::WINDOW_FORCE_START_SLOT, Value::Nil),
+                    (primitives::WINDOW_BASE_LINE_SLOT, Value::Nil),
+                ] {
+                    window.set_held_slot(self, slot, value);
+                }
             }
         }
         if !keep {
@@ -1382,7 +1387,7 @@ impl Interpreter {
         primitives::set_window_point_insertion_type(self, window_id, buffer_id);
         // set_window_buffer: the selected window is its buffer's last.
         if window_id == self.selected_window_id {
-            let window = self.record_value(window_id);
+            let window = self.window_value(window_id);
             if let Some(mut shown) = self.get_buffer_by_id_mut(buffer_id) {
                 shown.set_last_selected_window(window);
             }
@@ -1779,23 +1784,22 @@ impl Interpreter {
         order: &mut Vec<u64>,
     ) {
         while let Some(id) = window {
-            let Some(record) = self.find_record(id) else {
+            let Some(record) = self.window_ref(id) else {
                 return;
             };
-            let slot = |index: usize| record.slots.get(index).copied().unwrap_or(Value::Nil);
-            let link = |index: usize| match slot(index).kind() {
-                Kind::Record(linked) => Some(linked.id),
-                _ => None,
+            let slot = |index: usize| record.slot(index);
+            let link = |index: usize| {
+                primitives::WindowRef::from_record_value(&slot(index))
+                    .map(primitives::WindowRef::id)
             };
             let temslot = |order: &[u64], linked: Option<u64>| {
                 linked
                     .and_then(|linked| order.iter().position(|saved| *saved == linked))
                     .map_or(Value::Nil, |index| Value::Integer(index as i64))
             };
-            let kind =
-                primitives::WindowKind::of_slot(record.slots.get(primitives::WINDOW_KIND_SLOT));
+            let kind = record.kind();
             let mut p = vec![Value::Nil; SAVED_WINDOW_SIZE];
-            p[SW_WINDOW] = self.record_value(id);
+            p[SW_WINDOW] = self.window_value(id);
             // p->buffer: a leaf's contents.
             let buffer = if kind.is_internal() {
                 None
@@ -1931,7 +1935,7 @@ impl Interpreter {
                 Value::Nil,
                 Value::Integer(snapshot.frame_width),
                 Value::Integer(snapshot.frame_height),
-                self.record_value(snapshot.root_window_id),
+                self.window_value(snapshot.root_window_id),
                 saved,
                 Value::Frame(frame_id),
                 Value::Frame(snapshot.selected_frame_id),
@@ -1991,11 +1995,8 @@ impl Interpreter {
             selected_window_id,
             root_window_id: slots
                 .get(5)
-                .and_then(|value| match value.kind() {
-                    Kind::Record(id) => Some(id.id),
-                    _ => None,
-                })
-                .unwrap_or(selected_window_id),
+                .and_then(primitives::WindowRef::from_record_value)
+                .map_or(selected_window_id, primitives::WindowRef::id),
             frame_width: slots
                 .get(3)
                 .and_then(|value| value.integer_value())
@@ -2085,9 +2086,9 @@ impl Interpreter {
         // Each saved window's window, and the buffer save_window_save kept.
         let saved_ids: Vec<Option<u64>> = saved_windows
             .iter()
-            .map(|saved| match saved_field(saved, SW_WINDOW).kind() {
-                Kind::Record(window) => Some(window.id),
-                _ => None,
+            .map(|saved| {
+                primitives::WindowRef::from_record_value(&saved_field(saved, SW_WINDOW))
+                    .map(primitives::WindowRef::id)
             })
             .collect();
         let saved_buffer = |saved: &Value| match saved_field(saved, SW_BUFFER).kind() {
@@ -2129,7 +2130,7 @@ impl Interpreter {
                 && self.has_buffer_id(saved)
                 && !self.buffer_is_minibuffer(saved)
             {
-                let window = self.record_value(*window);
+                let window = self.window_value(*window);
                 primitives::call_named_function(
                     self,
                     "record-window-buffer",
@@ -2206,11 +2207,11 @@ impl Interpreter {
             };
             self.set_window_slot(window, primitives::WINDOW_NEXT_SIBLING_SLOT, Value::Nil);
             let parent = link(SW_PARENT);
-            let parent_value = parent.map_or(Value::Nil, |parent| self.record_value(parent));
+            let parent_value = parent.map_or(Value::Nil, |parent| self.window_value(parent));
             self.set_window_slot(window, primitives::WINDOW_PARENT_SLOT, parent_value);
-            let this = self.record_value(window);
+            let this = self.window_value(window);
             if let Some(prev) = link(SW_PREV) {
-                let prev_value = self.record_value(prev);
+                let prev_value = self.window_value(prev);
                 self.set_window_slot(window, primitives::WINDOW_PREV_SIBLING_SLOT, prev_value);
                 self.set_window_slot(prev, primitives::WINDOW_NEXT_SIBLING_SLOT, this);
             } else {
@@ -2223,11 +2224,9 @@ impl Interpreter {
             // "If we squirreled away the buffer, restore it now": whichever
             // delete_all_child_windows left it there, this restore's or
             // an earlier deletion's.
-            let squirreled = self
-                .find_record(window)
-                .and_then(|record| record.slots.get(primitives::WINDOW_COMBINATION_LIMIT_SLOT))
-                .copied()
-                .unwrap_or(Value::Nil);
+            let squirreled = self.window_ref(window).map_or(Value::Nil, |record| {
+                record.slot(primitives::WINDOW_COMBINATION_LIMIT_SLOT)
+            });
             if matches!(squirreled.kind(), Kind::Buffer(_)) {
                 self.wset_buffer(window, squirreled);
             }
@@ -2272,11 +2271,9 @@ impl Interpreter {
             while let Some(cell) = tail.cons_ref() {
                 if let Some(pers) = cell.car.get().cons_ref() {
                     let (name, value) = (pers.car.get(), pers.cdr.get());
-                    let parameters = self
-                        .find_record(window)
-                        .and_then(|record| record.slots.get(primitives::WINDOW_PARAMETERS_SLOT))
-                        .copied()
-                        .unwrap_or(Value::Nil);
+                    let parameters = self.window_ref(window).map_or(Value::Nil, |record| {
+                        record.slot(primitives::WINDOW_PARAMETERS_SLOT)
+                    });
                     let entry = {
                         let mut tail = parameters;
                         let mut walk = crate::lisp::types::TailWalk::new(tail);
@@ -2333,7 +2330,7 @@ impl Interpreter {
             let saved_point = Some(saved_field(slots, SW_POINTM));
             let kept = |interp: &Self, live: bool| {
                 Value::list([
-                    interp.record_value(*window),
+                    interp.window_value(*window),
                     match saved_field(slots, SW_BUFFER).kind() {
                         Kind::Buffer(_) => saved_field(slots, SW_BUFFER),
                         _ => saved
@@ -2443,7 +2440,7 @@ impl Interpreter {
                 }
             }
         }
-        snapshot.frame_id.borrow_mut().root_window = self.record_ref(snapshot.root_window_id);
+        snapshot.frame_id.borrow_mut().root_window = self.window_ref(snapshot.root_window_id);
         // Arrange not to restore point in the buffer that was current when
         // the configuration was saved.
         if let Some(point) = old_point
@@ -2485,7 +2482,7 @@ impl Interpreter {
             }
             // select_window's bset_last_selected_window, and
             // Fset_window_configuration's own after it.
-            let window = self.record_value(current_window);
+            let window = self.window_value(current_window);
             if let Some(mut state) = self.get_buffer_by_id_mut(buffer) {
                 state.set_last_selected_window(window);
             }
@@ -2509,7 +2506,7 @@ impl Interpreter {
             if window == root || !self.window_is_live_record(window) {
                 continue;
             }
-            let window = self.record_value(window);
+            let window = self.window_value(window);
             let mut env = crate::lisp::types::Env::new();
             if primitives::call_named_function(self, "window-deletable-p", &[window], &mut env)?
                 .is_truthy()
@@ -2520,7 +2517,7 @@ impl Interpreter {
         // Fset_window_configuration's select_window (current_window, Qnil):
         // the configuration's window gets a new use time and its buffer is
         // recorded, buffer-list-update-hook run with it current.
-        let current_window = self.record_value(snapshot.selected_window_id);
+        let current_window = self.window_value(snapshot.selected_window_id);
         if let Some(buffer_id) = primitives::window_buffer_id(self, &current_window)
             .filter(|buffer_id| self.has_buffer_id(*buffer_id))
         {
@@ -2597,21 +2594,18 @@ impl Interpreter {
         let Some(window) = window else {
             return Ok(());
         };
-        let link = |interp: &Self, slot: usize| match interp
-            .find_record(window)
-            .and_then(|record| record.slots.get(slot))
-            .map(|value| value.kind())
-        {
-            Some(Kind::Record(record)) => Some(record.id),
-            _ => None,
+        let link = |interp: &Self, slot: usize| {
+            interp
+                .window_ref(window)
+                .and_then(|record| primitives::WindowRef::from_record_value(&record.slot(slot)))
+                .map(primitives::WindowRef::id)
         };
         let next = link(self, primitives::WINDOW_NEXT_SIBLING_SLOT);
         self.unshow_window_tree(next)?;
-        let internal = primitives::WindowKind::of_slot(
-            self.find_record(window)
-                .and_then(|record| record.slots.get(primitives::WINDOW_KIND_SLOT)),
-        )
-        .is_internal();
+        let internal = self
+            .window_ref(window)
+            .map_or(primitives::WindowKind::Leaf, primitives::WindowRef::kind)
+            .is_internal();
         if let Some(child) = link(self, primitives::WINDOW_FIRST_CHILD_SLOT).filter(|_| internal) {
             self.unshow_window_tree(Some(child))?;
             // wset_combination (w, false, Qnil): no contents.
@@ -2620,11 +2614,9 @@ impl Interpreter {
             self.unshow_window_buffer(window)?;
             primitives::unchain_window_markers(self, window);
             // wset_combination_limit (w, w->contents).
-            let contents = self
-                .find_record(window)
-                .and_then(|record| record.slots.get(primitives::WINDOW_BUFFER_SLOT))
-                .copied()
-                .unwrap_or(Value::Nil);
+            let contents = self.window_ref(window).map_or(Value::Nil, |record| {
+                record.slot(primitives::WINDOW_BUFFER_SLOT)
+            });
             self.set_window_slot(window, primitives::WINDOW_COMBINATION_LIMIT_SLOT, contents);
             // wset_buffer (w, Qnil).
             self.wset_buffer(window, Value::Nil);
@@ -2653,11 +2645,8 @@ impl Interpreter {
             primitives::WINDOW_BUFFER_SLOT,
             "a window's contents are set by wset_buffer"
         );
-        if let Some(record) = self.find_record_mut(window) {
-            if record.slots.len() <= slot {
-                record.slots.resize(slot + 1, Value::Nil);
-            }
-            record.slots[slot] = value;
+        if let Some(record) = self.window_ref(window) {
+            record.set_slot(self, slot, value);
         }
     }
 
@@ -2669,14 +2658,10 @@ impl Interpreter {
 
     /// WINDOW_LIVE_P: a window that shows a buffer.
     fn window_is_live_record(&self, id: u64) -> bool {
-        self.find_record(id).is_some_and(|record| {
-            record.kind == RecordKind::Window
-                && primitives::window_slot_buffer_id(
-                    record.slots.get(primitives::WINDOW_BUFFER_SLOT),
-                )
-                .is_some()
-                && primitives::WindowKind::of_slot(record.slots.get(primitives::WINDOW_KIND_SLOT))
-                    != primitives::WindowKind::Deleted
+        self.window_ref(id).is_some_and(|record| {
+            record.is_window()
+                && record.contents_buffer_id().is_some()
+                && record.kind() != primitives::WindowKind::Deleted
         })
     }
 
@@ -3369,17 +3354,16 @@ impl Interpreter {
             .query = Some(query);
     }
 
-    /// The records of KIND that FILTER admits, as objects: a caller that
-    /// edits them takes each through `find_record_mut'.
-    pub(crate) fn records_of_kind(
+    /// The windows of the registry that FILTER admits, as objects.
+    pub(crate) fn windows_where(
         &self,
-        kind: RecordKind,
-        filter: impl Fn(&RecordState) -> bool,
-    ) -> Vec<RecordRef> {
+        filter: impl Fn(primitives::WindowRef) -> bool,
+    ) -> Vec<primitives::WindowRef> {
         self.records
             .values()
             .copied()
-            .filter(|record| record.kind == kind && filter(record))
+            .map(primitives::WindowRef::from_registry)
+            .filter(|window| window.is_window() && filter(*window))
             .collect()
     }
 
@@ -3781,8 +3765,8 @@ fn saved_windows(
                     .filter(|value: &Value| !value.is_nil())
                     .unwrap_or_else(|| field(pixel))
             };
-            let current = matches!(field(SW_WINDOW).kind(), Kind::Record(window)
-                if window.id == snapshot.selected_window_id);
+            let current = primitives::WindowRef::from_record_value(&field(SW_WINDOW))
+                .is_some_and(|window| window.id() == snapshot.selected_window_id);
             (
                 current,
                 [

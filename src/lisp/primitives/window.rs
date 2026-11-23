@@ -531,6 +531,13 @@ impl WindowRef {
         window_slot_buffer_id(self.0.slots.get(WINDOW_BUFFER_SLOT))
     }
 
+    /// Whether the record behind the handle is a window: an id's lookup
+    /// (`Interpreter::window_ref') takes whatever record the id names.
+    #[inline]
+    pub(crate) fn is_window(self) -> bool {
+        self.0.kind == crate::lisp::eval::RecordKind::Window
+    }
+
     /// Slot INDEX, None where the window holds no such slot.
     #[inline]
     pub(crate) fn slot_opt(self, index: usize) -> Option<Value> {
@@ -543,6 +550,16 @@ impl WindowRef {
         self.slot_opt(index).unwrap_or(Value::Nil)
     }
 
+    /// Grow the window's slots (with nil) to hold slot INDEX.
+    #[inline]
+    pub(crate) fn ensure_slot(self, interp: &mut Interpreter, index: usize) {
+        if let Some(record) = interp.find_record_mut(self.0)
+            && record.slots.len() <= index
+        {
+            record.slots.resize(index + 1, Value::Nil);
+        }
+    }
+
     /// Store VALUE in slot INDEX, growing the window's slots (with nil)
     /// to hold it.
     #[inline]
@@ -552,6 +569,26 @@ impl WindowRef {
                 record.slots.resize(index + 1, Value::Nil);
             }
             record.slots[index] = value;
+        }
+    }
+
+    /// Store VALUE in slot INDEX of a window that holds it; one that does
+    /// not is a bug (it panics, as indexing its slots does).
+    #[inline]
+    pub(crate) fn set_held_slot(self, interp: &mut Interpreter, index: usize, value: Value) {
+        if let Some(record) = interp.find_record_mut(self.0) {
+            record.slots[index] = value;
+        }
+    }
+
+    /// Store VALUE in slot INDEX where the window holds that slot, and
+    /// nothing where it does not.
+    #[inline]
+    pub(crate) fn set_slot_if_held(self, interp: &mut Interpreter, index: usize, value: Value) {
+        if let Some(record) = interp.find_record_mut(self.0)
+            && let Some(slot) = record.slots.get_mut(index)
+        {
+            *slot = value;
         }
     }
 }

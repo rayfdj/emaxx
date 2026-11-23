@@ -145,8 +145,8 @@ impl Interpreter {
     pub(crate) fn active_minibuffer_window_value(&self) -> Option<Value> {
         self.minibuffer_runtime
             .active_window_id
-            .filter(|window_id| self.find_record(*window_id).is_some())
-            .map(|id| self.record_value(id))
+            .filter(|window_id| self.window_ref(*window_id).is_some())
+            .map(|id| self.window_value(id))
     }
 
     pub(crate) fn active_minibuffer_activation_id(&self) -> Option<u64> {

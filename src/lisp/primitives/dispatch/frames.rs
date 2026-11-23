@@ -351,7 +351,7 @@ fn store_frame_parameter(
 ) -> Result<(), LispError> {
     if cached_symbol!("minibuffer").is(prop) {
         if is_window_record(interp, val) {
-            let mini = id.borrow().minibuffer_window.map(Value::Record);
+            let mini = id.borrow().minibuffer_window.map(WindowRef::value);
             let Kind::Record(window) = val.kind() else {
                 unreachable!()
             };

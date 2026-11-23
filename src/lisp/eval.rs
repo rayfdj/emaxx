@@ -3913,10 +3913,10 @@ pub(crate) struct FrameState {
     /// frame.h's face_hash_table: the frame's own face definitions, an
     /// `eq' table of each face's symbol to its lface vector.
     pub(crate) face_hash_table: Option<Value>,
-    pub(crate) root_window: Option<crate::lisp::types::RecordRef>,
-    pub(crate) selected_window: Option<crate::lisp::types::RecordRef>,
-    pub(crate) minibuffer_window: Option<crate::lisp::types::RecordRef>,
-    pub(crate) old_selected_window: Option<crate::lisp::types::RecordRef>,
+    pub(crate) root_window: Option<primitives::WindowRef>,
+    pub(crate) selected_window: Option<primitives::WindowRef>,
+    pub(crate) minibuffer_window: Option<primitives::WindowRef>,
+    pub(crate) old_selected_window: Option<primitives::WindowRef>,
     pub(crate) tty_sized: bool,
     pub(crate) id: u64,
     /// frame.h's text_cols, total_cols and pixel_width, one value on a
@@ -3975,15 +3975,15 @@ pub(crate) struct FrameState {
 
 impl FrameState {
     pub(crate) fn root_window_id(&self) -> u64 {
-        self.root_window.map_or(0, |window| window.id)
+        self.root_window.map_or(0, primitives::WindowRef::id)
     }
 
     pub(crate) fn selected_window_id(&self) -> u64 {
-        self.selected_window.map_or(0, |window| window.id)
+        self.selected_window.map_or(0, primitives::WindowRef::id)
     }
 
     pub(crate) fn minibuffer_window_id(&self) -> u64 {
-        self.minibuffer_window.map_or(0, |window| window.id)
+        self.minibuffer_window.map_or(0, primitives::WindowRef::id)
     }
 }
 
@@ -4195,7 +4195,9 @@ impl ImageGraphCopier {
                     &mut state.old_selected_window,
                 ] {
                     if let Some(source) = *window {
-                        let Kind::Record(copied) = self.copy(&Value::Record(source)).kind() else {
+                        let Some(copied) =
+                            primitives::WindowRef::from_record_value(&self.copy(&source.value()))
+                        else {
                             unreachable!()
                         };
                         *window = Some(copied);
@@ -4945,7 +4947,7 @@ impl LispReachability {
                 .into_iter()
                 .flatten()
                 {
-                    self.enqueue(&Value::Record(window));
+                    self.enqueue(&window.value());
                 }
                 if let Some(target) = state.focus_frame_id {
                     self.enqueue(&Value::Frame(target));
@@ -5580,8 +5582,8 @@ impl Interpreter {
     /// them.  An id the sweep already freed has no entry and is skipped.
     fn mark_record_holders(&self, mark: &mut impl FnMut(&Value)) {
         let mut hold = |id: u64| {
-            if let Some(record) = self.record_ref(id) {
-                mark(&Value::Record(record));
+            if let Some(window) = self.window_ref(id) {
+                mark(&window.value());
             }
         };
         hold(self.old_selected_window_id);
@@ -5896,9 +5898,8 @@ impl Interpreter {
         for buffer in &self.minibuffer_list {
             mark(buffer);
         }
-        for id in [self.standard_obarray_id, self.selected_window_id] {
-            mark(&self.record_value(id));
-        }
+        mark(&self.record_value(self.standard_obarray_id));
+        mark(&self.window_value(self.selected_window_id));
         // The thread's Lisp values outside any interpreter (xdisp.c's
         // staticpro'd echo area; a tag cache).
         crate::lisp::primitives::mark_thread_local_roots(&mut mark);
@@ -9060,31 +9061,27 @@ impl Interpreter {
             interp.define_special_variable(name, value);
         }
         let buffer_start = interp.buffer.borrow().point_min();
-        let selected_window = interp.create_pseudovector(
-            RecordKind::Window,
-            "window",
-            primitives::window_record_slots(
-                &interp,
-                Some(interp.current_buffer_id),
-                buffer_start,
-                Value::Nil,
-                (
-                    interp.frame_width(),
-                    interp.frame_height().saturating_sub(1).max(1),
-                    0,
-                    0,
-                ),
+        let selected_window_slots = primitives::window_record_slots(
+            &interp,
+            Some(interp.current_buffer_id),
+            buffer_start,
+            Value::Nil,
+            (
+                interp.frame_width(),
+                interp.frame_height().saturating_sub(1).max(1),
+                0,
+                0,
             ),
         );
-        let Kind::Record(selected_window_id) = selected_window.kind() else {
-            unreachable!("window records use Value::Record");
-        };
-        interp.set_selected_window_id(selected_window_id.id);
-        interp.set_root_window_id(selected_window_id.id);
-        interp.old_selected_window_id = selected_window_id.id;
-        if let Some(window) = interp.find_record_mut(selected_window_id) {
-            window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
-        }
+        let selected_window = interp.make_window(selected_window_slots);
+        interp.set_selected_window_id(selected_window.id());
+        interp.set_root_window_id(selected_window.id());
+        interp.old_selected_window_id = selected_window.id();
+        selected_window.set_held_slot(
+            &mut interp,
+            primitives::WINDOW_USE_TIME_SLOT,
+            Value::Integer(1),
+        );
         // frame.c:make_frame shows the current buffer in the root window
         // through set_window_buffer, and the minibuffer in the minibuffer
         // window.
@@ -9095,26 +9092,20 @@ impl Interpreter {
             .buffer_object(1)
             .map_or(Value::Nil, |buffer| buffer.borrow().name());
         interp.buffer_list.push((1, messages_name));
-        let minibuffer_window = interp.create_pseudovector(
-            RecordKind::Window,
-            "window",
-            primitives::window_record_slots(
-                &interp,
-                Some(minibuffer_buffer_id),
+        let minibuffer_window_slots = primitives::window_record_slots(
+            &interp,
+            Some(minibuffer_buffer_id),
+            1,
+            primitives::WindowKind::Minibuffer.value(),
+            (
+                interp.frame_width(),
                 1,
-                primitives::WindowKind::Minibuffer.value(),
-                (
-                    interp.frame_width(),
-                    1,
-                    0,
-                    interp.frame_height().saturating_sub(1).max(1),
-                ),
+                0,
+                interp.frame_height().saturating_sub(1).max(1),
             ),
         );
-        let Kind::Record(minibuffer_window_id) = minibuffer_window.kind() else {
-            unreachable!("window records use Value::Record");
-        };
-        interp.set_minibuffer_window_id(minibuffer_window_id.id);
+        let minibuffer_window = interp.make_window(minibuffer_window_slots);
+        interp.set_minibuffer_window_id(minibuffer_window.id());
         // The two windows show their buffers from the start.
         interp.recount_buffer_windows();
         // Interpreter::new also constructs several dumped values after the

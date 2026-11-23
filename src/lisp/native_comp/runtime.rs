@@ -15657,8 +15657,8 @@ mod tests {
             focus.borrow_mut().param_alist =
                 Value::cons(Value::cons(Value::symbol("escaped-data"), payload), alist);
             let state = frame.borrow();
-            let root = Value::Record(state.root_window.expect("initial root"));
-            let mini = Value::Record(state.minibuffer_window.expect("initial minibuffer"));
+            let root = state.root_window.expect("initial root").value();
+            let mini = state.minibuffer_window.expect("initial minibuffer").value();
             let terminal = Value::Terminal(state.terminal.expect("initial terminal"));
             drop(state);
             // Batch selection must not install an immortal frontend root.
@@ -15798,21 +15798,27 @@ mod tests {
         assert_eq!(state.focus_frame_id, Some(copied));
         let root = state.root_window.expect("copied root window");
         assert_ne!(
-            Value::Record(root),
-            Value::Record(frame.borrow().root_window.expect("source root"))
+            root.value(),
+            frame.borrow().root_window.expect("source root").value()
         );
         assert_eq!(
-            root.slots[crate::lisp::primitives::WINDOW_FRAME_SLOT],
+            root.slot(crate::lisp::primitives::WINDOW_FRAME_SLOT),
             Value::Frame(copied)
         );
+        let record = |window: crate::lisp::primitives::WindowRef| match window.value().kind() {
+            Kind::Record(record) => record,
+            _ => unreachable!("a window is a host record"),
+        };
         assert_ne!(
-            root.owner,
-            frame.borrow().root_window.expect("source root").owner
+            record(root).owner,
+            record(frame.borrow().root_window.expect("source root")).owner
         );
-        assert!(root.ptr_eq(&cloned.record_ref(root.id).expect("clone record index")));
+        assert!(record(root).ptr_eq(&cloned.record_ref(root.id()).expect("clone record index")));
         assert_eq!(
-            state.selected_window.map(Value::Record),
-            Some(Value::Record(root))
+            state
+                .selected_window
+                .map(crate::lisp::primitives::WindowRef::value),
+            Some(root.value())
         );
         let terminal = state.terminal.expect("copied terminal");
         assert_ne!(
@@ -15875,7 +15881,7 @@ mod tests {
             crate::lisp::primitives::call(
                 &mut interpreter,
                 "window-live-p",
-                &[Value::Record(window)],
+                &[window.value()],
                 &mut Env::new(),
             )
             .expect("deleted frame's window"),
