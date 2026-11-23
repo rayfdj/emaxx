@@ -51,49 +51,30 @@ pub(crate) const WINDOW_FRAME_SLOT: usize = 19;
 /// list, where window.h has the two integers alone.
 pub(crate) const WINDOW_BASE_LINE_SLOT: usize = 20;
 
-/// `w->window_end_valid = false'.
-pub(crate) fn invalidate_window_end(interp: &mut Interpreter, window_id: u64) {
-    set_window_flag(interp, window_id, WindowRef::set_window_end_valid, false);
-}
-
-/// w->last_point of WINDOW_ID: point as the window's last complete
+/// w->last_point of WINDOW: point as the window's last complete
 /// redisplay left it, None where none has (the field is 0).
-pub(crate) fn window_last_point(interp: &Interpreter, window_id: u64) -> Option<i64> {
-    interp
-        .window_ref(window_id)
-        .map(WindowRef::last_point)
-        .filter(|point| *point != 0)
+pub(crate) fn window_last_point(window: WindowRef) -> Option<i64> {
+    Some(window.last_point()).filter(|point| *point != 0)
 }
 
-/// `w->last_point = POINT' for WINDOW_ID, 0 for none.
-pub(crate) fn set_window_last_point(interp: &Interpreter, window_id: u64, point: Option<i64>) {
-    if let Some(window) = interp.window_ref(window_id) {
-        window.set_last_point(point.unwrap_or(0));
-    }
+/// `w->last_point = POINT' for WINDOW, 0 for none.
+pub(crate) fn set_window_last_point(window: WindowRef, point: Option<i64>) {
+    window.set_last_point(point.unwrap_or(0));
 }
 
-/// w->column_number_displayed of WINDOW_ID: the column a `%c' or `%C' of
+/// w->column_number_displayed of WINDOW: the column a `%c' or `%C' of
 /// its mode line last showed, None where none is displayed (the field is
 /// -1).
-pub(crate) fn window_column_number_displayed(interp: &Interpreter, window_id: u64) -> Option<i64> {
-    interp
-        .window_ref(window_id)
-        .map(WindowRef::column_number_displayed)
-        .filter(|column| *column != -1)
+pub(crate) fn window_column_number_displayed(window: WindowRef) -> Option<i64> {
+    Some(window.column_number_displayed()).filter(|column| *column != -1)
 }
 
-/// `w->column_number_displayed = COLUMN' for WINDOW_ID, -1 for none.
-pub(crate) fn set_window_column_number_displayed(
-    interp: &Interpreter,
-    window_id: u64,
-    column: Option<i64>,
-) {
-    if let Some(window) = interp.window_ref(window_id) {
-        window.set_column_number_displayed(column.unwrap_or(-1));
-    }
+/// `w->column_number_displayed = COLUMN' for WINDOW, -1 for none.
+pub(crate) fn set_window_column_number_displayed(window: WindowRef, column: Option<i64>) {
+    window.set_column_number_displayed(column.unwrap_or(-1));
 }
 
-/// WINDOW_ID's character geometry as (total_cols, total_lines, left_col,
+/// WINDOW's character geometry as (total_cols, total_lines, left_col,
 /// top_line), in window_geometry's order: window.h's fields of those
 /// names, the window's edges and sizes in frame columns and lines.
 /// window.c keeps them apart from the pixel geometry and assigns them on
@@ -103,10 +84,7 @@ pub(crate) fn set_window_column_number_displayed(
 /// below the menu bar.  A text frame's character cell is one pixel, and a
 /// window not yet given one of the four reads its pixel edge or size,
 /// which it then still equals.
-pub(crate) fn window_char_geometry(interp: &Interpreter, window_id: u64) -> (i64, i64, i64, i64) {
-    let Some(window) = interp.window_ref(window_id) else {
-        return (0, 0, 0, 0);
-    };
+pub(crate) fn window_char_geometry(window: WindowRef) -> (i64, i64, i64, i64) {
     (
         window.total_cols().or(window.pixel_width()).unwrap_or(0),
         window.total_lines().or(window.pixel_height()).unwrap_or(0),
@@ -117,11 +95,8 @@ pub(crate) fn window_char_geometry(interp: &Interpreter, window_id: u64) -> (i64
 
 /// WINDOW_ID's left_margin_cols and right_margin_cols (None for 0, no
 /// margin).
-pub(crate) fn window_margin_cols(
-    interp: &Interpreter,
-    window_id: u64,
-) -> (Option<i64>, Option<i64>) {
-    let Some(window) = interp.window_ref(window_id) else {
+pub(crate) fn window_margin_cols(interp: &Interpreter, w: u64) -> (Option<i64>, Option<i64>) {
+    let Some(window) = interp.window_ref(w) else {
         return (None, None);
     };
     let margin = |cols: i64| Some(cols).filter(|cols| *cols != 0);
@@ -133,35 +108,25 @@ pub(crate) fn window_margin_cols(
 
 pub(crate) fn set_window_margin_cols(
     interp: &mut Interpreter,
-    window_id: u64,
+    w: u64,
     left: Option<i64>,
     right: Option<i64>,
 ) {
-    if let Some(window) = interp.window_ref(window_id) {
+    if let Some(window) = interp.window_ref(w) {
         window.set_left_margin_cols(left.unwrap_or(0));
         window.set_right_margin_cols(right.unwrap_or(0));
     }
-}
-
-/// One of WINDOW_ID's bits, BIT its reader (`WindowRef::force_start' for
-/// w->force_start); false for no window.
-pub(crate) fn window_flag(
-    interp: &Interpreter,
-    window_id: u64,
-    bit: fn(WindowRef) -> bool,
-) -> bool {
-    interp.window_ref(window_id).is_some_and(bit)
 }
 
 /// `w->BIT = ON' for WINDOW_ID, SET the bit's store
 /// (`WindowRef::set_force_start' for w->force_start).
 pub(crate) fn set_window_flag(
     interp: &mut Interpreter,
-    window_id: u64,
+    w: u64,
     set: fn(WindowRef, bool),
     on: bool,
 ) {
-    if let Some(window) = interp.window_ref(window_id) {
+    if let Some(window) = interp.window_ref(w) {
         set(window, on);
     }
 }
@@ -176,10 +141,10 @@ pub(crate) const WINDOW_MARKER_SLOTS: [usize; 3] =
 /// The marker in SLOT of WINDOW_ID (nil in an internal window's).
 pub(crate) fn window_marker(
     interp: &Interpreter,
-    window_id: u64,
+    window: u64,
     slot: usize,
 ) -> Option<crate::lisp::types::MarkerRef> {
-    match interp.window_ref(window_id)?.slot(slot).kind() {
+    match interp.window_ref(window)?.slot(slot).kind() {
         Kind::Marker(marker) => Some(marker),
         _ => None,
     }
@@ -188,23 +153,23 @@ pub(crate) fn window_marker(
 /// marker_position of SLOT's marker: None when it points nowhere.
 pub(crate) fn window_marker_position(
     interp: &Interpreter,
-    window_id: u64,
+    window: WindowRef,
     slot: usize,
 ) -> Option<usize> {
-    window_marker(interp, window_id, slot)?.position()
+    window_marker(interp, window.id(), slot)?.position()
 }
 
 /// The marker in SLOT of WINDOW_ID, made when the slot holds none (as
 /// make_window gives a window its three).
 fn window_marker_for_set(
     interp: &mut Interpreter,
-    window_id: u64,
+    w: u64,
     slot: usize,
 ) -> Option<crate::lisp::types::MarkerRef> {
-    if let Some(marker) = window_marker(interp, window_id, slot) {
+    if let Some(marker) = window_marker(interp, w, slot) {
         return Some(marker);
     }
-    let window = interp.window_ref(window_id)?;
+    let window = interp.window_ref(w)?;
     window.ensure_slot(interp, slot);
     let marker = crate::lisp::types::MarkerRef::new();
     window.set_held_slot(interp, slot, Value::Marker(marker));
@@ -215,12 +180,12 @@ fn window_marker_for_set(
 /// inside [BEG, Z].
 pub(crate) fn set_window_marker(
     interp: &mut Interpreter,
-    window_id: u64,
+    window: u64,
     slot: usize,
     buffer_id: u64,
     charpos: usize,
 ) {
-    if let Some(marker) = window_marker_for_set(interp, window_id, slot) {
+    if let Some(marker) = window_marker_for_set(interp, window, slot) {
         let _ = interp.set_marker(marker, Some(charpos), Some(buffer_id));
     }
 }
@@ -229,13 +194,13 @@ pub(crate) fn set_window_marker(
 /// BUFFER_ID, inside its accessible portion.
 pub(crate) fn set_window_marker_restricted(
     interp: &mut Interpreter,
-    window_id: u64,
+    window: u64,
     slot: usize,
     buffer_id: u64,
     charpos: usize,
 ) {
     let (begv, zv) = buffer_point_bounds(interp, buffer_id);
-    set_window_marker(interp, window_id, slot, buffer_id, charpos.clamp(begv, zv));
+    set_window_marker(interp, window, slot, buffer_id, charpos.clamp(begv, zv));
 }
 
 /// marker.c:set_marker_restricted of SLOT's marker to POSITION in
@@ -247,13 +212,13 @@ pub(crate) fn set_window_marker_restricted(
 /// `(wrong-type-argument integer-or-marker-p POSITION)'.
 pub(crate) fn set_window_marker_restricted_value(
     interp: &mut Interpreter,
-    window_id: u64,
+    window: WindowRef,
     slot: usize,
     buffer_id: u64,
     position: &Value,
 ) -> Result<(), LispError> {
     let buffer = interp.buffer_object(buffer_id);
-    let Some(marker) = window_marker_for_set(interp, window_id, slot) else {
+    let Some(marker) = window_marker_for_set(interp, window.id(), slot) else {
         return Ok(());
     };
     let buffer = match buffer {
@@ -287,15 +252,15 @@ pub(crate) fn set_window_marker_restricted_value(
     };
     let (begv, zv) = buffer_point_bounds(interp, buffer_id);
     let charpos = clip_to_bounds(begv as i64, charpos, zv as i64) as usize;
-    set_window_marker(interp, window_id, slot, buffer_id, charpos);
+    set_window_marker(interp, window.id(), slot, buffer_id, charpos);
     Ok(())
 }
 
 /// marker.c:unchain_marker on WINDOW_ID's three markers, as
 /// delete_window and delete_all_child_windows do: they point nowhere.
-pub(crate) fn unchain_window_markers(interp: &Interpreter, window_id: u64) {
+pub(crate) fn unchain_window_markers(interp: &Interpreter, window: u64) {
     for slot in WINDOW_MARKER_SLOTS {
-        if let Some(marker) = window_marker(interp, window_id, slot) {
+        if let Some(marker) = window_marker(interp, window, slot) {
             marker.detach();
         }
     }
@@ -303,14 +268,10 @@ pub(crate) fn unchain_window_markers(interp: &Interpreter, window_id: u64) {
 
 /// set_window_buffer's insertion type for WINDOW_ID's point markers: the
 /// value of `window-point-insertion-type' in BUFFER_ID.
-pub(crate) fn set_window_point_insertion_type(
-    interp: &Interpreter,
-    window_id: u64,
-    buffer_id: u64,
-) {
+pub(crate) fn set_window_point_insertion_type(interp: &Interpreter, window: u64, buffer_id: u64) {
     let insertion_type = window_point_insertion_type(interp, buffer_id);
     for slot in [WINDOW_POINT_SLOT, WINDOW_OLD_POINT_SLOT] {
-        if let Some(marker) = window_marker(interp, window_id, slot) {
+        if let Some(marker) = window_marker(interp, window, slot) {
             marker.set_insertion_type(insertion_type);
         }
     }
@@ -1045,18 +1006,19 @@ pub(crate) fn window_start(
     match value.map(|v| v.kind()) {
         None | Some(Kind::Nil) => Ok(current_window_start(interp)),
         Some(value) => {
-            let Some(id) = window_record_id_from_value(interp, &value.value()) else {
+            let Some(window) = WindowRef::from_value(&value.value()) else {
                 return Err(LispError::WrongTypeArgument(
                     "windowp".into(),
                     value.value(),
                 ));
             };
-            if id == interp.selected_window_id() {
+            if Some(window) == interp.selected_window() {
                 return Ok(current_window_start(interp));
             }
-            let buffer_id =
-                window_buffer_id(interp, &value.value()).unwrap_or(interp.current_buffer_id());
-            Ok(window_start_marker(interp, id, buffer_id))
+            let buffer_id = window
+                .live_buffer_id(interp)
+                .unwrap_or(interp.current_buffer_id());
+            Ok(window_start_marker(interp, window, buffer_id))
         }
     }
 }
@@ -1064,11 +1026,15 @@ pub(crate) fn window_start(
 /// WINDOW_ID's start marker position (Fmarker_position of w->start): a
 /// marker stays inside [BEG, Z] of BUFFER_ID but not inside a narrowing
 /// made after it was set.
-pub(crate) fn window_start_marker(interp: &Interpreter, window_id: u64, buffer_id: u64) -> usize {
-    if window_id == interp.selected_window_id() {
+pub(crate) fn window_start_marker(
+    interp: &Interpreter,
+    window: WindowRef,
+    buffer_id: u64,
+) -> usize {
+    if Some(window) == interp.selected_window() {
         return interp.selected_window_start();
     }
-    window_marker_position(interp, window_id, WINDOW_START_SLOT)
+    window_marker_position(interp, window, WINDOW_START_SLOT)
         .unwrap_or_else(|| buffer_point_bounds(interp, buffer_id).0)
 }
 
@@ -1085,12 +1051,13 @@ pub(crate) fn buffer_z(interp: &Interpreter, buffer_id: u64) -> usize {
 
 /// Store START (clamped to the window buffer's accessible region, as
 /// set_marker_restricted clamps) as WINDOW_ID's start marker.
-pub(crate) fn set_window_start_marker(interp: &mut Interpreter, window_id: u64, start: usize) {
-    let buffer_id = window_buffer_id(interp, &interp.window_value(window_id))
+pub(crate) fn set_window_start_marker(interp: &mut Interpreter, window: WindowRef, start: usize) {
+    let buffer_id = window
+        .live_buffer_id(interp)
         .unwrap_or(interp.current_buffer_id());
     let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
     let start = start.clamp(point_min, point_max);
-    set_window_marker(interp, window_id, WINDOW_START_SLOT, buffer_id, start);
+    set_window_marker(interp, window.id(), WINDOW_START_SLOT, buffer_id, start);
 }
 
 /// What a redisplay of WINDOW_ID showed: its point (the window's own,
@@ -1098,16 +1065,14 @@ pub(crate) fn set_window_start_marker(interp: &mut Interpreter, window_id: u64, 
 /// moved it) and window_end_pos, Z less the end of the text it showed.
 pub(crate) fn record_window_display(
     interp: &mut Interpreter,
-    window_id: u64,
+    window: WindowRef,
     buffer_id: u64,
     point: usize,
     window_end: usize,
 ) {
     let z = buffer_z(interp, buffer_id);
-    set_window_marker(interp, window_id, WINDOW_POINT_SLOT, buffer_id, point);
-    if let Some(window) = interp.window_ref(window_id) {
-        window.set_window_end_pos(Some(z as i64 - window_end.min(z) as i64));
-    }
+    set_window_marker(interp, window.id(), WINDOW_POINT_SLOT, buffer_id, point);
+    window.set_window_end_pos(Some(z as i64 - window_end.min(z) as i64));
 }
 
 /// window.c Fset_window_start past decode_live_window: the start marker
@@ -1116,24 +1081,25 @@ pub(crate) fn record_window_display(
 /// begin a line.
 pub(crate) fn set_window_start_value(
     interp: &mut Interpreter,
-    id: u64,
+    window: WindowRef,
     pos: &Value,
     noforce: bool,
 ) -> Result<(), LispError> {
     // set_marker_restricted (w->start, pos, w->contents): its live_buffer
     // is decode_buffer's, the current buffer for the nil contents of a
     // deleted selected window, which decode_live_window gives for nil.
-    let buffer_id =
-        window_buffer_id(interp, &interp.window_value(id)).unwrap_or(interp.current_buffer_id());
-    set_window_marker_restricted_value(interp, id, WINDOW_START_SLOT, buffer_id, pos)?;
-    set_window_flag(interp, id, WindowRef::set_start_at_line_beg, false);
+    let buffer_id = window
+        .live_buffer_id(interp)
+        .unwrap_or(interp.current_buffer_id());
+    set_window_marker_restricted_value(interp, window, WINDOW_START_SLOT, buffer_id, pos)?;
+    window.set_start_at_line_beg(false);
     // Bug#15957.
-    invalidate_window_end(interp, id);
+    window.set_window_end_valid(false);
     if !noforce {
-        set_window_flag(interp, id, WindowRef::set_force_start, true);
+        window.set_force_start(true);
     }
-    interp.wset_update_mode_line(id);
-    interp.wset_redisplay(id);
+    interp.wset_update_mode_line(window.id());
+    interp.wset_redisplay(window.id());
     Ok(())
 }
 
@@ -1190,7 +1156,7 @@ pub(crate) fn recenter_selected_window(
     text_height: usize,
     interactive: bool,
 ) -> Result<(), LispError> {
-    let window_id = interp.selected_window_id();
+    let w = interp.selected_window_ref();
     // buf = XBUFFER (w->contents): a deleted selected window's nil is no
     // buffer, so not the current one either.
     if interp.selected_window_contents_buffer_id() != Some(interp.current_buffer_id()) {
@@ -1211,8 +1177,8 @@ pub(crate) fn recenter_selected_window(
                 .is_some_and(|value| value.is_truthy())
         {
             // redraw_frame: fset_redisplay (f).
-            let selected = interp.selected_window_id();
-            interp.fset_redisplay_window_frame(selected);
+            let selected = interp.selected_window_ref();
+            interp.fset_redisplay_window_frame(selected.id());
         }
         center = true;
     } else if matches!(arg.kind(), Kind::Cons(_)) {
@@ -1234,11 +1200,11 @@ pub(crate) fn recenter_selected_window(
         let mut passes = 0;
         let mut fetches = crate::tty::IteratorFetches::off();
         loop {
-            fetches.begin_pass(interp, env, window_id);
+            fetches.begin_pass(interp, env, w);
             let start = recenter_display_start(
                 interp,
                 env,
-                window_id,
+                w,
                 RecenterArg { center, iarg },
                 (ht, margin),
                 point,
@@ -1246,7 +1212,7 @@ pub(crate) fn recenter_selected_window(
             );
             passes += 1;
             if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES
-                || !fetches.fontify(interp, env, window_id)
+                || !fetches.fontify(interp, env, w)
             {
                 match start {
                     Some(start) => break start,
@@ -1265,25 +1231,20 @@ pub(crate) fn recenter_selected_window(
         };
         line = clip_to_bounds(margin, line, ht - margin - 1);
         let win = super::indent_motion::MotionWindow {
-            id: window_id,
+            window: w,
             contents: interp.current_buffer_id(),
         };
         super::indent_motion::vmotion(interp, env, point, -line, win).bufpos
     };
     interp.set_selected_window_start(start);
-    invalidate_window_end(interp, window_id);
-    set_window_flag(interp, window_id, WindowRef::set_optional_new_start, true);
+    w.set_window_end_valid(false);
+    w.set_optional_new_start(true);
     let at_line_beg = {
         let buffer = interp.buffer.borrow();
         start <= buffer.point_min() || buffer.char_at(start - 1) == Some('\n')
     };
-    set_window_flag(
-        interp,
-        window_id,
-        WindowRef::set_start_at_line_beg,
-        at_line_beg,
-    );
-    interp.wset_redisplay(window_id);
+    w.set_start_at_line_beg(at_line_beg);
+    interp.wset_redisplay(w.id());
     Ok(())
 }
 
@@ -1307,7 +1268,7 @@ struct RecenterArg {
 fn recenter_display_start(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     RecenterArg { center, iarg }: RecenterArg,
     (ht, margin): (i64, i64),
     point: usize,
@@ -1315,10 +1276,10 @@ fn recenter_display_start(
 ) -> Option<usize> {
     if !center && iarg >= 0 {
         let nlines = clip_to_bounds(margin, iarg, ht - margin - 1).max(0);
-        crate::tty::fetch_start_display(interp, window_id, fetches, point);
-        let row = super::move_it::move_it_by_lines(interp, env, window_id, point, 0, fetches).0;
+        crate::tty::fetch_start_display(interp, window, fetches, point);
+        let row = super::move_it::move_it_by_lines(interp, env, window, point, 0, fetches).0;
         return Some(if nlines > 0 {
-            super::move_it::move_it_by_lines(interp, env, window_id, row, -nlines, fetches).0
+            super::move_it::move_it_by_lines(interp, env, window, row, -nlines, fetches).0
         } else {
             row
         });
@@ -1327,9 +1288,9 @@ fn recenter_display_start(
         ht / 2
     } else {
         let nlines = clip_to_bounds(margin + 1, -iarg, ht - margin);
-        crate::tty::fetch_start_display(interp, window_id, fetches, point);
-        let row = super::move_it::move_it_by_lines(interp, env, window_id, point, 0, fetches).0;
-        super::move_it::move_it_by_lines(interp, env, window_id, row, nlines, fetches);
+        crate::tty::fetch_start_display(interp, window, fetches, point);
+        let row = super::move_it::move_it_by_lines(interp, env, window, point, 0, fetches).0;
+        super::move_it::move_it_by_lines(interp, env, window, row, nlines, fetches);
         // Point's row ends NLINES from the bottom, empty lines past the
         // buffer's end counted in.
         let h = ht - nlines;
@@ -1340,11 +1301,11 @@ fn recenter_display_start(
     };
     // move_it_vertically_backward: whole screen lines above point's row,
     // no reseat.
-    crate::tty::fetch_start_display(interp, window_id, fetches, point);
+    crate::tty::fetch_start_display(interp, window, fetches, point);
     crate::tty::fetch_move_vertically_backward(
         interp,
         env,
-        window_id,
+        window,
         fetches,
         point,
         lines_back as usize,
@@ -1361,8 +1322,8 @@ pub(crate) fn move_screen_lines(
     from: usize,
     count: isize,
 ) -> (usize, isize) {
-    let window_id = interp.selected_window_id();
-    move_screen_lines_in(interp, env, window_id, from, count)
+    let window = interp.selected_window_ref();
+    move_screen_lines_in(interp, env, window, from, count)
 }
 
 /// `move_screen_lines' under WINDOW_ID's geometry, in the current buffer
@@ -1370,7 +1331,7 @@ pub(crate) fn move_screen_lines(
 pub(crate) fn move_screen_lines_in(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     from: usize,
     count: isize,
 ) -> (usize, isize) {
@@ -1379,7 +1340,7 @@ pub(crate) fn move_screen_lines_in(
     let point_max = interp.buffer.borrow().point_max();
     let from = from.clamp(point_min, point_max);
     let (mut bol, mut eol) = visual_line_bounds(interp, from);
-    let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
+    let mut starts = screen_row_starts(interp, env, window, bol, eol);
     let mut index = row_index_of(&starts, from);
     let mut remaining = count;
     while remaining > 0 {
@@ -1389,7 +1350,7 @@ pub(crate) fn move_screen_lines_in(
             let bounds = visual_line_bounds(interp, eol + 1);
             bol = bounds.0;
             eol = bounds.1;
-            starts = screen_row_starts(interp, env, window_id, bol, eol);
+            starts = screen_row_starts(interp, env, window, bol, eol);
             index = 0;
         } else {
             break;
@@ -1403,7 +1364,7 @@ pub(crate) fn move_screen_lines_in(
             let bounds = visual_line_bounds(interp, bol - 1);
             bol = bounds.0;
             eol = bounds.1;
-            starts = screen_row_starts(interp, env, window_id, bol, eol);
+            starts = screen_row_starts(interp, env, window, bol, eol);
             index = starts.len().saturating_sub(1);
         } else {
             break;
@@ -1424,7 +1385,7 @@ thread_local! {
 fn motion_from_start(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     start: usize,
     pos: usize,
     limit: usize,
@@ -1432,7 +1393,7 @@ fn motion_from_start(
     let mut rows = 0i64;
     let mut cursor = start;
     while (rows as usize) < limit && pos >= cursor {
-        let (next, remaining) = move_screen_lines_in(interp, env, window_id, cursor, 1);
+        let (next, remaining) = move_screen_lines_in(interp, env, window, cursor, 1);
         if remaining != 0 || next <= cursor || pos < next {
             break;
         }
@@ -1445,7 +1406,7 @@ fn motion_from_start(
         let line_start = super::buffers::line_beginning_at(interp, at);
         super::buffers::column_at(interp, env, line_start, at).map(|column| column as i64)
     };
-    let row_start = move_screen_lines_in(interp, env, window_id, pos, 0).0;
+    let row_start = move_screen_lines_in(interp, env, window, pos, 0).0;
     let hpos = column_at(interp, env, pos)? - column_at(interp, env, row_start)?;
     Ok((rows, hpos.max(0)))
 }
@@ -1468,7 +1429,7 @@ pub(crate) fn window_scroll(
     total_lines: i64,
     hscroll: i64,
 ) -> Result<(), LispError> {
-    let window_id = interp.selected_window_id();
+    let window = interp.selected_window_ref();
     let long_lines = interp.buffer.borrow().long_line_optimizations_p();
     let mut long_lines_truncated = long_lines
         && interp
@@ -1476,9 +1437,9 @@ pub(crate) fn window_scroll(
             .is_some_and(|value| !value.is_nil());
     let count = interp.specpdl_index();
     let n = n.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
-    interp.wset_redisplay(window_id);
+    interp.wset_redisplay(window.id());
     // Does this window's buffer have very long and truncated lines?
-    let total_cols = window_char_geometry(interp, window_id).0;
+    let total_cols = window_char_geometry(window).0;
     if long_lines && !long_lines_truncated && total_cols < interp.frame_width() {
         let partial = interp
             .symbol_value_key(cached_symbol!("truncate-partial-width-windows"))
@@ -1502,12 +1463,12 @@ pub(crate) fn window_scroll(
         )?;
     }
     let result = if whole && long_lines_truncated {
-        window_scroll_for_long_lines(interp, env, window_id, n, noerror, text_height)
+        window_scroll_for_long_lines(interp, env, window, n, noerror, text_height)
     } else {
         window_scroll_line_based(
             interp,
             env,
-            window_id,
+            window,
             n,
             whole,
             noerror,
@@ -1522,7 +1483,7 @@ pub(crate) fn window_scroll(
     result.and(unbind)?;
     // Bug#15957: a window-end asked for before the next redisplay must
     // be computed anew.
-    invalidate_window_end(interp, window_id);
+    window.set_window_end_valid(false);
     Ok(())
 }
 
@@ -1532,14 +1493,14 @@ pub(crate) fn window_scroll(
 fn window_scroll_for_long_lines(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     n: i64,
     noerror: bool,
     text_height: usize,
 ) -> Result<(), LispError> {
     use super::indent_motion::{MotionWindow, vmotion};
     let win = MotionWindow {
-        id: window_id,
+        window,
         contents: interp.current_buffer_id(),
     };
     let mut startpos = interp.selected_window_start();
@@ -1561,7 +1522,7 @@ fn window_scroll_for_long_lines(
         && super::dispatch::call(
             interp,
             "pos-visible-in-window-p",
-            &[Value::Integer(point as i64), interp.window_value(window_id)],
+            &[Value::Integer(point as i64), window.value()],
             env,
         )?
         .is_truthy();
@@ -1586,12 +1547,12 @@ fn window_scroll_for_long_lines(
         )
     };
     if pos < zv {
-        set_window_start_marker(interp, window_id, pos);
-        set_window_flag(interp, window_id, WindowRef::set_start_at_line_beg, bolp);
-        interp.wset_update_mode_line(window_id);
+        set_window_start_marker(interp, window, pos);
+        window.set_start_at_line_beg(bolp);
+        interp.wset_update_mode_line(window.id());
         // force_start so that redisplay_window runs the
         // window-scroll-functions.
-        set_window_flag(interp, window_id, WindowRef::set_force_start, true);
+        window.set_force_start(true);
         interp.buffer.borrow_mut().goto_char(pos);
         let pos = if n > 0 {
             vmotion(interp, env, pos, ht / 2, win).bufpos
@@ -1624,7 +1585,7 @@ struct ScrollGeometry {
 fn window_scroll_line_based(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    w: WindowRef,
     n: i64,
     whole: bool,
     noerror: bool,
@@ -1636,12 +1597,12 @@ fn window_scroll_line_based(
         total_lines,
         hscroll,
     } = geometry;
-    let window = interp.window_value(window_id);
+    let window = w.value();
     let opoint = interp.buffer.borrow().point();
     let ht = text_height.max(1) as i64;
     let mut startpos = interp.selected_window_start();
     let adjust_old_pointm =
-        window_marker_position(interp, window_id, WINDOW_OLD_POINT_SLOT) == Some(opoint);
+        window_marker_position(interp, w, WINDOW_OLD_POINT_SLOT) == Some(opoint);
     let mut n = n;
     if whole {
         let nscls = interp
@@ -1669,8 +1630,7 @@ fn window_scroll_line_based(
             )
             .is_ok_and(|value| value.is_truthy());
         original = if vpos <= 0 || !scroll_command {
-            let (vpos, hpos) =
-                motion_from_start(interp, env, window_id, startpos, opoint, text_height)?;
+            let (vpos, hpos) = motion_from_start(interp, env, w, startpos, opoint, text_height)?;
             let saved = (hpos + hscroll, vpos);
             SCROLL_PRESERVE.with(|cell| cell.set(saved));
             saved
@@ -1685,12 +1645,12 @@ fn window_scroll_line_based(
         env,
     )?;
     if visible.is_nil() {
-        visual_vertical_motion(interp, env, window_id, -(ht / 2), None)?;
+        visual_vertical_motion(interp, env, w, -(ht / 2), None)?;
         startpos = interp.buffer.borrow().point();
     }
     interp.buffer.borrow_mut().goto_char(startpos);
     let lose = n < 0 && interp.buffer.borrow().point() <= interp.buffer.borrow().point_min();
-    visual_vertical_motion(interp, env, window_id, n, None)?;
+    visual_vertical_motion(interp, env, w, n, None)?;
     let (pos, bolp, zv) = {
         let buffer = interp.buffer.borrow();
         let pos = buffer.point();
@@ -1713,20 +1673,20 @@ fn window_scroll_line_based(
         };
     }
     let margin = selected_scroll_margin(interp, text_height) as i64;
-    set_window_start_marker(interp, window_id, pos);
-    set_window_flag(interp, window_id, WindowRef::set_start_at_line_beg, bolp);
-    interp.wset_update_mode_line(window_id);
+    set_window_start_marker(interp, w, pos);
+    w.set_start_at_line_beg(bolp);
+    interp.wset_update_mode_line(w.id());
     // force_start so redisplay runs the window-scroll-functions.
-    set_window_flag(interp, window_id, WindowRef::set_force_start, true);
+    w.set_force_start(true);
     let (preserve_hpos, preserve_vpos) = original;
     let goto = |interp: &mut Interpreter, at: usize| interp.buffer.borrow_mut().goto_char(at);
     if preserve.is_truthy() && margin == 0 && (whole || !matches!(preserve.kind(), Kind::T)) {
         goto(interp, pos);
-        visual_vertical_motion(interp, env, window_id, preserve_vpos, Some(preserve_hpos))?;
+        visual_vertical_motion(interp, env, w, preserve_vpos, Some(preserve_hpos))?;
     } else if n > 0 {
         let top_margin = if margin > 0 {
             goto(interp, pos);
-            visual_vertical_motion(interp, env, window_id, margin, None)?;
+            visual_vertical_motion(interp, env, w, margin, None)?;
             interp.buffer.borrow().point()
         } else {
             pos
@@ -1742,7 +1702,7 @@ fn window_scroll_line_based(
                 preserve_vpos
             };
             goto(interp, pos);
-            visual_vertical_motion(interp, env, window_id, nlines, Some(preserve_hpos))?;
+            visual_vertical_motion(interp, env, w, nlines, Some(preserve_hpos))?;
         } else {
             goto(interp, top_margin);
         }
@@ -1750,7 +1710,7 @@ fn window_scroll_line_based(
         // Scrolled backward: point near the window's end, outside the
         // scroll margin.
         goto(interp, pos);
-        let moved = visual_vertical_motion(interp, env, window_id, ht - margin, None)?;
+        let moved = visual_vertical_motion(interp, env, w, ht - margin, None)?;
         let bottom_margin = if moved == ht - margin {
             interp.buffer.borrow().point()
         } else {
@@ -1767,9 +1727,9 @@ fn window_scroll_line_based(
                 preserve_vpos
             };
             goto(interp, pos);
-            visual_vertical_motion(interp, env, window_id, nlines, Some(preserve_hpos))?;
+            visual_vertical_motion(interp, env, w, nlines, Some(preserve_hpos))?;
         } else {
-            visual_vertical_motion(interp, env, window_id, -1, None)?;
+            visual_vertical_motion(interp, env, w, -1, None)?;
         }
     }
     if adjust_old_pointm {
@@ -1777,7 +1737,7 @@ fn window_scroll_line_based(
         // w->contents): scroll_command has made the buffer current.
         let point = interp.buffer.borrow().point();
         let buffer_id = interp.current_buffer_id();
-        set_window_marker(interp, window_id, WINDOW_OLD_POINT_SLOT, buffer_id, point);
+        set_window_marker(interp, w.id(), WINDOW_OLD_POINT_SLOT, buffer_id, point);
     }
     Ok(())
 }

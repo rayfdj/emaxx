@@ -842,10 +842,6 @@ impl Interpreter {
         self.selected_frame_id.borrow_mut().root_window = window;
     }
 
-    pub(crate) fn minibuffer_window_id(&self) -> u64 {
-        self.selected_frame_id.borrow().minibuffer_window_id()
-    }
-
     /// FRAME_MINIBUF_WINDOW of the selected frame.
     pub(crate) fn minibuffer_window(&self) -> Option<primitives::WindowRef> {
         self.selected_frame_id.borrow().minibuffer_window
@@ -2160,7 +2156,7 @@ impl Interpreter {
                 .then(|| {
                     primitives::window_marker_position(
                         self,
-                        current_window,
+                        snapshot.selected_window?,
                         primitives::WINDOW_POINT_SLOT,
                     )
                 })
@@ -2407,11 +2403,13 @@ impl Interpreter {
                 // was saved is not restored.
                 if Some(buffer) != new_current_buffer
                     && buffer == self.current_buffer_id()
-                    && let Some(point) = primitives::window_marker_position(
-                        self,
-                        *window,
-                        primitives::WINDOW_POINT_SLOT,
-                    )
+                    && let Some(point) = self.window_ref(*window).and_then(|window| {
+                        primitives::window_marker_position(
+                            self,
+                            window,
+                            primitives::WINDOW_POINT_SLOT,
+                        )
+                    })
                 {
                     let mut state = self.buffer.borrow_mut();
                     let point = point.clamp(state.point_min(), state.point_max());

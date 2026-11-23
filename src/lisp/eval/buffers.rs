@@ -357,23 +357,17 @@ impl Interpreter {
     /// `suspended_old_point' for a change made in BUFFER_ID as the
     /// current buffer.
     pub(crate) fn suspended_old_point_in(&self, buffer_id: u64) -> Option<usize> {
-        use crate::lisp::primitives::{WINDOW_OLD_POINT_SLOT, WindowRef};
-        let window_id = self.selected_window_id();
-        let suspended = self
-            .window_ref(window_id)
-            .is_some_and(WindowRef::suspend_auto_hscroll);
-        if !suspended
-            || crate::lisp::primitives::window_buffer_id(self, &self.window_value(window_id))
-                != Some(buffer_id)
-        {
+        use crate::lisp::primitives::WINDOW_OLD_POINT_SLOT;
+        let window = self.selected_window()?;
+        if !window.suspend_auto_hscroll() || window.live_buffer_id(self) != Some(buffer_id) {
             return None;
         }
-        crate::lisp::primitives::window_marker_position(self, window_id, WINDOW_OLD_POINT_SLOT)
+        crate::lisp::primitives::window_marker_position(self, window, WINDOW_OLD_POINT_SLOT)
     }
 
     /// The selected window's w->suspend_auto_hscroll.
     pub(crate) fn auto_hscroll_suspended(&self) -> bool {
-        self.window_ref(self.selected_window_id())
+        self.selected_window()
             .is_some_and(crate::lisp::primitives::WindowRef::suspend_auto_hscroll)
     }
 
@@ -381,16 +375,14 @@ impl Interpreter {
     /// edits made in another order than GNU's that its own check, made
     /// apart, found leave it suspended.
     pub(crate) fn suspend_auto_hscroll_again(&mut self) {
-        let window_id = self.selected_window_id();
-        if let Some(window) = self.window_ref(window_id) {
+        if let Some(window) = self.selected_window() {
             window.set_suspend_auto_hscroll(true);
         }
     }
 
     /// w->suspend_auto_hscroll = 0 for the selected window.
     pub(crate) fn resume_auto_hscroll(&mut self) {
-        let window_id = self.selected_window_id();
-        if let Some(window) = self.window_ref(window_id) {
+        if let Some(window) = self.selected_window() {
             window.set_suspend_auto_hscroll(false);
         }
     }

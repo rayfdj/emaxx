@@ -677,8 +677,8 @@ define_dispatch!(
                 // The motion runs in the current buffer, which WINDOW
                 // shows for as long as it takes (Fvertical_motion).
                 let window = live_motion_window(interp, args.get(1).unwrap_or(&Value::Nil))?;
-                let window_id = window_record_id_from_value(interp, &window)
-                    .unwrap_or_else(|| interp.selected_window_id());
+                let w =
+                    WindowRef::from_value(&window).unwrap_or_else(|| interp.selected_window_ref());
                 // Noninteractively vmotion moves by lines alone; the
                 // display iterator's motion first converts CUR-COL
                 // (extract_float) and then COLS to x with window_column_x.
@@ -707,10 +707,9 @@ define_dispatch!(
                 // init_iterator frees the frame's realized faces after a
                 // face change.
                 if crate::lisp::primitives::interactive_window_metrics().is_some() {
-                    interp.init_iterator_faces_window(window_id);
+                    interp.init_iterator_faces_window(w.id());
                 }
-                let moved =
-                    visual_vertical_motion_from(interp, env, window_id, n, goal_col, start_x)?;
+                let moved = visual_vertical_motion_from(interp, env, w, n, goal_col, start_x)?;
                 Ok(Value::Integer(moved))
             }
             "search-forward" | "search-backward" => search_named(interp, name, args, env),
@@ -1823,8 +1822,8 @@ pub(crate) fn visual_char_widths(
 /// computes at the window's start — so wrapped lines break that many
 /// columns earlier.
 fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize {
-    let window_id = interp.selected_window_id();
-    window_line_number_columns(interp, env, window_id)
+    let window = interp.selected_window_ref();
+    window_line_number_columns(interp, env, window)
 }
 
 /// The `display-line-numbers' columns of WINDOW, which shows the current
@@ -1832,7 +1831,7 @@ fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize 
 pub(crate) fn window_line_number_columns(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    w: WindowRef,
 ) -> usize {
     let buffer_id = interp.current_buffer_id();
     let enabled = interp
@@ -1842,7 +1841,7 @@ pub(crate) fn window_line_number_columns(
     if enabled.is_nil() {
         return 0;
     }
-    let window = interp.window_value(window_id);
+    let window = w.value();
     let text_rows = super::call(interp, "window-body-height", &[window], env)
         .ok()
         .and_then(|value| value.integer_value())
@@ -1855,7 +1854,7 @@ pub(crate) fn window_line_number_columns(
     let start = crate::lisp::primitives::window::window_start(interp, Some(&window))
         .unwrap_or(point_min)
         .clamp(point_min, point_max);
-    let point = if window_id == interp.selected_window_id() {
+    let point = if w == interp.selected_window_ref() {
         interp.buffer.borrow().point()
     } else {
         super::call(interp, "window-point", &[window], env)
@@ -1882,22 +1881,22 @@ pub(crate) fn window_line_number_columns(
 pub(crate) fn window_text_geometry(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
 ) -> crate::tty::WindowTextGeometry {
-    let lnum_cols = window_line_number_columns(interp, env, window_id);
-    let truncate = crate::tty::window_truncates(interp, window_id, interp.current_buffer_id());
-    let state = crate::lisp::primitives::window_hscroll_state(interp, window_id);
+    let lnum_cols = window_line_number_columns(interp, env, window);
+    let truncate = crate::tty::window_truncates(interp, window, interp.current_buffer_id());
+    let state = crate::lisp::primitives::window_hscroll_state(interp, window);
     let hscroll = state.hscroll.max(0) as usize;
     let min_hscroll = state.min_hscroll.max(0) as usize;
     let current_line = auto_hscrolls_current_line(interp);
     crate::tty::WindowTextGeometry {
         lnum_cols,
-        text_width: crate::lisp::primitives::window_text_area_columns(interp, window_id)
+        text_width: crate::lisp::primitives::window_text_area_columns(interp, window)
             .saturating_sub(lnum_cols)
             .max(1),
         truncate,
         hscroll,
-        first_visible: iterator_first_visible(interp, window_id, truncate),
+        first_visible: iterator_first_visible(interp, window, truncate),
         // buffer_posn_from_coords tests `auto-hscroll-mode' alone.
         point_row_hscroll: (truncate && current_line).then(|| hscroll.saturating_sub(min_hscroll)),
     }
@@ -1917,10 +1916,10 @@ fn auto_hscrolls_current_line(interp: &Interpreter) -> bool {
 /// min_hscroll the other rows take.
 pub(crate) fn iterator_first_visible(
     interp: &Interpreter,
-    window_id: u64,
+    window: WindowRef,
     truncate: bool,
 ) -> usize {
-    let state = crate::lisp::primitives::window_hscroll_state(interp, window_id);
+    let state = crate::lisp::primitives::window_hscroll_state(interp, window);
     if truncate && auto_hscrolls_current_line(interp) && !state.suspended {
         state.min_hscroll.max(0) as usize
     } else {
@@ -1941,15 +1940,15 @@ pub(crate) fn interactive_motion(interp: &Interpreter) -> bool {
 pub(crate) fn interactive_screen_line(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     bol: usize,
 ) -> crate::tty::ScreenLineLayout {
     let lnum_cols = motion_line_number_columns(interp, env);
-    let width = crate::lisp::primitives::window_text_area_columns(interp, window_id)
+    let width = crate::lisp::primitives::window_text_area_columns(interp, window)
         .saturating_sub(lnum_cols)
         .max(1);
-    let truncate = crate::tty::window_truncates(interp, window_id, interp.current_buffer_id());
-    crate::tty::screen_line_layout(interp, window_id, bol, width, truncate, lnum_cols)
+    let truncate = crate::tty::window_truncates(interp, window, interp.current_buffer_id());
+    crate::tty::screen_line_layout(interp, window, bol, width, truncate, lnum_cols)
 }
 
 /// xdisp.c:window_text_pixel_size for the current buffer shown in
@@ -1962,7 +1961,7 @@ pub(crate) fn interactive_screen_line(
 pub(crate) fn window_text_pixel_size(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     args: [Value; 6],
 ) -> Result<Value, LispError> {
     let [from, to, x_limit, y_limit, _mode_lines, ignore_line_at_end] = args;
@@ -2049,15 +2048,15 @@ pub(crate) fn window_text_pixel_size(
     // start_display at FROM, move_it_by_lines (0) back to FROM's screen
     // line and forward to FROM again, the vertical offset's lines, then
     // move_it_to TO, no further down than the row holding Y-LIMIT.
-    let mut fetches = crate::tty::IteratorFetches::new(interp, env, window_id);
+    let mut fetches = crate::tty::IteratorFetches::new(interp, env, window);
     if let Some(geometry) = fetches.geometry() {
-        crate::tty::fetch_start_display(interp, window_id, &mut fetches, start);
-        crate::tty::fetch_screen_line_start(interp, window_id, &mut fetches, start);
+        crate::tty::fetch_start_display(interp, window, &mut fetches, start);
+        crate::tty::fetch_screen_line_start(interp, window, &mut fetches, start);
         let from = if vertical_offset != 0 {
             super::super::move_it::move_it_by_lines(
                 interp,
                 env,
-                window_id,
+                window,
                 start,
                 vertical_offset,
                 &mut fetches,
@@ -2070,16 +2069,16 @@ pub(crate) fn window_text_pixel_size(
         // The iterator move_it_by_lines left, which stops again where
         // it stands.
         fetches.begin_walk();
-        crate::tty::IteratorWalk::at(interp, window_id, geometry, from).walk_to_within(
+        crate::tty::IteratorWalk::at(interp, window, geometry, from).walk_to_within(
             &mut fetches,
             from,
             end,
             max_y,
         );
-        fetches.fontify(interp, env, window_id);
+        fetches.fontify(interp, env, window);
     }
     let lnum = motion_line_number_columns(interp, env);
-    let text_area = crate::lisp::primitives::window_text_area_columns(interp, window_id);
+    let text_area = crate::lisp::primitives::window_text_area_columns(interp, window);
     // it.last_visible_x: the text area less the continuation column, which
     // FROM is reached with; TO is then measured to X-LIMIT itself.
     let default_width = text_area.saturating_sub(lnum).max(1);
@@ -2087,12 +2086,12 @@ pub(crate) fn window_text_pixel_size(
         Some(limit) => limit.saturating_add(1).saturating_sub(lnum).max(1),
         None => default_width,
     };
-    let truncate = crate::tty::window_truncates(interp, window_id, interp.current_buffer_id());
+    let truncate = crate::tty::window_truncates(interp, window, interp.current_buffer_id());
     // init_iterator's first_visible_x: the window's hscroll (its
     // min_hscroll when only the current line hscrolls), which the
     // iterator's x counts from and its last_visible_x lies past.
     let hscroll = if truncate {
-        window_text_geometry(interp, env, window_id).first_visible
+        window_text_geometry(interp, env, window).first_visible
     } else {
         0
     };
@@ -2117,7 +2116,7 @@ pub(crate) fn window_text_pixel_size(
         let (landed, _) = super::super::move_it::move_it_by_lines(
             interp,
             env,
-            window_id,
+            window,
             start,
             vertical_offset,
             &mut crate::tty::IteratorFetches::off(),
@@ -2126,7 +2125,7 @@ pub(crate) fn window_text_pixel_size(
     }
     // One display context for every line the iterator walks.
     let interp: &Interpreter = interp;
-    let layouter = crate::tty::ScreenLineLayouter::new(interp, window_id, lnum);
+    let layouter = crate::tty::ScreenLineLayouter::new(interp, window, lnum);
     let layout_with = |pos: usize, width: usize| {
         let (bol, eol) = visual_line_bounds(interp, pos);
         (layouter.layout(bol, width, truncate), eol)
@@ -2289,12 +2288,12 @@ pub(crate) fn window_text_pixel_size(
 pub(crate) fn screen_row_starts(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     bol: usize,
     eol: usize,
 ) -> Vec<usize> {
     if interactive_motion(interp) {
-        interactive_screen_line(interp, env, window_id, bol).row_starts
+        interactive_screen_line(interp, env, window, bol).row_starts
     } else {
         visual_segment_starts(interp, env, bol, eol)
     }
@@ -2570,8 +2569,7 @@ fn compute_motion_value(
     let window = live_motion_window(interp, &args[6])?;
     let from = checked_motion_position(interp, from)?;
     let to = checked_motion_position(interp, to)?;
-    let window_id =
-        window_record_id_from_value(interp, &window).unwrap_or_else(|| interp.selected_window_id());
+    let w = WindowRef::from_value(&window).unwrap_or_else(|| interp.selected_window_ref());
     let contents = crate::lisp::primitives::window_buffer_id(interp, &window)
         .unwrap_or_else(|| interp.current_buffer_id());
     let (tohpos, tovpos) = match topos {
@@ -2608,7 +2606,7 @@ fn compute_motion_value(
         hscroll,
         tab_offset,
         crate::lisp::primitives::indent_motion::MotionWindow {
-            id: window_id,
+            window: w,
             contents,
         },
     );
@@ -2925,11 +2923,11 @@ fn window_column_x(interp: &Interpreter, window: Value, column: Value) -> Result
 pub(crate) fn visual_vertical_motion(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     n: i64,
     goal_col: Option<i64>,
 ) -> Result<i64, LispError> {
-    visual_vertical_motion_from(interp, env, window_id, n, goal_col, None)
+    visual_vertical_motion_from(interp, env, window, n, goal_col, None)
 }
 
 /// visual_vertical_motion with Fvertical_motion's CUR-COL as START_X:
@@ -2939,7 +2937,7 @@ pub(crate) fn visual_vertical_motion(
 pub(crate) fn visual_vertical_motion_from(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    w: WindowRef,
     n: i64,
     goal_col: Option<i64>,
     start_x: Option<i64>,
@@ -2948,14 +2946,12 @@ pub(crate) fn visual_vertical_motion_from(
     // window shows it, with the buffer's point as the window's, for as
     // long as the motion takes.
     let current = interp.current_buffer_id();
-    let shown = interp
-        .window_ref(window_id)
-        .map_or(Value::Nil, crate::lisp::primitives::WindowRef::contents);
+    let shown = w.contents();
     if crate::lisp::primitives::window_slot_buffer_id(Some(&shown)) == Some(current) {
-        return vertical_motion_in_window(interp, env, window_id, n, goal_col, start_x);
+        return vertical_motion_in_window(interp, env, w, n, goal_col, start_x);
     }
     // marker_position (w->pointm), for restore_window_buffer.
-    let old_point = match window_marker(interp, window_id, WINDOW_POINT_SLOT) {
+    let old_point = match window_marker(interp, w.id(), WINDOW_POINT_SLOT) {
         Some(marker) => Some(
             marker
                 .position()
@@ -2964,26 +2960,26 @@ pub(crate) fn visual_vertical_motion_from(
         None => None,
     };
     let object = interp.buffer_value(current).unwrap_or(Value::Nil);
-    interp.wset_buffer(window_id, object);
+    interp.wset_buffer(w.id(), object);
     let point = interp.buffer.borrow().point();
-    set_window_marker(interp, window_id, WINDOW_POINT_SLOT, current, point);
-    let result = vertical_motion_in_window(interp, env, window_id, n, goal_col, start_x);
+    set_window_marker(interp, w.id(), WINDOW_POINT_SLOT, current, point);
+    let result = vertical_motion_in_window(interp, env, w, n, goal_col, start_x);
     // restore_window_buffer, however the motion ended: its
     // decode_live_window first, then the window's buffer and its point
     // (set_marker_both, which unchains the marker when that buffer has
     // been killed).
-    let window = interp.window_value(window_id);
+    let window = w.value();
     if window_buffer_id(interp, &window).is_none() {
         return Err(wrong_type_argument("window-live-p", window));
     }
-    interp.wset_buffer(window_id, shown);
+    interp.wset_buffer(w.id(), shown);
     if let (Some(buffer), Some(point)) = (
         crate::lisp::primitives::window_slot_buffer_id(Some(&shown)),
         old_point,
     ) {
         if interp.has_buffer_id(buffer) {
-            set_window_marker(interp, window_id, WINDOW_POINT_SLOT, buffer, point);
-        } else if let Some(marker) = window_marker(interp, window_id, WINDOW_POINT_SLOT) {
+            set_window_marker(interp, w.id(), WINDOW_POINT_SLOT, buffer, point);
+        } else if let Some(marker) = window_marker(interp, w.id(), WINDOW_POINT_SLOT) {
             marker.detach();
         }
     }
@@ -2994,7 +2990,7 @@ pub(crate) fn visual_vertical_motion_from(
 fn vertical_motion_in_window(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     n: i64,
     goal_col: Option<i64>,
     start_x: Option<i64>,
@@ -3008,7 +3004,7 @@ fn vertical_motion_in_window(
         let mut passes = 0;
         let mut fetches = crate::tty::IteratorFetches::off();
         loop {
-            fetches.begin_pass(interp, env, window_id);
+            fetches.begin_pass(interp, env, window);
             // to_x: the goal's x plus the line numbers' width.
             let to_x = goal_col.map(|goal| goal + motion_line_number_columns(interp, env) as i64);
             // nlines 0 skips move_it_by_lines when the given start x is
@@ -3028,7 +3024,7 @@ fn vertical_motion_in_window(
                 crate::lisp::primitives::move_it::vertical_motion(
                     interp,
                     env,
-                    window_id,
+                    window,
                     n,
                     &mut fetches,
                 )
@@ -3046,7 +3042,7 @@ fn vertical_motion_in_window(
                 let geometry = crate::tty::WindowTextGeometry {
                     lnum_cols: motion_line_number_columns(interp, env),
                     point_row_hscroll: None,
-                    ..window_text_geometry(interp, env, window_id)
+                    ..window_text_geometry(interp, env, window)
                 };
                 let point = interp.buffer.borrow().point();
                 let mut row = landing.row;
@@ -3055,7 +3051,7 @@ fn vertical_motion_in_window(
                 let mut from_x = start_x.filter(|_| stays);
                 loop {
                     let (bol, _) = visual_line_bounds(interp, target);
-                    let layout = interactive_screen_line(interp, env, window_id, bol);
+                    let layout = interactive_screen_line(interp, env, window, bol);
                     let index = row
                         .filter(|&row| row < layout.row_starts.len())
                         .unwrap_or_else(|| row_index_of(&layout.row_starts, target));
@@ -3102,8 +3098,11 @@ fn vertical_motion_in_window(
                         target = stop.position;
                     }
                     if let Some(geometry) = fetches.geometry() {
-                        crate::tty::IteratorWalk::at(interp, window_id, geometry, row_start)
-                            .walk_to(&mut fetches, row_start, target);
+                        crate::tty::IteratorWalk::at(interp, window, geometry, row_start).walk_to(
+                            &mut fetches,
+                            row_start,
+                            target,
+                        );
                     }
                     let in_string_before_newline = stop.is_some_and(|stop| {
                         !stop.display
@@ -3119,7 +3118,7 @@ fn vertical_motion_in_window(
                     let down = crate::lisp::primitives::move_it::move_it_by_lines_from(
                         interp,
                         env,
-                        window_id,
+                        window,
                         row_start,
                         Some(index),
                         1,
@@ -3134,7 +3133,7 @@ fn vertical_motion_in_window(
             }
             passes += 1;
             if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES
-                || !fetches.fontify(interp, env, window_id)
+                || !fetches.fontify(interp, env, window)
             {
                 interp.buffer.borrow_mut().goto_char(target);
                 return Ok(moved);
@@ -3151,7 +3150,7 @@ fn vertical_motion_in_window(
         point,
         n,
         crate::lisp::primitives::indent_motion::MotionWindow {
-            id: window_id,
+            window,
             contents: interp.current_buffer_id(),
         },
     );

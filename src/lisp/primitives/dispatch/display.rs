@@ -1499,16 +1499,6 @@ fn window_geometry(interp: &Interpreter, window: WindowRef) -> (i64, i64, i64, i
     )
 }
 
-/// `window_geometry' for a caller that still names its window by a
-/// number: one the registry does not know reads the selected frame's
-/// size at its corner.
-fn window_geometry_by_id(interp: &Interpreter, w: u64) -> (i64, i64, i64, i64) {
-    match interp.window_ref(w) {
-        Some(window) => window_geometry(interp, window),
-        None => (interp.frame_width(), interp.frame_height(), 0, 0),
-    }
-}
-
 fn window_at_frame_coordinates(
     interp: &Interpreter,
     frame: crate::lisp::types::FrameRef,
@@ -1619,7 +1609,7 @@ fn position_at_coordinates(
     let result = (|| {
         let start = window_start(interp, Some(&window))?;
         let end = interp.buffer.borrow().point_max();
-        let hscroll = window_hscroll_state(interp, w.id()).hscroll.max(0);
+        let hscroll = window_hscroll_state(interp, w).hscroll.max(0);
         let motion_args = crate::lisp::alloc::RootedVec::from_vec(vec![
             Value::Integer(start as i64),
             Value::cons(Value::Integer(-hscroll), Value::Integer(0)),
@@ -1711,17 +1701,12 @@ fn pos_visible_xy(
     let mut passes = 0;
     let mut fetches = crate::tty::IteratorFetches::off();
     loop {
-        let geometry = super::buffer_edit::window_text_geometry(interp, env, window.id());
+        let geometry = super::buffer_edit::window_text_geometry(interp, env, window);
         let shown = match pos {
-            Some(target) => crate::tty::window_position_xy(
-                interp,
-                window.id(),
-                start,
-                target,
-                geometry,
-                text_rows,
-            ),
-            None => crate::tty::window_end_xy(interp, window.id(), start, geometry, text_rows)
+            Some(target) => {
+                crate::tty::window_position_xy(interp, window, start, target, geometry, text_rows)
+            }
+            None => crate::tty::window_end_xy(interp, window, start, geometry, text_rows)
                 .map(|(x, y)| crate::tty::VisibleAt { x, y, rbot: 0 }),
         };
         let xy = shown.or_else(|| {
@@ -1732,20 +1717,20 @@ fn pos_visible_xy(
             })
         });
         passes += 1;
-        fetches.begin_pass(interp, env, window.id());
+        fetches.begin_pass(interp, env, window);
         if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES || fetches.geometry().is_none() {
             return xy;
         }
         crate::tty::fetch_pos_visible(
             interp,
-            window.id(),
+            window,
             &mut fetches,
             geometry,
             (start, pos),
             shown.map(|at| (at.x, at.y)),
             text_rows,
         );
-        if !fetches.fontify(interp, env, window.id()) {
+        if !fetches.fontify(interp, env, window) {
             return xy;
         }
     }
@@ -1765,22 +1750,15 @@ fn window_end_walk(
     let mut passes = 0;
     let mut fetches = crate::tty::IteratorFetches::off();
     loop {
-        let geometry = super::buffer_edit::window_text_geometry(interp, env, window.id());
-        let end = crate::tty::window_end_walk(interp, window.id(), start, geometry, text_rows);
+        let geometry = super::buffer_edit::window_text_geometry(interp, env, window);
+        let end = crate::tty::window_end_walk(interp, window, start, geometry, text_rows);
         passes += 1;
-        fetches.begin_pass(interp, env, window.id());
+        fetches.begin_pass(interp, env, window);
         if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES || fetches.geometry().is_none() {
             return end;
         }
-        crate::tty::fetch_window_end(
-            interp,
-            window.id(),
-            &mut fetches,
-            geometry,
-            start,
-            text_rows,
-        );
-        if !fetches.fontify(interp, env, window.id()) {
+        crate::tty::fetch_window_end(interp, window, &mut fetches, geometry, start, text_rows);
+        if !fetches.fontify(interp, env, window) {
             return end;
         }
     }
@@ -1800,19 +1778,18 @@ fn posn_at_window_xy(
     let mut passes = 0;
     let mut fetches = crate::tty::IteratorFetches::off();
     loop {
-        let geometry = super::buffer_edit::window_text_geometry(interp, env, window.id());
-        let at = crate::tty::window_position_at(interp, window.id(), start, xy, geometry);
+        let geometry = super::buffer_edit::window_text_geometry(interp, env, window);
+        let at = crate::tty::window_position_at(interp, window, start, xy, geometry);
         passes += 1;
-        fetches.begin_pass(interp, env, window.id());
+        fetches.begin_pass(interp, env, window);
         if passes > crate::tty::ITERATOR_FONTIFICATION_PASSES || fetches.geometry().is_none() {
             return at;
         }
-        crate::tty::fetch_start_display(interp, window.id(), &mut fetches, start);
-        let mut walk =
-            crate::tty::IteratorWalk::from_window_start(interp, window.id(), geometry, start);
+        crate::tty::fetch_start_display(interp, window, &mut fetches, start);
+        let mut walk = crate::tty::IteratorWalk::from_window_start(interp, window, geometry, start);
         let row_start = walk.walk_rows(&mut fetches, start, xy.1);
         walk.walk_to(&mut fetches, row_start.min(at.position), at.position);
-        if !fetches.fontify(interp, env, window.id()) {
+        if !fetches.fontify(interp, env, window) {
             return at;
         }
     }
@@ -2004,7 +1981,7 @@ pub(crate) fn window_render_layout(
             let (width, height, left, top) = window_geometry(interp, window);
             let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
             let clamp = |value: i64| value.clamp(point_min as i64, point_max as i64) as usize;
-            let start = window_start_marker(interp, window.id(), buffer_id);
+            let start = window_start_marker(interp, window, buffer_id);
             let live_point = if buffer_id == interp.current_buffer_id() {
                 interp.buffer.borrow().point()
             } else {
@@ -2016,7 +1993,7 @@ pub(crate) fn window_render_layout(
             let point = if selected {
                 live_point
             } else {
-                window_marker_position(interp, window.id(), WINDOW_POINT_SLOT)
+                window_marker_position(interp, window, WINDOW_POINT_SLOT)
                     .map(|point| clamp(point as i64))
                     .unwrap_or(live_point)
             };
@@ -3128,7 +3105,7 @@ fn resize_mini_window_apply(
     mini.set_total_lines(Some(height + delta));
     window_resize_apply(interp, root, false)?;
     let (_, root_height, _, root_top) = window_geometry(interp, root);
-    let (_, root_lines, _, root_top_line) = window_char_geometry(interp, root.id());
+    let (_, root_lines, _, root_top_line) = window_char_geometry(root);
     set_window_geometry(mini, (width, height + delta, left, root_top + root_height));
     mini.set_top_line(Some(root_top_line + root_lines));
     // fset_redisplay (f).
@@ -3153,7 +3130,7 @@ fn replace_window(
     }
     if setflag {
         set_window_geometry(new, window_geometry(interp, old));
-        let (total_cols, total_lines, left_col, top_line) = window_char_geometry(interp, old.id());
+        let (total_cols, total_lines, left_col, top_line) = window_char_geometry(old);
         new.set_left_col(Some(left_col));
         new.set_top_line(Some(top_line));
         new.set_total_cols(Some(total_cols));
@@ -3559,7 +3536,7 @@ fn split_window_tree(
             set_window_slot_value(interp, parent, WINDOW_COMBINATION_LIMIT_SLOT, Value::T);
         }
         let size = window_pixel_size(interp, old_window, horflag);
-        let (old_cols, old_lines, _, _) = window_char_geometry(interp, old_window.id());
+        let (old_cols, old_lines, _, _) = window_char_geometry(old_window);
         let total = if horflag { old_cols } else { old_lines };
         set_window_slot_value(interp, parent, WINDOW_NEW_PIXEL_SLOT, Value::Integer(size));
         set_window_slot_value(interp, parent, WINDOW_NEW_TOTAL_SLOT, Value::Integer(total));
@@ -3572,7 +3549,7 @@ fn split_window_tree(
     let reference_buffer = reference
         .live_buffer_id(interp)
         .ok_or_else(|| LispError::Signal("Attempt to split a non-live window".into()))?;
-    let start = window_marker_position(interp, reference.id(), WINDOW_START_SLOT).unwrap_or(1);
+    let start = window_marker_position(interp, reference, WINDOW_START_SLOT).unwrap_or(1);
     let (old_width, old_height, old_left, old_top) = window_geometry(interp, old_window);
     // Orthogonal coordinates and sizes come from OLD; the iso ones are
     // assigned by window_resize_apply below.
@@ -3585,8 +3562,7 @@ fn split_window_tree(
     // Fsplit_window_internal's set_window_buffer of the new window.
     interp.adjust_window_count(new.id(), true);
     set_window_slot_value(interp, new, WINDOW_FRAME_SLOT, Value::Frame(frame));
-    let (old_cols, old_lines, old_left_col, old_top_line) =
-        window_char_geometry(interp, old_window.id());
+    let (old_cols, old_lines, old_left_col, old_top_line) = window_char_geometry(old_window);
     if horflag {
         new.set_top_line(Some(old_top_line));
         new.set_total_lines(Some(old_lines));
@@ -3628,7 +3604,7 @@ fn split_window_tree(
         }
         child = window_link(w, WINDOW_NEXT_SIBLING_SLOT);
     }
-    let (parent_cols, parent_lines, _, _) = window_char_geometry(interp, parent.id());
+    let (parent_cols, parent_lines, _, _) = window_char_geometry(parent);
     set_window_slot_value(
         interp,
         new,
@@ -3806,7 +3782,7 @@ fn set_window_buffer_hooks(
     env: &mut Env,
 ) -> Result<(), LispError> {
     let window = w.value();
-    let start = Value::Integer(window_start_marker(interp, w.id(), buffer_id) as i64);
+    let start = Value::Integer(window_start_marker(interp, w, buffer_id) as i64);
     let original_buffer = interp.current_buffer_id();
     interp.set_current_buffer_id(buffer_id)?;
     let result = run_window_scroll_functions(interp, window, start, env);
@@ -3985,7 +3961,7 @@ fn delete_other_windows_from_tree(
             Some(marker) => marker
                 .position()
                 .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?,
-            None => window_start_marker(interp, w.id(), buffer_id),
+            None => window_start_marker(interp, w, buffer_id),
         };
         Some((
             buffer_id,
@@ -4026,7 +4002,7 @@ fn delete_other_windows_from_tree(
     let mut resize_failed = false;
     if !live {
         let (root_width, root_height, root_left, root_top) = window_geometry(interp, root_window);
-        let (_, _, root_left_col, root_top_line) = window_char_geometry(interp, root_window.id());
+        let (_, _, root_left_col, root_top_line) = window_char_geometry(root_window);
         for horflag in [false, true] {
             let (width, height, left, top) = window_geometry(interp, w);
             let delta = if horflag {
@@ -4100,7 +4076,7 @@ fn delete_other_windows_from_tree(
             let (start, _) = crate::lisp::primitives::window::move_screen_lines_in(
                 interp,
                 env,
-                w.id(),
+                w,
                 startpos,
                 -(top as isize),
             );
@@ -4109,7 +4085,7 @@ fn delete_other_windows_from_tree(
                 start <= buffer.point_min() || buffer.char_at(start - 1) == Some('\n')
             };
             interp.set_current_buffer_id(saved)?;
-            set_window_start_marker(interp, w.id(), start);
+            set_window_start_marker(interp, w, start);
             w.set_start_at_line_beg(at_line_beg);
             // So that redisplay runs the window-scroll-functions.
             w.set_optional_new_start(true);
@@ -4159,7 +4135,7 @@ fn window_body_pixel_size(interp: &Interpreter, window: WindowRef) -> (i64, i64)
     let (_, height, _, _) = window_geometry(interp, window);
     let body_height =
         height - window_non_body_height(interp, window, window.live_buffer_id(interp));
-    (window_text_width_columns(interp, window.id()), body_height)
+    (window_text_width_columns(interp, window), body_height)
 }
 
 /// WINDOW's old_pixel_width, old_pixel_height, old_body_pixel_width and
@@ -4568,19 +4544,19 @@ fn selected_command_text_height(interp: &Interpreter) -> usize {
 }
 
 /// WINDOW_TOTAL_COLS of WINDOW.
-pub(crate) fn window_total_columns(interp: &Interpreter, window: u64) -> i64 {
-    window_geometry_by_id(interp, window).0
+pub(crate) fn window_total_columns(interp: &Interpreter, window: WindowRef) -> i64 {
+    window_geometry(interp, window).0
 }
 
 /// window_box_width of WINDOW's text area in terminal cells.
-pub(crate) fn window_text_area_columns(interp: &Interpreter, window: u64) -> usize {
+pub(crate) fn window_text_area_columns(interp: &Interpreter, window: WindowRef) -> usize {
     window_text_width_columns(interp, window).max(0) as usize
 }
 
-fn window_text_width_columns(interp: &Interpreter, window: u64) -> i64 {
-    let (total, _, left, _) = window_geometry_by_id(interp, window);
-    let root = WindowRef::from_value(&interp.root_window_value()).map_or(window, WindowRef::id);
-    let (root_width, _, root_left, _) = window_geometry_by_id(interp, root);
+fn window_text_width_columns(interp: &Interpreter, window: WindowRef) -> i64 {
+    let (total, _, left, _) = window_geometry(interp, window);
+    let root = WindowRef::from_value(&interp.root_window_value()).unwrap_or(window);
+    let (root_width, _, root_left, _) = window_geometry(interp, root);
     // GNU reserves one terminal column for the vertical separator of every
     // live window whose right edge is not the root window's right edge.  The
     // separator is part of WINDOW-TOTAL-WIDTH but not WINDOW-BODY-WIDTH (see
@@ -4588,7 +4564,7 @@ fn window_text_width_columns(interp: &Interpreter, window: u64) -> i64 {
     // frames, so there are no GUI fringes or scroll-bar pixels to subtract.
     let vertical_separator =
         i64::from(left.saturating_add(total) < root_left.saturating_add(root_width));
-    let (left, right) = interp.window_margins(window);
+    let (left, right) = interp.window_margins(window.id());
     (total - vertical_separator - left.unwrap_or(0) - right.unwrap_or(0)).max(0)
 }
 
@@ -4603,13 +4579,12 @@ pub(crate) struct WindowHscrollState {
     pub(crate) old_point: Option<i64>,
 }
 
-pub(crate) fn window_hscroll_state(interp: &Interpreter, w: u64) -> WindowHscrollState {
-    let window = interp.window_ref(w);
+pub(crate) fn window_hscroll_state(interp: &Interpreter, window: WindowRef) -> WindowHscrollState {
     WindowHscrollState {
-        hscroll: window.map_or(0, WindowRef::hscroll).max(0),
-        min_hscroll: window.map_or(0, WindowRef::min_hscroll).max(0),
-        suspended: window.is_some_and(WindowRef::suspend_auto_hscroll),
-        old_point: window_marker_position(interp, w, WINDOW_OLD_POINT_SLOT)
+        hscroll: window.hscroll().max(0),
+        min_hscroll: window.min_hscroll().max(0),
+        suspended: window.suspend_auto_hscroll(),
+        old_point: window_marker_position(interp, window, WINDOW_OLD_POINT_SLOT)
             .map(|point| point as i64),
     }
 }
@@ -6157,7 +6132,7 @@ define_dispatch!(
                 // nil while it points nowhere.
                 let window = decode_live_window(interp, args.first())?;
                 Ok(
-                    match window_marker_position(interp, window.id(), WINDOW_START_SLOT) {
+                    match window_marker_position(interp, window, WINDOW_START_SLOT) {
                         Some(start) => Value::Integer(start as i64),
                         None if window_marker(interp, window.id(), WINDOW_START_SLOT).is_some() => {
                             Value::Nil
@@ -6179,15 +6154,15 @@ define_dispatch!(
                 // less the end the last redisplay recorded (none before
                 // one, so a batch session answers Z).
                 if args.get(1).is_some_and(Value::is_truthy)
-                    && crate::tty::window_end_outdated(interp, window.id(), buffer_id)
+                    && crate::tty::window_end_outdated(interp, window, buffer_id)
                     && interactive_window_metrics().is_some()
                     && !interp
                         .symbol_value_key(cached_symbol!("noninteractive"))
                         .is_some_and(|value| value.is_truthy())
                 {
                     let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
-                    let start = window_start_marker(interp, window.id(), buffer_id)
-                        .clamp(point_min, point_max);
+                    let start =
+                        window_start_marker(interp, window, buffer_id).clamp(point_min, point_max);
                     let height = (window_geometry(interp, window).1
                         - window_non_body_height(interp, window, Some(buffer_id)))
                     .max(1) as usize;
@@ -6250,7 +6225,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 2)?;
                 let window = decode_live_window(interp, None)?;
                 let requested = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => window_text_width_columns(interp, window.id()) - 2,
+                    None | Some(Kind::Nil) => window_text_width_columns(interp, window) - 2,
                     Some(value) => prefix_numeric_value(&value.value())?.as_integer()?,
                 };
                 let current = window.hscroll();
@@ -6442,11 +6417,10 @@ define_dispatch!(
                     None | Some(Kind::Nil) if w == interp.selected_window_ref() => {
                         interp.buffer.borrow().point()
                     }
-                    None | Some(Kind::Nil) => {
-                        window_marker_position(interp, w.id(), WINDOW_POINT_SLOT).ok_or_else(
-                            || LispError::Signal("Marker does not point anywhere".into()),
-                        )?
-                    }
+                    None | Some(Kind::Nil) => window_marker_position(interp, w, WINDOW_POINT_SLOT)
+                        .ok_or_else(|| {
+                            LispError::Signal("Marker does not point anywhere".into())
+                        })?,
                     Some(Kind::T) => point_max,
                     Some(value) => position_from_value(interp, &value.value())?,
                 };
@@ -6552,7 +6526,7 @@ define_dispatch!(
                 Ok(Value::Integer(if pixel_rounded {
                     window_pixel_size(interp, w, horizontal)
                 } else {
-                    let (cols, lines, _, _) = window_char_geometry(interp, w.id());
+                    let (cols, lines, _, _) = window_char_geometry(w);
                     if horizontal { cols } else { lines }
                 }))
             }
@@ -6572,10 +6546,7 @@ define_dispatch!(
             "window-body-width" => {
                 need_arg_range(name, args, 0, 2)?;
                 let window = decode_live_window(interp, args.first())?;
-                Ok(Value::Integer(window_text_width_columns(
-                    interp,
-                    window.id(),
-                )))
+                Ok(Value::Integer(window_text_width_columns(interp, window)))
             }
             "window-body-height" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -6638,7 +6609,7 @@ define_dispatch!(
                 {
                     window_geometry(interp, w)
                 } else {
-                    window_char_geometry(interp, w.id())
+                    window_char_geometry(w)
                 };
                 Ok(Value::Integer(
                     if matches!(name, "window-pixel-left" | "window-left-column") {
@@ -6821,7 +6792,7 @@ define_dispatch!(
                 };
                 let start = current_window_start(interp);
                 if start < point_min || start > point_max {
-                    visual_vertical_motion(interp, env, window.id(), -((height / 2) as i64), None)?;
+                    visual_vertical_motion(interp, env, window, -((height / 2) as i64), None)?;
                     let (start, bolp) = {
                         let buffer = interp.buffer.borrow();
                         let pt = buffer.point();
@@ -6840,11 +6811,11 @@ define_dispatch!(
                 // text does not fill counting one row fewer, its walk
                 // fontifying what it passes.
                 let from = interp.buffer.borrow().point();
-                crate::tty::fontify_window_rows(interp, env, window.id(), from, height);
+                crate::tty::fontify_window_rows(interp, env, window, from, height);
                 let (_, shortage) = crate::lisp::primitives::window::move_screen_lines_in(
                     interp,
                     env,
-                    window.id(),
+                    window,
                     from,
                     height as isize,
                 );
@@ -6860,7 +6831,7 @@ define_dispatch!(
                         if iarg < 0 { iarg + lines } else { iarg }
                     }
                 };
-                let moved = visual_vertical_motion(interp, env, window.id(), target, None)?;
+                let moved = visual_vertical_motion(interp, env, window, target, None)?;
                 Ok(Value::Integer(moved))
             }
             "recenter" => {
@@ -6941,7 +6912,7 @@ define_dispatch!(
                 let size = super::buffer_edit::window_text_pixel_size(
                     interp,
                     env,
-                    window.id(),
+                    window,
                     [arg(1), arg(2), arg(3), arg(4), arg(5), arg(6)],
                 );
                 interp.set_current_buffer_id(saved_buffer)?;
@@ -7006,7 +6977,7 @@ define_dispatch!(
                 let size = super::buffer_edit::window_text_pixel_size(
                     interp,
                     env,
-                    window.id(),
+                    window,
                     [
                         Value::Nil,
                         Value::Nil,
@@ -7024,10 +6995,10 @@ define_dispatch!(
                 // narrowed buffer and so moves the start to BEGV).
                 if let Some(window_buffer) = window.live_buffer_id(interp) {
                     let (point_min, point_max) = buffer_point_bounds(interp, window_buffer);
-                    let start = window_start_marker(interp, window.id(), window_buffer);
-                    set_window_start_marker(interp, window.id(), start.clamp(point_min, point_max));
+                    let start = window_start_marker(interp, window, window_buffer);
+                    set_window_start_marker(interp, window, start.clamp(point_min, point_max));
                     for slot in [WINDOW_POINT_SLOT, WINDOW_OLD_POINT_SLOT] {
-                        if let Some(point) = window_marker_position(interp, window.id(), slot) {
+                        if let Some(point) = window_marker_position(interp, window, slot) {
                             set_window_marker(
                                 interp,
                                 window.id(),
@@ -7717,7 +7688,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let window = decode_live_window(interp, args.first())?;
                 Ok(
-                    window_marker_position(interp, window.id(), WINDOW_OLD_POINT_SLOT)
+                    window_marker_position(interp, window, WINDOW_OLD_POINT_SLOT)
                         .map_or(Value::Nil, |point| Value::Integer(point as i64)),
                 )
             }
@@ -8286,7 +8257,7 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 3)?;
                 let window = decode_live_window(interp, args.first().filter(|w| !w.is_nil()))?;
                 let noforce = args.get(2).is_some_and(Value::is_truthy);
-                set_window_start_value(interp, window.id(), &args[1], noforce)?;
+                set_window_start_value(interp, window, &args[1], noforce)?;
                 Ok(args[1])
             }
             "set-window-point" => {
@@ -8320,7 +8291,7 @@ define_dispatch!(
                 } else {
                     set_window_marker_restricted_value(
                         interp,
-                        window.id(),
+                        window,
                         WINDOW_POINT_SLOT,
                         buffer_id,
                         &args[1],

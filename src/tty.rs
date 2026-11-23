@@ -1786,7 +1786,7 @@ fn window_render_geometry(
             None => TRUNCATE_PARTIAL_WIDTH > info.width as i64,
         };
 
-    let state = crate::lisp::primitives::window_hscroll_state(interpreter, info.window.id());
+    let state = crate::lisp::primitives::window_hscroll_state(interpreter, info.window);
     let mut hscroll = state.hscroll.max(0);
     let mut suspended = state.suspended;
     let point = info.point as i64;
@@ -1846,9 +1846,8 @@ fn window_render_geometry(
             // display iterator: the visual line's laid-out columns,
             // prefix included.
             let spec = resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
-            let context =
-                CharacterDisplayContext::new(interpreter, info.buffer_id, info.window.id())
-                    .with_line_numbers(lnum_cols);
+            let context = CharacterDisplayContext::new(interpreter, info.buffer_id, info.window)
+                .with_line_numbers(lnum_cols);
             let point_line =
                 visual_line_first_line(&buffer, &spec, buffer.line_number_at_pos(point_pos));
             let visual = glyphless_visual_line_at(&buffer, &spec, point_line, Some(&context));
@@ -2240,7 +2239,7 @@ struct CharacterDisplayContext<'a> {
     /// (None: every character is drawn).
     charset_list_coding: Option<String>,
     buffer_id: u64,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     /// The buffer's `word-wrap', with `word-wrap-by-category'.
     line_wrap: layout::LineWrap,
     /// The buffer's category table, read when wrapping by category.
@@ -2274,13 +2273,15 @@ struct CharacterDisplayContext<'a> {
 }
 
 impl<'a> CharacterDisplayContext<'a> {
-    fn new(interpreter: &'a Interpreter, buffer_id: u64, window_id: u64) -> Self {
+    fn new(
+        interpreter: &'a Interpreter,
+        buffer_id: u64,
+        window: crate::lisp::primitives::WindowRef,
+    ) -> Self {
         // window.c:window_display_table selects one valid table.  An absent
         // character entry does not fall through to the next table.
         let display_table = [
-            interpreter.window_ref(window_id).and_then(|window| {
-                window.slot_opt(crate::lisp::primitives::WINDOW_DISPLAY_TABLE_SLOT)
-            }),
+            window.slot_opt(crate::lisp::primitives::WINDOW_DISPLAY_TABLE_SLOT),
             interpreter
                 .buffer_local_toplevel_value(buffer_id, "buffer-display-table")
                 .or_else(|| interpreter.default_toplevel_value("buffer-display-table")),
@@ -2355,7 +2356,7 @@ impl<'a> CharacterDisplayContext<'a> {
             display_table,
             charset_list_coding,
             buffer_id,
-            window_id,
+            window,
             line_wrap,
             category_table,
             tab_width,
@@ -2389,8 +2390,12 @@ impl<'a> CharacterDisplayContext<'a> {
     /// The context display_string draws a mode, header or tab line in:
     /// reseat_to_string's iterator uses `standard-display-table' when it
     /// is a display table, else the window's.
-    fn for_mode_line(interpreter: &'a Interpreter, buffer_id: u64, window_id: u64) -> Self {
-        let mut context = Self::new(interpreter, buffer_id, window_id);
+    fn for_mode_line(
+        interpreter: &'a Interpreter,
+        buffer_id: u64,
+        window: crate::lisp::primitives::WindowRef,
+    ) -> Self {
+        let mut context = Self::new(interpreter, buffer_id, window);
         if let Some(Kind::CharTable(table)) = interpreter
             .default_toplevel_value("standard-display-table")
             .map(|value| value.kind())
@@ -2428,7 +2433,7 @@ impl<'a> CharacterDisplayContext<'a> {
                 Some(target) => {
                     let left = self
                         .interpreter
-                        .window_margins(self.window_id)
+                        .window_margins(self.window.id())
                         .0
                         .unwrap_or(0)
                         .max(0);
@@ -2496,7 +2501,7 @@ impl<'a> CharacterDisplayContext<'a> {
                 pos,
                 name,
                 false,
-                Some(self.window_id),
+                Some(self.window),
             )
             // Redisplay reads a property whose lookup signals as nil.
             .ok()
@@ -2696,7 +2701,7 @@ impl<'a> CharacterDisplayContext<'a> {
 
     /// window_box_width of the window's text area, in cells.
     fn text_area_width(&self) -> usize {
-        crate::lisp::primitives::window_text_area_columns(self.interpreter, self.window_id)
+        crate::lisp::primitives::window_text_area_columns(self.interpreter, self.window)
     }
 
     fn method_from_value(value: Value, no_font_fallback: bool) -> Option<GlyphlessDisplayMethod> {
@@ -3070,22 +3075,20 @@ impl CharacterDisplay {
 /// for the interpreter's display_string.
 pub(crate) struct ModeLineMeasure {
     buffer_id: u64,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
 }
 
 impl ModeLineMeasure {
     /// The measures of WINDOW_ID's rows, which show its buffer.
     #[cfg(test)]
-    pub(crate) fn for_window(interpreter: &Interpreter, window_id: u64) -> Self {
-        let buffer_id = crate::lisp::primitives::window_buffer_id(
-            interpreter,
-            &interpreter.window_value(window_id),
-        )
-        .unwrap_or_else(|| interpreter.current_buffer_id());
-        Self {
-            buffer_id,
-            window_id,
-        }
+    pub(crate) fn for_window(
+        interpreter: &Interpreter,
+        window: crate::lisp::primitives::WindowRef,
+    ) -> Self {
+        let buffer_id = window
+            .live_buffer_id(interpreter)
+            .unwrap_or_else(|| interpreter.current_buffer_id());
+        Self { buffer_id, window }
     }
 }
 
@@ -3093,7 +3096,7 @@ impl crate::lisp::primitives::ModeLineCells for ModeLineMeasure {
     fn widths(&self, interpreter: &Interpreter, text: &[char]) -> Vec<usize> {
         let source: String = text.iter().collect();
         let display =
-            CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window_id)
+            CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window)
                 .translate_for(&source, true);
         let glyphs: Vec<char> = display.text.chars().collect();
         display
@@ -3109,12 +3112,12 @@ impl crate::lisp::primitives::ModeLineCells for ModeLineMeasure {
     }
 
     fn stretch(&self, interpreter: &Interpreter, plist: &[Value], x: usize) -> usize {
-        CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window_id)
+        CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window)
             .mode_line_stretch_width(plist, x)
     }
 
     fn width_of(&self, interpreter: &Interpreter, spec: &Value) -> Option<f64> {
-        CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window_id)
+        CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window)
             .pixel_width(spec, None)
     }
 }
@@ -3122,11 +3125,11 @@ impl crate::lisp::primitives::ModeLineCells for ModeLineMeasure {
 fn apply_character_display(
     interpreter: &Interpreter,
     buffer_id: u64,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     text: String,
     spans: &mut Vec<(usize, usize, Value)>,
 ) -> String {
-    let display = CharacterDisplayContext::for_mode_line(interpreter, buffer_id, window_id)
+    let display = CharacterDisplayContext::for_mode_line(interpreter, buffer_id, window)
         .translate_for(&text, true);
     display.remap_faces(spans);
     spans.extend(display.face_spans);
@@ -4790,21 +4793,13 @@ impl VisibleAt {
 /// TEXT_ROWS rows.
 pub(crate) fn window_position_xy(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     start: usize,
     pos: usize,
     geometry: WindowTextGeometry,
     text_rows: usize,
 ) -> Option<VisibleAt> {
-    window_cell_xy(
-        interpreter,
-        window_id,
-        start,
-        pos,
-        geometry,
-        text_rows,
-        false,
-    )
+    window_cell_xy(interpreter, window, start, pos, geometry, text_rows, false)
 }
 
 /// pos_visible_p with charpos -1 (POS t) when the window shows ZV:
@@ -4818,14 +4813,13 @@ pub(crate) fn window_position_xy(
 /// The hscroll comes off either x.
 pub(crate) fn window_end_xy(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     start: usize,
     geometry: WindowTextGeometry,
     text_rows: usize,
 ) -> Option<(i64, usize)> {
     let zv = interpreter.buffer.borrow().point_max();
-    window_cell_xy(interpreter, window_id, start, zv, geometry, text_rows, true)
-        .map(|at| (at.x, at.y))
+    window_cell_xy(interpreter, window, start, zv, geometry, text_rows, true).map(|at| (at.x, at.y))
 }
 
 /// Fwindow_end's walk over WINDOW, which shows the current buffer:
@@ -4835,12 +4829,12 @@ pub(crate) fn window_end_xy(
 /// for a row inside one), or ZV.
 pub(crate) fn window_end_walk(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     start: usize,
     geometry: WindowTextGeometry,
     text_rows: usize,
 ) -> usize {
-    let layouter = ScreenLineLayouter::new(interpreter, window_id, geometry.lnum_cols);
+    let layouter = ScreenLineLayouter::new(interpreter, window, geometry.lnum_cols);
     let zv = interpreter.buffer.borrow().point_max();
     let mut layout = layouter.layout_from(start, geometry.text_width, geometry.truncate);
     let mut y = 0usize;
@@ -4865,15 +4859,15 @@ pub(crate) fn window_end_walk(
 /// each row on the way to its end and that row's first element.
 pub(crate) fn fetch_window_end(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     fetches: &mut IteratorFetches,
     geometry: WindowTextGeometry,
     start: usize,
     text_rows: usize,
 ) {
-    fetch_start_display(interpreter, window_id, fetches, start);
+    fetch_start_display(interpreter, window, fetches, start);
     let zv = interpreter.buffer.borrow().point_max();
-    let mut walk = IteratorWalk::from_window_start(interpreter, window_id, geometry, start);
+    let mut walk = IteratorWalk::from_window_start(interpreter, window, geometry, start);
     walk.walk_to_within(fetches, start, zv, text_rows);
 }
 
@@ -4883,38 +4877,29 @@ pub(crate) fn fetch_window_end(
 /// the window is outdated.
 pub(crate) fn window_end_outdated(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     buffer_id: u64,
 ) -> bool {
     interpreter.windows_or_buffers_changed != 0
-        || !crate::lisp::primitives::window_flag(
-            interpreter,
-            window_id,
-            crate::lisp::primitives::WindowRef::window_end_valid,
-        )
+        || !window.window_end_valid()
         || interpreter
             .get_buffer_by_id(buffer_id)
             .is_none_or(|buffer| {
                 buffer.clip_changed() || buffer.prevent_redisplay_optimizations_p()
             })
-        || redisplay_flags::window_outdated(
-            interpreter,
-            interpreter
-                .window_ref(window_id)
-                .expect("the window of a redisplay"),
-        )
+        || redisplay_flags::window_outdated(interpreter, window)
 }
 
 fn window_cell_xy(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     start: usize,
     pos: usize,
     geometry: WindowTextGeometry,
     text_rows: usize,
     window_end: bool,
 ) -> Option<VisibleAt> {
-    let layouter = ScreenLineLayouter::new(interpreter, window_id, geometry.lnum_cols);
+    let layouter = ScreenLineLayouter::new(interpreter, window, geometry.lnum_cols);
     let zv = interpreter.buffer.borrow().point_max();
     let mut layout = layouter.layout_from(start, geometry.text_width, geometry.truncate);
     let mut y = 0usize;
@@ -5089,12 +5074,12 @@ pub(crate) struct WindowPositionAt {
 /// X of the text area, as the window lays its text out.
 pub(crate) fn window_position_at(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     start: usize,
     (x, y): (usize, usize),
     geometry: WindowTextGeometry,
 ) -> WindowPositionAt {
-    let layouter = ScreenLineLayouter::new(interpreter, window_id, geometry.lnum_cols);
+    let layouter = ScreenLineLayouter::new(interpreter, window, geometry.lnum_cols);
     let (zv, point) = {
         let buffer = interpreter.buffer.borrow();
         (buffer.point_max(), buffer.point())
@@ -5206,15 +5191,14 @@ pub(crate) fn row_x_stop(
 /// LNUM_COLS line-number gutter, wrapped or, with TRUNCATE, truncated.
 pub(crate) fn screen_line_layout(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     bol: usize,
     text_width: usize,
     truncate: bool,
     lnum_cols: usize,
 ) -> ScreenLineLayout {
     std::rc::Rc::unwrap_or_clone(
-        ScreenLineLayouter::new(interpreter, window_id, lnum_cols)
-            .layout(bol, text_width, truncate),
+        ScreenLineLayouter::new(interpreter, window, lnum_cols).layout(bol, text_width, truncate),
     )
 }
 
@@ -5225,7 +5209,7 @@ pub(crate) struct ScreenLineLayouter<'a> {
     interpreter: &'a Interpreter,
     spec: crate::lisp::primitives::InvisibilitySpec,
     context: CharacterDisplayContext<'a>,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     lnum_cols: usize,
 }
 
@@ -5233,12 +5217,22 @@ pub(crate) struct ScreenLineLayouter<'a> {
 /// the window, its line-number columns, the line's start, the start a
 /// start_display anchors its first row at, the text width, whether
 /// lines truncate and the iterator's first visible column.
-type WalkLayoutKey = (u64, usize, usize, Option<usize>, usize, bool, usize);
+type WalkLayoutKey = (
+    crate::lisp::primitives::WindowRef,
+    usize,
+    usize,
+    Option<usize>,
+    usize,
+    bool,
+    usize,
+);
 
 thread_local! {
     /// The display lines the walks of one window's redisplay lay out,
     /// while no Lisp runs between them: each walk takes the window's
-    /// lines from here rather than laying them out again.
+    /// lines from here rather than laying them out again.  No Lisp, so
+    /// no collection: a window that keys a layout is the one redisplay
+    /// holds, and the table is emptied before Lisp runs again.
     static WALK_LAYOUTS: std::cell::RefCell<
         Option<std::collections::HashMap<WalkLayoutKey, std::rc::Rc<ScreenLineLayout>>>,
     > = const { std::cell::RefCell::new(None) };
@@ -5251,19 +5245,23 @@ fn share_walk_layouts(on: bool) {
 }
 
 impl<'a> ScreenLineLayouter<'a> {
-    pub(crate) fn new(interpreter: &'a Interpreter, window_id: u64, lnum_cols: usize) -> Self {
+    pub(crate) fn new(
+        interpreter: &'a Interpreter,
+        window: crate::lisp::primitives::WindowRef,
+        lnum_cols: usize,
+    ) -> Self {
         let buffer_id = interpreter.current_buffer_id();
         let spec = {
             let buffer = interpreter.buffer.borrow();
             resolve_buffer_invisibility(interpreter, &buffer, buffer_id)
         };
-        let context = CharacterDisplayContext::new(interpreter, buffer_id, window_id)
+        let context = CharacterDisplayContext::new(interpreter, buffer_id, window)
             .with_line_numbers(lnum_cols);
         Self {
             interpreter,
             spec,
             context,
-            window_id,
+            window,
             lnum_cols,
         }
     }
@@ -5304,9 +5302,9 @@ impl<'a> ScreenLineLayouter<'a> {
         // A start inside the line: rows from there (start_display).
         let origin = origin.filter(|origin| *origin != line_start);
         let first_visible =
-            crate::lisp::primitives::iterator_first_visible(interpreter, self.window_id, truncate);
+            crate::lisp::primitives::iterator_first_visible(interpreter, self.window, truncate);
         let key = (
-            self.window_id,
+            self.window,
             self.lnum_cols,
             line_start,
             origin,
@@ -5345,7 +5343,7 @@ impl<'a> ScreenLineLayouter<'a> {
         let (spec, context) = (&self.spec, &self.context);
         let first_visible = crate::lisp::primitives::iterator_first_visible(
             self.interpreter,
-            self.window_id,
+            self.window,
             truncate,
         );
         let visual = glyphless_visual_line_at(buffer, spec, first_line, Some(context));
@@ -5601,7 +5599,11 @@ fn iterator_skipped_runs(visual: &VisualLine, line_start: usize) -> Vec<(usize, 
 /// init_iterator's choice to truncate rather than continue WINDOW's
 /// lines: `truncate-lines' in its buffer, a partial-width window under
 /// `truncate-partial-width-windows', or a horizontal scroll.
-pub(crate) fn window_truncates(interpreter: &Interpreter, window_id: u64, buffer_id: u64) -> bool {
+pub(crate) fn window_truncates(
+    interpreter: &Interpreter,
+    window: crate::lisp::primitives::WindowRef,
+    buffer_id: u64,
+) -> bool {
     let value = |name: &str| {
         interpreter
             .buffer_local_value(buffer_id, name)
@@ -5609,11 +5611,11 @@ pub(crate) fn window_truncates(interpreter: &Interpreter, window_id: u64, buffer
             .unwrap_or(Value::Nil)
     };
     if value("truncate-lines").is_truthy()
-        || crate::lisp::primitives::window_hscroll_state(interpreter, window_id).hscroll > 0
+        || crate::lisp::primitives::window_hscroll_state(interpreter, window).hscroll > 0
     {
         return true;
     }
-    let width = crate::lisp::primitives::window_total_columns(interpreter, window_id);
+    let width = crate::lisp::primitives::window_total_columns(interpreter, window);
     width < interpreter.frame_width()
         && match value("truncate-partial-width-windows").kind() {
             Kind::Integer(columns) => columns > width,
@@ -6456,7 +6458,7 @@ fn with_window_point<T>(
             let buffer = interpreter.buffer.borrow();
             let marker = crate::lisp::primitives::window_marker_position(
                 interpreter,
-                info.window.id(),
+                info.window,
                 crate::lisp::primitives::WINDOW_POINT_SLOT,
             )
             .unwrap_or(info.point);
@@ -6504,7 +6506,7 @@ fn publish_window_start(
     window_end: usize,
 ) -> crate::lisp::primitives::WindowRenderInfo {
     use crate::lisp::primitives::{record_window_display, set_window_start_marker};
-    set_window_start_marker(interpreter, info.window.id(), chosen.start);
+    set_window_start_marker(interpreter, info.window, chosen.start);
     info.window.set_start_at_line_beg(chosen.start_at_line_beg);
     let point = chosen.point.unwrap_or(info.point);
     if info.selected && chosen.point.is_some() {
@@ -6514,13 +6516,7 @@ fn publish_window_start(
             buffer.goto_char(point);
         }
     }
-    record_window_display(
-        interpreter,
-        info.window.id(),
-        info.buffer_id,
-        point,
-        window_end,
-    );
+    record_window_display(interpreter, info.window, info.buffer_id, point, window_end);
     crate::lisp::primitives::WindowRenderInfo {
         start: chosen.start,
         point,
@@ -6623,7 +6619,7 @@ fn fontify_window_steps(
         return false;
     }
     let ran = with_window_point(interpreter, info, |interpreter| {
-        let mut fetches = IteratorFetches::new(interpreter, env, info.window.id());
+        let mut fetches = IteratorFetches::new(interpreter, env, info.window);
         let Some(geometry) = fetches.geometry() else {
             return false;
         };
@@ -6642,17 +6638,17 @@ fn fontify_window_steps(
                     // the walks so far fontify under the start they saw.
                     if !fetches.ranges.is_empty() {
                         share_walk_layouts(false);
-                        ran |= fetches.fontify(interpreter, env, info.window.id());
+                        ran |= fetches.fontify(interpreter, env, info.window);
                         fetches.ranges.clear();
                         share_walk_layouts(true);
                     }
                     crate::lisp::primitives::set_window_start_marker(
                         interpreter,
-                        info.window.id(),
+                        info.window,
                         start,
                     );
-                    fetch_start_display(interpreter, info.window.id(), &mut fetches, start);
-                    IteratorWalk::from_window_start(interpreter, info.window.id(), geometry, start)
+                    fetch_start_display(interpreter, info.window, &mut fetches, start);
+                    IteratorWalk::from_window_start(interpreter, info.window, geometry, start)
                         .walk_rows(&mut fetches, start, text_rows);
                 }
                 FetchStep::Init { pos } => {
@@ -6660,14 +6656,14 @@ fn fontify_window_steps(
                     fetches.push_stop(pos);
                 }
                 FetchStep::StartDisplay { start } => {
-                    fetch_start_display(interpreter, info.window.id(), &mut fetches, start);
+                    fetch_start_display(interpreter, info.window, &mut fetches, start);
                 }
                 FetchStep::MoveTo { from, pos, rows } => {
-                    IteratorWalk::from_window_start(interpreter, info.window.id(), geometry, from)
+                    IteratorWalk::from_window_start(interpreter, info.window, geometry, from)
                         .walk_to_within(&mut fetches, from, pos, rows);
                 }
                 FetchStep::Lines { from, rows } => {
-                    IteratorWalk::from_window_start(interpreter, info.window.id(), geometry, from)
+                    IteratorWalk::from_window_start(interpreter, info.window, geometry, from)
                         .walk_rows(&mut fetches, from, rows);
                 }
                 FetchStep::Partial { from } => {
@@ -6676,13 +6672,8 @@ fn fontify_window_steps(
                     // below, each to its end; the original goes on after.
                     if !long_truncated {
                         let original = fetches.copy_walk();
-                        IteratorWalk::from_window_start(
-                            interpreter,
-                            info.window.id(),
-                            geometry,
-                            from,
-                        )
-                        .walk_rows(&mut fetches, from, text_rows + 1);
+                        IteratorWalk::from_window_start(interpreter, info.window, geometry, from)
+                            .walk_rows(&mut fetches, from, text_rows + 1);
                         fetches.resume_walk(original);
                     }
                 }
@@ -6690,7 +6681,7 @@ fn fontify_window_steps(
                     fetch_move_vertically_backward(
                         interpreter,
                         env,
-                        info.window.id(),
+                        info.window,
                         &mut fetches,
                         pos,
                         rows,
@@ -6701,7 +6692,7 @@ fn fontify_window_steps(
                         fetch_move_vertically_backward(
                             interpreter,
                             env,
-                            info.window.id(),
+                            info.window,
                             &mut fetches,
                             pos,
                             rows,
@@ -6712,7 +6703,7 @@ fn fontify_window_steps(
                 FetchStep::PosVisible { start, pos } => {
                     let shown = window_position_xy(
                         interpreter,
-                        info.window.id(),
+                        info.window,
                         start,
                         pos,
                         geometry,
@@ -6721,7 +6712,7 @@ fn fontify_window_steps(
                     .map(|at| (at.x, at.y));
                     fetch_pos_visible(
                         interpreter,
-                        info.window.id(),
+                        info.window,
                         &mut fetches,
                         geometry,
                         (start, Some(pos)),
@@ -6733,7 +6724,7 @@ fn fontify_window_steps(
                     crate::lisp::primitives::move_it::move_it_by_lines(
                         interpreter,
                         env,
-                        info.window.id(),
+                        info.window,
                         from,
                         dvpos,
                         &mut fetches,
@@ -6743,12 +6734,12 @@ fn fontify_window_steps(
                     // The walks so far fontify under the start they saw;
                     // the rest under this one.
                     share_walk_layouts(false);
-                    ran |= fetches.fontify(interpreter, env, info.window.id());
+                    ran |= fetches.fontify(interpreter, env, info.window);
                     fetches.ranges.clear();
                     share_walk_layouts(true);
                     crate::lisp::primitives::set_window_start_marker(
                         interpreter,
-                        info.window.id(),
+                        info.window,
                         start,
                     );
                 }
@@ -6762,14 +6753,17 @@ fn fontify_window_steps(
                     fetches.begin_walk();
                     fetches.push_stop(line_start);
                     if rows > 0 {
-                        IteratorWalk::at(interpreter, info.window.id(), geometry, line_start)
-                            .walk_rows(&mut fetches, line_start, rows);
+                        IteratorWalk::at(interpreter, info.window, geometry, line_start).walk_rows(
+                            &mut fetches,
+                            line_start,
+                            rows,
+                        );
                     }
                 }
             }
         }
         share_walk_layouts(false);
-        ran |= fetches.fontify(interpreter, env, info.window.id());
+        ran |= fetches.fontify(interpreter, env, info.window);
         *declined = std::mem::take(&mut fetches.declined_before);
         declined.append(&mut fetches.declined);
         ran
@@ -6790,7 +6784,7 @@ fn fontify_window_steps(
 pub(crate) fn fetch_move_vertically_backward(
     interpreter: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     fetches: &mut IteratorFetches,
     point: usize,
     rows: usize,
@@ -6800,8 +6794,7 @@ pub(crate) fn fetch_move_vertically_backward(
         return;
     };
     let begv = interpreter.buffer.borrow().point_min();
-    let nchars_per_row =
-        crate::lisp::primitives::move_it::iterator_row_chars(interpreter, window_id);
+    let nchars_per_row = crate::lisp::primitives::move_it::iterator_row_chars(interpreter, window);
     let mut it = point;
     // IT's current_y, relative to where it started.
     let mut it_y = 0i64;
@@ -6823,11 +6816,11 @@ pub(crate) fn fetch_move_vertically_backward(
         // it2, a copy of the iterator reseat_1 left at IT, walks to
         // start_pos.
         fetches.begin_walk();
-        IteratorWalk::at(interpreter, window_id, geometry, it).walk_to(fetches, it, start_pos);
+        IteratorWalk::at(interpreter, window, geometry, it).walk_to(fetches, it, start_pos);
         let h = rows_between(
             interpreter,
             env,
-            window_id,
+            window,
             it,
             start_pos,
             &mut IteratorFetches::off(),
@@ -6838,7 +6831,7 @@ pub(crate) fn fetch_move_vertically_backward(
             // at the line start, then move_it_by_lines its rows down.
             if h > 0 {
                 fetches.begin_walk();
-                IteratorWalk::at(interpreter, window_id, geometry, it)
+                IteratorWalk::at(interpreter, window, geometry, it)
                     .walk_rows(fetches, it, h as usize);
             }
             break;
@@ -7078,9 +7071,13 @@ pub(crate) struct IteratorFetches {
 impl IteratorFetches {
     /// Recording the walks of an iterator in WINDOW, which shows the
     /// current buffer, when `fontification-functions' would run.
-    pub(crate) fn new(interpreter: &mut Interpreter, env: &mut Env, window_id: u64) -> Self {
+    pub(crate) fn new(
+        interpreter: &mut Interpreter,
+        env: &mut Env,
+        window: crate::lisp::primitives::WindowRef,
+    ) -> Self {
         let mut fetches = IteratorFetches::default();
-        fetches.begin_pass(interpreter, env, window_id);
+        fetches.begin_pass(interpreter, env, window);
         fetches
     }
 
@@ -7095,13 +7092,13 @@ impl IteratorFetches {
         &mut self,
         interpreter: &mut Interpreter,
         env: &mut Env,
-        window_id: u64,
+        window: crate::lisp::primitives::WindowRef,
     ) {
         let on = interpreter
             .symbol_value_key(cached_symbol!("fontification-functions"))
             .is_some_and(|value| !value.is_nil());
         self.geometry =
-            on.then(|| crate::lisp::primitives::window_text_geometry(interpreter, env, window_id));
+            on.then(|| crate::lisp::primitives::window_text_geometry(interpreter, env, window));
         self.zv = interpreter.buffer.borrow().point_max();
         self.z = interpreter.buffer.borrow().size_total() + 1;
         self.ranges.clear();
@@ -7184,7 +7181,7 @@ impl IteratorFetches {
         &mut self,
         interpreter: &mut Interpreter,
         env: &mut Env,
-        window_id: u64,
+        window: crate::lisp::primitives::WindowRef,
     ) -> bool {
         let before = LayoutStamp::of(interpreter);
         let mut ran = false;
@@ -7215,7 +7212,7 @@ impl IteratorFetches {
             let (any, next) = fontify_iterated_text(
                 interpreter,
                 env,
-                window_id,
+                window,
                 (first, to),
                 Declined {
                     now: &mut stops.declined,
@@ -7374,11 +7371,11 @@ impl<'a> IteratorWalk<'a> {
     /// From the display line holding POS.
     pub(crate) fn at(
         interpreter: &'a Interpreter,
-        window_id: u64,
+        window: crate::lisp::primitives::WindowRef,
         geometry: WindowTextGeometry,
         pos: usize,
     ) -> Self {
-        let layouter = ScreenLineLayouter::new(interpreter, window_id, geometry.lnum_cols);
+        let layouter = ScreenLineLayouter::new(interpreter, window, geometry.lnum_cols);
         let layout = layouter.layout(pos, geometry.text_width, geometry.truncate);
         IteratorWalk {
             layouter,
@@ -7392,11 +7389,11 @@ impl<'a> IteratorWalk<'a> {
     /// display line, its rows beginning there).
     pub(crate) fn from_window_start(
         interpreter: &'a Interpreter,
-        window_id: u64,
+        window: crate::lisp::primitives::WindowRef,
         geometry: WindowTextGeometry,
         start: usize,
     ) -> Self {
-        let layouter = ScreenLineLayouter::new(interpreter, window_id, geometry.lnum_cols);
+        let layouter = ScreenLineLayouter::new(interpreter, window, geometry.lnum_cols);
         let layout = layouter.layout_from(start, geometry.text_width, geometry.truncate);
         IteratorWalk {
             layouter,
@@ -7571,23 +7568,23 @@ impl<'a> IteratorWalk<'a> {
 pub(crate) fn fontify_window_rows(
     interpreter: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     start: usize,
     rows: usize,
 ) {
     let mut fetches = IteratorFetches::off();
     for _ in 0..ITERATOR_FONTIFICATION_PASSES {
-        fetches.begin_pass(interpreter, env, window_id);
+        fetches.begin_pass(interpreter, env, window);
         let Some(geometry) = fetches.geometry() else {
             return;
         };
-        fetch_start_display(interpreter, window_id, &mut fetches, start);
-        IteratorWalk::from_window_start(interpreter, window_id, geometry, start).walk_rows(
+        fetch_start_display(interpreter, window, &mut fetches, start);
+        IteratorWalk::from_window_start(interpreter, window, geometry, start).walk_rows(
             &mut fetches,
             start,
             rows,
         );
-        if !fetches.fontify(interpreter, env, window_id) {
+        if !fetches.fontify(interpreter, env, window) {
             return;
         }
     }
@@ -7598,7 +7595,7 @@ pub(crate) fn fontify_window_rows(
 /// FROM begins a line -- and it2's walk from there to FROM.
 pub(crate) fn fetch_screen_line_start(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     fetches: &mut IteratorFetches,
     from: usize,
 ) {
@@ -7608,15 +7605,14 @@ pub(crate) fn fetch_screen_line_start(
     let line_start =
         crate::lisp::primitives::move_it::back_to_previous_visible_line_start(interpreter, from);
     fetches.begin_walk();
-    IteratorWalk::at(interpreter, window_id, geometry, line_start)
-        .walk_to(fetches, line_start, from);
+    IteratorWalk::at(interpreter, window, geometry, line_start).walk_to(fetches, line_start, from);
     // move_it_vertically_backward (it, 0): the iterator itself, back at
     // the line start, then move_it_by_lines the rows down to FROM's.
     let rows =
-        IteratorWalk::at(interpreter, window_id, geometry, line_start).rows_to(line_start, from);
+        IteratorWalk::at(interpreter, window, geometry, line_start).rows_to(line_start, from);
     if rows > 0 {
         fetches.begin_walk();
-        IteratorWalk::at(interpreter, window_id, geometry, line_start)
+        IteratorWalk::at(interpreter, window, geometry, line_start)
             .walk_rows(fetches, line_start, rows);
     }
 }
@@ -7626,7 +7622,7 @@ pub(crate) fn fetch_screen_line_start(
 /// line's start (reseat_at_previous_visible_line_start, move_it_to).
 pub(crate) fn fetch_start_display(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     fetches: &mut IteratorFetches,
     start: usize,
 ) {
@@ -7638,7 +7634,7 @@ pub(crate) fn fetch_start_display(
     let origin = window_iterator_origin(interpreter, start, geometry.truncate);
     if origin < start {
         fetches.begin_walk();
-        IteratorWalk::at(interpreter, window_id, geometry, origin).walk_to(fetches, origin, start);
+        IteratorWalk::at(interpreter, window, geometry, origin).walk_to(fetches, origin, start);
     }
 }
 
@@ -7651,15 +7647,15 @@ pub(crate) fn fetch_start_display(
 /// POS does not show, or is t.
 pub(crate) fn fetch_pos_visible(
     interpreter: &Interpreter,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     fetches: &mut IteratorFetches,
     geometry: WindowTextGeometry,
     (start, pos): (usize, Option<usize>),
     shown: Option<(i64, usize)>,
     text_rows: usize,
 ) {
-    fetch_start_display(interpreter, window_id, fetches, start);
-    let mut walk = IteratorWalk::from_window_start(interpreter, window_id, geometry, start);
+    fetch_start_display(interpreter, window, fetches, start);
+    let mut walk = IteratorWalk::from_window_start(interpreter, window, geometry, start);
     match (pos, shown) {
         (Some(pos), Some((_, row))) if row + 1 < text_rows => {
             let landed = walk.walk_to(fetches, start, pos);
@@ -7683,7 +7679,7 @@ pub(crate) fn fetch_pos_visible(
 fn fontify_iterated_text(
     interpreter: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: crate::lisp::primitives::WindowRef,
     (start, end): (usize, usize),
     declined: Declined<'_>,
 ) -> (bool, usize) {
@@ -7694,12 +7690,12 @@ fn fontify_iterated_text(
     {
         return (false, start);
     }
-    let window_point = if window_id == interpreter.selected_window_ref().id() {
+    let window_point = if window == interpreter.selected_window_ref() {
         interpreter.buffer.borrow().point()
     } else {
         crate::lisp::primitives::window_marker_position(
             interpreter,
-            window_id,
+            window,
             crate::lisp::primitives::WINDOW_POINT_SLOT,
         )
         .unwrap_or_else(|| interpreter.buffer.borrow().point())
@@ -8446,7 +8442,7 @@ fn redraw_with_echo_policy(
                     let invisibility =
                         resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
                     let glyphless =
-                        CharacterDisplayContext::new(interpreter, info.buffer_id, info.window.id())
+                        CharacterDisplayContext::new(interpreter, info.buffer_id, info.window)
                             .with_line_numbers(geometry.lnum.map_or(0, |layout| layout.cols));
                     match plan_window_text(
                         &buffer,
@@ -8526,7 +8522,7 @@ fn redraw_with_echo_policy(
                         consume_window_start_flags(info.window, consumed);
                         crate::lisp::primitives::set_window_start_marker(
                             interpreter,
-                            info.window.id(),
+                            info.window,
                             start,
                         );
                         run_window_scroll_functions(interpreter, env, info, start);
@@ -8534,7 +8530,7 @@ fn redraw_with_echo_policy(
                             stage,
                             crate::lisp::primitives::window_start_marker(
                                 interpreter,
-                                info.window.id(),
+                                info.window,
                                 info.buffer_id,
                             ),
                             update_mode_line,
@@ -8960,7 +8956,7 @@ fn redraw_with_echo_policy(
             }
         };
         let job_invisibility = resolve_buffer_invisibility(interpreter, &buffer, job.buffer_id);
-        let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window.id())
+        let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window)
             .with_line_numbers(job.lnum_cols);
         // The rows of one continued line share its layout: it is made once
         // for them, not once a row.
@@ -9377,7 +9373,7 @@ fn redraw_with_echo_policy(
         let current_attrs = resolve("line-number-current-line");
         let major_attrs = (layout.major_tick > 0).then(|| resolve("line-number-major-tick"));
         let minor_attrs = (layout.minor_tick > 0).then(|| resolve("line-number-minor-tick"));
-        let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window.id())
+        let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window)
             .with_line_numbers(layout.cols);
         let Some(buffer) = (if job.buffer_id == interpreter.current_buffer_id() {
             Some(interpreter.buffer.borrow())
@@ -9645,11 +9641,11 @@ fn redraw_with_echo_policy(
         if !job.display && keep_painted_cells(&mut frame, &state.painted_rows, job) {
             continue;
         }
-        crate::lisp::primitives::begin_display_mode_lines(interpreter, job.window);
+        crate::lisp::primitives::begin_display_mode_lines(job.window);
         let remapping = face_remapping(interpreter, Some(job.buffer_id));
         let measure = ModeLineMeasure {
             buffer_id: job.buffer_id,
-            window_id: job.window.id(),
+            window: job.window,
         };
         // display_mode_lines runs with `inhibit-quit' bound to t.
         let rendered = with_inhibit_quit(interpreter, env, |interpreter, env| {
@@ -9676,7 +9672,7 @@ fn redraw_with_echo_policy(
         mode_line = apply_character_display(
             interpreter,
             job.buffer_id,
-            job.window.id(),
+            job.window,
             mode_line,
             &mut spans,
         );
@@ -9731,7 +9727,7 @@ fn redraw_with_echo_policy(
             );
             let measure = ModeLineMeasure {
                 buffer_id: job.buffer_id,
-                window_id: job.window.id(),
+                window: job.window,
             };
             let (mut tab, mut spans) = match crate::lisp::primitives::render_window_tab_line(
                 interpreter,
@@ -9748,13 +9744,7 @@ fn redraw_with_echo_policy(
                     (format!("[tab-line render error: {error:?}]"), Vec::new())
                 }
             };
-            tab = apply_character_display(
-                interpreter,
-                job.buffer_id,
-                job.window.id(),
-                tab,
-                &mut spans,
-            );
+            tab = apply_character_display(interpreter, job.buffer_id, job.window, tab, &mut spans);
             let mut shown = job.body_width;
             if cell_count(&tab) > job.body_width {
                 (tab, shown) = take_cells_padded(&tab, job.body_width, ' ');
@@ -9793,7 +9783,7 @@ fn redraw_with_echo_policy(
             );
             let measure = ModeLineMeasure {
                 buffer_id: job.buffer_id,
-                window_id: job.window.id(),
+                window: job.window,
             };
             let rendered = with_inhibit_quit(interpreter, env, |interpreter, env| {
                 crate::lisp::primitives::render_window_header_line(
@@ -9813,13 +9803,8 @@ fn redraw_with_echo_policy(
                     (format!("[header-line render error: {error:?}]"), Vec::new())
                 }
             };
-            header = apply_character_display(
-                interpreter,
-                job.buffer_id,
-                job.window.id(),
-                header,
-                &mut spans,
-            );
+            header =
+                apply_character_display(interpreter, job.buffer_id, job.window, header, &mut spans);
             let mut shown = job.body_width;
             if cell_count(&header) > job.body_width {
                 (header, shown) = take_cells_padded(&header, job.body_width, ' ');
@@ -10415,9 +10400,11 @@ fn translate_echo_paint(
     // The minibuffer's remapping; an echo area message's (BUFFER_ID 0)
     // is the frame's.
     let remapping = face_remapping(interpreter, (buffer_id != 0).then_some(buffer_id));
+    let mini_window = interpreter
+        .minibuffer_window()
+        .expect("a frame has a minibuffer window");
     let display =
-        CharacterDisplayContext::new(interpreter, buffer_id, interpreter.minibuffer_window_id())
-            .translate(&text);
+        CharacterDisplayContext::new(interpreter, buffer_id, mini_window).translate(&text);
     // Display offsets to the cells their glyphs take.
     let cells = display_cells(&display.text);
     let cell_of = |offset: usize| cells[offset.min(cells.len() - 1)];
@@ -11447,7 +11434,7 @@ mod tests {
             CharacterDisplayContext::new(
                 interpreter,
                 interpreter.current_buffer_id(),
-                interpreter.selected_window_ref().id(),
+                interpreter.selected_window_ref(),
             )
             .translate("x")
             .text
@@ -11513,7 +11500,7 @@ mod tests {
         let context = CharacterDisplayContext::new(
             &interpreter,
             interpreter.current_buffer_id(),
-            interpreter.selected_window_ref().id(),
+            interpreter.selected_window_ref(),
         );
         let visual = glyphless_visual_line_at(
             &interpreter.buffer.borrow(),
@@ -11536,7 +11523,7 @@ mod tests {
         let rendered = apply_character_display(
             &interpreter,
             interpreter.current_buffer_id(),
-            interpreter.selected_window_ref().id(),
+            interpreter.selected_window_ref(),
             "xyA".into(),
             &mut spans,
         );
@@ -11655,7 +11642,7 @@ mod tests {
         let context = CharacterDisplayContext::new(
             &interpreter,
             interpreter.current_buffer_id(),
-            interpreter.selected_window_ref().id(),
+            interpreter.selected_window_ref(),
         );
         let visual = glyphless_visual_line_at(
             &interpreter.buffer.borrow(),
@@ -11675,7 +11662,7 @@ mod tests {
         let context = CharacterDisplayContext::new(
             &interpreter,
             interpreter.current_buffer_id(),
-            interpreter.selected_window_ref().id(),
+            interpreter.selected_window_ref(),
         );
         let visual = glyphless_visual_line_at(
             &interpreter.buffer.borrow(),
@@ -11708,7 +11695,7 @@ mod tests {
             let context = CharacterDisplayContext::new(
                 interpreter,
                 interpreter.current_buffer_id(),
-                interpreter.selected_window_ref().id(),
+                interpreter.selected_window_ref(),
             );
             let visual = glyphless_visual_line_at(
                 &interpreter.buffer.borrow(),
@@ -11808,7 +11795,7 @@ mod tests {
         let context = CharacterDisplayContext::new(
             &interpreter,
             interpreter.current_buffer_id(),
-            interpreter.selected_window_ref().id(),
+            interpreter.selected_window_ref(),
         );
         let visual = glyphless_visual_line_at(
             &interpreter.buffer.borrow(),
@@ -11839,7 +11826,7 @@ mod tests {
         let context = CharacterDisplayContext::new(
             &interpreter,
             interpreter.current_buffer_id(),
-            interpreter.selected_window_ref().id(),
+            interpreter.selected_window_ref(),
         );
         let visual = glyphless_visual_line_at(
             &interpreter.buffer.borrow(),
@@ -11958,7 +11945,7 @@ mod tests {
         let rendered = apply_character_display(
             &interpreter,
             interpreter.current_buffer_id(),
-            interpreter.selected_window_ref().id(),
+            interpreter.selected_window_ref(),
             "a▼▲".to_string(),
             &mut spans,
         );
@@ -12188,7 +12175,7 @@ mod tests {
         let context = CharacterDisplayContext::new(
             &interp,
             interp.current_buffer_id(),
-            interp.selected_window_ref().id(),
+            interp.selected_window_ref(),
         );
         let visual = glyphless_visual_line_at(
             &interp.buffer.borrow(),
@@ -15414,7 +15401,7 @@ fn selected_window_mode_line_checks(
             .get_buffer_by_id(buffer_id)
             .is_some_and(|buffer| !buffer.clip_changed())
     {
-        let last_point = crate::lisp::primitives::window_last_point(interpreter, window.id())
+        let last_point = crate::lisp::primitives::window_last_point(window)
             .and_then(|point| usize::try_from(point).ok());
         let point = redisplay_flags::window_point(interpreter, window);
         if let (Some(last_point), Some(point)) = (last_point, point)
@@ -15492,11 +15479,12 @@ fn window_displays_mode_line(
     let full_width = info.left == 0 && info.width >= cols;
     let column_left = info.selected
         && info.buffer_id == interpreter.current_buffer_id()
-        && crate::lisp::primitives::window_column_number_displayed(interpreter, info.window.id())
-            .is_some_and(|displayed| {
+        && crate::lisp::primitives::window_column_number_displayed(info.window).is_some_and(
+            |displayed| {
                 crate::lisp::primitives::current_column(interpreter, env)
                     .is_ok_and(|column| column as i64 != displayed)
-            });
+            },
+        );
     let mode_lines = update_mode_line
         || (consider_all_windows && !full_width)
         || crate::lisp::primitives::window_base_line_pos(info.window) > 0

@@ -728,17 +728,17 @@ define_dispatch!(
                     .filter(|value| !value.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
-                let Some(window_id) = window_record_id_from_value(interp, &window) else {
+                let Some(w) = WindowRef::from_value(&window) else {
                     return Err(wrong_type_argument("windowp", window));
                 };
                 // decode_any_window, then the position: POS, point in the
                 // selected window, or marker_position (w->pointm), which
                 // signals for a deleted window's unchained marker.
                 if args.first().is_none_or(Value::is_nil)
-                    && window_id != interp.selected_window_id()
+                    && w != interp.selected_window_ref()
                     && crate::lisp::primitives::window::window_marker(
                         interp,
-                        window_id,
+                        w.id(),
                         crate::lisp::primitives::WINDOW_POINT_SLOT,
                     )
                     .is_some_and(|marker| marker.position().is_none())

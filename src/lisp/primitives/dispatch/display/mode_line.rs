@@ -1396,8 +1396,7 @@ impl ModeLine<'_> {
                     .unwrap_or(0);
                 // `w->column_number_displayed = col'.
                 crate::lisp::primitives::set_window_column_number_displayed(
-                    interp,
-                    self.window.id(),
+                    self.window,
                     Some(column),
                 );
                 let shown = if c == 'C' { column + 1 } else { column };
@@ -1517,7 +1516,7 @@ impl ModeLine<'_> {
         let mut startpos = if window == interp.selected_window_ref() {
             current_window_start(interp)
         } else {
-            window_marker_position(interp, window.id(), WINDOW_START_SLOT).unwrap_or(1)
+            window_marker_position(interp, window, WINDOW_START_SLOT).unwrap_or(1)
         };
         let height = window_geometry(interp, window).1.max(1);
         if !own_buffer || !(begv <= startpos && startpos <= zv) {
@@ -1628,7 +1627,7 @@ impl ModeLine<'_> {
         let toppos = if window == interp.selected_window_ref() {
             current_window_start(interp) as i64
         } else {
-            window_marker_position(interp, window.id(), WINDOW_START_SLOT).unwrap_or(1) as i64
+            window_marker_position(interp, window, WINDOW_START_SLOT).unwrap_or(1) as i64
         };
         let window_end_pos = window_end_pos(interp, window, z);
         let botpos = z - window_end_pos;
@@ -1813,9 +1812,9 @@ thread_local! {
 
 /// display_mode_lines' start: the column and line number displayed are
 /// set again while WINDOW_ID's formats are processed.
-pub(crate) fn begin_display_mode_lines(interp: &mut Interpreter, window: WindowRef) {
+pub(crate) fn begin_display_mode_lines(window: WindowRef) {
     LINE_NUMBER_DISPLAYED.set(false);
-    crate::lisp::primitives::set_window_column_number_displayed(interp, window.id(), None);
+    crate::lisp::primitives::set_window_column_number_displayed(window, None);
 }
 
 /// redisplay_window after display_mode_lines: a window whose mode line
@@ -2136,7 +2135,7 @@ pub(super) fn display_mode_line(
             )
         };
         if crate::lisp::types::eq_symbol_named(compact_value, "long")
-            && window_total_columns(interp, window.id()).max(0) as usize >= chars.len()
+            && window_total_columns(interp, window).max(0) as usize >= chars.len()
         {
             ml.display_string(interp, env, None, Some(mode_string), None, 0, 0, 0)?;
             return Ok(());

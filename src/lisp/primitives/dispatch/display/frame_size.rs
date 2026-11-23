@@ -407,7 +407,7 @@ fn resize_frame_windows(
             );
         } else {
             let (_, root_height, _, root_top) = window_geometry(interp, root);
-            let (_, root_lines, _, root_top_line) = window_char_geometry(interp, root.id());
+            let (_, root_lines, _, root_top_line) = window_char_geometry(root);
             mini.set_total_lines(Some(mini_height));
             mini.set_top_line(Some(root_top_line + root_lines));
             set_window_geometry(
@@ -424,12 +424,12 @@ fn resize_frame_windows(
 /// window.c:window_resize_apply_total: W's total size (width with
 /// HORFLAG) becomes its new total, its children placed from its column
 /// or line, advancing across an iso-combination.
-fn window_resize_apply_total(interp: &mut Interpreter, window: WindowRef, horflag: bool) {
+fn window_resize_apply_total(window: WindowRef, horflag: bool) {
     let new_total = window
         .slot(WINDOW_NEW_TOTAL_SLOT)
         .integer_value()
         .unwrap_or(0);
-    let (_, _, left_col, top_line) = window_char_geometry(interp, window.id());
+    let (_, _, left_col, top_line) = window_char_geometry(window);
     let mut edge = if horflag {
         window.set_total_cols(Some(new_total));
         left_col
@@ -441,18 +441,18 @@ fn window_resize_apply_total(interp: &mut Interpreter, window: WindowRef, horfla
         return;
     };
     let mut child = window.first_child();
-    while let Some(child_id) = child {
+    while let Some(w) = child {
         if horflag {
-            child_id.set_left_col(Some(edge));
+            w.set_left_col(Some(edge));
         } else {
-            child_id.set_top_line(Some(edge));
+            w.set_top_line(Some(edge));
         }
-        window_resize_apply_total(interp, child_id, horflag);
+        window_resize_apply_total(w, horflag);
         if horizontal == horflag {
-            let (cols, lines, _, _) = window_char_geometry(interp, child_id.id());
+            let (cols, lines, _, _) = window_char_geometry(w);
             edge += if horflag { cols } else { lines };
         }
-        child = window_link(child_id, WINDOW_NEXT_SIBLING_SLOT);
+        child = window_link(w, WINDOW_NEXT_SIBLING_SLOT);
     }
 }
 
@@ -470,7 +470,7 @@ pub(super) fn window_resize_apply_total_for_frame(
     // Necessary when deleting the top-/or leftmost window.
     root.set_left_col(Some(0));
     root.set_top_line(Some(frame_top_margin(frame)));
-    window_resize_apply_total(interp, root, horizontal);
+    window_resize_apply_total(root, horizontal);
     if let Some(mini) = frame_mini_window(interp, frame) {
         let new_total = mini
             .slot(WINDOW_NEW_TOTAL_SLOT)
@@ -479,7 +479,7 @@ pub(super) fn window_resize_apply_total_for_frame(
         if horizontal {
             mini.set_total_cols(Some(new_total));
         } else {
-            let (_, root_lines, _, root_top_line) = window_char_geometry(interp, root.id());
+            let (_, root_lines, _, root_top_line) = window_char_geometry(root);
             mini.set_top_line(Some(root_top_line + root_lines));
             mini.set_total_lines(Some(new_total));
         }

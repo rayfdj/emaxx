@@ -29742,10 +29742,10 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
     // A frontend publishing live geometry changes both answers: its
     // redisplay records the window's end (w->window_end_pos).
     set_interactive_window_metrics(Some(InteractiveWindowMetrics { window_end: 199 }));
-    let window_id = interp.selected_window_ref();
+    let window = interp.selected_window_ref();
     let buffer_id = interp.current_buffer_id();
     let point = interp.buffer.borrow().point();
-    super::window::record_window_display(&mut interp, window_id.id(), buffer_id, point, 199);
+    super::window::record_window_display(&mut interp, window, buffer_id, point, 199);
     let end = call(&mut interp, "window-end", &[], &mut env).expect("window-end");
     assert_eq!(end, Value::Integer(199), "window-end reads the glass state");
 
@@ -30476,12 +30476,12 @@ fn glass_mode_line_honors_font_lock_face_string_properties() {
     .expect("mode-line form parses")
     .expect("mode-line form exists");
     interp.eval(&form, &mut env).expect("mode-line form runs");
-    let window_id = interp.selected_window_ref();
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id.id());
+    let window = interp.selected_window_ref();
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window);
     let (_, spans) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        window_id,
+        window,
         1,
         InteractiveWindowMetrics { window_end: 1 },
         80,
@@ -30970,7 +30970,8 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let buffer_before = interp.current_buffer_id();
     let point_before = interp.buffer.borrow().point();
     let metrics = crate::lisp::primitives::InteractiveWindowMetrics { window_end: 14 };
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id());
+    let measure =
+        crate::tty::ModeLineMeasure::for_window(&interp, WindowRef::from_object(lower_id));
     let (mode_line, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
@@ -31024,7 +31025,8 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("dedicate softly");
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id());
+    let measure =
+        crate::tty::ModeLineMeasure::for_window(&interp, WindowRef::from_object(lower_id));
     let (softly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
@@ -31046,7 +31048,8 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("dedicate strongly");
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id());
+    let measure =
+        crate::tty::ModeLineMeasure::for_window(&interp, WindowRef::from_object(lower_id));
     let (strongly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
@@ -37053,7 +37056,7 @@ fn window_geometry_is_the_windows_own_integers() {
     interp.adjust_window_count(lone.id(), true);
     assert_eq!(pixels(lone), (Some(80), Some(10), Some(3), Some(4)));
     assert_eq!(chars(lone), (None, None, None, None));
-    assert_eq!(window_char_geometry(&interp, lone.id()), (80, 10, 3, 4));
+    assert_eq!(window_char_geometry(lone), (80, 10, 3, 4));
     assert_eq!((old_sizes(lone), margins(lone)), ((0, 0, 0, 0), (0, 0)));
     assert_eq!(window_margin_cols(&interp, lone.id()), (None, None));
     // `w->total_cols = 70' and `w->top_line = 6' are the window's own,
@@ -37062,15 +37065,15 @@ fn window_geometry_is_the_windows_own_integers() {
     lone.set_top_line(Some(6));
     assert_eq!(chars(lone), (Some(70), None, None, Some(6)));
     assert_eq!(pixels(lone), (Some(80), Some(10), Some(3), Some(4)));
-    assert_eq!(window_char_geometry(&interp, lone.id()), (70, 10, 3, 6));
+    assert_eq!(window_char_geometry(lone), (70, 10, 3, 6));
     lone.set_left_col(Some(0));
     lone.set_total_lines(Some(0));
-    assert_eq!(window_char_geometry(&interp, lone.id()), (70, 0, 0, 6));
+    assert_eq!(window_char_geometry(lone), (70, 0, 0, 6));
     // The dead window of a dump is given nothing.
     let dead = interp.install_dead_window(3);
     assert_eq!(pixels(dead), (None, None, None, None));
     assert_eq!(chars(dead), (None, None, None, None));
-    assert_eq!(window_char_geometry(&interp, dead.id()), (0, 0, 0, 0));
+    assert_eq!(window_char_geometry(dead), (0, 0, 0, 0));
     assert_eq!((old_sizes(dead), margins(dead)), ((0, 0, 0, 0), (0, 0)));
     // Nothing holds the two from here on: the lone window shows its
     // buffer no longer.
@@ -37079,7 +37082,7 @@ fn window_geometry_is_the_windows_own_integers() {
     // The frame's windows: what Lisp reads is the window's integers.
     let top = handle(interp.selected_window_value());
     assert!(matches!(pixels(top), (Some(_), Some(_), Some(0), Some(_))));
-    let (cols, lines, left_col, top_line) = window_char_geometry(&interp, top.id());
+    let (cols, lines, left_col, top_line) = window_char_geometry(top);
     assert_eq!(
         run(
             &mut interp,
@@ -37116,7 +37119,7 @@ fn window_geometry_is_the_windows_own_integers() {
     // window-resize-apply-total gives the frame's root; the old window
     // and the new one have the lines window_resize_apply gave them, the
     // new one starting where the old one ends.
-    let before = (pixels(top), window_char_geometry(&interp, top.id()));
+    let before = (pixels(top), window_char_geometry(top));
     let bottom = handle(run(&mut interp, "(setq wg-bottom (split-window))"));
     let column = handle(run(&mut interp, "(window-parent)"));
     assert_eq!(pixels(column), before.0);
@@ -37132,8 +37135,8 @@ fn window_geometry_is_the_windows_own_integers() {
             .map(|(a, b)| a + b),
         Some(lines)
     );
-    let (_, top_lines, _, top_top_line) = window_char_geometry(&interp, top.id());
-    let (_, bottom_lines, _, bottom_top_line) = window_char_geometry(&interp, bottom.id());
+    let (_, top_lines, _, top_top_line) = window_char_geometry(top);
+    let (_, bottom_lines, _, bottom_top_line) = window_char_geometry(bottom);
     assert_eq!(bottom_top_line, top_top_line + top_lines);
     assert_eq!(
         run(
@@ -37209,7 +37212,7 @@ fn window_geometry_is_the_windows_own_integers() {
         Value::cons(Value::Integer(2), Value::Integer(3))
     );
     for (window, name) in [(top, "(selected-window)"), (bottom, "wg-bottom")] {
-        let (cols, lines, left_col, top_line) = window_char_geometry(&interp, window.id());
+        let (cols, lines, left_col, top_line) = window_char_geometry(window);
         assert_eq!(
             run(
                 &mut interp,
@@ -37292,18 +37295,18 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
     let dead = interp.install_dead_window(3);
     for window in [lone, dead] {
         assert_eq!((counters(window), bits(window)), (NEW, [false; 8]));
-        assert_eq!(window_last_point(&interp, window.id()), None);
-        assert_eq!(window_column_number_displayed(&interp, window.id()), None);
+        assert_eq!(window_last_point(window), None);
+        assert_eq!(window_column_number_displayed(window), None);
     }
     // `w->last_point = 5' and `w->column_number_displayed = 0' are the
     // window's integers; none is 0 of the one and -1 of the other.
-    set_window_last_point(&interp, lone.id(), Some(5));
-    set_window_column_number_displayed(&interp, lone.id(), Some(0));
+    set_window_last_point(lone, Some(5));
+    set_window_column_number_displayed(lone, Some(0));
     assert_eq!((lone.last_point(), lone.column_number_displayed()), (5, 0));
-    assert_eq!(window_last_point(&interp, lone.id()), Some(5));
-    assert_eq!(window_column_number_displayed(&interp, lone.id()), Some(0));
-    set_window_last_point(&interp, lone.id(), None);
-    set_window_column_number_displayed(&interp, lone.id(), None);
+    assert_eq!(window_last_point(lone), Some(5));
+    assert_eq!(window_column_number_displayed(lone), Some(0));
+    set_window_last_point(lone, None);
+    set_window_column_number_displayed(lone, None);
     assert_eq!((lone.last_point(), lone.column_number_displayed()), (0, -1));
     // Each bit is stored and read by its own name, alone.
     let stores: [Bit; 8] = [
@@ -37326,13 +37329,13 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
         ),
     ];
     for (index, (store, read)) in stores.into_iter().enumerate() {
-        set_window_flag(&mut interp, lone.id(), store, true);
+        store(lone, true);
         let mut expected = [false; 8];
         expected[index] = true;
         assert_eq!(bits(lone), expected, "bit {index}");
-        assert!(window_flag(&interp, lone.id(), read));
-        set_window_flag(&mut interp, lone.id(), store, false);
-        assert!(!window_flag(&interp, lone.id(), read));
+        assert!(read(lone));
+        store(lone, false);
+        assert!(!read(lone));
     }
     assert_eq!(bits(lone), [false; 8]);
     // Nothing holds the two from here on: the lone window shows its

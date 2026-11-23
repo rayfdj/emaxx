@@ -32,7 +32,7 @@ pub(super) fn window_point(interp: &Interpreter, window: WindowRef) -> Option<us
         let buffer = window_buffer(interp, window)?;
         Some(interp.buffer_point_by_id(buffer))
     } else {
-        window_marker_position(interp, window.id(), WINDOW_POINT_SLOT)
+        window_marker_position(interp, window, WINDOW_POINT_SLOT)
     }
 }
 
@@ -74,11 +74,11 @@ pub(super) fn mode_line_update_needed(
     env: &mut Env,
     window: WindowRef,
 ) -> bool {
-    let Some(displayed) = window_column_number_displayed(interp, window.id()) else {
+    let Some(displayed) = window_column_number_displayed(window) else {
         return false;
     };
     let point = interp.buffer.borrow().point();
-    let last_point = window_last_point(interp, window.id());
+    let last_point = window_last_point(window);
     if last_point == Some(point as i64) && !window_outdated(interp, window) {
         return false;
     }
@@ -108,7 +108,7 @@ pub(super) fn needs_no_redisplay(interp: &Interpreter, window: WindowRef) -> boo
     {
         return false;
     }
-    window_point(interp, window).map(|point| point as i64) == window_last_point(interp, window.id())
+    window_point(interp, window).map(|point| point as i64) == window_last_point(window)
 }
 
 /// propagate_buffer_redisplay: each window whose buffer's text must be
@@ -144,7 +144,7 @@ pub(super) fn mark_window_display_accurate(interp: &mut Interpreter, window: Win
         buffer.take_unchanged_counts();
     }
     let point = window_point(interp, window).map(|point| point as i64);
-    set_window_last_point(interp, window.id(), point);
+    set_window_last_point(window, point);
     window.set_update_mode_line(false);
     window.set_redisplay(false);
 }

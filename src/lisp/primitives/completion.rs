@@ -1808,7 +1808,7 @@ pub(crate) fn check_recursive_minibuffer(interp: &Interpreter) -> Result<(), Lis
     }
     let message = Value::string("Command attempted to use minibuffer while in minibuffer");
     let in_minibuffer_window = super::WindowRef::from_value(&interp.minibuffer_window_value())
-        .is_some_and(|window| window.id() == interp.selected_window_id());
+        .is_some_and(|window| window == interp.selected_window_ref());
     if in_minibuffer_window {
         Err(LispError::SignalValue(Value::list([
             Value::symbol("user-error"),
@@ -2089,8 +2089,7 @@ fn read_minibuf_unwind(interp: &mut Interpreter, state: ActiveMinibuffer, env: &
     // go back to, the calling window is Fselect_window'ed.
     let minibuffer_window = interp.minibuffer_window_value();
     let outer_reads = super::WindowRef::from_value(&minibuffer_window)
-        .and_then(|window| interp.window_ref(window.id()))
-        .is_some_and(|record| !record.slot(super::WINDOW_PREV_BUFFERS_SLOT).is_nil());
+        .is_some_and(|window| !window.slot(super::WINDOW_PREV_BUFFERS_SLOT).is_nil());
     let calling_window = state.saved_selected_window.value();
     if !outer_reads && super::window_buffer_id(interp, &calling_window).is_some() {
         let _ = super::call(interp, "select-window", &[calling_window], env);

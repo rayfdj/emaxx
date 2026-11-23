@@ -752,7 +752,7 @@ pub(crate) fn sit_for(
     use crate::lisp::primitives::processes::WAIT_READING_MAX;
     let do_display = display_option > 0;
     let selected_window_buffer = |interp: &Interpreter| {
-        let window = interp.window_value(interp.selected_window_id());
+        let window = interp.selected_window_ref().value();
         crate::lisp::primitives::window_buffer_id(interp, &window)
     };
     let curbuf_eq_winbuf = selected_window_buffer(interp) == Some(interp.current_buffer_id());
@@ -1036,7 +1036,7 @@ pub(crate) fn read_char_redisplay(
         INPUT_WAS_PENDING.set(input_pending);
         REDISPLAY_INPUT_PENDING.set(Some(input_pending));
         if interp.menu.help_echo_showing_p
-            && interp.selected_window_id() != interp.minibuffer_window_id()
+            && Some(interp.selected_window_ref()) != interp.minibuffer_window()
         {
             redisplay_preserve_echo_area(interp, env);
         } else {
@@ -1100,7 +1100,7 @@ pub(crate) fn read_char_idle(
 ) -> Result<(), LispError> {
     // Slow down auto saves logarithmically in size of current buffer, and
     // garbage collect while we're at it.
-    if interp.selected_window_id() != interp.minibuffer_window_id() {
+    if Some(interp.selected_window_ref()) != interp.minibuffer_window() {
         LAST_NON_MINIBUF_SIZE.set(interp.buffer.borrow().size_total() as i64);
     }
     let mut buffer_size = (LAST_NON_MINIBUF_SIZE.get() >> 8) + 1;

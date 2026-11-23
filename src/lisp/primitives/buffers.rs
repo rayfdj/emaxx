@@ -30,7 +30,7 @@ pub(crate) fn highest_priority_overlay_property(
     pos: usize,
     prop: impl crate::lisp::types::PropertyKey,
     at_insertion_position: bool,
-    window_id: Option<u64>,
+    window: Option<crate::lisp::primitives::WindowRef>,
 ) -> Result<Option<Value>, LispError> {
     Ok(highest_priority_overlay_property_with_id(
         interp,
@@ -38,7 +38,7 @@ pub(crate) fn highest_priority_overlay_property(
         pos,
         prop,
         at_insertion_position,
-        window_id,
+        window,
     )?
     .map(|(value, _)| value))
 }
@@ -49,7 +49,7 @@ pub(crate) fn highest_priority_overlay_property_with_id(
     pos: usize,
     prop: impl crate::lisp::types::PropertyKey,
     at_insertion_position: bool,
-    window_id: Option<u64>,
+    window: Option<crate::lisp::primitives::WindowRef>,
 ) -> Result<Option<(Value, crate::overlay::OverlayRef)>, LispError> {
     if buffer.overlays.is_empty() {
         return Ok(None);
@@ -63,7 +63,7 @@ pub(crate) fn highest_priority_overlay_property_with_id(
         )
         .filter(|overlay| overlay_covers_position(overlay, pos, at_insertion_position))
         .collect();
-    sort_overlays(interp, &mut overlays, window_id)?;
+    sort_overlays(interp, &mut overlays, window)?;
     for overlay in overlays.into_iter().rev() {
         if let Some(value) = overlay_property_with_category(interp, &overlay, prop)? {
             return Ok(Some((value, overlay)));
@@ -125,7 +125,7 @@ pub(crate) fn previous_overlay_change_position(
 pub(crate) fn sort_overlays(
     interp: &Interpreter,
     overlays: &mut Vec<crate::overlay::OverlayRef>,
-    window_id: Option<u64>,
+    w: Option<crate::lisp::primitives::WindowRef>,
 ) -> Result<(), LispError> {
     if overlays.is_empty() {
         return Ok(());
@@ -177,9 +177,9 @@ pub(crate) fn sort_overlays(
     // lookup_char_property's Fassq does.
     let mut items = Vec::with_capacity(overlays.len());
     for &overlay in overlays.iter() {
-        if let Some(window) = window_id
+        if let Some(window) = w
             && overlay_property_with_category(interp, &overlay, "window")?
-                .and_then(|value| window_record_id_from_value(interp, &value))
+                .and_then(|value| super::window::WindowRef::from_value(&value))
                 .is_some_and(|owner| owner != window)
         {
             continue;
@@ -1324,11 +1324,10 @@ fn truncated_long_line_column(
         // `w->total_cols < FRAME_COLS (XFRAME (WINDOW_FRAME (w)))'.
         if !partial.is_nil()
             && let Some(window) = window
-            && let Some(window_id) =
-                super::window::WindowRef::from_value(&window).map(super::window::WindowRef::id)
-            && let Some(frame) = interp.window_frame_id(window_id)
+            && let Some(w) = super::window::WindowRef::from_value(&window)
+            && let Some(frame) = interp.window_frame_id(w.id())
         {
-            let total_cols = super::window::window_char_geometry(interp, window_id).0;
+            let total_cols = super::window::window_char_geometry(w).0;
             let frame_cols = frame.borrow().width;
             if total_cols < frame_cols {
                 // XFIXNAT of a fixnum, a negative one included.
