@@ -780,8 +780,25 @@ impl Interpreter {
         Ok(())
     }
 
+    /// The window ID names, for the holders that still know a window by
+    /// its id: None once the sweep has freed it (`record_ref').
+    #[inline]
+    pub(crate) fn window_ref(&self, id: u64) -> Option<primitives::WindowRef> {
+        self.record_ref(id)
+            .map(primitives::WindowRef::from_registry)
+    }
+
+    /// The window ID names, as a value.  A holder of a window's id holds
+    /// a live window, so a missing one is a bug (`record_value').
+    pub(crate) fn window_value(&self, id: u64) -> Value {
+        match self.window_ref(id) {
+            Some(window) => window.value(),
+            None => panic!("record {id} is not in this state's registry"),
+        }
+    }
+
     pub fn selected_window_value(&self) -> Value {
-        self.record_value(self.selected_window_id)
+        self.window_value(self.selected_window_id)
     }
 
     pub fn selected_window_id(&self) -> u64 {
@@ -1250,11 +1267,11 @@ impl Interpreter {
         );
     }
 
-    fn window_record_buffer_id(&self, window_id: u64) -> Option<u64> {
-        primitives::window_slot_buffer_id(
-            self.find_record(window_id)
-                .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT)),
-        )
+    /// w->contents of WINDOW_ID where it is a buffer, live or not
+    /// (`window_slot_buffer_id').
+    pub(crate) fn window_record_buffer_id(&self, window_id: u64) -> Option<u64> {
+        self.window_ref(window_id)
+            .and_then(primitives::WindowRef::contents_buffer_id)
     }
 
     /// window.c:unshow_buffer: WINDOW_ID stops showing its buffer.  The
@@ -3183,22 +3200,38 @@ impl Interpreter {
         &mut self,
         kind: RecordKind,
         type_name: &str,
-        mut slots: Vec<Value>,
+        slots: Vec<Value>,
     ) -> Value {
         if kind == RecordKind::Window {
-            slots.resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
-            slots[primitives::WINDOW_FRAME_SLOT] = self.selected_frame_value();
+            return self.make_window_of_type(type_name, slots).value();
         }
-        let record = self.create_record_with_kind(Value::symbol(type_name), slots, kind);
+        self.create_record_with_kind(Value::symbol(type_name), slots, kind)
+    }
+
+    /// window.c:make_window's allocation: a window holding SLOTS up to
+    /// its frame slot, on the selected frame, next in sequence.
+    pub(crate) fn make_window(&mut self, slots: Vec<Value>) -> primitives::WindowRef {
+        self.make_window_of_type("window", slots)
+    }
+
+    /// make_window under TYPE_NAME, the type index's name for it.
+    fn make_window_of_type(
+        &mut self,
+        type_name: &str,
+        mut slots: Vec<Value>,
+    ) -> primitives::WindowRef {
+        slots.resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
+        slots[primitives::WINDOW_FRAME_SLOT] = self.selected_frame_value();
+        let record =
+            self.create_record_with_kind(Value::symbol(type_name), slots, RecordKind::Window);
+        let Some(window) = primitives::WindowRef::from_value(&record) else {
+            unreachable!("window records use Value::Record");
+        };
         // window.c:make_window and copy_window: `++sequence_number'.
-        if kind == RecordKind::Window
-            && let Kind::Record(id) = record.kind()
-        {
-            self.window_sequence_number += 1;
-            let number = self.window_sequence_number;
-            self.window_sequence_numbers.insert(id.id, number);
-        }
-        record
+        self.window_sequence_number += 1;
+        let number = self.window_sequence_number;
+        self.window_sequence_numbers.insert(window.id(), number);
+        window
     }
 
     /// The window's `sequence_number', as print.c prints it.

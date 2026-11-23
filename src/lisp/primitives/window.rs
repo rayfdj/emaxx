@@ -446,10 +446,10 @@ impl WindowKind {
         }
     }
 
-    /// The kind of WINDOW's record.
+    /// The kind of WINDOW.
     #[inline]
-    pub(crate) fn of(window: crate::lisp::types::RecordRef) -> WindowKind {
-        WindowKind::of_slot(window.slots.get(WINDOW_KIND_SLOT))
+    pub(crate) fn of(window: WindowRef) -> WindowKind {
+        WindowKind::of_slot(window.slot_opt(WINDOW_KIND_SLOT).as_ref())
     }
 
     /// An internal window's (window_resize_check's !NILP (w->contents)
@@ -459,6 +459,100 @@ impl WindowKind {
             self,
             WindowKind::InternalHorizontal | WindowKind::InternalVertical
         )
+    }
+}
+
+/// A window object: the one handle a window's state is read and written
+/// through, whatever holds it (a value, a frame's field, an id in the
+/// registry).  The state behind it is the host record's slot vector, laid
+/// out by the `WINDOW_*_SLOT' constants above.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WindowRef(crate::lisp::types::RecordRef);
+
+impl WindowRef {
+    /// decode_any_window's WINDOWP: the window VALUE is, live, internal
+    /// or deleted.
+    #[inline]
+    pub(crate) fn from_value(value: &Value) -> Option<WindowRef> {
+        match value.kind() {
+            Kind::Record(record) if record.kind == crate::lisp::eval::RecordKind::Window => {
+                Some(WindowRef(record))
+            }
+            _ => None,
+        }
+    }
+
+    /// The window VALUE is where nothing but a window is a host record (a
+    /// window's link slot, a frame's window, a value a caller made from a
+    /// window): any host record, its kind unchecked.
+    #[inline]
+    pub(crate) fn from_record_value(value: &Value) -> Option<WindowRef> {
+        match value.kind() {
+            Kind::Record(record) => Some(WindowRef(record)),
+            _ => None,
+        }
+    }
+
+    /// The registry's RECORD as a window, for an id a window holder kept
+    /// (`Interpreter::window_ref'): its kind unchecked.
+    #[inline]
+    pub(crate) fn from_registry(record: crate::lisp::types::RecordRef) -> WindowRef {
+        WindowRef(record)
+    }
+
+    /// The id the side tables still know the window by.
+    #[inline]
+    pub(crate) fn id(self) -> u64 {
+        self.0.id
+    }
+
+    /// The window as a Lisp object.
+    #[inline]
+    pub(crate) fn value(self) -> Value {
+        Value::Record(self.0)
+    }
+
+    /// What the window is (its kind slot).
+    #[inline]
+    pub(crate) fn kind(self) -> WindowKind {
+        WindowKind::of(self)
+    }
+
+    /// A copy of the window's slots, as make_parent_window's memcpy
+    /// takes them.
+    pub(crate) fn slots(self) -> Vec<Value> {
+        self.0.slots.clone()
+    }
+
+    /// w->contents where it is a buffer, live or not
+    /// (`window_slot_buffer_id' of the buffer slot).
+    #[inline]
+    pub(crate) fn contents_buffer_id(self) -> Option<u64> {
+        window_slot_buffer_id(self.0.slots.get(WINDOW_BUFFER_SLOT))
+    }
+
+    /// Slot INDEX, None where the window holds no such slot.
+    #[inline]
+    pub(crate) fn slot_opt(self, index: usize) -> Option<Value> {
+        self.0.slots.get(index).copied()
+    }
+
+    /// Slot INDEX, nil where the window holds no such slot.
+    #[inline]
+    pub(crate) fn slot(self, index: usize) -> Value {
+        self.slot_opt(index).unwrap_or(Value::Nil)
+    }
+
+    /// Store VALUE in slot INDEX, growing the window's slots (with nil)
+    /// to hold it.
+    #[inline]
+    pub(crate) fn set_slot(self, interp: &mut Interpreter, index: usize, value: Value) {
+        if let Some(record) = interp.find_record_mut(self.0) {
+            if record.slots.len() <= index {
+                record.slots.resize(index + 1, Value::Nil);
+            }
+            record.slots[index] = value;
+        }
     }
 }
 
