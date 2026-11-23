@@ -121,9 +121,14 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   GNU's one word with the `mini' and `horizontal' bits, and the
   sequence number, use time and cursor bit are the window's own; an
   accessor costs 324.9 (GNU 244.2), a native call of one 122.4 (GNU
-  48.0).  The stages that give the object the rest of window.h's
-  fields and take the ids away follow; the item closes when a window
-  is GNU's `struct window' and the counts are GNU's.
+  48.0).  Round 373 is the fourth: the geometry, the scroll and
+  redisplay counters and the redisplay bits are the window's own
+  integers and bits, 21 numbered Lisp slots being left; the counts are
+  unchanged, and one `split-window-internal' counts 117 vector cells
+  (GNU 149), the count following the object's interim size.  The
+  stages that give the object window.h's offsets and size and take the
+  ids away follow; the item closes when a window is GNU's `struct
+  window' and the counts are GNU's.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -19483,6 +19488,91 @@ setup_process_coding_systems's check now refuses). A 13-form
   among them), three reads of an absent buffer or slot vector as nil or
   empty that are the code they replace, and 1,618 changed lines with
   four tests and 121 assertions added.
+- **Round 373: a window's geometry and redisplay state are its own
+  integers and bits (M2, D3 and A3.5, the fourth stage; neither is
+  closed).**  In window.h the edges and sizes (`pixel_left',
+  `pixel_top', `left_col', `top_line', `pixel_width', `pixel_height',
+  `total_cols', `total_lines', the four old sizes), the margins,
+  `change_stamp', `hscroll', `min_hscroll', `last_modified',
+  `last_overlay_modified', `last_point', `column_number_displayed',
+  `window_end_pos' and the bits `update_mode_line', `last_had_star',
+  `start_at_line_beg', `force_start', `optional_new_start',
+  `window_end_valid', `redisplay' and `suspend_auto_hscroll' are C
+  integers and bits of the window.  Emaxx kept each as a numbered Lisp
+  slot, which could be absent, nil or a value.  They are fields of the
+  object now, in window.h's order, with handle accessors; the numbered
+  Lisp slots are 21 besides the contents, and the object is 52 words
+  with its header.  A C integer has no absent state, so each field's
+  old states were read first (the per-field table is the stage's
+  status file): where absence had an answer of its own a `given' bit
+  stands beside the integer and the accessor answers an Option (the
+  eight edges and sizes, whose unset columns and lines read the pixel
+  fields and whose unset pixel sizes read the frame's, saved as nil in
+  a configuration and unset again when a nil is restored; and
+  `window_end_pos', which the mode line reads live metrics for while it
+  is unset); the old sizes, `change_stamp', the two modification
+  counts, `hscroll' and `min_hscroll' are plain with 0, the margins
+  plain with 0 for none (a configuration still saves nil for 0),
+  `last_point' 0 for none, `column_number_displayed' GNU's -1 for
+  none, the bits false.  The base-line cache stays a Lisp slot: it is
+  a list of six (number, position, buffer, modification count and the
+  narrowing), not window.h's two integers.  The integers are 64-bit
+  where window.h has `int'; narrowing them and dropping the `given'
+  bits belong with the stage that gives the object GNU's offsets and
+  size.  **Counts**: the accessors the probe calls are not among the
+  moved fields, so six window accessors from byte code cost 324.9 each
+  as before (GNU 244.2) and a native call of one 122.4 (GNU 48.0); the
+  byte-code recursion (371.1), the `mapc' callback (413.7) and the
+  interpreted `(ignore i)' loop (2,762) are unchanged.  One
+  `split-window-internal' counts 117 vector cells where it counted 129
+  (GNU 149): the count follows the object's size, which shrank by six
+  words a window, and moves away from GNU's until the object is GNU's
+  size.  For the probes of the earlier stages (splits and deletions,
+  configurations, the collector stress, the dump with windows) and two
+  new ones (every geometry and scroll accessor Lisp has over a fresh
+  frame, a split, margins, hscroll, a resize and a configuration saved
+  and restored; the same accessors on the dead windows of a loaded
+  dump) the output is GNU's on both streams and the previous build's.
+  Two tests are new (the geometry as the window's own integers with
+  their unset states; the redisplay bits and counters as the window's
+  own); four of alloc/vectors/tests.rs and primitives/tests.rs state
+  the same facts through the new fields.
+  The independent review (the one question: does the round cheat or
+  break something) read every removed reader and writer against its
+  replacement, the `given' bits through `window_geometry', the
+  character geometry, the configuration's save and restore, the copier
+  and `make_parent_window', the collector (the thirty slots that left
+  the traced range only ever held a fixnum, t or nil), the dump (the
+  dumper writes the held count alone and a loaded window has every new
+  field unset), and the 26 changed assertions (sixteen the layout's
+  facts restated, the bit check stronger; eight the held-slot facts on
+  the one slot still past the frame's; two the same fact through a
+  bit); it drove two terminal sessions through the column and line
+  mode line, the modified star, automatic hscroll, margins, splits, a
+  second frame, a resize, isearch, narrowing, the minibuffer growing
+  and configurations, 188 screens identical between the builds, and a
+  batch probe of hscroll's extremes, margins, window states and a
+  revived window identical between the builds and GNU.  It found no
+  cheat and nothing broken.  The one difference Lisp can see is the
+  vector-cell count above, which `memory-use-counts' takes from the
+  object's real words (52 a window now, 58 before, GNU 66); the two
+  stores that are no longer conditional write false over false.
+  Validation of the two commits (gate profile, one test thread a
+  process): the grouped gate 3,541 passed, 0 failed, 2 ignored (two
+  library tests more); cli 30, cli_parity 174, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  In the gate's first run, made beside two other
+  builds, `filenotify_scenarios_match_the_oracle_through_keyboard_reads'
+  failed in its group (four events counted where two are expected, in
+  a scenario that waits a tenth of a second for each); it passed five
+  times of five alone on the same binary and its whole group passed
+  when run again, 474 of 474.  The round audit reports no hard
+  finding; it lists the 26 assertions the review went through, one
+  read of an absent slot vector as empty that is the code it replaces,
+  and 2,637 changed lines with two tests and 145 assertions added.
+  The plan of the windows work, with its inventory and stages, is now
+  in the repository as docs/plans/d3-windows.md.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -22727,6 +22817,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (217) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 373 and its review), outside the
+  round and in no milestone.**  One line each: the parent a split makes
+  does not take the split window's old sizes, margins or redisplay
+  state, where GNU's make_parent_window copies the whole window
+  (`window-old-pixel-width' and `-height' of the parent 0 and 0, GNU 80
+  and 22); `split-window-internal' and `fringe-bitmaps-at-pos' given
+  the dead window of a loaded dump end GNU itself with a signal; the
+  terminal screens of the review's two sessions differ from GNU's on
+  39 of 188, alike before and after the round (not looked into);
+  `window_scroll' carries a `clippy::too_many_arguments' allowance
+  from before the lock.
 - **Found after the scope lock (round 372 and its review), outside the
   round and in no milestone.**  One line each: in a window whose
   contents are a killed buffer (a `buffer-list-update-hook' that kills
