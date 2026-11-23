@@ -319,10 +319,7 @@ pub(crate) fn intern_in_obarray_with_name(
         return Ok(Value::Symbol(existing));
     }
     let name = make_name(interp)?;
-    let symbol = crate::lisp::types::SymbolName::make_private(
-        crate::lisp::types::make_fresh_obarray_symbol_name(symbol_name, id.id),
-        name,
-    );
+    let symbol = crate::lisp::types::SymbolName::make_private_pending(name, id.id);
     let record = interp.find_record_mut(id).expect("validated obarray");
     let mut buckets = obarray::RecordBuckets(&mut record.slots);
     // intern_sym files it in the bucket of the name oblookup compared.

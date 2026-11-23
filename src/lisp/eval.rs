@@ -4098,18 +4098,20 @@ impl ImageGraphCopier {
         if let Some(copied) = self.symbols.get(&symbol.identity_ptr()) {
             return *copied;
         }
-        let copied = if symbol.cell().is_uninterned() {
-            SymbolName::make_uninterned(
+        let copied = match symbol.cell().interned() {
+            crate::lisp::alloc::SymbolInterned::Uninterned => SymbolName::make_uninterned(
                 Value::Nil,
                 crate::lisp::types::visible_symbol_name(symbol.as_str()),
                 crate::lisp::primitives::next_make_symbol_id(),
-            )
-        } else if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
+            ),
             // A private obarray's symbol: the copied obarray's buckets
             // hold the copy.
-            SymbolName::make_private(symbol.as_str().to_owned(), Value::Nil)
-        } else {
-            SymbolName::intern_with_lisp_name(symbol.as_str().to_owned(), Some(Value::Nil))
+            crate::lisp::alloc::SymbolInterned::Interned => {
+                SymbolName::make_private(symbol.as_str().to_owned(), Value::Nil)
+            }
+            crate::lisp::alloc::SymbolInterned::InInitialObarray => {
+                SymbolName::intern_with_lisp_name(symbol.as_str().to_owned(), Some(Value::Nil))
+            }
         };
         // Record the object before following its name: a name's properties
         // can point back to this symbol, or share any other copied object.

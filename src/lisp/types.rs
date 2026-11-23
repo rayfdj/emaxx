@@ -447,6 +447,8 @@ impl SymbolName {
     /// intern_sym in the initial obarray: NAME filed first in bucket INDEX.
     fn file_initial(names: &mut obarray::StandardBuckets, name: Self, index: usize) {
         use obarray::Buckets;
+        name.cell()
+            .set_interned(crate::lisp::alloc::SymbolInterned::InInitialObarray);
         symbols::note_builtin_boolean(name);
         // lread.c:intern_sym initializes only keywords in the initial
         // obarray. Their value is this actual object, including after
@@ -474,6 +476,9 @@ impl SymbolName {
             {
                 Ok(existing) => Err(existing),
                 Err(index) => {
+                    symbol
+                        .cell()
+                        .set_interned(crate::lisp::alloc::SymbolInterned::InInitialObarray);
                     names.insert(symbol, index);
                     Ok(())
                 }
@@ -500,9 +505,27 @@ impl SymbolName {
     /// lread.c:intern_driver's new symbol for a private obarray, named
     /// LISP_NAME under the marked TEXT: an ordinary heap object, which the
     /// obarray's buckets hold (and the collector frees with them), never
-    /// found again by its text.
+    /// found again by its text, SYMBOL_INTERNED as intern_sym leaves it.
     pub(crate) fn make_private(text: String, lisp_name: Value) -> Self {
-        Self::allocate(text, lisp_name)
+        let symbol = Self::allocate(text, lisp_name);
+        symbol
+            .cell()
+            .set_interned(crate::lisp::alloc::SymbolInterned::Interned);
+        symbol
+    }
+
+    /// `make_private' for a new symbol of the private obarray OBARRAY,
+    /// with no host text: `as_str' builds the marked one if a reader asks
+    /// (`make_fresh_obarray_symbol_name').
+    pub(crate) fn make_private_pending(lisp_name: Value, obarray: u64) -> Self {
+        let symbol = Self::allocate_with_text(
+            crate::lisp::alloc::SymbolText::pending_private(obarray),
+            lisp_name,
+        );
+        symbol
+            .cell()
+            .set_interned(crate::lisp::alloc::SymbolInterned::Interned);
+        symbol
     }
 
     /// alloc.c's Fmake_symbol's allocation: a cell with no value, function
@@ -525,7 +548,8 @@ impl SymbolName {
                 payload: Cell::new(Default::default()),
                 next: Cell::new(None),
                 flags: Cell::new(0),
-                image: false,
+                // init_symbol's SYMBOL_UNINTERNED, the image flag unset.
+                bits: Cell::new(0),
                 state: Cell::new(0),
                 mark: MarkBit::default(),
             },
@@ -551,8 +575,11 @@ impl SymbolName {
         use obarray::Buckets;
         // A primitive naming a symbol by its literal text presents the same
         // address on every call: the text is hashed once, not each time.
+        // The slot's symbol answers while it is in the initial obarray:
+        // Funintern leaves the slot (see `AddressNames').
         let key = (text.as_ptr() as usize) ^ (text.len() << 48);
         if let Some(symbol) = symbols::with_address_names(|cache| cache.get(key))
+            && symbol.cell().interned() == crate::lisp::alloc::SymbolInterned::InInitialObarray
             && symbol.as_str() == text
         {
             return Some(symbol);
@@ -721,9 +748,8 @@ impl SymbolName {
 
     /// data.c:Fkeywordp of a symbol, in the DEFUN's order: the first byte
     /// of its actual name a colon (SREF (SYMBOL_NAME (object), 0)), then
-    /// SYMBOL_INTERNED_IN_INITIAL_OBARRAY_P, which is neither uninterned
-    /// nor a private obarray's symbol.  Constant state is separate and
-    /// survives uninterning.
+    /// SYMBOL_INTERNED_IN_INITIAL_OBARRAY_P, the `interned' field.
+    /// Constant state is separate and survives uninterning.
     pub(crate) fn is_keyword(&self) -> bool {
         let Kind::StringObject(name) = self.lisp_name().kind() else {
             return false;
@@ -731,8 +757,7 @@ impl SymbolName {
         // SAFETY: the one byte is read here and now: nothing stores into
         // the name or collects while the slice is in use.
         unsafe { name.bytes_unguarded() }.first() == Some(&b':')
-            && !self.cell().is_uninterned()
-            && !is_private_obarray_symbol(self.as_str())
+            && self.cell().interned() == crate::lisp::alloc::SymbolInterned::InInitialObarray
     }
 
     /// The symbol's cell (for the census and the dump).
@@ -2547,9 +2572,11 @@ fn host_text(cell: &crate::lisp::alloc::SymbolCell) -> &str {
     }
 }
 
-/// The host text of a pending symbol, one of `make_symbol': its name as
-/// the string holds it now, the marker and the next of `make-symbol''s
-/// ids (`make_uninterned_symbol_name').
+/// The host text of a pending symbol: its name as the string holds it
+/// now, then for one of `make_symbol' the uninterned marker and the next
+/// of `make-symbol''s ids (`make_uninterned_symbol_name'), for one of
+/// `make_private_pending' the private marker, its obarray's id and a
+/// serial (`make_fresh_obarray_symbol_name').
 #[cold]
 #[inline(never)]
 fn build_host_text(cell: &crate::lisp::alloc::SymbolCell) -> &str {
@@ -2565,10 +2592,14 @@ fn build_host_text(cell: &crate::lisp::alloc::SymbolCell) -> &str {
         }
         _ => String::new(),
     };
-    cell.internal.install(make_uninterned_symbol_name(
-        &visible,
-        crate::lisp::primitives::next_make_symbol_id(),
-    ))
+    cell.internal
+        .install(match cell.internal.pending_obarray() {
+            Some(obarray) => make_fresh_obarray_symbol_name(&visible, obarray),
+            None => make_uninterned_symbol_name(
+                &visible,
+                crate::lisp::primitives::next_make_symbol_id(),
+            ),
+        })
 }
 
 pub(crate) fn make_obarray_symbol_name(base: &str, obarray_id: u64) -> String {
@@ -4529,6 +4560,110 @@ mod tests {
             assert!(
                 census_live_uninterned_symbols() <= before,
                 "the unreached pending symbols are swept"
+            );
+        });
+    }
+
+    #[test]
+    fn the_interned_field_follows_each_obarray_as_intern_sym_and_funintern_set_it() {
+        // lisp.h's `interned', as alloc.c:init_symbol, lread.c:intern_sym
+        // and Funintern write it, for each obarray, and Fkeywordp of each.
+        use crate::lisp::alloc::SymbolInterned;
+        crate::lisp::runtime::with_runtime(|| {
+            let mut interp = crate::lisp::eval::Interpreter::new();
+            let mut env = super::Env::new();
+            let form = crate::lisp::reader::Reader::new(
+                r#"(let* ((ob (obarray-make))
+                          (private (intern ":zz-field-k" ob))
+                          (removed (intern "zz-field-removed" ob))
+                          (initial (intern ":zz-field-k"))
+                          (gone (intern "zz-field-gone")))
+                     (unintern removed ob)
+                     (unintern gone obarray)
+                     (vector (make-symbol ":zz-field-k") private removed initial gone
+                             (intern ":zz-field-k") (intern "zz-field-removed" ob)))"#,
+            )
+            .read()
+            .expect("the form reads")
+            .expect("a form");
+            let vector = interp.eval(&form, &mut env).expect("the form evaluates");
+            let Kind::Vector(slots) = vector.kind() else {
+                panic!("a vector")
+            };
+            let field = |index: usize| match slots.get(index).expect("a slot").kind() {
+                Kind::Symbol(symbol) => (symbol.cell().interned(), symbol.is_keyword()),
+                _ => panic!("a symbol"),
+            };
+            assert_eq!(field(0), (SymbolInterned::Uninterned, false));
+            assert_eq!(field(1), (SymbolInterned::Interned, false));
+            assert_eq!(field(2), (SymbolInterned::Uninterned, false));
+            assert_eq!(field(3), (SymbolInterned::InInitialObarray, true));
+            assert_eq!(field(4), (SymbolInterned::Uninterned, false));
+            assert_eq!(field(5), (SymbolInterned::InInitialObarray, true));
+            assert_eq!(field(6), (SymbolInterned::Interned, false));
+            // A private symbol's host text is built when it is first asked
+            // for, with the marker its obarray's symbols carry.
+            let Kind::Symbol(fresh) = slots.get(6).expect("a slot").kind() else {
+                panic!("a symbol")
+            };
+            assert!(fresh.host_text_if_built().is_none());
+            assert!(super::is_private_obarray_symbol(fresh.as_str()));
+            assert_eq!(
+                super::visible_symbol_name(fresh.as_str()),
+                "zz-field-removed"
+            );
+            assert!(!fresh.is_named("zz-field-removed"));
+        });
+    }
+
+    #[test]
+    fn funintern_leaves_no_address_slot_to_outlive_its_symbol() {
+        // A name a primitive looks up by its literal text fills a slot of
+        // the address cache.  Funintern leaves the slot, whose hit then
+        // passes over the uninterned symbol; the collection empties it
+        // before the sweep can free the symbol (a slot read after that
+        // would read a free cell).
+        const NAME: &str = "emaxx-funintern-address-slot";
+        // The cell's address, complemented so that the stack's scan finds
+        // no pointer to it.
+        #[inline(never)]
+        fn cache_and_unintern(interp: &mut crate::lisp::eval::Interpreter) -> usize {
+            let symbol = SymbolName::intern_str(NAME);
+            assert_eq!(SymbolName::find(NAME), Some(symbol));
+            assert!(interp.unintern_standard_symbol(symbol.lisp_name(), Some(symbol)));
+            assert!(symbol.cell().is_uninterned());
+            assert_eq!(SymbolName::find(NAME), None);
+            assert!(
+                super::symbols::address_slot_names(symbol.identity_ptr()),
+                "Funintern leaves the slot"
+            );
+            !symbol.identity_ptr()
+        }
+        crate::lisp::runtime::with_runtime(|| {
+            let mut interp = crate::lisp::eval::Interpreter::new();
+            let mut env = super::Env::new();
+            crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+                .expect("collect");
+            let before = census_live_uninterned_symbols();
+            let gone = cache_and_unintern(&mut interp);
+            assert_eq!(census_live_uninterned_symbols(), before + 1);
+            crate::lisp::alloc::clobber_stack();
+            crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+                .expect("collect");
+            assert!(
+                census_live_uninterned_symbols() <= before,
+                "the uninterned symbol is swept"
+            );
+            assert!(
+                !super::symbols::address_slot_names(!gone),
+                "the collection emptied the slot"
+            );
+            assert_eq!(SymbolName::find(NAME), None);
+            let again = SymbolName::intern_str(NAME);
+            assert_eq!(SymbolName::find(NAME), Some(again));
+            assert_eq!(
+                again.cell().interned(),
+                crate::lisp::alloc::SymbolInterned::InInitialObarray
             );
         });
     }

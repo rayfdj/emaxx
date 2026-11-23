@@ -1083,8 +1083,7 @@ impl Printer {
         self.vars(interp, GENSYM);
         // `#:' for a symbol not interned in the initial obarray.
         if self.options.gensym
-            && (symbol.cell().is_uninterned()
-                || crate::lisp::types::is_private_obarray_symbol(symbol.as_str()))
+            && symbol.cell().interned() != crate::lisp::alloc::SymbolInterned::InInitialObarray
         {
             self.strout(interp, env, "#:")?;
         } else if size_byte == 0 {

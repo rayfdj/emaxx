@@ -1794,6 +1794,95 @@ fn image_keeps_a_private_obarray_symbol_apart_from_its_namesake() {
 }
 
 #[test]
+fn image_keeps_each_symbols_interned_field() {
+    // lisp.h's `interned' of the symbols a record holds: an uninterned
+    // one, a private obarray's, one uninterned from it, a keyword of the
+    // initial obarray and a symbol uninterned from that; the dumped flags
+    // word says which, and each loaded symbol has it.  Fkeywordp and
+    // print-gensym then answer as GNU 30.2 answers before any dump.
+    use crate::lisp::alloc::SymbolInterned;
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    let program = r#"
+        (let* ((ob (obarray-make))
+               (private (intern ":zz-image-k" ob))
+               (removed (intern "zz-image-removed" ob))
+               (gone (intern "zz-image-gone")))
+          (unintern removed ob)
+          (unintern gone obarray)
+          (vector (make-symbol ":zz-image-k") private removed (intern ":zz-image-k") gone ob))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let vector = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| *value)
+        .expect("the root vector");
+    target
+        .install_image(
+            &image,
+            crate::lisp::eval::PdumperLoadRecord {
+                filename: "zz-interned.pdmp".into(),
+                load_time: std::time::Duration::ZERO,
+                dump_size: bytes.len() as u64,
+            },
+        )
+        .expect("install");
+    let Kind::Vector(slots) = vector.kind() else {
+        panic!("the root is a vector")
+    };
+    for (index, interned) in [
+        SymbolInterned::Uninterned,
+        SymbolInterned::Interned,
+        SymbolInterned::Uninterned,
+        SymbolInterned::InInitialObarray,
+        SymbolInterned::Uninterned,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let Kind::Symbol(symbol) = slots.get(index).expect("a slot").kind() else {
+            panic!("slot {index} is a symbol")
+        };
+        assert_eq!(symbol.cell().interned(), interned, "slot {index}");
+    }
+    target.set_global_binding("zz-v", vector);
+    let probe = r#"
+        (let ((v zz-v) (print-gensym t))
+          (list (keywordp (aref v 0)) (keywordp (aref v 1)) (keywordp (aref v 3))
+                (mapcar #'prin1-to-string (append v nil))
+                (eq (intern-soft ":zz-image-k" (aref v 5)) (aref v 1))
+                (intern-soft "zz-image-removed" (aref v 5))
+                (eq (intern-soft "zz-image-gone") (aref v 4))))"#;
+    let form = crate::lisp::reader::Reader::new(probe)
+        .read()
+        .expect("probe parses")
+        .expect("probe has a form");
+    let value = target
+        .eval(&form, &mut crate::lisp::types::Env::new())
+        .unwrap_or_else(|error| panic!("probe: {error:?}"));
+    let printed = crate::lisp::primitives::call(
+        &mut target,
+        "prin1-to-string",
+        &[value],
+        &mut crate::lisp::types::Env::new(),
+    )
+    .expect("print");
+    assert_eq!(
+        string_like(&printed).expect("printed").text,
+        "(nil nil t (\"#::zz-image-k\" \"#::zz-image-k\" \"#:zz-image-removed\" \":zz-image-k\" \"#:zz-image-gone\" \"#<obarray n=1>\") t nil nil)"
+    );
+}
+
+#[test]
 fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     fn printed(interp: &mut Interpreter, value: &Value) -> String {
         let value = crate::lisp::native_comp::call_c_primitive(

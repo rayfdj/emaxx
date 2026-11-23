@@ -74,6 +74,28 @@ impl SymbolText {
         }
     }
 
+    /// No text yet, for a symbol of the private obarray OBARRAY, whose
+    /// text the builder makes with the obarray's id: the length word of
+    /// a pending text holds the id plus one, zero for no obarray.
+    pub(crate) fn pending_private(obarray: u64) -> Self {
+        let len = usize::try_from(obarray)
+            .ok()
+            .and_then(|id| id.checked_add(1))
+            .expect("an obarray's id");
+        Self {
+            text: Cell::new(std::ptr::null()),
+            len: Cell::new(len),
+        }
+    }
+
+    /// The private obarray a pending text was made for
+    /// (`pending_private'), or None for a built text or an uninterned
+    /// symbol's.
+    pub(crate) fn pending_obarray(&self) -> Option<u64> {
+        let len = self.len.get();
+        (self.text.get().is_null() && len != 0).then(|| (len - 1) as u64)
+    }
+
     /// The text, or None while it is pending.
     #[inline(always)]
     pub(crate) fn get(&self) -> Option<&str> {
@@ -130,9 +152,10 @@ pub struct SymbolCell {
     /// `Lisp_Symbol.u.s.next': the next symbol of its obarray bucket.
     pub(crate) next: Cell<Option<SymbolName>>,
     pub(crate) flags: Cell<u8>,
-    /// Allocated while an image loaded (see `ImageCells'); set by
-    /// `allocate_symbol'.
-    pub(crate) image: bool,
+    /// Bit 0 (`IMAGE_CELL'): allocated while an image loaded (see
+    /// `ImageCells'), set by `allocate_symbol'.  Bits 1 and 2: lisp.h's
+    /// `interned' (`SymbolInterned'), in GNU's encoding.
+    pub(crate) bits: Cell<u8>,
     pub(crate) state: Cell<u16>,
     pub(crate) mark: MarkBit,
 }
@@ -150,9 +173,6 @@ const C_SLOT: u16 = 8;
 // the variables buffer.c defines, as opposed to the ones Lisp or other C
 // files make local per buffer.
 const NATIVE_BUFFER_SLOT: u16 = 16;
-// lisp.h: Lisp_Symbol.interned is object state, not an identity-number bit.
-// Standard-obarray removal still has its separate membership adapter.
-const UNINTERNED: u16 = 32;
 // The fixed ABI words designate these actual objects, not any later symbol
 // whose name happens to be nil or t after the original is uninterned.
 const BUILTIN_NIL: u16 = 64;
@@ -213,6 +233,21 @@ pub(crate) const STORE_EFFECT_VARIABLES: [&str; 11] = [
     "attempt-orderly-shutdown-on-fatal-signal",
 ];
 
+const IMAGE_CELL: u8 = 1;
+const INTERNED_SHIFT: u32 = 1;
+const INTERNED_BITS: u8 = 3 << INTERNED_SHIFT;
+
+/// lisp.h's `enum symbol_interned', the values of Lisp_Symbol.interned.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SymbolInterned {
+    /// SYMBOL_UNINTERNED: in no obarray (init_symbol, Funintern).
+    Uninterned = 0,
+    /// SYMBOL_INTERNED: in an obarray other than the initial one.
+    Interned = 1,
+    /// SYMBOL_INTERNED_IN_INITIAL_OBARRAY.
+    InInitialObarray = 2,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) union SymbolPayload {
     value: Value,
@@ -255,12 +290,36 @@ impl SymbolCell {
         }
     }
 
-    pub(crate) fn is_uninterned(&self) -> bool {
-        self.state.get() & UNINTERNED != 0
+    /// Lisp_Symbol.interned.
+    #[inline(always)]
+    pub(crate) fn interned(&self) -> SymbolInterned {
+        match (self.bits.get() & INTERNED_BITS) >> INTERNED_SHIFT {
+            0 => SymbolInterned::Uninterned,
+            1 => SymbolInterned::Interned,
+            _ => SymbolInterned::InInitialObarray,
+        }
     }
 
+    /// The store of init_symbol, intern_sym and Funintern.
+    pub(crate) fn set_interned(&self, interned: SymbolInterned) {
+        self.bits
+            .set((self.bits.get() & !INTERNED_BITS) | ((interned as u8) << INTERNED_SHIFT));
+    }
+
+    /// !SYMBOL_INTERNED_P.
+    pub(crate) fn is_uninterned(&self) -> bool {
+        self.interned() == SymbolInterned::Uninterned
+    }
+
+    /// Funintern's SYMBOL_UNINTERNED.
     pub(crate) fn mark_uninterned(&self) {
-        self.state.set(self.state.get() | UNINTERNED);
+        self.set_interned(SymbolInterned::Uninterned);
+    }
+
+    /// Whether the cell was allocated while an image loaded.
+    #[inline(always)]
+    pub(crate) fn is_image(&self) -> bool {
+        self.bits.get() & IMAGE_CELL != 0
     }
 
     #[inline]
@@ -620,7 +679,6 @@ impl SymbolCell {
             & (BUILTIN
                 | BUILTIN_NIL
                 | BUILTIN_T
-                | UNINTERNED
                 | C_SLOT
                 | INT_FORWARD
                 | KBOARD_FORWARD
@@ -628,8 +686,9 @@ impl SymbolCell {
                 | BUFFER_SLOT
                 | STORE_CONVERTS
                 | TRAPPED_WRITE)
-            == 0)
-            .then_some(state & !PLAIN_STORE)
+            == 0
+            && !self.is_uninterned())
+        .then_some(state & !PLAIN_STORE)
     }
 }
 
@@ -644,15 +703,16 @@ const _: () = {
     assert!(offset_of!(SymbolCell, payload) == 40);
     assert!(offset_of!(SymbolCell, next) == 48);
     assert!(offset_of!(SymbolCell, flags) == 56);
-    assert!(offset_of!(SymbolCell, image) == 57);
+    assert!(offset_of!(SymbolCell, bits) == 57);
     assert!(offset_of!(SymbolCell, state) == 58);
     assert!(offset_of!(SymbolCell, mark) == 60);
 };
 
 /// The words of a symbol cell an image maps: the key text's offset in the
 /// image and its length, the name, function, plist and value words, no
-/// next symbol (the loader files the symbol), and the flags, the image
-/// byte and STATE, the mark the loader's.  The offsets and the Lisp words
+/// next symbol (the loader files the symbol, which sets its `interned'),
+/// and the flags, the bits with the image flag alone and STATE, the mark
+/// the loader's.  The offsets and the Lisp words
 /// are the image's, made the process's by relocations.
 pub(crate) fn image_cell_words(
     key: (u64, usize),
@@ -668,7 +728,7 @@ pub(crate) fn image_cell_words(
         lisp[2],
         lisp[3],
         0,
-        u64::from(flags) | 1 << 8 | u64::from(state) << 16,
+        u64::from(flags) | u64::from(IMAGE_CELL) << 8 | u64::from(state) << 16,
     ]
 }
 
@@ -772,7 +832,7 @@ impl SymbolRef {
     pub(crate) fn mark(&self, epoch: u32) -> bool {
         let cell = self.cell();
         let marked = cell.mark.mark(epoch);
-        if marked && cell.image {
+        if marked && cell.is_image() {
             super::IMAGE_SYMBOLS.note_marked();
         }
         marked
@@ -810,7 +870,9 @@ pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
     // written before a handle is made.
     unsafe {
         std::ptr::write(slot, cell);
-        (*slot).image = super::image_region_open();
+        if super::image_region_open() {
+            (*slot).bits.set((*slot).bits.get() | IMAGE_CELL);
+        }
         (*slot)
             .mark
             .set_raw(super::super::types::current_mark_epoch());
@@ -919,7 +981,7 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
             if mark == epoch {
                 num_used += usize::from(!image_block);
                 // SAFETY: an allocated cell.
-                image_live += usize::from(unsafe { (*cell).image });
+                image_live += usize::from(unsafe { (*cell).is_image() });
                 continue;
             }
             if mark != FREE_MARK {

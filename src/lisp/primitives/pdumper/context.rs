@@ -1516,8 +1516,7 @@ impl DumpContext {
         self.field_lv(start, &mut words, 2, &val, WEIGHT_NORMAL);
         self.field_lv(start, &mut words, 3, &function, WEIGHT_NORMAL);
         self.field_lv(start, &mut words, 4, &plist, WEIGHT_NORMAL);
-        let private = !symbol.cell().is_uninterned()
-            && crate::lisp::types::is_private_obarray_symbol(symbol.as_str());
+        let private = symbol.cell().interned() == crate::lisp::alloc::SymbolInterned::Interned;
         let next = match symbol.cell().next.get() {
             Some(next) if private => Value::Symbol(next),
             _ => Value::Integer(0),
@@ -2959,14 +2958,13 @@ pub(crate) fn symbol_flags_word(
     // `unintern' leaves the symbol object with SYMBOL_UNINTERNED; Emaxx
     // still keeps standard-obarray removals in a membership set, so the record
     // says both.
-    let interned: u64 = if symbol.cell().is_uninterned() || uninterned_from_obarray {
-        SYMBOL_UNINTERNED
-    } else if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
+    let interned: u64 = match symbol.cell().interned() {
+        _ if uninterned_from_obarray => SYMBOL_UNINTERNED,
+        crate::lisp::alloc::SymbolInterned::Uninterned => SYMBOL_UNINTERNED,
         // lisp.h: interned in some other obarray -- a private obarray's
         // own symbol object.
-        SYMBOL_INTERNED
-    } else {
-        SYMBOL_INTERNED_IN_INITIAL_OBARRAY
+        crate::lisp::alloc::SymbolInterned::Interned => SYMBOL_INTERNED,
+        crate::lisp::alloc::SymbolInterned::InInitialObarray => SYMBOL_INTERNED_IN_INITIAL_OBARRAY,
     };
     let mut word = redirect | (interned << 4);
     if uninterned_from_obarray {
