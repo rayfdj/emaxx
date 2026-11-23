@@ -13,6 +13,13 @@
 //! the configured and built `src` directory of the pinned checkout, and
 //! GNU-BINARY is the unstripped `emacs` executable it produced.  Build it with
 //! `rustc --edition 2024 -O tools/generate_native_subrs.rs`.
+//!
+//! `generate_native_subrs --reemit EXISTING OUTPUT` emits again the table an
+//! earlier run wrote to EXISTING: the same subroutines, arities and ABI
+//! strings, read back from that file, under this tool's present choice of
+//! each entry.  It is how a table is brought up to date for a target whose
+//! reference build is not at hand; run on a table this tool has just
+//! written, it writes the same bytes.
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -27,31 +34,37 @@ struct Primitive {
     max_args: i32,
 }
 
-fn main() {
-    let mut arguments = env::args_os().skip(1);
-    let gnu_src = PathBuf::from(
-        arguments
-            .next()
-            .expect("usage: TOOL GNU-SRC GNU-BINARY OUTPUT"),
-    );
-    let gnu_binary = PathBuf::from(
-        arguments
-            .next()
-            .expect("usage: TOOL GNU-SRC GNU-BINARY OUTPUT"),
-    );
-    let output = PathBuf::from(
-        arguments
-            .next()
-            .expect("usage: TOOL GNU-SRC GNU-BINARY OUTPUT"),
-    );
-    assert!(
-        arguments.next().is_none(),
-        "usage: TOOL GNU-SRC GNU-BINARY OUTPUT"
-    );
+/// What a generated file says of its build: the subroutines in table order
+/// and the three inputs to comp.c:hash_native_abi.
+struct Table {
+    registration: Vec<Primitive>,
+    abi_version: String,
+    abi_configuration: String,
+    abi_configuration_options: String,
+}
 
-    let min_arg_constants = read_min_arg_constants(&gnu_src);
-    let definitions = read_defun_definitions(&gnu_src, &min_arg_constants);
-    let compiled_subrs = read_compiled_subrs(&gnu_binary);
+fn main() {
+    let arguments = env::args_os()
+        .skip(1)
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let (table, output) = match arguments.as_slice() {
+        [mode, existing, output] if mode.as_os_str() == "--reemit" => {
+            (read_generated_table(existing), output)
+        }
+        [gnu_src, gnu_binary, output] => (read_gnu_table(gnu_src, gnu_binary), output),
+        _ => panic!("usage: TOOL GNU-SRC GNU-BINARY OUTPUT, or TOOL --reemit EXISTING OUTPUT"),
+    };
+    fs::write(output, emit(&table))
+        .unwrap_or_else(|error| panic!("write {}: {error}", output.display()));
+}
+
+/// The table of the reference build: GNU-SRC's registrations that
+/// GNU-BINARY defines, in `Vcomp_subr_list' order.
+fn read_gnu_table(gnu_src: &Path, gnu_binary: &Path) -> Table {
+    let min_arg_constants = read_min_arg_constants(gnu_src);
+    let definitions = read_defun_definitions(gnu_src, &min_arg_constants);
+    let compiled_subrs = read_compiled_subrs(gnu_binary);
     let abi_version = read_c_define_string(&gnu_src.join("comp.c"), "ABI_VERSION");
     let abi_configuration = read_c_define_string(&gnu_src.join("config.h"), "EMACS_CONFIGURATION");
     let abi_configuration_options =
@@ -60,11 +73,11 @@ fn main() {
     let mut seen = HashSet::new();
     let mut preprocessed: HashMap<String, String> = HashMap::new();
 
-    for function in startup_calls(&gnu_src) {
-        for source in definition_sources(&gnu_src, &function) {
+    for function in startup_calls(gnu_src) {
+        for source in definition_sources(gnu_src, &function) {
             let text = preprocessed
                 .entry(source.clone())
-                .or_insert_with(|| preprocess_registration_source(&gnu_src, &source));
+                .or_insert_with(|| preprocess_registration_source(gnu_src, &source));
             let Some(body) = function_body(text, &function) else {
                 continue;
             };
@@ -98,6 +111,126 @@ fn main() {
     );
 
     registration.reverse();
+    Table {
+        registration,
+        abi_version,
+        abi_configuration,
+        abi_configuration_options,
+    }
+}
+
+/// The table an earlier run emitted to PATH, read back from its text as
+/// written or as rustfmt left it: the three ABI strings, and the name and
+/// arity of each `NativeSubr::new' entry in order.  The entries' targets are
+/// not read; `emit' chooses them again.
+fn read_generated_table(path: &Path) -> Table {
+    let text =
+        fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let constant = |name: &str| {
+        let declaration = format!("const {name}: &str =");
+        let value = text
+            .split_once(&declaration)
+            .unwrap_or_else(|| panic!("find {name} in {}", path.display()))
+            .1;
+        parse_c_string(value.trim_start())
+            .unwrap_or_else(|| panic!("parse {name} in {}", path.display()))
+    };
+    let mut registration = Vec::new();
+    for arguments in call_arguments(&text, "NativeSubr::new(") {
+        let parts = split_top_level(arguments)
+            .into_iter()
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        let [name, min_args, max_args, _target, index] = parts.as_slice() else {
+            panic!("a table entry has five fields: {arguments}");
+        };
+        let name = name
+            .strip_prefix('c')
+            .and_then(parse_c_string)
+            .unwrap_or_else(|| panic!("a table entry names its subroutine: {arguments}"));
+        let max_args = match *max_args {
+            "NativeMaxArgs::Many" => -2,
+            "NativeMaxArgs::Unevalled" => -1,
+            fixed => fixed
+                .strip_prefix("NativeMaxArgs::Fixed(")
+                .and_then(|count| count.strip_suffix(')'))
+                .and_then(|count| count.parse::<i32>().ok())
+                .unwrap_or_else(|| panic!("a table entry gives its arity: {arguments}")),
+        };
+        assert_eq!(
+            index.parse::<usize>().ok(),
+            Some(registration.len()),
+            "table entries are numbered in order: {arguments}"
+        );
+        registration.push(Primitive {
+            name,
+            min_args: min_args
+                .parse::<u16>()
+                .unwrap_or_else(|_| panic!("a table entry gives its minimum: {arguments}")),
+            max_args,
+        });
+    }
+    assert!(
+        text.contains(&format!("[NativeSubr; {}]", registration.len())),
+        "the table declares as many entries as it lists"
+    );
+    Table {
+        registration,
+        abi_version: constant("NATIVE_ABI_VERSION"),
+        abi_configuration: constant("NATIVE_ABI_SYSTEM_CONFIGURATION"),
+        abi_configuration_options: constant("NATIVE_ABI_SYSTEM_CONFIGURATION_OPTIONS"),
+    }
+}
+
+/// The argument text of each call of CALLEE (its name and open parenthesis)
+/// in Rust TEXT, up to the parenthesis that closes it.
+fn call_arguments<'a>(text: &'a str, callee: &str) -> Vec<&'a str> {
+    let mut result = Vec::new();
+    let mut offset = 0;
+    while let Some(relative) = text[offset..].find(callee) {
+        let start = offset + relative + callee.len();
+        let mut depth = 1_i32;
+        let mut quoted = false;
+        let mut escaped = false;
+        let mut end = None;
+        for (relative, character) in text[start..].char_indices() {
+            if quoted {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '"' {
+                    quoted = false;
+                }
+            } else if character == '"' {
+                quoted = true;
+            } else if character == '(' {
+                depth += 1;
+            } else if character == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(start + relative);
+                    break;
+                }
+            }
+        }
+        let end = end.unwrap_or_else(|| panic!("a call of {callee} is closed"));
+        result.push(&text[start..end]);
+        offset = end;
+    }
+    result
+}
+
+/// The generated file for TABLE: the ABI strings, the table with each
+/// subroutine's entry, and the entries this file defines itself.
+fn emit(table: &Table) -> String {
+    let Table {
+        registration,
+        abi_version,
+        abi_configuration,
+        abi_configuration_options,
+    } = table;
     let mut generated = String::from(
         "//! Generated from GNU Emacs C `syms_of_*`/`defsubr` order.\n\
          //! Regenerate with `tools/generate_native_subrs.rs`; do not hand edit.\n\n\
@@ -191,8 +324,7 @@ fn main() {
             }
         }
     }
-    fs::write(&output, generated)
-        .unwrap_or_else(|error| panic!("write {}: {error}", output.display()));
+    generated
 }
 
 // Store the chosen Rust implementation in the subr itself, as DEFUN stores
