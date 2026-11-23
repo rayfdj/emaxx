@@ -709,16 +709,20 @@ impl SymbolName {
             .unwrap_or_else(|_| visible_symbol_name(self.as_str()).to_owned())
     }
 
-    /// data.c:Fkeywordp: initial-obarray membership and the actual name's
-    /// first byte. Constant state is separate and survives uninterning.
+    /// data.c:Fkeywordp of a symbol, in the DEFUN's order: the first byte
+    /// of its actual name a colon (SREF (SYMBOL_NAME (object), 0)), then
+    /// SYMBOL_INTERNED_IN_INITIAL_OBARRAY_P, which is neither uninterned
+    /// nor a private obarray's symbol.  Constant state is separate and
+    /// survives uninterning.
     pub(crate) fn is_keyword(&self) -> bool {
-        if self.cell().is_uninterned() || is_private_obarray_symbol(self.as_str()) {
-            return false;
-        }
         let Kind::StringObject(name) = self.lisp_name().kind() else {
             return false;
         };
-        name.borrow().bytes().first() == Some(&b':')
+        // SAFETY: the one byte is read here and now: nothing stores into
+        // the name or collects while the slice is in use.
+        unsafe { name.bytes_unguarded() }.first() == Some(&b':')
+            && !self.cell().is_uninterned()
+            && !is_private_obarray_symbol(self.as_str())
     }
 
     /// The symbol's cell (for the census and the dump).
@@ -2566,9 +2570,12 @@ pub(crate) fn is_uninterned_symbol(symbol: &str) -> bool {
 }
 
 /// A symbol interned in a private obarray: its own object, whose Lisp
-/// name can equal an initial-obarray symbol's.
+/// name can equal an initial-obarray symbol's.  The marker is one byte of
+/// the text, a control character, so the byte scan of
+/// `is_visible_symbol_name' finds it: a `&str' pattern ran the general
+/// substring searcher over the name, on every `keywordp' of a symbol.
 pub(crate) fn is_private_obarray_symbol(symbol: &str) -> bool {
-    symbol.contains(OBARRAY_SYMBOL_MARKER)
+    memchr::memchr(OBARRAY_SYMBOL_MARKER_CHAR as u8, symbol.as_bytes()).is_some()
 }
 
 /// Whether NAME carries neither marker: `visible_symbol_name' returns it
@@ -4372,6 +4379,108 @@ mod tests {
                 "the unreached uninterned symbols are swept"
             );
         });
+    }
+
+    #[test]
+    fn is_keyword_finds_the_private_obarray_marker_as_the_substring_search_did() {
+        // The private-obarray test as it was written, with the `&str'
+        // pattern, and Fkeywordp of a symbol as `is_keyword' made it with
+        // that test: the interned state first, then the name's first
+        // byte read under a guard.
+        let searched = |text: &str| text.contains(super::OBARRAY_SYMBOL_MARKER);
+        let reference = |symbol: &SymbolName| {
+            if symbol.cell().is_uninterned() || searched(symbol.as_str()) {
+                return false;
+            }
+            let Kind::StringObject(name) = symbol.lisp_name().kind() else {
+                return false;
+            };
+            name.borrow().bytes().first() == Some(&b':')
+        };
+
+        // The scan and the search of a text with the marker at each place
+        // in it, with the uninterned symbols' marker there instead, and
+        // with neither: names shorter and longer than a machine word or
+        // two, and ones with characters of several bytes.
+        let bases = [
+            "",
+            ":",
+            "a",
+            ":key",
+            "\u{e9}",
+            ":\u{e9}\u{4e2d}",
+            ":fifteen-bytes!",
+            ":sixteen-bytes!!",
+            ":seventeen-bytes!",
+            ":a-name-of-more-than-thirty-two-bytes-in-all",
+        ];
+        for base in bases {
+            assert!(!super::is_private_obarray_symbol(base), "{base:?}");
+            assert!(!searched(base), "{base:?}");
+            for (place, _) in base.char_indices().chain([(base.len(), ' ')]) {
+                for (marker, private) in [
+                    (super::OBARRAY_SYMBOL_MARKER, true),
+                    (super::UNINTERNED_SYMBOL_MARKER, false),
+                ] {
+                    let text = format!("{}{marker}{}", &base[..place], &base[place..]);
+                    assert_eq!(super::is_private_obarray_symbol(&text), private, "{text:?}");
+                    assert_eq!(searched(&text), private, "{text:?}");
+                }
+            }
+        }
+
+        // Fkeywordp of each kind of symbol: what it is, and that the
+        // search answered the same.
+        let private =
+            |visible: &str, text: String| SymbolName::make_private(text, Value::string(visible));
+        let symbols = [
+            (SymbolName::from(":emaxx-keyword-scan"), true),
+            (SymbolName::from("emaxx-keyword-scan"), false),
+            (SymbolName::from(":"), true),
+            (SymbolName::from(""), false),
+            (
+                SymbolName::from(":emaxx-keyword-scan-of-a-name-of-many-bytes"),
+                true,
+            ),
+            (SymbolName::from(":\u{e9}maxx-keyword-scan"), true),
+            (
+                SymbolName::make_uninterned(Value::string(":k"), ":k", 1),
+                false,
+            ),
+            (
+                SymbolName::make_uninterned(Value::string("k"), "k", 2),
+                false,
+            ),
+            (
+                private(":x", super::make_obarray_symbol_name(":x", 7)),
+                false,
+            ),
+            (
+                private(":x", super::make_fresh_obarray_symbol_name(":x", 7)),
+                false,
+            ),
+            (private("y", super::make_obarray_symbol_name("y", 7)), false),
+            (
+                private(
+                    ":\u{e9}-private-name-of-many-bytes",
+                    super::make_obarray_symbol_name(":\u{e9}-private-name-of-many-bytes", 8),
+                ),
+                false,
+            ),
+        ];
+        for (symbol, keyword) in &symbols {
+            assert_eq!(symbol.is_keyword(), *keyword, "{:?}", symbol.as_str());
+            assert_eq!(reference(symbol), *keyword, "{:?}", symbol.as_str());
+            // The symbol a symbol with position holds is that symbol.
+            let positioned = Value::positioned_symbol(Value::Symbol(*symbol), Value::Integer(3));
+            let Kind::SymbolWithPos(positioned) = positioned.kind() else {
+                unreachable!("a symbol with position")
+            };
+            let Kind::Symbol(held) = positioned.symbol().kind() else {
+                unreachable!("the symbol it was given")
+            };
+            assert_eq!(held.is_keyword(), *keyword, "{:?}", symbol.as_str());
+        }
     }
 
     #[test]
