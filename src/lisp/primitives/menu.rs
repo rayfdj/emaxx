@@ -2005,7 +2005,7 @@ pub(crate) fn update_menu_bar(
         return Ok(hooks_run);
     }
     let window = frame.borrow().selected_window_id();
-    let window_value = interp.record_value(window);
+    let window_value = interp.window_value(window);
     let buffer = super::window_buffer_id(interp, &window_value);
     let prev = interp.current_buffer_id();
     // record_unwind_save_match_data: here when SAVE_MATCH_DATA, around

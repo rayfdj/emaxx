@@ -1842,7 +1842,7 @@ pub(crate) fn window_line_number_columns(
     if enabled.is_nil() {
         return 0;
     }
-    let window = interp.record_value(window_id);
+    let window = interp.window_value(window_id);
     let text_rows = super::call(interp, "window-body-height", &[window], env)
         .ok()
         .and_then(|value| value.integer_value())
@@ -2443,10 +2443,9 @@ fn live_motion_window(interp: &Interpreter, value: &Value) -> Result<Value, Lisp
     let Some(window_id) = window_record_id_from_value(interp, &window) else {
         return Err(wrong_type_argument("window-live-p", window));
     };
-    let kind = crate::lisp::primitives::WindowKind::of_slot(
-        interp
-            .find_record(window_id)
-            .and_then(|record| record.slots.get(WINDOW_KIND_SLOT)),
+    let kind = interp.window_ref(window_id).map_or(
+        crate::lisp::primitives::WindowKind::Leaf,
+        crate::lisp::primitives::WindowRef::kind,
     );
     if !matches!(
         kind,
@@ -2960,10 +2959,8 @@ pub(crate) fn visual_vertical_motion_from(
     // long as the motion takes.
     let current = interp.current_buffer_id();
     let shown = interp
-        .find_record(window_id)
-        .and_then(|record| record.slots.get(WINDOW_BUFFER_SLOT))
-        .copied()
-        .unwrap_or(Value::Nil);
+        .window_ref(window_id)
+        .map_or(Value::Nil, |record| record.slot(WINDOW_BUFFER_SLOT));
     if crate::lisp::primitives::window_slot_buffer_id(Some(&shown)) == Some(current) {
         return vertical_motion_in_window(interp, env, window_id, n, goal_col, start_x);
     }
@@ -2985,7 +2982,7 @@ pub(crate) fn visual_vertical_motion_from(
     // decode_live_window first, then the window's buffer and its point
     // (set_marker_both, which unchains the marker when that buffer has
     // been killed).
-    let window = interp.record_value(window_id);
+    let window = interp.window_value(window_id);
     if window_buffer_id(interp, &window).is_none() {
         return Err(wrong_type_argument("window-live-p", window));
     }

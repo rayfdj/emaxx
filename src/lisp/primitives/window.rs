@@ -124,17 +124,16 @@ pub(crate) fn invalidate_window_end(interp: &mut Interpreter, window_id: u64) {
 /// top_line), in window_geometry's order.  A record from before these
 /// slots existed reads its pixel geometry, which it then still equals.
 pub(crate) fn window_char_geometry(interp: &Interpreter, window_id: u64) -> (i64, i64, i64, i64) {
-    let record = interp.find_record(window_id);
+    let window = interp.window_ref(window_id);
     let slot = |slot: usize, fallback: usize| {
-        record
-            .and_then(|record| {
-                record
-                    .slots
-                    .get(slot)
+        window
+            .and_then(|window| {
+                window
+                    .slot_opt(slot)
                     .filter(|value| !value.is_nil())
-                    .or_else(|| record.slots.get(fallback))
+                    .or_else(|| window.slot_opt(fallback))
             })
-            .and_then(Value::integer_value)
+            .and_then(|value| value.integer_value())
             .unwrap_or(0)
     };
     (
@@ -152,11 +151,8 @@ pub(crate) fn set_window_char_slot(
     slot: usize,
     value: i64,
 ) {
-    if let Some(record) = interp.find_record_mut(window_id) {
-        if record.slots.len() <= slot {
-            record.slots.resize(slot + 1, Value::Nil);
-        }
-        record.slots[slot] = Value::Integer(value);
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_slot(interp, slot, Value::Integer(value));
     }
 }
 
@@ -165,11 +161,11 @@ pub(crate) fn window_margin_cols(
     interp: &Interpreter,
     window_id: u64,
 ) -> (Option<i64>, Option<i64>) {
-    let record = interp.find_record(window_id);
+    let window = interp.window_ref(window_id);
     let slot = |slot: usize| {
-        record
-            .and_then(|record| record.slots.get(slot))
-            .and_then(Value::integer_value)
+        window
+            .and_then(|window| window.slot_opt(slot))
+            .and_then(|value| value.integer_value())
             .filter(|cols| *cols != 0)
     };
     (
@@ -184,36 +180,28 @@ pub(crate) fn set_window_margin_cols(
     left: Option<i64>,
     right: Option<i64>,
 ) {
-    if let Some(record) = interp.find_record_mut(window_id) {
-        if record.slots.len() <= WINDOW_RIGHT_MARGIN_COLS_SLOT {
-            record
-                .slots
-                .resize(WINDOW_RIGHT_MARGIN_COLS_SLOT + 1, Value::Nil);
-        }
+    if let Some(window) = interp.window_ref(window_id) {
+        window.ensure_slot(interp, WINDOW_RIGHT_MARGIN_COLS_SLOT);
         let value = |cols: Option<i64>| {
             cols.filter(|cols| *cols != 0)
                 .map(Value::Integer)
                 .unwrap_or(Value::Nil)
         };
-        record.slots[WINDOW_LEFT_MARGIN_COLS_SLOT] = value(left);
-        record.slots[WINDOW_RIGHT_MARGIN_COLS_SLOT] = value(right);
+        window.set_held_slot(interp, WINDOW_LEFT_MARGIN_COLS_SLOT, value(left));
+        window.set_held_slot(interp, WINDOW_RIGHT_MARGIN_COLS_SLOT, value(right));
     }
 }
 
 /// One of WINDOW_ID's redisplay flags (the slots above).
 pub(crate) fn window_flag(interp: &Interpreter, window_id: u64, slot: usize) -> bool {
     interp
-        .find_record(window_id)
-        .and_then(|record| record.slots.get(slot))
-        .is_some_and(Value::is_truthy)
+        .window_ref(window_id)
+        .is_some_and(|window| window.slot(slot).is_truthy())
 }
 
 pub(crate) fn set_window_flag(interp: &mut Interpreter, window_id: u64, slot: usize, on: bool) {
-    if let Some(record) = interp.find_record_mut(window_id) {
-        if record.slots.len() <= slot {
-            record.slots.resize(slot + 1, Value::Nil);
-        }
-        record.slots[slot] = if on { Value::T } else { Value::Nil };
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_slot(interp, slot, if on { Value::T } else { Value::Nil });
     }
 }
 
@@ -221,9 +209,8 @@ pub(crate) fn set_window_flag(interp: &mut Interpreter, window_id: u64, slot: us
 /// None where the window holds none.
 pub(crate) fn window_count_slot(interp: &Interpreter, window_id: u64, slot: usize) -> Option<i64> {
     interp
-        .find_record(window_id)
-        .and_then(|record| record.slots.get(slot))
-        .and_then(Value::integer_value)
+        .window_ref(window_id)
+        .and_then(|window| window.slot(slot).integer_value())
 }
 
 pub(crate) fn set_window_count_slot(
@@ -232,11 +219,8 @@ pub(crate) fn set_window_count_slot(
     slot: usize,
     value: Option<i64>,
 ) {
-    if let Some(record) = interp.find_record_mut(window_id) {
-        if record.slots.len() <= slot {
-            record.slots.resize(slot + 1, Value::Nil);
-        }
-        record.slots[slot] = value.map_or(Value::Nil, Value::Integer);
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_slot(interp, slot, value.map_or(Value::Nil, Value::Integer));
     }
 }
 
@@ -253,7 +237,7 @@ pub(crate) fn window_marker(
     window_id: u64,
     slot: usize,
 ) -> Option<crate::lisp::types::MarkerRef> {
-    match interp.find_record(window_id)?.slots.get(slot)?.kind() {
+    match interp.window_ref(window_id)?.slot(slot).kind() {
         Kind::Marker(marker) => Some(marker),
         _ => None,
     }
@@ -278,12 +262,10 @@ fn window_marker_for_set(
     if let Some(marker) = window_marker(interp, window_id, slot) {
         return Some(marker);
     }
-    let record = interp.find_record_mut(window_id)?;
-    if record.slots.len() <= slot {
-        record.slots.resize(slot + 1, Value::Nil);
-    }
+    let window = interp.window_ref(window_id)?;
+    window.ensure_slot(interp, slot);
     let marker = crate::lisp::types::MarkerRef::new();
-    record.slots[slot] = Value::Marker(marker);
+    window.set_held_slot(interp, slot, Value::Marker(marker));
     Some(marker)
 }
 
@@ -673,20 +655,8 @@ pub(crate) fn buffer_point_bounds(interp: &Interpreter, buffer_id: u64) -> (usiz
     ))
 }
 
-/// decode_any_window's WINDOWP: the window record VALUE is, live,
-/// internal or deleted.
-#[inline]
-pub(crate) fn window_record(value: &Value) -> Option<crate::lisp::types::RecordRef> {
-    match value.kind() {
-        Kind::Record(record) if record.kind == crate::lisp::eval::RecordKind::Window => {
-            Some(record)
-        }
-        _ => None,
-    }
-}
-
 pub(crate) fn window_record_id_from_value(_interp: &Interpreter, value: &Value) -> Option<u64> {
-    window_record(value).map(|record| record.id)
+    WindowRef::from_value(value).map(WindowRef::id)
 }
 
 /// w->contents of a window record's buffer slot, BUFFERP: the buffer
@@ -703,11 +673,11 @@ pub(crate) fn window_slot_buffer_id(slot: Option<&Value>) -> Option<u64> {
 /// The live buffer the window VALUE shows (BUFFERP (w->contents)), read
 /// from the record itself.
 pub(crate) fn window_buffer_id(interp: &Interpreter, value: &Value) -> Option<u64> {
-    let window = window_record(value)?;
-    match window.slots.get(WINDOW_BUFFER_SLOT).map(|slot| slot.kind()) {
+    let window = WindowRef::from_value(value)?;
+    match window.slot(WINDOW_BUFFER_SLOT).kind() {
         // BUFFER_LIVE_P of the object itself.
-        Some(Kind::Buffer(buffer)) => buffer.is_live().then_some(buffer.id),
-        Some(Kind::Integer(id)) => {
+        Kind::Buffer(buffer) => buffer.is_live().then_some(buffer.id),
+        Kind::Integer(id) => {
             let id = id.max(0) as u64;
             interp.has_buffer_id(id).then_some(id)
         }
@@ -764,7 +734,7 @@ pub(crate) fn buffer_z(interp: &Interpreter, buffer_id: u64) -> usize {
 /// Store START (clamped to the window buffer's accessible region, as
 /// set_marker_restricted clamps) as WINDOW_ID's start marker.
 pub(crate) fn set_window_start_marker(interp: &mut Interpreter, window_id: u64, start: usize) {
-    let buffer_id = window_buffer_id(interp, &interp.record_value(window_id))
+    let buffer_id = window_buffer_id(interp, &interp.window_value(window_id))
         .unwrap_or(interp.current_buffer_id());
     let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
     let start = start.clamp(point_min, point_max);
@@ -783,11 +753,9 @@ pub(crate) fn record_window_display(
 ) {
     let z = buffer_z(interp, buffer_id);
     set_window_marker(interp, window_id, WINDOW_POINT_SLOT, buffer_id, point);
-    if let Some(record) = interp.find_record_mut(window_id) {
-        if record.slots.len() <= WINDOW_END_POS_SLOT {
-            record.slots.resize(WINDOW_END_POS_SLOT + 1, Value::Nil);
-        }
-        record.slots[WINDOW_END_POS_SLOT] = Value::Integer(z as i64 - window_end.min(z) as i64);
+    if let Some(window) = interp.window_ref(window_id) {
+        let end_pos = Value::Integer(z as i64 - window_end.min(z) as i64);
+        window.set_slot(interp, WINDOW_END_POS_SLOT, end_pos);
     }
 }
 
@@ -805,7 +773,7 @@ pub(crate) fn set_window_start_value(
     // is decode_buffer's, the current buffer for the nil contents of a
     // deleted selected window, which decode_live_window gives for nil.
     let buffer_id =
-        window_buffer_id(interp, &interp.record_value(id)).unwrap_or(interp.current_buffer_id());
+        window_buffer_id(interp, &interp.window_value(id)).unwrap_or(interp.current_buffer_id());
     set_window_marker_restricted_value(interp, id, WINDOW_START_SLOT, buffer_id, pos)?;
     set_window_flag(interp, id, WINDOW_START_AT_LINE_BEG_SLOT, false);
     // Bug#15957.
@@ -1242,7 +1210,7 @@ fn window_scroll_for_long_lines(
         && super::dispatch::call(
             interp,
             "pos-visible-in-window-p",
-            &[Value::Integer(point as i64), interp.record_value(window_id)],
+            &[Value::Integer(point as i64), interp.window_value(window_id)],
             env,
         )?
         .is_truthy();
@@ -1317,7 +1285,7 @@ fn window_scroll_line_based(
         total_lines,
         hscroll,
     } = geometry;
-    let window = interp.record_value(window_id);
+    let window = interp.window_value(window_id);
     let opoint = interp.buffer.borrow().point();
     let ht = text_height.max(1) as i64;
     let mut startpos = interp.selected_window_start();

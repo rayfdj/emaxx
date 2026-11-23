@@ -1324,7 +1324,8 @@ fn truncated_long_line_column(
         // `w->total_cols < FRAME_COLS (XFRAME (WINDOW_FRAME (w)))'.
         if !partial.is_nil()
             && let Some(window) = window
-            && let Some(window_id) = super::window::window_record(&window).map(|record| record.id)
+            && let Some(window_id) =
+                super::window::WindowRef::from_value(&window).map(super::window::WindowRef::id)
             && let Some(frame) = interp.window_frame_id(window_id)
         {
             let total_cols = super::window::window_char_geometry(interp, window_id).0;

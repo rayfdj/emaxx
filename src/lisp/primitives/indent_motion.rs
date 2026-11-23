@@ -69,8 +69,8 @@ fn display_table_of(value: Value) -> Option<CharTableRef> {
 /// buffer's `buffer-display-table', else `standard-display-table'.
 fn window_display_table(interp: &Interpreter, win: MotionWindow) -> Option<CharTableRef> {
     let own = interp
-        .find_record(win.id)
-        .and_then(|window| window.slots.get(super::WINDOW_DISPLAY_TABLE_SLOT).copied())
+        .window_ref(win.id)
+        .and_then(|window| window.slot_opt(super::WINDOW_DISPLAY_TABLE_SLOT))
         .and_then(display_table_of);
     if own.is_some() {
         return own;
@@ -339,7 +339,7 @@ pub(crate) fn compute_motion(
     // Negative width means use all available text columns, less one for
     // the continuation glyph on a character terminal.
     if width < 0 {
-        let window_value = interp.record_value(win.id);
+        let window_value = interp.window_value(win.id);
         width = super::dispatch::call(interp, "window-body-width", &[window_value], env)
             .ok()
             .and_then(|value| value.integer_value())

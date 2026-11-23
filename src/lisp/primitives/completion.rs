@@ -20,10 +20,9 @@ pub(crate) fn interaction_allowed(interp: &Interpreter) -> bool {
         .is_some_and(|value| value.is_truthy())
 }
 
-pub(crate) fn is_window_value(interp: &Interpreter, value: &Value) -> bool {
+pub(crate) fn is_window_value(_interp: &Interpreter, value: &Value) -> bool {
     crate::lisp::types::eq_symbol_named(value, "window")
-        || matches!(value.kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record|
-            record.kind == crate::lisp::eval::RecordKind::Window))
+        || super::WindowRef::from_value(value).is_some()
 }
 
 #[cfg(test)]
@@ -1552,10 +1551,8 @@ pub(crate) fn activate_minibuffer_with_history(
     let saved_selected_window_id = interp.selected_window_id();
     // minibuf_level++ before the frame is chosen: (minibuffer-depth) is the
     // new level from here on, the mode hooks below included.
-    let minibuffer_window_id = match minibuffer_window.kind() {
-        Kind::Record(window) => window.id,
-        _ => saved_selected_window_id,
-    };
+    let minibuffer_window_id = super::WindowRef::from_record_value(&minibuffer_window)
+        .map_or(saved_selected_window_id, super::WindowRef::id);
     let previous_runtime =
         interp.begin_minibuffer_runtime(buffer_id, minibuffer_window_id, prompt_string.text);
     // read_minibuf arranges to restore a number of minibuffer-related
@@ -1660,8 +1657,8 @@ pub(crate) fn activate_minibuffer_with_history(
         // its markers at the buffer's point before the erase) and
         // Fselect_window it: the read happens there, never in the entry
         // window.
-        if let Kind::Record(minibuffer_window_id) = minibuffer_window.kind() {
-            interp.show_buffer_in_window(minibuffer_window_id.id, buffer_id, false);
+        if let Some(shown_in) = super::WindowRef::from_record_value(&minibuffer_window) {
+            interp.show_buffer_in_window(shown_in.id(), buffer_id, false);
             super::call(interp, "select-window", &[minibuffer_window], env)?;
         }
         // read_minibuf erases the buffer and inserts the prompt with
@@ -1791,10 +1788,9 @@ pub(crate) fn check_recursive_minibuffer(interp: &Interpreter) -> Result<(), Lis
         return Ok(());
     }
     let message = Value::string("Command attempted to use minibuffer while in minibuffer");
-    let in_minibuffer_window = matches!(
-        interp.minibuffer_window_value().kind(),
-        Kind::Record(window) if window.id == interp.selected_window_id()
-    );
+    let in_minibuffer_window =
+        super::WindowRef::from_record_value(&interp.minibuffer_window_value())
+            .is_some_and(|window| window.id() == interp.selected_window_id());
     if in_minibuffer_window {
         Err(LispError::SignalValue(Value::list([
             Value::symbol("user-error"),
@@ -1810,18 +1806,17 @@ pub(crate) fn check_recursive_minibuffer(interp: &Interpreter) -> Result<(), Lis
 /// (popped, with its start and point), or else the null minibuffer.
 fn minibuffer_unwind(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     let window = interp.minibuffer_window_value();
-    let Kind::Record(window_id) = window.kind() else {
+    let Some(window_id) = super::WindowRef::from_record_value(&window) else {
         return Ok(());
     };
-    let window_id = window_id.id;
+    let window_id = window_id.id();
     // WINDOW_LIVE_P: a live window shows a buffer.
     if super::window_buffer_id(interp, &window).is_none() {
         return Ok(());
     }
-    let previous = interp
-        .find_record(window_id)
-        .and_then(|record| record.slots.get(super::WINDOW_PREV_BUFFERS_SLOT).copied())
-        .unwrap_or(Value::Nil);
+    let previous = interp.window_ref(window_id).map_or(Value::Nil, |record| {
+        record.slot(super::WINDOW_PREV_BUFFERS_SLOT)
+    });
     if let Some(cell) = previous.cons_ref() {
         let entry = cell.car.get();
         if let Kind::Buffer(buffer) = entry.car()?.kind()
@@ -1829,8 +1824,8 @@ fn minibuffer_unwind(interp: &mut Interpreter, env: &mut Env) -> Result<(), Lisp
                 .buffer_object(buffer.id)
                 .is_some_and(|live| live.ptr_eq(&buffer))
         {
-            if let Some(record) = interp.find_record_mut(window_id) {
-                record.slots[super::WINDOW_PREV_BUFFERS_SLOT] = cell.cdr.get();
+            if let Some(record) = interp.window_ref(window_id) {
+                record.set_held_slot(interp, super::WINDOW_PREV_BUFFERS_SLOT, cell.cdr.get());
             }
             interp.show_buffer_in_window(window_id, buffer.id, false);
             let rest = entry.cdr()?;
@@ -2075,14 +2070,10 @@ fn read_minibuf_unwind(interp: &mut Interpreter, state: ActiveMinibuffer, env: &
     // window": unless the minibuffer window has an outer read's buffer to
     // go back to, the calling window is Fselect_window'ed.
     let minibuffer_window = interp.minibuffer_window_value();
-    let outer_reads = match minibuffer_window.kind() {
-        Kind::Record(window) => interp
-            .find_record(window.id)
-            .and_then(|record| record.slots.get(super::WINDOW_PREV_BUFFERS_SLOT))
-            .is_some_and(|previous| !previous.is_nil()),
-        _ => false,
-    };
-    let calling_window = interp.record_value(state.saved_selected_window_id);
+    let outer_reads = super::WindowRef::from_record_value(&minibuffer_window)
+        .and_then(|window| interp.window_ref(window.id()))
+        .is_some_and(|record| !record.slot(super::WINDOW_PREV_BUFFERS_SLOT).is_nil());
+    let calling_window = interp.window_value(state.saved_selected_window_id);
     if !outer_reads && super::window_buffer_id(interp, &calling_window).is_some() {
         let _ = super::call(interp, "select-window", &[calling_window], env);
     }

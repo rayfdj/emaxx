@@ -752,7 +752,7 @@ pub(crate) fn sit_for(
     use crate::lisp::primitives::processes::WAIT_READING_MAX;
     let do_display = display_option > 0;
     let selected_window_buffer = |interp: &Interpreter| {
-        let window = interp.record_value(interp.selected_window_id());
+        let window = interp.window_value(interp.selected_window_id());
         crate::lisp::primitives::window_buffer_id(interp, &window)
     };
     let curbuf_eq_winbuf = selected_window_buffer(interp) == Some(interp.current_buffer_id());

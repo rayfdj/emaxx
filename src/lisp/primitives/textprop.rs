@@ -645,10 +645,7 @@ pub(crate) fn previous_property_change(
 
 /// A window object (WINDOWP), live or not: its record id.
 fn window_object(interp: &Interpreter, object: &Value) -> Option<u64> {
-    match object.kind() {
-        Kind::Record(_) => window_record_id_from_value(interp, object),
-        _ => None,
-    }
+    window_record_id_from_value(interp, object)
 }
 
 /// textprop.c:get_char_property_and_overlay: PROP of the character at

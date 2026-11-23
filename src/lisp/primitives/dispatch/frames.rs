@@ -297,9 +297,8 @@ pub(crate) fn frame_display_parameter(
     })
 }
 
-fn is_window_record(interp: &Interpreter, value: Value) -> bool {
-    matches!(value.kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record|
-        record.kind == crate::lisp::eval::RecordKind::Window))
+fn is_window_record(_interp: &Interpreter, value: Value) -> bool {
+    WindowRef::from_value(&value).is_some()
 }
 
 /// frame.c:frame_name_fnn_p: whether NAME is `F' and decimal digits.
@@ -352,10 +351,10 @@ fn store_frame_parameter(
     if cached_symbol!("minibuffer").is(prop) {
         if is_window_record(interp, val) {
             let mini = id.borrow().minibuffer_window.map(WindowRef::value);
-            let Kind::Record(window) = val.kind() else {
+            let Some(window) = WindowRef::from_record_value(&val) else {
                 unreachable!()
             };
-            if !super::display::window_is_minibuffer(interp, window.id) {
+            if !super::display::window_is_minibuffer(interp, window.id()) {
                 return Err(crate::lisp::primitives::values::doprnt_error(
                     interp,
                     "The `minibuffer' parameter does not specify a valid minibuffer window",
@@ -1056,12 +1055,12 @@ define_dispatch!(
                     .find(|candidate| {
                         frame_parameter_value(interp, *candidate, cached_symbol!("no-other-frame"))
                             .is_nil()
-                            && match args.get(1).map(|v| v.kind()) {
-                                Some(Kind::Record(window)) => {
-                                    candidate.borrow().minibuffer_window_id() == window.id
-                                        || interp.window_frame_id(window.id) == Some(*candidate)
+                            && match args.get(1).and_then(WindowRef::from_record_value) {
+                                Some(window) => {
+                                    candidate.borrow().minibuffer_window_id() == window.id()
+                                        || interp.window_frame_id(window.id()) == Some(*candidate)
                                 }
-                                _ => true,
+                                None => true,
                             }
                     })
                     .unwrap_or(id);
@@ -1393,7 +1392,7 @@ pub(super) fn select_frame(
         interp,
         "select-window",
         &[
-            interp.record_value(window),
+            interp.window_value(window),
             if norecord { Value::T } else { Value::Nil },
         ],
         env,
