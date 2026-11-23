@@ -709,8 +709,9 @@ impl SymbolName {
     }
 
     /// The host text if the symbol has one yet: None for a symbol of
-    /// `make_symbol' whose text no reader has asked for.
-    #[inline(always)]
+    /// `make_symbol' whose text no reader has asked for (the tests' view of
+    /// the pending state).
+    #[cfg(test)]
     pub(crate) fn host_text_if_built(&self) -> Option<&str> {
         self.0.internal.get()
     }
