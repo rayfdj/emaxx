@@ -22948,6 +22948,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   45185888428) passed: 3,548 library tests, the seven integration
   targets (217) and the binaries' tests (61), none failed.
 
+**On `4fb2ec4`** (round 374): the frozen run (run 45198231570) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 51.3 s against 43.0 s (1.195), test bodies 228.4 s
+  against 215.6 s (1.060), in all 1.082 (GNU's suite took 259 s).  The
+  widest body gaps are comp-tests (10.7 s against 9.0 s), tramp-tests
+  (14.5 against 12.9), semantic-utest-ia (2.66 against 1.84),
+  process-tests (2.17 against 1.48), mule-tests (1.90 against 1.27) and
+  package-tests (5.78 against 5.30).  The Rust gate (run
+  45198225377) passed: 3,550 library tests, the seven integration
+  targets (217) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 374 and its review), outside the
   round and in no milestone.**  One line each: the link-table entries
