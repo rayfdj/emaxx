@@ -129,6 +129,13 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   stages that give the object window.h's offsets and size and take the
   ids away follow; the item closes when a window is GNU's `struct
   window' and the counts are GNU's.
+- **In progress: D4** (native code calling a primitive).  Round 374:
+  the plan (docs/plans/d4-native-subrs.md) and its first two stages;
+  sixteen type predicates of data.c are their own link-table entries,
+  `bufferp' from native code 78.1 instructions an iteration of the
+  probe's loop against GNU's 73.0 (126.1 before).  The general entry,
+  which every other subr still takes, pays about 50 more than GNU's
+  call; the plan's later stages take it down by shape.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -19573,6 +19580,98 @@ setup_process_coding_systems's check now refuses). A 13-form
   and 2,637 changed lines with two tests and 145 assertions added.
   The plan of the windows work, with its inventory and stages, is now
   in the repository as docs/plans/d3-windows.md.
+- **Round 374: native code calls sixteen type predicates themselves
+  (M2, D4, the first two stages of its plan; not closed).**  GNU's link
+  table for native code holds each subr's C function (comp.c's freloc,
+  `subr->function.a0'), so `(bufferp x)' in native-compiled Lisp is a
+  call of Fbufferp, about twelve instructions.  Emaxx's entry for all
+  but 36 subrs was a generated shell that passed the subr's index to
+  `invoke_subr': the subr found by index, its Rust entry read from a
+  word learned at the first call, the interpreter found through a
+  thread-local, the handler list compared, the body called with a
+  slice of its arguments and its `Result' tested, 40 instructions
+  around a body that checks its argument count again.  Measured before
+  the round in a native loop (instructions an iteration, the loop
+  itself 51 against GNU's 50): `bufferp' and `<' 126.1 against 73.0,
+  `vectorp' 109.1 against 58.0, `point' 110.1 against 57.0, `keywordp'
+  187.3 against 64.0, `delq' 220.1 against 151.0, `assoc' 270.1 against
+  167.0; `=', `>=', `max' and `cons' at or under GNU's (they had word
+  entries).  In a profile of byte-compiling subr-x.el (353M
+  instructions) native code called subrs 74,621 times, 237 of them
+  distinct, `cons' 31%, `nth' 14%, `=' and `+' 5.6% each: the general
+  path's excess is about 1% of such a run.  The plan
+  (docs/plans/d4-native-subrs.md, with the inventory and the stages)
+  gives a subr's table entry one of four shapes: the predicate
+  itself for a subr whose C body reads only its argument words; the
+  interpreter read alone for one that reads interpreter state and
+  cannot signal; the general path written into the wrapper with the
+  index and arity constant; the same over the caller's vector for a
+  MANY subr.  **This round**: the measurement probes (eighteen
+  `native-*' files of tools/perf/probes); a table-driven test that
+  every word-level entry of the link table answers as its primitive
+  over a sample of every kind of object, with
+  `symbols-with-pos-enabled' nil and t, each predicate shown to answer
+  both t and nil, its list of names tied to the generator's; a
+  `--reemit' mode of tools/generate_native_subrs.rs that emits a table
+  again from an existing one (the Darwin table has no GNU build here
+  to regenerate from) and a test that the two tables give each shared
+  name the same target and shape; and sixteen predicates of data.c
+  (`symbol-with-pos-p', `vectorp', `bufferp', `markerp', `subrp',
+  `closurep', `byte-code-function-p', `interpreted-function-p',
+  `floatp', `integerp', `numberp', `natnump', `integer-or-marker-p',
+  `number-or-marker-p', `char-or-string-p', `arrayp'), each dispatch
+  arm's expression moved into a function of the value that the arm and
+  a `direct_native_*' entry both call, the generator selecting them,
+  both tables regenerated (the Linux one byte for byte the output of
+  CI's own recipe on GNU's build, before and after).  `recordp' stays
+  on the general entry: Emaxx's arm collects a vector for the reader's
+  record form, so it can allocate.  src/anti_cheat.rs gains the
+  sixteen contract entries its exact fast-path inventory requires
+  (owner `data.c:Fname', the table test as contract), nothing else in
+  it changing; the round audit lists the file as changed
+  infrastructure for that.  **After**: `bufferp' and `<' 78.1 (GNU
+  73.0), `vectorp' 63.1 (58.0), `symbol-with-pos-p' 63.1 (58.0); the
+  five instructions left are `Value::kind's tag switch against
+  lisp.h's single test; every other probe, the byte-code recursion
+  (371.1), the `mapc' callback (413.7) and the window accessors are
+  unchanged.  **What is left of D4**: `recordp', `bare-symbol',
+  `keywordp' (its body 94 instructions against GNU's 14: a substring
+  search of the symbol's name) and `nth' with a variable index (157.1
+  against 101.0); the entries that read the interpreter (`point' 110.1
+  against 57.0); the thirteen kinds that still reach a cascade through
+  general wrappers (`+' 170.1 against 151.0); the general fixed and
+  MANY entries (about 17 and 27 instructions fewer each when written
+  into the wrapper); the bodies of `assoc' and `delq'.
+  The independent review (the one question: does the round cheat or
+  break something) compared each of the sixteen functions with the arm
+  it came from and with its DEFUN, read the entries' machine code (leaf
+  functions: no call, no thread-local, tag and header loads only), and
+  probed 125 objects against the sixteen predicates from native code
+  directly and through `funcall', `apply' and `mapcar', with byte-code
+  and interpreted twins, under both settings of
+  `symbols-with-pos-enabled': GNU, the build before and the build after
+  answer alike in every cell, as they do for literals of an eln's
+  constants, for handlers popped inline around the calls, signals,
+  throws, a collection, a second thread, and for `advice-add', `fset'
+  and `defalias' of four of the predicates with trampolines on and
+  off.  Both tables changed in exactly the sixteen targets and the
+  sixteen shells removed, no subr renumbered.  It found no cheat and
+  nothing broken, and noted of the round's own tests that the table
+  test proves the wiring (entry and arm now call one function, so only
+  the "answers both t and nil" assertion constrains the predicate
+  itself, whose arms keep their own tests), that a name added to the
+  test's second list would satisfy its tie to the generator without
+  being compared, and that the generator asserts no arity for a
+  runtime target.
+  Validation of the five commits (gate profile, one test thread a
+  process): the grouped gate 3,543 passed, 0 failed, 2 ignored (two
+  library tests more); cli 30, cli_parity 174, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists
+  src/anti_cheat.rs as changed infrastructure (the sixteen contract
+  entries appended to the inventory, nothing else), and 1,675 changed
+  lines with two tests and twenty assertions added, none removed.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -22829,6 +22928,16 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (217) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 374 and its review), outside the
+  round and in no milestone.**  One line each: the link-table entries
+  of `symbolp' and `bare-symbol-p' answer t for the unbound marker
+  where their primitives answer nil (no Lisp value is that marker);
+  `interpreted-function-p' is "a closure whose code is not a string"
+  where GNU requires a cons (the reader and the constructors refuse
+  the closures that would tell them apart); a pseudovector of a code
+  the allocator does not know reads as a plain vector, so `vectorp'
+  would answer t for one; `recordp' collects a vector to test the
+  reader's record form.
 - **Found after the scope lock (round 373 and its review), outside the
   round and in no milestone.**  One line each: the parent a split makes
   does not take the split window's old sizes, margins or redisplay
